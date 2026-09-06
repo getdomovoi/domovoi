@@ -6,26 +6,35 @@ import { arch, homedir, hostname, platform, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  buildVersion,
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
   type MachineCapability,
+  type MachineWslFacts,
   type FleetMachine,
+  fleetMachineDescriptorSchema,
+  fleetSnapshotOverflowErrorCode,
+  type FleetMachineDescriptor,
+  type FleetSnapshotOverflow,
   createEmptyWorkspace,
   daemonAuthenticationErrorCode,
   daemonPersistenceUnavailableErrorCode,
+  deviceLabelMismatchErrorCode,
   devicePairingLimitErrorCode,
+  type DeviceLabelMismatch,
   sourcePreflight,
   transferPreflight,
   type TransferReceipt,
-  machineCredentialMissingErrorCode,
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
   terminalOutputBatchDelayMilliseconds,
   turnSkillSelectionErrorCode,
+  skillInstallErrorCode,
   maximumEmergencyStopFailureMessageLength,
+  maximumProviderPromptCodeUnits,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
@@ -33,6 +42,7 @@ import {
   sessionTransferContractVersion,
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
+  type ProtocolMismatch,
   rpcMethods,
   rpcRequestSchema,
   skillInventoryEntryFromSummary,
@@ -59,6 +69,7 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type SkillInstallRefusal,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
@@ -67,8 +78,13 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+import { FleetSnapshotOverflowError } from "./fleet-registry.js"
+import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
-import { MachinePairingRequiredError, openMachineSocket } from "./machine-socket.js"
+import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
+import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
+import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
 import {
@@ -134,6 +150,7 @@ import {
 import {
   composeProviderPrompt,
   PromptCompositionLimitError,
+  validateProviderPromptBudget,
 } from "./prompt-composer.js"
 import { TurnSkillSelectionError } from "./skill-context.js"
 import {
@@ -142,7 +159,9 @@ import {
   type TerminalService,
 } from "./terminal.js"
 import type { ProviderProbe } from "./providers.js"
+import { SkillInstallError, SkillSourceError } from "./skill-install.js"
 import type { SkillReviews } from "./skill-reviews.js"
+import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -157,12 +176,15 @@ import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger } from "./usage.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
+import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
 import {
+  DeviceLabelMismatchError,
   DeviceLimitReachedError,
   type VerifiedDeviceCredential,
 } from "./device-registry.js"
-import type { MachineCredentials } from "./machine-credentials.js"
+import type { ConfiguredSshTunnel } from "./transport-config.js"
+import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { advertisedTransports } from "./advertised-transports.js"
 import { classifyProviderFailure, providerTurnCompletion } from "./provider-failures.js"
 import {
@@ -181,6 +203,7 @@ import {
 } from "./rpc-outbound.js"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
+import { PairingClaimAdmission } from "./pairing-admission.js"
 import {
   appendDurableOutput,
   DurableOutputRedactor,
@@ -212,6 +235,7 @@ const defaultSessionTransferTimeoutMs = 600_000
 const internalError = -32603
 const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
+type PreAuthAuditKind = "authentication" | "invalid-request" | "pairing" | "pairing-rate-limit"
 export const maximumWebSocketPayloadBytes = 2 * 1_024 * 1_024
 export const maximumAuthenticationPayloadBytes = 4 * 1_024
 // One failed write is a transient disk or lock problem worth retrying. This many
@@ -253,18 +277,29 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+function skillInstallAuditDetail(values: Record<string, unknown>): string {
+  const source = values.source && typeof values.source === "object"
+    ? (values.source as Record<string, unknown>).path
+    : undefined
+  return `scope=${String(values.scope ?? "")} sourceDigest=${String(values.sourceDigest ?? "")} source=${String(source ?? "")}`
+}
+
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
   "runtime.models",
   "skill.list",
   "skill.inventory",
   "skill.read",
+  "skill.installPreview",
   "session.history",
   "session.evidence",
   "audit.query",
+  "fleet.heartbeat",
 ])
 const machineRpcMethods = new Set<RpcMethod>([
   "system.hello",
+  "fleet.heartbeat",
+  "device.revokeCurrent",
   "transfer.preflight",
   "transfer.prepare",
   "transfer.member",
@@ -690,7 +725,7 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
   "capture" | "storeUpload"
 >
 
-type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "close"> & Partial<
+type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "window" | "close"> & Partial<
   Pick<UsageLedger, "transferSession" | "replaceTransferredSession">
 >
 
@@ -724,6 +759,7 @@ export const localMachineCapabilities = [
 ] as const satisfies readonly MachineCapability[]
 
 export type DaemonServerOptions = {
+  localOwner?: { secret: LocalOwnerSecret; identity: LocalOwnerIdentity }
   host?: string
   port?: number
   allowedOrigins?: string[]
@@ -735,6 +771,8 @@ export type DaemonServerOptions = {
   workspaceService?: WorkspaceService
   worktreeRoot?: string
   agentTimeoutMs?: number
+  auditReadTimeoutMs?: number
+  providerPromptBudgetCodeUnits?: number
   modelCacheTtlMs?: number
   authToken?: string
   allowRemoteTransport?: boolean
@@ -746,6 +784,7 @@ export type DaemonServerOptions = {
   usageLedger?: DaemonUsageLedger
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
+  skillTrustPath?: string
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
@@ -753,7 +792,19 @@ export type DaemonServerOptions = {
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
   advertiseHost?: string
-  machineCredentials?: MachineCredentials
+  tailnetHost?: string
+  sshTunnels?: readonly ConfiguredSshTunnel[]
+  // The distribution this daemon runs in, when it runs inside WSL. It is a
+  // fact about the executable's host, so it is supplied at construction like
+  // the platform rather than read back from stored state.
+  wsl?: MachineWslFacts
+  // Below the production factory only. The version this daemon advertises and
+  // admits peers by, so a test peer can stand in for another release. Its own
+  // dials keep the build's version.
+  advertisedProtocolVersion?: string
+  machineCredentials?: AsyncMachineCredentials
+  fleetOperationTimeoutMs?: number
+  fleetHeartbeatIntervalMs?: number
   readTransferBundle?: (bundlePath: string) => Promise<Buffer>
   transferTransactions?: FileTransferTransactions
   outgoingTransferTransactions?: FileTransferTransactions
@@ -805,6 +856,7 @@ export class DomovoiDaemon {
   #http: HttpServer | undefined
   #websocket: WebSocketServer | undefined
   #snapshot: WorkspaceSnapshot
+  #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
   #persistenceFailures = 0
   #persistenceUnavailable = false
@@ -828,6 +880,8 @@ export class DomovoiDaemon {
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
+  #auditReadTimeoutMs: number
+  #providerPromptBudgetCodeUnits: number
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
   #authToken: string
@@ -838,7 +892,9 @@ export class DomovoiDaemon {
   }>()
   #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
   #connectionIds = new WeakMap<WebSocket, string>()
-  #preAuthAuditDeadlines = new Map<"authentication" | "invalid-request", number>()
+  #preAuthAuditDeadlines = new Map<PreAuthAuditKind, number>()
+  #pairingClaimAdmission = new PairingClaimAdmission()
+  #socketSources = new WeakMap<WebSocket, string>()
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
   #authTimeoutMs: number
@@ -852,6 +908,7 @@ export class DomovoiDaemon {
   #providerRefresh: Promise<void> | undefined
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
+  #skillTrustPath: string
   #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
@@ -864,12 +921,18 @@ export class DomovoiDaemon {
   #stopPromise: Promise<void> | undefined
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
+  #localOwner: DaemonServerOptions["localOwner"]
   #advertiseHost: string | undefined
+  #tailnetHost: string | undefined
+  #wsl: MachineWslFacts | undefined
+  #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
-  #machineCredentials: MachineCredentials | undefined
+  #machineCredentials: AsyncMachineCredentials | undefined
+  #fleetEnrollment: FleetEnrollmentService
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
   #transferTransactions: FileTransferTransactions
   #outgoingTransferTransactions: FileTransferTransactions
+  #ownedTransferRoot: string | undefined
   #sessionTransferTimeoutMs: number
   #sessionTransferRetryMs: number
   #transferReconciliationTimer: ReturnType<typeof setTimeout> | undefined
@@ -886,6 +949,13 @@ export class DomovoiDaemon {
   #ownershipChecks = new Set<string>()
 
   constructor(options: DaemonServerOptions = {}) {
+    // Audit reads are store work, not agent work. Keep a finite independent
+    // budget, validated before any workspace state or providers are opened.
+    this.#auditReadTimeoutMs = options.auditReadTimeoutMs ?? 30_000
+    validateOperationDeadlineBudget(this.#auditReadTimeoutMs)
+    this.#providerPromptBudgetCodeUnits = options.providerPromptBudgetCodeUnits
+      ?? maximumProviderPromptCodeUnits
+    validateProviderPromptBudget(this.#providerPromptBudgetCodeUnits)
     const authToken = options.authToken ?? randomBytes(32).toString("base64url")
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
@@ -895,7 +965,14 @@ export class DomovoiDaemon {
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
+    this.#localOwner = options.localOwner
     this.#advertiseHost = options.advertiseHost
+    this.#tailnetHost = options.tailnetHost
+    this.#wsl = options.wsl
+    this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
+    if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
+      throw new RangeError("Advertised protocol version must be a three-part semver")
+    }
     this.#machineCredentials = options.machineCredentials
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
     this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
@@ -907,15 +984,20 @@ export class DomovoiDaemon {
     // fleet says where they are, pairing left the credential here, and the
     // socket carries the transfer calls.
     this.#connectToMachine = options.connectToMachine ?? createMachineDialer({
-      machines: () => this.#store.fleet?.snapshot(
-        this.#snapshot.machine.id,
-        Date.now(),
-      ).machines ?? [],
+      machine: (id) => {
+        const target = this.#store.fleet?.lookupMachine(id, this.#snapshot.machine.id, Date.now())
+        if (!target || !transferPreflight({ source: { ...target, id: this.#snapshot.machine.id }, target }).allowed) return undefined
+        return target
+      },
       credentials: this.#machineCredentials,
-      open: ({ endpoint, expectedMachineId, credential, signal }) => openMachineSocket({
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
+      dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
+      open: ({ endpoint, expectedMachineId, credential, signal, deadline }) => openMachineSocket({
         endpoint,
         expectedMachineId,
         credential,
+        deadline,
+        callTimeoutMs: defaultMachineCallTimeoutMs,
         ...(signal ? { signal } : {}),
       }),
     })
@@ -935,15 +1017,19 @@ export class DomovoiDaemon {
       name: machineName,
       platform: machinePlatform,
       arch: machineArch,
-      version: "0.0.1",
+      version: buildVersion,
       connection: "local",
       reachable: true,
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
-    const transferRoot = statePath === ":memory:"
+    // In-memory state has no directory to keep transfer packages beside, so
+    // this daemon makes one. It owns that tree and removes it when it stops;
+    // a temporary directory nobody reclaims is a leak on every run.
+    const ownedTransferRoot = statePath === ":memory:"
       ? join(tmpdir(), `domovoi-transfer-transactions-${randomUUID()}`)
-      : join(dirname(statePath), "transfers")
+      : undefined
+    const transferRoot = ownedTransferRoot ?? join(dirname(statePath), "transfers")
     this.#transferTransactions = options.transferTransactions ?? new FileTransferTransactions(
       join(transferRoot, "incoming"),
     )
@@ -951,6 +1037,7 @@ export class DomovoiDaemon {
       ?? new FileTransferTransactions(
         join(transferRoot, "outgoing"),
       )
+    this.#ownedTransferRoot = ownedTransferRoot
     this.#annotationVisualContext = options.annotationVisualContext
       ?? new AnnotationVisualContextService({
         root: join(dirname(statePath), "annotation-crops"),
@@ -972,6 +1059,30 @@ export class DomovoiDaemon {
           ?? options.statePath === undefined,
       },
     )
+    this.#snapshot = this.#store.load()
+    if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
+      // Picking either identity would silently reassign the ownership of every
+      // stored session. Fail before providers or listeners can do any work.
+      if (!options.store) void Promise.resolve(this.#store.close()).catch((error: unknown) => {
+        this.#reportError("Closing mismatched workspace state failed", error)
+      })
+      throw new Error("Stored workspace machine identity does not match this daemon; restore the matching identity and state before restarting")
+    }
+    if (options.machineIdentity) {
+      // A saved machine row is not evidence of this executable's platform or
+      // version after a restart/upgrade. Keep provider readiness separately.
+      this.#snapshot.machine = { ...initialSnapshot.machine, providers: this.#snapshot.machine.providers }
+    }
+    this.#localMachine = structuredClone(this.#snapshot.machine)
+    this.#fleetEnrollment = new FleetEnrollmentService({
+      selfId: this.#localMachine.id, registry: this.#store.fleet, credentials: this.#machineCredentials,
+      ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
+      operationTimeoutMs: options.fleetOperationTimeoutMs ?? defaultFleetOperationTimeoutMs,
+      heartbeatIntervalMs: options.fleetHeartbeatIntervalMs ?? defaultFleetHeartbeatIntervalMs,
+      recordLocal: () => this.#recordThisMachine(),
+      changed: (fleet) => this.#broadcastNotification("fleet.changed", fleetClientSnapshot(fleet)),
+      reportFailure: (context) => this.#reportError(context, new Error("Fleet lifecycle recovery will retry")),
+    })
     const usagePath = options.store || statePath === ":memory:"
       ? ":memory:"
       : join(dirname(statePath), "usage.sqlite")
@@ -980,7 +1091,6 @@ export class DomovoiDaemon {
     this.#pairing = this.#store.devices
       ? new PairingCodeService(this.#store.devices)
       : undefined
-    this.#snapshot = this.#store.load()
     this.#agents = new AgentRegistry(
       options.agents ?? {
         "claude-code": new ClaudeAgentSdkAdapter(),
@@ -1003,6 +1113,7 @@ export class DomovoiDaemon {
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
     this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
+    this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath(homedir())
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -1028,24 +1139,26 @@ export class DomovoiDaemon {
 
   // The local daemon is the one machine this registry can observe directly, so
   // its heartbeat is refreshed whenever a client reads the fleet.
+  #machineDescriptor(): FleetMachineDescriptor {
+    const machine = this.#localMachine
+    return fleetMachineDescriptorSchema.parse({
+      id: machine.id, label: machine.name, platform: machine.platform,
+      arch: machine.arch, version: machine.version, capabilities: [...localMachineCapabilities], protocolVersion: this.#advertisedProtocolVersion,
+      transports: advertisedTransports({
+        host: this.host, port: this.address?.port ?? this.requestedPort,
+        ...(this.#tls ? { tls: true } : {}),
+        ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
+        ...(this.#tailnetHost ? { tailnetHost: this.#tailnetHost } : {}),
+      }),
+      ...(this.#wsl ? { wsl: this.#wsl } : {}),
+    })
+  }
+
   #recordThisMachine(): void {
-    const machine = this.#snapshot.machine
     try {
       this.#store.fleet?.record({
-        id: machine.id,
-        label: machine.name,
-        platform: machine.platform,
-        arch: machine.arch,
-        version: machine.version,
+        ...this.#machineDescriptor(),
         connection: "local",
-        capabilities: [...localMachineCapabilities],
-        protocolVersion,
-        transports: advertisedTransports({
-          host: this.host,
-          port: this.address?.port ?? this.requestedPort,
-          ...(this.#tls ? { tls: true } : {}),
-          ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
-        }),
       }, Date.now())
     } catch (error) {
       this.#reportError("Domovoi could not record this machine in the fleet", error)
@@ -1089,7 +1202,8 @@ export class DomovoiDaemon {
     return this.#authToken
   }
 
-  async start(): Promise<{ host: string; port: number }> {
+  async start(signal?: AbortSignal): Promise<{ host: string; port: number }> {
+    signal?.throwIfAborted()
     if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
     if (this.#http) throw new Error("Daemon is already running")
 
@@ -1097,7 +1211,9 @@ export class DomovoiDaemon {
       this.#transferTransactions.pruneExpired(),
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
+    signal?.throwIfAborted()
     await this.#recoverSessionArchives()
+    signal?.throwIfAborted()
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
 
@@ -1110,7 +1226,7 @@ export class DomovoiDaemon {
     this.#http = listen((request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
-        response.end(JSON.stringify({ status: "ok", protocolVersion }))
+        response.end(JSON.stringify({ status: "ok", protocolVersion: this.#advertisedProtocolVersion }))
         return
       }
 
@@ -1137,7 +1253,21 @@ export class DomovoiDaemon {
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
     })
+    this.#websocket.on("headers", (headers, request) => {
+      const nonce = request.headers["x-domovoi-owner-nonce"]
+      const peer = request.socket.remoteAddress
+      const local = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
+        || (peer !== undefined && peer === request.socket.localAddress)
+      // Discovery proves this instance, not client authority. It uses a
+      // separate private key; the same socket must still complete hello.
+      if (this.#localOwner && local && typeof nonce === "string" && credentialSchema.safeParse(nonce).success) {
+        headers.push(`X-Domovoi-Owner-Proof: ${localOwnerProof(this.#localOwner.secret, this.#localOwner.identity, nonce)}`)
+      }
+    })
     this.#websocket.on("connection", (socket, request) => {
+      // Use the socket peer, never caller-authored forwarding headers. NAT or
+      // proxy peers share a budget; neither a reconnect nor hello resets it.
+      if (request.socket.remoteAddress) this.#socketSources.set(socket, request.socket.remoteAddress)
       socket.once("close", () => {
         this.#rpcOutbound.forget(socket)
         this.#releaseTerminalOwnership(socket)
@@ -1214,11 +1344,13 @@ export class DomovoiDaemon {
       this.#http!.once("error", reject)
       this.#http!.listen(this.requestedPort, this.host, () => resolve())
     })
+    signal?.throwIfAborted()
 
     // A dead target must not hold daemon startup hostage. Each frozen source
     // remains read-only while its own resource queue reconciles in background.
     this.#scheduleSessionTransferRecovery()
     this.#scheduleRecoveredOwnershipChecks()
+    this.#fleetEnrollment.start()
     if (this.#providerProbe) this.#queueProviderRefresh(true)
 
     return this.address!
@@ -1227,20 +1359,22 @@ export class DomovoiDaemon {
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopping = true
+    const fleetStopped = this.#fleetEnrollment.stop()
     if (this.#transferReconciliationTimer) {
       clearTimeout(this.#transferReconciliationTimer)
       this.#transferReconciliationTimer = undefined
     }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
-    const stopping = this.#finishStop()
+    const stopping = this.#finishStop(fleetStopped)
     this.#stopPromise = stopping
     return stopping
   }
 
-  async #finishStop(): Promise<void> {
+  async #finishStop(fleetStopped: Promise<void>): Promise<void> {
     const failures: unknown[] = []
     try {
+      await fleetStopped
       await this.#providerRefresh
       try {
         await withTimeout(
@@ -1277,6 +1411,12 @@ export class DomovoiDaemon {
     failures.push(...providerClosures.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : []
     ))
+    // Native work may survive its caller's deadline. Shutdown must observe
+    // worker exit, or report failure instead of claiming the writer stopped.
+    const keyringShutdown = OperationDeadline.start(5_000)
+    try { await this.#machineCredentials?.close(keyringShutdown) }
+    catch (error) { failures.push(error) }
+    finally { keyringShutdown.clear() }
     try {
       await this.#store.close()
     } catch (error) {
@@ -1286,6 +1426,20 @@ export class DomovoiDaemon {
       this.#usageLedger.close()
     } catch (error) {
       failures.push(error)
+    }
+    // Last, so nothing is still writing packages into it. Removal is retried
+    // because a transfer that just ended can still hold a file open.
+    const ownedTransferRoot = this.#ownedTransferRoot
+    if (ownedTransferRoot !== undefined) {
+      this.#ownedTransferRoot = undefined
+      try {
+        await rm(ownedTransferRoot, {
+          recursive: true, force: true, maxRetries: 10, retryDelay: 50,
+        })
+      } catch (error) {
+        this.#ownedTransferRoot = ownedTransferRoot
+        failures.push(error)
+      }
     }
     this.#stopped = true
     if (failures.length > 0) throw new AggregateError(failures, "Domovoi shutdown failed")
@@ -1308,14 +1462,16 @@ export class DomovoiDaemon {
     }
   }
 
-  #appendPreAuthAudit(kind: "authentication" | "invalid-request"): void {
-    const now = Date.now()
+  #appendPreAuthAudit(kind: PreAuthAuditKind, detail?: string): void {
+    const now = performance.now()
     if ((this.#preAuthAuditDeadlines.get(kind) ?? 0) > now) return
     this.#preAuthAuditDeadlines.set(kind, now + preAuthAuditWindowMs)
     this.#appendAudit({
+      retention: "pre-auth",
       actor: { kind: "daemon", component: kind === "authentication" ? kind : "rpc" },
-      action: `security.${kind}`,
-      outcome: kind === "authentication" ? "denied" : "failed",
+      action: kind === "pairing" ? "device.claim" : `security.${kind}`,
+      outcome: kind === "invalid-request" ? "failed" : "denied",
+      ...(detail === undefined ? {} : { detail }),
     })
   }
 
@@ -1333,7 +1489,7 @@ export class DomovoiDaemon {
       ? { ...authenticatedActor, connectionId }
       : authenticatedActor ?? { kind: "daemon", component: "rpc" }
     const sessionId = this.#auditSessionId(values)
-    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId"]
+    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId", "machineId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
       ?? ((method === "skill.setEnabled" || method === "skill.review")
@@ -1354,6 +1510,9 @@ export class DomovoiDaemon {
       ...(method === "skill.review"
         ? { detail: `decision=${String(values.decision ?? "")} digest=${String(values.contentDigest ?? "")}` }
         : {}),
+      ...(method === "skill.install"
+        ? { detail: skillInstallAuditDetail(values) }
+        : {}),
     })
     this.#pendingAudits.set(socket, pending)
     return true
@@ -1362,7 +1521,7 @@ export class DomovoiDaemon {
   #amendPendingAudit(
     socket: WebSocket,
     id: string | number | null,
-    updates: Pick<AuditAppendInput, "target" | "detail">,
+    updates: Pick<AuditAppendInput, "target" | "detail"> & { outcome?: AuditOutcome },
   ): void {
     const input = this.#pendingAudits.get(socket)?.get(JSON.stringify(id))
     if (!input) return
@@ -1483,7 +1642,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -1545,8 +1704,7 @@ export class DomovoiDaemon {
     const sourceCapability = this.#sourceTransferCapabilityRefusal(params.method)
     if (sourceCapability) return this.#refusedTransferPreview(params, sourceCapability)
 
-    const fleet = this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
-    const target = fleet?.machines.find((machine) => machine.id === params.targetMachineId)
+    const target = this.#store.fleet?.lookupMachine(params.targetMachineId, this.#snapshot.machine.id, Date.now())
     if (!target) return this.#refusedTransferPreview(params, "target-unreachable")
     const reachable = transferPreflight({
       source: { ...target, id: this.#snapshot.machine.id },
@@ -2769,11 +2927,18 @@ export class DomovoiDaemon {
         || request.method === "provider.refresh"
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
+        || request.method === "usage.window"
         || request.method === "skill.list"
         || request.method === "skill.inventory"
         || request.method === "skill.read"
+        || request.method === "skill.installPreview"
         || request.method === "audit.query"
         || request.method === "audit.export"
+        || request.method === "fleet.heartbeat"
+        || request.method === "fleet.list"
+        || request.method === "fleet.enroll"
+        || request.method === "fleet.forget"
+        || request.method === "device.revokeCurrent"
         || request.method === "system.emergencyStop"
     } catch {
       return false
@@ -2785,7 +2950,10 @@ export class DomovoiDaemon {
     if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
       this.#fileSkillCatalog = {
         projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews),
+        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews, {
+          trustPath: this.#skillTrustPath,
+          report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
+        }),
       }
     }
     return this.#fileSkillCatalog.catalog
@@ -3041,6 +3209,15 @@ export class DomovoiDaemon {
     }
 
     const method = request.method as RpcMethod
+    if (method === "device.claim" && !this.#pairingClaimAdmission.admit(this.#socketSources.get(socket))) {
+      // Admission precedes shape, version and code checks. Incompatible claims
+      // cost admission, not code guesses; exhausted sources get this uniform
+      // refusal even for an incompatible version or a valid unspent code.
+      this.#appendPreAuthAudit("pairing-rate-limit", "Pairing claim admission limit reached")
+      this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
+      socket.close(1008, "pairing rate limit")
+      return
+    }
     if (!this.#deviceCredentialActive(socket)) {
       this.#authenticatedClients.delete(socket)
       this.#appendPreAuthAudit("authentication")
@@ -3074,7 +3251,7 @@ export class DomovoiDaemon {
       // versionless client is correctly judged incompatible rather than being
       // waved through as whatever the daemon happens to speak.
       const { clientProtocol, compatibility } = helloProtocolCompatibility(
-        protocolVersion,
+        this.#advertisedProtocolVersion,
         hello.protocolVersion,
       )
       if (compatibility !== "compatible") {
@@ -3085,7 +3262,8 @@ export class DomovoiDaemon {
           socket,
           request.id,
           protocolVersionMismatchErrorCode,
-          `This daemon speaks protocol ${protocolVersion}; the client speaks ${clientProtocol}`,
+          protocolMismatchRefusal(this.#advertisedProtocolVersion, clientProtocol),
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: clientProtocol, compatibility },
         )
         return
       }
@@ -3141,9 +3319,18 @@ export class DomovoiDaemon {
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
     } else if (method === "device.claim") {
-      // The one method a machine may reach before it has a credential, because
-      // presenting the pairing code is how it gets one. It grants nothing else.
+      // The code grants only a short-lived confirmation capability. No normal
+      // machine authentication is possible until the source confirms storage.
       const params = paramsResult.data as RpcParams<"device.claim">
+      const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
+      if (compatibility !== "compatible") {
+        // The wire must be compatible before spending a short-lived code or a
+        // guessing attempt. No credential exists until the claim succeeds.
+        this.#error(socket, request.id, protocolVersionMismatchErrorCode,
+          "Update both daemons to the same protocol before pairing",
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
+        return
+      }
       if (!this.#pairing) {
         this.#error(socket, request.id, internalError, "Device pairing is unavailable")
         return
@@ -3157,21 +3344,16 @@ export class DomovoiDaemon {
           actor: { kind: "daemon", component: "rpc" },
           action: "device.claim",
           outcome: "succeeded",
-          target: paired.device.id,
+          target: paired.claim.deviceId,
         })
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(paired),
+          result: rpcMethods[method].result.parse({ ...paired, machine: this.#machineDescriptor() }),
         })
       } catch (error) {
         if (error instanceof DeviceLimitReachedError) {
-          this.#appendAudit({
-            actor: { kind: "daemon", component: "rpc" },
-            action: "device.claim",
-            outcome: "denied",
-            detail: error.message,
-          })
+          this.#appendPreAuthAudit("pairing", error.message)
           this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
           return
         }
@@ -3179,13 +3361,44 @@ export class DomovoiDaemon {
         // The reason is recorded for an operator but never returned: an
         // unauthenticated caller must not learn whether a code exists, has
         // expired, or was simply wrong.
-        this.#appendAudit({
-          actor: { kind: "daemon", component: "rpc" },
-          action: "device.claim",
-          outcome: "denied",
-          detail: error.message,
-        })
+        this.#appendPreAuthAudit("pairing", error.message)
         this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
+      }
+      return
+    } else if (method === "device.confirmClaim") {
+      const params = paramsResult.data as RpcParams<"device.confirmClaim">
+      const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
+      if (compatibility !== "compatible") {
+        this.#error(socket, request.id, protocolVersionMismatchErrorCode,
+          "Update both daemons to the same protocol before pairing",
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
+        return
+      }
+      // This narrow capability is usable without hello so an unconfirmed
+      // credential never receives ordinary machine authority. Its source must
+      // persist it before making this call. Lost replies are safe to replay.
+      try {
+        const device = this.#store.devices?.confirmClaim(params.authToken, params.machineId, Date.now())
+        if (!device) {
+          // Confirmation proves a full-strength bearer, not another guess at
+          // a spoken code. Retries must not burn claim admission or turn rate
+          // pressure into a false verdict that a durably stored key is invalid.
+          this.#appendPreAuthAudit("authentication")
+          this.#rejectAuthentication(socket, request.id, "Pairing was refused")
+          return
+        }
+        this.#appendAudit({ actor: { kind: "machine", machineId: params.machineId },
+          action: "device.confirmClaim", outcome: "succeeded", target: device.id })
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ device }) })
+        this.#disconnectInactiveDevices()
+      } catch (error) {
+        // Storage failure is not proof the capability is invalid. The source
+        // must keep its durable journal and retry, not delete its only token.
+        if (error instanceof DeviceLimitReachedError) this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
+        else {
+          this.#reportError("Device claim confirmation failed", error)
+          this.#error(socket, request.id, internalError, "Device claim confirmation is unavailable")
+        }
       }
       return
     } else if (!this.#authenticatedClients.has(socket)) {
@@ -3241,7 +3454,7 @@ export class DomovoiDaemon {
         socket,
         request.id,
         daemonAuthenticationErrorCode,
-        "Machine connections may only use transfer RPCs",
+        "Machine connections may only use machine lifecycle and transfer RPCs",
       )
       return
     }
@@ -3259,6 +3472,24 @@ export class DomovoiDaemon {
     try {
       let changed = false
       let alreadyPersisted = false
+      if (method === "fleet.heartbeat" || method === "device.revokeCurrent") {
+        const credential = this.#deviceCredentials.get(socket)?.verified
+        if (authenticatedActor?.kind !== "machine" || credential?.binding.kind !== "machine") {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "This method requires a machine-paired credential")
+          return
+        }
+        if (method === "fleet.heartbeat") {
+          this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
+        } else {
+          this.#store.devices!.revoke(credential.device.id)
+          this.#amendPendingAudit(socket, request.id, { target: credential.device.id })
+          // The response precedes the close frame so the source can distinguish
+          // confirmed revocation from an ambiguous disconnected socket.
+          this.#send(socket, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
+          this.#disconnectInactiveDevices()
+        }
+        return
+      }
       if (method === "system.emergencyStop") {
         const params = paramsResult.data as RpcParams<"system.emergencyStop">
         const actor = this.#authenticatedActors.get(socket)
@@ -3279,7 +3510,7 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"audit.query">
         const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.query(params, signal),
-          this.#agentTimeoutMs,
+          this.#auditReadTimeoutMs,
           "Audit query timed out",
         )
         this.#send(socket, {
@@ -3310,6 +3541,17 @@ export class DomovoiDaemon {
         })
         return
       }
+      if (method === "usage.window") {
+        const params = paramsResult.data as RpcParams<"usage.window">
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(
+            this.#usageLedger.window(Date.parse(params.start), Date.parse(params.end)),
+          ),
+        })
+        return
+      }
       if (method === "audit.export") {
         if (!this.#auditLog) {
           this.#error(socket, request.id, invalidParams, "Audit log is unavailable")
@@ -3318,7 +3560,7 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"audit.export">
         const result = await this.#withAbortTimeout(
           async (signal) => this.#auditLog!.export(params, signal),
-          this.#agentTimeoutMs,
+          this.#auditReadTimeoutMs,
           "Audit export timed out",
         )
         this.#send(socket, {
@@ -3668,32 +3910,6 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
-        })
-        return
-      }
-
-      if (method === "device.saveCredential") {
-        const params = paramsResult.data as RpcParams<"device.saveCredential">
-        // Keeping another machine's credential is device management, so a
-        // device credential must not reach it.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Managing paired devices requires the daemon credential",
-          )
-          return
-        }
-        if (!this.#machineCredentials) {
-          this.#error(socket, request.id, internalError, "Machine credentials are unavailable")
-          return
-        }
-        this.#machineCredentials.save(params.machineId, params.credential)
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({ saved: true }),
         })
         return
       }
@@ -4402,41 +4618,6 @@ export class DomovoiDaemon {
         return
       }
 
-      if (method === "device.machineCredential") {
-        const params = paramsResult.data as RpcParams<"device.machineCredential">
-        // Handing out another machine's credential is device management, so a
-        // device credential must not reach it.
-        if (this.#deviceCredentials.get(socket) !== undefined) {
-          this.#error(
-            socket,
-            request.id,
-            daemonAuthenticationErrorCode,
-            "Managing paired devices requires the daemon credential",
-          )
-          return
-        }
-        if (!this.#machineCredentials) {
-          this.#error(socket, request.id, internalError, "Machine credentials are unavailable")
-          return
-        }
-        const credential = this.#machineCredentials.forMachine(params.machineId)
-        if (credential === undefined) {
-          this.#error(
-            socket,
-            request.id,
-            machineCredentialMissingErrorCode,
-            "No credential is kept for that machine",
-          )
-          return
-        }
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse({ credential }),
-        })
-        return
-      }
-
       if (method === "device.issueCode") {
         // Opening a pairing enrols a new device, so it is device management and
         // a device credential must not reach it: otherwise one paired device
@@ -4467,12 +4648,14 @@ export class DomovoiDaemon {
         || method === "device.list"
         || method === "device.revoke"
         || method === "device.rotate"
+        || method === "device.rename"
       ) {
         const params = paramsResult.data as
           | RpcParams<"device.pair">
           | RpcParams<"device.list">
           | RpcParams<"device.revoke">
           | RpcParams<"device.rotate">
+          | RpcParams<"device.rename">
         const devices = this.#store.devices
         if (!devices) {
           this.#error(socket, request.id, internalError, "Device pairing is unavailable")
@@ -4489,27 +4672,41 @@ export class DomovoiDaemon {
           )
           return
         }
-        const result = method === "device.pair"
-          ? devices.pair({
-              label: (params as { label: string }).label,
-              binding: {
-                kind: "client",
-                client: (params as RpcParams<"device.pair">).client,
-              },
-            })
-          : method === "device.list"
-            ? { devices: devices.list() }
-            : method === "device.revoke"
-              ? { device: devices.revoke((params as { deviceId: string }).deviceId) }
-              : devices.rotate((params as { deviceId: string }).deviceId)
-        if (method === "device.revoke" || method === "device.rotate") {
-          this.#disconnectInactiveDevices()
+        try {
+          const result = method === "device.pair"
+            ? devices.pair({
+                label: (params as { label: string }).label,
+                binding: {
+                  kind: "client",
+                  client: (params as RpcParams<"device.pair">).client,
+                },
+              })
+            : method === "device.list"
+              ? { devices: devices.list() }
+              : method === "device.revoke"
+                ? { device: devices.revoke((params as { deviceId: string }).deviceId) }
+                : method === "device.rename"
+                  ? {
+                      device: devices.rename(
+                        (params as RpcParams<"device.rename">).deviceId,
+                        (params as RpcParams<"device.rename">).label,
+                        (params as RpcParams<"device.rename">).expectedLabel,
+                      ),
+                    }
+                  : devices.rotate((params as { deviceId: string }).deviceId)
+          if (method === "device.revoke" || method === "device.rotate") {
+            this.#disconnectInactiveDevices()
+          }
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(result),
+          })
+        } catch (error) {
+          if (!(error instanceof DeviceLabelMismatchError)) throw error
+          this.#amendPendingAudit(socket, request.id, { detail: "reason=label-mismatch" })
+          this.#error(socket, request.id, deviceLabelMismatchErrorCode, error.message, error.mismatch)
         }
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse(result),
-        })
         return
       }
 
@@ -4517,14 +4714,37 @@ export class DomovoiDaemon {
         this.#recordThisMachine()
         this.#scheduleSessionTransferRecovery()
         this.#scheduleRecoveredOwnershipChecks()
-        this.#send(socket, {
-          jsonrpc: "2.0",
-          id: request.id,
-          result: rpcMethods[method].result.parse(
-            this.#store.fleet?.snapshot(this.#snapshot.machine.id, Date.now())
-              ?? { machines: [] },
-          ),
+        try {
+          this.#send(socket, {
+            jsonrpc: "2.0", id: request.id,
+            result: rpcMethods[method].result.parse(fleetClientSnapshot(
+              await this.#fleetEnrollment.list(),
+              (paramsResult.data as RpcParams<"fleet.list">).includeQuarantined,
+            )),
+          })
+        } catch (error) {
+          if (!(error instanceof FleetSnapshotOverflowError)) throw error
+          this.#error(socket, request.id, fleetSnapshotOverflowErrorCode, error.message, error.overflow)
+        }
+        return
+      }
+
+      if (method === "fleet.enroll" || method === "fleet.forget") {
+        if (this.#deviceCredentials.get(socket) !== undefined) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "Managing the fleet requires the daemon credential")
+          return
+        }
+        const result = method === "fleet.enroll"
+          ? await this.#fleetEnrollment.enroll(paramsResult.data as RpcParams<"fleet.enroll">)
+          : await this.#fleetEnrollment.forget(paramsResult.data as RpcParams<"fleet.forget">)
+        if (result.outcome === "refused") this.#amendPendingAudit(socket, request.id, { outcome: "denied", detail: `reason=${result.reason}` })
+        else this.#amendPendingAudit(socket, request.id, {
+          target: result.outcome === "pending" ? result.operation.machineId : result.machineId,
+          detail: result.outcome === "pending" ? `pending=${result.operation.id}`
+            : "remoteRevocation" in result ? `remoteRevocation=${result.remoteRevocation}` : "authenticated-enrollment",
         })
+        const clientResult = result.outcome === "refused" ? result : { ...result, fleet: fleetClientSnapshot(result.fleet) }
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(clientResult) })
         return
       }
 
@@ -4663,6 +4883,67 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse((await catalog.read(params.id)).skill),
+        })
+        return
+      }
+
+      if (method === "skill.installPreview") {
+        const params = paramsResult.data as RpcParams<"skill.installPreview">
+        const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
+        if (!(catalog instanceof FileSkillCatalog)) {
+          this.#error(socket, request.id, invalidParams, "Skill install is unavailable")
+          return
+        }
+        try {
+          this.#send(socket, {
+            jsonrpc: "2.0",
+            id: request.id,
+            result: rpcMethods[method].result.parse(await catalog.installPreview(params.source)),
+          })
+        } catch (error) {
+          if (!(error instanceof SkillSourceError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+        }
+        return
+      }
+
+      if (method === "skill.install") {
+        const params = paramsResult.data as RpcParams<"skill.install">
+        const actor = this.#authenticatedActors.get(socket)
+        if (!actor || actor.kind !== "client") {
+          this.#error(socket, request.id, invalidParams, "Skill install requires an identified client")
+          return
+        }
+        const project = this.#snapshot.project
+        if (params.scope === "project" && !project) {
+          this.#error(socket, request.id, invalidParams, "Open a project before installing a project skill")
+          return
+        }
+        const catalog = this.#skillCatalogFor(project?.path)
+        if (!(catalog instanceof FileSkillCatalog)) {
+          this.#error(socket, request.id, invalidParams, "Skill install is unavailable")
+          return
+        }
+        let installed
+        try {
+          installed = await catalog.install(params)
+        } catch (error) {
+          if (error instanceof SkillInstallError) {
+            this.#error(socket, request.id, skillInstallErrorCode, error.message, error.refusal)
+            return
+          }
+          if (!(error instanceof SkillSourceError)) throw error
+          this.#error(socket, request.id, invalidParams, error.message)
+          return
+        }
+        this.#amendPendingAudit(socket, request.id, {
+          target: installed.id,
+          detail: `${skillInstallAuditDetail(params)} digest=${installed.contentDigest} path=${installed.path}`,
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(installed),
         })
         return
       }
@@ -5492,6 +5773,19 @@ export class DomovoiDaemon {
 
       if (method === "project.open") {
         const params = paramsResult.data as RpcParams<"project.open">
+        // Repository work on a WSL distribution belongs to the daemon inside
+        // it. Reading the share from here would run git across the boundary,
+        // so the request is turned away before anything touches the path.
+        const share = wslSharePath(params.path)
+        if (share) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            `${params.path} is inside the WSL distribution ${share.distribution}, which this daemon does not reach through the share. Run domovoid open ${params.path} so the daemon inside ${share.distribution} opens it.`,
+          )
+          return
+        }
         const repository = await this.#withAbortTimeout(
           (signal) => this.#workspaceService.inspect(params.path, signal),
           this.#agentTimeoutMs,
@@ -5612,15 +5906,23 @@ export class DomovoiDaemon {
           return
         }
         const sessionId = `session-${randomUUID()}`
+        let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.createSessionWorkspace(
-            project.path,
-            sessionId,
-            signal,
-          ),
+          (signal) => {
+            const creating = this.#workspaceService.createSessionWorkspace(
+              project.path,
+              sessionId,
+              signal,
+            )
+            creatingWorkspace = creating
+            return creating
+          },
           this.#agentTimeoutMs,
           "Session workspace creation timed out",
-        )
+        ).catch((error: unknown) => {
+          this.#removeAbandonedWorkspace(creatingWorkspace)
+          throw error
+        })
         let providerThreadId: string
         try {
           const agent = this.#agents.require(runtime.provider)
@@ -5781,16 +6083,24 @@ export class DomovoiDaemon {
           .update(params.requestId)
           .digest("hex")
           .slice(0, 20)}`
+        let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.createSessionWorkspaceFromCheckpoint!(
-            source.workspacePath!,
-            checkpoint.commit!,
-            sessionId,
-            signal,
-          ),
+          (signal) => {
+            const creating = this.#workspaceService.createSessionWorkspaceFromCheckpoint!(
+              source.workspacePath!,
+              checkpoint.commit!,
+              sessionId,
+              signal,
+            )
+            creatingWorkspace = creating
+            return creating
+          },
           this.#agentTimeoutMs,
           "Fork workspace creation timed out",
-        )
+        ).catch((error: unknown) => {
+          this.#removeAbandonedWorkspace(creatingWorkspace)
+          throw error
+        })
         const agent = this.#agents.require(runtime.provider)
         let providerThreadId: string
         try {
@@ -5941,6 +6251,7 @@ export class DomovoiDaemon {
             snapshot: this.#snapshot,
             sessionId: session.id,
             userPrompt: params.prompt,
+            budgetCodeUnits: this.#providerPromptBudgetCodeUnits,
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
             annotationVisualContext: this.#annotationVisualContext,
@@ -7168,6 +7479,24 @@ export class DomovoiDaemon {
     return withAbortTimeout(operation, timeoutMs, message, signal)
   }
 
+  // A deadline rejects without waiting for the git run it aborted, so the
+  // worktree that run may still finish is recorded only by this promise.
+  // Remove it once it settles instead of stranding a worktree and its branch.
+  #removeAbandonedWorkspace(creating: Promise<{ path: string }> | undefined): void {
+    if (!creating) return
+    void creating.then(async (workspace) => {
+      try {
+        await withTimeout(
+          this.#workspaceService.removeSessionWorkspace(workspace.path),
+          this.#agentTimeoutMs,
+          "Late session worktree cleanup timed out",
+        )
+      } catch (error) {
+        this.#reportError("Domovoi could not remove a late session worktree", error)
+      }
+    }, () => undefined)
+  }
+
   #emergencyFailureMessage(error: unknown, fallback: string): string {
     const errorMessage = error instanceof Error ? error.message : ""
     const detail = redactDurableText(errorMessage.trim() ? errorMessage : fallback).value
@@ -7365,7 +7694,7 @@ export class DomovoiDaemon {
       await this.#saveAgentState()
     }
 
-    this.#closeSessionTerminals(sessionId)
+    const terminalExits = this.#closeSessionTerminals(sessionId)
 
     const approvals = this.#snapshot.approvals.filter(
       (approval) => approval.sessionId === sessionId,
@@ -7495,6 +7824,7 @@ export class DomovoiDaemon {
         throw new Error("Workspace service cannot preserve archive branches")
       }
       const workspacePath = session.workspacePath
+      await this.#awaitTerminalExits(terminalExits)
       await this.#withAbortTimeout(
         (signal) => this.#workspaceService.archiveSessionWorkspace!(workspacePath, signal),
         this.#agentTimeoutMs,
@@ -7691,9 +8021,29 @@ export class DomovoiDaemon {
     this.#artifactWatchers.clear()
   }
 
-  #closeSessionTerminals(sessionId: string): void {
+  // A kill only asks. The shell keeps the session worktree as its working
+  // directory until it actually exits, so the caller holds these and waits
+  // before removing that worktree.
+  #closeSessionTerminals(sessionId: string): Promise<void>[] {
+    const exits: Promise<void>[] = []
     for (const [terminalId, terminal] of this.#terminals) {
-      if (terminal.sessionId === sessionId) this.#closeTerminal(terminalId)
+      if (terminal.sessionId !== sessionId) continue
+      exits.push(terminalExit(terminal.process))
+      this.#closeTerminal(terminalId)
+    }
+    return exits
+  }
+
+  async #awaitTerminalExits(exits: readonly Promise<void>[]): Promise<void> {
+    if (exits.length === 0) return
+    try {
+      await withTimeout(
+        Promise.all(exits),
+        this.#agentTimeoutMs,
+        "Session terminal shutdown timed out",
+      )
+    } catch (error) {
+      this.#reportError("Domovoi could not confirm a session terminal exited", error)
     }
   }
 
@@ -8044,6 +8394,23 @@ async function resolveInsideReal(root: string, candidate: string): Promise<strin
   } catch {
     return undefined
   }
+}
+
+// Registered while the terminal is still tracked, which is before node-pty
+// emits its exit, so this observes the shell that a kill is about to end.
+function terminalExit(terminal: TerminalProcess): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let disposable: { dispose(): void } | undefined
+    let exited = false
+    const finish = (): void => {
+      exited = true
+      disposable?.dispose()
+      disposable = undefined
+      resolve()
+    }
+    disposable = terminal.onExit(finish)
+    if (exited) disposable.dispose()
+  })
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

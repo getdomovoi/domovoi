@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
+import { fleetMachineDescriptorSchema } from "./fleet.js"
 
 export const maximumPairedDeviceLabelLength = 128
 export const maximumListedDevices = 256
@@ -95,13 +96,67 @@ export const deviceRevokeParamsSchema = z.object({
 
 export const deviceRotateParamsSchema = deviceRevokeParamsSchema
 
+// A rename is a label change and nothing else: the request names the row and
+// the new word for it. Identity, binding, and credential material have no
+// field here, so a client cannot ask for them to move.
+export const deviceRenameLabelSchema = z.string()
+  .trim()
+  .min(1)
+  .max(maximumPairedDeviceLabelLength)
+  .regex(/^\P{Cc}*$/u, "A device label cannot contain control characters")
+
+// The expected label is a precondition: when present, the daemon renames only
+// a row whose label still reads that way, so an Undo sent after another client
+// renamed the same row refuses instead of overwriting that rename.
+export const deviceRenameParamsSchema = z.object({
+  deviceId: deviceIdSchema,
+  label: deviceRenameLabelSchema,
+  expectedLabel: deviceLabelSchema.optional(),
+}).strict()
+
+export const deviceRenameResultSchema = z.object({
+  device: pairedDeviceSchema,
+}).strict()
+
+// The data on a deviceLabelMismatchErrorCode refusal: the row as it is now, so
+// the client can show the current label without another round trip.
+export const deviceLabelMismatchSchema = z.object({
+  kind: z.literal("device-label-mismatch"),
+  device: pairedDeviceSchema,
+}).strict()
+
 export const pairingCodeSchema = z.string().regex(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/)
 
 export const deviceClaimParamsSchema = z.object({
   code: pairingCodeSchema,
   label: deviceLabelSchema,
   machineId: machineIdSchema,
+  // Compatibility is checked before the one-time code is consumed.
+  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
 }).strict()
+
+// A claim is not a paired device. Only its confirmation capability exists
+// until the source has durably stored the token. It cannot authenticate hello.
+export const pendingDeviceClaimSchema = z.object({
+  state: z.literal("pending"),
+  deviceId: deviceIdSchema,
+  machineId: machineIdSchema,
+  expiresAt: z.string().datetime({ offset: true }),
+}).strict()
+
+export const deviceClaimResultSchema = z.object({
+  claim: pendingDeviceClaimSchema,
+  token: deviceCredentialSchema,
+  machine: fleetMachineDescriptorSchema,
+}).strict()
+
+export const deviceConfirmClaimParamsSchema = z.object({
+  authToken: deviceCredentialSchema,
+  machineId: machineIdSchema,
+  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+}).strict()
+
+export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSchema }).strict()
 
 export const deviceIssueCodeResultSchema = z.object({
   code: pairingCodeSchema,
@@ -110,21 +165,6 @@ export const deviceIssueCodeResultSchema = z.object({
 
 export const machineCredentialSchema = credentialSchema
 
-export const deviceSaveCredentialParamsSchema = z.object({
-  machineId: machineIdSchema,
-  credential: machineCredentialSchema,
-}).strict()
-
-export const deviceMachineCredentialParamsSchema = z.object({
-  machineId: machineIdSchema,
-}).strict()
-
-export const deviceMachineCredentialResultSchema = z.object({
-  credential: machineCredentialSchema,
-}).strict()
-
-export const deviceSaveCredentialResultSchema = z.object({ saved: z.literal(true) }).strict()
-
 export const deviceListParamsSchema = z.object({}).strict()
 
 export const devicesResultSchema = z.object({
@@ -132,11 +172,12 @@ export const devicesResultSchema = z.object({
 }).strict()
 
 export type DeviceIssueCodeResult = z.infer<typeof deviceIssueCodeResultSchema>
+export type PendingDeviceClaim = z.infer<typeof pendingDeviceClaimSchema>
+export type DeviceClaimResult = z.infer<typeof deviceClaimResultSchema>
 export type PairedDeviceSummary = z.infer<typeof pairedDeviceSchema>
 export type DeviceCredentialBinding = z.infer<typeof deviceCredentialBindingSchema>
 export type DevicePairResult = z.infer<typeof devicePairResultSchema>
 export type DevicesResult = z.infer<typeof devicesResultSchema>
-export type DeviceSaveCredentialParams = z.infer<typeof deviceSaveCredentialParamsSchema>
-export type DeviceSaveCredentialResult = z.infer<typeof deviceSaveCredentialResultSchema>
-export type DeviceMachineCredentialParams = z.infer<typeof deviceMachineCredentialParamsSchema>
-export type DeviceMachineCredentialResult = z.infer<typeof deviceMachineCredentialResultSchema>
+export type DeviceRenameParams = z.infer<typeof deviceRenameParamsSchema>
+export type DeviceRenameResult = z.infer<typeof deviceRenameResultSchema>
+export type DeviceLabelMismatch = z.infer<typeof deviceLabelMismatchSchema>

@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
+import { isMainThread } from "node:worker_threads"
 
 import { credentialSchema, machineIdSchema } from "@getdomovoi/protocol"
 
@@ -28,13 +30,22 @@ export interface MachineCredentials {
   machines(): string[]
 }
 
+// Cross-store journals keep only this commitment, never keychain bytes. Binding
+// the identity as well as the domain prevents a digest from moving to a new row.
+export function machineCredentialDigest(machineId: string, credential: string): string {
+  requireMachineId(machineId)
+  if (!credentialSchema.safeParse(credential).success) throw new Error("Machine credential is malformed")
+  return `sha256:${createHash("sha256")
+    .update("domovoi:machine-credential:v1\0").update(machineId).update("\0").update(credential).digest("hex")}`
+}
+
 // A credential for another machine is a secret like any provider key, so it
 // lives in the OS keychain rather than in the state database, and no error
 // carries its bytes.
 export class MachineCredentialStore implements MachineCredentials {
   readonly #keyring: MachineKeyring
 
-  constructor(keyring: MachineKeyring = new NativeMachineKeyring()) {
+  constructor(keyring: MachineKeyring) {
     this.#keyring = keyring
   }
 
@@ -101,6 +112,27 @@ export class MachineCredentialStore implements MachineCredentials {
   machines(): string[] {
     return this.#index()
   }
+
+  // These checks and writes are one worker operation, not two messages with
+  // an await between them. Index repair never writes back an earlier secret.
+  repairIndex(machineId: string, expectedDigest: string): boolean {
+    const held = this.forMachine(machineId)
+    if (!held || machineCredentialDigest(machineId, held) !== expectedDigest) return false
+    this.#writeIndex([...this.#index(), machineId])
+    const readback = this.forMachine(machineId)
+    if (!readback || machineCredentialDigest(machineId, readback) !== expectedDigest || !this.machines().includes(machineId)) {
+      throw new MachineCredentialUnavailableError()
+    }
+    return true
+  }
+
+  forgetIfMatching(machineId: string, expectedDigest: string | null): boolean {
+    const held = this.forMachine(machineId)
+    if (held !== undefined && machineCredentialDigest(machineId, held) !== expectedDigest) return false
+    this.forget(machineId)
+    if (this.forMachine(machineId) !== undefined || this.machines().includes(machineId)) throw new MachineCredentialUnavailableError()
+    return true
+  }
 }
 
 function requireMachineId(machineId: string): void {
@@ -121,17 +153,34 @@ const require = createRequire(import.meta.url)
 
 export class NativeMachineKeyring implements MachineKeyring {
   #binding: KeyringBinding | undefined
+  readonly #checkpoint: () => void
+
+  constructor(checkpoint: () => void) {
+    if (isMainThread) throw new Error("Native machine credentials require the keyring worker")
+    this.#checkpoint = checkpoint
+  }
+
+  #entry(account: string): KeyringEntry {
+    this.#checkpoint()
+    const entry = new (this.#requireBinding().Entry)(keychainService, account)
+    this.#checkpoint()
+    return entry
+  }
 
   get(account: string): string | undefined {
-    return new (this.#requireBinding().Entry)(keychainService, account).getPassword() ?? undefined
+    const value = this.#entry(account).getPassword() ?? undefined
+    this.#checkpoint()
+    return value
   }
 
   set(account: string, secret: string): void {
-    new (this.#requireBinding().Entry)(keychainService, account).setPassword(secret)
+    this.#entry(account).setPassword(secret)
+    this.#checkpoint()
   }
 
   delete(account: string): void {
-    new (this.#requireBinding().Entry)(keychainService, account).deletePassword()
+    this.#entry(account).deletePassword()
+    this.#checkpoint()
   }
 
   #requireBinding(): KeyringBinding {

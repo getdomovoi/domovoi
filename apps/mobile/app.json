@@ -2,7 +2,6 @@
   "expo": {
     "name": "Domovoi",
     "slug": "domovoi",
-    "version": "0.0.1",
     "orientation": "portrait",
     "scheme": "domovoi",
     "userInterfaceStyle": "automatic",

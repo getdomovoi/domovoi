@@ -3,14 +3,18 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { createProductionDaemon } from "@getdomovoi/daemon"
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, shell } from "electron"
+import { acquireLocalDaemon } from "@getdomovoi/daemon"
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, shell } from "electron"
 
-import { ownDesktopDaemon } from "./desktop-daemon.js"
-import { OwnedDaemonLifecycle, startDesktop } from "./owned-daemon.js"
+import { DesktopDaemon } from "./desktop-daemon.js"
+import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
+import { LaunchSmokeExit } from "./launch-smoke-exit.js"
+import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   isAuthorizedRendererEvent,
+  isTrustedRendererFrameUrl,
+  rendererContentSecurityPolicy,
   resolveRendererTarget,
   type RendererTarget,
 } from "./renderer-security.js"
@@ -47,12 +51,12 @@ let activeWindowDecoration: WindowDecoration = "domovoi"
 let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
 const desktopPlatform: DesktopPlatform = process.platform
 const launchSmoke = process.env.DOMOVOI_DESKTOP_LAUNCH_SMOKE === "1"
+if (launchSmoke) {
+  configureLaunchSmokeProfile(app, process.env.DOMOVOI_LAUNCH_SMOKE_PROFILE, homedir())
+}
 let launchSmokeStage = "main"
 let launchSmokeTimeout: ReturnType<typeof setTimeout> | undefined
 const deepLinks = new DesktopDeepLinkQueue()
-const ownedDaemon = new OwnedDaemonLifecycle((error) => {
-  console.error("Owned daemon failed to stop during desktop shutdown", error)
-})
 const startupMetrics = new DesktopStartupMetrics({
   enabled: process.env.DOMOVOI_PERFORMANCE_REPORT === "1",
 })
@@ -90,18 +94,26 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
-// Desktop, the CLI, and the service build a daemon the same way, from the
-// same environment, so a paired device keeps meeting the same identity and
-// credential no matter which of them started the daemon.
-const ensureDaemon = ownDesktopDaemon(
-  () => createProductionDaemon({
-    environment: process.env,
-    homeDirectory: homedir(),
-    machineLabel: hostname(),
-    errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
-  }),
-  ownedDaemon,
-)
+// Attach to the profile's owner, or own a daemon only when the profile is free.
+const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
+  environment: process.env,
+  homeDirectory: homedir(),
+  machineLabel: hostname(),
+  errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
+}))
+const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
+  console.error("Local daemon failed to release during desktop shutdown", error)
+})
+const launchSmokeExit = new LaunchSmokeExit(() => desktopDaemon.release(), (code) => {
+  if (launchSmokeTimeout) clearTimeout(launchSmokeTimeout)
+  if (code === 0) console.info("DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK")
+  app.exit(code)
+}, (error) => { console.error("Desktop launch smoke could not release its daemon", error) })
+
+function finishLaunchSmoke(code: 0 | 1): void {
+  launchSmokeStage = "shutdown"
+  void launchSmokeExit.finish(code)
+}
 
 function windowDecorationPath(): string {
   return join(app.getPath("userData"), windowDecorationFileName)
@@ -194,16 +206,35 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
   mainWindow.webContents.on("will-navigate", (event) => event.preventDefault())
 
-  mainRendererTarget = resolveRendererTarget({
+  const target = resolveRendererTarget({
     isPackaged: app.isPackaged,
     rendererUrl: process.env.ELECTRON_RENDERER_URL,
     bundledRendererPath: join(import.meta.dirname, "../renderer/index.html"),
   })
-  if (mainRendererTarget.kind === "url") {
-    void mainWindow.loadURL(mainRendererTarget.url)
-  } else {
-    void mainWindow.loadFile(mainRendererTarget.path)
+  mainRendererTarget = target
+  const window = mainWindow
+  const load = () => {
+    if (!window.isDestroyed()) void (target.kind === "url" ? window.loadURL(target.url) : window.loadFile(target.path))
   }
+  // The document's policy names the acquired endpoint, so the load waits.
+  void desktopDaemon.acquire().then(load, () => {})
+}
+
+// Served with the document so connect-src can name the acquired endpoint.
+function serveRendererPolicy(): void {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const acquisition = desktopDaemon.current()
+    const trusted = details.resourceType === "mainFrame" && mainRendererTarget
+      && isTrustedRendererFrameUrl(details.url, mainRendererTarget)
+    callback(trusted ? {
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [
+          rendererContentSecurityPolicy(acquisition?.kind === "refused" ? undefined : acquisition?.url),
+        ],
+      },
+    } : {})
+  })
 }
 
 ipcMain.handle("domovoi:window-decoration-get", (event) => {
@@ -220,7 +251,8 @@ registerDesktopIpc(ipcMain, {
   authorized: authorizedDesktopSender,
   mainWindow: () => mainWindow,
   focusMainWindow,
-  rpcEndpoint: ensureDaemon,
+  rpcEndpoint: () => desktopDaemon.acquire(),
+  reconnectRpcEndpoint: () => desktopDaemon.reacquire(),
   platform: desktopPlatform,
   fileSystem: desktopFileSystem,
   openDirectoryDialog: {
@@ -242,13 +274,20 @@ registerDesktopIpc(ipcMain, {
     enabled: launchSmoke,
     preloadReady: () => { launchSmokeStage = "preload" },
     ready: () => {
-      if (launchSmokeTimeout) clearTimeout(launchSmokeTimeout)
-      console.info("DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK")
-      app.exit(0)
+      if (desktopDaemon.current()?.kind !== "owned") {
+        console.error("Desktop launch smoke did not acquire its own production daemon")
+        finishLaunchSmoke(1)
+        return
+      }
+      finishLaunchSmoke(0)
+    },
+    failed: (message) => {
+      console.error(`Desktop launch smoke renderer failed: ${message}`)
+      finishLaunchSmoke(1)
     },
     unauthorized: () => {
       console.error("Domovoi desktop launch smoke renderer sender was not authorized")
-      app.exit(1)
+      finishLaunchSmoke(1)
     },
   },
 })
@@ -280,22 +319,33 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     startupMetrics.mark("app-ready")
+    serveRendererPolicy()
     if (launchSmoke) {
+      const budget = Number(process.env.DOMOVOI_LAUNCH_SMOKE_TIMEOUT_MS)
+      if (!Number.isSafeInteger(budget) || budget < 1 || budget > 2_147_483_647) {
+        throw new Error("Desktop launch smoke requires a bounded launch budget")
+      }
       launchSmokeTimeout = setTimeout(() => {
         console.error(`Domovoi desktop launch smoke stopped after ${launchSmokeStage} readiness`)
-        app.exit(1)
-      }, 10_000)
-      createWindow()
-      return
+        finishLaunchSmoke(1)
+      }, budget)
     }
     await startDesktop(createWindow, async () => {
-      await ensureDaemon()
+      const acquired = await desktopDaemon.acquire()
+      if (launchSmoke && acquired.kind !== "owned") {
+        throw new Error(acquired.kind === "refused" ? acquired.message : "Desktop launch smoke attached instead of owning")
+      }
       startupMetrics.mark("daemon-ready")
     })
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
   }).catch((error: unknown) => {
+    if (launchSmoke) {
+      console.error("Desktop launch smoke could not start", error)
+      finishLaunchSmoke(1)
+      return
+    }
     const detail = recordStartupFailure({
       error,
       logPath: domovoiMainLogPath(),
@@ -311,5 +361,5 @@ app.on("window-all-closed", () => {
 })
 
 app.on("before-quit", (event) => {
-  ownedDaemon.beforeQuit(event, () => app.quit())
+  daemonLifecycle.beforeQuit(event, () => app.quit())
 })

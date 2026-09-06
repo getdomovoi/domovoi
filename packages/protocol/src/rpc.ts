@@ -49,20 +49,27 @@ import {
 } from "./schema.js"
 import {
   deviceClaimParamsSchema,
+  deviceClaimResultSchema,
+  deviceConfirmClaimParamsSchema,
+  deviceConfirmClaimResultSchema,
   deviceIssueCodeResultSchema,
-  deviceMachineCredentialParamsSchema,
-  deviceMachineCredentialResultSchema,
-  deviceSaveCredentialParamsSchema,
-  deviceSaveCredentialResultSchema,
   deviceListParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
+  deviceRenameParamsSchema,
+  deviceRenameResultSchema,
   deviceRevokeParamsSchema,
   deviceRotateParamsSchema,
   devicesResultSchema,
   pairedDeviceSchema,
 } from "./devices.js"
-import { fleetSnapshotSchema } from "./fleet.js"
+import { fleetMachineDescriptorSchema, fleetSnapshotSchema } from "./fleet.js"
+import {
+  fleetEnrollParamsSchema,
+  fleetEnrollResultSchema,
+  fleetForgetParamsSchema,
+  fleetForgetResultSchema,
+} from "./fleet-enrollment.js"
 import {
   annotationStatusSchema,
   canonicalBase64DecodedByteLength,
@@ -80,6 +87,9 @@ import {
   skillContentDigestSchema,
   skillDocumentSchema,
   skillIdSchema,
+  skillInstallPreviewSchema,
+  skillInstallScopeSchema,
+  skillInstallSourceSchema,
   skillInventorySchema,
   skillReviewDecisionSchema,
   skillSummariesSchema,
@@ -99,6 +109,9 @@ export const protocolVersionMismatchErrorCode = -32012 as const
 export const devicePairingLimitErrorCode = -32013 as const
 export const daemonPersistenceUnavailableErrorCode = -32014 as const
 export const turnSkillSelectionErrorCode = -32015 as const
+export const fleetSnapshotOverflowErrorCode = -32016 as const
+export const deviceLabelMismatchErrorCode = -32017 as const
+export const skillInstallErrorCode = -32018 as const
 
 const projectSwitchAffectedSessionSchema = z.object({
   id: z.string().min(1),
@@ -823,7 +836,7 @@ export const systemPauseAllParamsSchema = z.object({
   client: clientKindSchema,
 })
 
-export const fleetListParamsSchema = z.object({}).strict()
+export const fleetListParamsSchema = z.object({ includeQuarantined: z.boolean().optional() }).strict()
 
 export const systemEmergencyStopParamsSchema = z.object({
   client: clientKindSchema,
@@ -1128,6 +1141,24 @@ export const sessionUsageSchema = usageTotalsSchema.extend({
   }
 })
 
+export const usageWindowParamsSchema = z.object({
+  start: z.string().datetime(),
+  end: z.string().datetime(),
+}).strict().superRefine((window, context) => {
+  if (Date.parse(window.start) < Date.parse(window.end)) return
+  context.addIssue({
+    code: "custom",
+    path: ["end"],
+    message: "A usage window must end after it starts",
+  })
+})
+export const usageWindowSchema = usageTotalsSchema.extend({
+  sessions: z.number().int().nonnegative(),
+  turns: z.number().int().nonnegative(),
+  reportedCostTurns: z.number().int().nonnegative(),
+  unavailableCostTurns: z.number().int().nonnegative(),
+}).strict()
+
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: systemHelloResultSchema },
   "artifact.authorize": {
@@ -1143,15 +1174,15 @@ export const rpcMethods = {
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
+  "fleet.enroll": { params: fleetEnrollParamsSchema, result: fleetEnrollResultSchema },
+  "fleet.forget": { params: fleetForgetParamsSchema, result: fleetForgetResultSchema },
+  "fleet.heartbeat": { params: z.object({}).strict(), result: fleetMachineDescriptorSchema },
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
   // Reachable before authentication: a machine being paired has no credential
-  // yet. Gated on an open pairing code and nothing else.
-  "device.claim": { params: deviceClaimParamsSchema, result: devicePairResultSchema },
+  // yet. Check protocol compatibility before consuming its one-time code.
+  "device.claim": { params: deviceClaimParamsSchema, result: deviceClaimResultSchema },
+  "device.confirmClaim": { params: deviceConfirmClaimParamsSchema, result: deviceConfirmClaimResultSchema },
   "device.issueCode": { params: deviceListParamsSchema, result: deviceIssueCodeResultSchema },
-  "device.saveCredential": {
-    params: deviceSaveCredentialParamsSchema,
-    result: deviceSaveCredentialResultSchema,
-  },
   "session.transfer": {
     params: sessionTransferParamsSchema,
     result: sessionTransferResultSchema,
@@ -1192,18 +1223,23 @@ export const rpcMethods = {
     params: transferAbortParamsSchema,
     result: transferAbortResultSchema,
   },
-  "device.machineCredential": {
-    params: deviceMachineCredentialParamsSchema,
-    result: deviceMachineCredentialResultSchema,
-  },
   "device.list": { params: deviceListParamsSchema, result: devicesResultSchema },
   "device.revoke": {
     params: deviceRevokeParamsSchema,
     result: z.object({ device: pairedDeviceSchema }).strict(),
   },
+  // Machine-only: revokes the current verified device, never a supplied id.
+  "device.revokeCurrent": {
+    params: deviceListParamsSchema,
+    result: z.object({ revoked: z.literal(true) }).strict(),
+  },
   "device.rotate": {
     params: deviceRotateParamsSchema,
     result: devicePairResultSchema,
+  },
+  "device.rename": {
+    params: deviceRenameParamsSchema,
+    result: deviceRenameResultSchema,
   },
   "system.pauseAll": {
     params: systemPauseAllParamsSchema,
@@ -1244,6 +1280,18 @@ export const rpcMethods = {
     }).strict(),
     result: skillSummarySchema,
   },
+  "skill.installPreview": {
+    params: z.object({ source: skillInstallSourceSchema }).strict(),
+    result: skillInstallPreviewSchema,
+  },
+  "skill.install": {
+    params: z.object({
+      source: skillInstallSourceSchema,
+      scope: skillInstallScopeSchema,
+      sourceDigest: skillContentDigestSchema,
+    }).strict(),
+    result: skillSummarySchema,
+  },
   "runtime.models": {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
@@ -1259,6 +1307,10 @@ export const rpcMethods = {
   "session.usage": {
     params: z.object({ sessionId: z.string().min(1) }).strict(),
     result: sessionUsageSchema,
+  },
+  "usage.window": {
+    params: usageWindowParamsSchema,
+    result: usageWindowSchema,
   },
   "annotation.create": {
     params: annotationCreateParamsSchema,
@@ -1329,27 +1381,33 @@ export const rpcMethodMutations = {
   "terminal.resize": "read-only",
   "terminal.close": "read-only",
   "fleet.list": "read-only",
+  "fleet.heartbeat": "read-only",
   "session.transferPreview": "read-only",
   "transfer.preflight": "read-only",
   "transfer.status": "read-only",
-  "device.machineCredential": "read-only",
   "device.list": "read-only",
   "session.evidence": "read-only",
   "session.history": "read-only",
   "session.usage": "read-only",
+  "usage.window": "read-only",
   "audit.query": "read-only",
   "audit.export": "read-only",
   "skill.list": "read-only",
   "skill.inventory": "read-only",
   "skill.read": "read-only",
+  "skill.installPreview": "read-only",
   "runtime.models": "read-only",
   "provider.secret.list": "read-only",
   "device.pair": "mutating",
   "device.claim": "mutating",
+  "device.confirmClaim": "mutating",
   "device.issueCode": "mutating",
-  "device.saveCredential": "mutating",
+  "fleet.enroll": "mutating",
+  "fleet.forget": "mutating",
   "device.revoke": "mutating",
+  "device.revokeCurrent": "mutating",
   "device.rotate": "mutating",
+  "device.rename": "mutating",
   "session.transfer": "mutating",
   "session.transferRecoverSource": "mutating",
   "session.transferResolveConflict": "mutating",
@@ -1361,6 +1419,7 @@ export const rpcMethodMutations = {
   "system.emergencyStop": "mutating",
   "skill.setEnabled": "mutating",
   "skill.review": "mutating",
+  "skill.install": "mutating",
   "provider.refresh": "mutating",
   "annotation.create": "mutating",
   "annotation.reply": "mutating",
@@ -1435,6 +1494,8 @@ export type PlanEditDisposition = z.infer<typeof planEditDispositionSchema>
 export type PlanEditReceipt = z.infer<typeof planEditReceiptSchema>
 export type PlanMutationResult = z.infer<typeof planMutationResultSchema>
 export type SessionUsage = z.infer<typeof sessionUsageSchema>
+export type UsageWindowParams = z.infer<typeof usageWindowParamsSchema>
+export type UsageWindow = z.infer<typeof usageWindowSchema>
 export type SessionEvidence = z.infer<typeof sessionEvidenceSchema>
 export type ChangedFileEvidence = z.infer<typeof changedFileEvidenceSchema>
 export type TestRunEvidence = z.infer<typeof testRunEvidenceSchema>

@@ -1,107 +1,164 @@
 import { afterAll, describe, expect, it, vi } from "vitest"
 
-import { protocolVersion } from "@getdomovoi/protocol"
+import {
+  fleetEnrollRefusalSchema,
+  protocolVersion,
+  type FleetEnrollParams,
+  type FleetEnrollResult,
+  type FleetMachine,
+} from "@getdomovoi/protocol"
 
-import { clientVersion } from "./client.js"
 import { Deadline } from "./deadline.js"
-import { machineHelloParams, pairMachine, MachinePairingError } from "./pair-machine.js"
+import { enrollRefusalMessage, pairMachine, MachinePairingError } from "./pair-machine.js"
 
 const code = "hearth-quiet-ember-42"
 const deadline = Deadline.start(2_147_483_647)
 afterAll(() => deadline.clear())
-const credential = "n".repeat(43)
 const machineId = `machine-${"c".repeat(32)}`
-const device = {
-  id: `device-${"a".repeat(32)}`,
-  label: "studio-ipad",
-  pairedAt: "2026-08-31T12:00:00.000Z",
-  binding: { kind: "machine", machineId },
+
+const workshop: FleetMachine = {
+  id: machineId,
+  label: "workshop",
+  platform: "linux",
+  arch: "x64",
+  version: "0.4.2",
+  capabilities: ["sessions"],
+  protocolVersion,
+  transports: [],
+  connection: "direct",
+  verifiedRoute: {
+    endpoint: "wss://workshop.tailnet:47831/rpc",
+    lastAuthenticatedAt: "2026-09-04T12:00:00.000Z",
+  },
+  heartbeat: { state: "online", lastSeenAt: "2026-09-04T12:00:00.000Z" },
+  health: "healthy",
+  self: false,
 }
 
-function pairing(overrides: {
-  identify?: (input: { endpoint: string; credential: string; deadline: Deadline }) => Promise<{ id: string; name: string }>
-  saveCredential?: (input: { machineId: string; credential: string; deadline: Deadline }) => Promise<void>
-} = {}) {
-  const saved: { machineId: string; credential: string }[] = []
-  return {
-    saved,
-    open: vi.fn(async () => ({
-      call: async () => ({ device, token: credential }),
-      close: () => {},
-    })),
-    identify: overrides.identify
-      ?? vi.fn(async () => ({ id: machineId, name: "workshop" })),
-    saveCredential: overrides.saveCredential
-      ?? vi.fn(async (input: { machineId: string; credential: string; deadline: Deadline }) => {
-        saved.push({ machineId: input.machineId, credential: input.credential })
-      }),
-  }
+const enrolled: FleetEnrollResult = {
+  outcome: "enrolled",
+  machineId,
+  fleet: { entries: [{ kind: "machine", machine: workshop }] },
 }
 
-const request = { endpoint: "wss://workshop.tailnet:47831/rpc", code, label: "studio-ipad" }
+const request = { endpoint: "wss://workshop.tailnet:47831/rpc", code, label: "studio-desktop" }
+
+function enrolling(result: FleetEnrollResult | Error = enrolled) {
+  return vi.fn(async (_params: Omit<FleetEnrollParams, "client">, _deadline: Deadline) => {
+    if (result instanceof Error) throw result
+    return result
+  })
+}
 
 describe("pairMachine", () => {
-  it("saves the claimed credential for the identity the machine reports", async () => {
-    const io = pairing()
+  it("enrolls in one call and names the machine from the daemon's own fleet", async () => {
+    const enroll = enrolling()
 
-    const paired = await pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, deadline, ...io })
+    const paired = await pairMachine({ request, deadline, enroll })
 
-    expect(io.saved).toEqual([{ machineId, credential }])
-    expect(paired).toEqual({ machineId, label: "workshop" })
-    expect(io.identify).toHaveBeenCalledWith({ endpoint: request.endpoint, credential, deadline })
+    expect(enroll).toHaveBeenCalledOnce()
+    expect(enroll).toHaveBeenCalledWith(
+      { endpoint: request.endpoint, code, sourceDeviceLabel: "studio-desktop" },
+      deadline,
+    )
+    expect(paired).toEqual({ outcome: "enrolled", machineId, label: "workshop", fleet: enrolled.fleet })
   })
 
-  it("carries one deadline through the claim, the greeting, and the store", async () => {
-    const io = pairing()
+  it("hands the pairing's own deadline to the enroll call", async () => {
+    const enroll = enrolling()
     const own = Deadline.start(30_000)
 
-    await pairMachine({ request, machineId, deadline: own, ...io })
+    await pairMachine({ request, deadline: own, enroll })
 
-    expect(io.open).toHaveBeenCalledWith(request.endpoint, own)
-    expect(io.identify).toHaveBeenCalledWith(expect.objectContaining({ deadline: own }))
-    expect(io.saveCredential).toHaveBeenCalledWith({ machineId, credential, deadline: own })
+    expect(enroll.mock.calls[0]?.[1]).toBe(own)
     own.clear()
   })
 
-  it("refuses to save a credential for an identity the protocol does not describe", async () => {
-    const io = pairing({ identify: vi.fn(async () => ({ id: "machine-nonsense", name: "workshop" })) })
+  it("reports an enrollment the daemon is still finishing as pending", async () => {
+    const operation = {
+      kind: "pending" as const,
+      id: "3d5b7a2e-4c1f-4a6b-9e2d-8f7c6b5a4d3e",
+      machineId,
+      operation: "enroll" as const,
+      startedAt: "2026-09-04T12:00:00.000Z",
+    }
+    const pending: FleetEnrollResult = {
+      outcome: "pending",
+      operation,
+      fleet: { entries: [operation] },
+    }
 
-    await expect(pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, deadline, ...io })).rejects.toThrow(MachinePairingError)
-    expect(io.saved).toEqual([])
+    await expect(pairMachine({ request, deadline, enroll: enrolling(pending) }))
+      .resolves.toEqual({ outcome: "pending", machineId, fleet: pending.fleet })
   })
 
-  it("never quotes the credential when the machine fails to name itself", async () => {
-    const io = pairing({
-      identify: vi.fn(async () => {
-        throw new Error(`Handshake with ${credential} failed`)
-      }),
-    })
-
-    await expect(pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, deadline, ...io })).rejects.toThrow(
-      "The machine did not name itself after pairing",
-    )
-    expect(io.saved).toEqual([])
+  it("turns every refusal the protocol names into this build's own words", async () => {
+    for (const reason of fleetEnrollRefusalSchema.options) {
+      const enroll = enrolling({ outcome: "refused", reason })
+      const failure = await pairMachine({ request, deadline, enroll }).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      )
+      expect(failure).toBeInstanceOf(MachinePairingError)
+      expect((failure as Error).message).toBe(enrollRefusalMessage[reason])
+      expect(enrollRefusalMessage[reason]).not.toMatch(/[!—]/u)
+    }
   })
 
-  it("never quotes the credential when saving it fails", async () => {
-    const io = pairing({
-      saveCredential: vi.fn(async () => {
-        throw new Error(`Storing ${credential} failed`)
-      }),
-    })
-
-    await expect(pairMachine({ request, machineId: `machine-${"c".repeat(32)}`, deadline, ...io })).rejects.toThrow(
-      "The machine paired but its credential could not be stored",
-    )
+  it("says the target refused the code in plain words", async () => {
+    await expect(pairMachine({ request, deadline, enroll: enrolling({ outcome: "refused", reason: "pairing-refused" }) }))
+      .rejects.toThrow("That machine refused the pairing code")
   })
-})
 
-it("greets a newly paired machine as a machine, on the current protocol", () => {
-  expect(machineHelloParams("machine-token")).toEqual({
-    client: "machine",
-    clientVersion,
-    protocolVersion,
-    authToken: "machine-token",
+  it("refuses an address that is not a WebSocket URL before asking the daemon", async () => {
+    const enroll = enrolling()
+
+    await expect(pairMachine({ request: { ...request, endpoint: "https://workshop.tailnet/rpc" }, deadline, enroll }))
+      .rejects.toThrow("A machine address must be a WebSocket URL")
+    expect(enroll).not.toHaveBeenCalled()
   })
-  expect(protocolVersion).not.toBe("0.1.0")
+
+  it("never sends a pairing code over a plaintext address off this machine", async () => {
+    const enroll = enrolling()
+
+    await expect(pairMachine({ request: { ...request, endpoint: "ws://workshop.tailnet:47831/rpc" }, deadline, enroll }))
+      .rejects.toThrow("Refusing to send a pairing code over an unencrypted connection")
+    expect(enroll).not.toHaveBeenCalled()
+  })
+
+  it("allows a plaintext address that stays on this machine", async () => {
+    const enroll = enrolling()
+
+    await pairMachine({ request: { ...request, endpoint: "ws://127.0.0.1:47831/rpc" }, deadline, enroll })
+
+    expect(enroll).toHaveBeenCalledOnce()
+  })
+
+  it("refuses an address that carries credentials, a query or a fragment", async () => {
+    const enroll = enrolling()
+
+    await expect(pairMachine({ request: { ...request, endpoint: "wss://user:pw@workshop.tailnet/rpc" }, deadline, enroll }))
+      .rejects.toThrow("A machine address cannot carry credentials, a query or a fragment")
+    expect(enroll).not.toHaveBeenCalled()
+  })
+
+  it("refuses a code that does not look like one before asking the daemon", async () => {
+    const enroll = enrolling()
+
+    await expect(pairMachine({ request: { ...request, code: "not a code" }, deadline, enroll }))
+      .rejects.toThrow("A pairing code looks like hearth-quiet-ember-42")
+    expect(enroll).not.toHaveBeenCalled()
+  })
+
+  it("never quotes the code when the daemon's failure does", async () => {
+    const enroll = enrolling(new Error(`Invalid params: ${code}`))
+
+    await expect(pairMachine({ request, deadline, enroll })).rejects.toThrow("Pairing was refused")
+  })
+
+  it("keeps the daemon's own words when they do not carry the code", async () => {
+    const enroll = enrolling(new Error("Daemon connection is not open"))
+
+    await expect(pairMachine({ request, deadline, enroll })).rejects.toThrow("Daemon connection is not open")
+  })
 })

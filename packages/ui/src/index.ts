@@ -8,10 +8,8 @@ export {
 } from "./desktop-platform"
 export { applyStoredAppearanceTheme } from "./workspace-persistence"
 export { isWorkspaceTheme, type WorkspaceTheme } from "./appearance"
-export { claimMachine, MachineClaimError, type ClaimConnection } from "./claim-machine"
 export { PairMachineDialog } from "./pair-machine-dialog"
-export { pairMachine, MachinePairingError, type PairedMachine, type PairMachineRequest } from "./pair-machine"
-export { openClaimConnection } from "./claim-socket"
+export { pairMachine, MachinePairingError, enrollRefusalMessage, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 export { Deadline, DeadlineExceededError } from "./deadline"
 export {
   DomovoiConnectTimeoutError,
@@ -22,6 +20,7 @@ export {
 export { connectMachineClient, type ConnectedMachineClient } from "./machine-client"
 export {
   dialTransport,
+  TransportDialTimeoutError,
   isLoopbackEndpoint,
   TransportDialError,
   type DialedTransport,

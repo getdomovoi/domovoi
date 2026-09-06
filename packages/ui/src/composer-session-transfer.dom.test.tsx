@@ -67,7 +67,7 @@ async function openTransferDialog(result: SessionTransferResult) {
     <Thread
       snapshot={snapshot}
       connected
-      fleet={[local, studio]}
+      fleet={[local, studio].map((machine) => ({ kind: "machine" as const, machine }))}
       currentMachineId={local.id}
       onSelectMachine={onSelectMachine}
       onTransferSession={onTransferSession}
@@ -189,7 +189,7 @@ it("offers no move where nothing can carry it out", async () => {
     <Thread
       snapshot={snapshot}
       connected
-      fleet={[local, studio]}
+      fleet={[local, studio].map((machine) => ({ kind: "machine" as const, machine }))}
       currentMachineId={local.id}
       {...handlers}
     />,

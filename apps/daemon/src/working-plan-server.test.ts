@@ -1,3 +1,4 @@
+import { waitForDaemon } from "./test-wait-for.js"
 import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -325,7 +326,7 @@ describe("working plan RPC", () => {
       ],
     })
 
-    await vi.waitFor(() => expect(context.durable().workingPlans[0]).toMatchObject({
+    await waitForDaemon(() => expect(context.durable().workingPlans[0]).toMatchObject({
       revision: 3,
       structureRevision: 2,
       steps: [
@@ -377,7 +378,7 @@ describe("working plan RPC", () => {
       command: "git push origin main",
       reason: "Publish the completed change",
     })
-    await vi.waitFor(() => expect(context.durable().approvals).toHaveLength(1))
+    await waitForDaemon(() => expect(context.durable().approvals).toHaveLength(1))
     const approvalId = context.durable().approvals[0]!.id
     expect(context.durable().workingPlans[0]!.steps[1]!.blocker).toEqual({
       kind: "approval",
@@ -402,7 +403,7 @@ describe("working plan RPC", () => {
         { text: "Run TOKEN=provider-plan-secret", status: "completed" },
       ],
     })
-    await vi.waitFor(() => expect(context.durable().workingPlans[0]).toMatchObject({
+    await waitForDaemon(() => expect(context.durable().workingPlans[0]).toMatchObject({
       revision: 6,
       structureRevision: 2,
       steps: [
@@ -421,7 +422,7 @@ describe("working plan RPC", () => {
       turnId: "turn-provider-plan",
       delta: "This opaque plan must not replace canonical steps.",
     })
-    await vi.waitFor(() => expect(context.save).toHaveBeenCalledTimes(savesBeforeLegacyDelta + 1))
+    await waitForDaemon(() => expect(context.save).toHaveBeenCalledTimes(savesBeforeLegacyDelta + 1))
     expect(context.durable().artifacts.find(
       (candidate) => candidate.id === `plan-${session.id}`,
     )).toMatchObject({

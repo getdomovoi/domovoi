@@ -1,4 +1,5 @@
 import {
+  buildVersion,
   daemonAuthenticationErrorCode,
   projectSwitchConfirmationErrorCode,
   projectSwitchConfirmationSchema,
@@ -7,6 +8,7 @@ import {
   rpcMethods,
   rpcResponseSchema,
   artifactAuthorizeResultSchema,
+  fleetChangedNotificationSchema,
   terminalAcceptedSchema,
   terminalClosedNotificationSchema,
   terminalOwnershipNotificationSchema,
@@ -21,13 +23,15 @@ import {
   type ArtifactAccess,
   type AuditExportParams,
   type AuditExportResult,
-  type DeviceMachineCredentialParams,
   type DevicePairResult,
+  type DeviceRenameParams,
+  type DeviceRenameResult,
   type DevicesResult,
+  type FleetEnrollParams,
+  type FleetEnrollResult,
+  type FleetForgetParams,
+  type FleetForgetResult,
   type FleetSnapshot,
-  type DeviceMachineCredentialResult,
-  type DeviceSaveCredentialParams,
-  type DeviceSaveCredentialResult,
   type AuditQueryPage,
   type AuditQueryParams,
   type ProviderModel,
@@ -41,6 +45,7 @@ import {
   type SessionTransferParams,
   type SessionTransferResult,
   type SkillDocument,
+  type SkillInstallPreview,
   type SkillInventory,
   type SkillSummary,
   type SystemEmergencyStopResult,
@@ -51,13 +56,17 @@ import {
 
 import { Deadline, DeadlineExceededError, deadlineBudget, describeTarget } from "./deadline.js"
 
+// The daemon's typed error data rides along: a refusal such as a withheld
+// fleet list carries facts the surface has to show, and a code alone cannot.
 export class DaemonRpcError extends Error {
   readonly code: number
+  readonly data: unknown
 
-  constructor(code: number, message: string) {
+  constructor(code: number, message: string, data?: unknown) {
     super(message)
     this.name = "DaemonRpcError"
     this.code = code
+    this.data = data
   }
 }
 
@@ -124,6 +133,8 @@ export type DomovoiReconnectScheduler = {
   clearTimeout: (timer: DomovoiReconnectTimer) => void
 }
 
+export type DomovoiEndpoint = { url: string; token: string }
+
 export type DomovoiClientOptions = {
   budgets: DomovoiClientBudgets
   reconnectDelayMs?: number
@@ -133,6 +144,7 @@ export type DomovoiClientOptions = {
   scheduler?: DomovoiReconnectScheduler
   authToken?: string
   clientId?: string
+  resolveEndpoint?: () => Promise<DomovoiEndpoint>
 }
 
 const defaultReconnectDelayMs = 1_000
@@ -148,17 +160,23 @@ function requestAbortError(signal: AbortSignal): Error {
   return new DOMException("Daemon RPC request aborted", "AbortError")
 }
 
+export const maximumReleasedRequests = 256
+
 // Every greeting this package sends carries the same build, so pairing and the
 // workspace connection cannot drift apart.
-export const clientVersion = "0.0.1"
+export const clientVersion = buildVersion
 
 export class DomovoiClient extends EventTarget {
-  readonly url: string
+  #url: string
   readonly kind: ClientKind
   readonly clientId: string
   #socket: WebSocket | undefined
   #requestId = 0
   #pending = new Map<number, PendingRequest>()
+  // A request this client gave up on, by cancellation or by its deadline, is
+  // still answered by the daemon. That answer is expected, so it is dropped
+  // here rather than read as a daemon this client no longer understands.
+  #released = new Set<number>()
   #opening: Promise<WorkspaceSnapshot> | undefined
   #cancelOpening: ((error: Error) => void) | undefined
   #reconnectDelayMs: number
@@ -172,12 +190,13 @@ export class DomovoiClient extends EventTarget {
   #authenticationTerminal = false
   #shouldReconnect = false
   #authToken: string | undefined
+  #resolveEndpoint: (() => Promise<DomovoiEndpoint>) | undefined
   #budgets: DomovoiClientBudgets
   #socketListeners: AbortController | undefined
 
   constructor(url: string, kind: ClientKind, options: DomovoiClientOptions) {
     super()
-    this.url = url
+    this.#url = url
     this.kind = kind
     this.#budgets = {
       connectMs: deadlineBudget(options.budgets.connectMs, "Connect budget"),
@@ -206,6 +225,13 @@ export class DomovoiClient extends EventTarget {
     this.#random = options.random ?? Math.random
     this.#scheduler = options.scheduler ?? defaultReconnectScheduler
     this.#authToken = options.authToken
+    this.#resolveEndpoint = options.resolveEndpoint
+  }
+
+  // The address this client last dialed. With a resolver it follows the owner
+  // across restarts instead of the address given at construction.
+  get url(): string {
+    return this.#url
   }
 
   // A caller that is trying several routes for one connection passes the
@@ -233,7 +259,7 @@ export class DomovoiClient extends EventTarget {
       : Deadline.start(this.#budgets.connectMs)
     if (deadline.expired) {
       return Promise.reject(
-        new DomovoiConnectTimeoutError("open", describeTarget(this.url), deadline.budgetMs),
+        new DomovoiConnectTimeoutError("open", describeTarget(this.#url), deadline.budgetMs),
       )
     }
 
@@ -241,84 +267,120 @@ export class DomovoiClient extends EventTarget {
     const listeners = new AbortController()
     this.#socketListeners = listeners
     const opening = new Promise<WorkspaceSnapshot>((resolve, reject) => {
-      const socket = new WebSocket(this.url)
-      this.#socket = socket
-      let opening = true
-      let stage: DomovoiConnectStage = "open"
-      const rejectOpening = (error: Error) => {
-        if (!opening) return
-        opening = false
+      const dial = () => {
+        const socket = new WebSocket(this.#url)
+        this.#socket = socket
+        let opening = true
+        let stage: DomovoiConnectStage = "open"
+        const rejectOpening = (error: Error) => {
+          if (!opening) return
+          opening = false
+          reject(error)
+        }
+        this.#cancelOpening = rejectOpening
+        const current = () => socket === this.#socket && generation === this.#connectionGeneration
+        deadline.signal.addEventListener("abort", () => {
+          if (!current()) return
+          // Everything this attempt owns goes before the next one starts: the
+          // socket is detached so its late events find nothing, its listeners
+          // are removed, and the hello it may have sent is no longer awaited.
+          const error = new DomovoiConnectTimeoutError(stage, describeTarget(this.#url), deadline.budgetMs)
+          this.#socket = undefined
+          listeners.abort()
+          rejectOpening(error)
+          this.#rejectPending(error)
+          socket.close()
+          this.dispatchEvent(new Event("disconnected"))
+          this.#scheduleReconnect()
+        }, { once: true, signal: listeners.signal })
+        socket.addEventListener("error", () => {
+          if (!current()) return
+          rejectOpening(new Error(`Cannot reach ${this.#url}`))
+          socket.close()
+        }, { once: true, signal: listeners.signal })
+        socket.addEventListener(
+          "open",
+          () => {
+            if (!current() || !this.#shouldReconnect) return
+            stage = "hello"
+            this.request("system.hello", {
+              client: this.kind,
+              clientId: this.clientId,
+              clientVersion,
+              protocolVersion,
+              ...(this.#authToken ? { authToken: this.#authToken } : {}),
+            }, { deadline }).then(
+              (snapshot) => {
+                if (socket !== this.#socket || generation !== this.#connectionGeneration) return
+                opening = false
+                this.#reconnectAttempt = 0
+                this.#authenticationTerminal = false
+                this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot }))
+                this.dispatchEvent(new Event("connected"))
+                resolve(snapshot)
+              },
+              (cause: unknown) => {
+                const error = cause instanceof Error ? cause : new Error("Daemon handshake failed")
+                rejectOpening(error)
+                socket.close()
+              },
+            )
+          },
+          { once: true, signal: listeners.signal },
+        )
+        socket.addEventListener("message", (event) => {
+          if (current()) this.#receive(String(event.data))
+        }, { signal: listeners.signal })
+        socket.addEventListener("close", (event) => {
+          if (!current()) return
+          this.#socket = undefined
+          const error = new Error("Daemon connection closed")
+          rejectOpening(error)
+          this.#rejectPending(error)
+          // A policy close is terminal whatever it says: a revoked device is
+          // refused for the same reason a bad credential is, and retrying only
+          // presents a credential the machine will keep refusing.
+          if (event.code === 1008) {
+            this.#markAuthenticationRequired(event.reason || "Daemon authentication required")
+          }
+          this.dispatchEvent(new Event("disconnected"))
+          this.#scheduleReconnect()
+        }, { signal: listeners.signal })
+      }
+      const resolveEndpoint = this.#resolveEndpoint
+      if (!resolveEndpoint) {
+        dial()
+        return
+      }
+      // Resolution shares the connect budget and runs before every attempt,
+      // so the owner's current endpoint is what gets dialed rather than the
+      // address this client started with. A resolver that refuses is the
+      // failure of this attempt, and the backoff loop asks it again.
+      let resolving = true
+      const failResolution = (error: Error) => {
+        if (!resolving) return
+        resolving = false
         reject(error)
       }
-      this.#cancelOpening = rejectOpening
-      const current = () => socket === this.#socket && generation === this.#connectionGeneration
-      deadline.signal.addEventListener("abort", () => {
-        if (!current()) return
-        // Everything this attempt owns goes before the next one starts: the
-        // socket is detached so its late events find nothing, its listeners
-        // are removed, and the hello it may have sent is no longer awaited.
-        const error = new DomovoiConnectTimeoutError(stage, describeTarget(this.url), deadline.budgetMs)
-        this.#socket = undefined
-        listeners.abort()
-        rejectOpening(error)
-        this.#rejectPending(error)
-        socket.close()
+      this.#cancelOpening = failResolution
+      const abandon = (error: Error) => {
+        if (!resolving || generation !== this.#connectionGeneration) return
+        failResolution(error)
         this.dispatchEvent(new Event("disconnected"))
         this.#scheduleReconnect()
-      }, { once: true, signal: listeners.signal })
-      socket.addEventListener("error", () => {
-        if (!current()) return
-        rejectOpening(new Error(`Cannot reach ${this.url}`))
-        socket.close()
-      }, { once: true, signal: listeners.signal })
-      socket.addEventListener(
-        "open",
-        () => {
-          if (!current() || !this.#shouldReconnect) return
-          stage = "hello"
-          this.request("system.hello", {
-            client: this.kind,
-            clientId: this.clientId,
-            clientVersion,
-            protocolVersion,
-            ...(this.#authToken ? { authToken: this.#authToken } : {}),
-          }, { deadline }).then(
-            (snapshot) => {
-              if (socket !== this.#socket || generation !== this.#connectionGeneration) return
-              opening = false
-              this.#reconnectAttempt = 0
-              this.#authenticationTerminal = false
-              this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot }))
-              this.dispatchEvent(new Event("connected"))
-              resolve(snapshot)
-            },
-            (cause: unknown) => {
-              const error = cause instanceof Error ? cause : new Error("Daemon handshake failed")
-              rejectOpening(error)
-              socket.close()
-            },
-          )
-        },
-        { once: true, signal: listeners.signal },
-      )
-      socket.addEventListener("message", (event) => {
-        if (current()) this.#receive(String(event.data))
-      }, { signal: listeners.signal })
-      socket.addEventListener("close", (event) => {
-        if (!current()) return
-        this.#socket = undefined
-        const error = new Error("Daemon connection closed")
-        rejectOpening(error)
-        this.#rejectPending(error)
-        // A policy close is terminal whatever it says: a revoked device is
-        // refused for the same reason a bad credential is, and retrying only
-        // presents a credential the machine will keep refusing.
-        if (event.code === 1008) {
-          this.#markAuthenticationRequired(event.reason || "Daemon authentication required")
-        }
-        this.dispatchEvent(new Event("disconnected"))
-        this.#scheduleReconnect()
-      }, { signal: listeners.signal })
+      }
+      const expire = () => abandon(new DomovoiConnectTimeoutError("open", describeTarget(this.#url), deadline.budgetMs))
+      deadline.signal.addEventListener("abort", expire, { once: true, signal: listeners.signal })
+      resolveEndpoint().then((endpoint) => {
+        if (!resolving || generation !== this.#connectionGeneration) return
+        resolving = false
+        deadline.signal.removeEventListener("abort", expire)
+        this.#url = endpoint.url
+        this.#authToken = endpoint.token
+        dial()
+      }, (cause: unknown) => {
+        abandon(cause instanceof Error ? cause : new Error("Daemon endpoint could not be resolved"))
+      })
     })
     this.#opening = opening
     const settled = () => {
@@ -368,7 +430,7 @@ export class DomovoiClient extends EventTarget {
     const parse = typeof parseOrOptions === "function" ? parseOrOptions : undefined
     const options = typeof parseOrOptions === "function" ? requestOptions : (parseOrOptions ?? {})
     const resultParser = parse ?? ((value: unknown) => rpcMethods[method].result.parse(value) as T)
-    const target = describeTarget(this.url)
+    const target = describeTarget(this.#url)
     return new Promise((resolve, reject) => {
       if (!this.#socket || this.#socket.readyState !== WebSocket.OPEN) {
         reject(new Error("Daemon connection is not open"))
@@ -390,12 +452,14 @@ export class DomovoiClient extends EventTarget {
         const pending = this.#pending.get(id)
         if (!pending) return
         this.#pending.delete(id)
+        this.#release(id)
         pending.cleanup()
         pending.reject(requestAbortError(options.signal!))
       }
       const onExpire = () => {
         if (this.#pending.get(id) !== pending) return
         this.#pending.delete(id)
+        this.#release(id)
         pending.cleanup()
         pending.reject(new DomovoiRpcTimeoutError(method, target, deadline.budgetMs))
       }
@@ -678,12 +742,16 @@ export class DomovoiClient extends EventTarget {
     return this.request("session.usage", { sessionId })
   }
 
-  listSkills(): Promise<SkillSummary[]> {
-    return this.request("skill.list", {})
+  usageWindow(window: RpcParams<"usage.window">): Promise<RpcResult<"usage.window">> {
+    return this.request("usage.window", window)
   }
 
-  getSkillInventory(): Promise<SkillInventory> {
-    return this.request("skill.inventory", {})
+  listSkills(options?: DomovoiRequestOptions): Promise<SkillSummary[]> {
+    return this.request("skill.list", {}, options)
+  }
+
+  getSkillInventory(options?: DomovoiRequestOptions): Promise<SkillInventory> {
+    return this.request("skill.inventory", {}, options)
   }
 
   readSkill(id: string): Promise<SkillDocument> {
@@ -698,6 +766,16 @@ export class DomovoiClient extends EventTarget {
 
   reviewSkill(params: RpcParams<"skill.review">): Promise<SkillSummary> {
     return this.request("skill.review", params)
+  }
+
+  previewSkillInstall(
+    params: RpcParams<"skill.installPreview">,
+  ): Promise<SkillInstallPreview> {
+    return this.request("skill.installPreview", params)
+  }
+
+  installSkill(params: RpcParams<"skill.install">): Promise<SkillSummary> {
+    return this.request("skill.install", params)
   }
 
   queryAudit(
@@ -776,18 +854,27 @@ export class DomovoiClient extends EventTarget {
     return this.request("device.rotate", { ...params, client: this.kind }, options)
   }
 
-  machineCredential(
-    params: DeviceMachineCredentialParams,
+  renameDevice(
+    params: DeviceRenameParams,
     options?: DomovoiRequestOptions,
-  ): Promise<DeviceMachineCredentialResult> {
-    return this.request("device.machineCredential", params, options)
+  ): Promise<DeviceRenameResult> {
+    return this.request("device.rename", params, options)
   }
 
-  saveMachineCredential(
-    params: DeviceSaveCredentialParams,
+  // The daemon claims, greets and stores on the client's behalf, so the only
+  // thing this connection ever carries is the one-time code and the answer.
+  enrollMachine(
+    params: Omit<FleetEnrollParams, "client">,
     options?: DomovoiRequestOptions,
-  ): Promise<DeviceSaveCredentialResult> {
-    return this.request("device.saveCredential", params, options)
+  ): Promise<FleetEnrollResult> {
+    return this.request("fleet.enroll", { ...params, client: this.kind }, options)
+  }
+
+  forgetMachine(
+    params: Omit<FleetForgetParams, "client">,
+    options?: DomovoiRequestOptions,
+  ): Promise<FleetForgetResult> {
+    return this.request("fleet.forget", { ...params, client: this.kind }, options)
   }
 
   exportAudit(
@@ -855,6 +942,16 @@ export class DomovoiClient extends EventTarget {
     }
   }
 
+  // Bounded so a daemon that never answers cannot grow this set without end;
+  // the oldest release is forgotten first, since its answer is the least due.
+  #release(id: number): void {
+    if (this.#released.size >= maximumReleasedRequests) {
+      const oldest = this.#released.values().next()
+      if (!oldest.done) this.#released.delete(oldest.value)
+    }
+    this.#released.add(id)
+  }
+
   #reportProtocolError(reason: string): void {
     this.dispatchEvent(new CustomEvent("protocol-error", { detail: { reason } }))
   }
@@ -901,6 +998,17 @@ export class DomovoiClient extends EventTarget {
         } else {
           this.#reportProtocolError(
             "Daemon sent a system.emergencyStopped notification this client could not parse",
+          )
+        }
+        return
+      }
+      if (notification.data.method === "fleet.changed") {
+        const fleet = fleetChangedNotificationSchema.safeParse(notification.data.params)
+        if (fleet.success) {
+          this.dispatchEvent(new CustomEvent("fleet-changed", { detail: fleet.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a fleet.changed notification this client could not parse",
           )
         }
         return
@@ -972,6 +1080,7 @@ export class DomovoiClient extends EventTarget {
     }
     const pending = this.#pending.get(response.data.id)
     if (!pending) {
+      if (this.#released.delete(response.data.id)) return
       this.#reportProtocolError(
         "Daemon sent a response for a request this client is not tracking",
       )
@@ -981,7 +1090,7 @@ export class DomovoiClient extends EventTarget {
     pending.cleanup()
 
     if (response.data.error) {
-      const error = new DaemonRpcError(response.data.error.code, response.data.error.message)
+      const error = new DaemonRpcError(response.data.error.code, response.data.error.message, response.data.error.data)
       if (response.data.error.code === daemonAuthenticationErrorCode) {
         pending.reject(error)
         this.#markAuthenticationRequired(response.data.error.message)

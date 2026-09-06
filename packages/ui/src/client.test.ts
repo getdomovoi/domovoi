@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, protocolVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { DomovoiClient, DomovoiConnectTimeoutError, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
+import { DaemonRpcError, DomovoiClient, DomovoiConnectTimeoutError, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
 import { Deadline } from "./deadline"
 
 const skillSecurityMetadata = {
@@ -13,6 +13,11 @@ const skillSecurityMetadata = {
 }
 
 const budgets = { connectMs: 10_000, requestMs: 120_000 }
+
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
 
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0
@@ -281,6 +286,7 @@ describe("DomovoiClient", () => {
       params: {
         client: "web",
         clientId: client.clientId,
+        clientVersion: "9.8.7-test",
         protocolVersion,
         authToken: "secret-token",
       },
@@ -1263,6 +1269,59 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("cancels a skill catalog refresh through its request signals", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+    const controller = new AbortController()
+
+    const listing = client.listSkills({ signal: controller.signal }).catch((cause: unknown) => cause)
+    const inventory = client.getSkillInventory({ signal: controller.signal }).catch((cause: unknown) => cause)
+    controller.abort()
+
+    await expect(listing).resolves.toMatchObject({ name: "AbortError" })
+    await expect(inventory).resolves.toMatchObject({ name: "AbortError" })
+    expect(vi.getTimerCount()).toBe(0)
+    client.disconnect()
+  })
+
+  it("drops the daemon's late answer to a cancelled request without a protocol error", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+    const controller = new AbortController()
+
+    const listing = client.listSkills({ signal: controller.signal }).catch((cause: unknown) => cause)
+    controller.abort()
+    await expect(listing).resolves.toMatchObject({ name: "AbortError" })
+
+    socket.receive({ jsonrpc: "2.0", id: 2, result: [] })
+    expect(protocolErrors).toEqual([])
+
+    const inventory = client.getSkillInventory()
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        machine: { id: "machine-local", name: "devbox", platform: "linux", arch: "x64", version: "0.0.1" },
+        skills: [],
+      },
+    })
+    await expect(inventory).resolves.toMatchObject({ machine: { id: "machine-local" } })
+    expect(protocolErrors).toEqual([])
+    client.disconnect()
+  })
+
   it("fetches only metadata for fleet skill comparison", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
@@ -1377,6 +1436,41 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("asks the daemon for usage totals over a window", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const window = { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" }
+    const usage = client.usageWindow(window)
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "usage.window",
+      params: window,
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        sessions: 2,
+        turns: 3,
+        inputTokens: 900,
+        cachedInputTokens: 100,
+        outputTokens: 300,
+        reasoningTokens: 0,
+        totalTokens: 1200,
+        costMicros: 4500,
+        currency: "USD",
+        reportedCostTurns: 2,
+        unavailableCostTurns: 1,
+      },
+    })
+    await expect(usage).resolves.toMatchObject({ sessions: 2, turns: 3, totalTokens: 1200 })
+    client.disconnect()
+  })
+
   it("reads skill source by discovered ID", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
     const initial = client.connect()
@@ -1440,6 +1534,57 @@ describe("DomovoiClient", () => {
     expect(socket.sent.at(-1)).not.toContain("clientId")
     socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
     await expect(update).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
+
+  it("previews a skill folder and installs it against the previewed source digest", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const source = { kind: "path", path: "/home/dev/work/skills/pr-triage" } as const
+    const preview = client.previewSkillInstall({ source })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.installPreview",
+      params: { source },
+    })
+    const reviewed = {
+      source,
+      name: "pr-triage",
+      description: "Triage pull requests.",
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      sourceDigest: `sha256:${"b".repeat(64)}`,
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+      files: [{ path: "SKILL.md", bytes: 120 }],
+      targets: [{ scope: "user", path: "/home/dev/.domovoi/skills/pr-triage", state: "available" }],
+      refusals: [],
+    }
+    socket.receive({ jsonrpc: "2.0", id: 2, result: reviewed })
+    await expect(preview).resolves.toEqual(reviewed)
+
+    const install = client.installSkill({ source, scope: "user", sourceDigest: `sha256:${"b".repeat(64)}` })
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
+      method: "skill.install",
+      params: { source, scope: "user", sourceDigest: `sha256:${"b".repeat(64)}` },
+    })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      error: {
+        code: -32018,
+        message: "Skill source changed since it was reviewed; review it again",
+        data: { kind: "skill-install-refused", reason: "source-changed" },
+      },
+    })
+    await expect(install).rejects.toMatchObject({
+      code: -32018,
+      data: { kind: "skill-install-refused", reason: "source-changed" },
+    })
     client.disconnect()
   })
 
@@ -1592,8 +1737,27 @@ describe("DomovoiClient", () => {
   })
 })
 
-describe("DomovoiClient machine credentials", () => {
+describe("DomovoiClient fleet enrollment", () => {
   const NativeWebSocket = globalThis.WebSocket
+  const machineId = `machine-${"c".repeat(32)}`
+  const remote = {
+    id: machineId,
+    label: "workshop",
+    platform: "linux",
+    arch: "x64",
+    version: "0.4.2",
+    capabilities: ["sessions"],
+    protocolVersion,
+    transports: [],
+    connection: "direct",
+    verifiedRoute: {
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      lastAuthenticatedAt: "2026-09-04T12:00:00.000Z",
+    },
+    heartbeat: { state: "online", lastSeenAt: "2026-09-04T12:00:00.000Z" },
+    health: "healthy",
+    self: false,
+  }
 
   beforeEach(() => {
     FakeWebSocket.instances = []
@@ -1604,60 +1768,138 @@ describe("DomovoiClient machine credentials", () => {
     globalThis.WebSocket = NativeWebSocket
   })
 
-  it("lists the fleet through the daemon", async () => {
+  async function connected() {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
     const socket = FakeWebSocket.instances[0]!
     socket.open()
     socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
     await connecting
+    return { client, socket }
+  }
+
+  it("lists the fleet through the daemon", async () => {
+    const { client, socket } = await connected()
 
     const listing = client.listFleet()
     const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
-    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { machines: [] } })
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { entries: [] } })
 
-    await expect(listing).resolves.toEqual({ machines: [] })
+    await expect(listing).resolves.toEqual({ entries: [] })
     expect(sent.method).toBe("fleet.list")
     expect(sent.params).toEqual({})
   })
 
-  it("reads a kept machine credential through the daemon", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
-    const connecting = client.connect()
-    const socket = FakeWebSocket.instances[0]!
-    socket.open()
-    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
-    await connecting
+  it("enrolls a machine through the daemon as the client it greeted as", async () => {
+    const { client, socket } = await connected()
 
-    const reading = client.machineCredential({ machineId: `machine-${"c".repeat(32)}` })
-    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string }
-    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { credential: "n".repeat(43) } })
-
-    await expect(reading).resolves.toEqual({ credential: "n".repeat(43) })
-    expect(sent.method).toBe("device.machineCredential")
-  })
-
-  it("saves a machine credential through the daemon", async () => {
-    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
-    const connecting = client.connect()
-    const socket = FakeWebSocket.instances[0]!
-    socket.open()
-    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
-    await connecting
-
-    const saving = client.saveMachineCredential({
-      machineId: `machine-${"c".repeat(32)}`,
-      credential: "n".repeat(43),
+    const enrolling = client.enrollMachine({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code: "hearth-quiet-ember-42",
+      sourceDeviceLabel: "studio-desktop",
     })
     const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
-    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { saved: true } })
-
-    await expect(saving).resolves.toEqual({ saved: true })
-    expect(sent.method).toBe("device.saveCredential")
-    expect(sent.params).toEqual({
-      machineId: `machine-${"c".repeat(32)}`,
-      credential: "n".repeat(43),
+    socket.receive({
+      jsonrpc: "2.0",
+      id: sent.id,
+      result: { outcome: "enrolled", machineId, fleet: { entries: [{ kind: "machine", machine: remote }] } },
     })
+
+    await expect(enrolling).resolves.toMatchObject({ outcome: "enrolled", machineId })
+    expect(sent.method).toBe("fleet.enroll")
+    expect(sent.params).toEqual({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code: "hearth-quiet-ember-42",
+      sourceDeviceLabel: "studio-desktop",
+      client: "web",
+    })
+  })
+
+  it("rejects an enrollment answer the protocol does not describe", async () => {
+    const { client, socket } = await connected()
+
+    const enrolling = client.enrollMachine({
+      endpoint: "wss://workshop.tailnet:47831/rpc",
+      code: "hearth-quiet-ember-42",
+      sourceDeviceLabel: "studio-desktop",
+    })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { outcome: "enrolled", machineId, fleet: { entries: [] } } })
+
+    await expect(enrolling).rejects.toThrow()
+  })
+
+  it("forgets a machine through the daemon and keeps the revocation verdict", async () => {
+    const { client, socket } = await connected()
+
+    const forgetting = client.forgetMachine({ machineId })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({
+      jsonrpc: "2.0",
+      id: sent.id,
+      result: { outcome: "forgotten", machineId, remoteRevocation: "unconfirmed", fleet: { entries: [] } },
+    })
+
+    await expect(forgetting).resolves.toEqual({
+      outcome: "forgotten",
+      machineId,
+      remoteRevocation: "unconfirmed",
+      fleet: { entries: [] },
+    })
+    expect(sent.method).toBe("fleet.forget")
+    expect(sent.params).toEqual({ machineId, client: "web" })
+  })
+
+  it("keeps the daemon's typed error data on a refused listing", async () => {
+    const { client, socket } = await connected()
+
+    const listing = client.listFleet()
+    const sent = JSON.parse(socket.sent[1]!) as { id: number }
+    socket.receive({
+      jsonrpc: "2.0",
+      id: sent.id,
+      error: {
+        code: fleetSnapshotOverflowErrorCode,
+        message: "Fleet keyring exceeds the wire limit",
+        data: { kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries: 600, entriesNotShown: 600 },
+      },
+    })
+
+    const failure = await listing.then(() => undefined, (cause: unknown) => cause)
+    expect(failure).toBeInstanceOf(DaemonRpcError)
+    expect((failure as DaemonRpcError).code).toBe(fleetSnapshotOverflowErrorCode)
+    expect((failure as DaemonRpcError).data)
+      .toEqual({ kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries: 600, entriesNotShown: 600 })
+  })
+
+  it("replaces the fleet when the daemon says it changed", async () => {
+    const { client, socket } = await connected()
+    const changes: unknown[] = []
+    client.addEventListener("fleet-changed", (event) => {
+      changes.push((event as CustomEvent).detail)
+    })
+
+    socket.receive({
+      jsonrpc: "2.0",
+      method: "fleet.changed",
+      params: { entries: [{ kind: "unenrolled", machineId }] },
+    })
+
+    expect(changes).toEqual([{ entries: [{ kind: "unenrolled", machineId }] }])
+  })
+
+  it("reports a fleet.changed notification it cannot parse", async () => {
+    const { client, socket } = await connected()
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+
+    socket.receive({ jsonrpc: "2.0", method: "fleet.changed", params: { machines: [] } })
+
+    expect(protocolErrors).toEqual([
+      "Daemon sent a fleet.changed notification this client could not parse",
+    ])
   })
 })
 
@@ -1786,6 +2028,43 @@ describe("DomovoiClient session transfer and devices", () => {
     await expect(revoking).resolves.toEqual({ device })
     expect(sent.method).toBe("device.revoke")
     expect(sent.params).toEqual({ deviceId: device.id, client: "web" })
+    client.disconnect()
+  })
+
+  it("renames a paired device with only its id and new label", async () => {
+    const { client, socket } = await connected()
+    const device = {
+      id: `device-${"d".repeat(32)}`,
+      label: "kitchen-ipad",
+      pairedAt: "2026-08-31T12:00:00.000Z",
+      binding: { kind: "client", client: "tablet" },
+    }
+
+    const renaming = client.renameDevice({ deviceId: device.id, label: "kitchen-ipad" })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { device } })
+
+    await expect(renaming).resolves.toEqual({ device })
+    expect(sent.method).toBe("device.rename")
+    expect(sent.params).toEqual({ deviceId: device.id, label: "kitchen-ipad" })
+    client.disconnect()
+  })
+
+  it("forwards the expected label a rename is conditioned on", async () => {
+    const { client, socket } = await connected()
+    const device = {
+      id: `device-${"d".repeat(32)}`,
+      label: "studio-ipad",
+      pairedAt: "2026-08-31T12:00:00.000Z",
+      binding: { kind: "client", client: "tablet" },
+    }
+
+    const renaming = client.renameDevice({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
+    const sent = JSON.parse(socket.sent[1]!) as { id: number; method: string; params: unknown }
+    socket.receive({ jsonrpc: "2.0", id: sent.id, result: { device } })
+
+    await expect(renaming).resolves.toEqual({ device })
+    expect(sent.params).toEqual({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
     client.disconnect()
   })
 
@@ -1990,6 +2269,144 @@ describe("DomovoiClient deadlines", () => {
 
     await expect(client.request("skill.list", {}, { deadline })).rejects.toBeInstanceOf(DomovoiRpcTimeoutError)
     expect(socket.sent).toHaveLength(1)
+    client.disconnect()
+  })
+})
+
+describe("DomovoiClient endpoint resolution", () => {
+  const NativeWebSocket = globalThis.WebSocket
+  const first = { url: "ws://127.0.0.1:47831/rpc", token: "first-token" }
+  const second = { url: "ws://127.0.0.1:50999/rpc", token: "second-token" }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    FakeWebSocket.instances = []
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket
+  })
+
+  afterEach(() => {
+    globalThis.WebSocket = NativeWebSocket
+    vi.useRealTimers()
+  })
+
+  it("dials the endpoint its resolver returns and asks again on every reconnect", async () => {
+    const endpoints = [first, second]
+    const resolveEndpoint = vi.fn(async () => endpoints.shift()!)
+    const client = new DomovoiClient(first.url, "desktop", {
+      budgets,
+      reconnectDelayMs: 25,
+      reconnectJitterRatio: 0,
+      resolveEndpoint,
+    })
+
+    const connecting = client.connect()
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(0)
+    const socket = FakeWebSocket.instances[0]!
+    expect(socket.url).toBe(first.url)
+    socket.open()
+    expect(JSON.parse(socket.sent[0]!)).toMatchObject({ method: "system.hello", params: { authToken: first.token } })
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await expect(connecting).resolves.toEqual(demoWorkspace)
+    expect(client.url).toBe(first.url)
+
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(25)
+    const reconnected = FakeWebSocket.instances[1]!
+    expect(reconnected.url).toBe(second.url)
+    reconnected.open()
+    expect(JSON.parse(reconnected.sent[0]!)).toMatchObject({ method: "system.hello", params: { authToken: second.token } })
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+    expect(client.url).toBe(second.url)
+    client.disconnect()
+  })
+
+  it("asks the resolver again for an explicit reconnect", async () => {
+    const endpoints = [first, second]
+    const resolveEndpoint = vi.fn(async () => endpoints.shift()!)
+    const client = new DomovoiClient(first.url, "desktop", { budgets, resolveEndpoint })
+
+    const connecting = client.connect()
+    await vi.advanceTimersByTimeAsync(0)
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    socket.drop()
+
+    const reconnecting = client.connect()
+    await vi.advanceTimersByTimeAsync(0)
+    const reconnected = FakeWebSocket.instances[1]!
+    expect(reconnected.url).toBe(second.url)
+    reconnected.open()
+    reconnected.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(reconnecting).resolves.toEqual(demoWorkspace)
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+    client.disconnect()
+  })
+
+  it("reports a resolver failure as the connect failure and keeps retrying", async () => {
+    const resolveEndpoint = vi.fn<() => Promise<{ url: string; token: string }>>()
+      .mockRejectedValueOnce(new Error("The profile has no reachable owner."))
+      .mockResolvedValueOnce(first)
+    const client = new DomovoiClient(first.url, "desktop", {
+      budgets,
+      reconnectDelayMs: 25,
+      reconnectJitterRatio: 0,
+      resolveEndpoint,
+    })
+    const states: boolean[] = []
+    const disconnected = vi.fn()
+    client.addEventListener("reconnecting", (event) => {
+      states.push((event as CustomEvent<{ active: boolean }>).detail.active)
+    })
+    client.addEventListener("disconnected", disconnected)
+
+    await expect(client.connect()).rejects.toThrow("The profile has no reachable owner.")
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(disconnected).toHaveBeenCalledOnce()
+    expect(states).toEqual([true])
+
+    await vi.advanceTimersByTimeAsync(25)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]!.url).toBe(first.url)
+    expect(resolveEndpoint).toHaveBeenCalledTimes(2)
+    client.disconnect()
+  })
+
+  it("never dials after a disconnect that arrived while resolving", async () => {
+    let settle!: (endpoint: { url: string; token: string }) => void
+    const resolveEndpoint = vi.fn(() => new Promise<{ url: string; token: string }>((resolve) => { settle = resolve }))
+    const client = new DomovoiClient(first.url, "desktop", { budgets, resolveEndpoint })
+
+    const connecting = client.connect()
+    client.disconnect()
+    settle(second)
+    await expect(connecting).rejects.toThrow("Daemon connection closed")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("charges resolution to the connect budget", async () => {
+    const resolveEndpoint = vi.fn(() => new Promise<{ url: string; token: string }>(() => {}))
+    const client = new DomovoiClient(first.url, "desktop", { budgets, resolveEndpoint })
+    const disconnected = vi.fn()
+    client.addEventListener("disconnected", disconnected)
+
+    const connecting = client.connect().catch((cause: unknown) => cause)
+    await vi.advanceTimersByTimeAsync(budgets.connectMs)
+
+    await expect(connecting).resolves.toBeInstanceOf(DomovoiConnectTimeoutError)
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(disconnected).toHaveBeenCalledOnce()
+    client.disconnect()
+  })
+
+  it("dials synchronously when no resolver is given", () => {
+    const client = new DomovoiClient(first.url, "web", { budgets })
+    void client.connect().catch(() => {})
+    expect(FakeWebSocket.instances).toHaveLength(1)
     client.disconnect()
   })
 })

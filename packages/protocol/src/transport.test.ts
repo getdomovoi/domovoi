@@ -66,7 +66,7 @@ describe("selectTransport", () => {
   })
 
   it("uses an SSH tunnel only where it was explicitly configured", () => {
-    expect(selectTransport([{ ...ssh, configured: false }, relay])).toEqual(relay)
+    expect(selectTransport([{ ...ssh, configured: false }, relay])).toBeUndefined()
     expect(selectTransport([ssh, relay])).toEqual(ssh)
   })
 

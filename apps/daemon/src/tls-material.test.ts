@@ -11,7 +11,7 @@ import { loadTlsMaterial } from "./tls-material.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 function opensslAvailable(): boolean {

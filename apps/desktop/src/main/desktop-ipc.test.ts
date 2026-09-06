@@ -31,13 +31,15 @@ const notAuthorized = "Desktop request is not authorized"
 const rect = { x: 0, y: 0, width: 10, height: 10 }
 const notification = { id: "desktop-completion-0123456789abcdef", kind: "completion", sessionId: "session-one" }
 const externalRequest = { editor: "system", path: "/home/user/.domovoi/worktrees/project" }
-const rpcEndpoint = { url: "ws://127.0.0.1:47831/rpc", token: "factory-token" }
+const acquisition = { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "factory-token" } as const
+const reacquisition = { kind: "attached", owner: "daemon", url: "wss://[::1]:50123/rpc", token: "rotated-token" } as const
 
 const channels: readonly ChannelSpec[] = [
   { channel: "window:minimize", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "window:maximize", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "window:close", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "domovoi:rpc-endpoint", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:rpc-endpoint-reconnect", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
     channel: "domovoi:capture-annotation",
     via: "handle",
@@ -77,6 +79,7 @@ const channels: readonly ChannelSpec[] = [
     unauthorized: { ignored: true },
   },
   { channel: "domovoi:launch-smoke-ready", via: "on", guard: "authorized", unauthorized: { exits: true } },
+  { channel: "domovoi:launch-smoke-failed", via: "on", guard: "authorized", unauthorized: { exits: true } },
 ]
 
 function capturedImage() {
@@ -126,7 +129,8 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "webContents.send": webContents.send,
     "event.sender.send": event.sender.send as Mock,
     focusMainWindow: vi.fn(),
-    rpcEndpoint: vi.fn(async () => rpcEndpoint),
+    rpcEndpoint: vi.fn(async () => acquisition),
+    reconnectRpcEndpoint: vi.fn(async () => reacquisition),
     "openDirectoryDialog.showOpenDirectory": vi.fn(async () => ({ canceled: false, filePaths: ["/projects/app"] })),
     "clipboard.readText": vi.fn(async () => "pasted"),
     "clipboard.writeText": vi.fn(async () => true),
@@ -139,6 +143,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "rendererDeepLinkSink.set": vi.fn((next: DesktopDeepLinkSink | undefined) => { sink = next }),
     "launchSmoke.preloadReady": vi.fn(),
     "launchSmoke.ready": vi.fn(),
+    "launchSmoke.failed": vi.fn(),
     "launchSmoke.unauthorized": vi.fn(),
   } satisfies Record<string, Mock>
   const authorize = vi.fn((_event: DesktopIpcEvent) => authorized)
@@ -147,6 +152,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     mainWindow: () => (options.withWindow ?? true) ? window : undefined,
     focusMainWindow: effects.focusMainWindow,
     rpcEndpoint: effects.rpcEndpoint,
+    reconnectRpcEndpoint: effects.reconnectRpcEndpoint,
     platform: "linux",
     fileSystem: {
       realpath: async (path) => path,
@@ -166,6 +172,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
       enabled: options.launchSmoke ?? true,
       preloadReady: effects["launchSmoke.preloadReady"],
       ready: effects["launchSmoke.ready"],
+      failed: effects["launchSmoke.failed"],
       unauthorized: effects["launchSmoke.unauthorized"],
     },
   }
@@ -232,19 +239,26 @@ describe("registerDesktopIpc", () => {
     expect(disabled.effects["launchSmoke.preloadReady"]).not.toHaveBeenCalled()
   })
 
-  it("serves the renderer the endpoint of the daemon that was actually built", async () => {
+  it("serves the renderer the daemon acquisition the main process resolved", async () => {
     const target = harness({ launchSmoke: false })
 
-    await expect(target.listener("handle", "domovoi:rpc-endpoint")(target.event)).resolves.toBe(rpcEndpoint)
-    expect(target.effects.rpcEndpoint).toHaveBeenCalledOnce()
+    await expect(target.listener("handle", "domovoi:rpc-endpoint")(target.event)).resolves.toBe(acquisition)
+    expect(target.calledEffects()).toEqual(["rpcEndpoint"])
   })
 
-  it("refuses daemon credentials during the launch smoke without building a daemon", async () => {
+  it("re-acquires the owner's current endpoint when the renderer reconnects", async () => {
+    const target = harness({ launchSmoke: false })
+
+    await expect(target.listener("handle", "domovoi:rpc-endpoint-reconnect")(target.event)).resolves.toBe(reacquisition)
+    expect(target.calledEffects()).toEqual(["reconnectRpcEndpoint"])
+  })
+
+  it("acquires daemon credentials through the real IPC path during the launch smoke", async () => {
     const target = harness({ launchSmoke: true })
 
-    await expect(async () => target.listener("handle", "domovoi:rpc-endpoint")(target.event))
-      .rejects.toThrow("Daemon credentials are unavailable during the launch smoke")
-    expect(target.calledEffects()).toEqual([])
+    await expect(target.listener("handle", "domovoi:rpc-endpoint")(target.event)).resolves.toBe(acquisition)
+    await expect(target.listener("handle", "domovoi:rpc-endpoint-reconnect")(target.event)).resolves.toBe(reacquisition)
+    expect(target.calledEffects()).toEqual(["rpcEndpoint", "reconnectRpcEndpoint"])
   })
 
   it("serves the authorized renderer", async () => {
@@ -357,6 +371,21 @@ describe("registerDesktopIpc", () => {
 
     const disabled = harness({ authorized: false, launchSmoke: false })
     disabled.listener("on", "domovoi:launch-smoke-ready")(disabled.event)
+    expect(disabled.calledEffects()).toEqual([])
+    expect(disabled.authorize).not.toHaveBeenCalled()
+  })
+
+  it("reports bounded renderer failures only in an authorized smoke", () => {
+    const target = harness()
+    const failed = target.listener("on", "domovoi:launch-smoke-failed")
+    failed(target.event, "x".repeat(2_000))
+    expect(target.effects["launchSmoke.failed"]).toHaveBeenLastCalledWith("x".repeat(1_000))
+    failed(target.event, { message: "not a string" })
+    expect(target.effects["launchSmoke.failed"]).toHaveBeenLastCalledWith("Renderer smoke failed")
+    expect(target.effects["launchSmoke.ready"]).not.toHaveBeenCalled()
+
+    const disabled = harness({ authorized: false, launchSmoke: false })
+    disabled.listener("on", "domovoi:launch-smoke-failed")(disabled.event, "failure")
     expect(disabled.calledEffects()).toEqual([])
     expect(disabled.authorize).not.toHaveBeenCalled()
   })

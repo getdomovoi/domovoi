@@ -1,11 +1,14 @@
+import { execFile } from "node:child_process"
 import { readFile, readdir } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { promisify } from "node:util"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
 const packagesKey = /^packages:\s*(\[.*\])?\s*$/
 const listItem = /^\s+-\s*(.+?)\s*$/
+const exec = promisify(execFile)
 
 function describe(packages) {
   return [...packages]
@@ -151,7 +154,28 @@ export async function collectWorkspacePackages(root = repositoryRoot) {
 
 export async function checkVersionLockstep(root = repositoryRoot) {
   const { packages, failures } = await collectWorkspacePackages(root)
-  return { packages, failures: [...failures, ...evaluateVersionLockstep(packages)] }
+  return { packages, failures: [...failures, ...evaluateVersionLockstep(packages), ...await checkRuntimeBuildVersion(root, packages)] }
+}
+
+async function checkRuntimeBuildVersion(root, packages) {
+  const protocol = packages.find((entry) => entry.name === "@getdomovoi/protocol")
+  if (!protocol) return []
+  const entry = `${dirname(protocol.path)}/dist/index.js`
+  // Inspect the actual built export in a bounded, fresh process. Source and
+  // manifest agreement alone cannot detect a stale release artifact.
+  let version
+  try {
+    const { stdout } = await exec(process.execPath, ["--input-type=module", "-e", [
+      `const runtime = await import(${JSON.stringify(pathToFileURL(join(root, entry)).href)})`,
+      'process.stdout.write(JSON.stringify({version: runtime.buildVersion}))',
+    ].join("\n")], { timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 16_384 })
+    version = JSON.parse(stdout).version
+  } catch {
+    return [`${entry}: runtime build identity unavailable; run pnpm --filter @getdomovoi/protocol build`]
+  }
+  return version === protocol.version ? [] : [
+    `${entry}: buildVersion is ${String(version)}, expected ${protocol.version}; rebuild @getdomovoi/protocol`,
+  ]
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

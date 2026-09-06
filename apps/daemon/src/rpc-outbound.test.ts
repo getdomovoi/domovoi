@@ -138,12 +138,12 @@ describe("RpcOutboundBackpressure", () => {
     expect(scheduler.pending).toHaveLength(0)
   })
 
-  it("closes rather than queueing a non-coalescible notification", () => {
+  it.each(["system.emergencyStopped", "fleet.changed"])("closes rather than dropping a non-coalescible %s notification", (method) => {
     const socket = new FakeSocket()
     socket.bufferedAmount = 100
     const policy = new RpcOutboundBackpressure({ highWaterBytes: 100, lowWaterBytes: 25 })
 
-    expect(policy.notify(socket, "system.emergencyStopped", "emergency", () => "resync")).toBe(false)
+    expect(policy.notify(socket, method, "event", () => "resync")).toBe(false)
 
     expect(socket.sent).toEqual([])
     expect(socket.close).toHaveBeenCalledWith(

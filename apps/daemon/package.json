@@ -4,7 +4,7 @@
   "description": "Execution daemon for Domovoi agent sessions.",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "license": "Apache-2.0",
   "repository": {
@@ -29,8 +29,9 @@
       "import": "./dist/server.js"
     }
   },
-  "files": ["dist/*.js", "dist/*.d.ts"],
+  "files": ["dist/*.js", "dist/*.d.ts", "runtime/lock.json", "runtime/package.json", "runtime/protocol.tgz"],
   "scripts": {
+    "prepack": "node ../../scripts/prepare-daemon-runtime.mjs",
     "build": "tsup",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "tsx watch src/index.ts",
@@ -52,7 +53,8 @@
     "node-pty": "1.2.0-beta.15",
     "parse5": "^8.0.1",
     "ws": "^8.18.3",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

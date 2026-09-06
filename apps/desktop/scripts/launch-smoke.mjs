@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process"
-import { access, mkdtemp, mkdir, rm } from "node:fs/promises"
+import { access, mkdtemp, mkdir, readFile, rm } from "node:fs/promises"
 import { constants } from "node:fs"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { DatabaseSync } from "node:sqlite"
 
 import electronPath from "electron"
 
-import { launchSmokeElectronArgs, launchSmokeTimeoutMs } from "./launch-smoke-args.mjs"
+import { launchSmokeElectronArgs, launchSmokeEnvironment, launchSmokeTimeoutMs } from "./launch-smoke-args.mjs"
 
 const successMarker = "DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK"
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
@@ -42,16 +43,7 @@ const electronArgs = launchSmokeElectronArgs({
 const xvfb = process.platform === "linux" ? await executableOnPath("xvfb-run") : undefined
 const command = xvfb ?? electronPath
 const args = xvfb ? ["--auto-servernum", electronPath, ...electronArgs] : electronArgs
-const env = {
-  ...process.env,
-  APPDATA: join(profileRoot, "config"),
-  DOMOVOI_DESKTOP_LAUNCH_SMOKE: "1",
-  HOME: profileRoot,
-  LOCALAPPDATA: join(profileRoot, "data"),
-  XDG_CACHE_HOME: join(profileRoot, "cache"),
-  XDG_CONFIG_HOME: join(profileRoot, "config"),
-  XDG_DATA_HOME: join(profileRoot, "data"),
-}
+const env = launchSmokeEnvironment({ env: process.env, profileRoot, timeoutMs })
 
 let stdout = ""
 let stderr = ""
@@ -119,12 +111,25 @@ try {
   if (!stdout.split(/\r?\n/u).includes(successMarker)) {
     throw new Error(`desktop launch smoke did not emit ${successMarker}`)
   }
-  // Starting is all the smoke proves. A daemon state directory in its
-  // throwaway home means the app built a daemon and minted credentials to do it.
-  const daemonState = join(profileRoot, ".domovoi")
-  if (await access(daemonState).then(() => true, () => false)) {
-    throw new Error(`desktop launch smoke created daemon state at ${daemonState}`)
+  // Renderer readiness alone is not daemon assembly. The production factory
+  // must have opened its persistent store in this isolated profile.
+  const daemonState = join(profileRoot, ".domovoi", "state.sqlite")
+  if (!await access(daemonState).then(() => true, () => false)) {
+    throw new Error("desktop launch smoke never started the production daemon: state.sqlite is missing")
   }
+  const owner = JSON.parse(await readFile(join(profileRoot, ".domovoi", "local-owner.json"), "utf8"))
+  if (owner.state !== "none") throw new Error("desktop launch smoke did not release its daemon owner")
+  // Read the store only after Electron exits. The positive witness is a
+  // credential minted, used for hello and revoked through real renderer RPC.
+  const database = new DatabaseSync(daemonState, { readOnly: true })
+  try {
+    const devices = database.prepare("SELECT label, credential_role, client_kind, last_seen_at, revoked_at FROM paired_devices").all()
+    if (devices.length !== 1 || devices[0].label !== "Desktop launch smoke"
+      || devices[0].credential_role !== "client" || devices[0].client_kind !== "desktop"
+      || !devices[0].last_seen_at || !devices[0].revoked_at) {
+      throw new Error("desktop launch smoke has no persisted authenticated and revoked client pairing")
+    }
+  } finally { database.close() }
 
   process.stdout.write(`${successMarker}\n`)
 } catch (error) {

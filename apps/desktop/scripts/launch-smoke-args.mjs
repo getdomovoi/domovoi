@@ -1,3 +1,5 @@
+import { join } from "node:path"
+
 export function launchSmokeElectronArgs({ platform, ci, desktopRoot }) {
   return [
     ...(platform === "linux" && ci ? ["--no-sandbox"] : []),
@@ -11,6 +13,29 @@ export function launchSmokeElectronArgs({ platform, ci, desktopRoot }) {
 // macOS, so a single budget either flakes there or hides a hang elsewhere.
 export function launchSmokeTimeoutMs({ platform, env }) {
   const configured = Number(env?.DOMOVOI_LAUNCH_SMOKE_TIMEOUT_MS)
-  if (Number.isFinite(configured) && configured > 0) return configured
-  return platform === "win32" ? 60_000 : 15_000
+  if (Number.isSafeInteger(configured) && configured > 0 && configured <= 2_147_483_647) return configured
+  // The smoke includes production startup, authenticated RPC and shutdown,
+  // not only renderer readiness. The parent bounds the entire child lifetime.
+  return platform === "win32" ? 90_000 : 60_000
+}
+
+export function launchSmokeEnvironment({ env, profileRoot, timeoutMs }) {
+  // Windows treats environment names case-insensitively. Remove aliases of
+  // every isolated path before adding the canonical keys below.
+  const replaced = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+    "ELECTRON_RENDERER_URL", "ELECTRON_RUN_AS_NODE", "NODE_OPTIONS"]
+  const inherited = Object.fromEntries(Object.entries(env).filter(([key]) =>
+    !key.toUpperCase().startsWith("DOMOVOI_")
+    && !replaced.includes(key.toUpperCase()),
+  ))
+  return {
+    ...inherited,
+    HOME: profileRoot, USERPROFILE: profileRoot,
+    APPDATA: join(profileRoot, "config"), LOCALAPPDATA: join(profileRoot, "data"),
+    XDG_CACHE_HOME: join(profileRoot, "cache"), XDG_CONFIG_HOME: join(profileRoot, "config"),
+    XDG_DATA_HOME: join(profileRoot, "data"),
+    DOMOVOI_DESKTOP_LAUNCH_SMOKE: "1", DOMOVOI_LAUNCH_SMOKE_PROFILE: profileRoot,
+    DOMOVOI_LAUNCH_SMOKE_TIMEOUT_MS: String(timeoutMs),
+    DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0",
+  }
 }

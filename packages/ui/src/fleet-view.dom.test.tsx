@@ -2,10 +2,13 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import type { FleetMachine, PairedDeviceSummary } from "@getdomovoi/protocol"
+import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary } from "@getdomovoi/protocol"
 
+import { DaemonRpcError } from "./client.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { FleetView, orderedMachineTransports } from "./fleet-view.js"
+import { forgetRefusalMessage } from "./forget-machine.js"
+import { remoteControlRefusal } from "./machine-selection.js"
 
 afterEach(cleanup)
 
@@ -42,6 +45,27 @@ const studio: FleetMachine = {
   transports: [{ kind: "tailnet", endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true }],
 }
 
+function entries(...machines: FleetMachine[]): FleetEntry[] {
+  return machines.map((machine) => ({ kind: "machine", machine }))
+}
+
+const pending: FleetEntry = {
+  kind: "pending",
+  id: "3d5b7a2e-4c1f-4a6b-9e2d-8f7c6b5a4d3e",
+  machineId: `machine-${"c".repeat(32)}`,
+  operation: "enroll",
+  startedAt: "2026-09-04T12:00:00.000Z",
+}
+
+const unenrolled: FleetEntry = { kind: "unenrolled", machineId: `machine-${"e".repeat(32)}` }
+
+const forgotten: FleetForgetResult = {
+  outcome: "forgotten",
+  machineId: studio.id,
+  remoteRevocation: "confirmed",
+  fleet: { entries: entries(local) },
+}
+
 const device: PairedDeviceSummary = {
   id: `device-${"d".repeat(32)}`,
   label: "studio-ipad",
@@ -73,10 +97,14 @@ const machineConsequence =
   "Cuts this machine off. Its sessions keep running there; transfers to it are refused."
 
 function renderFleet(overrides: {
-  machines?: FleetMachine[]
+  entries?: FleetEntry[]
+  currentMachineId?: string
+  fleetOverflow?: FleetSnapshotOverflow
   devices?: PairedDeviceSummary[]
+  onForgetMachine?: (machineId: string) => Promise<FleetForgetResult>
   onRevokeDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary }>
   onRotateDevice?: (params: { deviceId: string }) => Promise<{ device: PairedDeviceSummary; token: string }>
+  onRenameDevice?: (params: { deviceId: string; label: string; expectedLabel?: string }) => Promise<{ device: PairedDeviceSummary }>
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(() => Promise.resolve({ devices }))
@@ -93,11 +121,19 @@ function renderFleet(overrides: {
         token: "r".repeat(43),
       })),
   )
+  const onRenameDevice = vi.fn(
+    overrides.onRenameDevice
+      ?? ((params: { deviceId: string; label: string }) => Promise.resolve({
+        device: { ...devices.find((candidate) => candidate.id === params.deviceId)!, label: params.label },
+      })),
+  )
   const onPairMachine = vi.fn(() => Promise.resolve({
+    outcome: "enrolled" as const,
     machineId: studio.id,
-    machineName: "studio",
-    label: "studio-ipad",
+    label: "studio",
+    fleet: { entries: entries(local, studio) },
   }))
+  const onForgetMachine = vi.fn(overrides.onForgetMachine ?? (() => Promise.resolve(forgotten)))
   const onUseMachine = vi.fn()
   const onOpenMachineTerminal = vi.fn()
   const user = userEvent.setup()
@@ -105,20 +141,23 @@ function renderFleet(overrides: {
     <TooltipProvider>
       <FleetView
         connected
-        machines={overrides.machines ?? [local, studio]}
-        currentMachineId={local.id}
+        entries={overrides.entries ?? entries(local, studio)}
+        currentMachineId={overrides.currentMachineId ?? local.id}
+        fleetOverflow={overrides.fleetOverflow ?? null}
         currentSessionCount={2}
         onOpenSkills={() => {}}
         onListDevices={onListDevices as never}
         onRevokeDevice={onRevokeDevice as never}
         onRotateDevice={onRotateDevice as never}
-        onPairMachine={onPairMachine as never}
+        onRenameDevice={onRenameDevice as never}
+        onPairMachine={onPairMachine}
+        onForgetMachine={onForgetMachine}
         onUseMachine={onUseMachine}
         onOpenMachineTerminal={onOpenMachineTerminal}
       />
     </TooltipProvider>,
   )
-  return { user, onListDevices, onRevokeDevice, onRotateDevice, onPairMachine, onUseMachine, onOpenMachineTerminal }
+  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal }
 }
 
 it("describes each machine in the fleet", () => {
@@ -131,6 +170,24 @@ it("describes each machine in the fleet", () => {
   expect(machine.textContent).toContain("tailnet")
   expect(machine.textContent).toContain("Upgrade required")
   expect(machine.textContent).toContain("sessions")
+})
+
+it("names the distribution for a daemon inside WSL", () => {
+  const ubuntu: FleetMachine = {
+    ...studio,
+    id: `machine-${"d".repeat(32)}`,
+    label: "ubuntu-daemon",
+    platform: "linux",
+    arch: "x64",
+    wsl: { distribution: "Ubuntu-24.04", version: 2 },
+    health: "healthy",
+  }
+  renderFleet({ entries: entries(local, ubuntu) })
+
+  const machine = screen.getByRole("group", { name: "ubuntu-daemon" })
+  expect(machine.textContent).toContain("Ubuntu-24.04 (WSL)")
+  expect(machine.textContent).toContain("x64")
+  expect(screen.getByRole("group", { name: "workshop" }).textContent).not.toContain("(WSL)")
 })
 
 it("counts sessions only for this machine", () => {
@@ -454,13 +511,15 @@ it("holds the table shape while the list loads", async () => {
     <TooltipProvider>
       <FleetView
         connected
-        machines={[local]}
+        entries={entries(local)}
+        fleetOverflow={null}
         currentMachineId={local.id}
         currentSessionCount={0}
         onOpenSkills={() => {}}
         onListDevices={(() => pending) as never}
         onRevokeDevice={(() => Promise.resolve({})) as never}
         onRotateDevice={(() => Promise.resolve({})) as never}
+        onRenameDevice={(() => Promise.resolve({})) as never}
       />
     </TooltipProvider>,
   )
@@ -486,6 +545,128 @@ it("offers no consequence and no action on a revoked row", async () => {
   expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", true)
   expect(within(row).queryByText(clientConsequence)).toBeNull()
   expect(row.textContent).toContain("revoked")
+})
+
+it("renames a device in place and offers Undo after committing", async () => {
+  const { user, onRenameDevice } = renderFleet()
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  const field = within(row).getByRole("textbox", { name: "Name for studio-ipad" })
+  expect(field).toHaveProperty("value", "studio-ipad")
+  await user.clear(field)
+  await user.type(field, "kitchen-ipad")
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).toHaveBeenCalledWith({ deviceId: device.id, label: "kitchen-ipad" })
+  const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
+  expect(within(renamed).queryByRole("textbox")).toBeNull()
+  expect(within(renamed).getByRole("button", { name: "Revoke kitchen-ipad" })).toBeTruthy()
+
+  await user.click(within(renamed).getByRole("button", { name: "Undo" }))
+
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
+  const restored = await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(within(restored).queryByRole("button", { name: "Undo" })).toBeNull()
+  expect(within(restored).getByRole("button", { name: "Rename studio-ipad" })).toBeTruthy()
+})
+
+it("keeps a rename made elsewhere instead of undoing over it", async () => {
+  const onRenameDevice = vi.fn()
+    .mockImplementationOnce((params: { deviceId: string; label: string }) =>
+      Promise.resolve({ device: { ...device, label: params.label } }))
+    .mockRejectedValueOnce(new DaemonRpcError(
+      deviceLabelMismatchErrorCode,
+      "Paired device is called desk-ipad, not the label this rename expected",
+      { kind: "device-label-mismatch", device: { ...device, label: "desk-ipad" } },
+    ))
+  const { user } = renderFleet({ onRenameDevice })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("kitchen-ipad{Enter}")
+  const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
+
+  await user.click(within(renamed).getByRole("button", { name: "Undo" }))
+
+  const current = await screen.findByRole("row", { name: /desk-ipad/ })
+  expect(within(current).queryByRole("button", { name: "Undo" })).toBeNull()
+  expect(within(current).getByRole("button", { name: "Rename desk-ipad" })).toBeTruthy()
+  expect(screen.queryByRole("row", { name: /studio-ipad/ })).toBeNull()
+  expect(onRenameDevice).toHaveBeenCalledTimes(2)
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
+  const alert = await screen.findByRole("alert")
+  expect(alert.textContent).toContain("changed elsewhere")
+  expect(alert.textContent).toContain("desk-ipad")
+})
+
+it("commits a rename with Enter and abandons one with Escape", async () => {
+  const { user, onRenameDevice } = renderFleet()
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("desk-ipad{Escape}")
+
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(within(row).queryByRole("textbox")).toBeNull()
+  expect(row.textContent).toContain("studio-ipad")
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("desk-ipad{Enter}")
+
+  expect(onRenameDevice).toHaveBeenCalledWith({ deviceId: device.id, label: "desk-ipad" })
+  expect(await screen.findByRole("row", { name: /desk-ipad/ })).toBeTruthy()
+})
+
+it("keeps an empty or unchanged label out of the daemon", async () => {
+  const { user, onRenameDevice } = renderFleet()
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  const field = within(row).getByRole("textbox", { name: "Name for studio-ipad" })
+  await user.clear(field)
+  await user.type(field, "   ")
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(field.getAttribute("aria-invalid")).toBe("true")
+
+  await user.click(within(row).getByRole("button", { name: "Cancel" }))
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(within(row).queryByRole("textbox")).toBeNull()
+})
+
+it("keeps the draft open for retry and says why when a rename is refused", async () => {
+  const onRenameDevice = vi.fn()
+    .mockRejectedValueOnce(new Error("Managing paired devices requires the daemon credential"))
+    .mockImplementationOnce((params: { deviceId: string; label: string }) =>
+      Promise.resolve({ device: { ...device, label: params.label } }))
+  const { user } = renderFleet({ onRenameDevice })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(within(row).getByRole("button", { name: "Rename studio-ipad" }))
+  await user.clear(within(row).getByRole("textbox", { name: "Name for studio-ipad" }))
+  await user.keyboard("kitchen-ipad{Enter}")
+
+  expect((await screen.findByRole("alert")).textContent)
+    .toContain("Managing paired devices requires the daemon credential")
+  const field = within(row).getByRole("textbox", { name: "Name for studio-ipad" })
+  expect(field).toHaveProperty("value", "kitchen-ipad")
+  expect(screen.queryByRole("button", { name: "Undo" })).toBeNull()
+
+  await user.click(within(row).getByRole("button", { name: "Save" }))
+
+  expect(onRenameDevice).toHaveBeenCalledTimes(2)
+  expect(onRenameDevice).toHaveBeenLastCalledWith({ deviceId: device.id, label: "kitchen-ipad" })
+  const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
+  expect(within(renamed).queryByRole("textbox")).toBeNull()
+  expect(within(renamed).getByRole("button", { name: "Undo" })).toBeTruthy()
 })
 
 it("states why a device action was refused", async () => {
@@ -517,13 +698,25 @@ it("says when no device is paired", async () => {
 })
 
 
-it("opens a machine from its card", async () => {
+it("refuses to open a remote machine and names the missing credential", async () => {
   const { user, onUseMachine } = renderFleet()
 
   const card = within(screen.getByRole("group", { name: "studio" }))
-  await user.click(card.getByRole("button", { name: "Use studio" }))
+  const use = card.getByRole("button", { name: "Use studio" })
+  expect(use).toHaveProperty("disabled", true)
+  expect(card.getByText(remoteControlRefusal)).toBeTruthy()
+  await user.click(use)
+  expect(onUseMachine).not.toHaveBeenCalled()
+})
 
-  expect(onUseMachine).toHaveBeenCalledWith(studio.id)
+it("opens this machine from its card when the client is attached elsewhere", async () => {
+  const { user, onUseMachine } = renderFleet({ currentMachineId: studio.id })
+
+  const card = within(screen.getByRole("group", { name: "workshop" }))
+  await user.click(card.getByRole("button", { name: "Use workshop" }))
+
+  expect(onUseMachine).toHaveBeenCalledWith(local.id)
+  expect(card.queryByText(remoteControlRefusal)).toBeNull()
 })
 
 it("says which machine is already in use instead of offering to open it", () => {
@@ -534,15 +727,25 @@ it("says which machine is already in use instead of offering to open it", () => 
   expect(card.queryByRole("button", { name: /^Use /u })).toBeNull()
 })
 
-it("opens a terminal on the machine that owns it", async () => {
+it("refuses a terminal on a remote machine for the same missing credential", async () => {
   const { user, onOpenMachineTerminal } = renderFleet({
-    machines: [{ ...studio, capabilities: ["sessions", "terminals"] }],
+    entries: entries(local, { ...studio, capabilities: ["sessions", "terminals"] }),
   })
 
   const card = within(screen.getByRole("group", { name: "studio" }))
-  await user.click(card.getByRole("button", { name: "Terminal on studio" }))
+  const terminal = card.getByRole("button", { name: "Terminal on studio" })
+  expect(terminal).toHaveProperty("disabled", true)
+  await user.click(terminal)
+  expect(onOpenMachineTerminal).not.toHaveBeenCalled()
+})
 
-  expect(onOpenMachineTerminal).toHaveBeenCalledWith(studio.id)
+it("opens a terminal on this machine", async () => {
+  const { user, onOpenMachineTerminal } = renderFleet({ currentMachineId: studio.id })
+
+  const card = within(screen.getByRole("group", { name: "workshop" }))
+  await user.click(card.getByRole("button", { name: "Terminal on workshop" }))
+
+  expect(onOpenMachineTerminal).toHaveBeenCalledWith(local.id)
 })
 
 it("offers no terminal on a machine that reports no terminal capability", () => {
@@ -557,28 +760,183 @@ it("does not offer machine actions while the daemon is unreachable", () => {
   render(
     <FleetView
       connected={false}
-      machines={[{ ...studio, capabilities: ["sessions", "terminals"] }]}
-      currentMachineId={local.id}
+      entries={entries({ ...local, capabilities: ["sessions", "terminals"] })}
+      fleetOverflow={null}
+      currentMachineId={studio.id}
       currentSessionCount={2}
       onOpenSkills={() => {}}
       onListDevices={(() => Promise.resolve({ devices: [] })) as never}
       onRevokeDevice={(() => Promise.resolve({})) as never}
       onRotateDevice={(() => Promise.resolve({})) as never}
+      onRenameDevice={(() => Promise.resolve({})) as never}
       onUseMachine={onUseMachine}
       onOpenMachineTerminal={vi.fn()}
     />,
   )
 
-  const card = within(screen.getByRole("group", { name: "studio" }))
-  expect(card.getByRole("button", { name: "Use studio" })).toHaveProperty("disabled", true)
-  expect(card.getByRole("button", { name: "Terminal on studio" })).toHaveProperty("disabled", true)
+  const card = within(screen.getByRole("group", { name: "workshop" }))
+  expect(card.getByRole("button", { name: "Use workshop" })).toHaveProperty("disabled", true)
+  expect(card.getByRole("button", { name: "Terminal on workshop" })).toHaveProperty("disabled", true)
 })
 
 it("marks a machine running an older daemon than the fleet", () => {
-  renderFleet({ machines: [local, { ...studio, version: "0.4.1" }] })
+  renderFleet({ entries: entries(local, { ...studio, version: "0.4.1" }) })
 
   const behind = within(screen.getByRole("group", { name: "studio" }))
   expect(behind.getByText("UPDATE 0.4.2")).toBeTruthy()
   const current = within(screen.getByRole("group", { name: "workshop" }))
   expect(current.queryByText(/^UPDATE/u)).toBeNull()
+})
+
+it("says the target refused this machine's credential and that pairing again is the fix", () => {
+  renderFleet({ entries: entries(local, { ...studio, health: "pairing-required" }) })
+
+  const card = screen.getByRole("group", { name: "studio" })
+  expect(card.textContent).toContain("Pair again")
+  expect(card.textContent).toContain("studio refused the credential this machine holds for it. Pair it again to restore it.")
+})
+
+it("says a keychain that cannot be read is not a pairing problem", () => {
+  renderFleet({ entries: entries(local, { ...studio, health: "credential-store-unavailable" }) })
+
+  const card = screen.getByRole("group", { name: "studio" })
+  expect(card.textContent).toContain("Keychain unavailable")
+  expect(card.textContent).toContain("The keychain on this machine could not be read, so nothing was presented to studio. Pairing again would not fix it.")
+})
+
+it("shows an enrollment in progress where the machine will be, with nothing to press", () => {
+  renderFleet({ entries: [...entries(local), pending] })
+
+  const row = screen.getByRole("group", { name: /enrolling machine-cccccccc/i })
+  expect(row.textContent).toContain("This daemon resumes it on its own")
+  expect(within(row).queryAllByRole("button")).toHaveLength(0)
+})
+
+it("shows a forget in progress as forgetting", () => {
+  renderFleet({ entries: [...entries(local), { ...pending, operation: "forget" }] })
+
+  expect(screen.getByRole("group", { name: /forgetting machine-cccccccc/i })).toBeTruthy()
+})
+
+it("says an unenrolled credential exists and how to enroll the machine", () => {
+  renderFleet({ entries: [...entries(local), unenrolled] })
+
+  const row = screen.getByRole("group", { name: /never enrolled machine-eeeeeeee/i })
+  expect(row.textContent).toContain("A credential exists but this machine was never enrolled. Pair it again to enroll it.")
+  expect(within(row).queryAllByRole("button")).toHaveLength(0)
+})
+
+it("forgets a machine only after the confirmation is accepted", async () => {
+  const { user, onForgetMachine } = renderFleet()
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  await user.click(card.getByRole("button", { name: "Forget studio" }))
+  expect(onForgetMachine).not.toHaveBeenCalled()
+  const dialog = await screen.findByRole("alertdialog")
+  expect(dialog.textContent).toContain("no revocation across machines")
+
+  await user.click(within(dialog).getByRole("button", { name: "Forget machine" }))
+
+  await waitFor(() => expect(onForgetMachine).toHaveBeenCalledWith(studio.id))
+  expect((await screen.findByRole("status", { name: /forgot studio/i })).textContent)
+    .toContain("studio revoked this machine's credential")
+})
+
+it("keeps the machine when the forget is cancelled", async () => {
+  const { user, onForgetMachine } = renderFleet()
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  await user.click(card.getByRole("button", { name: "Forget studio" }))
+  await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Keep machine" }))
+
+  expect(onForgetMachine).not.toHaveBeenCalled()
+})
+
+it("tells the operator to revoke this machine on the target when nothing confirmed it", async () => {
+  const { user } = renderFleet({
+    onForgetMachine: () => Promise.resolve({ ...forgotten, remoteRevocation: "unconfirmed" }),
+  })
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  await user.click(card.getByRole("button", { name: "Forget studio" }))
+  await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Forget machine" }))
+
+  const receipt = await screen.findByRole("status", { name: /forgot studio/i })
+  expect(receipt.textContent).toContain("studio did not confirm revoking this machine")
+  expect(receipt.textContent).toContain("Revoke this machine in the Devices list on studio")
+})
+
+it("says a forget the daemon is still finishing is pending and who revokes", async () => {
+  const { user } = renderFleet({
+    onForgetMachine: () => Promise.resolve({
+      outcome: "pending",
+      operation: { ...pending, machineId: studio.id, operation: "forget" },
+      remoteRevocation: "unconfirmed",
+      fleet: { entries: [...entries(local), { ...pending, machineId: studio.id, operation: "forget" }] },
+    }),
+  })
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  await user.click(card.getByRole("button", { name: "Forget studio" }))
+  await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Forget machine" }))
+
+  const receipt = await screen.findByRole("status", { name: /forgetting studio/i })
+  expect(receipt.textContent).toContain("This daemon resumes it on its own")
+  expect(receipt.textContent).toContain("Revoke this machine in the Devices list on studio")
+})
+
+it("states why a forget was refused, in this build's words", async () => {
+  const { user } = renderFleet({
+    onForgetMachine: () => Promise.resolve({ outcome: "refused", reason: "operation-in-progress" }),
+  })
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  await user.click(card.getByRole("button", { name: "Forget studio" }))
+  await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Forget machine" }))
+
+  expect((await screen.findByRole("alert")).textContent).toContain(forgetRefusalMessage["operation-in-progress"])
+  for (const reason of fleetForgetRefusalSchema.options) {
+    expect(forgetRefusalMessage[reason]).not.toMatch(/[!—]/u)
+  }
+})
+
+it("offers no forget on this machine", () => {
+  renderFleet()
+
+  expect(within(screen.getByRole("group", { name: "workshop" })).queryByRole("button", { name: /^Forget/u })).toBeNull()
+})
+
+it("states the consequence of forgetting before the confirmation", () => {
+  renderFleet()
+
+  const card = within(screen.getByRole("group", { name: "studio" }))
+  const standing = card.getByText("Deletes the credential this machine holds for it. Sessions there keep running, and revoking this machine on that side may still be yours to do.")
+  expect(standing.className.split(" ")).toContain("pointer-coarse:block")
+})
+
+it("says the fleet list is withheld, how many entries exist, and the daemon-side remedy", () => {
+  renderFleet({
+    entries: entries(local),
+    fleetOverflow: {
+      kind: "fleet-overflow",
+      limit: maximumFleetEntries,
+      totalEntries: maximumFleetEntries + 40,
+      entriesNotShown: maximumFleetEntries + 40,
+    },
+  })
+
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("Fleet list withheld")
+  expect(alert.textContent).toContain(`${maximumFleetEntries + 40} fleet entries`)
+  expect(alert.textContent).toContain(`${maximumFleetEntries + 40} entries are not shown`)
+  expect(alert.textContent).toContain("This is not an empty fleet")
+  expect(alert.textContent).toContain("domovoid fleet-keychain list")
+  expect(alert.textContent).toContain("domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped")
+  expect(alert.textContent).toContain("On the daemon's own machine")
+})
+
+it("shows no overflow notice when the daemon listed the fleet", () => {
+  renderFleet()
+
+  expect(screen.queryByText("Fleet list withheld")).toBeNull()
 })

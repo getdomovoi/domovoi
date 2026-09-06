@@ -34,32 +34,73 @@ describe("createDesktopWindowBridge", () => {
     expect(bridge).not.toHaveProperty("clipboard")
   })
 
-  it("hands the renderer the daemon endpoint the main process resolved", async () => {
+  it("hands the renderer the endpoint of the daemon the main process acquired", async () => {
     const target = ipc()
     const bridge = createDesktopWindowBridge(target, "linux")
-    const endpoint = { url: "wss://[::1]:50123/rpc", token: "factory-token" }
+    const owned = { kind: "owned", url: "wss://[::1]:50123/rpc", token: "factory-token" }
+    const attached = { kind: "attached", owner: "daemon", url: "ws://127.0.0.1:47831/rpc", token: "file-token" }
 
-    target.invoke.mockResolvedValueOnce(endpoint)
-    await expect(bridge.getRpcEndpoint()).resolves.toEqual(endpoint)
+    target.invoke.mockResolvedValueOnce(owned)
+    await expect(bridge.getRpcEndpoint()).resolves.toEqual({ url: "wss://[::1]:50123/rpc", token: "factory-token" })
     expect(target.invoke).toHaveBeenCalledWith("domovoi:rpc-endpoint")
+
+    target.invoke.mockResolvedValueOnce(attached)
+    await expect(bridge.getRpcEndpoint()).resolves.toEqual({ url: "ws://127.0.0.1:47831/rpc", token: "file-token" })
+
+    target.invoke.mockResolvedValueOnce(owned)
+    await expect(bridge.acquireDaemon()).resolves.toEqual(owned)
+    target.invoke.mockResolvedValueOnce(attached)
+    await expect(bridge.acquireDaemon()).resolves.toEqual(attached)
+    expect(target.invoke).not.toHaveBeenCalledWith("domovoi:rpc-endpoint-reconnect")
+
+    target.invoke.mockResolvedValueOnce(attached)
+    await expect(bridge.reacquireDaemon()).resolves.toEqual(attached)
+    expect(target.invoke).toHaveBeenLastCalledWith("domovoi:rpc-endpoint-reconnect")
   })
 
-  it("rejects a daemon endpoint that is not a bearer token for a websocket URL", async () => {
+  it("carries a refusal with the daemon's reason and message", async () => {
+    const target = ipc()
+    const bridge = createDesktopWindowBridge(target, "linux")
+    const refusal = { kind: "refused", reason: "owner-unreachable", message: "The profile has no reachable owner." }
+
+    target.invoke.mockResolvedValueOnce(refusal)
+    await expect(bridge.acquireDaemon()).resolves.toEqual(refusal)
+    target.invoke.mockResolvedValueOnce(refusal)
+    await expect(bridge.reacquireDaemon()).resolves.toEqual(refusal)
+    target.invoke.mockResolvedValueOnce(refusal)
+    await expect(bridge.getRpcEndpoint()).rejects.toThrow("The profile has no reachable owner.")
+  })
+
+  it("rejects a daemon acquisition that is not a described bearer token for a websocket URL", async () => {
     const target = ipc()
     const bridge = createDesktopWindowBridge(target, "linux")
 
     for (const reply of [
       "factory-token",
       null,
-      [{ url: "ws://127.0.0.1:47831/rpc", token: "factory-token" }],
-      { url: "ws://127.0.0.1:47831/rpc" },
-      { token: "factory-token" },
-      { url: "ws://127.0.0.1:47831/rpc", token: "" },
-      { url: "", token: "factory-token" },
-      { url: "http://127.0.0.1:47831/rpc", token: "factory-token" },
-      { url: "not a url", token: "factory-token" },
-      { url: "ws://127.0.0.1:47831/rpc", token: "factory-token", host: "127.0.0.1" },
+      [{ kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "factory-token" }],
+      { url: "ws://127.0.0.1:47831/rpc", token: "factory-token" },
+      { kind: "started", url: "ws://127.0.0.1:47831/rpc", token: "factory-token" },
+      { kind: "owned", url: "ws://127.0.0.1:47831/rpc" },
+      { kind: "owned", token: "factory-token" },
+      { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "" },
+      { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "t".repeat(4_097) },
+      { kind: "owned", url: "", token: "factory-token" },
+      { kind: "owned", url: "http://127.0.0.1:47831/rpc", token: "factory-token" },
+      { kind: "owned", url: "not a url", token: "factory-token" },
+      { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "factory-token", host: "127.0.0.1" },
+      { kind: "owned", owner: "daemon", url: "ws://127.0.0.1:47831/rpc", token: "factory-token" },
+      { kind: "attached", url: "ws://127.0.0.1:47831/rpc", token: "factory-token" },
+      { kind: "attached", owner: "service", url: "ws://127.0.0.1:47831/rpc", token: "factory-token" },
+      { kind: "attached", owner: "daemon", url: "http://127.0.0.1:47831/rpc", token: "factory-token" },
+      { kind: "refused", reason: "owner-unreachable" },
+      { kind: "refused", reason: "owner-unreachable", message: "" },
+      { kind: "refused", reason: "owner-unreachable", message: "m".repeat(1_001) },
+      { kind: "refused", reason: "owner-asleep", message: "The profile has no reachable owner." },
+      { kind: "refused", reason: "owner-unreachable", message: "The profile has no reachable owner.", url: "ws://127.0.0.1:47831/rpc" },
     ]) {
+      target.invoke.mockResolvedValueOnce(reply)
+      await expect(bridge.acquireDaemon()).rejects.toThrow("Desktop returned an invalid daemon endpoint")
       target.invoke.mockResolvedValueOnce(reply)
       await expect(bridge.getRpcEndpoint()).rejects.toThrow("Desktop returned an invalid daemon endpoint")
     }

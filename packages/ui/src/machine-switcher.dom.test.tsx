@@ -2,9 +2,10 @@ import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import type { FleetMachine } from "@getdomovoi/protocol"
+import type { FleetEntry, FleetMachine } from "@getdomovoi/protocol"
 
 import { MachineSwitcher } from "./machine-switcher.js"
+import { remoteControlRefusal } from "./machine-selection.js"
 
 afterEach(cleanup)
 
@@ -42,15 +43,29 @@ const offline: FleetMachine = {
   health: "unreachable",
 }
 
+function entries(...machines: FleetMachine[]): FleetEntry[] {
+  return machines.map((machine) => ({ kind: "machine", machine }))
+}
+
+const pending: FleetEntry = {
+  kind: "pending",
+  id: "3d5b7a2e-4c1f-4a6b-9e2d-8f7c6b5a4d3e",
+  machineId: `machine-${"d".repeat(32)}`,
+  operation: "enroll",
+  startedAt: "2026-09-04T12:00:00.000Z",
+}
+
+const unenrolled: FleetEntry = { kind: "unenrolled", machineId: `machine-${"e".repeat(32)}` }
+
 async function openMenu(
-  machines: FleetMachine[],
+  fleet: FleetEntry[],
   sessionCount = 2,
   onSelectMachine?: (machineId: string) => void,
 ) {
   const user = userEvent.setup()
   render(
     <MachineSwitcher
-      machines={machines}
+      entries={fleet}
       currentMachineId={local.id}
       currentSessionCount={sessionCount}
       {...(onSelectMachine ? { onSelectMachine } : {})}
@@ -62,14 +77,14 @@ async function openMenu(
 
 it("names the current machine on the chip", () => {
   render(
-    <MachineSwitcher machines={[local, tailnet]} currentMachineId={local.id} currentSessionCount={2} />,
+    <MachineSwitcher entries={entries(local, tailnet)} currentMachineId={local.id} currentSessionCount={2} />,
   )
 
   expect(screen.getByRole("button", { name: /workshop/ })).toBeTruthy()
 })
 
 it("lists the fleet with connection and status", async () => {
-  await openMenu([local, tailnet, offline])
+  await openMenu(entries(local, tailnet, offline))
 
   const studio = screen.getByRole("menuitem", { name: /studio/ })
   expect(studio.textContent).toContain("tailnet")
@@ -77,7 +92,7 @@ it("lists the fleet with connection and status", async () => {
 })
 
 it("shows an offline machine as unreachable and unselectable", async () => {
-  await openMenu([local, offline])
+  await openMenu(entries(local, offline))
 
   const machine = screen.getByRole("menuitem", { name: /hetzner/ })
   expect(machine.textContent).toContain("UNREACHABLE")
@@ -85,56 +100,59 @@ it("shows an offline machine as unreachable and unselectable", async () => {
 })
 
 it("marks the machine this client is attached to", async () => {
-  await openMenu([local, tailnet])
+  await openMenu(entries(local, tailnet))
 
   expect(screen.getByRole("menuitem", { name: /workshop/ }).textContent).toContain("This machine")
 })
 
 it("reports the active session count of this machine", async () => {
-  await openMenu([local, tailnet], 3)
+  await openMenu(entries(local, tailnet), 3)
 
   expect(screen.getByRole("menuitem", { name: /workshop/ }).textContent).toContain("3 sessions")
 })
 
-it("selects a reachable machine", async () => {
+it("refuses attaching to a remote machine and names the missing credential", async () => {
   const onSelectMachine = vi.fn()
-  const user = await openMenu([local, tailnet], 2, onSelectMachine)
+  const user = await openMenu(entries(local, tailnet), 2, onSelectMachine)
 
-  await user.click(screen.getByRole("menuitem", { name: /studio/ }))
-
-  expect(onSelectMachine).toHaveBeenCalledWith(tailnet.id)
+  const studio = screen.getByRole("menuitem", { name: /studio/ })
+  expect(studio.getAttribute("aria-disabled")).toBe("true")
+  expect(studio.textContent).toContain(remoteControlRefusal)
+  await user.click(studio)
+  expect(onSelectMachine).not.toHaveBeenCalled()
 })
 
 it("says why a machine cannot be selected", async () => {
   const onSelectMachine = vi.fn()
-  await openMenu([local, offline], 2, onSelectMachine)
+  await openMenu(entries(local, offline), 2, onSelectMachine)
 
   const machine = screen.getByRole("menuitem", { name: /hetzner/ })
   expect(machine.getAttribute("aria-disabled")).toBe("true")
-  expect(machine.textContent).toContain("That machine cannot be reached")
+  expect(machine.textContent).toContain("UNREACHABLE")
+  expect(machine.textContent).toContain(remoteControlRefusal)
 })
 
 it("offers nothing to select where no handler can act on it", async () => {
-  await openMenu([local, tailnet])
+  await openMenu(entries(local, tailnet))
 
   expect(screen.getByRole("menuitem", { name: /studio/ }).getAttribute("aria-disabled")).toBe("true")
 })
 
 it("names a machine that needs an upgrade", async () => {
-  await openMenu([local, { ...tailnet, health: "upgrade-required" }])
+  await openMenu(entries(local, { ...tailnet, health: "upgrade-required" }))
 
   const studio = screen.getByRole("menuitem", { name: /studio/ })
   expect(studio.textContent).toContain("Upgrade required")
 })
 
 it("names a machine the client is too old to talk to", async () => {
-  await openMenu([local, { ...tailnet, health: "version-mismatch" }])
+  await openMenu(entries(local, { ...tailnet, health: "version-mismatch" }))
 
   expect(screen.getByRole("menuitem", { name: /studio/ }).textContent).toContain("Version mismatch")
 })
 
 it("names a machine that is reconnecting", async () => {
-  await openMenu([local, { ...tailnet, health: "reconnecting" }])
+  await openMenu(entries(local, { ...tailnet, health: "reconnecting" }))
 
   expect(screen.getByRole("menuitem", { name: /studio/ }).textContent).toContain("Reconnecting")
 })
@@ -144,7 +162,7 @@ it("offers to pair a machine, as the handoff's device menu does", async () => {
   const user = userEvent.setup()
   render(
     <MachineSwitcher
-      machines={[local]}
+      entries={entries(local)}
       currentMachineId={local.id}
       currentSessionCount={1}
       onPairMachine={onPairMachine}
@@ -158,13 +176,13 @@ it("offers to pair a machine, as the handoff's device menu does", async () => {
 })
 
 it("omits the pairing entry where nothing can act on it", async () => {
-  await openMenu([local])
+  await openMenu(entries(local))
 
   expect(screen.queryByRole("menuitem", { name: /pair a machine/i })).toBeNull()
 })
 
 it("describes a fleet holding only this machine", async () => {
-  await openMenu([local])
+  await openMenu(entries(local))
 
   expect(screen.getByText("No other machines are paired")).toBeTruthy()
 })
@@ -174,7 +192,7 @@ it("offers moving the active session to another machine", async () => {
   const user = userEvent.setup()
   render(
     <MachineSwitcher
-      machines={[local, tailnet]}
+      entries={entries(local, tailnet)}
       currentMachineId={local.id}
       currentSessionCount={1}
       onTransferSession={onTransferSession}
@@ -187,13 +205,13 @@ it("offers moving the active session to another machine", async () => {
   expect(onTransferSession).toHaveBeenCalledWith(tailnet.id)
 })
 
-it("keeps attaching to a machine while it also offers the move", async () => {
+it("offers the move to a machine it refuses to attach to", async () => {
   const onSelectMachine = vi.fn()
   const onTransferSession = vi.fn()
   const user = userEvent.setup()
   render(
     <MachineSwitcher
-      machines={[local, tailnet]}
+      entries={entries(local, tailnet)}
       currentMachineId={local.id}
       currentSessionCount={1}
       onSelectMachine={onSelectMachine}
@@ -202,10 +220,11 @@ it("keeps attaching to a machine while it also offers the move", async () => {
   )
   await user.click(screen.getByRole("button", { name: /workshop/ }))
 
-  await user.click(screen.getByRole("menuitem", { name: /^studio/ }))
+  expect(screen.getByRole("menuitem", { name: /^studio/ }).getAttribute("aria-disabled")).toBe("true")
+  await user.click(screen.getByRole("menuitem", { name: /move this session to studio/i }))
 
-  expect(onSelectMachine).toHaveBeenCalledWith(tailnet.id)
-  expect(onTransferSession).not.toHaveBeenCalled()
+  expect(onTransferSession).toHaveBeenCalledWith(tailnet.id)
+  expect(onSelectMachine).not.toHaveBeenCalled()
 })
 
 it("refuses the move to an unreachable machine with the reason", async () => {
@@ -213,7 +232,7 @@ it("refuses the move to an unreachable machine with the reason", async () => {
   const user = userEvent.setup()
   render(
     <MachineSwitcher
-      machines={[local, offline]}
+      entries={entries(local, offline)}
       currentMachineId={local.id}
       currentSessionCount={1}
       onTransferSession={onTransferSession}
@@ -231,7 +250,7 @@ it("omits the move section where no other machine is paired", async () => {
   const user = userEvent.setup()
   render(
     <MachineSwitcher
-      machines={[local]}
+      entries={entries(local)}
       currentMachineId={local.id}
       currentSessionCount={1}
       onTransferSession={onTransferSession}
@@ -240,4 +259,55 @@ it("omits the move section where no other machine is paired", async () => {
   await user.click(screen.getByRole("button", { name: /workshop/ }))
 
   expect(screen.queryByText("Move this session to")).toBeNull()
+})
+
+it("names a machine whose credential the target refused", async () => {
+  await openMenu(entries(local, { ...tailnet, health: "pairing-required" }))
+
+  expect(screen.getByRole("menuitem", { name: /studio/ }).textContent).toContain("Pair again")
+})
+
+it("names a machine whose credential could not be read here", async () => {
+  await openMenu(entries(local, { ...tailnet, health: "credential-store-unavailable" }))
+
+  expect(screen.getByRole("menuitem", { name: /studio/ }).textContent).toContain("Keychain unavailable")
+})
+
+it("shows an enrollment in progress in place, with nothing to press", async () => {
+  await openMenu([...entries(local), pending])
+
+  const row = screen.getByRole("menuitem", { name: /enrolling/i })
+  expect(row.getAttribute("aria-disabled")).toBe("true")
+  expect(row.textContent).toContain("machine-dddddddd")
+  expect(row.textContent).toContain("This daemon resumes it on its own")
+  expect(row.querySelector("button")).toBeNull()
+})
+
+it("shows a forget in progress as forgetting", async () => {
+  await openMenu([...entries(local), { ...pending, operation: "forget" }])
+
+  expect(screen.getByRole("menuitem", { name: /forgetting/i })).toBeTruthy()
+})
+
+it("says an unenrolled credential exists and how to enroll the machine", async () => {
+  await openMenu([...entries(local), unenrolled])
+
+  const row = screen.getByRole("menuitem", { name: /never enrolled/i })
+  expect(row.getAttribute("aria-disabled")).toBe("true")
+  expect(row.textContent).toContain("A credential exists but this machine was never enrolled. Pair it again to enroll it.")
+})
+
+it("offers the move only to machines with a descriptor", async () => {
+  const user = userEvent.setup()
+  render(
+    <MachineSwitcher
+      entries={[...entries(local, tailnet), pending, unenrolled]}
+      currentMachineId={local.id}
+      currentSessionCount={1}
+      onTransferSession={vi.fn()}
+    />,
+  )
+  await user.click(screen.getByRole("button", { name: /workshop/ }))
+
+  expect(screen.getAllByRole("menuitem", { name: /move this session to/i })).toHaveLength(1)
 })

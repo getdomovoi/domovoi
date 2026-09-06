@@ -25,6 +25,7 @@ This repository is early. The current vertical slice includes:
 apps/
   daemon/    domovoid execution service and JSON-RPC endpoint
   desktop/   Electron client
+  mobile/    Expo phone app, see apps/mobile/README.md
   web/       browser client and installable PWA
 packages/
   protocol/  publishable wire schemas and shared types
@@ -34,9 +35,16 @@ design/
   design_handoff_domovoi_brand/  signed brand source
 ```
 
+## Set up a machine
+
+To take a machine that has nothing installed through a daemon runtime, first start, TLS,
+supervision, fleet pairing, and Windows to WSL access, follow
+[clean-machine setup](docs/clean-machine-setup.md). It is written for the operator of that machine
+and names what is still unproven per platform. The rest of this page is repository development.
+
 ## Develop
 
-Requirements: Node.js 22 or newer and pnpm 11.
+Requirements: Node.js 22.13.0 or newer and pnpm 11.
 
 ```bash
 pnpm install
@@ -61,6 +69,20 @@ dials `ws://127.0.0.1:47831/rpc` by default; set the build-time Vite variable
 URL. Preview documents
 on every listener, loopback included, require short-lived signed capabilities scoped to one
 artifact revision, purpose, annotation bridge channel, and parent origin.
+
+File-backed credentials are written, synced and closed in private staging before a no-replace
+hard link publishes the final name. An interrupted first write therefore does not publish an
+empty `daemon.token` or `local-owner.key`. Existing malformed files are preserved and startup
+names their path; see [credential initialization and offline recovery](docs/credential-files.md)
+before quarantining one. Initialization requires a filesystem with hard-link support.
+
+For supervised operation, `domovoid service install` saves validated non-secret daemon settings and
+uses them on every service start. Environment-only bearer tokens are not copied into service files.
+See [daemon service configuration](docs/daemon-services.md) for credential setup and lifecycle limits.
+For a stranded legacy or custom-supervised profile, `domovoid profile recover --confirm-no-supervisor`
+records an explicit assertion that no supervisor will restart it. Stop those supervisors first.
+The command requires a free profile lease; deleting `service.json` is not proof of shutdown.
+See [local owner recovery](docs/local-daemon-ownership.md#service-installation-and-recovery) before using it.
 
 ## Verify
 

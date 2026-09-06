@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import type { FleetMachine, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { FleetEntry, FleetMachine, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { buildWorkspaceCommands, rankWorkspaceCommands } from "./command-palette"
 
@@ -38,6 +38,10 @@ function machine(overrides: Partial<FleetMachine> = {}): FleetMachine {
     self: false,
     ...overrides,
   } as FleetMachine
+}
+
+function entries(...machines: FleetMachine[]): FleetEntry[] {
+  return machines.map((candidate) => ({ kind: "machine", machine: candidate }))
 }
 
 const base = {
@@ -89,29 +93,42 @@ describe("launcher entries", () => {
     const selectMachine = vi.fn()
     const commands = buildWorkspaceCommands({
       ...base,
-      machines: [machine({ id: "machine-self", label: "studio-arch", self: true }), machine()],
+      entries: entries(machine({ id: "machine-self", label: "studio-arch", self: true }), machine()),
       selectMachine,
     })
-    const entries = commands.filter((command) => command.section === "Machines")
-    expect(entries.map((entry) => entry.detail)).toEqual(["this machine", "tailnet"])
-    entries[1]?.run()
-    expect(selectMachine).toHaveBeenCalledWith("machine-hetzner")
+    const listed = commands.filter((command) => command.section === "Machines")
+    expect(listed.map((entry) => entry.detail)).toEqual(["this machine", "tailnet"])
+    listed[0]?.run()
+    expect(selectMachine).toHaveBeenCalledWith("machine-self")
   })
 
-  it("disables a machine the switcher would refuse for the same reason", () => {
+  it("disables every remote machine, since attaching needs a credential nothing issues", () => {
     const commands = buildWorkspaceCommands({
       ...base,
-      machines: [machine({ health: "upgrade-required" }), machine({ id: "machine-b", label: "b", transports: [] })],
+      entries: entries(machine(), machine({ id: "machine-b", label: "b", transports: [] })),
       selectMachine: vi.fn(),
     })
     expect(commands.filter((command) => command.section === "Machines").map((entry) => entry.disabled))
       .toEqual([true, true])
   })
 
+  it("lists nothing for an entry that has no machine to attach to", () => {
+    const commands = buildWorkspaceCommands({
+      ...base,
+      entries: [
+        ...entries(machine({ id: "machine-self", label: "studio-arch", self: true })),
+        { kind: "unenrolled", machineId: "machine-legacy" },
+        { kind: "pending", id: "3d5b7a2e-4c1f-4a6b-9e2d-8f7c6b5a4d3e", machineId: "machine-p", operation: "forget", startedAt: "2026-09-04T12:00:00.000Z" },
+      ],
+      selectMachine: vi.fn(),
+    })
+    expect(commands.filter((command) => command.section === "Machines")).toHaveLength(1)
+  })
+
   it("keeps this machine selectable even when its health is unknown", () => {
     const commands = buildWorkspaceCommands({
       ...base,
-      machines: [machine({ id: "machine-self", label: "studio-arch", self: true, health: "unreachable" })],
+      entries: entries(machine({ id: "machine-self", label: "studio-arch", self: true, health: "unreachable" })),
       selectMachine: vi.fn(),
     })
     expect(commands.find((command) => command.section === "Machines")?.disabled).toBe(false)
@@ -135,7 +152,7 @@ describe("launcher entries", () => {
     const commands = buildWorkspaceCommands({
       ...base,
       sessions: [session()],
-      machines: [machine()],
+      entries: entries(machine()),
       skills: [{ id: "skill-a", name: "alpha", scope: "project" }],
       activateSession: vi.fn(),
       selectMachine: vi.fn(),

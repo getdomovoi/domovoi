@@ -16,6 +16,15 @@ async function fixture(files) {
     await mkdir(join(root, dirname(path)), { recursive: true })
     await writeFile(join(root, path), contents)
   }
+  for (const [path, contents] of Object.entries(files)) {
+    if (!path.endsWith("/package.json")) continue
+    const metadata = JSON.parse(contents)
+    if (metadata.name !== "@getdomovoi/protocol") continue
+    const output = `${dirname(path)}/dist/index.js`
+    if (output in files) continue
+    await mkdir(join(root, dirname(output)), { recursive: true })
+    await writeFile(join(root, output), `export const buildVersion = ${JSON.stringify(metadata.version)}\n`)
+  }
   return root
 }
 
@@ -28,6 +37,47 @@ test("accepts a workspace released as one unit", () => {
     { name: "@getdomovoi/protocol", path: "packages/protocol/package.json", version: "0.0.1" },
     { name: "@getdomovoi/daemon", path: "apps/daemon/package.json", version: "0.0.1" },
   ]), [])
+})
+
+test("refuses a stale runtime build even when every manifest agrees", async (t) => {
+  const root = await fixture({
+    "pnpm-workspace.yaml": "packages: [packages/*]\n",
+    "packages/protocol/package.json": manifest("@getdomovoi/protocol", "9.8.7-test"),
+    "packages/protocol/dist/index.js": 'export const buildVersion = "0.0.1"\n',
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+  assert.deepEqual((await checkVersionLockstep(root)).failures, [
+    "packages/protocol/dist/index.js: buildVersion is 0.0.1, expected 9.8.7-test; rebuild @getdomovoi/protocol",
+  ])
+})
+
+test("accepts the runtime artifact rebuilt for the release", async (t) => {
+  const root = await fixture({
+    "pnpm-workspace.yaml": "packages: [packages/*]\n",
+    "packages/protocol/package.json": manifest("@getdomovoi/protocol", "9.8.7-test"),
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+  assert.deepEqual((await checkVersionLockstep(root)).failures, [])
+})
+
+test("refuses a runtime artifact without a build identity", async (t) => {
+  const root = await fixture({
+    "pnpm-workspace.yaml": "packages: [packages/*]\n",
+    "packages/protocol/package.json": manifest("@getdomovoi/protocol", "9.8.7-test"),
+    "packages/protocol/dist/index.js": "export {}\n",
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+  assert.match((await checkVersionLockstep(root)).failures.join("\n"), /buildVersion is undefined, expected 9\.8\.7-test/)
+})
+
+test("reports a missing build with its rebuild command", async (t) => {
+  const root = await fixture({
+    "pnpm-workspace.yaml": "packages: [packages/*]\n",
+    "packages/protocol/package.json": manifest("@getdomovoi/protocol", "9.8.7-test"),
+  })
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await rm(join(root, "packages/protocol/dist/index.js"))
+  assert.match((await checkVersionLockstep(root)).failures.join("\n"), /runtime build identity unavailable; run pnpm --filter @getdomovoi\/protocol build/)
 })
 
 test("reports every package that drifted from the majority version", () => {

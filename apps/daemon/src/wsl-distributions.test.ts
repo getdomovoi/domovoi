@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { parseWslDistributions, wslDaemonTargets } from "./wsl-distributions.js"
+import { parseWslDistributions } from "./wsl-distributions.js"
 
 function utf16(text: string, { bom = true } = {}): Buffer {
   return Buffer.from(`${bom ? "﻿" : ""}${text}`, "utf16le")
@@ -16,71 +16,68 @@ const listing = [
 
 describe("parseWslDistributions", () => {
   it("reads the utf-16 listing wsl.exe writes", () => {
-    expect(parseWslDistributions(utf16(listing))).toEqual([
+    expect(parseWslDistributions(utf16(listing))).toEqual({ kind: "listed", distributions: [
       { name: "Ubuntu-24.04", state: "Running", version: 2, default: true },
       { name: "debian", state: "Stopped", version: 2, default: false },
       { name: "Legacy", state: "Running", version: 1, default: false },
-    ])
+    ] })
   })
 
   it("reads the same listing without a byte order mark", () => {
-    expect(parseWslDistributions(utf16(listing, { bom: false }))).toHaveLength(3)
+    expect(parseWslDistributions(utf16(listing, { bom: false }))).toEqual(parseWslDistributions(utf16(listing)))
+  })
+
+  it("reads string output and ignores only blank rows", () => {
+    expect(parseWslDistributions(`${listing}\r\n \t\r\n`)).toEqual(parseWslDistributions(utf16(listing)))
   })
 
   it("keeps a distribution name that contains spaces", () => {
     const named = ["  NAME  STATE  VERSION", "  Ubuntu 24.04 LTS    Running   2"].join("\r\n")
-    expect(parseWslDistributions(utf16(named))).toEqual([
+    expect(parseWslDistributions(utf16(named))).toEqual({ kind: "listed", distributions: [
       { name: "Ubuntu 24.04 LTS", state: "Running", version: 2, default: false },
-    ])
+    ] })
   })
 
   it("keeps a distribution name exactly as it was registered", () => {
     const doubled = ["  NAME  STATE  VERSION", "* Ubuntu  24.04    Running   2"].join("\r\n")
-    expect(parseWslDistributions(utf16(doubled))).toEqual([
+    expect(parseWslDistributions(utf16(doubled))).toEqual({ kind: "listed", distributions: [
       { name: "Ubuntu  24.04", state: "Running", version: 2, default: true },
-    ])
+    ] })
   })
 
   it("reports nothing when wsl.exe lists no distribution", () => {
-    expect(parseWslDistributions(utf16(""))).toEqual([])
+    expect(parseWslDistributions(utf16("  NAME  STATE  VERSION\r\n"))).toEqual({ kind: "listed", distributions: [] })
   })
 
-  it("ignores a line it cannot read rather than inventing a distribution", () => {
+  it.each(["", "not a header", "prefix NAME STATE VERSION", "NAME STATE VERSION suffix"])(
+    "reports an unreadable header as corrupt: %j", (header) => {
+      expect(parseWslDistributions(utf16(`${header}\r\n  Ubuntu Running 2\r\n`)))
+        .toEqual({ kind: "corrupt", reason: "header", line: 1 })
+    },
+  )
+
+  it.each([
+    "Ubuntu Running broken", "Ubuntu Running", "Ubuntu Unknown 2", "Running 2",
+    "Ubuntu Running 0", "Ubuntu Running 99999999999999999999",
+  ])(
+    "reports an unreadable row as corrupt: %j", (row) => {
+      expect(parseWslDistributions(utf16(`  NAME  STATE  VERSION\r\n  ${row}\r\n`)))
+        .toEqual({ kind: "corrupt", reason: "row", line: 2 })
+    },
+  )
+
+  it("rejects a torn UTF-16 character instead of dropping its last byte", () => {
+    const torn = Buffer.concat([utf16("  NAME  STATE  VERSION\r\n"), Buffer.from([0x55])])
+    expect(parseWslDistributions(torn)).toEqual({ kind: "corrupt", reason: "encoding", line: 2 })
+  })
+
+  it("reports a broken listing without returning partial rows or their contents", () => {
     const broken = [
       "  NAME  STATE  VERSION",
       "  Ubuntu-24.04    Running   2",
       "Windows Subsystem for Linux has no installed distributions.",
       "  Trailing",
     ].join("\r\n")
-    expect(parseWslDistributions(utf16(broken))).toEqual([
-      { name: "Ubuntu-24.04", state: "Running", version: 2, default: false },
-    ])
-  })
-})
-
-describe("wslDaemonTargets", () => {
-  const distributions = parseWslDistributions(utf16(listing))
-
-  it("offers the running WSL2 distributions a daemon can be reached in", () => {
-    expect(wslDaemonTargets(distributions)).toEqual([
-      { name: "Ubuntu-24.04", default: true },
-    ])
-  })
-
-  it("leaves a stopped distribution alone rather than starting it", () => {
-    expect(wslDaemonTargets(distributions).map((target) => target.name)).not.toContain("debian")
-  })
-
-  it("refuses a WSL1 distribution, where the daemon has no separate network stack", () => {
-    expect(wslDaemonTargets(distributions).map((target) => target.name)).not.toContain("Legacy")
-  })
-
-  it("puts the default distribution first", () => {
-    const listed = parseWslDistributions(utf16([
-      "  NAME  STATE  VERSION",
-      "  alpha    Running   2",
-      "* beta     Running   2",
-    ].join("\r\n")))
-    expect(wslDaemonTargets(listed).map((target) => target.name)).toEqual(["beta", "alpha"])
+    expect(parseWslDistributions(utf16(broken))).toEqual({ kind: "corrupt", reason: "row", line: 3 })
   })
 })

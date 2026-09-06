@@ -32,6 +32,37 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # The native systemd test gates on the user manager's private socket, so
+      # without one the Linux leg would skip it and prove nothing. Lingering
+      # starts systemd --user for this account; the socket check below fails the
+      # job rather than letting the test disappear from the run.
+      - name: Start a systemd user manager
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$(id -un)"
+          runtime="/run/user/$(id -u)"
+          for _ in $(seq 1 30); do
+            if [ -S "$runtime/systemd/private" ]; then break; fi
+            sleep 1
+          done
+          test -S "$runtime/systemd/private"
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+          XDG_RUNTIME_DIR="$runtime" systemctl --user show --property=Version
+      # Same rule on the macOS leg: the native launchd test gates on the per-user
+      # gui domain the installer targets, so without one it would skip and prove
+      # nothing. Hosted macOS images auto-login the runner user, which is what
+      # creates that domain; this check fails the job rather than letting the
+      # test disappear from the run. Never run it under sudo, which would ask
+      # for gui/0 instead of the runner's own domain.
+      - name: Require a per-user launchd domain
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+          test "$uid" -ne 0
+          launchctl print "gui/$uid" > "$RUNNER_TEMP/launchd-domain.txt"
+          echo "gui/$uid answers with $(wc -l < "$RUNNER_TEMP/launchd-domain.txt") lines"
       - run: pnpm test
       - run: pnpm build
       - run: pnpm performance:budget
@@ -40,6 +71,10 @@ jobs:
       - run: pnpm test:install
       - run: pnpm release:artifacts
         if: matrix.os == 'ubuntu-latest'
+      - name: Verify packed daemon on musl
+        run: pnpm test:musl
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 10
   audit:
     runs-on: ubuntu-latest
     steps:

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import type { FleetMachine } from "@getdomovoi/protocol"
 
-import { machineSelection } from "./machine-selection.js"
+import { machineAttachment, machineSelection, remoteControlRefusal } from "./machine-selection.js"
 
 const machine: FleetMachine = {
   id: `machine-${"b".repeat(32)}`,
@@ -57,5 +57,33 @@ describe("machineSelection", () => {
   it("refuses a machine with no transport this client may dial", () => {
     expect(machineSelection({ ...machine, transports: [] }))
       .toEqual({ selectable: false, reason: "That machine advertises no usable transport" })
+  })
+
+  it("says the target refused this machine's credential and pairing again is the fix", () => {
+    expect(machineSelection({ ...machine, health: "pairing-required" }))
+      .toEqual({ selectable: false, reason: "That machine refused this machine's credential, so pair it again" })
+  })
+
+  it("says a keychain that cannot be read is not a pairing problem", () => {
+    expect(machineSelection({ ...machine, health: "credential-store-unavailable" }))
+      .toEqual({ selectable: false, reason: "The keychain here could not be read, which pairing again would not fix" })
+  })
+})
+
+describe("machineAttachment", () => {
+  it("refuses every remote machine because no client credential exists for it", () => {
+    expect(machineAttachment(machine)).toEqual({ selectable: false, reason: remoteControlRefusal })
+    expect(remoteControlRefusal).toContain("its own device credential")
+    expect(remoteControlRefusal).toContain("not part of this release")
+  })
+
+  it("refuses a remote machine for the credential before its health", () => {
+    expect(machineAttachment({ ...machine, health: "unreachable" }))
+      .toEqual({ selectable: false, reason: remoteControlRefusal })
+  })
+
+  it("always offers this machine, since returning home dials nothing", () => {
+    expect(machineAttachment({ ...machine, self: true })).toEqual({ selectable: true })
+    expect(machineAttachment({ ...machine, self: true, health: "unreachable" })).toEqual({ selectable: true })
   })
 })

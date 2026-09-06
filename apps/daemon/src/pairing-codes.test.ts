@@ -29,17 +29,26 @@ describe("PairingCodeService", () => {
     expect(issued.expiresAt).toBe(new Date(start + pairingCodeTtlMs).toISOString())
   })
 
-  it("pairs a device when the code matches", () => {
+  it("spends the code without activating a credential before durable source confirmation", () => {
     const { pairing, devices, start } = service()
     const issued = pairing.issue(start)
 
     const paired = pairing.claim(issued.code, claimant, start + 1_000)
 
     expect(paired.token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(devices.verify(paired.token)).toEqual({
-      device: expect.objectContaining({ label: "studio-ipad" }),
-      binding: { kind: "machine", machineId },
-    })
+    expect(devices.verify(paired.token)).toBeUndefined()
+    expect(devices.isActive(paired.token)).toBe(false)
+    expect(devices.list()).toEqual([])
+  })
+
+  it("does not revoke working machine authority for an abandoned re-pair claim", () => {
+    const { pairing, devices, start } = service()
+    const existing = devices.pair({ label: "working source", binding: { kind: "machine", machineId } })
+    const issued = pairing.issue(start)
+    pairing.claim(issued.code, claimant, start + 1_000)
+
+    expect(devices.isActive(existing.token)).toBe(true)
+    expect(devices.list()).toEqual([existing.device])
   })
 
   it("spends a code on the first successful pairing", () => {

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest"
+import { protocolVersion } from "./schema.js"
 
 import {
   deviceClaimParamsSchema,
+  deviceLabelMismatchSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
+  deviceRenameParamsSchema,
+  deviceRenameResultSchema,
   deviceRevokeParamsSchema,
   deviceRotateParamsSchema,
   devicesResultSchema,
+  maximumPairedDeviceLabelLength,
   pairedDeviceSchema,
 } from "./devices.js"
 
@@ -138,10 +143,19 @@ describe("deviceClaimParamsSchema", () => {
       code: "hearth-quiet-ember-42",
       label: "studio-mac",
       machineId: `machine-${"a".repeat(32)}`,
+      protocolVersion,
     }
     expect(deviceClaimParamsSchema.parse(claim)).toEqual(claim)
     const { machineId: _machineId, ...unbound } = claim
     expect(deviceClaimParamsSchema.safeParse(unbound).success).toBe(false)
+  })
+
+  it("requires a protocol version before a claim can spend a pairing code", () => {
+    expect(deviceClaimParamsSchema.safeParse({
+      code: "hearth-quiet-ember-42",
+      label: "studio-mac",
+      machineId: `machine-${"a".repeat(32)}`,
+    }).success).toBe(false)
   })
 })
 
@@ -152,6 +166,61 @@ describe("deviceRevokeParamsSchema and deviceRotateParamsSchema", () => {
     expect(deviceRotateParamsSchema.parse(params)).toEqual(params)
     expect(deviceRevokeParamsSchema.safeParse({ deviceId: "ipad", client: "web" }).success)
       .toBe(false)
+  })
+})
+
+describe("deviceRenameParamsSchema", () => {
+  it("carries only the device identity and its new label", () => {
+    expect(deviceRenameParamsSchema.parse({ deviceId: device.id, label: "  kitchen-ipad  " }))
+      .toEqual({ deviceId: device.id, label: "kitchen-ipad" })
+    expect(deviceRenameParamsSchema.safeParse({
+      deviceId: device.id,
+      label: "kitchen-ipad",
+      client: "web",
+    }).success).toBe(false)
+    expect(deviceRenameParamsSchema.safeParse({
+      deviceId: device.id,
+      label: "kitchen-ipad",
+      binding: { kind: "client", client: "phone" },
+    }).success).toBe(false)
+    expect(deviceRenameParamsSchema.safeParse({ deviceId: "ipad", label: "kitchen-ipad" }).success)
+      .toBe(false)
+  })
+
+  it("bounds the label and refuses control characters", () => {
+    expect(deviceRenameParamsSchema.parse({
+      deviceId: device.id,
+      label: "n".repeat(maximumPairedDeviceLabelLength),
+    }).label).toBe("n".repeat(maximumPairedDeviceLabelLength))
+    for (const label of ["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1), "kitchen\u0000ipad", "line\nbreak"]) {
+      expect(deviceRenameParamsSchema.safeParse({ deviceId: device.id, label }).success).toBe(false)
+    }
+  })
+
+  it("carries an optional expected label as a precondition", () => {
+    expect(deviceRenameParamsSchema.parse({ deviceId: device.id, label: "studio-ipad", expectedLabel: " kitchen-ipad " }))
+      .toEqual({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
+    for (const expectedLabel of ["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1)]) {
+      expect(deviceRenameParamsSchema.safeParse({ deviceId: device.id, label: "studio-ipad", expectedLabel }).success)
+        .toBe(false)
+    }
+  })
+})
+
+describe("deviceLabelMismatchSchema", () => {
+  it("carries the current device and nothing else", () => {
+    const mismatch = { kind: "device-label-mismatch", device }
+    expect(deviceLabelMismatchSchema.parse(mismatch)).toEqual(mismatch)
+    expect(deviceLabelMismatchSchema.safeParse({ ...mismatch, token: "secret" }).success).toBe(false)
+    expect(deviceLabelMismatchSchema.safeParse({ ...mismatch, expectedLabel: "kitchen-ipad" }).success).toBe(false)
+    expect(deviceLabelMismatchSchema.safeParse({ device }).success).toBe(false)
+  })
+})
+
+describe("deviceRenameResultSchema", () => {
+  it("returns the renamed device without any credential", () => {
+    expect(deviceRenameResultSchema.parse({ device })).toEqual({ device })
+    expect(deviceRenameResultSchema.safeParse({ device, token: "secret" }).success).toBe(false)
   })
 })
 

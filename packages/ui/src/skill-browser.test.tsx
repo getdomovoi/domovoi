@@ -60,6 +60,8 @@ describe("skill browser", () => {
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -99,6 +101,8 @@ describe("skill browser", () => {
         }]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
@@ -132,11 +136,14 @@ describe("skill browser", () => {
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )
 
-    expect(markup).toContain("Signature present, not verified")
+    expect(markup).toContain("Signed by untrusted key publisher-key")
+    expect(markup).not.toContain("Signature present, not verified")
     expect(markup).toContain("Excluded from Build auto")
     expect(markup).not.toContain("Verified publisher")
   })
@@ -167,6 +174,8 @@ describe("skill browser", () => {
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
+        onPreviewSkillInstall={vi.fn()}
+        onInstallSkill={vi.fn()}
         onRetry={vi.fn()}
       />,
     )

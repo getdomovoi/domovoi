@@ -6,6 +6,11 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
+vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
+  buildVersion: "9.8.7-test",
+}))
+
 import {
   CodexAppServerAdapter,
   StdioCodexTransport,
@@ -227,9 +232,40 @@ describe("StdioCodexTransport", () => {
       const closing = transport.close()
       expect(child.signals).toEqual(["SIGTERM"])
       await vi.advanceTimersByTimeAsync(25)
+      expect(child.signals).toEqual(["SIGTERM", "SIGKILL"])
+      // A child that outlives its kill still bounds the close.
+      await vi.advanceTimersByTimeAsync(25)
 
       await expect(closing).resolves.toBeUndefined()
       expect(child.signals).toEqual(["SIGTERM", "SIGKILL"])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("reports the close only once the killed child has exited", async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new FakeChild()
+      child.ignoreSignals = true
+      const transport = new StdioCodexTransport(
+        () => child as unknown as ChildProcessWithoutNullStreams,
+        25,
+      )
+      const settled = vi.fn()
+
+      const closing = transport.close().then(settled)
+      await vi.advanceTimersByTimeAsync(25)
+
+      expect(child.signals).toEqual(["SIGTERM", "SIGKILL"])
+      expect(settled).not.toHaveBeenCalled()
+
+      child.signalCode = "SIGKILL"
+      child.emit("exit", null, "SIGKILL")
+      child.emit("close", null, "SIGKILL")
+      await closing
+
+      expect(settled).toHaveBeenCalledOnce()
     } finally {
       vi.useRealTimers()
     }
@@ -658,7 +694,7 @@ describe("CodexAppServerAdapter", () => {
     expect(transport.sent[0]).toMatchObject({
       id: 1,
       method: "initialize",
-      params: { clientInfo: { name: "domovoi", title: "Domovoi", version: "0.0.1" } },
+      params: { clientInfo: { name: "domovoi", title: "Domovoi", version: "9.8.7-test" } },
     })
     transport.receive({ id: 1, result: {} })
     await connecting

@@ -1,0 +1,469 @@
+import {
+  fleetEnrollParamsSchema, fleetEnrollResultSchema, fleetEntryMachineId,
+  fleetForgetParamsSchema, fleetForgetResultSchema, fleetMachineDescriptorSchema,
+  maximumFleetMachines, maximumFleetEntries, protocolCompatibility, protocolVersion,
+  type FleetEnrollParams, type FleetEnrollRefusal, type FleetEnrollResult,
+  type FleetForgetParams, type FleetForgetResult,
+  type FleetMachineFacts, type FleetRemoteRevocation, type FleetSnapshot,
+} from "@getdomovoi/protocol"
+
+import { createMachineDialer, type MachineConnection, type MachineRouteConnection } from "./machine-dial.js"
+import { machineCredentialDigest, MachineCredentialUnavailableError } from "./machine-credentials.js"
+import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
+import { fleetOperationSummary, type FleetEnrollmentOperation, type FleetForgetOperation } from "./fleet-operations.js"
+import {
+  FleetLimitReachedError, FleetOperationInProgressError, FleetSnapshotOverflowError,
+  type EnrolledFleetMachine, type FleetConnectionFailure, type FleetRegistry,
+} from "./fleet-registry.js"
+import {
+  claimMachineSocket, confirmMachineSocket, defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs,
+  MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError,
+  MachineProtocolMismatchError, MachineSelfEnrollmentError, openMachineSocket, readMachineDescriptor,
+} from "./machine-socket.js"
+import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { isLoopbackHost, type ConfiguredSshTunnel } from "./transport-config.js"
+
+export const defaultFleetOperationTimeoutMs = 30_000
+export const defaultFleetHeartbeatIntervalMs = 15_000
+
+type Options = {
+  selfId: string
+  registry: FleetRegistry | undefined
+  credentials: AsyncMachineCredentials | undefined
+  sshTunnels?: readonly ConfiguredSshTunnel[]
+  operationTimeoutMs: number
+  heartbeatIntervalMs: number
+  changed: (snapshot: FleetSnapshot) => void
+  recordLocal?: () => void
+  reportFailure?: (context: string) => void
+  // Test dependencies remain below the production factory, not on the wire.
+  claim?: typeof claimMachineSocket
+  confirm?: typeof confirmMachineSocket
+  open?: typeof openMachineSocket
+  now?: () => number
+}
+
+export class FleetEnrollmentService {
+  readonly #input: Options
+  readonly #now: () => number
+  readonly #lifetime = new AbortController()
+  readonly #tasks = new Set<Promise<unknown>>()
+  readonly #heartbeats = new Map<string, AbortController>()
+  #knownCredentialIds: string[] = []
+  #indexRead = 0
+  #timer: ReturnType<typeof setTimeout> | undefined
+  #started = false
+  #stopped = false
+  // Only fleet lifecycle calls serialize. They never hold the session/global
+  // mutation queue. Before claim the target identity is unknown, so endpoint
+  // locks would let two aliases race to replace the same remote credential.
+  #lifecycleBusy = false
+
+  constructor(input: Options) {
+    validateOperationDeadlineBudget(input.operationTimeoutMs)
+    validateOperationDeadlineBudget(input.heartbeatIntervalMs)
+    this.#input = input
+    this.#now = input.now ?? Date.now
+  }
+
+  snapshot(): FleetSnapshot {
+    const registry = this.#input.registry
+    if (!registry) return { entries: [] }
+    this.#input.recordLocal?.()
+    return registry.snapshot(this.#input.selfId, this.#now(), this.#knownCredentialIds)
+  }
+
+  // Render committed state without a new external wait. In particular, a
+  // keychain read for a response must not undo a successful enrollment.
+  // Only identity metadata is cached; dialing always reads the credential.
+  list(): Promise<FleetSnapshot> { return this.#track(this.#list()) }
+
+  async #readIndex(deadline: OperationDeadline): Promise<void> {
+    const read = ++this.#indexRead
+    const ids = await this.#input.credentials?.machines(deadline) ?? []
+    deadline.throwIfExpired()
+    if (!this.#stopped && read === this.#indexRead) this.#knownCredentialIds = ids
+  }
+
+  async #list(): Promise<FleetSnapshot> {
+    const deadline = this.#deadline()
+    const read = this.#indexRead + 1
+    try { await this.#readIndex(deadline) }
+    catch {
+      if (this.#stopped) throw new MachineCredentialUnavailableError()
+      // Failure is also a late result. An older attempt must not downgrade
+      // facts accepted after a newer index read or lifecycle mutation.
+      if (read !== this.#indexRead) return this.snapshot()
+      const registry = this.#input.registry
+      if (!registry) return { entries: [] }
+      for (const entry of registry.enrolled()) {
+        registry.recordFailure(entry.facts.id, entry.credentialDigest, "credential-store-unavailable")
+      }
+    } finally { deadline.clear() }
+    if (this.#stopped) throw new MachineCredentialUnavailableError()
+    return this.snapshot()
+  }
+
+  start(): void {
+    if (this.#started || this.#stopped) return
+    this.#started = true
+    const tick = async () => {
+      try { await this.reconcile(); await this.refresh(); this.#changed() }
+      catch { this.#input.reportFailure?.("Fleet reconciliation could not read or persist lifecycle state") }
+    }
+    // Intentional long-lived scheduler; attempts themselves remain bounded.
+    // A silent peer cannot delay the next healthy peer's heartbeat. In-flight
+    // machine IDs deduplicate across ticks instead of serializing the fleet.
+    this.#timer = setInterval(() => { void this.#track(tick()).catch(() => {}) }, this.#input.heartbeatIntervalMs)
+    this.#timer.unref?.()
+    void this.#track(tick()).catch(() => {})
+  }
+
+  async stop(): Promise<void> {
+    this.#stopped = true
+    clearInterval(this.#timer)
+    this.#lifetime.abort()
+    for (const id of [...this.#heartbeats.keys()]) this.#cancelHeartbeat(id)
+    await Promise.allSettled([...this.#tasks])
+  }
+
+  enroll(params: FleetEnrollParams): Promise<FleetEnrollResult> { return this.#track(this.#enroll(params)) }
+  forget(params: FleetForgetParams): Promise<FleetForgetResult> { return this.#track(this.#forget(params)) }
+  reconcile(): Promise<void> { return this.#track(this.#reconcile()) }
+  refresh(): Promise<void> { return this.#track(this.#refresh()) }
+
+  #track<T>(task: Promise<T>): Promise<T> {
+    this.#tasks.add(task)
+    void task.then(() => this.#tasks.delete(task), () => this.#tasks.delete(task))
+    return task
+  }
+
+  #deadline(): OperationDeadline {
+    return OperationDeadline.start(this.#input.operationTimeoutMs, { signal: this.#lifetime.signal })
+  }
+
+  #changed(): void {
+    if (this.#stopped) return
+    // A vanished/slow client cannot roll back an already durable lifecycle
+    // change. Reconnect relists, and outbound policy closes rather than drops.
+    try { this.#input.changed(this.snapshot()) } catch { /* The next relist retries the read. */ }
+  }
+
+  async #enroll(raw: FleetEnrollParams): Promise<FleetEnrollResult> {
+    const params = fleetEnrollParamsSchema.parse(raw)
+    const { registry, credentials, selfId } = this.#input
+    if (!registry) return { outcome: "refused", reason: "fleet-unavailable" }
+    if (!credentials) return { outcome: "refused", reason: "credential-store-unavailable" }
+    if (params.expectedMachineId === selfId) return { outcome: "refused", reason: "self-enrollment" }
+    if (this.#lifecycleBusy) return { outcome: "refused", reason: "operation-in-progress" }
+    this.#lifecycleBusy = true
+    const deadline = this.#deadline()
+    let claimed: Awaited<ReturnType<typeof claimMachineSocket>> | undefined
+    let operation: FleetEnrollmentOperation | undefined
+    try {
+      deadline.throwIfExpired()
+      // Discover a locked keychain before spending a one-time pairing code.
+      await this.#readIndex(deadline)
+      const snapshot = this.snapshot()
+      const entries = snapshot.entries
+      const quarantined = snapshot.registry?.quarantined ?? []
+      if (params.expectedMachineId && registry.pendingOperations().some((entry) => entry.machineId === params.expectedMachineId)) {
+        throw new FleetOperationInProgressError()
+      }
+      const admitted = entries.filter((entry) => entry.kind === "machine" || (entry.kind === "pending" && entry.operation === "enroll"))
+      if ((admitted.length >= maximumFleetMachines && !admitted.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId))
+        || (entries.length + quarantined.length >= maximumFleetEntries
+          && !entries.some((entry) => fleetEntryMachineId(entry) === params.expectedMachineId)
+          && !quarantined.some((entry) => entry.machineId !== undefined && entry.machineId === params.expectedMachineId))) {
+        throw new FleetLimitReachedError()
+      }
+      claimed = await (this.#input.claim ?? claimMachineSocket)({
+        endpoint: params.endpoint, code: params.code, sourceDeviceLabel: params.sourceDeviceLabel,
+        sourceMachineId: selfId, ...(params.expectedMachineId ? { expectedMachineId: params.expectedMachineId } : {}),
+        deadline, callTimeoutMs: defaultMachineCallTimeoutMs, signal: this.#lifetime.signal,
+      })
+      const receivedAt = this.#now()
+      deadline.throwIfExpired()
+      const parsed = fleetMachineDescriptorSchema.safeParse(claimed.descriptor)
+      if (!parsed.success) throw new MachineDescriptorError()
+      const descriptor = parsed.data
+      if (descriptor.id === selfId) throw new MachineSelfEnrollmentError()
+      if (params.expectedMachineId && params.expectedMachineId !== descriptor.id) throw new MachineIdentityMismatchError()
+      if (protocolCompatibility(protocolVersion, descriptor.protocolVersion) !== "compatible") throw new MachineProtocolMismatchError()
+      if (JSON.stringify({ descriptor, endpoint: claimed.endpoint }).includes(claimed.credential)) throw new MachineDescriptorError()
+      this.#cancelHeartbeat(descriptor.id)
+      operation = registry.stageEnrollment({
+        ...descriptor, connection: "direct",
+        verifiedRoute: { endpoint: claimed.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() },
+      }, machineCredentialDigest(descriptor.id, claimed.credential), receivedAt, claimed.claim)
+      this.#changed()
+      ++this.#indexRead
+      try { await credentials.save(descriptor.id, claimed.credential, deadline) } catch { /* Read back; a write can fail after changing the key. */ }
+      const settled = await this.#settleEnrollment(operation, deadline)
+      this.#changed()
+      if (settled === "enrolled") return fleetEnrollResultSchema.parse({ outcome: "enrolled", machineId: descriptor.id, fleet: this.snapshot() })
+      if (settled === "aborted" || settled === "unkept") {
+        return { outcome: "refused", reason: settled === "unkept" ? "credential-store-unavailable" : "pairing-refused" }
+      }
+      return this.#pendingEnrollment(operation)
+    } catch (error) {
+      if (operation && registry.pendingOperations().some((entry) => entry.id === operation!.id)) return this.#pendingEnrollment(operation)
+      return { outcome: "refused", reason: enrollRefusal(error) }
+    } finally {
+      deadline.clear()
+      this.#lifecycleBusy = false
+    }
+  }
+
+  #pendingEnrollment(operation: FleetEnrollmentOperation): FleetEnrollResult {
+    return fleetEnrollResultSchema.parse({ outcome: "pending", operation: fleetOperationSummary(operation), fleet: this.snapshot() })
+  }
+
+  async #settleEnrollment(operation: FleetEnrollmentOperation, deadline: OperationDeadline): Promise<"enrolled" | "pending" | "aborted" | "unkept"> {
+    const { registry, credentials } = this.#input
+    let connection: MachineConnection | undefined
+    try {
+      deadline.throwIfExpired()
+      ++this.#indexRead
+      const matched = await credentials!.repairIndex(operation.machineId, operation.credentialDigest, deadline)
+      deadline.throwIfExpired()
+      if (!matched) {
+        registry!.abortEnrollment(operation.id)
+        return "unkept"
+      }
+      this.#knownCredentialIds = [...new Set([...this.#knownCredentialIds, operation.machineId])]
+      const credential = await credentials!.forMachine(operation.machineId, deadline)
+      deadline.throwIfExpired()
+      if (!credential || machineCredentialDigest(operation.machineId, credential) !== operation.credentialDigest) return "pending"
+      const input = { endpoint: operation.facts.verifiedRoute.endpoint, expectedMachineId: operation.machineId,
+        credential, deadline, callTimeoutMs: defaultMachineCallTimeoutMs, signal: this.#lifetime.signal }
+      connection = operation.claim
+        ? await (this.#input.confirm ?? confirmMachineSocket)({ ...input, sourceMachineId: this.#input.selfId, claim: operation.claim })
+        : await (this.#input.open ?? openMachineSocket)(input)
+      await readMachineDescriptor(connection, operation.machineId, credential, deadline)
+      // Neither an accepted confirmation nor its lost reply is permission to
+      // publish against keychain bytes that changed during the network wait.
+      const held = await credentials!.forMachine(operation.machineId, deadline)
+      deadline.throwIfExpired()
+      if (held !== credential) {
+        await this.#revokeUnkeptClaim(connection, deadline)
+        return "pending"
+      }
+      return registry!.completeEnrollment(operation.id, operation.credentialDigest) ? "enrolled" : "pending"
+    } catch (error) {
+      if (error instanceof MachinePairingRequiredError) {
+        // Invalid/expired confirmation is authoritative. Transport, storage,
+        // timeout and protocol failures are not: keep the journal for retry.
+        try {
+          const removed = await credentials!.forgetIfMatching(operation.machineId, operation.credentialDigest, deadline)
+          deadline.throwIfExpired()
+          if (removed) {
+            this.#knownCredentialIds = this.#knownCredentialIds.filter((id) => id !== operation.machineId)
+            registry!.abortEnrollment(operation.id)
+            return "aborted"
+          }
+        } catch { /* Keep the journal when local cleanup could not finish. */ }
+      }
+      return "pending"
+    } finally { connection?.close() }
+  }
+
+  async #revokeUnkeptClaim(connection: MachineConnection, parent: OperationDeadline): Promise<void> {
+    if (parent.remainingMs() === 0) return
+    const deadline = parent.limit(1_000)
+    try { await connection.call("device.revokeCurrent", {}, undefined, deadline) } catch { /* No false claim of remote revocation. */ }
+    finally { deadline.clear() }
+  }
+
+  async #forget(raw: FleetForgetParams): Promise<FleetForgetResult> {
+    const params = fleetForgetParamsSchema.parse(raw)
+    const { registry, credentials, selfId } = this.#input
+    if (params.machineId === selfId) return { outcome: "refused", reason: "self-forget" }
+    if (!registry) return { outcome: "refused", reason: "fleet-unavailable" }
+    if (!credentials) return { outcome: "refused", reason: "credential-store-unavailable" }
+    if (this.#lifecycleBusy || registry.pendingOperations().some((entry) => entry.machineId === params.machineId)) {
+      return { outcome: "refused", reason: "operation-in-progress" }
+    }
+    this.#lifecycleBusy = true
+    const deadline = this.#deadline()
+    let operation: FleetForgetOperation | undefined
+    try {
+      deadline.throwIfExpired()
+      await this.#readIndex(deadline)
+      const snapshot = this.snapshot()
+      if (!snapshot.entries.some((entry) => fleetEntryMachineId(entry) === params.machineId)
+        && !snapshot.registry?.quarantined.some((entry) => entry.machineId === params.machineId)) {
+        return { outcome: "refused", reason: "not-enrolled" }
+      }
+      const credential = await credentials.forMachine(params.machineId, deadline)
+      deadline.throwIfExpired()
+      const digest = credential === undefined ? null : machineCredentialDigest(params.machineId, credential)
+      this.#cancelHeartbeat(params.machineId)
+      operation = registry.stageForget(params.machineId, digest, this.#now())
+      this.#changed()
+      const revocation = await this.#settleForget(operation, deadline)
+      this.#changed()
+      if (revocation !== undefined) return fleetForgetResultSchema.parse({
+        outcome: "forgotten", machineId: params.machineId, remoteRevocation: revocation, fleet: this.snapshot(),
+      })
+      return this.#pendingForget(operation)
+    } catch {
+      return operation ? this.#pendingForget(operation) : { outcome: "refused", reason: "credential-store-unavailable" }
+    } finally { deadline.clear(); this.#lifecycleBusy = false }
+  }
+
+  #pendingForget(operation: FleetForgetOperation): FleetForgetResult {
+    const current = this.#input.registry!.pendingOperations().find((entry) => entry.id === operation.id)
+    const remoteRevocation = current?.kind === "forget" ? current.remoteRevocation : operation.remoteRevocation
+    return fleetForgetResultSchema.parse({ outcome: "pending", operation: fleetOperationSummary(operation), remoteRevocation, fleet: this.snapshot() })
+  }
+
+  async #settleForget(operation: FleetForgetOperation, deadline: OperationDeadline): Promise<FleetRemoteRevocation | undefined> {
+    const { registry, credentials } = this.#input
+    try {
+      deadline.throwIfExpired()
+      const held = await credentials!.forMachine(operation.machineId, deadline)
+      deadline.throwIfExpired()
+      if (held !== undefined && machineCredentialDigest(operation.machineId, held) !== operation.credentialDigest) return undefined
+      let revocation = operation.remoteRevocation
+      const enrollment = registry!.pendingForgetEnrollment(operation.id)
+      if (held && enrollment && revocation !== "confirmed") {
+        // Leave budget for local deletion even when the remote will not answer.
+        const remoteDeadline = deadline.limit(this.#input.operationTimeoutMs / 2)
+        let connection: MachineRouteConnection | undefined
+        try {
+          connection = await this.#dial([enrollment.facts], operation.machineId, remoteDeadline)
+          const result = await connection.call("device.revokeCurrent", {}, undefined, remoteDeadline)
+          remoteDeadline.throwIfExpired()
+          if (result && typeof result === "object" && "revoked" in result && result.revoked === true) {
+            revocation = "confirmed"
+            registry!.confirmRemoteRevocation(operation.id)
+          }
+        } catch { /* Unreachable/refused is not proof the remote revoked it. */ }
+        finally { connection?.close(); remoteDeadline.clear() }
+      }
+      deadline.throwIfExpired()
+      // Re-read after the remote await. A replacement key is not the key this
+      // operation was authorised to delete, so keep the pending row visible.
+      ++this.#indexRead
+      const removed = await credentials!.forgetIfMatching(operation.machineId, operation.credentialDigest, deadline)
+      deadline.throwIfExpired()
+      if (!removed) return undefined
+      this.#knownCredentialIds = this.#knownCredentialIds.filter((id) => id !== operation.machineId)
+      return registry!.completeForget(operation.id) ? revocation : undefined
+    } catch { return undefined }
+  }
+
+  async #reconcile(): Promise<void> {
+    if (this.#stopped || this.#lifecycleBusy || !this.#input.registry || !this.#input.credentials) return
+    this.#lifecycleBusy = true
+    try {
+      await Promise.all(this.#input.registry.pendingOperations().map(async (operation) => {
+        const deadline = this.#deadline()
+        try {
+          if (operation.kind === "enroll") await this.#settleEnrollment(operation, deadline)
+          else await this.#settleForget(operation, deadline)
+        } finally { deadline.clear() }
+      }))
+      this.#changed()
+    } finally { this.#lifecycleBusy = false }
+  }
+
+  async #refresh(): Promise<void> {
+    if (this.#stopped || !this.#input.registry) return
+    await this.list()
+    if (this.#stopped) return
+    // One bounded attempt per enrolled ID. The registry's 128-entry limit
+    // bounds live probes, and a pending lifecycle operation is excluded here.
+    await Promise.all(this.#input.registry.enrolled().map((entry) => this.#heartbeat(entry)))
+  }
+
+  async #heartbeat(entry: EnrolledFleetMachine): Promise<void> {
+    const id = entry.facts.id
+    if (id === this.#input.selfId || this.#heartbeats.has(id)) return
+    const controller = new AbortController()
+    this.#heartbeats.set(id, controller)
+    const deadline = OperationDeadline.start(this.#input.operationTimeoutMs, {
+      signal: AbortSignal.any([this.#lifetime.signal, controller.signal]),
+    })
+    let connection: MachineRouteConnection | undefined
+    try {
+      const credential = await this.#input.credentials?.forMachine(id, deadline)
+      deadline.throwIfExpired()
+      if (!this.#input.credentials) throw new MachineCredentialUnavailableError()
+      if (!credential || machineCredentialDigest(id, credential) !== entry.credentialDigest) throw new MachinePairingRequiredError()
+      connection = await this.#dial([entry.facts], id, deadline, controller.signal)
+      const descriptor = await readMachineDescriptor(connection, id, credential, deadline)
+      const receivedAt = this.#now()
+      if (this.#heartbeats.get(id) !== controller || this.#stopped) return
+      const held = await this.#input.credentials.forMachine(id, deadline)
+      if (this.#heartbeats.get(id) !== controller || this.#stopped) return
+      if (!held || machineCredentialDigest(id, held) !== entry.credentialDigest) throw new MachinePairingRequiredError()
+      deadline.throwIfExpired()
+      this.#input.registry!.refreshAuthenticated({
+        ...descriptor,
+        // SSH belongs to this source's configuration. Remembering it here
+        // would keep dialing it after the operator removed that configuration.
+        // Refresh peer facts/contact without claiming the old direct route
+        // authenticated now, and never put a local forward in advertisements.
+        // A row that never stored a direct route stays an SSH observation.
+        ...(connection.routeSource === "wsl"
+          ? { connection: "wsl", ...(entry.facts.verifiedRoute
+            && !isLoopbackHost(new URL(entry.facts.verifiedRoute.endpoint).hostname)
+            ? { verifiedRoute: entry.facts.verifiedRoute } : {}) }
+          : connection.routeSource !== "ssh"
+          ? { connection: "direct", verifiedRoute: { endpoint: connection.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() } }
+          : entry.facts.verifiedRoute
+            ? { connection: "direct", verifiedRoute: entry.facts.verifiedRoute }
+            : { connection: "ssh" }),
+      }, entry.credentialDigest, receivedAt)
+    } catch (error) {
+      if (this.#heartbeats.get(id) === controller && !this.#stopped) {
+        this.#input.registry!.recordFailure(id, entry.credentialDigest, connectionFailure(error, entry.facts.protocolVersion))
+      }
+    } finally {
+      connection?.close()
+      deadline.clear()
+      if (this.#heartbeats.get(id) === controller) this.#heartbeats.delete(id)
+      this.#changed()
+    }
+  }
+
+  #cancelHeartbeat(id: string): void {
+    const controller = this.#heartbeats.get(id)
+    this.#heartbeats.delete(id)
+    controller?.abort()
+  }
+
+  #dial(machines: FleetMachineFacts[], machineId: string, deadline: OperationDeadline, signal?: AbortSignal): Promise<MachineRouteConnection> {
+    return createMachineDialer({
+      machine: (id) => machines.find((machine) => machine.id === id), credentials: this.#input.credentials, dialTimeoutMs: defaultMachineHandshakeTimeoutMs,
+      ...(this.#input.sshTunnels ? { sshTunnels: this.#input.sshTunnels } : {}),
+      open: (input) => (this.#input.open ?? openMachineSocket)({ ...input, callTimeoutMs: defaultMachineCallTimeoutMs }),
+    })(machineId, signal, deadline)
+  }
+}
+
+function enrollRefusal(error: unknown): FleetEnrollRefusal {
+  if (error instanceof MachineCredentialUnavailableError) return "credential-store-unavailable"
+  if (error instanceof MachinePairingRequiredError) return "pairing-refused"
+  if (error instanceof MachineProtocolMismatchError) return "protocol-mismatch"
+  if (error instanceof MachineIdentityMismatchError) return "identity-mismatch"
+  if (error instanceof MachineSelfEnrollmentError) return "self-enrollment"
+  if (error instanceof MachineDescriptorError) return "target-description-invalid"
+  if (error instanceof FleetLimitReachedError || error instanceof FleetSnapshotOverflowError) return "fleet-limit"
+  if (error instanceof FleetOperationInProgressError) return "operation-in-progress"
+  return "target-unreachable"
+}
+
+function connectionFailure(error: unknown, lastAdvertisedProtocol: string): FleetConnectionFailure {
+  if (error instanceof MachineCredentialUnavailableError) return "credential-store-unavailable"
+  if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError) return "pairing-required"
+  if (error instanceof MachineProtocolMismatchError) {
+    // A refusal names the peer's version. Without one, the version the peer
+    // last advertised says which side has to move.
+    const remote = error.remoteVersion ?? lastAdvertisedProtocol
+    return protocolCompatibility(remote, protocolVersion) === "machine-behind" ? "upgrade-required" : "version-mismatch"
+  }
+  return "reconnecting"
+}

@@ -8,6 +8,7 @@ import {
   auditQueryParamsSchema,
   daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
+  deviceLabelMismatchErrorCode,
   helloParamsSchema,
   isMutatingRpcMethod,
   isRefusedWithoutPersistence,
@@ -29,6 +30,7 @@ import {
   sessionHistoryEntrySchema,
   sessionHistoryPageSchema,
   sessionHistoryParamsSchema,
+  skillInstallErrorCode,
   workspaceSnapshotSchema,
 } from "./index.js"
 
@@ -85,11 +87,57 @@ describe("audit RPC contracts", () => {
       unknown: true,
     }).success).toBe(false)
   })
-  it("exposes skill inventory without a distribution RPC", () => {
+  it("exposes skill inventory without a copy, sync, or distribution RPC", () => {
     expect(rpcMethods["skill.inventory"].params.parse({})).toEqual({})
     expect(Object.keys(rpcMethods).filter((method) => (
-      method.startsWith("skill.") && /install|copy|sync|distribut/i.test(method)
+      method.startsWith("skill.") && /copy|sync|distribut/i.test(method)
     ))).toEqual([])
+  })
+
+  it("reserves a structured error for refused skill installs", () => {
+    expect(skillInstallErrorCode).toBe(-32018)
+    expect(rpcMethodMutations["skill.installPreview"]).toBe("read-only")
+    expect(rpcMethodMutations["skill.install"]).toBe("mutating")
+  })
+
+  it("previews a skill install from an absolute local path only", () => {
+    const source = { kind: "path", path: "/home/dev/work/skills/pr-triage" } as const
+    expect(rpcMethods["skill.installPreview"].params.parse({ source })).toEqual({ source })
+    expect(rpcMethods["skill.installPreview"].params.safeParse({
+      source: { kind: "path", path: "skills/pr-triage" },
+    }).success).toBe(false)
+    expect(rpcMethods["skill.installPreview"].params.safeParse({
+      source: { kind: "url", url: "https://example.invalid/skill" },
+    }).success).toBe(false)
+    expect(rpcMethods["skill.installPreview"].params.safeParse({ source, scope: "user" }).success)
+      .toBe(false)
+  })
+
+  it("pins a skill install to the previewed source digest and a catalog scope", () => {
+    const params = {
+      source: { kind: "path", path: "/home/dev/work/skills/pr-triage" },
+      scope: "user",
+      sourceDigest: `sha256:${"c".repeat(64)}`,
+    } as const
+    expect(rpcMethods["skill.install"].params.parse(params)).toEqual(params)
+    expect(rpcMethods["skill.install"].params.safeParse({ ...params, scope: "system" }).success)
+      .toBe(false)
+    expect(rpcMethods["skill.install"].params.safeParse({ ...params, sourceDigest: undefined }).success)
+      .toBe(false)
+    expect(rpcMethods["skill.install"].params.safeParse({ ...params, force: true }).success)
+      .toBe(false)
+    expect(rpcMethods["skill.install"].result.safeParse({
+      id: "skill-111111111111",
+      name: "pr-triage",
+      description: "Triage pull requests.",
+      path: "/home/dev/.domovoi/skills/pr-triage/SKILL.md",
+      scope: "user",
+      source: "domovoi",
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      contentDigest: `sha256:${"a".repeat(64)}`,
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+    }).success).toBe(true)
   })
 
   it("does not expose pre-transactional transfer endpoints", () => {
@@ -331,6 +379,39 @@ describe("session usage RPC contracts", () => {
   })
 })
 
+describe("usage window RPC contracts", () => {
+  const window = { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" }
+  const totals = {
+    sessions: 2,
+    turns: 3,
+    inputTokens: 30,
+    cachedInputTokens: 4,
+    outputTokens: 12,
+    reasoningTokens: 2,
+    totalTokens: 44,
+    costMicros: 24_000,
+    currency: "USD",
+    reportedCostTurns: 2,
+    unavailableCostTurns: 1,
+  }
+
+  it("reads totals across sessions for one window and nothing else", () => {
+    expect(rpcMethods["usage.window"].params.parse(window)).toEqual(window)
+    expect(rpcMethods["usage.window"].params.safeParse({ ...window, sessionId: "session-1" }).success).toBe(false)
+    expect(rpcMethods["usage.window"].result.parse(totals)).toEqual(totals)
+    expect(rpcMethods["usage.window"].result.safeParse({ ...totals, byRuntime: [] }).success).toBe(false)
+    expect(rpcMethods["usage.window"].result.safeParse({ ...totals, currency: undefined }).success).toBe(true)
+    expect(rpcMethodMutations["usage.window"]).toBe("read-only")
+  })
+
+  it("refuses a window that is not two instants with the end after the start", () => {
+    expect(rpcMethods["usage.window"].params.safeParse({ start: window.end, end: window.start }).success).toBe(false)
+    expect(rpcMethods["usage.window"].params.safeParse({ start: window.start, end: window.start }).success).toBe(false)
+    expect(rpcMethods["usage.window"].params.safeParse({ start: "2026-09-04", end: window.end }).success).toBe(false)
+    expect(rpcMethods["usage.window"].params.safeParse({ start: window.start }).success).toBe(false)
+  })
+})
+
 describe("provider thread restart RPC contracts", () => {
   it("accepts only attributed strict restart requests", () => {
     expect(rpcMethods["session.restartProviderThread"].params.parse({
@@ -357,6 +438,8 @@ describe("empty-params RPC contracts", () => {
       "skill.inventory",
       "provider.secret.list",
       "fleet.list",
+      "fleet.heartbeat",
+      "device.revokeCurrent",
       "device.list",
       "device.issueCode",
     ] as const) {
@@ -1060,6 +1143,33 @@ describe("session.revertFile parameters", () => {
       force: true,
     }).success).toBe(false)
     expect(rpcMethods["session.revertFile"].result.safeParse(demoWorkspace).success).toBe(true)
+  })
+})
+
+describe("device rename RPC contract", () => {
+  it("renames a label with no client attribution and no credential in the result", () => {
+    const deviceId = `device-${"a".repeat(32)}`
+    expect(rpcMethods["device.rename"].params.parse({ deviceId, label: "kitchen-ipad" }))
+      .toEqual({ deviceId, label: "kitchen-ipad" })
+    expect(rpcMethods["device.rename"].params.safeParse({ deviceId, label: "kitchen-ipad", client: "web" }).success)
+      .toBe(false)
+    expect(rpcMethods["device.rename"].result.safeParse({
+      device: {
+        id: deviceId,
+        label: "kitchen-ipad",
+        pairedAt: "2026-08-31T12:00:00.000Z",
+        binding: { kind: "client", client: "phone" },
+      },
+      token: "n".repeat(43),
+    }).success).toBe(false)
+    expect(rpcMethodMutations["device.rename"]).toBe("mutating")
+  })
+
+  it("reserves a structured error for a rename whose expected label is stale", () => {
+    const deviceId = `device-${"a".repeat(32)}`
+    expect(deviceLabelMismatchErrorCode).toBe(-32017)
+    expect(rpcMethods["device.rename"].params.parse({ deviceId, label: "studio-ipad", expectedLabel: "kitchen-ipad" }))
+      .toEqual({ deviceId, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
   })
 })
 

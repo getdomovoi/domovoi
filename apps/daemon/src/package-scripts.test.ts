@@ -8,9 +8,14 @@ import { readPackageScripts } from "./package-scripts.js"
 
 const scratches: string[] = []
 
-function scratchWith(manifest: string): string {
-  const directory = mkdtempSync(join(tmpdir(), "domovoi-scripts-"))
+function scratch(prefix = "domovoi-scripts-"): string {
+  const directory = mkdtempSync(join(tmpdir(), prefix))
   scratches.push(directory)
+  return directory
+}
+
+function scratchWith(manifest: string): string {
+  const directory = scratch()
   writeFileSync(join(directory, "package.json"), manifest)
   return directory
 }
@@ -29,7 +34,7 @@ describe("readPackageScripts", () => {
   })
 
   it("returns undefined when the manifest is missing, unreadable, or scriptless", () => {
-    expect(readPackageScripts(mkdtempSync(join(tmpdir(), "domovoi-scripts-empty-")))).toBeUndefined()
+    expect(readPackageScripts(scratch("domovoi-scripts-empty-"))).toBeUndefined()
     expect(readPackageScripts(scratchWith("{ not json"))).toBeUndefined()
     expect(readPackageScripts(scratchWith(JSON.stringify({ name: "x" })))).toBeUndefined()
     expect(readPackageScripts(scratchWith(JSON.stringify({ scripts: [] })))).toBeUndefined()

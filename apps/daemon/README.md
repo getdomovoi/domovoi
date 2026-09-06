@@ -13,8 +13,20 @@ pnpm install
 pnpm --filter @getdomovoi/daemon build
 ```
 
-The package is standard ESM, but npm, pnpm, and Bun registry installation will only be supported
-after publication.
+The package is standard ESM. After publication, the supported frozen installation is the
+verified bootstrap described in [the distribution contract](https://github.com/getdomovoi/domovoi/blob/main/docs/distribution.md).
+It requires Node 22 with bundled npm 10.0.0 or newer and installs the archive's integrity-locked
+runtime before publishing its receipt. Manual npm, pnpm, or Bun adds of the daemon are not frozen.
+Native compilation and the external toolchain remain reproducibility limits; provider SDKs are
+downloaded under their existing terms, not bundled in this package. Bootstrap installs a runtime
+tree rather than a command: run it as `node <runtimePath>/dist/index.js`, since nothing adds
+`domovoid` to `PATH`, starts the daemon, or installs supervision.
+
+To set up a machine that has nothing installed, follow
+[clean-machine setup](https://github.com/getdomovoi/domovoi/blob/main/docs/clean-machine-setup.md).
+It carries an operator from a runtime installation through first start, TLS, service supervision,
+fleet pairing, machine-credential recovery, and Windows to WSL access, and names what remains
+unproven per platform. This page is the reference for the pieces that guide assembles.
 
 ## Run
 
@@ -27,13 +39,15 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | Variable | Purpose |
 | --- | --- |
 | `DOMOVOI_HOST` | Listener host |
-| `DOMOVOI_PORT` | Listener port |
+| `DOMOVOI_PORT` | Listener port; `0` selects an ephemeral port published in the owner record |
 | `DOMOVOI_AUTH_TOKEN` | Bearer token required by RPC requests |
 | `DOMOVOI_CREDENTIAL_PATH` | Generated daemon credential file path |
 | `DOMOVOI_MACHINE_IDENTITY_PATH` | Stable machine identity file path |
 | `DOMOVOI_TLS_CERT_PATH` | TLS certificate chain, required for a non-loopback listener |
 | `DOMOVOI_TLS_KEY_PATH` | TLS private key, required for a non-loopback listener |
 | `DOMOVOI_ADVERTISE_HOST` | Name an encrypted listener is advertised as reachable by |
+| `DOMOVOI_TAILNET_HOST` | Explicit tailnet host or address for a non-loopback TLS listener |
+| `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
@@ -51,6 +65,338 @@ own short-lived signed capabilities on every listener, loopback included; each c
 to one artifact revision, purpose, annotation bridge channel, and parent origin, and an unsigned or
 retargeted request returns 404.
 
+## Fleet enrollment and recovery
+
+`fleet.enroll` is a local-root operation. It claims a versioned pairing code and receives the
+target's own descriptor and a pending credential. The source records the
+endpoint it actually authenticated over separately from the target's advertisements. Remote
+listeners require TLS; relay enrollment and plaintext off-machine endpoints are refused.
+
+Peer credentials stay in the OS keychain, never the renderer or the workspace snapshot. SQLite
+journals retain an operation kind, credential digest and pending claim metadata, not its bytes.
+Only after the token and its index survive matching keychain readback does the source reconnect
+and call `device.confirmClaim`. It then authenticates as this machine and reads the descriptor
+again before publishing enrollment. Pending enrollment/forget operations remain visible and
+resume on startup. Heartbeats refresh target facts every 15 seconds, with each attempt bounded
+by a 30-second operation deadline. A failed attempt does not advance the last-contact timestamp.
+Forget reports whether the target confirmed revocation; unconfirmed removal requires revoking
+this machine in the target's Devices list. Enrollment does not grant a client credential for
+remote Use or Terminal; that is a separate admission step.
+
+An unconfirmed machine claim expires five minutes after issuance, including across target
+restarts. Its hash is stored separately from paired devices, with at most 128 pending claims.
+Expired claims are invalid at use even without a running cleanup timer; subsequent claims and
+confirmations remove expired hashes. Pending tokens cannot authenticate RPC, receive workspace
+broadcasts, or revoke the machine's previous active credential. Confirmation atomically replaces
+that previous credential. Repeating confirmation with the same still-active token is safe after
+a lost reply or either daemon restarting. Revocation and rotation cannot be undone by replay.
+
+If the source crashes before storing the token, the target's pending capability expires without
+ever becoming active. If the source stored it but lost the confirmation reply, startup recovery
+repeats confirmation from the journal and keychain. Transport and storage failures retain that
+journal. An authoritative invalid/expired-token refusal removes only the matching local token
+and aborts enrollment: issue a new code on the target and enroll again. Confirmation is the
+source's assertion of durable storage, not cryptographic proof of another machine's filesystem.
+Spoken-code admission limits apply to claims, not full-strength bearer confirmations; failed
+confirmation authentication uses the ordinary failed-authentication limit.
+
+This exchange requires protocol 0.5.0. Update both peers before enrollment. Existing active bound
+credentials are unchanged and do not require pairing again. A pending claim is not a paired
+device and is not listed in Devices; the local source shows its existing pending enrollment row.
+
+Native machine-keyring construction, reads, writes, deletion and index repair run on one
+serialized worker, not the daemon event loop. Calls require the caller's existing operation
+deadline and have a five-second phase limit, including queue time. Admission is bounded to
+256 active or queued operations. Expiry refuses the caller but does not release the native
+slot: later calls cannot overtake a still-running OS operation. The worker checks cancellation
+and monotonic time between native steps. A native write already entered can still complete
+after expiry; its pending fleet journal stays authoritative until readback resolves it.
+
+Fleet rendering caches only the last successfully observed machine IDs. A list refreshes those
+IDs; a failed read retains known recovery rows and reports credential-store-unavailable for
+enrolled peers. Credentials are never cached for dialing. Index repair and guarded deletion
+check the journal's digest inside a single worker operation, and dialing rechecks current fleet
+eligibility after the credential wait. A failed worker is not replaced in the same daemon
+instance. Unlock the keychain and retry after slow operations settle; restart Domovoi if its
+worker failed. Shutdown waits up to five seconds for worker exit and reports failure if exit
+cannot be confirmed.
+
+The local recovery CLI also bounds shutdown. If native work will not acknowledge termination,
+it prints the shutdown failure, waits up to one second for a piped stderr to take it, and exits
+nonzero instead of leaving the terminal waiting.
+
+This does not change the installed native library's missing-value semantics. Its
+[1.3.0 synchronous getter](https://github.com/Brooooooklyn/keyring-node/blob/v1.3.0/src/entry.rs)
+converts native read errors into a missing result, so not every OS failure can
+be distinguished from an absent credential. The worker isolates blocking and exceptions; it
+does not claim to repair that upstream distinction.
+
+Admission is limited to 128 machine entries, including the local machine and pending enrollment
+reservations. At capacity, re-pairing an existing row requires its `expectedMachineId`; an unnamed
+target is refused before consuming the pairing code. Recovery rows remain visible beyond the
+admission limit. The wire list is bounded at 512
+total entries. Older keychain indexes had no count limit. An over-cap index therefore refuses the
+entire list with `fleetSnapshotOverflowErrorCode` (`-32016`) and a `fleet-overflow` error payload
+containing `limit`, `totalEntries`, and `entriesNotShown`. No rows are silently truncated.
+
+For exceptional over-cap recovery, run these locally as the same OS user who runs Domovoi:
+
+```bash
+domovoid fleet-keychain list
+domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
+```
+
+Stop Domovoi and its supervisor before `forget`. The confirmation asserts that you have stopped
+them; the command does not stop or independently verify them. Otherwise a running reconciliation
+could race the repair. `list` prints the complete indexed machine IDs, never credential bytes,
+without the wire cap. `forget` removes only the named local key and index entry, checks readback,
+and leaves unrelated credentials and fleet facts intact. It does not prove revocation on the
+target: revoke this machine in the target's Devices list as well. Restart Domovoi and use ordinary
+Fleet Forget for remaining recorded facts once the list fits. These commands require the OS
+keychain to be available. Pagination of larger legacy fleets is not implemented.
+
+### Damaged fleet records
+
+Each stored machine is decoded independently. Malformed JSON or invalid machine facts quarantine
+that row without hiding healthy peers. The daemon retains the original row bytes in the existing
+owner-only state database. Quarantine and a `fleet.quarantine` audit receipt commit together. The
+receipt contains an opaque quarantine ID and a fixed reason, never the damaged value or parser
+message. Relisting and restarting do not create another receipt for the same quarantine.
+
+Quarantined machines are excluded from dialing and heartbeats. Late heartbeat results cannot
+clear quarantine. Pending enrollment or forget operations still mask their retained machine
+facts. Corrupt operation journals and database access failures remain explicit errors, not absent
+authority; this recovery applies to machine rows, not arbitrary SQLite corruption.
+
+For inspection, an authenticated client calls `fleet.list` with `{ "includeQuarantined": true }`.
+A degraded result adds optional `registry: { state: "degraded", quarantined: [...] }` metadata.
+Each record has `kind: "quarantined"`, an opaque `id`, `detectedAt`, a fixed `reason`, and a
+`recoveryAction`. It includes `machineId` only when that stored identity is valid. These records
+share the 512-entry wire bound and do not consume active machine admission slots.
+
+The actions name these operator procedures:
+
+- `forget-and-enroll`: use the existing local-root `fleet.forget` call with the supplied machine
+  ID and client kind. Damaged routing facts are not used for revocation, so an unconfirmed result
+  requires revoking this machine in the target's Devices list. Then enroll again with a fresh
+  pairing code. Successful explicit re-enrollment can also replace the damaged facts.
+- `repair-registry-offline`: the stored identity cannot safely address a machine. Stop Domovoi
+  and its supervisor, take a consistent SQLite backup, and have an operator repair or remove
+  only the `fleet_machines` row whose `quarantine_id` matches the reported opaque ID. Do not
+  delete the whole profile or match by label. Retain the backup for recovery, inspect any
+  remaining keychain IDs using the recovery CLI above, and enroll the peer again. There is no
+  automatic repair, expiry, or online deletion by an untrusted identity.
+
+The current UI is unchanged. Existing clients still receive only valid ordinary lifecycle rows;
+they do not render quarantine diagnostics yet. The new field is emitted only for that explicit
+inspection request, since older parsers reject unknown fields even when a new parser calls them
+optional. Ordinary `fleet.list`, enrollment and forget results, and `fleet.changed` retain their
+previous shape. Inspection clients must request diagnostics again after a change notification.
+Quarantine is never described as a machine that was never enrolled.
+
+## Configured fleet routes
+
+`DOMOVOI_TAILNET_HOST=studio.example.ts.net` explicitly classifies a listener endpoint as
+`tailnet`. It requires a non-loopback listener, remote opt-in and loaded TLS material. It accepts
+one host or IP address, not a URL, port, wildcard or loopback address. The advertised endpoint uses
+the listener's actual bound port. `DOMOVOI_ADVERTISE_HOST` supplies an independent route, local
+for a loopback host and otherwise LAN;
+when both name the same endpoint, the explicit tailnet classification wins without a LAN duplicate.
+The factory's returned URL uses the configured advertise host, otherwise the tailnet name, otherwise
+the bound address, so a tailnet-only setup does not hand clients a wildcard address.
+Names and address ranges are never treated as proof of tailnet membership or transport protection.
+Configure DNS, reachability and a trusted certificate valid for the advertised name yourself.
+The [transport contract](../../docs/transport-contract.md) validates each route's locality,
+protection and configuration before selection. Relay records remain unavailable.
+
+For an already enrolled peer, configure an existing SSH local forward on the source daemon:
+
+```bash
+DOMOVOI_SSH_TUNNELS='[{"machineId":"machine-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","endpoint":"ws://127.0.0.1:47900/rpc"}]' domovoid
+```
+
+Replace the example ID with the enrolled target's machine ID. Domovoi does not launch SSH,
+establish host-key trust, manage SSH credentials or verify which program created the forward.
+The operator must keep a loopback-only forward running to that peer's daemon. `ws://` is suitable
+only when the SSH channel terminates at the target's plaintext loopback listener; for a TLS target
+use `wss://` with a trusted certificate valid for the configured endpoint. Certificate verification
+is not disabled. Anyone able to replace the local forward is inside this trust boundary.
+
+SSH configuration is bounded to 32 KiB of JSON, 128 unique machine IDs, and one endpoint per ID.
+Endpoints use `localhost`, `127.0.0.1` or `::1` after URL normalization, at most 2,048 characters,
+with no credentials, query or fragment. It is source-local configuration, not fleet fact: it never
+appears in a peer descriptor. A target cannot enable SSH by advertising `configured: true`.
+Remote loopback advertisements are ignored even with TLS; only a source-verified direct route
+or source-local SSH configuration can authorize a remote peer's loopback endpoint here.
+Enrollment still requires a code and a successful authenticated descriptor exchange. Adding a
+route never enrolls a peer, supplies a missing credential or unmasks a pending forget.
+
+Dialing tries the source-verified direct endpoint first, target-advertised direct candidates in
+protocol order next, then the configured SSH forward. Duplicate endpoint strings are tried once.
+All candidates share the original monotonic deadline. A silent candidate can spend the remaining
+budget, in which case no later candidate starts. Credential, identity or protocol rejection stops
+fallback. This does not promise reachability across disjoint tailnets.
+
+Heartbeat and transfer use the same route configuration. Successful SSH heartbeats refresh peer
+facts and last contact but do not replace or refresh the timestamp of the remembered direct route.
+Otherwise a removed setting would quietly survive as a preferred route. Remove the SSH entry and
+restart with the updated configuration to remove this fallback. A separately enrolled direct route
+is independent and remains until re-enrollment or Forget. Service installation saves both settings
+in its non-secret `service.json`, and a supervised daemon started with `--service-config` reads
+that file instead of the supervisor's environment. Removing `DOMOVOI_SSH_TUNNELS` from the
+supervisor and restarting leaves the saved fallback active. Rerun `domovoid service install` with
+the intended environment, or edit `service.json`, before restarting the service.
+
+These producers do not add WSL transport discovery, remote client admission for Use or Terminal,
+or a relay. WSL facts and its open shim remain separate from a WSL transport producer.
+
+## Skill signatures and trust
+
+A skill is a `SKILL.md` file with YAML frontmatter. Its content digest is `sha256:` followed by
+the hex SHA-256 of the file's UTF-8 text, and that digest is what enablement reviews, turn
+selections, and signatures pin. The signed unit is exactly that digest: the signer signs the UTF-8
+bytes of `domovoi-skill-signature-v1:<content digest>` with an Ed25519 key, and the detached
+signature sits beside the skill as `SKILL.md.sig`:
+
+```json
+{
+  "version": 1,
+  "contentDigest": "sha256:<hex>",
+  "algorithm": "ed25519",
+  "keyId": "ed25519:0123456789abcdef",
+  "value": "<base64 signature>"
+}
+```
+
+The key id is `ed25519:` plus the first sixteen hex characters of the SHA-256 of the raw 32-byte
+public key. Sibling files in a skill directory are not covered: only `SKILL.md` reaches a provider
+and only its digest is pinned anywhere, so widening the unit would change every pinned digest.
+
+Trust roots are local. The daemon reads `~/.domovoi/skill-trusted-keys.json`, a JSON list of
+public keys that only `domovoid skill trust` writes; the daemon never creates or populates it. On
+POSIX the file must be owner-only. A trust file the group or others can read is refused, reported
+through the daemon error sink, and treated as holding no keys. There is no signer registry and no
+revocation source yet: removing a key means editing that file, and a key it does not list is
+untrusted on this machine.
+
+Every catalog entry carries a `signature` state and a `trust` state, computed when the catalog is
+listed and again whenever a skill file, its `.sig`, or the trust file changes, not on every turn:
+
+| `signature` | `trust` | Meaning |
+| --- | --- | --- |
+| `unsigned` | `untrusted`, `unsigned` | No `SKILL.md.sig` beside the skill |
+| `unverified` | `untrusted`, `unverified-signature` | Signed by a key the trust file does not list; `keyId` names it |
+| `verified` | `trusted`, `verified-signature` | Verifies against a listed key; `authority` is `signature · <key id>` |
+| `invalid`, `verification-failed` | `blocked`, `invalid-signature` | Content changed since signing, or the signature does not verify |
+| `invalid`, `malformed` | `blocked`, `invalid-signature` | The `.sig` is unreadable, oversized, a symlink, or not a declaration |
+
+A manual review can still trust an `unsigned` or `unverified` skill against its exact digest; it
+never unblocks an `invalid` one. What the composer sends is unchanged: Build auto still requires
+`trusted`, every other mode still refuses `blocked`, and the delivery record on a sent turn now
+names the trust state each delivered skill carried.
+
+The commands are local file operations that contact no daemon:
+
+```bash
+domovoid skill keygen ~/.domovoi/skill-signing.pem
+domovoid skill sign path/to/skill --key ~/.domovoi/skill-signing.pem
+domovoid skill trust <public-key>
+domovoid skill trust <public-key> --trust-file /path/to/skill-trusted-keys.json
+```
+
+`keygen` writes a PKCS8 PEM Ed25519 private key to the named file, `0600`, refuses to overwrite an
+existing file, and prints the key id and base64 public key, never the private half. `sign` accepts
+the skill directory or its `SKILL.md`, refuses a private key others can read, and writes or replaces
+`SKILL.md.sig`; run it again after every edit, since a stale signature blocks the skill. `trust` adds
+the printed public key to the trust file once, creating it owner-only when needed. The daemon picks
+the change up on its next catalog read.
+
+## Adding a skill
+
+A skill is added from a folder on the execution machine in two steps: a review, then an install
+pinned to what was reviewed. `skill.installPreview` takes `{ source: { kind: "path", path } }`,
+where `path` is absolute, and returns the parsed name and description, the declared capability
+manifest, the `SKILL.md` content digest, a `sourceDigest` over every regular file in the folder
+(relative path and SHA-256 of each file, `SKILL.md.sig` included), the signature and trust state
+computed exactly as the catalog computes them, the file list with sizes, one target per install
+scope, and any refusals. It reads the folder and writes nothing.
+
+`skill.install` takes the same `source`, a `scope`, and the previewed `sourceDigest`, and answers
+with the installed catalog entry. The scopes and their roots are the Domovoi-owned catalog roots:
+`user` is `~/.domovoi/skills` and `project` is `<project>/.domovoi/skills`, so a project install
+needs an open project and a user install does not. `system` (`/etc/domovoi/skills`) is not an
+install target. The install is refused with error code `-32018` and a
+`{ kind: "skill-install-refused", reason }` payload when:
+
+| `reason` | Condition |
+| --- | --- |
+| `source-changed` | The folder's `sourceDigest` no longer matches the previewed one, checked again over the bytes actually copied |
+| `blocked` | The trust state is `blocked`, so the signature is invalid |
+| `name-conflict` | `<root>/<name>` already exists with different files; identical files return the existing entry |
+| `symlink-escapes-source` | A link inside the folder resolves outside it; `path` names the link |
+| `source-too-large` | More than 256 files, 8 MiB, or eight directory levels |
+
+The copy never follows a link out of the source, writes only under the chosen root, and is
+atomic: files land in a `.domovoi-install-<random>` staging directory inside the root, which the
+catalog walk ignores, and one rename moves the finished directory to `<root>/<name>`. A failed
+copy removes its staging directory. Each `skill.install` is audited like every other mutation,
+with the scope, both digests, the source path, and on success the installed skill id and path.
+Installing grants nothing: the skill still needs a project enablement review before a turn carries
+it, and Build auto still requires a trusted state.
+
+```bash
+domovoid skill add path/to/skill --scope user
+domovoid skill add path/to/skill --scope project --yes
+```
+
+`add` prints the same review facts and installs only with `--yes`; without it nothing is written
+and the exit code is `0`. The project scope is the working directory. A refusal prints as
+`refused: <reason>` with exit code `1`. Like the other skill commands it contacts no daemon, so it
+writes no audit entry; the daemon lists the new entry on its next catalog read.
+
+## Pairing admission and audit retention
+
+Pairing claims are limited to three per source address and thirty across the listener in a rolling
+minute. For a valid JSON-RPC request naming `device.claim`, admission runs before parameter
+validation, protocol compatibility or code verification, so malformed parameters and incompatible
+versions count and a throttled valid code is not consumed. Admitted
+version mismatches return `protocolVersionMismatchErrorCode` (`-32012`) with a `protocol-mismatch`
+payload naming both protocol versions and which side is behind, without spending a code guess;
+exhausted sources receive the ordinary pairing refusal regardless of the submitted version or shape.
+The source is the TCP peer address, not a forwarding
+header. Reconnecting, greeting with a credential, or issuing another code does not reset these
+budgets. Peers behind the same NAT or proxy share the source budget. A throttled claim receives the
+ordinary pairing refusal and its socket closes with code `1008`, reason `pairing rate limit`.
+Wait a minute before trying again; an expired code needs replacing after the cooldown.
+
+The five-wrong-guesses limit and three-minute code lifetime still apply. Admission limits reduce
+abuse; they do not guarantee pairing availability against distributed peers or a peer that keeps
+trying after cooldown. Keep code-based pairing on a protected direct route. Limits are held for
+the lifetime of the daemon; a restart also invalidates its open pairing code.
+
+The audit retains up to 10,000 activity entries and a separate maximum of 1,000 pre-authentication
+entries. Rejected claims, authentication failures, and invalid requests cannot spend activity
+retention. Repeated ingress events record only the first event of each category per minute, not a
+complete attempt count. Successful pairings remain activity records. Both classes remain available
+through audit query and export, without recording submitted codes, credentials, or claimant labels.
+Upgrades preserve existing history without guessing which older rows were unauthenticated; the
+retention distinction applies to new writes.
+
+## Transfer chunk retries
+
+Concurrent receives for the same transfer member use a process-local reservation keyed by the
+journal path. It covers chunk reads and writes, final publication, and chunk-directory cleanup.
+A competing receive gets the existing `chunk-out-of-order` refusal without waiting; a retry after
+the owner finishes can adopt its durable chunk or completed member. Other members can progress
+independently. This prevents cleanup racing a retry's open chunk handle within one daemon process,
+which Windows can reject with `EPERM`. It does not coordinate separate daemon processes sharing a
+journal directory.
+
+Production transfer RPCs share a per-transfer resource queue across sockets. A reconnected retry
+or abort waits for the original handler to finish; dropping its socket does not release that
+queue slot. The journal's overlap refusal protects concurrent direct journal calls, not the
+ordinary reconnect path. Retention pruning runs before the daemon opens its listener.
+
 ## When state cannot reach disk
 
 The daemon writes the workspace snapshot after every change. A single failed write is retried on
@@ -63,6 +409,35 @@ Read-only methods keep working, including `workspace.get`, so an operator can re
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
 again as soon as one write succeeds, since each write stores the whole snapshot.
+
+## Provider prompt budget
+
+Each `session.send` composes one provider prompt from reviewed skills, open annotations, the
+working plan, the provider handoff, and the person's request. The prompt is measured in UTF-16
+code units (`String.length`) against one total budget. The default is 262,144, the protocol's
+`maximumProviderPromptCodeUnits`, which is also the most a single `session.send` request may
+carry. `DaemonServerOptions.providerPromptBudgetCodeUnits` lowers it. The value must be an
+integer from 1 through 262,144 and is validated before workspace state is opened. The budget
+bounds payload size only; it is not a provider token-window guarantee.
+
+Each section is shaped by its own limit first: skill content is cut at 12,000 code units per
+skill, at most 20 open annotations are offered, and the handoff offers its newest 40 thread items
+inside 24,000 code units. The total budget then applies to the composed prompt. When it does not
+fit, the composer drops one item at a time in this order and stops as soon as the prompt fits:
+
+1. Project-default skills, last by name first. Skills a person selected for the turn are required
+   and are never dropped.
+2. Open annotations, oldest first.
+3. Handoff thread history, oldest item first.
+4. Handoff open annotations, last listed first.
+5. Handoff artifacts, last listed first.
+
+The person's request, the working plan, the handoff summary, and the framing instructions are never
+dropped. If those alone exceed the budget, `session.send` fails with `invalidParams` naming the
+budget and what to shorten, and nothing is sent or recorded. Every drop is recorded on the sent
+user thread item's `providerPromptDelivery`: `budget.limit` and `budget.used`,
+`skills.omitted.budget`, `annotations.omitted.budget`, and `handoff.omitted`. The prompt itself
+opens with a `domovoi_context_delivery` marker whenever context was omitted.
 
 ## Supervise
 
@@ -83,7 +458,80 @@ is installed. `remove` stops the service and deletes the file it pointed at.
 A service file never carries a secret. `DOMOVOI_AUTH_TOKEN` and any other credential stay in the
 user-private files the daemon already reads.
 
+## Windows and WSL
+
+A daemon inside a WSL distribution is its own machine. Run `domovoid` inside the distribution;
+it publishes its loopback endpoint at `~/.domovoi/endpoint.json` there, and WSL 2 forwards that
+port to the Windows loopback. The Windows side never opens `\\wsl$` or `\\wsl.localhost`: every
+question is put to `wsl.exe` as an argument list with a 10 second deadline, and the distribution
+answers with its own tools.
+
+```powershell
+domovoid wsl list
+domovoid open \\wsl$\Ubuntu-24.04\home\me\project
+domovoid open .
+```
+
+`wsl list` runs `wsl.exe --list --verbose` and, for each running distribution, asks it to read
+its endpoint file. It prints one line per distribution: the name, `WSL 1` or `WSL 2`, `running`
+or `stopped`, and `daemon at ws://127.0.0.1:<port>/rpc`, `no daemon`, or `could not be asked`.
+The credential in the endpoint file is never printed. A stopped distribution is not asked, since
+asking would start it. The command runs only on Windows. A machine without WSL is told so and the
+command exits 0. A `wsl.exe` that this session may not run, that does not answer within the
+deadline, that fails, or that answers with something other than a listing is reported as that,
+with the remedy, and the command exits 1. A running distribution that could not be asked is listed
+as `could not be asked` with the reason: `timed out`, `denied`, `wsl.exe failed`, or `endpoint
+file unreadable`. None of these is ever reported as a missing distribution or a missing daemon.
+
+The listing parser returns either a complete `listed` result or `corrupt` with the unreadable
+line number, never a partial list. A header followed by `Ubuntu Running broken`, a broken row
+beside a valid one, or a torn UTF-16 character therefore makes both `wsl list` and `open` refuse
+with a remedy: inspect `wsl.exe --list --verbose` and check `wsl.exe --status` before retrying.
+The refusal does not repeat the row contents. Only a valid header with no rows or an explicit
+no-distributions answer counts as an empty listing. The parser recognizes the `NAME STATE VERSION`
+header and `Running` or `Stopped` rows; an unrecognized format is unknown, not absence.
+
+`open` on a `\\wsl$\<distribution>\...` or `\\wsl.localhost\<distribution>\...` path, with either
+separator, asks that distribution's own `wslpath` where the path lives, asks it back which Windows
+path that is, and then sends `project.open` to the daemon inside the distribution with the
+distribution's credential. This machine's credential never travels into a distribution. The
+command refuses, naming the distribution and the remedy, when the distribution is not installed,
+is stopped, runs under WSL 1, has no daemon endpoint, or when the path reads back as a Windows
+drive the distribution mounts, wherever it mounts it. When `wsl.exe` itself cannot answer, the
+refusal says whether WSL is not installed, the call was denied, it timed out, or the service
+failed, rather than that the distribution does not exist. An endpoint file that is not one a daemon
+published is refused as unreadable rather than reported as no daemon, and nothing read from it is
+repeated. A plain Windows path opens through this machine's daemon as before, without asking
+`wsl.exe` anything.
+
+Every daemon refuses `project.open` on a `\\wsl$` or `\\wsl.localhost` path, so no repository
+work runs through the share; the refusal names `domovoid open` as the way to reach the daemon
+inside the distribution. The runner that starts `git` inside a distribution asks the same
+`wslpath` question before running anything, so a repository on a Windows drive is refused
+wherever the distribution mounts it, not only under `/mnt`.
+
+What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
+the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
+the listing answers or refuses within its deadline and that a distribution that does not exist is
+refused; the path round trip and the drive refusal need a running distribution and skip there.
+Discovery, open, authentication, repository ownership, Git, and restart against a running
+distribution are not verified by CI.
+
+A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
+from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.
+A supervisor that starts the daemon without `WSL_DISTRO_NAME` leaves those facts unreported, and
+the daemon is listed as plain Linux. Discovery does not enroll a distribution in the fleet; pair
+it with `domovoid pair` inside the distribution like any other machine.
+
 ## Programmatic use
+
+Node.js 22.13.0 or newer is required for unflagged `node:sqlite`.
+
+One process owns the canonical profile, protected before the state store is constructed.
+Desktop can use `acquireLocalDaemon` to start or attach, with distinct `owned`, `attached` and
+`refused` handles. Attachments can detach but cannot stop the owner. See
+[local daemon ownership](../../docs/local-daemon-ownership.md) for the record, proof, deadlines,
+restart rules, platform limits and service-install refusal.
 
 `@getdomovoi/daemon` exposes one supported production factory. It owns the daemon credential,
 stable machine identity, provider discovery, peer-credential store, TLS loading, state database,
@@ -111,6 +559,7 @@ await daemon.stop()
 | `homeDirectory` | State-directory base; defaults to the current user's home |
 | `machineLabel` | Initial label for a new machine identity; defaults to the hostname |
 | `errorSink` | Receives daemon failures as `{ context, detail }` |
+| `owner` | Record this direct owner as `daemon` (default) or `desktop`; acquisition sets Desktop automatically |
 
 The returned handle exposes the configured `host`, `requestedPort`, whether the transport is
 secure, where its credential came from, and `start()` and `stop()`. `start()` returns the actual
@@ -121,6 +570,39 @@ The package retains `@getdomovoi/daemon/internal` as an inert artifact-compatibi
 It does not expose the raw server constructor or a supported runtime API. Daemon tests import the
 source server module directly.
 
+## Bundle restore claims
+
+Only one bundle restore may mutate a session worktree at a time. A process-local reservation is
+taken before asynchronous work, and an exclusive file at
+`<worktree-root>/.restore-claims/<session-id>` also excludes other daemon processes. Contention
+fails immediately, without waiting or retrying. Restoring a different session remains independent;
+a later incremental restore is still allowed after the earlier operation settles.
+
+Each claim records a fresh ownership token before repository work starts. Once acquired, token
+initialization finishes under its own I/O deadline even if the restore is cancelled, so cleanup
+can still identify and remove the claim. Success, failure and
+cancellation all attempt to close the handle and remove the matching claim independently, and
+always release the process-local reservation. Cleanup rereads the pathname and preserves any
+replacement whose token differs, reporting that the claim now belongs to another owner. An
+unwritten or unreadable token also prevents removal. Cleanup failures name the claim path and retain
+any restore failure as the primary cause. If the restore completed before cleanup failed, the
+error says so explicitly: do not retry that completed restore. A killed process or a failed
+unlink can leave its claim file behind.
+Domovoi never deletes a claim because it looks old. If the error names a stale claim, stop every
+Domovoi process using that worktree root and its supervisor, confirm no restore is active, then
+remove only the named claim file. Keep the session worktree, repository and Git refs intact. The
+token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
+make live manual claim deletion safe.
+
+## Loaded fixture checks
+
+The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
+keyring responsiveness test allows ten seconds to observe its real child daemon starting. The
+short RPC responsiveness probe and the suite-wide observation and test defaults are unchanged.
+Set `DOMOVOI_TEST_SLOW_FIXTURES=1` when running those two files to inject a finite 5.5-second journal
+delay and a 3.5-second child startup delay. The journal delay is cancelled with the test, and the
+child stays under its parent's kill deadline. Normal runs inject no delay.
+
 ## Terminal dependency
 
 `node-pty` is pinned to the exact prerelease `1.2.0-beta.15`. The stable release, `1.1.0`, failed
@@ -130,6 +612,13 @@ darwin prebuild shipped `spawn-helper` without the execute bit, so `posix_spawnp
 pnpm. The fix landed in `1.2.0-beta.2` (#858) and `1.2.0-beta.4` (#866). The pin is exact so a
 prerelease bump is a reviewed change. Move to the next stable release that contains the fix once
 it exists, and verify it on the three CI runners.
+
+Its Linux prebuild selector does not distinguish glibc from musl. The verified bootstrap forces
+the reviewed node-pty source build on musl or unknown Linux libc, then checks that the installed
+module loads before publishing a runnable receipt. Provide Python, make, a C++ compiler, and
+platform headers for that build. Manual package-manager installs do not apply this policy.
+`pnpm test:musl` exercises the real packed daemon and a PTY in a pinned Node 22 Alpine container;
+it is not a promise about every musl version or architecture.
 
 ## License
 

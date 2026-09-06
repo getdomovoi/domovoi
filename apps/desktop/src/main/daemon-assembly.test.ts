@@ -16,7 +16,7 @@ async function desktopSources(): Promise<[string, string][]> {
 }
 
 describe("desktop daemon assembly", () => {
-  it("builds its daemon only through the production factory", async () => {
+  it("acquires its daemon only through the local ownership seam", async () => {
     const offenders: string[] = []
     for (const [file, source] of await desktopSources()) {
       if (/\bDomovoiDaemon\b/u.test(source)) offenders.push(`${file}: names the daemon constructor`)
@@ -27,7 +27,7 @@ describe("desktop daemon assembly", () => {
           .map((name) => name.trim())
           .filter((name) => name.length > 0 && !name.startsWith("type "))
         for (const name of values) {
-          if (name !== "createProductionDaemon") offenders.push(`${file}: imports ${name} from @getdomovoi/daemon`)
+          if (name !== "acquireLocalDaemon") offenders.push(`${file}: imports ${name} from @getdomovoi/daemon`)
         }
       }
     }

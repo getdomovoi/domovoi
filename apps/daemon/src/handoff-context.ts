@@ -15,21 +15,50 @@ function serialize(value: unknown): string {
   return JSON.stringify(value).replaceAll("<", "\\u003c")
 }
 
-export function prepareHandoffPrompt(
+type HandoffContext = {
+  handoff: string
+  worktree: string | undefined
+  changedFiles: number
+  tests: { passed: number; failed: number }
+  history: { kind: string; body: string | undefined }[]
+  artifacts: {
+    id: string
+    title: string
+    type: string
+    revision: number
+    path: string | undefined
+    content: string | undefined
+  }[]
+  openAnnotations: {
+    id: string
+    artifactId: string
+    body: string | undefined
+    anchor: WorkspaceSnapshot["annotations"][number]["anchor"]
+  }[]
+}
+
+type HandoffOmissions = { threadItems: number; artifacts: number; annotations: number }
+
+export type HandoffInclusion = { history: number; annotations: number; artifacts: number }
+
+export type PreparedHandoffContext =
+  | { status: "not-required" }
+  | { status: "delivered"; context: HandoffContext; omitted: HandoffOmissions }
+
+export function prepareHandoffContext(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
-  userPrompt: string,
-): { prompt: string; delivery: ProviderPromptHandoffDelivery } {
+): PreparedHandoffContext {
   const sessionThread = snapshot.thread.filter((item) => item.sessionId === sessionId)
   const handoffIndex = sessionThread.findLastIndex(
     (item) => item.kind === "system"
       && (item.id.startsWith("handoff-") || item.body.startsWith("Handed off ")),
   )
-  if (handoffIndex < 0) return { prompt: userPrompt, delivery: { status: "not-required" } }
+  if (handoffIndex < 0) return { status: "not-required" }
   if (sessionThread.slice(handoffIndex + 1).some(
     (item) => item.kind === "user" || item.kind === "assistant",
   )) {
-    return { prompt: userPrompt, delivery: { status: "not-required" } }
+    return { status: "not-required" }
   }
 
   const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)
@@ -61,7 +90,7 @@ export function prepareHandoffPrompt(
       body: truncate(annotation.body, 2_000),
       anchor: annotation.anchor,
     }))
-  const context = {
+  const context: HandoffContext = {
     handoff: handoff?.kind === "system" ? handoff.body : "Provider handoff",
     worktree: session?.workspacePath,
     changedFiles: session?.changedFiles ?? 0,
@@ -70,13 +99,12 @@ export function prepareHandoffPrompt(
     artifacts,
     openAnnotations,
   }
-  const omitted = {
+  const omitted: HandoffOmissions = {
     threadItems: Math.max(0, allHistory.length - history.length),
     artifacts: 0,
     annotations: 0,
   }
-  let boundedContext = serialize(context)
-  while (boundedContext.length > contextBudget) {
+  while (serialize(context).length > contextBudget) {
     if (context.history.length) {
       context.history.shift()
       omitted.threadItems += 1
@@ -87,14 +115,47 @@ export function prepareHandoffPrompt(
       context.artifacts.pop()
       omitted.artifacts += 1
     } else break
-    boundedContext = serialize(context)
+  }
+
+  return { status: "delivered", context, omitted }
+}
+
+export function handoffInclusion(prepared: PreparedHandoffContext): HandoffInclusion {
+  if (prepared.status !== "delivered") return { history: 0, annotations: 0, artifacts: 0 }
+  return {
+    history: prepared.context.history.length,
+    annotations: prepared.context.openAnnotations.length,
+    artifacts: prepared.context.artifacts.length,
+  }
+}
+
+export function renderHandoffContext(
+  prepared: PreparedHandoffContext,
+  included: HandoffInclusion,
+  userPrompt: string,
+): { prompt: string; delivery: ProviderPromptHandoffDelivery } {
+  if (prepared.status !== "delivered") {
+    return { prompt: userPrompt, delivery: { status: "not-required" } }
+  }
+  const { context } = prepared
+  const history = context.history.slice(
+    Math.max(0, context.history.length - included.history),
+  )
+  const artifacts = context.artifacts.slice(0, included.artifacts)
+  const openAnnotations = context.openAnnotations.slice(0, included.annotations)
+  const omitted: HandoffOmissions = {
+    threadItems: prepared.omitted.threadItems + context.history.length - history.length,
+    artifacts: prepared.omitted.artifacts + context.artifacts.length - artifacts.length,
+    annotations: prepared.omitted.annotations
+      + context.openAnnotations.length
+      - openAnnotations.length,
   }
 
   return {
     prompt: [
       "Domovoi handed this session across providers. Use only the documented state below; hidden reasoning and provider caches were not transferred.",
       "<domovoi_handoff_context>",
-      boundedContext,
+      serialize({ ...context, history, artifacts, openAnnotations }),
       "</domovoi_handoff_context>",
       "",
       "<user_request>",
@@ -103,6 +164,15 @@ export function prepareHandoffPrompt(
     ].join("\n"),
     delivery: { status: "delivered", omitted },
   }
+}
+
+export function prepareHandoffPrompt(
+  snapshot: WorkspaceSnapshot,
+  sessionId: string,
+  userPrompt: string,
+): { prompt: string; delivery: ProviderPromptHandoffDelivery } {
+  const prepared = prepareHandoffContext(snapshot, sessionId)
+  return renderHandoffContext(prepared, handoffInclusion(prepared), userPrompt)
 }
 
 export function agentPromptWithHandoff(

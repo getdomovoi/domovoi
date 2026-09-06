@@ -196,3 +196,26 @@ it("changes one notification kind without disturbing the others", async () => {
     approvalNeeded: true,
   })
 })
+
+it("describes the local daemon on the machine pane when the client knows how it is served", () => {
+  render(
+    <SettingsShell
+      {...shellProps()}
+      localDaemon={{
+        title: "Connected to the installed Domovoi service",
+        detail: "The daemon runs outside this app and keeps running after it quits.",
+      }}
+    />,
+  )
+
+  const section = within(screen.getByRole("region", { name: /local daemon/iu }))
+  expect(section.getByText("Connected to the installed Domovoi service")).toBeTruthy()
+  expect(section.getByText("The daemon runs outside this app and keeps running after it quits.")).toBeTruthy()
+})
+
+it("draws no local daemon section for a client that cannot say how the daemon is served", () => {
+  render(<SettingsShell {...shellProps()} />)
+
+  expect(screen.queryByRole("region", { name: /local daemon/iu })).toBeNull()
+  expect(screen.queryByText(/Domovoi service/u)).toBeNull()
+})

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { protocolVersion } from "@getdomovoi/protocol"
+import { fleetEnrollResultSchema, fleetSnapshotSchema, protocolVersion } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -15,14 +15,16 @@ import {
   type ProductionDaemonRuntime,
 } from "./production-daemon.js"
 import { MachineCredentialStore, type MachineKeyring } from "./machine-credentials.js"
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { DomovoiDaemon, type DaemonServerOptions } from "./server.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 
 const roots: string[] = []
 const running: ProductionDaemonHandle[] = []
 
 afterEach(async () => {
   await Promise.allSettled(running.splice(0).map((daemon) => daemon.stop()))
-  await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })))
+  await removeScratchDirectories(roots)
 })
 
 function testToken(label: string): string {
@@ -83,20 +85,54 @@ async function openRpc(handle: ProductionDaemonHandle) {
     return response
   }
 
-  return { socket, call }
+  return { socket, call, endpoint }
 }
 
 describe("createProductionDaemon", () => {
+  it.each([
+    { DOMOVOI_TAILNET_HOST: "studio.tailnet.example" },
+    { DOMOVOI_SSH_TUNNELS: JSON.stringify([{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://not-local/rpc" }]) },
+  ])("refuses invalid route configuration before creating secrets or a server: %j", async (environment) => {
+    const loadOrCreateToken = vi.fn(async () => testToken("unused"))
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    await expect(createProductionDaemonWithDependencies({ environment, homeDirectory: await temporaryHome() }, {
+      ...productionDaemonDependencies, loadOrCreateToken, createDaemon,
+    })).rejects.toThrow(/DOMOVOI_(TAILNET_HOST|SSH_TUNNELS)/)
+    expect(loadOrCreateToken).not.toHaveBeenCalled()
+    expect(createDaemon).not.toHaveBeenCalled()
+  })
+
+  it("passes validated routes from the production environment to the server", async () => {
+    const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    const handle = await createProductionDaemonWithDependencies({
+      environment: {
+        DOMOVOI_HOST: "0.0.0.0", DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+        DOMOVOI_TLS_CERT_PATH: "/cert.pem", DOMOVOI_TLS_KEY_PATH: "/key.pem",
+        DOMOVOI_TAILNET_HOST: "studio.tailnet.example", DOMOVOI_SSH_TUNNELS: JSON.stringify(sshTunnels),
+      },
+      homeDirectory: await temporaryHome(),
+    }, {
+      ...productionDaemonDependencies,
+      loadTls: async () => ({ cert: Buffer.from("test certificate"), key: Buffer.from("test private key") }),
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+      createDaemon,
+    })
+    running.push(handle)
+    expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({ tailnetHost: "studio.tailnet.example", sshTunnels }))
+    expect(await handle.start()).toMatchObject({ url: "wss://studio.tailnet.example:49200/rpc" })
+  })
+
   it("assembles every mandatory production dependency", async () => {
-    const homeDirectory = join("", "home", "tester")
+    const homeDirectory = await temporaryHome()
     const authToken = testToken("production-factory")
     const machineIdentity = { id: `machine-${"a".repeat(32)}`, label: "studio" }
     const providerProbe = { inspect: async () => [] }
-    const machineCredentials = new MachineCredentialStore({
+    const machineCredentials = asyncTestCredentials(new MachineCredentialStore({
       get: () => undefined,
       set: () => {},
       delete: () => {},
-    })
+    }))
     let daemonOptions: DaemonServerOptions | undefined
     const handle = await createProductionDaemonWithDependencies({
       environment: {},
@@ -121,6 +157,7 @@ describe("createProductionDaemon", () => {
       },
     })
 
+    running.push(handle)
     expect(daemonOptions).toMatchObject({
       host: "127.0.0.1",
       port: 47_831,
@@ -130,6 +167,7 @@ describe("createProductionDaemon", () => {
       machineCredentials,
       statePath: join(homeDirectory, ".domovoi", "state.sqlite"),
       worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
+      skillTrustPath: join(homeDirectory, ".domovoi", "skill-trusted-keys.json"),
       manageStateDirectoryPermissions: true,
     })
     expect(handle).toMatchObject({
@@ -190,7 +228,7 @@ describe("createProductionDaemon", () => {
       .resolves.toBe(firstIdentity)
   })
 
-  it("keeps a peer credential and identity through a real daemon restart", async () => {
+  it("enrolls two production daemons and keeps peer facts, route, credential and identity through restart", async () => {
     const homeDirectory = await temporaryHome()
     const values = new Map<string, string>()
     const keyring: MachineKeyring = {
@@ -205,7 +243,7 @@ describe("createProductionDaemon", () => {
       createMachineCredentials: () => {
         const store = new MachineCredentialStore(keyring)
         credentialStores.push(store)
-        return store
+        return asyncTestCredentials(store)
       },
       createDaemon: (options: DaemonServerOptions) => new DomovoiDaemon({
         ...options,
@@ -213,8 +251,21 @@ describe("createProductionDaemon", () => {
       }),
     }
     const options = { environment: {}, homeDirectory, machineLabel: "studio" }
-    const peerMachineId = `machine-${"b".repeat(32)}`
-    const peerCredential = testToken("peer-machine")
+
+    const peerValues = new Map<string, string>()
+    const peer = await createProductionDaemonWithDependencies({
+      environment: {}, homeDirectory: await temporaryHome(), machineLabel: "target studio",
+    }, {
+      ...dependencies,
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({
+        get: (id) => peerValues.get(id), set: (id, value) => { peerValues.set(id, value) }, delete: (id) => peerValues.delete(id),
+      })),
+    })
+    running.push(peer)
+    const peerRpc = await openRpc(peer)
+    const peerHello = await peerRpc.call(1, "system.hello", { client: "cli", clientVersion: "0.0.1", protocolVersion })
+    const peerMachineId = (peerHello.result as { machine: { id: string } }).machine.id
+    const code = await peerRpc.call(2, "device.issueCode", {})
 
     const first = await createProductionDaemonWithDependencies(options, dependencies)
     running.push(first)
@@ -224,10 +275,20 @@ describe("createProductionDaemon", () => {
       clientVersion: "0.0.1",
       protocolVersion,
     })
-    await expect(firstRpc.call(2, "device.saveCredential", {
-      machineId: peerMachineId,
-      credential: peerCredential,
-    })).resolves.toMatchObject({ result: { saved: true } })
+    const enrolledResponse = await firstRpc.call(2, "fleet.enroll", {
+      endpoint: peerRpc.endpoint.url, code: (code.result as { code: string }).code,
+      sourceDeviceLabel: "source studio", expectedMachineId: peerMachineId, client: "cli",
+    })
+    const enrolled = fleetEnrollResultSchema.parse(enrolledResponse.result)
+    expect(enrolled).toMatchObject({ outcome: "enrolled", machineId: peerMachineId })
+    const peerCredential = credentialStores[0]!.forMachine(peerMachineId)!
+    expect(peerCredential).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(JSON.stringify(enrolled)).not.toContain(peerCredential)
+    const firstFleet = fleetSnapshotSchema.parse((await firstRpc.call(3, "fleet.list", {})).result)
+    expect(firstFleet.entries).toHaveLength(2)
+    expect(firstFleet.entries).toContainEqual(expect.objectContaining({ kind: "machine", machine: expect.objectContaining({
+      id: peerMachineId, label: "target studio", self: false, connection: "direct", verifiedRoute: expect.objectContaining({ endpoint: peerRpc.endpoint.url }),
+    }) }))
     firstRpc.socket.close()
     await first.stop()
 
@@ -245,6 +306,59 @@ describe("createProductionDaemon", () => {
     })
     expect(credentialStores).toHaveLength(2)
     expect(credentialStores[1]!.forMachine(peerMachineId)).toBe(peerCredential)
+    const restartedFleet = fleetSnapshotSchema.parse((await secondRpc.call(2, "fleet.list", {})).result)
+    expect(restartedFleet.entries).toHaveLength(2)
+    expect(restartedFleet.entries).toContainEqual(expect.objectContaining({ kind: "machine", machine: expect.objectContaining({ id: peerMachineId, label: "target studio" }) }))
+    const forgotten = await secondRpc.call(3, "fleet.forget", { machineId: peerMachineId, client: "cli" })
+    expect(forgotten).toMatchObject({ result: { outcome: "forgotten", machineId: peerMachineId, remoteRevocation: "confirmed" } })
+    expect(credentialStores[1]!.forMachine(peerMachineId)).toBeUndefined()
+    const devices = await peerRpc.call(3, "device.list", {})
+    expect(devices).toMatchObject({ result: { devices: [expect.objectContaining({
+      binding: { kind: "machine", machineId: (firstHello.result as { machine: { id: string } }).machine.id },
+      revokedAt: expect.any(String),
+    })] } })
     secondRpc.socket.close()
+    peerRpc.socket.close()
+  })
+})
+
+describe("createProductionDaemon under WSL", () => {
+  it("describes the distribution the daemon runs in from its environment", async () => {
+    const homeDirectory = await temporaryHome()
+    const environment = { WSL_DISTRO_NAME: "Ubuntu-24.04", WSL_INTEROP: "/run/WSL/8_interop" }
+    const wsl = { distribution: "Ubuntu-24.04", version: 2 as const }
+    const wslFacts = vi.fn(() => wsl)
+    let daemonOptions: DaemonServerOptions | undefined
+    running.push(await createProductionDaemonWithDependencies({ environment, homeDirectory, machineLabel: "studio" }, {
+      ...productionDaemonDependencies,
+      loadOrCreateToken: async () => testToken("wsl-factory"),
+      loadOrCreateIdentity: async () => ({ id: `machine-${"b".repeat(32)}`, label: "studio" }),
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+      wslFacts,
+      createDaemon: (options) => {
+        daemonOptions = options
+        return fakeRuntime(options)
+      },
+    }))
+
+    expect(wslFacts).toHaveBeenCalledWith(environment)
+    expect(daemonOptions).toMatchObject({ wsl })
+  })
+
+  it("passes no WSL facts to a daemon outside WSL", async () => {
+    let daemonOptions: DaemonServerOptions | undefined
+    running.push(await createProductionDaemonWithDependencies({ environment: {}, homeDirectory: await temporaryHome(), machineLabel: "studio" }, {
+      ...productionDaemonDependencies,
+      loadOrCreateToken: async () => testToken("plain-factory"),
+      loadOrCreateIdentity: async () => ({ id: `machine-${"b".repeat(32)}`, label: "studio" }),
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+      wslFacts: () => undefined,
+      createDaemon: (options) => {
+        daemonOptions = options
+        return fakeRuntime(options)
+      },
+    }))
+
+    expect(daemonOptions).not.toHaveProperty("wsl")
   })
 })

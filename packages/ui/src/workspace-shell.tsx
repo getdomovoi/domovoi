@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -43,6 +43,7 @@ import type {
   RpcParams,
   Runtime,
   SessionEvidence,
+  FleetEntry,
   FleetMachine,
   SessionHistoryCategory,
   SessionHistoryPage,
@@ -54,6 +55,8 @@ import type {
   SessionTransferPreview,
   SessionTransferPreviewParams,
   SessionUsage,
+  UsageWindow,
+  UsageWindowParams,
   TurnSkillSelection,
   TurnSkillSelectionRefusal,
   SystemEmergencyStopResult,
@@ -62,7 +65,6 @@ import type {
   PreviewBridgePickerMessage,
   PreviewBridgeResolveAnchorsMessage,
   PreviewBridgeSelectionMessage,
-  TransportCandidate,
 } from "@getdomovoi/protocol"
 import {
   boundedClientThread,
@@ -137,13 +139,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
-import { connectMachineClient } from "./machine-client.js"
-import { Deadline } from "./deadline"
-import { collectFleetInventories } from "./fleet-inventories.js"
-import { openMachine } from "./open-machine.js"
-import { resolveMachineTarget } from "./machine-target.js"
+import { fleetMachines } from "./fleet-entries.js"
+import { machineAttachment } from "./machine-selection.js"
 import {
-  attachedMachineSwitch,
   beganMachineSwitch,
   failedMachineSwitch,
   homeMachineSwitch,
@@ -157,7 +155,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./comp
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { ProjectSwitchConfirmationError } from "./client"
-import { machineDialBudgetMs, useWorkspace, workspaceBudgets } from "./use-workspace"
+import { useWorkspace } from "./use-workspace"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { annotationCaptureUpload } from "./annotation-capture"
@@ -178,12 +176,17 @@ import {
   sessionUsageCostNote,
   sessionUsageFetchKey,
   sessionUsageReportedCost,
+  usageTodayDetail,
+  usageTodayReadout,
+  usageTodayRefreshDelayMs,
+  usageTodayWindow,
+  usageWindowFetchKey,
 } from "./session-usage"
 import { SkillBrowser } from "./skill-browser"
 import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
-import { SettingsShell } from "./settings-shell"
+import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
@@ -263,6 +266,8 @@ export type WorkspaceShellProps = {
   clientKind?: ClientKind
   rpcUrl?: string
   rpcToken?: string
+  resolveRpcEndpoint?: () => Promise<{ url: string; token: string }>
+  localDaemon?: LocalDaemonDescription
   windowBridge?: DesktopWindowBridge
   onChangeCredential?: () => void
 }
@@ -406,6 +411,14 @@ export function skillInventoryRefreshKey(snapshot: WorkspaceSnapshot | null): st
     : "no-machine"
 }
 
+// The daemon keys its catalog by the project path, and a branch can carry
+// different project skills, so a refresh follows those facts and nothing else
+// a workspace change may bring.
+export function skillProjectRefreshKey(snapshot: WorkspaceSnapshot | null): string {
+  const project = snapshot?.project
+  return project ? JSON.stringify([project.id, project.path, project.branch]) : "no-project"
+}
+
 const defaultRuntime: Runtime = {
   provider: "codex",
   model: "default",
@@ -459,6 +472,7 @@ export function AppBar({
   onOpenCommands,
   commandShortcut,
   usage,
+  usageToday,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -472,6 +486,7 @@ export function AppBar({
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
   usage?: SessionUsage | null | undefined
+  usageToday?: UsageWindow | null | undefined
 }) {
   const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
@@ -532,10 +547,69 @@ export function AppBar({
             {emergencyStopMessage}
           </span>
         ) : null}
+        <UsageTodayReadout usage={usageToday ?? null} />
       </div>
       {ownsDecoration && bridge ? <WindowControls bridge={bridge} /> : null}
     </header>
   )
+}
+
+export function UsageTodayReadout({ usage }: { usage: UsageWindow | null }) {
+  const id = useId()
+  const readout = usage ? usageTodayReadout(usage) : undefined
+  if (!usage || !readout) return null
+  const labelId = `${id}-label`
+  const valueId = `${id}-value`
+  return (
+    <span role="status" aria-labelledby={`${labelId} ${valueId}`} className="font-machine text-[10.5px] text-faint">
+      <span id={labelId} className="sr-only">Usage today</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            id={valueId}
+            className="rounded-[4px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
+          >
+            {readout}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[42ch] text-[11.5px] leading-relaxed">
+          {usageTodayDetail(usage)}
+        </TooltipContent>
+      </Tooltip>
+    </span>
+  )
+}
+
+export function useUsageToday(
+  connected: boolean,
+  key: string | null,
+  fetch: (window: UsageWindowParams) => Promise<UsageWindow>,
+): UsageWindow | null {
+  const [usage, setUsage] = useState<UsageWindow | null>(null)
+  useEffect(() => {
+    if (!connected || !key) {
+      setUsage(null)
+      return
+    }
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = () => {
+      const now = new Date()
+      void fetch(usageTodayWindow(now)).then((next) => {
+        if (active) setUsage(next)
+      }, () => {
+        if (active) setUsage(null)
+      })
+      timer = setTimeout(refresh, usageTodayRefreshDelayMs(now))
+    }
+    refresh()
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [connected, fetch, key])
+  return usage
 }
 
 export function SessionUsageFooter({ usage }: { usage: SessionUsage | null }) {
@@ -698,7 +772,7 @@ export function SessionsSidebar({
   collapseButtonRef,
 }: {
   snapshot: WorkspaceSnapshot
-  fleet?: FleetMachine[] | null
+  fleet?: FleetEntry[] | null
   onCollapse: () => void
   onActivate: (sessionId: string) => void
   onNewSession: () => void
@@ -769,7 +843,7 @@ export function SessionsSidebar({
       <Separator />
       <div className="flex h-12 items-center gap-2 px-3">
         <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">{machineInitials(snapshot.machine.name)}</span>
-        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">{snapshot.machine.name}</span><span className="block font-machine text-[9px] text-faint">{outcomeCount(fleet?.length ?? 1, "machine", "machines")} · {snapshot.machine.connection}</span></span>
+        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">{snapshot.machine.name}</span><span className="block font-machine text-[9px] text-faint">{outcomeCount(fleet ? fleetMachines(fleet).length : 1, "machine", "machines")} · {snapshot.machine.connection}</span></span>
         <LaptopIcon className="size-3.5 text-muted-foreground" />
         <Tooltip>
           <TooltipTrigger asChild>
@@ -1371,7 +1445,7 @@ export function Thread({
   snapshot: WorkspaceSnapshot
   connected: boolean
   emergencyStopPending?: boolean | undefined
-  fleet?: FleetMachine[] | undefined
+  fleet?: FleetEntry[] | undefined
   currentMachineId?: string | undefined
   onResolve: (
     approvalId: string,
@@ -1460,7 +1534,8 @@ export function Thread({
     )
   }
 
-  const machines = fleet ?? [localMachineEntry(snapshot)]
+  const entries = fleet ?? [localFleetEntry(snapshot)]
+  const machines = fleetMachines(entries)
   const sourceMachine = machines.find(
     (machine) => machine.id === (currentMachineId ?? snapshot.machine.id),
   ) ?? localMachineEntry(snapshot)
@@ -1568,7 +1643,7 @@ export function Thread({
       ? active.ownershipConflict?.otherMachineId
       : active.transfer?.targetMachineId
     if (otherId === undefined) return undefined
-    return fleet?.find((machine) => machine.id === otherId)?.label
+    return fleetMachines(fleet ?? []).find((machine) => machine.id === otherId)?.label
   })()
 
   const releaseSession = async (offer: SessionRecoveryOffer) => {
@@ -1804,7 +1879,7 @@ export function Thread({
                 />
               ) : null}
               <MachineSwitcher
-                machines={machines}
+                entries={entries}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
                 currentSessionCount={activeSessionCount(snapshot)}
                 onPairMachine={onPairMachine ? () => setPairingMachine(true) : undefined}
@@ -1915,6 +1990,10 @@ function localMachineEntry(snapshot: WorkspaceSnapshot): FleetMachine {
     health: "healthy",
     self: true,
   }
+}
+
+function localFleetEntry(snapshot: WorkspaceSnapshot): FleetEntry {
+  return { kind: "machine", machine: localMachineEntry(snapshot) }
 }
 
 export function activeThreadKey(snapshot: WorkspaceSnapshot): string {
@@ -3227,7 +3306,7 @@ function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandB
   )
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, windowBridge, onChangeCredential }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, onChangeCredential }: WorkspaceShellProps) {
   const [machineSwitch, setMachineSwitch] = useState<MachineSwitchState>(homeMachineSwitch)
   const attached = machineSwitch.state === "attached" ? machineSwitch.target : null
   const activeRpcUrl = attached?.endpoint ?? rpcUrl
@@ -3246,18 +3325,20 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     emergencyStopError,
     emergencyStopOutcome,
     emergencyStopPending,
+    endpointUrl,
     forkSession,
     getSkillInventory,
     createTerminal,
+    fleet,
+    fleetOverflow,
+    forgetMachine,
     listDevices,
-    listFleet,
     listModels,
     listProviderSecrets,
     listSkills,
     exportAudit,
     loadSessionHistory,
     loadSessionEvidence,
-    machineCredential,
     openProject,
     pairMachine,
     pauseSession,
@@ -3275,9 +3356,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     replyToAnnotation,
     revokeDevice,
     rotateDevice,
+    renameDevice,
     reviewSkill,
+    previewSkillInstall,
+    installSkill,
     sendMessage,
     sessionUsage,
+    usageWindow,
     setSkillEnabled,
     setRuntime,
     setAnnotationStatus,
@@ -3291,7 +3376,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     authenticationRequired,
     protocolError,
     reconnecting,
-  } = useWorkspace(activeRpcUrl, clientKind, activeRpcToken)
+  } = useWorkspace(activeRpcUrl, clientKind, activeRpcToken, attached ? undefined : resolveRpcEndpoint)
   const terminalControls = useMemo<TerminalControls>(() => ({
     clientId: terminalClientId,
     create: createTerminal,
@@ -3309,69 +3394,22 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setHomeMachineId(snapshot.machine.id)
   }, [machineSwitch.state, snapshot])
 
-  const [fleet, setFleet] = useState<FleetMachine[] | null>(null)
-  useEffect(() => {
-    if (!connected) return
-    let active = true
-    void listFleet().then(
-      (snapshot) => {
-        if (active) setFleet(snapshot.machines)
-      },
-      () => {
-        // A daemon that cannot describe its fleet still runs this machine, so
-        // the menu falls back to naming this machine alone.
-        if (active) setFleet(null)
-      },
-    )
-    return () => {
-      active = false
-    }
-  }, [connected, listFleet])
-
-  // Reaching another machine tries its transports in turn as one operation, so
-  // one deadline covers the whole dial; a later route gets only what remains.
-  const dialMachine = useCallback(async (
-    { candidates, credential }: { candidates: TransportCandidate[]; credential: string },
-  ) => {
-    const deadline = Deadline.start(machineDialBudgetMs)
-    try {
-      return await connectMachineClient({
-        candidates,
-        credential,
-        kind: clientKind,
-        budgets: workspaceBudgets,
-        deadline,
-      })
-    } finally {
-      deadline.clear()
-    }
-  }, [clientKind])
-
+  // Attaching to another machine is a client dial with a client credential,
+  // and nothing issues one for a remote machine yet. The switch records the
+  // refusal instead of dialing, so the composer reports the same sentence the
+  // menu already shows rather than a transport error.
   const switchMachine = useCallback((machineId: string) => {
     if (machineId === homeMachineId) {
       setMachineSwitch(homeMachineSwitch)
       return
     }
-    const machine = fleet?.find((candidate) => candidate.id === machineId)
+    const machine = fleetMachines(fleet?.entries ?? []).find((candidate) => candidate.id === machineId)
     if (!machine) return
+    const attachment = machineAttachment(machine)
+    if (attachment.selectable) return
     setMachineSwitch((current) => beganMachineSwitch(current, machineId, homeMachineId ?? undefined))
-    void resolveMachineTarget({
-      machine,
-      readCredential: async (id) => (await machineCredential({ machineId: id })).credential,
-      connect: async (attempt) => {
-        const opened = await dialMachine(attempt)
-        return { transport: opened.transport, close: () => opened.client.disconnect() }
-      },
-      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    }).then(
-      (target) => setMachineSwitch((current) => attachedMachineSwitch(current, target)),
-      (error: unknown) => setMachineSwitch((current) => failedMachineSwitch(
-        current,
-        error instanceof Error ? error.message : "That machine could not be opened",
-        machineId,
-      )),
-    )
-  }, [dialMachine, fleet, homeMachineId, machineCredential])
+    setMachineSwitch((current) => failedMachineSwitch(current, attachment.reason, machineId))
+  }, [fleet, homeMachineId])
 
   const shellRef = useRef<HTMLDivElement>(null)
   const sidebarCollapseButtonRef = useRef<HTMLButtonElement>(null)
@@ -3477,6 +3515,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     (session) => session.id === snapshot.activeSessionId,
   )?.workspacePath
   const skillMachineKey = skillInventoryRefreshKey(snapshot)
+  const skillProjectKey = skillProjectRefreshKey(snapshot)
+  // The composer names the skills a turn carries, so the catalog cannot wait
+  // for someone to open the Skills surface first.
+  const skillsWanted = surface === "skills" || skillProjectKey !== "no-project"
   const skillMachine = useMemo(() => {
     if (skillMachineKey === "no-machine") return null
     const [id, name, platform, arch, version] = JSON.parse(skillMachineKey) as [
@@ -3646,7 +3688,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     reconnect: reconnectDaemon,
     setSurface,
     sessions: snapshot?.sessions ?? [],
-    machines: fleet,
+    entries: fleet?.entries,
     skills,
     activateSession: (sessionId) => {
       setSurface("workspace")
@@ -3660,6 +3702,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   })
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
+  const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
   const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
@@ -3811,10 +3854,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     return () => { active = false }
   }, [connected, listProviderSecrets, surface])
 
+  // A refresh follows the machine and project keys, a reconnect, and an
+  // explicit retry. Other workspace changes and surface moves leave the catalog
+  // alone, and a refresh they would have made obsolete is cancelled rather than
+  // left to finish for nothing.
   useEffect(() => {
-    // The composer names the skills a turn carries, so the catalog cannot wait
-    // for someone to open the Skills surface first.
-    if (surface !== "skills" && !snapshot?.project) return
+    if (!skillsWanted) return
     if (!connected) {
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{
@@ -3825,33 +3870,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       return
     }
     let active = true
+    const refresh = new AbortController()
+    const options = { signal: refresh.signal }
     setSkillsLoading(true)
     setSkillsError("")
-    void Promise.all([listSkills(), getSkillInventory()]).then(
-      async ([discovered, inventory]) => {
+    void Promise.all([listSkills(options), getSkillInventory(options)]).then(
+      ([discovered, inventory]) => {
         if (!active) return
         setSkills(discovered)
-        // This machine answers first so the card is never empty while the
-        // fleet is still being asked.
+        // Only this machine answers. Asking a fleet member for its inventory is
+        // a client dial with a client credential, which no remote machine has
+        // until client admission lands, so the comparison covers this machine
+        // rather than guessing at the others.
         setSkillInventories([{ state: "available", inventory }])
-        const sources = await collectFleetInventories({
-          local: inventory,
-          fleet,
-          open: async (machine) => {
-            const opened = await openMachine({
-              machine,
-              readCredential: async (id) => (await machineCredential({ machineId: id })).credential,
-              connect: dialMachine,
-              wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-              attempts: 1,
-            })
-            return {
-              inventory: () => opened.client.getSkillInventory(),
-              close: () => opened.client.disconnect(),
-            }
-          },
-        })
-        if (active) setSkillInventories(sources)
       },
       (cause: unknown) => {
         if (active) {
@@ -3865,18 +3896,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     ).finally(() => {
       if (active) setSkillsLoading(false)
     })
-    return () => { active = false }
+    return () => {
+      active = false
+      refresh.abort()
+    }
   }, [
     connected,
-    dialMachine,
-    fleet,
     getSkillInventory,
     listSkills,
-    machineCredential,
     skillMachine,
+    skillProjectKey,
     skillsRefresh,
-    snapshot?.project,
-    surface,
+    skillsWanted,
   ])
 
   useEffect(() => {
@@ -3894,7 +3925,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} />
+        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
@@ -3911,6 +3942,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
+            {...(localDaemon ? { localDaemon } : {})}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {
@@ -3953,19 +3985,28 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               setSkillsRefresh((current) => current + 1)
               return reviewed
             }}
+            onPreviewSkillInstall={(source) => previewSkillInstall({ source })}
+            onInstallSkill={async (input) => {
+              const installed = await installSkill(input)
+              setSkillsRefresh((current) => current + 1)
+              return installed
+            }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
         ) : surface === "fleet" ? (
           <FleetView
             connected={connected}
-            machines={fleet ?? [localMachineEntry(snapshot)]}
+            entries={fleet?.entries ?? [localFleetEntry(snapshot)]}
+            fleetOverflow={fleetOverflow}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
             currentSessionCount={activeSessionCount(snapshot)}
             onOpenSkills={() => setSurface("skills")}
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
             onRotateDevice={rotateDevice}
+            onRenameDevice={renameDevice}
             onPairMachine={pairMachine}
+            onForgetMachine={(machineId: string) => forgetMachine({ machineId })}
             onUseMachine={(machineId: string) => {
               switchMachine(machineId)
               setSurface("workspace")
@@ -3999,9 +4040,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet ?? undefined} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={activeRpcUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet?.entries ?? null} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet?.entries} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>

@@ -1,4 +1,6 @@
-import { access, mkdir, mkdtemp, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { asyncTestCredentials } from "./test-machine-credentials.js"
+import { waitForDaemon } from "./test-wait-for.js"
+import { access, chmod, mkdir, mkdtemp, realpath, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
@@ -14,6 +16,7 @@ import {
   createEmptyWorkspace,
   daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
+  deviceLabelMismatchErrorCode,
   devicePairingLimitErrorCode,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
@@ -22,6 +25,7 @@ import {
   projectSwitchConfirmationSchema,
   protocolVersion,
   protocolVersionMismatchErrorCode,
+  skillInstallErrorCode,
   workspaceSnapshotSchema,
   type ProviderModel,
   type RpcMethod,
@@ -61,6 +65,14 @@ import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { internalRpcErrorMessage } from "./rpc-errors.js"
 import { maximumPairedDevices } from "./device-registry.js"
 import { SqliteSkillReviews } from "./skill-reviews.js"
+import {
+  addTrustedSkillKey,
+  exportSkillPublicKey,
+  generateSkillSigningKey,
+  signSkillDigest,
+  skillContentDigest,
+  skillKeyId,
+} from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import {
   FileRevertIncompleteError,
@@ -260,7 +272,7 @@ const codexModels = () => [{
 
 afterEach(async () => {
   await Promise.all(running.splice(0).map((daemon) => daemon.stop()))
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 describe("DomovoiDaemon", () => {
@@ -540,12 +552,12 @@ describe("DomovoiDaemon", () => {
     for (const listener of listeners) {
       listener({ type: "text-delta", threadId: "thread-streaming", turnId, delta: "hello from A" })
     }
-    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.delta" }),
     ])))
     releasePersist()
     await pendingOther
-    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.changed" }),
     ])))
 
@@ -645,7 +657,7 @@ describe("DomovoiDaemon", () => {
       mimeType: "text/markdown",
       content: "# Review plan",
     })
-    await vi.waitFor(() => expect(store.snapshot.artifacts).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(store.snapshot.artifacts).toEqual(expect.arrayContaining([
       expect.objectContaining({ sessionId: session.id, path: "design-studio/variant-a.html", type: "preview", revision: 1, variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 } }),
       expect.objectContaining({ sessionId: session.id, path: "plans/review-plan.md", type: "plan", content: "# Review plan", revision: 1 }),
     ])))
@@ -657,7 +669,7 @@ describe("DomovoiDaemon", () => {
       mimeType: "text/html",
       variant: { id: "a", groupId: "design-studio", label: "Variant A", order: 0 },
     })
-    await vi.waitFor(() => expect(store.snapshot.artifacts.find(
+    await waitForDaemon(() => expect(store.snapshot.artifacts.find(
       (artifact) => artifact.path === "design-studio/variant-a.html",
     )?.revision).toBe(2))
     await new Promise<void>((resolve) => setImmediate(resolve))
@@ -961,7 +973,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       agents: {},
-      usageLedger: { record: vi.fn(), session: usage, close: vi.fn() },
+      usageLedger: { record: vi.fn(), session: usage, window: vi.fn(), close: vi.fn() },
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -990,6 +1002,56 @@ describe("DomovoiDaemon", () => {
       model: "gpt-5.6-sol",
       threadId: "thread-current",
     })
+    socket.close()
+  })
+
+  it("reads usage totals over a window across sessions from the ledger", async () => {
+    const result = {
+      sessions: 2,
+      turns: 3,
+      inputTokens: 35,
+      cachedInputTokens: 2,
+      outputTokens: 13,
+      reasoningTokens: 1,
+      totalTokens: 49,
+      costMicros: 30_000,
+      currency: "USD",
+      reportedCostTurns: 2,
+      unavailableCostTurns: 1,
+    }
+    const window = vi.fn(() => result)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      agents: {},
+      usageLedger: { record: vi.fn(), session: vi.fn(), window, close: vi.fn() },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: string }
+        if (message.id === "usage-window") resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "usage-window",
+      method: "usage.window",
+      params: { start: "2026-09-04T06:00:00.000Z", end: "2026-09-05T06:00:00.000Z" },
+    }))
+
+    await expect(response).resolves.toMatchObject({ result })
+    expect(window).toHaveBeenCalledWith(
+      Date.parse("2026-09-04T06:00:00.000Z"),
+      Date.parse("2026-09-05T06:00:00.000Z"),
+    )
     socket.close()
   })
 
@@ -1026,6 +1088,7 @@ describe("DomovoiDaemon", () => {
       usageLedger: {
         record: vi.fn(() => { throw new Error("usage database unavailable") }),
         session: vi.fn(),
+        window: vi.fn(),
         close: vi.fn(),
       },
       errorSink,
@@ -1048,7 +1111,7 @@ describe("DomovoiDaemon", () => {
       delta: "still delivered",
     })
 
-    await vi.waitFor(() => expect(store.snapshot.thread).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(store.snapshot.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "assistant", body: "still delivered" }),
     ])))
     expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
@@ -1319,7 +1382,7 @@ describe("DomovoiDaemon", () => {
       method: "session.evidence",
       params: { sessionId: session.id },
     }))
-    await vi.waitFor(() => expect(evidence).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(evidence).toHaveBeenCalledOnce())
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: 2,
@@ -1446,6 +1509,97 @@ describe("DomovoiDaemon", () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(messages.filter((message) => message.id === 1)).toHaveLength(1)
     expect(save).not.toHaveBeenCalled()
+  })
+
+  it("removes a session worktree the creation deadline abandoned", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    let releaseWorkspace: (() => void) | undefined
+    const removeSessionWorkspace = vi.fn(async () => {})
+    // The aborted git run can still finish its worktree, and only this promise
+    // records where that worktree went.
+    const createSessionWorkspace = vi.fn((_path: string, sessionId: string) => (
+      new Promise<{ path: string; branch: string; baseCommit: string }>((resolve) => {
+        releaseWorkspace = () => resolve({
+          path: `/worktrees/${sessionId}`,
+          branch: `domovoi/${sessionId}`,
+          baseCommit: "a".repeat(40),
+        })
+      })
+    ))
+    const workspaceService = {
+      inspect: vi.fn(async (path: string) => ({
+        root: path, name: "domovoi", branch: "main", head: "a".repeat(40),
+      })),
+      createSessionWorkspace,
+      removeSessionWorkspace,
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "provider-thread-1"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "provider-turn-1"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: testAuthToken("abandoned-worktree-token"),
+      agentTimeoutMs: 10,
+      errorSink: vi.fn(),
+      store: { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() },
+      agents: { codex: agent },
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { id?: number }
+        if (message.id !== 7) return
+        socket.off("message", receive)
+        resolve(message as Record<string, unknown>)
+      }
+      socket.on("message", receive)
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "session.create",
+      params: {
+        title: "Abandoned worktree",
+        client: "desktop",
+        runtime: {
+          provider: "codex",
+          model: "default",
+          reasoning: "medium",
+          permissionMode: "build",
+          auto: false,
+        },
+      },
+    }))
+    await expect(response).resolves.toMatchObject({
+      id: 7,
+      error: { message: "Session workspace creation timed out" },
+    })
+    expect(releaseWorkspace).toBeDefined()
+    releaseWorkspace!()
+    await waitForDaemon(() => expect(removeSessionWorkspace).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/worktrees\/session-/),
+    ))
+    socket.close()
   })
 
   it("drains queued events once and rejects late shutdown events", async () => {
@@ -2128,7 +2282,7 @@ describe("DomovoiDaemon", () => {
       prompt: "Begin the work",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledOnce())
     for (const listener of listeners) {
       listener({ type: "provider-disconnected", reason: "transport lost during turn/start" })
     }
@@ -2218,7 +2372,7 @@ describe("DomovoiDaemon", () => {
     }
 
     const models = rpc("runtime.models", { provider: "codex", client: "desktop" })
-    await vi.waitFor(() => expect(agent.connect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.connect).toHaveBeenCalledOnce())
     for (const listener of listeners) {
       listener({ type: "provider-disconnected", reason: "lost during initialization" })
     }
@@ -2405,7 +2559,7 @@ describe("DomovoiDaemon", () => {
       },
     })
 
-    await vi.waitFor(() => expect(changes).toHaveLength(1))
+    await waitForDaemon(() => expect(changes).toHaveLength(1))
     expect(changes[0]).toMatchObject({
       thread: expect.arrayContaining([
         expect.objectContaining({
@@ -3614,14 +3768,14 @@ describe("DomovoiDaemon", () => {
 
     await expect(response).resolves.toMatchObject({
       result: {
-        machines: [{
+        entries: [{ kind: "machine", machine: {
           id: `machine-${"7".repeat(32)}`,
           label: "workshop",
           connection: "local",
           self: true,
           heartbeat: { state: "online" },
           capabilities: expect.arrayContaining(["sessions", "terminals"]),
-        }],
+        } }],
       },
     })
     socket.close()
@@ -3715,6 +3869,62 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("renames a paired device and records the rename", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+    const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+    const device = (paired.result as { device: { id: string } }).device
+
+    const renamed = await call(3, "device.rename", { deviceId: device.id, label: "kitchen-ipad" })
+    const missing = await call(4, "device.rename", { deviceId: `device-${"0".repeat(32)}`, label: "kitchen-ipad" })
+    const blank = await call(5, "device.rename", { deviceId: device.id, label: "   " })
+
+    expect(renamed).toEqual({ jsonrpc: "2.0", id: 3, result: { device: { ...device, label: "kitchen-ipad" } } })
+    expect(missing).toMatchObject({ error: { code: expect.any(Number) } })
+    expect(blank).toMatchObject({ error: { code: -32602 } })
+    expect(store.devices.list()).toEqual([{ ...device, label: "kitchen-ipad" }])
+    expect(store.devices.verify((paired.result as { token: string }).token)?.device.label).toBe("kitchen-ipad")
+    const entries = store.auditLog.query({ limit: 50 }).entries
+    expect(entries.some((entry) => entry.action === "device.rename" && entry.target === device.id)).toBe(true)
+    socket.close()
+  })
+
+  it("refuses a rename whose expected label is stale and returns the current row", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+    const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+    const device = (paired.result as { device: { id: string } }).device
+
+    const matched = await call(3, "device.rename", { deviceId: device.id, label: "kitchen-ipad", expectedLabel: "studio-ipad" })
+    const stale = await call(4, "device.rename", { deviceId: device.id, label: "studio-ipad", expectedLabel: "studio-ipad" })
+
+    expect(matched).toEqual({ jsonrpc: "2.0", id: 3, result: { device: { ...device, label: "kitchen-ipad" } } })
+    expect(stale).toEqual({
+      jsonrpc: "2.0",
+      id: 4,
+      error: {
+        code: deviceLabelMismatchErrorCode,
+        message: expect.any(String),
+        data: { kind: "device-label-mismatch", device: { ...device, label: "kitchen-ipad" } },
+      },
+    })
+    expect(store.devices.list()).toEqual([{ ...device, label: "kitchen-ipad" }])
+    const entries = store.auditLog.query({ limit: 50 }).entries
+    expect(entries).toContainEqual(expect.objectContaining({
+      action: "device.rename",
+      target: device.id,
+      outcome: "failed",
+      detail: "reason=label-mismatch",
+    }))
+    socket.close()
+  })
+
   it("refuses to manage devices for a client holding only a device credential", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
@@ -3728,13 +3938,19 @@ describe("DomovoiDaemon", () => {
       deviceId: issued.device.id,
       client: "desktop",
     })
+    const renameAttempt = await call(4, "device.rename", {
+      deviceId: issued.device.id,
+      label: "kitchen-ipad",
+    })
 
-    for (const attempt of [pairAttempt, revokeAttempt]) {
+    for (const attempt of [pairAttempt, revokeAttempt, renameAttempt]) {
       expect(attempt).toMatchObject({
         error: { message: "Managing paired devices requires the daemon credential" },
       })
     }
-    expect(store.devices.list()).toHaveLength(1)
+    expect(store.devices.list()).toEqual([
+      expect.objectContaining({ id: issued.device.id, label: "studio-ipad" }),
+    ])
     socket.close()
   })
 
@@ -3853,7 +4069,8 @@ describe("DomovoiDaemon", () => {
       result: { machine: { id: expect.any(String) } },
     })
     socket.close()
-  })
+    // Real key generation and listener startup need their own Windows budget.
+  }, 90_000)
 
   async function unauthenticatedSocket(daemon: DomovoiDaemon) {
     const address = daemon.address!
@@ -3878,19 +4095,19 @@ describe("DomovoiDaemon", () => {
     return { socket, call }
   }
 
-  it("keeps a credential for a machine it was given", async () => {
+  it("refuses the removed credential-save bypass even to the root client", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const credentials = new Map<string, string>()
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -3913,8 +4130,8 @@ describe("DomovoiDaemon", () => {
       params: { machineId: `machine-${"b".repeat(32)}`, credential: "n".repeat(43) },
     }))
 
-    await expect(response).resolves.toMatchObject({ result: { saved: true } })
-    expect(credentials.get(`machine-${"b".repeat(32)}`)).toBe("n".repeat(43))
+    await expect(response).resolves.toMatchObject({ error: { code: -32601, message: "Unknown method: device.saveCredential" } })
+    expect(credentials.get(`machine-${"b".repeat(32)}`)).toBeUndefined()
     expect(JSON.stringify(store.auditLog.query({ limit: 20 }).entries)).not.toContain("n".repeat(43))
     socket.close()
   })
@@ -3926,12 +4143,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     await daemon.start()
@@ -3943,25 +4160,25 @@ describe("DomovoiDaemon", () => {
     })
 
     await expect(response).resolves.toMatchObject({
-      error: { message: "Managing paired devices requires the daemon credential" },
+      error: { code: -32601, message: "Unknown method: device.saveCredential" },
     })
     expect(credentials.size).toBe(0)
     socket.close()
   })
 
-  it("returns a kept machine credential to a daemon client", async () => {
+  it("never returns a kept machine credential through the removed root RPC", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const credentials = new Map<string, string>([[`machine-${"b".repeat(32)}`, "n".repeat(43)]])
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -3984,7 +4201,9 @@ describe("DomovoiDaemon", () => {
       params: { machineId: `machine-${"b".repeat(32)}` },
     }))
 
-    await expect(response).resolves.toMatchObject({ result: { credential: "n".repeat(43) } })
+    const refused = await response
+    expect(refused).toMatchObject({ error: { code: -32601, message: "Unknown method: device.machineCredential" } })
+    expect(JSON.stringify(refused)).not.toContain("n".repeat(43))
     expect(JSON.stringify(store.auditLog.query({ limit: 20 }).entries)).not.toContain("n".repeat(43))
     socket.close()
   })
@@ -3996,12 +4215,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (machineId: string, credential: string) => credentials.set(machineId, credential),
         forMachine: (machineId: string) => credentials.get(machineId),
         forget: (machineId: string) => credentials.delete(machineId),
         machines: () => [...credentials.keys()],
-      },
+      }),
     })
     running.push(daemon)
     await daemon.start()
@@ -4011,7 +4230,7 @@ describe("DomovoiDaemon", () => {
       machineId: `machine-${"b".repeat(32)}`,
     })
     expect(refusal).toMatchObject({
-      error: { message: "Managing paired devices requires the daemon credential" },
+      error: { code: -32601, message: "Unknown method: device.machineCredential" },
     })
     expect(JSON.stringify(refusal)).not.toContain("n".repeat(43))
     socket.close()
@@ -4023,12 +4242,12 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: () => {},
         forMachine: () => undefined,
         forget: () => {},
         machines: () => [],
-      },
+      }),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -4052,7 +4271,7 @@ describe("DomovoiDaemon", () => {
     }))
 
     await expect(response).resolves.toMatchObject({
-      error: { message: "No credential is kept for that machine" },
+      error: { code: -32601, message: "Unknown method: device.machineCredential" },
     })
     socket.close()
   })
@@ -4155,7 +4374,7 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
-  it("pairs an unauthenticated machine that presents the pairing code", async () => {
+  it("stages but does not activate an unauthenticated machine presenting the pairing code", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
@@ -4167,14 +4386,13 @@ describe("DomovoiDaemon", () => {
       code: issued.code,
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     const token = (claimed.result as { token: string }).token
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
-    expect(store.devices.verify(token)).toEqual({
-      device: expect.objectContaining({ label: "studio-ipad" }),
-      binding: { kind: "machine", machineId: claimedMachineId },
-    })
+    expect(store.devices.verify(token)).toBeUndefined()
+    expect(store.devices.list()).toEqual([])
     socket.close()
   })
 
@@ -4205,6 +4423,7 @@ describe("DomovoiDaemon", () => {
       code: "hearth-quiet-ember-42",
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     }))
       .resolves.toMatchObject({ error: { message: "Pairing was refused" } })
     expect(store.devices.list()).toHaveLength(0)
@@ -4222,12 +4441,14 @@ describe("DomovoiDaemon", () => {
       code: "hearth-quiet-ember-42",
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
     daemon.issuePairingCode()
     const withWrongCode = await call(2, "device.claim", {
       code: "willow-harbor-cedar-11",
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     const refusal = (response: Record<string, unknown>) =>
@@ -4252,6 +4473,7 @@ describe("DomovoiDaemon", () => {
       code: issued.code,
       label: "one-too-many",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     expect(claimed).toMatchObject({
@@ -4323,6 +4545,7 @@ describe("DomovoiDaemon", () => {
       code: issued.code,
       label: "studio-ipad",
       machineId: claimedMachineId,
+      protocolVersion,
     })
 
     const token = (claimed.result as { token: string }).token
@@ -4593,7 +4816,7 @@ describe("DomovoiDaemon", () => {
       method: "project.open",
       params: { path: "/blocked", client: "desktop" },
     }))
-    await vi.waitFor(() => expect(workspaceService.inspect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(workspaceService.inspect).toHaveBeenCalledOnce())
 
     const unauthenticated = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
@@ -4961,7 +5184,7 @@ describe("DomovoiDaemon", () => {
       prompt: "Block this session",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
+    await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "thread-first",
     })))
     const queuedSameSession = rpc("session.send", {
@@ -5273,6 +5496,96 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("reports a signed project skill as verified over RPC once its key is trusted", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "domovoi-project-signed-skill-"))
+    scratchDirectories.push(projectRoot)
+    const skillDirectory = join(projectRoot, ".domovoi", "skills", "signed")
+    await mkdir(skillDirectory, { recursive: true })
+    const content = "---\nname: signed\ndescription: Signed project instructions.\n---\n\n# Signed\n"
+    await writeFile(join(skillDirectory, "SKILL.md"), content)
+    const signer = generateSkillSigningKey()
+    const contentDigest = skillContentDigest(content)
+    const keyId = skillKeyId(signer.publicKey)
+    await writeFile(join(skillDirectory, "SKILL.md.sig"), JSON.stringify({
+      version: 1,
+      contentDigest,
+      algorithm: "ed25519",
+      keyId,
+      value: signSkillDigest(contentDigest, signer.privateKey),
+    }))
+    const trustPath = join(projectRoot, "state", "skill-trusted-keys.json")
+    await addTrustedSkillKey(trustPath, exportSkillPublicKey(signer.publicKey))
+    const errorSink = vi.fn()
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.project!.path = projectRoot
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agents: {},
+      skillTrustPath: trustPath,
+      errorSink,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+
+    expect(await rpc(1, "skill.list", {})).toMatchObject({
+      result: expect.arrayContaining([expect.objectContaining({
+        name: "signed",
+        signature: {
+          state: "verified",
+          algorithm: "ed25519",
+          keyId,
+          value: expect.any(String),
+          verifiedBy: trustPath,
+          verifiedAt: expect.any(String),
+        },
+        trust: { state: "trusted", reason: "verified-signature", authority: `signature · ${keyId}` },
+      })]),
+    })
+    expect(await rpc(2, "skill.inventory", {})).toMatchObject({
+      result: {
+        skills: expect.arrayContaining([expect.objectContaining({
+          name: "signed",
+          signature: { state: "verified" },
+          trust: { state: "trusted", reason: "verified-signature" },
+        })]),
+      },
+    })
+
+    if (process.platform !== "win32") {
+      await chmod(trustPath, 0o644)
+      expect(await rpc(3, "skill.list", {})).toMatchObject({
+        result: expect.arrayContaining([expect.objectContaining({
+          name: "signed",
+          signature: expect.objectContaining({ state: "unverified", keyId }),
+          trust: { state: "untrusted", reason: "unverified-signature" },
+        })]),
+      })
+      expect(errorSink).toHaveBeenCalledWith({
+        context: "skill-trust",
+        detail: `Skill trust file must not be readable by other users: ${trustPath}`,
+      })
+    }
+    socket.close()
+  })
+
   it("persists exact project skill reviews and audits the client", async () => {
     const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
     let currentSkill: SkillSummary = {
@@ -5383,7 +5696,7 @@ describe("DomovoiDaemon", () => {
       enabled: false,
     })
     expect(disabled).toMatchObject({ result: { skillEnablements: [{ enabled: false }] } })
-    await vi.waitFor(() => expect(notifications).toEqual(expect.arrayContaining([
+    await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
       expect.objectContaining({
         method: "workspace.changed",
         params: expect.objectContaining({
@@ -5515,6 +5828,193 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("previews and installs a skill from a local folder and refuses a stale digest", async () => {
+    const auditLog = { append: vi.fn(), query: vi.fn(), export: vi.fn() }
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-skill-install-rpc-")))
+    scratchDirectories.push(scratch)
+    const source = join(scratch, "work", "pr-triage")
+    await mkdir(source, { recursive: true })
+    await writeFile(join(source, "SKILL.md"), [
+      "---",
+      "name: pr-triage",
+      "description: Triage pull requests.",
+      "domovoi:",
+      "  manifest:",
+      "    version: 1",
+      "    capabilities:",
+      "      - filesystem.read",
+      "---",
+      "",
+      "# Instructions",
+      "",
+    ].join("\n"))
+    const userRoot = join(scratch, "home", ".domovoi", "skills")
+    const skillCatalog = new FileSkillCatalog([
+      { path: userRoot, scope: "user", source: "domovoi" },
+      { path: join(scratch, "project", ".domovoi", "skills"), scope: "project", source: "domovoi" },
+    ], undefined, { trustPath: join(scratch, "home", ".domovoi", "skill-trusted-keys.json") })
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => structuredClone(demoWorkspace),
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      auditLog,
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await rpc(1, "system.hello", {
+      authToken: daemon.authToken,
+      client: "desktop",
+      clientId: "desktop-installer",
+      clientVersion: "0.0.1",
+      protocolVersion,
+    })
+
+    const preview = (await rpc(2, "skill.installPreview", {
+      source: { kind: "path", path: source },
+    })).result as RpcResult<"skill.installPreview">
+    expect(preview).toMatchObject({
+      name: "pr-triage",
+      description: "Triage pull requests.",
+      manifest: { version: 1, capabilities: ["filesystem.read"] },
+      signature: { state: "unsigned" },
+      trust: { state: "untrusted", reason: "unsigned" },
+      files: [{ path: "SKILL.md", bytes: expect.any(Number) }],
+      targets: [
+        { scope: "project", path: join(scratch, "project", ".domovoi", "skills", "pr-triage"), state: "available" },
+        { scope: "user", path: join(userRoot, "pr-triage"), state: "available" },
+      ],
+      refusals: [],
+    })
+    const staleDigest = `sha256:${"b".repeat(64)}`
+    await expect(rpc(3, "skill.install", {
+      source: { kind: "path", path: source },
+      scope: "user",
+      sourceDigest: staleDigest,
+    })).resolves.toMatchObject({
+      error: {
+        code: skillInstallErrorCode,
+        message: "Skill source changed since it was reviewed; review it again",
+        data: { kind: "skill-install-refused", reason: "source-changed" },
+      },
+    })
+    const installed = (await rpc(4, "skill.install", {
+      source: { kind: "path", path: source },
+      scope: "user",
+      sourceDigest: preview.sourceDigest,
+    })).result as RpcResult<"skill.install">
+    expect(installed).toMatchObject({
+      name: "pr-triage",
+      scope: "user",
+      source: "domovoi",
+      path: join(userRoot, "pr-triage", "SKILL.md"),
+      contentDigest: preview.contentDigest,
+      trust: { state: "untrusted", reason: "unsigned" },
+    })
+    expect((await rpc(5, "skill.list", {})).result).toEqual([installed])
+    await expect(rpc(6, "skill.installPreview", {
+      source: { kind: "path", path: join(scratch, "nowhere") },
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: `Skill source is not a readable directory: ${join(scratch, "nowhere")}` },
+    })
+
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      actor: {
+        kind: "client",
+        client: "desktop",
+        clientId: "desktop-installer",
+        connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      },
+      action: "skill.install",
+      outcome: "failed",
+      detail: `scope=user sourceDigest=${staleDigest} source=${source}`,
+    }))
+    expect(auditLog.append).toHaveBeenCalledWith(expect.objectContaining({
+      action: "skill.install",
+      outcome: "succeeded",
+      target: installed.id,
+      detail: `scope=user sourceDigest=${preview.sourceDigest} source=${source} digest=${installed.contentDigest} path=${installed.path}`,
+    }))
+    expect(auditLog.append).not.toHaveBeenCalledWith(expect.objectContaining({ action: "skill.installPreview" }))
+    socket.close()
+  })
+
+  it("rejects a project-scoped skill install without an open project", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-skill-install-noproject-")))
+    scratchDirectories.push(scratch)
+    const source = join(scratch, "pr-triage")
+    await mkdir(source, { recursive: true })
+    await writeFile(join(source, "SKILL.md"), "---\nname: pr-triage\ndescription: Triage.\n---\n")
+    const skillCatalog = new FileSkillCatalog([
+      { path: join(scratch, "home", ".domovoi", "skills"), scope: "user", source: "domovoi" },
+    ])
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: {
+        load: () => createEmptyWorkspace({ ...structuredClone(demoWorkspace.machine), id: "machine-skill-install" }),
+        save: vi.fn(),
+        close: vi.fn(),
+      },
+      skillCatalog,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+    await new Promise<void>((resolve) => socket.once("open", () => resolve()))
+    await rpc(1, "system.hello", {
+      authToken: daemon.authToken,
+      client: "desktop",
+      clientId: "desktop-installer",
+      clientVersion: "0.0.1",
+      protocolVersion,
+    })
+
+    const preview = (await rpc(2, "skill.installPreview", {
+      source: { kind: "path", path: source },
+    })).result as RpcResult<"skill.installPreview">
+    expect(preview.targets).toEqual([{
+      scope: "user",
+      path: join(scratch, "home", ".domovoi", "skills", "pr-triage"),
+      state: "available",
+    }])
+    await expect(rpc(3, "skill.install", {
+      source: { kind: "path", path: source },
+      scope: "project",
+      sourceDigest: preview.sourceDigest,
+    })).resolves.toMatchObject({
+      error: { code: -32602, message: "Open a project before installing a project skill" },
+    })
+    await expect(stat(join(scratch, "home"))).rejects.toMatchObject({ code: "ENOENT" })
+    socket.close()
+  })
+
   it("rejects skill review without an open project", async () => {
     const skill = {
       id: "skill-4d6f4d6f4d6f",
@@ -5571,7 +6071,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.once("error", reject)
@@ -5619,7 +6119,7 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
-    await vi.waitFor(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(providerProbe.inspect).toHaveBeenCalledOnce())
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.once("error", reject)
@@ -5945,7 +6445,7 @@ describe("DomovoiDaemon", () => {
       command: "pnpm   test",
       cwd: workspacePath,
     })
-    await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(41, "allow-once"))
+    await waitForDaemon(() => expect(agent.resolveApproval).toHaveBeenCalledWith(41, "allow-once"))
     await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
     listener!({
       type: "approval-requested",
@@ -6103,6 +6603,12 @@ describe("DomovoiDaemon", () => {
         message: `This daemon speaks protocol ${protocolVersion}; the client speaks 0.1.0`,
       },
     })
+    expect((refusal.error as { data: unknown }).data).toEqual({
+      kind: "protocol-mismatch",
+      daemonProtocolVersion: protocolVersion,
+      clientProtocolVersion: "0.1.0",
+      compatibility: "machine-ahead",
+    })
     socket.close()
   })
 
@@ -6145,6 +6651,12 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect((refusal.error as { message: string }).message).toContain("9.9.9")
+    expect((refusal.error as { data: unknown }).data).toEqual({
+      kind: "protocol-mismatch",
+      daemonProtocolVersion: protocolVersion,
+      clientProtocolVersion: "9.9.9",
+      compatibility: "machine-behind",
+    })
     socket.close()
   })
 
@@ -6881,7 +7393,7 @@ describe("DomovoiDaemon", () => {
     })
 
     const timedOut = rpc(1)
-    await vi.waitFor(() => expect(agent.resetConnection).toHaveBeenCalledOnce())
+    await waitForDaemon(() => expect(agent.resetConnection).toHaveBeenCalledOnce())
     expect(agent.close).not.toHaveBeenCalled()
     await expect(timedOut).resolves.toMatchObject({ error: { message: "Agent setup timed out" } })
     expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
@@ -7296,7 +7808,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
-        id: "machine-per-project",
+        id: `machine-${"9".repeat(32)}`,
         name: "per-project-test",
         platform: process.platform,
         arch: process.arch,
@@ -7375,7 +7887,7 @@ describe("DomovoiDaemon", () => {
         reason: "Build the project",
       })
     }
-    await vi.waitFor(async () => {
+    await waitForDaemon(async () => {
       const current = await rpc("workspace.get", {})
       expect((current.result as { approvals: unknown[] }).approvals).toHaveLength(1)
     })
@@ -7495,7 +8007,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(statePath, createEmptyWorkspace({
-        id: "machine-per-project",
+        id: `machine-${"9".repeat(32)}`,
         name: "per-project-test",
         platform: process.platform,
         arch: process.arch,
@@ -7574,7 +8086,7 @@ describe("DomovoiDaemon", () => {
         reason: "Build the project",
       })
     }
-    await vi.waitFor(async () => {
+    await waitForDaemon(async () => {
       const current = await rpc("workspace.get", {})
       expect((current.result as { approvals: unknown[] }).approvals).toHaveLength(1)
     })
@@ -7675,7 +8187,7 @@ describe("DomovoiDaemon", () => {
       })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
-      id: "machine-orchestration",
+      id: `machine-${"8".repeat(32)}`,
       name: "orchestration-test",
       platform: process.platform,
       arch: process.arch,
@@ -7763,7 +8275,7 @@ describe("DomovoiDaemon", () => {
     ])
     expect(workspaceService.removeSessionWorkspace).toHaveBeenCalledOnce()
     resolveTimedOutThread!("provider-thread-after-timeout")
-    await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith(
+    await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledWith(
       "provider-thread-after-timeout",
     ))
 
@@ -7853,10 +8365,10 @@ describe("DomovoiDaemon", () => {
         delta: "\n3. Verify the next turn.",
       })
     }
-    await vi.waitFor(() => expect(notifications.filter(
+    await waitForDaemon(() => expect(notifications.filter(
       (notification) => notification.method === "workspace.delta",
     )).toHaveLength(4))
-    await vi.waitFor(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeStream + 1))
+    await waitForDaemon(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeStream + 1))
     expect(notifications).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.changed" }),
     ]))
@@ -8038,7 +8550,7 @@ describe("DomovoiDaemon", () => {
       prompt: "Continue after project switch",
       client: "desktop",
     })
-    await vi.waitFor(() => expect(agent.startTurn).toHaveBeenCalledTimes(2))
+    await waitForDaemon(() => expect(agent.startTurn).toHaveBeenCalledTimes(2))
     const reopening = rpc("project.open", { path: "/code/domovoi/.", client: "desktop" })
     expect(agent.stopThread).not.toHaveBeenCalledWith("provider-thread-1")
     resolveLateTurn!("late-turn")
@@ -8307,7 +8819,7 @@ describe("DomovoiDaemon", () => {
       error: { code: -32603, message: "Provider restart timed out" },
     })
     resolveLateRestart!("late-restart-thread")
-    await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith("late-restart-thread"))
+    await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledWith("late-restart-thread"))
     expect((await rpc("workspace.get", {}) as { result: { sessions: Array<{ id: string; providerThreadId?: string }> } })
       .result.sessions.find(({ id }) => id === steeringSessionId)).not.toHaveProperty("providerThreadId")
     socket.close()
@@ -8926,11 +9438,16 @@ describe("DomovoiDaemon", () => {
         recoveryCommit: "c".repeat(40),
       })),
     } satisfies WorkspaceService
+    let artifactWatcher: ArtifactWatcherOptions | undefined
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
       agent,
       workspaceService,
+      artifactWatcherFactory: (options) => {
+        artifactWatcher = options
+        return { start: async () => {}, stop: () => {} }
+      },
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -9122,26 +9639,76 @@ describe("DomovoiDaemon", () => {
     const download = await fetch(`http://${address.host}:${address.port}/artifacts/${encodeURIComponent(downloadAccess.artifactId)}?session=${downloadAccess.sessionId}&revision=${downloadAccess.revision}&purpose=download&expires=${downloadAccess.expiresAt}&signature=${downloadAccess.signature}`)
     expect(download.headers.get("content-disposition")).toContain("attachment")
 
+    // A signed URL pins one revision, and rewriting the file it addresses moves
+    // the artifact to the next revision. The watcher change is delivered here
+    // instead of awaited from the filesystem, so each fetch below runs against a
+    // revision the daemon already holds rather than against a debounce.
+    const observePreviewWrite = (previousRevision: number): Promise<number> => {
+      const observed = new Promise<number>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as {
+            method?: string
+            params?: { artifacts?: Array<{ id: string; revision: number }> }
+          }
+          if (message.method !== "workspace.changed") return
+          const updated = message.params?.artifacts?.find((candidate) => candidate.id === artifact!.id)
+          if (!updated || updated.revision <= previousRevision) return
+          socket.off("message", receive)
+          resolve(updated.revision)
+        }
+        socket.on("message", receive)
+      })
+      artifactWatcher!.onChange({
+        path: "preview.html",
+        title: "preview.html",
+        type: "preview",
+        mimeType: "text/html",
+      })
+      return observed
+    }
+    const artifactUrlFor = (granted: typeof access, purpose: string): string =>
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(granted.artifactId)}`
+      + `?session=${granted.sessionId}&revision=${granted.revision}&purpose=${purpose}`
+      + `&expires=${granted.expiresAt}&signature=${granted.signature}`
+
     await writeFile(join(worktree, "preview.html"), `<main>${"<div>".repeat(maximumPrintableArtifactDepth + 2)}Plan${"</div>".repeat(maximumPrintableArtifactDepth + 2)}</main>`)
-    const limited = await fetch(printUrl)
+    const limitedRevision = await observePreviewWrite(printAccess.revision)
+    expect(limitedRevision).toBeGreaterThan(printAccess.revision)
+    expect((await fetch(printUrl)).status).toBe(404)
+    const limitedAccess = (await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: limitedRevision,
+      purpose: "print",
+      client: "desktop",
+    })).result as typeof access
+    const limitedPrintUrl = artifactUrlFor(limitedAccess, "print")
+    const limited = await fetch(limitedPrintUrl)
     expect(limited.status).toBe(413)
     await expect(limited.json()).resolves.toEqual({ error: "artifact_limit" })
+    // Removing the file leaves the revision where it is, so this capability is
+    // still current and the refusal can only come from the missing content.
     await unlink(join(worktree, "preview.html"))
-    const missing = await fetch(printUrl)
+    const missing = await fetch(limitedPrintUrl)
     expect(missing.status).toBe(404)
     await expect(missing.json()).resolves.toEqual({ error: "not_found" })
     await writeFile(join(worktree, "preview.html"), "<h1>Domovoi preview</h1>")
+    const restoredRevision = await observePreviewWrite(limitedRevision)
 
-    await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: artifact!.revision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
-    // The writes above can raise the artifact's revision before this point, so
-    // the revision the daemon does not have is read now rather than assumed.
-    const currentSnapshot = await rpc("workspace.get", {})
-    const currentArtifact = (currentSnapshot.result as {
-      artifacts: Array<{ id: string; revision: number }>
-    }).artifacts.find((candidate) => candidate.id === artifact!.id)
-    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: currentArtifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: restoredRevision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: restoredRevision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 
-    const invalidBridge = await fetch(`${plainPreviewUrl}&bridge=short`)
+    // The preview capability signed before those writes named an earlier
+    // revision, so the daemon refuses it and the current revision is signed.
+    expect((await fetch(plainPreviewUrl)).status).toBe(404)
+    const restoredAccess = (await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: restoredRevision,
+      purpose: "preview",
+      client: "desktop",
+    })).result as typeof access
+    const invalidBridge = await fetch(`${artifactUrlFor(restoredAccess, "preview")}&bridge=short`)
     expect(invalidBridge.status).toBe(200)
     await expect(invalidBridge.text()).resolves.toBe("<h1>Domovoi preview</h1>")
 
@@ -9920,10 +10487,19 @@ describe("DomovoiDaemon", () => {
     const terminalProcesses = new Map<string, { kill: ReturnType<typeof vi.fn> }>()
     const terminalService = {
       spawn: vi.fn(({ cwd }: { cwd: string }) => {
+        // A real pty exits after a kill, and the archive waits for that exit
+        // before it removes the worktree the shell is sitting in.
+        const exitListeners = new Set<(event: { exitCode: number; signal?: number }) => void>()
         const process = {
-          process: "/bin/sh", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+          process: "/bin/sh", write: vi.fn(), resize: vi.fn(),
+          kill: vi.fn(() => {
+            for (const listener of [...exitListeners]) listener({ exitCode: 0 })
+          }),
           onData: vi.fn(() => ({ dispose: vi.fn() })),
-          onExit: vi.fn(() => ({ dispose: vi.fn() })),
+          onExit: vi.fn((listener: (event: { exitCode: number; signal?: number }) => void) => {
+            exitListeners.add(listener)
+            return { dispose: () => exitListeners.delete(listener) }
+          }),
         }
         terminalProcesses.set(cwd, process)
         return process
@@ -10062,6 +10638,100 @@ describe("DomovoiDaemon", () => {
     )).toEqual(workingPlanBefore)
     expect(store.snapshot.sessions[0]).not.toHaveProperty("workspacePath")
     expect(agent.stopThread).toHaveBeenCalledTimes(2)
+  })
+
+  it("removes the archived worktree only after its terminal shell exits", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-billing"
+    delete session.providerThreadId
+    delete session.activeTurnId
+    snapshot.approvals = []
+    const activateTurns = deferLiveTurns(snapshot)
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    // A killed shell keeps the worktree as its working directory until it
+    // exits, and Windows refuses to remove a directory a live handle holds.
+    let exitShell: (() => void) | undefined
+    let shellRunning = true
+    const terminalProcess = {
+      process: "/bin/sh", write: vi.fn(), resize: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn((listener: (event: { exitCode: number }) => void) => {
+        const previous = exitShell
+        exitShell = () => { previous?.(); shellRunning = false; listener({ exitCode: 0 }) }
+        return { dispose: vi.fn() }
+      }),
+      kill: vi.fn(),
+    }
+    const removedWhileShellRunning: boolean[] = []
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      archiveSessionWorkspace: vi.fn(async () => { removedWhileShellRunning.push(shellRunning) }),
+      checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const store = {
+      snapshot,
+      load() { return this.snapshot },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: testAuthToken("archive-terminal-exit-token"),
+      store,
+      agents: { codex: agent },
+      workspaceService,
+      terminalService: { spawn: vi.fn(() => terminalProcess) },
+      errorSink: vi.fn(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    activateTurns()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    await rpc("terminal.create", {
+      terminalId: "billing-terminal", sessionId: session.id,
+      cols: 80, rows: 24, client: "desktop", clientId: "billing-client",
+    })
+
+    const archived = rpc("session.archive", { sessionId: session.id, client: "desktop" })
+    await waitForDaemon(() => expect(terminalProcess.kill).toHaveBeenCalledOnce())
+    expect(workspaceService.archiveSessionWorkspace).not.toHaveBeenCalled()
+
+    exitShell!()
+    await expect(archived).resolves.toMatchObject({ result: { sessions: expect.arrayContaining([
+      expect.objectContaining({ id: session.id, state: "archived" }),
+    ]) } })
+    expect(removedWhileShellRunning).toEqual([false])
+    socket.close()
   })
 
   it("ignores provider events after archive intent survives cleanup failure", async () => {
@@ -10292,7 +10962,7 @@ describe("DomovoiDaemon", () => {
     }))
 
     try {
-      await vi.waitFor(() => expect(agent.stopThread).toHaveBeenCalledWith("thread-billing"))
+      await waitForDaemon(() => expect(agent.stopThread).toHaveBeenCalledWith("thread-billing"))
       expect(changes).toEqual(expect.arrayContaining([
         expect.objectContaining({
           method: "workspace.changed",
@@ -10433,6 +11103,7 @@ describe("DomovoiDaemon", () => {
       projectId: snapshot.project!.id,
       limit: 10,
     })
+    expect(queried.error).toBeUndefined()
     expect(queried.result).toMatchObject({
       hasMore: false,
       entries: [
@@ -10453,16 +11124,19 @@ describe("DomovoiDaemon", () => {
       ],
     })
     const cancelled = await rpc("audit.query", { action: "checkpoint.create", limit: 10 })
+    expect(cancelled.error).toBeUndefined()
     expect(cancelled.result.entries).toEqual([
       expect.objectContaining({ outcome: "cancelled", sessionId: session.id }),
     ])
     const denied = await rpc("audit.query", { action: "security.authentication", limit: 10 })
+    expect(denied.error).toBeUndefined()
     expect(denied.result.entries).toEqual([
       expect.objectContaining({ outcome: "denied", actor: { kind: "daemon", component: "authentication" } }),
     ])
     await expect(rpc("audit.query", { before: "audit-does-not-exist", limit: 10 }))
       .resolves.toMatchObject({ error: { code: -32602, message: "Audit cursor does not exist" } })
     const providerTools = await rpc("audit.query", { action: "provider.tool.completed", limit: 10 })
+    expect(providerTools.error).toBeUndefined()
     expect(providerTools.result.entries).toEqual([
       expect.objectContaining({
         actor: { kind: "provider", provider: "claude-code", providerThreadId: "audit-thread" },
@@ -10472,6 +11146,7 @@ describe("DomovoiDaemon", () => {
       }),
     ])
     const exported = await rpc("audit.export", { limit: 100 })
+    expect(exported.error).toBeUndefined()
     expect(exported.result.content).not.toContain("must-never-persist")
     expect(exported.result.content).not.toContain("must-never-persist-either")
     expect(exported.result.content).not.toContain("provider-command-secret")
@@ -10500,7 +11175,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       statePath: ":memory:",
       auditLog,
-      agentTimeoutMs: 5,
+      auditReadTimeoutMs: 5,
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -11080,12 +11755,12 @@ describe("DomovoiDaemon session transfer requests", () => {
       port: 0,
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: (id: string, credential: string) => credentials.set(id, credential),
         forMachine: (id: string) => credentials.get(id),
         forget: (id: string) => credentials.delete(id),
         machines: () => [...credentials.keys()],
-      },
+      }),
       statePath: ":memory:",
       workspaceService: {
         ...stubWorkspaceService(),
@@ -11182,12 +11857,12 @@ describe("DomovoiDaemon session transfer requests", () => {
       statePath: ":memory:",
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: () => {},
         forMachine: () => targetCredential,
         forget: () => {},
         machines: () => [targetMachineId],
-      },
+      }),
       workspaceService: {
         ...stubWorkspaceService(),
         pushSessionRef: async (_worktree: string, remote: string, sessionId: string) => {
@@ -11254,12 +11929,12 @@ describe("DomovoiDaemon session transfer requests", () => {
       statePath: ":memory:",
       store,
       authToken: testAuthToken("correct-horse-battery-staple"),
-      machineCredentials: {
+      machineCredentials: asyncTestCredentials({
         save: () => {},
         forMachine: () => "n".repeat(43),
         forget: () => {},
         machines: () => [targetMachineId],
-      },
+      }),
       connectToMachine: async () => ({
         call: async (method: string) => method === "transfer.preflight"
           ? {
@@ -12097,7 +12772,7 @@ describe("DomovoiDaemon persistence refusal", () => {
     // Denied rather than allowed, and denied rather than left as a card that
     // approval.resolve would itself refuse. Agent events are queued, so the
     // decision lands on a later tick.
-    await vi.waitFor(() => expect(agent.resolveApproval).toHaveBeenCalledWith(91, "deny"))
+    await waitForDaemon(() => expect(agent.resolveApproval).toHaveBeenCalledWith(91, "deny"))
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(91, "allow-once")
     expect(auditAppend).toHaveBeenCalledWith(expect.objectContaining({
       action: "provider.approval-requested",
@@ -12158,6 +12833,119 @@ describe("DomovoiDaemon persistence refusal", () => {
     await expect(activate()).resolves.toMatchObject({
       result: { activeSessionId: snapshot.sessions[1]!.id },
     })
+    socket.close()
+  })
+})
+
+describe("DomovoiDaemon and WSL", () => {
+  it.skipIf(process.platform !== "linux")("describes the distribution this daemon runs in", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      machineIdentity: { id: `machine-${"8".repeat(32)}`, label: "ubuntu-daemon" },
+      wsl: { distribution: "Ubuntu-24.04", version: 2 },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "fleet.list", params: {} }))
+
+    await expect(response).resolves.toMatchObject({
+      result: {
+        entries: [{ kind: "machine", machine: {
+          id: `machine-${"8".repeat(32)}`,
+          platform: process.platform,
+          wsl: { distribution: "Ubuntu-24.04", version: 2 },
+          self: true,
+        } }],
+      },
+    })
+    socket.close()
+  })
+
+  it("reports no WSL facts for a daemon that has none", async () => {
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      machineIdentity: { id: `machine-${"9".repeat(32)}`, label: "plain" },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const response = new Promise<{ result: { entries: Array<{ machine: Record<string, unknown> }> } }>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()))
+      })
+    })
+
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 9, method: "fleet.list", params: {} }))
+
+    expect((await response).result.entries[0]?.machine).not.toHaveProperty("wsl")
+    socket.close()
+  })
+
+  it.each([
+    "\\\\wsl$\\Ubuntu-24.04\\home\\me\\project",
+    "\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\project",
+    "//wsl$/Ubuntu-24.04/home/me/project",
+  ])("refuses to do repository work through the WSL share: %s", async (path) => {
+    const workspaceService = {
+      inspect: vi.fn(),
+      createSessionWorkspace: vi.fn(),
+      removeSessionWorkspace: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      authToken: testAuthToken("wsl-share-token"),
+      workspaceService,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    const response = new Promise<Record<string, unknown>>((resolve) => {
+      socket.once("message", (data) => {
+        resolve(JSON.parse(data.toString()) as Record<string, unknown>)
+      })
+    })
+
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "project.open",
+      params: { path, client: "desktop" },
+    }))
+
+    await expect(response).resolves.toMatchObject({
+      id: 1,
+      error: {
+        code: -32602,
+        message: expect.stringMatching(/Ubuntu-24\.04.*domovoid open/s),
+      },
+    })
+    expect(workspaceService.inspect).not.toHaveBeenCalled()
     socket.close()
   })
 })

@@ -10,7 +10,7 @@ import { readBoundedArtifactContent } from "./artifact-content.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 describe("readBoundedArtifactContent", () => {

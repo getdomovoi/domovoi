@@ -1,10 +1,11 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, renderHook, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, expect, it } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
 
-import type { SessionUsage } from "@getdomovoi/protocol"
+import type { SessionUsage, UsageWindow, UsageWindowParams } from "@getdomovoi/protocol"
 
-import { AppBar, SessionUsageFooter, SessionUsageSummary } from "./workspace-shell.js"
+import { TooltipProvider } from "./components/ui/tooltip"
+import { AppBar, SessionUsageFooter, SessionUsageSummary, useUsageToday } from "./workspace-shell.js"
 
 afterEach(cleanup)
 
@@ -95,6 +96,82 @@ it("leaves the app bar readout out until a session reports usage", () => {
   render(<AppBar {...appBarProps()} usage={null} />)
 
   expect(screen.queryByRole("button", { name: /tokens/u })).toBeNull()
+})
+
+function usageToday(overrides: Partial<UsageWindow> = {}): UsageWindow {
+  return {
+    sessions: 2,
+    turns: 3,
+    inputTokens: 900,
+    cachedInputTokens: 100,
+    outputTokens: 300,
+    reasoningTokens: 0,
+    totalTokens: 1200,
+    costMicros: 4_180_000,
+    currency: "USD",
+    reportedCostTurns: 3,
+    unavailableCostTurns: 0,
+    ...overrides,
+  }
+}
+
+it("reads the day's cost across sessions out in the app bar", async () => {
+  render(<TooltipProvider><AppBar {...appBarProps()} usageToday={usageToday()} /></TooltipProvider>)
+
+  const readout = screen.getByRole("status", { name: "Usage today $4.18 today" })
+  expect(readout.textContent).toContain("$4.18 today")
+  expect(screen.queryByTitle(/tokens across/u)).toBeNull()
+
+  act(() => screen.getByRole("button", { name: "$4.18 today" }).focus())
+  expect((await screen.findByRole("tooltip")).textContent).toBe("1.2k tokens across 3 turns in 2 sessions today.")
+})
+
+it("falls back to tokens when no provider reported a cost today", () => {
+  render(<TooltipProvider><AppBar {...appBarProps()} usageToday={usageToday({ reportedCostTurns: 0, unavailableCostTurns: 3, costMicros: 0, currency: undefined })} /></TooltipProvider>)
+
+  const readout = screen.getByRole("status", { name: "Usage today 1.2k tokens today" })
+  expect(readout.textContent).not.toContain("$")
+})
+
+it("leaves the today readout out until a turn is recorded today", () => {
+  const { unmount } = render(<TooltipProvider><AppBar {...appBarProps()} usageToday={null} /></TooltipProvider>)
+  expect(screen.queryByRole("status", { name: /Usage today/u })).toBeNull()
+  unmount()
+
+  render(<TooltipProvider><AppBar {...appBarProps()} usageToday={usageToday({ sessions: 0, turns: 0, totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costMicros: 0, currency: undefined, reportedCostTurns: 0 })} /></TooltipProvider>)
+  expect(screen.queryByRole("status", { name: /Usage today/u })).toBeNull()
+})
+
+it("refreshes the today readout at local midnight and stops on unmount", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+  try {
+    vi.setSystemTime(new Date(2026, 8, 4, 23, 59, 30))
+    const fetch = vi.fn((_window: UsageWindowParams) => Promise.resolve(usageToday()))
+    const view = renderHook(() => useUsageToday(true, "idle", fetch))
+    await act(async () => { await Promise.resolve() })
+
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenLastCalledWith({
+      start: new Date(2026, 8, 4).toISOString(),
+      end: new Date(2026, 8, 5).toISOString(),
+    })
+    expect(view.result.current).toEqual(usageToday())
+    expect(vi.getTimerCount()).toBe(1)
+
+    await act(async () => { vi.advanceTimersByTime(30_000) })
+
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenLastCalledWith({
+      start: new Date(2026, 8, 5).toISOString(),
+      end: new Date(2026, 8, 6).toISOString(),
+    })
+    expect(vi.getTimerCount()).toBe(1)
+
+    view.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {
+    vi.useRealTimers()
+  }
 })
 
 it("puts cost and context in the inspector footer", () => {

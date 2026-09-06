@@ -269,6 +269,7 @@ function skillPromptContext(
         name: skill.name,
         contentDigest: skill.contentDigest,
         contentTruncated: skill.contentTruncated,
+        trust: skill.trust,
       })),
       omitted,
     },

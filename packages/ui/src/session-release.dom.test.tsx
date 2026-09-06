@@ -71,7 +71,7 @@ function renderConflicted(onReleaseSession = vi.fn(async () => ({}))) {
     <Thread
       snapshot={snapshot}
       connected
-      fleet={[studio(snapshot)]}
+      fleet={[{ kind: "machine", machine: studio(snapshot) }]}
       currentMachineId={snapshot.machine.id}
       onReleaseSession={onReleaseSession}
       {...handlers}
@@ -111,7 +111,7 @@ it("does not offer a release the daemon cannot be asked for", () => {
     <Thread
       snapshot={snapshot}
       connected
-      fleet={[studio(snapshot)]}
+      fleet={[{ kind: "machine", machine: studio(snapshot) }]}
       currentMachineId={snapshot.machine.id}
       {...handlers}
     />,

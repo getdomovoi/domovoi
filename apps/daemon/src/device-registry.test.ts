@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite"
 import { describe, expect, it } from "vitest"
 
 import {
+  DeviceLabelMismatchError,
   DeviceLimitReachedError,
   DeviceNotFoundError,
   SqliteDeviceRegistry,
@@ -19,6 +20,38 @@ function registry(database = new DatabaseSync(":memory:")): {
 }
 
 describe("SqliteDeviceRegistry", () => {
+  it("re-pairs one machine without leaving its previous bearer active", () => {
+    const { registry: devices } = registry()
+    const binding = { kind: "machine" as const, machineId: `machine-${"a".repeat(32)}` }
+    const old = devices.pair({ label: "studio", binding })
+    const phone = devices.pair({ label: "studio", binding: { kind: "client", client: "phone" } })
+    const other = devices.pair({ label: "studio", binding: { kind: "machine", machineId: `machine-${"b".repeat(32)}` } })
+    const replacement = devices.pair({ label: "renamed studio", binding })
+
+    expect(devices.verify(old.token)).toBeUndefined()
+    expect(devices.verify(replacement.token)?.binding).toEqual(binding)
+    expect(devices.isActive(phone.token)).toBe(true)
+    expect(devices.isActive(other.token)).toBe(true)
+    expect(devices.list()).toContainEqual({ ...old.device, revokedAt: expect.any(String) })
+  })
+
+  it("can replace a machine at capacity without revoking it when the replacement fails", () => {
+    const { registry: devices, database } = registry()
+    const binding = { kind: "machine" as const, machineId: `machine-${"a".repeat(32)}` }
+    const original = devices.pair({ label: "studio", binding })
+    for (let index = 1; index < maximumPairedDevices; index += 1) {
+      devices.pair({ label: `phone-${index}`, binding: { kind: "client", client: "phone" } })
+    }
+    database.exec("CREATE TRIGGER refuse_device BEFORE INSERT ON paired_devices BEGIN SELECT RAISE(ABORT, 'disk refusal'); END")
+    expect(() => devices.pair({ label: "studio", binding })).toThrow("disk refusal")
+    expect(devices.isActive(original.token)).toBe(true)
+    database.exec("DROP TRIGGER refuse_device")
+    const replacement = devices.pair({ label: "studio", binding })
+    expect(devices.isActive(original.token)).toBe(false)
+    expect(devices.isActive(replacement.token)).toBe(true)
+    expect(devices.list().filter(({ revokedAt }) => revokedAt === undefined)).toHaveLength(maximumPairedDevices)
+  })
+
   it("keeps client and machine credential authority distinct", () => {
     const { registry: devices } = registry()
     const machineId = `machine-${"a".repeat(32)}`
@@ -217,6 +250,92 @@ describe("SqliteDeviceRegistry", () => {
 
     expect(() => devices.rotate(paired.device.id)).toThrow(DeviceNotFoundError)
   })
+
+  it("renames a device and changes nothing but its label", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({
+      label: "studio-ipad",
+      binding: { kind: "machine", machineId: `machine-${"c".repeat(32)}` },
+    })
+    devices.markSeen(paired.device.id, "2026-09-04T08:00:00.000Z")
+    const before = devices.list()[0]!
+
+    const renamed = devices.rename(paired.device.id, "  kitchen-ipad  ")
+
+    expect(renamed).toEqual({ ...before, label: "kitchen-ipad" })
+    expect(devices.list()).toEqual([{ ...before, label: "kitchen-ipad" }])
+    expect(devices.verify(paired.token)).toEqual({
+      device: { ...before, label: "kitchen-ipad" },
+      binding: { kind: "machine", machineId: `machine-${"c".repeat(32)}` },
+    })
+  })
+
+  it("keeps a renamed label across a store reload", () => {
+    const database = new DatabaseSync(":memory:")
+    const first = new SqliteDeviceRegistry(database)
+    const paired = first.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+    first.rename(paired.device.id, "kitchen-ipad")
+
+    const restarted = new SqliteDeviceRegistry(database)
+
+    expect(restarted.list()).toEqual([{ ...paired.device, label: "kitchen-ipad" }])
+  })
+
+  it("keeps the label of a revoked device editable for the record", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+    const revoked = devices.revoke(paired.device.id)
+
+    expect(devices.rename(paired.device.id, "old ipad")).toEqual({ ...revoked, label: "old ipad" })
+    expect(devices.verify(paired.token)).toBeUndefined()
+  })
+
+  it("refuses to rename an unknown device", () => {
+    const { registry: devices } = registry()
+
+    expect(() => devices.rename("device-missing", "kitchen-ipad")).toThrow(DeviceNotFoundError)
+    expect(() => devices.rename("device-missing", "kitchen-ipad", "studio-ipad")).toThrow(DeviceNotFoundError)
+  })
+
+  it("renames a device whose label still matches the expected one", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+
+    expect(devices.rename(paired.device.id, "kitchen-ipad", "studio-ipad"))
+      .toEqual({ ...paired.device, label: "kitchen-ipad" })
+    expect(devices.list()).toEqual([{ ...paired.device, label: "kitchen-ipad" }])
+  })
+
+  it("refuses a stale expected label and reports the row as it is", () => {
+    const { registry: devices } = registry()
+    const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+    devices.rename(paired.device.id, "kitchen-ipad")
+
+    let refusal: unknown
+    try {
+      devices.rename(paired.device.id, "studio-ipad", "studio-ipad")
+    } catch (error) {
+      refusal = error
+    }
+
+    expect(refusal).toBeInstanceOf(DeviceLabelMismatchError)
+    expect((refusal as DeviceLabelMismatchError).mismatch).toEqual({
+      kind: "device-label-mismatch",
+      device: { ...paired.device, label: "kitchen-ipad" },
+    })
+    expect(devices.list()).toEqual([{ ...paired.device, label: "kitchen-ipad" }])
+  })
+
+  it.each(["", "   ", "n".repeat(maximumPairedDeviceLabelLength + 1), "kitchen\u0000ipad"])(
+    "refuses an unusable rename label: %s",
+    (label) => {
+      const { registry: devices } = registry()
+      const paired = devices.pair({ label: "studio-ipad", binding: { kind: "client", client: "tablet" } })
+
+      expect(() => devices.rename(paired.device.id, label)).toThrow("Device label is invalid")
+      expect(devices.list()).toEqual([paired.device])
+    },
+  )
 
   it("keeps credentials usable across daemon restarts", () => {
     const database = new DatabaseSync(":memory:")

@@ -16,7 +16,7 @@ are welcome.
 
 Requirements:
 
-- Node.js 22 or newer;
+- Node.js 22.13.0 or newer;
 - pnpm 11; and
 - a native build toolchain supported by `node-gyp` for daemon terminal development.
 
@@ -44,6 +44,9 @@ Use test-driven development for behavior changes:
 
 Tests run sequentially at the workspace root because packages consume the generated protocol
 artifacts. Do not make the root test command parallel without first removing that build dependency.
+
+The [Desktop launch smoke](docs/desktop-launch-smoke.md) starts a real production daemon in an
+isolated profile and verifies authenticated renderer RPC and shutdown, not just renderer readiness.
 
 [AGENTS.md](AGENTS.md) is the agent-facing summary of these commands, the project boundaries, and
 the conventions below.
@@ -114,7 +117,8 @@ widths. Describe keyboard, touch, loading, empty, and failure states when they a
 Every workspace package shares one version and is released as one compatibility unit. Record the
 release intent of a change with `pnpm changeset` and commit the generated file alongside the
 change. `pnpm release:status` lists changed packages that still lack metadata, and
-`pnpm release:invariants` fails when package versions drift apart, a workflow references an
+`pnpm release:invariants` fails when package versions drift apart, the built protocol's
+`buildVersion` differs from its manifest (rebuild after versioning), a workflow references an
 action by a mutable tag, `ROADMAP.html` is stale relative to `ROADMAP.md`, or the phone's
 generated design tokens are stale relative to `packages/ui/src/styles.css`.
 
