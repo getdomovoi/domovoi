@@ -802,7 +802,16 @@ before any public package or application publish.
 - [ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and
   GitHub Releases from the same immutable commit
   - `.github/workflows/release.yml` does all of this through Changesets and npm trusted
-    publishing, gated on the same checks as CI, with the protocol published before the daemon.
+    publishing, with the protocol published before the daemon.
+  - Its `gate` job runs `pnpm release:gate`, which refuses to continue until the `ci` run for
+    the same commit has concluded success with every one of its jobs green. A release therefore
+    inherits the Linux, macOS, and Windows matrix, the packed-daemon musl check, and the
+    production dependency audit instead of re-running a Linux-only subset of them. Nothing else
+    gates the release: `main` carries no branch protection and no required status check, so the
+    workflow is the whole gate.
+  - `wsl.yml` is path filtered and scheduled rather than run on every commit, so it is not part
+    of that gate. Making a path-filtered workflow a per-commit requirement would leave it
+    pending on every commit outside its paths.
   - It stays inert until the `RELEASE_PUBLISHING` repository variable is set; the npm
     organisation and trusted publishers do not exist yet. See `docs/distribution.md`.
 - [ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts
