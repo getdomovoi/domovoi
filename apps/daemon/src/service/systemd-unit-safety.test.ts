@@ -16,7 +16,7 @@ type Body = Parameters<typeof withThrowawayUnit>[1]
 // Run the exact native harness with real private files but no native manager.
 // Even its old, destructive cleanup can only remove this scenario's fixtures.
 async function scenario(
-  options: { collision?: "manager" | "files"; probe?: CapturedRun; failEnable?: boolean },
+  options: { collision?: "manager" | "files"; probe?: CapturedRun; failEnable?: boolean; failCleanup?: boolean; refuseCleanup?: boolean },
   check: (state: {
     run: (body: Body) => Promise<void>
     calls: string[][]
@@ -58,7 +58,11 @@ async function scenario(
               if (options.collision) for (const path of paths) await base.write(path, "pre-existing unit", active)
               return options.probe ?? { code: 0, stdout: `LoadState=${loaded ? "loaded" : "not-found"}\n` }
             }
-            if (args[1] === "disable") loaded = false
+            if (args[1] === "disable") {
+              if (options.failCleanup) throw new Error("manager cleanup unavailable")
+              if (options.refuseCleanup) return { code: 1, stdout: "", stderr: "manager cleanup unavailable" }
+              loaded = false
+            }
             return { code: 0, stdout: args[1] === "show" ? `LoadState=${loaded ? "loaded" : "not-found"}\n` : "" }
           },
         },
@@ -130,6 +134,37 @@ it("rechecks absence immediately before attempting installation", async () => {
     })).rejects.toThrow(/already has files/)
     expect(calls.map((args) => args[1])).toEqual(["show", "show"])
     expect(await readFile(paths[0]!, "utf8")).toBe("another owner")
+  })
+}, safetyBudget + 6_000)
+
+it.each(["throws", "refuses"] as const)("names retained files and both failures when manager cleanup %s", async (kind) => {
+  await scenario({ failCleanup: kind === "throws", refuseCleanup: kind === "refuses" }, async ({ run, paths, loaded }) => {
+    const original = new Error("native assertion failed")
+    let home: string | undefined
+    try {
+      const result = await run(async (unit, deadline) => {
+        home = unit.home
+        await unit.install(deadline)
+        throw original
+      }).then(() => undefined, (error: unknown) => error)
+      expect(result).toBeInstanceOf(AggregateError)
+      const error = result as AggregateError
+      expect(error.errors[0]).toBe(original)
+      expect(error.errors[1]).toMatchObject({ message: expect.stringContaining("manager cleanup unavailable") })
+      expect(error.message).toContain(paths[0])
+      expect(error.message).toContain(paths[1])
+      expect(error.message).toContain(home)
+      expect(error.message).toContain("Confirm the unit is stopped")
+      expect(loaded()).toBe(true)
+      expect(existsSync(paths[0]!)).toBe(true)
+      expect(existsSync(home!)).toBe(true)
+    } finally {
+      // No real manager ran in this scenario. Reclaim only the private home
+      // returned by the harness whose intentionally failed cleanup retained it.
+      const cleanup = OperationDeadline.start(5_000)
+      try { if (home) await withinServiceDeadline(cleanup, () => rm(home!, { recursive: true, force: true })) }
+      finally { cleanup.clear() }
+    }
   })
 }, safetyBudget + 6_000)
 

@@ -153,6 +153,11 @@ collection itself also refuses a missing socket rather than trusting the earlier
 A stale socket reaches the bounded manager query and fails instead of being treated as absence.
 The same harness has portable safety tests with a simulated manager and real private files; those
 tests exercise refusals without risking a pre-existing service on the developer's machine.
+If cleanup cannot confirm the attempted unit stopped, it retains files rather than leaving a
+restartable job pointing at deleted launch input. The error names the UUID unit and paths to
+inspect and preserves the original assertion failure alongside the cleanup failure. Stop that
+test-owned unit before manually removing retained files. A preflight refusal never authorizes
+stopping or deleting the colliding unit.
 
 A second native Linux-only test proves the restart supervision that unit declares. It reads
 `Restart` and `RestartSec` back from the manager's parse of the installed unit rather than from the

@@ -117,6 +117,7 @@ export async function withThrowawayUnit(
   let readyPath: string | undefined
   let pid: number | undefined
   let cleanupArmed = false
+  const failures: unknown[] = []
   try {
     const home = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-systemd-")))
     installedHome = home
@@ -192,6 +193,9 @@ export async function withThrowawayUnit(
       }),
       observed: (observed) => { pid = observed },
     }, deadline)
+  } catch (error) {
+    failures.push(error)
+    throw error
   } finally {
     deadline.clear()
     const cleanup = OperationDeadline.start(cleanupBudget)
@@ -205,7 +209,13 @@ export async function withThrowawayUnit(
         if (ready !== undefined && existsSync(ready)) {
           await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
         }
-        await systemctl(["--user", "disable", "--now", unit], cleanup)
+        const disabled = await systemctl(["--user", "disable", "--now", unit], cleanup)
+        if (disabled.code !== 0) {
+          const remaining = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
+          if (remaining.code !== 0 || remaining.stdout.trim() !== "LoadState=not-found") {
+            throw new Error(`Cannot confirm ${unit} stopped: ${disabled.stderr || `systemctl exited ${disabled.code}`}`)
+          }
+        }
         const started = pid
         if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
           cleanup.throwIfExpired()
@@ -229,6 +239,14 @@ export async function withThrowawayUnit(
       }
       const created = installedHome
       if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
+    } catch (error) {
+      // Unconditional deletion here would leave a possibly restartable job
+      // pointing at removed files. Retain on uncertainty and preserve both the
+      // original failure and cleanup evidence, with exact recovery targets.
+      const retained = cleanupArmed
+        ? `${unitPath}, ${wantsPath}, ${installedHome}. Confirm the unit is stopped before removing retained files.`
+        : `${installedHome ?? "no known private home"}. No manager cleanup was authorized.`
+      throw new AggregateError([...failures, error], `Native systemd cleanup for ${unit} did not complete. Inspect ${retained}`, { cause: error })
     } finally { cleanup.clear() }
   }
 }
