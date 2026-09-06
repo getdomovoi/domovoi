@@ -1063,11 +1063,11 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Replace the no-op lint gate with real TypeScript/React linting
 </li>
-<li>[ ] Remove the artifact preview revision race in <code>apps/daemon/src/server.test.ts</code>
+<li>[x] Remove the artifact preview revision race in <code>apps/daemon/src/server.test.ts</code>
 <ul>
-<li>The signed print URL pins an artifact revision. Rewriting <code>preview.html</code> to exercise the nesting limit can raise the revision through the file watcher before the fetch arrives, so the daemon answers <code>404 not_found</code> instead of the expected <code>413 artifact_limit</code>.
+<li>A signed URL pins one artifact revision, so rewriting the file it addresses moves the artifact to its next revision and the daemon refuses the pinned capability with <code>404 not_found</code>. That refusal is the contract: the signature covers a revision whose content the file no longer holds, and the daemon reads the file at fetch time.
 </li>
-<li>Observed on macOS CI for pull request #221 on 2026-09-03; the same commit passed on <code>main</code>. Re-authorize after each write, or assert on whichever revision the daemon currently holds.
+<li>The test reused capabilities across its own writes and passed only while it beat the watcher debounce. It now injects the artifact watcher, delivers each change itself, authorizes the revision the daemon holds, and asserts that the stale capability is refused.
 </li>
 </ul>
 </li>
