@@ -17,7 +17,32 @@ const execute = promisify(execFile)
 const digest = (bytes, algorithm) => createHash(algorithm).update(bytes).digest(algorithm === "sha256" ? "hex" : "base64")
 const sri = (bytes) => `sha512-${digest(bytes, "sha512")}`
 
-test("identical archives install the reviewed transitive bytes after the registry changes", { timeout: 90_000 }, async (t) => {
+// This test runs npm for real four times, and on a Windows runner that is the
+// slowest thing CI does. Measured on this test across every CI job since it
+// landed: 104 Linux runs took 2.8 to 8.3 seconds end to end and 98 macOS runs
+// took 3.0 to 8.5, while 93 Windows runs took 8.0 to 50.4, median 14.0. Two
+// Windows runs then spent the whole of a 45 second budget inside a single one
+// of those installs, in CI runs 33982814495 and 34040862830. So 45 seconds was
+// a fixed window rather than a bound: it sat just above the whole test's
+// typical Windows cost and below what one stalled step there can reach.
+//
+// These are bounds on a stall, not on the work. The largest real npm install
+// measured on these runners is the packed daemon bootstrap next door, which
+// takes up to 142 seconds on Windows against its own 600 second budget, so a
+// per-install budget has to clear that before it can claim to be a bound.
+// Install stays under the 300000 ms production default, so this still refuses
+// sooner than a shipped bootstrap would.
+const installBudgetMs = 180_000
+// The shipped command spends the production default in its own process, and a
+// parent that killed it first would replace its named refusal with a signal.
+// This is the backstop for a child that never exits, not a phase budget.
+const commandBudgetMs = 180_000
+// Above any single phase budget, so one stalled step is reported by the
+// bootstrap message that names it rather than by a blunt outer timeout. Four
+// simultaneous maximal stalls would still land here, and that is deliberate.
+const testBudgetMs = 300_000
+
+test("identical archives install the reviewed transitive bytes after the registry changes", { timeout: testBudgetMs }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "domovoi-frozen-live-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const responses = new Map()
@@ -107,7 +132,7 @@ test("identical archives install the reviewed transitive bytes after the registr
     return await runBootstrapCommand(command, args, options)
   }
   const install = (destination) => installBootstrapDaemon({
-    version: "1.0.0", destination, baseUrl: "https://release.test", expectedSha256: sha256, timeoutMs: 45_000, run,
+    version: "1.0.0", destination, baseUrl: "https://release.test", expectedSha256: sha256, timeoutMs: installBudgetMs, run,
     download: async (url) => url.endsWith("SHA256SUMS") ? `${sha256}  getdomovoi-daemon-1.0.0.tgz\n` : app.bytes,
   })
   const first = await install(join(root, "first"))
@@ -144,7 +169,7 @@ test("identical archives install the reviewed transitive bytes after the registr
   })
   const cli = await execute(process.execPath, [fileURLToPath(new URL("./bootstrap-daemon.mjs", import.meta.url)),
     "1.0.0", `https://127.0.0.1:${releaseServer.address().port}`, join(root, "cli"), sha256], {
-    timeout: 45_000, killSignal: "SIGKILL", env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate,
+    timeout: commandBudgetMs, killSignal: "SIGKILL", env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate,
       npm_config_registry: registry, npm_config_global: "true", npm_config_prefix: join(root, "ambient-prefix"),
       NPM_CONFIG_CACHE: join(root, "ambient-cache") },
   })
