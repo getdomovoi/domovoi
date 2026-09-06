@@ -49,6 +49,9 @@ import {
 } from "./schema.js"
 import {
   deviceClaimParamsSchema,
+  deviceClaimResultSchema,
+  deviceConfirmClaimParamsSchema,
+  deviceConfirmClaimResultSchema,
   deviceIssueCodeResultSchema,
   deviceListParamsSchema,
   devicePairParamsSchema,
@@ -1177,7 +1180,8 @@ export const rpcMethods = {
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
   // Reachable before authentication: a machine being paired has no credential
   // yet. Check protocol compatibility before consuming its one-time code.
-  "device.claim": { params: deviceClaimParamsSchema, result: devicePairResultSchema },
+  "device.claim": { params: deviceClaimParamsSchema, result: deviceClaimResultSchema },
+  "device.confirmClaim": { params: deviceConfirmClaimParamsSchema, result: deviceConfirmClaimResultSchema },
   "device.issueCode": { params: deviceListParamsSchema, result: deviceIssueCodeResultSchema },
   "session.transfer": {
     params: sessionTransferParamsSchema,
@@ -1396,6 +1400,7 @@ export const rpcMethodMutations = {
   "provider.secret.list": "read-only",
   "device.pair": "mutating",
   "device.claim": "mutating",
+  "device.confirmClaim": "mutating",
   "device.issueCode": "mutating",
   "fleet.enroll": "mutating",
   "fleet.forget": "mutating",

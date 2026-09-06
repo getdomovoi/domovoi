@@ -1,6 +1,6 @@
 import { createHash, randomInt, timingSafeEqual } from "node:crypto"
 
-import type { DevicePairing, DeviceRegistry } from "./device-registry.js"
+import type { DeviceClaim, DeviceRegistry } from "./device-registry.js"
 
 export const pairingCodeTtlMs = 180_000
 // A spoken code is short, so guessing is bounded rather than merely slow.
@@ -63,7 +63,7 @@ export class PairingCodeService {
     return this.#open !== undefined && this.#open.expiresAtMs > nowMs
   }
 
-  claim(code: string, input: { label: string; machineId: string }, nowMs: number): DevicePairing {
+  claim(code: string, input: { label: string; machineId: string }, nowMs: number): DeviceClaim {
     const open = this.#open
     if (!open) throw new PairingCodeError("Pairing code is not valid")
     if (open.expiresAtMs <= nowMs) {
@@ -80,9 +80,6 @@ export class PairingCodeService {
     }
 
     this.#open = undefined
-    return this.#devices.pair({
-      label: input.label,
-      binding: { kind: "machine", machineId: input.machineId },
-    })
+    return this.#devices.claim(input, nowMs)
   }
 }

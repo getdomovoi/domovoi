@@ -19,10 +19,10 @@ import { skillEnablementReviewsSchema } from "./skills.js"
 
 export { clientIdentityIdSchema, clientKindSchema }
 
-// 0.4 replaces raw machine-credential import/export with verified enrollment and
-// discriminated fleet entries. Older clients fail at hello before spending a
-// pairing code or expecting credential access. Existing bound keys remain valid.
-export const protocolVersion = "0.4.0" as const
+// 0.5 claims are pending until the source durably stores and confirms them.
+// Older callers fail before spending a code under immediate-activation rules.
+// Existing active bound credentials remain valid; this needs no new pairing.
+export const protocolVersion = "0.5.0" as const
 
 export const connectionIdSchema = z.string().uuid()
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
