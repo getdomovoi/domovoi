@@ -45,6 +45,9 @@ Use test-driven development for behavior changes:
 Tests run sequentially at the workspace root because packages consume the generated protocol
 artifacts. Do not make the root test command parallel without first removing that build dependency.
 
+The [Desktop launch smoke](docs/desktop-launch-smoke.md) starts a real production daemon in an
+isolated profile and verifies authenticated renderer RPC and shutdown, not just renderer readiness.
+
 [AGENTS.md](AGENTS.md) is the agent-facing summary of these commands, the project boundaries, and
 the conventions below.
 

@@ -20,6 +20,10 @@ const runtimeProvided = [
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    // Keep the startup artifact within its byte cap without changing names
+    // used in diagnostics or hiding startup code in an unmeasured chunk.
+    build: { minify: "esbuild" },
+    esbuild: { keepNames: true },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
