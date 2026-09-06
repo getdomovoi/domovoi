@@ -54,11 +54,41 @@ export async function downloadWslImage(path, deadline, { download = downloadOver
   assert.equal(hash.digest("hex"), image.sha256, "WSL image sha256 differs from the pinned digest")
 }
 
+// Six discovery, four transport and five repository proofs, deliberately one
+// contract rather than two independently drifting minimum counts. The test
+// fixture reads the real registrations instead of copying this list.
+const requiredWslProofs = [
+  "lists the installed distributions, or says why it cannot, within its deadline",
+  "discovers each distribution as a machine fact without a credential in it",
+  "does not mistake a distribution wsl.exe does not have for one with no daemon",
+  "does not place a path in a distribution wsl.exe does not have",
+  "round-trips a path through a running WSL 2 distribution's own wslpath",
+  "refuses the Windows system drive through a running WSL 2 distribution",
+  "produces an authenticated WSL candidate through the production fleet heartbeat and dialer",
+  "refuses both a wrong pairing and the endpoint file's root token",
+  "produces no route from the real leftover endpoint after the daemon is killed",
+  "refuses a stopped distribution without starting it or reusing the old loopback port",
+  "opens the native repository through the Windows CLI without changing the Windows workspace",
+  "keeps the native repository owned by the guest while executing real Git",
+  "refuses the custom-mounted Windows drive through the Windows open shim",
+  "refuses WSL shares at the Windows daemon before repository inspection",
+  "rediscovers the restarted guest with its repository and pairing intact",
+]
+
 export function assertWslReport(report) {
-  assert.ok(report?.success === true && report.numTotalTests >= 10
+  assert.ok(report?.success === true && report.numTotalTests === requiredWslProofs.length
     && report.numPassedTests === report.numTotalTests && report.numFailedTests === 0
     && report.numPendingTests === 0 && report.numTodoTests === 0,
-  "WSL native proofs must pass at least ten tests with no skipped, pending or failed tests")
+  `WSL native proofs must pass exactly ${requiredWslProofs.length} discovery, transport and repository tests with no skipped, pending or failed tests`)
+  // Neither unrelated passes nor duplicate names may substitute for a proof.
+  // Adding a test requires an explicit update here, not a stale lower minimum.
+  const assertions = report.testResults?.flatMap((suite) => suite.assertionResults ?? []) ?? []
+  for (const title of requiredWslProofs) {
+    const matches = assertions.filter((test) => test.title === title)
+    assert.ok(matches.length === 1 && matches[0].status === "passed",
+      `WSL native proofs require one passed assertion: ${title}`)
+  }
+  assert.equal(assertions.length, requiredWslProofs.length, "WSL native proofs contain unaccounted assertions")
 }
 
 const nodeEffects = {
@@ -150,12 +180,12 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
       const reportPath = join(staging, "native.json")
       const vitestCli = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs")
       try {
-        await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
+        effects.log(await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
           "--coverage.enabled=false", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`], {
           cwd: join(rootDirectory, "apps", "daemon"),
           env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution, DOMOVOI_WSL_EXPECTED_MOUNT_ROOT: mountRoot,
-            DOMOVOI_WSL_NATIVE_TRANSPORT: "1" },
-        })
+            DOMOVOI_WSL_NATIVE_TRANSPORT: "1", DOMOVOI_WSL_NATIVE_BUDGET_MS: String(budgets.proofs) },
+        }))
         report = await deadline.run(() => effects.readReport(reportPath))
         assertWslReport(report)
       } catch (error) {
@@ -213,7 +243,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         await summary.run(() => appendFile(process.env.GITHUB_STEP_SUMMARY,
           `### WSL native proofs\n\n${result.tests} passed, zero skipped. One Ubuntu 24.04.4 WSL 2 distribution.\n\n`
           + result.phases.map(({ name, seconds }) => `- ${name}: ${seconds} seconds\n`).join("")
-          + "\nProves guest boot, filesystem boundaries, authenticated WSL fleet routes, stale endpoints and stopped-distribution refusal. Does not prove cross-distribution routing, mirrored networking or VPNs.\n"))
+          + "\nProves guest boot, custom-mount refusal, Windows CLI repository open, guest ownership and Git, authenticated WSL routes, graceful daemon restart, stale endpoints and stopped-distribution refusal. Does not prove cross-distribution routing, service supervision, mirrored networking or VPNs.\n"))
       } finally { summary.clear() }
     }
   } catch (error) {

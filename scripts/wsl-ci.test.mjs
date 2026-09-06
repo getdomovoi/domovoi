@@ -11,7 +11,28 @@ import { assertWslReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
-const passed = { numTotalTests: 10, numPassedTests: 10, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true }
+const ts = require("typescript")
+// Build the successful report from the real registrations, not the guard's
+// own list. Adding or removing a proof must change the accepted contract too.
+const nativeProofs = await Promise.all([
+  "wsl-windows.test.ts", "wsl-native-transport-proof.ts", "wsl-native-repository-proof.ts",
+].map(async (file) => {
+  const source = ts.createSourceFile(file, await readFile(new URL(`../apps/daemon/src/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true)
+  assert.equal(source.parseDiagnostics.length, 0, `${file} must parse before its proof names can be checked`)
+  const titles = []
+  function visit(node) {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "it") {
+      assert.ok(ts.isStringLiteral(node.arguments[0]), `${file} must register literal proof names`)
+      titles.push(node.arguments[0].text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return { file, titles }
+}))
+const assertionResults = nativeProofs.flatMap(({ titles }) => titles.map((title) => ({ title, status: "passed" })))
+const passed = { numTotalTests: assertionResults.length, numPassedTests: assertionResults.length,
+  numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true, testResults: [{ assertionResults }] }
 
 function fixture(overrides = {}) {
   const calls = []
@@ -70,6 +91,44 @@ test("six discovery proofs alone no longer satisfy the transport job", () => {
   assert.throws(() => assertWslReport({ ...passed, numTotalTests: 6, numPassedTests: 6 }), /WSL native proofs/)
 })
 
+test("the report contract matches six discovery, four transport and five repository registrations", () => {
+  assert.deepEqual(nativeProofs.map(({ titles }) => titles.length), [6, 4, 5])
+  assert.equal(new Set(assertionResults.map(({ title }) => title)).size, 15)
+  assert.doesNotThrow(() => assertWslReport(passed))
+})
+
+test("unrelated passes cannot replace any discovery, transport or repository proof", () => {
+  for (const assertion of assertionResults) {
+    const substituted = { ...passed, testResults: [{ assertionResults: assertionResults.map((entry) => entry === assertion
+      ? { title: "unrelated passing test", status: "passed" } : entry) }] }
+    assert.throws(() => assertWslReport(substituted), (error) => error.message.includes(assertion.title))
+  }
+})
+
+test("a new registration requires an explicit report contract update", () => {
+  const expanded = [...assertionResults, { title: "new passing proof", status: "passed" }]
+  assert.throws(() => assertWslReport({ ...passed, numTotalTests: expanded.length, numPassedTests: expanded.length,
+    testResults: [{ assertionResults: expanded }] }), /WSL native proofs/)
+})
+
+test("report totals cannot hide additional skipped or duplicate assertions", () => {
+  for (const extra of [{ title: "hidden skipped proof", status: "pending" }, assertionResults[0]]) {
+    assert.throws(() => assertWslReport({ ...passed, testResults: [{ assertionResults: [...assertionResults, extra] }] }), /WSL native proofs/)
+  }
+})
+
+test("a green transport report without repository boundary proofs is insufficient", () => {
+  assert.throws(() => assertWslReport({ ...passed, numTotalTests: 10, numPassedTests: 10, testResults: [] }), /WSL native proofs.*repository/)
+  for (const assertion of passed.testResults[0].assertionResults) {
+    const withoutOne = { ...passed, testResults: [{ assertionResults: passed.testResults[0].assertionResults
+      .filter((entry) => entry !== assertion) }] }
+    assert.throws(() => assertWslReport(withoutOne), (error) => error.message.includes(assertion.title))
+    assert.throws(() => assertWslReport({ ...withoutOne, testResults: [{ assertionResults: [
+      ...withoutOne.testResults[0].assertionResults, { ...assertion, status: "pending" },
+    ] }] }), (error) => error.message.includes(assertion.title))
+  }
+})
+
 test("image download streams the pinned bytes and refuses a digest mismatch", { timeout: 5_000 }, async () => {
   const deadline = bootstrapDeadline(3_000, "test image deadline")
   let directory
@@ -118,13 +177,14 @@ test("provisions exactly one distro, requires it in the test process, then remov
   assert.ok(proof.args.includes("--reporter=json"))
   assert.equal(proof.options.env.DOMOVOI_WSL_REQUIRED_DISTRIBUTION, distribution)
   assert.equal(proof.options.env.DOMOVOI_WSL_EXPECTED_MOUNT_ROOT, "/domovoi-ci-drives/")
+  assert.equal(proof.options.env.DOMOVOI_WSL_NATIVE_BUDGET_MS, "240000")
   assert.ok(calls.some(({ args }) => args.includes("uname")))
   for (const { args } of calls.filter(({ args }) => args[0] === "-d")) {
     assert.equal(args[4], "--exec", "provisioning must not add an implicit Linux shell")
   }
   assert.deepEqual(calls.at(-1).args, ["--unregister", distribution])
   assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "guest runtime", "native proofs", "cleanup"])
-  assert.equal(result.tests, 10)
+  assert.equal(result.tests, 15)
 })
 
 test("missing virtualization fails before the proofs, not as a green skip", async () => {
@@ -137,6 +197,26 @@ test("missing virtualization fails before the proofs, not as a green skip", asyn
   await assert.rejects(runWslCi({ platform: "win32", effects }), /HCS_E_HYPERV_NOT_INSTALLED/)
   assert.equal(calls.some(({ args }) => args.includes("src/wsl-windows.test.ts")), false)
   assert.equal(calls.at(-1).args[0], "--unregister")
+})
+
+test("a changed proof budget also reaches the guest lifetime", async () => {
+  const { calls, effects } = fixture()
+  await runWslCi({ platform: "win32", effects, budgets: { proofs: 4_321 } })
+  const proof = calls.find(({ args }) => args.includes("src/wsl-windows.test.ts"))
+  assert.equal(proof.options.env.DOMOVOI_WSL_NATIVE_BUDGET_MS, "4321")
+})
+
+test("successful proofs retain real guest diagnostics in the job log", async () => {
+  const lines = []
+  const original = fixture()
+  const { effects } = fixture({
+    run: (command, args, options) => args.includes("src/wsl-windows.test.ts")
+      ? Promise.resolve("WSL repository Git: git version from the required guest\n")
+      : original.effects.run(command, args, options),
+    log: (line) => lines.push(line),
+  })
+  await runWslCi({ platform: "win32", effects })
+  assert.ok(lines.some((line) => line.includes("WSL repository Git: git version from the required guest")))
 })
 
 test("a working WSL executable with a WSL 1 guest is not enough", async () => {
