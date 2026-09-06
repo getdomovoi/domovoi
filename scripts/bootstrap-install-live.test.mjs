@@ -19,12 +19,13 @@ const sri = (bytes) => `sha512-${digest(bytes, "sha512")}`
 
 // This test runs npm for real four times, and on a Windows runner that is the
 // slowest thing CI does. Measured on this test across every CI job since it
-// landed: 104 Linux runs took 2.8 to 8.3 seconds end to end and 98 macOS runs
-// took 3.0 to 8.5, while 93 Windows runs took 8.0 to 50.4, median 14.0. Two
-// Windows runs then spent the whole of a 45 second budget inside a single one
-// of those installs, in CI runs 33982814495 and 34040862830. So 45 seconds was
-// a fixed window rather than a bound: it sat just above the whole test's
-// typical Windows cost and below what one stalled step there can reach.
+// landed: 104 passing Linux runs took 2.8 to 8.3 seconds end to end and 98
+// passing macOS runs took 3.0 to 8.5, while 91 passing Windows runs took 8.0 to
+// 50.4, median 14.0. Two further Windows runs spent the whole of a 45 second
+// budget inside a single one of those installs, at 46.8 and 45.3 seconds end to
+// end, in CI runs 33982814495 and 34040862830. So 45 seconds was a fixed window
+// rather than a bound: it sat just above the whole test's typical Windows cost
+// and below what one stalled step there can reach.
 //
 // These are bounds on a stall, not on the work. The largest real npm install
 // measured on these runners is the packed daemon bootstrap next door, which
