@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from "node:child_process"
 import { setTimeout as delay } from "node:timers/promises"
 
 import { fleetSnapshotSchema, type FleetMachine } from "@getdomovoi/protocol"
@@ -24,6 +25,10 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
       let endpoint: DistroEndpoint
       let guest: FleetMachine
       let pid: string
+      let guestProcess: ChildProcess | undefined
+      let guestOutput = ""
+      let guestExit: string | undefined
+      let guestLifetime: OperationDeadline | undefined
       const run = (deadline: OperationDeadline, args: string[]) => {
         deadline.throwIfExpired()
         return beforeDeadline(runWslText("wsl.exe", args, {
@@ -64,15 +69,28 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
           // the real CLI and uses createProductionDaemon, its normal stores and
           // endpoint publisher. It never imports a test daemon constructor.
           progress("launch guest daemon")
-          await linux(deadline, ["sh", "-c",
-            "PATH=/opt/domovoi-ci-node/bin:/usr/sbin:/usr/bin:/sbin:/bin DOMOVOI_HOST=127.0.0.1 DOMOVOI_PORT=0 "
-            + "nohup /opt/domovoi-ci-node/bin/node /opt/domovoi-ci-daemon/dist/index.js "
-            + "</dev/null >/tmp/domovoi-ci-daemon.log 2>&1 & echo $! >/tmp/domovoi-ci-daemon.pid"])
+          // Keep the WSL invocation attached to its real CLI, not a shell that
+          // leaves before its background child's startup can be observed. The
+          // fixture's lifetime is bounded independently of individual RPCs.
+          guestLifetime = OperationDeadline.start(180_000)
+          guestProcess = spawn("wsl.exe", ["-d", distribution!, "--exec", "sh", "-c",
+            "echo $$ >/tmp/domovoi-ci-daemon.pid; "
+            + "exec env PATH=/opt/domovoi-ci-node/bin:/usr/sbin:/usr/bin:/sbin:/bin DOMOVOI_HOST=127.0.0.1 DOMOVOI_PORT=0 "
+            + "/opt/domovoi-ci-node/bin/node /opt/domovoi-ci-daemon/dist/index.js"], {
+            stdio: ["ignore", "pipe", "pipe"], signal: guestLifetime.signal, killSignal: "SIGKILL",
+          })
+          const output = (bytes: Buffer) => { guestOutput = (guestOutput + bytes.toString()).slice(-65_536) }
+          guestProcess.stdout?.on("data", output)
+          guestProcess.stderr?.on("data", output)
+          guestProcess.once("error", (error) => { guestExit = error.message })
+          guestProcess.once("exit", (code, signal) => { guestExit = `code ${code}, signal ${signal}` })
+          progress("observe guest endpoint publication")
+          endpoint = await observe(deadline, () => {
+            if (guestExit !== undefined) throw new Error(`Guest daemon exited before endpoint publication: ${guestExit}`)
+            return readDistroEndpoint({ distribution: distribution!, timeoutMs: Math.ceil(deadline.remainingMs()) })
+          })
           pid = (await linux(deadline, ["cat", "/tmp/domovoi-ci-daemon.pid"])).trim()
           expect(pid).toMatch(/^[1-9][0-9]*$/)
-          progress("observe guest endpoint publication")
-          endpoint = await observe(deadline, () => readDistroEndpoint({ distribution: distribution!,
-            timeoutMs: Math.ceil(deadline.remainingMs()) }))
           // The listener may be up before WSL's localhost forward is installed.
           // Each probe gets only its remaining caller budget; the poll itself
           // shares this setup deadline and never creates a second daemon.
@@ -101,10 +119,7 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
           progress("complete")
         } catch (error) {
           process.stderr.write(`WSL transport setup failed during: ${phase}\n`)
-          const diagnostic = OperationDeadline.start(5_000)
-          try { process.stderr.write(await linux(diagnostic, ["cat", "/tmp/domovoi-ci-daemon.log"])) }
-          catch { process.stderr.write("WSL guest log could not be read within the diagnostic deadline\n") }
-          finally { diagnostic.clear() }
+          process.stderr.write(`Guest daemon output: ${guestOutput || "(none)"}\n`)
           throw new Error(`WSL transport setup failed during: ${phase}`, { cause: error })
         } finally { deadline.clear() }
       }, 70_000)
@@ -112,7 +127,11 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
       // The outer wsl-ci invocation owns this UUID guest and terminates then
       // unregisters it even after a hook failure. Do not re-enter a deliberately
       // stopped guest here or kill a remembered PID after the kill proof ran.
-      afterAll(async () => { await harness.cleanup() }, 30_000)
+      afterAll(async () => {
+        guestProcess?.kill("SIGKILL")
+        guestLifetime?.clear()
+        await harness.cleanup()
+      }, 30_000)
 
       it("produces an authenticated WSL candidate through the production fleet heartbeat and dialer", async () => {
         const route = await dial()
