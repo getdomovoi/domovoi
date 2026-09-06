@@ -123,6 +123,10 @@ Canonical sessions, provider configuration and paired devices remain in the same
 Only loopback may use plaintext WS; remote routes require WSS. Literal IPv6 hosts are refused at
 this Desktop CSP seam; configure a TLS hostname or usable IPv4 route instead. IPv6 route support
 elsewhere does not make that CSP form safe to grant.
+Normalized hostnames must fit one non-wildcard CSP host source. Literal or encoded semicolons,
+commas, and other characters outside that grammar are refused, not escaped into a policy. Such
+a route produces the existing route-unavailable remedy; configure a normal DNS hostname or IPv4
+route before trying again. Internationalized names use their URL-normalized ASCII spelling.
 
 Socket admission grants no HTTP preview-frame access. On a remote Desktop session the Preview
 tab explains that RPC and Terminal work but previews need a separate verified path, and names
@@ -142,6 +146,9 @@ verification; they cover notification withholding, bounded queues, deadlines and
 
 - `fleet-origin-smoke.mjs`: verified origin opens; an unverified origin, another port, and a
   consumed ticket do not. Replacing the exact source with a port wildcard makes the proof fail.
+  Five literal or encoded directive/policy delimiter cases also refuse. Chromium's network hook
+  sees no request to the unverified hostname prefix, so a DNS or TLS error cannot pass as a CSP
+  refusal. Before the host guard, the semicolon case reached that hook and failed the proof.
 - `fleet-client-smoke.mjs`: the actual main, preload and renderer attach to a real home owner,
   authorize a separate target client grant, open its session and terminal, read inventory with
   the verified client receipt, render the comparison, and remove local access. The keychain and

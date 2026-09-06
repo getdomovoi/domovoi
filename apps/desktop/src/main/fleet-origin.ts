@@ -11,7 +11,11 @@ const maximumTickets = 128
 function exactOrigin(endpoint: string): string | undefined {
   try {
     const url = new URL(endpoint)
-    if (url.username || url.password || /[\s*[\]]/u.test(url.host)) return undefined
+    // A URL host is not a CSP source: even normalized hosts can contain a
+    // semicolon or comma. Permit only CSP host-part without its wildcards.
+    // URL has already converted IDNs to ASCII and validated the numeric port.
+    // https://www.w3.org/TR/CSP3/#grammardef-host-part
+    if (url.username || url.password || !/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?$/u.test(url.hostname)) return undefined
     if (url.protocol !== "wss:" && !(url.protocol === "ws:" && ["localhost", "127.0.0.1"].includes(url.hostname))) return undefined
     return url.origin
   } catch { return undefined }
