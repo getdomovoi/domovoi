@@ -12,14 +12,10 @@ import { WebSocket } from "ws"
 import { OperationDeadline } from "./operation-deadline.js"
 import { withinServiceDeadline } from "./service/deadline.js"
 import { fixtureAddress } from "./test-fixture-address.js"
-import { fixtureStartupTimeoutMs, waitForDaemon, waitForFixtureStartup } from "./test-wait-for.js"
+import { waitForDaemon, waitForFixtureStartup } from "./test-wait-for.js"
 import { removeScratchDirectory } from "./test-scratch.js"
 
 const budget = process.platform === "win32" ? 40_000 : 20_000
-// The child here boots Node with tsx and starts a real daemon, so its startup
-// gets the shared fixture budget rather than the shorter observation one. It
-// stays half of the outer budget above, which still bounds a genuine hang.
-const startupBudget = fixtureStartupTimeoutMs(process.platform)
 // The latency the test exists to prove. Sizing this would weaken the claim.
 const probeBudget = process.platform === "win32" ? 5_000 : 1_500
 // A killed child releases its handles slowly on the runner whose tail is twice
@@ -51,8 +47,10 @@ it("answers unrelated RPC while a native keyring constructor is blocked", async 
     let stderr = ""
     child.stdout!.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
     child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
-    // This is child startup observation, not the responsiveness assertion.
-    // Keep the short workspace.get probe below unchanged once the owner listens.
+    // Child startup observation, not the responsiveness assertion. It boots Node
+    // with tsx and starts a real daemon, so it takes the shared spawned fixture
+    // budget, which stays inside the outer deadline above. Keep the short
+    // workspace.get probe below unchanged once the owner listens.
     const { url } = await beforeDeadline(waitForFixtureStartup("The keyring fixture", () => {
       expect(child!.exitCode, stderr).toBeNull()
       return fixtureAddress(stdout)
