@@ -67,19 +67,42 @@ retargeted request returns 404.
 
 ## Fleet enrollment and recovery
 
-`fleet.enroll` is a local-root operation. It claims a versioned pairing code, authenticates as
-this machine, and reads the target's own descriptor on one connection. The source records the
+`fleet.enroll` is a local-root operation. It claims a versioned pairing code and receives the
+target's own descriptor and a pending credential. The source records the
 endpoint it actually authenticated over separately from the target's advertisements. Remote
 listeners require TLS; relay enrollment and plaintext off-machine endpoints are refused.
 
 Peer credentials stay in the OS keychain, never the renderer or the workspace snapshot. SQLite
-journals retain an operation kind and credential digest, not its bytes. Enrollment is published
-only after matching keychain readback. Pending enrollment/forget operations remain visible and
+journals retain an operation kind, credential digest and pending claim metadata, not its bytes.
+Only after the token and its index survive matching keychain readback does the source reconnect
+and call `device.confirmClaim`. It then authenticates as this machine and reads the descriptor
+again before publishing enrollment. Pending enrollment/forget operations remain visible and
 resume on startup. Heartbeats refresh target facts every 15 seconds, with each attempt bounded
 by a 30-second operation deadline. A failed attempt does not advance the last-contact timestamp.
 Forget reports whether the target confirmed revocation; unconfirmed removal requires revoking
 this machine in the target's Devices list. Enrollment does not grant a client credential for
 remote Use or Terminal; that is a separate admission step.
+
+An unconfirmed machine claim expires five minutes after issuance, including across target
+restarts. Its hash is stored separately from paired devices, with at most 128 pending claims.
+Expired claims are invalid at use even without a running cleanup timer; subsequent claims and
+confirmations remove expired hashes. Pending tokens cannot authenticate RPC, receive workspace
+broadcasts, or revoke the machine's previous active credential. Confirmation atomically replaces
+that previous credential. Repeating confirmation with the same still-active token is safe after
+a lost reply or either daemon restarting. Revocation and rotation cannot be undone by replay.
+
+If the source crashes before storing the token, the target's pending capability expires without
+ever becoming active. If the source stored it but lost the confirmation reply, startup recovery
+repeats confirmation from the journal and keychain. Transport and storage failures retain that
+journal. An authoritative invalid/expired-token refusal removes only the matching local token
+and aborts enrollment: issue a new code on the target and enroll again. Confirmation is the
+source's assertion of durable storage, not cryptographic proof of another machine's filesystem.
+Spoken-code admission limits apply to claims, not full-strength bearer confirmations; failed
+confirmation authentication uses the ordinary failed-authentication limit.
+
+This exchange requires protocol 0.5.0. Update both peers before enrollment. Existing active bound
+credentials are unchanged and do not require pairing again. A pending claim is not a paired
+device and is not listed in Devices; the local source shows its existing pending enrollment row.
 
 Native machine-keyring construction, reads, writes, deletion and index repair run on one
 serialized worker, not the daemon event loop. Calls require the caller's existing operation

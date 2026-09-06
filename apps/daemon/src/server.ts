@@ -3299,8 +3299,8 @@ export class DomovoiDaemon {
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
     } else if (method === "device.claim") {
-      // The one method a machine may reach before it has a credential, because
-      // presenting the pairing code is how it gets one. It grants nothing else.
+      // The code grants only a short-lived confirmation capability. No normal
+      // machine authentication is possible until the source confirms storage.
       const params = paramsResult.data as RpcParams<"device.claim">
       const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
       if (compatibility !== "compatible") {
@@ -3320,17 +3320,16 @@ export class DomovoiDaemon {
           label: params.label,
           machineId: params.machineId,
         }, Date.now())
-        this.#disconnectInactiveDevices()
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
           action: "device.claim",
           outcome: "succeeded",
-          target: paired.device.id,
+          target: paired.claim.deviceId,
         })
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(paired),
+          result: rpcMethods[method].result.parse({ ...paired, machine: this.#machineDescriptor() }),
         })
       } catch (error) {
         if (error instanceof DeviceLimitReachedError) {
@@ -3344,6 +3343,42 @@ export class DomovoiDaemon {
         // expired, or was simply wrong.
         this.#appendPreAuthAudit("pairing", error.message)
         this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
+      }
+      return
+    } else if (method === "device.confirmClaim") {
+      const params = paramsResult.data as RpcParams<"device.confirmClaim">
+      const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
+      if (compatibility !== "compatible") {
+        this.#error(socket, request.id, protocolVersionMismatchErrorCode,
+          "Update both daemons to the same protocol before pairing",
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
+        return
+      }
+      // This narrow capability is usable without hello so an unconfirmed
+      // credential never receives ordinary machine authority. Its source must
+      // persist it before making this call. Lost replies are safe to replay.
+      try {
+        const device = this.#store.devices?.confirmClaim(params.authToken, params.machineId, Date.now())
+        if (!device) {
+          // Confirmation proves a full-strength bearer, not another guess at
+          // a spoken code. Retries must not burn claim admission or turn rate
+          // pressure into a false verdict that a durably stored key is invalid.
+          this.#appendPreAuthAudit("authentication")
+          this.#rejectAuthentication(socket, request.id, "Pairing was refused")
+          return
+        }
+        this.#appendAudit({ actor: { kind: "machine", machineId: params.machineId },
+          action: "device.confirmClaim", outcome: "succeeded", target: device.id })
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ device }) })
+        this.#disconnectInactiveDevices()
+      } catch (error) {
+        // Storage failure is not proof the capability is invalid. The source
+        // must keep its durable journal and retry, not delete its only token.
+        if (error instanceof DeviceLimitReachedError) this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
+        else {
+          this.#reportError("Device claim confirmation failed", error)
+          this.#error(socket, request.id, internalError, "Device claim confirmation is unavailable")
+        }
       }
       return
     } else if (!this.#authenticatedClients.has(socket)) {
