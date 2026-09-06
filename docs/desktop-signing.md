@@ -143,8 +143,12 @@ Leave `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` absent in Azure mode. Electron-b
 uses `win.azureSignOptions` and the PowerShell `TrustedSigning` module. It installs that module
 at build time, so PowerShell Gallery, Microsoft signing endpoints and the timestamp service
 must be reachable. That vendor-tool download remains a dependency/reproducibility limit,
-not something this branch has independently frozen or verified. Developer CLI and interactive
-authentication fallbacks are excluded. [Pinned-major builder integration](https://www.electron.build/v26/docs/features/code-signing/code-signing-win/).
+not something this branch has independently frozen or verified. The complete service-principal
+environment is required before invoking it; the native negative-credential proof below must
+confirm refusal at the vendor boundary. Do not add v27's `ExcludeCredentials` metadata option:
+the v26 adapter forwards it as an unsupported PowerShell parameter.
+[Pinned-major builder integration](https://www.electron.build/v26/docs/features/code-signing/code-signing-win/),
+[PowerShell module parameter contract](https://www.powershellgallery.com/packages/TrustedSigning/0.5.0/Content/TrustedSigning.psm1).
 
 **Existing PFX alternative:** if a publisher already holds a usable Authenticode `.pfx`/`.p12`
 and its private key, put its base64 bytes in secret **`WIN_CSC_LINK`**, its password in secret

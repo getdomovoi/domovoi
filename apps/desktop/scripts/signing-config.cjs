@@ -79,13 +79,6 @@ function signingConfiguration(environment, hostPlatform, verification = { verify
           fileDigest: "SHA256",
           timestampDigest: "SHA256",
           timestampRfc3161: "http://timestamp.acs.microsoft.com",
-          // No interactive, developer CLI or managed-identity fallback after a
-          // broken configured service principal. The environment is the actor.
-          ExcludeCredentials: [
-            "ManagedIdentityCredential", "WorkloadIdentityCredential", "SharedTokenCacheCredential",
-            "VisualStudioCredential", "VisualStudioCodeCredential", "AzureCliCredential",
-            "AzurePowerShellCredential", "AzureDeveloperCliCredential", "InteractiveBrowserCredential",
-          ].join(","),
         },
       } : certificate ? {
         signtoolOptions: {

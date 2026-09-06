@@ -33,9 +33,15 @@ const certificate = {
 async function configured(env) {
   const manifest = JSON.parse(await readFile(resolve(desktopRoot, "package.json"), "utf8"))
   const filename = manifest.scripts["package:mac"].match(/--config (\S+)/u)?.[1] ?? "electron-builder.yml"
-  const keys = Object.keys(env)
+  // Exercise the real entry with fixture credentials, not the invoking runner's
+  // PR context or an operator's signing environment. Restore every value below.
+  const keys = [...new Set([
+    ...Object.keys(env),
+    ...Object.keys(process.env).filter((key) => /^(CSC_|WIN_CSC_|APPLE_|AZURE_|DOMOVOI_DESKTOP_REQUIRE_SIGNING$|DOMOVOI_WIN_PUBLISHER_NAME$|GITHUB_EVENT_NAME$)/u.test(key)),
+  ])]
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
   try {
+    for (const key of keys) delete process.env[key]
     Object.assign(process.env, env)
     const entry = resolve(desktopRoot, filename)
     if (filename.endsWith(".cjs")) delete require.cache[require.resolve(entry)]
@@ -123,13 +129,35 @@ test("both Windows modes require signing, use SHA-256, and pass the real builder
       assert.equal(config.win.signtoolOptions, null)
       assert.equal(config.win.azureSignOptions.fileDigest, "SHA256")
       assert.equal(config.win.azureSignOptions.publisherName, azure.DOMOVOI_WIN_PUBLISHER_NAME)
-      assert.match(config.win.azureSignOptions.ExcludeCredentials, /AzureCliCredential/u)
     } else {
       assert.deepEqual(config.win.signtoolOptions.signingHashAlgorithms, ["sha256"])
       assert.equal(config.win.azureSignOptions, undefined)
     }
     assert.doesNotMatch(JSON.stringify(config), /fixture-only/u)
   }
+})
+
+test("the real v26 Azure adapter emits only supported signing module parameters", async () => {
+  const { WindowsSignAzureManager } = builderRequire("app-builder-lib/out/codeSign/windowsSignAzureManager.js")
+  const config = signingConfiguration(azure, "win32")
+  const calls = []
+  const manager = new WindowsSignAzureManager({
+    platformSpecificBuildOptions: config.win,
+    vm: { value: Promise.resolve({
+      powershellCommand: { value: Promise.resolve("powershell.exe") },
+      toVmFile: (path) => path,
+      exec: async (...args) => { calls.push(args) },
+    }) },
+  })
+  await manager.signFile({ path: "C:\\fixture\\Domovoi.exe", options: config.win })
+  assert.equal(calls.length, 1)
+  const command = calls[0][1].at(-1)
+  assert.match(command, /^Invoke-TrustedSigning /u)
+  // The PowerShell module takes individual Exclude... switches, not the
+  // ExcludeCredentials metadata array accepted by the different v27 adapter.
+  assert.doesNotMatch(command, /-ExcludeCredentials/u)
+  assert.match(command, /-FileDigest 'SHA256'/u)
+  assert.doesNotMatch(command, /fixture-only/u)
 })
 
 function packContext(platform) {
