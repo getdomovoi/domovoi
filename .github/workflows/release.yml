@@ -16,13 +16,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
+  # The gate is the ci workflow's own verdict on this exact commit, not a second
+  # opinion about it. Re-running a subset here would publish on a weaker result
+  # than main is held to: ci runs on Linux, macOS, and Windows, checks the packed
+  # daemon on musl, and audits the production dependency graph, and this job
+  # refuses to continue unless every one of those jobs concluded success.
+  gate:
     if: >-
       github.repository == 'getdomovoi/domovoi'
       && github.ref == 'refs/heads/main'
       && vars.RELEASE_PUBLISHING == 'enabled'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
@@ -37,24 +43,18 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        with:
-          bun-version: 1.4.0
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
-      - run: pnpm performance:budget
-      - run: pnpm release:invariants
-      - run: pnpm license:audit
-      - run: pnpm test:install
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Require the ci workflow to have passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 50
+        run: pnpm release:gate
       - id: mode
         uses: changesets/action/select-mode@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
 
   version:
-    needs: verify
-    if: needs.verify.outputs.mode == 'version'
+    needs: gate
+    if: needs.gate.outputs.mode == 'version'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,8 +76,8 @@ jobs:
           pr-title: "chore(release): version packages"
 
   pack:
-    needs: verify
-    if: needs.verify.outputs.mode == 'publish'
+    needs: gate
+    if: needs.gate.outputs.mode == 'publish'
     runs-on: ubuntu-latest
     permissions:
       contents: read
