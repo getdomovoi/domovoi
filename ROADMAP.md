@@ -601,28 +601,33 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
   - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
     installation, first start, TLS, supervision, pairing, and recovery, and names what remains
     unproven per platform.
-- [ ] Implement WSL discovery and a `domovoi open .` Windows interop shim
+- [x] Implement WSL discovery and a `domovoid open` Windows interop shim
   - Since #262 `domovoid wsl list` discovers each distribution and whether a daemon answers there,
     the daemon reports its own WSL facts on its machine descriptor, and `domovoid open` places a
     Windows path inside the distro. A `wsl.exe` that cannot answer is classified as absent,
     denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or
     daemon. Unit tests drive them with a fake `wsl.exe`. A corrupt listing returns no partial
     discovery: unreadable rows after a valid header and torn UTF-16 bytes propagate a corrupt
-    classification and remedy through both CLI commands. A real Windows-to-WSL test now exists:
-    `apps/daemon/src/wsl-windows.test.ts` runs six tests against the installed `wsl.exe` and skips
-    by name off Windows or on a Windows machine without it. On the Windows CI job, which has no
-    running WSL 2 distribution, four of them prove that the listing answers or refuses within its
-    deadline and that a distribution that does not exist is refused, and the two that need a
-    running distribution skip. Discovery, open, authentication, repository ownership, Git, and
-    restart against a running distribution remain unverified. No `domovoi` alias exists, and WSL
-    is still neither a transport nor a fleet candidate: nothing but the CLI and `domovoid open`
-    consumes the discovery.
-- [ ] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
+    classification and remedy through both CLI commands. The separate path-filtered and nightly
+    Windows job provisions one pinned Ubuntu WSL 2 guest and requires every native proof with
+    zero skips. Hosted run 34011937724 passed all 15: real CLI discovery and open through both
+    UNC spellings, guest project ownership and Git, authenticated fleet routing, graceful daemon
+    restart with the project and pairing preserved, and stale/stopped endpoint refusal.
+    `docs/wsl-ci.md` records the run, timings and limits. Normal non-WSL runs still skip these
+    native tests explicitly. WSL routes are source-local candidates produced only after the
+    guest answers with the enrolled identity. No `domovoi` alias, service-launch WSL facts,
+    multi-distro arbitration, mirrored-network or VPN proof is claimed.
+- [x] Keep all WSL filesystem and Git work inside the distro daemon, never through `\\wsl$`
   - The open shim and the git runner both ask the distribution's own `wslpath` which Windows path
     a placed path reads back as, so a Windows drive is refused wherever the distribution mounts
     it, with a fake `wsl.exe` covering a custom automount root and a drive mounted by hand. The
-    real mount-boundary test runs only on a Windows machine with a running WSL 2 distribution,
-    which CI does not have.
+    dedicated native job now proves the custom automount case at `/domovoi-ci-drives/`, including
+    refusing a valid Windows Git repository through the real Windows open shim and Git-command
+    preparation without changing either daemon's project. It also proves the Windows daemon
+    refuses both WSL share spellings with the boundary-specific remedy, while the guest owns
+    the native project and executes Git. Hand-mounted drive paths and repository-selecting Git
+    arguments remain unit-tested, not native-tested. This does not prove a session transfer or
+    non-root guest permissions.
 - [ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
   - #244 adds the production remote row and refresh path these states run on, plus
     `pairing-required` for a target that refused this machine's credential and
