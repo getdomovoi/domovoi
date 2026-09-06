@@ -95,6 +95,17 @@ test("ignores a launcher that is not pnpm", () => {
   })
 })
 
+test("ignores a launcher Node cannot spawn without a shell", () => {
+  const executable = String.raw`C:\Program Files\pnpm\pnpm.exe`
+  const env = { npm_execpath: String.raw`C:\Users\runneradmin\AppData\Roaming\npm\pnpm.cmd` }
+
+  assert.deepEqual(pnpmInvocation("win32", { env, lookup: () => `${executable}\r\n` }), {
+    command: executable,
+    args: [],
+    shell: false,
+  })
+})
+
 test("lets Windows resolve pnpm by name when the lookup stalls", (t) => {
   const warnings = []
   t.mock.method(console, "warn", (message) => warnings.push(message))
