@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -17,13 +17,14 @@ import {
 import { MachineCredentialStore, type MachineKeyring } from "./machine-credentials.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { DomovoiDaemon, type DaemonServerOptions } from "./server.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 
 const roots: string[] = []
 const running: ProductionDaemonHandle[] = []
 
 afterEach(async () => {
   await Promise.allSettled(running.splice(0).map((daemon) => daemon.stop()))
-  await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })))
+  await removeScratchDirectories(roots)
 })
 
 function testToken(label: string): string {

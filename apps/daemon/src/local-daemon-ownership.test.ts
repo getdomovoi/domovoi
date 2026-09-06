@@ -1,6 +1,6 @@
 import { fork } from "node:child_process"
 import { on, once } from "node:events"
-import { mkdtemp, rm, stat } from "node:fs/promises"
+import { mkdtemp, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "./operation-deadline.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 import {
   createProductionDaemon, createProductionDaemonWithDependencies, productionDaemonDependencies,
   type ProductionDaemonHandle,
@@ -19,7 +20,7 @@ const handles: ProductionDaemonHandle[] = []
 
 afterEach(async () => {
   await Promise.allSettled(handles.splice(0).map((handle) => handle.stop()))
-  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })))
+  await removeScratchDirectories(homes)
 })
 
 describe("production profile ownership", () => {

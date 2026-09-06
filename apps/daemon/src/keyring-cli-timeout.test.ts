@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -9,6 +9,7 @@ import { expect, it } from "vitest"
 
 import { OperationDeadline } from "./operation-deadline.js"
 import { withinServiceDeadline } from "./service/deadline.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 const budget = process.platform === "win32" ? 30_000 : 16_000
 
@@ -46,7 +47,9 @@ it("exits the real recovery CLI when native work will not acknowledge shutdown",
     const cleanup = OperationDeadline.start(10_000)
     try {
       if (closed) await withinServiceDeadline(cleanup, () => closed!)
-      await withinServiceDeadline(cleanup, () => rm(directory, { recursive: true, force: true }))
     } finally { cleanup.clear() }
+    // Removal never shares the budget the wait above may have spent, and it
+    // retries a directory the exiting child still holds.
+    await removeScratchDirectory(directory)
   }
 }, budget + 11_000)
