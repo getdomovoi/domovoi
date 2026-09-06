@@ -19,12 +19,11 @@ const cleanupBudget = 30_000
 const productionUnit = "domovoid.service"
 const runtimeDirectory = process.env.XDG_RUNTIME_DIR ?? ""
 const configHome = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config")
-// The unit ships RestartSec=5. A restart therefore lands five seconds after the
-// process ends, so observing one needs longer than the shared daemon wait, and
-// proving no restart happened needs a window past that delay. Both numbers are
-// checked against the delay the manager itself reports for this unit.
+// The unit ships RestartSec=5, and the supervision test asserts the manager
+// reports exactly that. A restart therefore lands five seconds after the
+// process ends, which is beyond what the shared daemon wait allows, and
+// proving no restart happened needs a window past that same delay.
 const restartDelay = "5s"
-const restartObservationMs = 30_000
 const noRestartWindowMs = 8_000
 // The gate is the systemd user manager's own private socket, which exists only
 // while systemd --user runs for this account. A machine without one skips.
@@ -222,9 +221,11 @@ it.runIf(managerRunning)("restarts a crashed unit and leaves a stopped one stopp
     const { effects, home, readyPath: ready, show, systemctl, unit } = throwaway
     // Every wait here is bounded, and none of them may outlive the shared
     // deadline; a manager that never answers fails the test rather than
-    // hanging it.
+    // hanging it. Thirty seconds is six times the restart delay asserted
+    // below, and the daemon-wide wait cannot be used because it is shorter
+    // than one such delay. Polling is slow because each turn spawns systemctl.
     const observe = <T>(assertion: () => Promise<T>) =>
-      withinServiceDeadline(deadline, () => vi.waitFor(assertion, { timeout: restartObservationMs, interval: 500 }))
+      withinServiceDeadline(deadline, () => vi.waitFor(assertion, { timeout: 30_000, interval: 500 }))
     // A restart, had the manager intended one, lands one restart delay after
     // the process ends. Watching past that is what turns "not restarted yet"
     // into "not restarted".
