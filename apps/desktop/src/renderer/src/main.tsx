@@ -12,6 +12,7 @@ import "@getdomovoi/ui/styles.css"
 import { daemonConnectionCopy } from "./desktop-daemon-copy.js"
 import { DesktopDaemonRefused } from "./desktop-daemon-refused.js"
 import { desktopRpcEndpointResolver, resolveDesktopStartup, type DesktopStartup } from "./desktop-startup.js"
+import { verifyLaunchSmokeDaemon } from "./launch-smoke.js"
 
 applyStoredAppearanceTheme()
 
@@ -22,9 +23,14 @@ type DesktopState =
   | { kind: "failed"; message: string }
   | DesktopStartup
 
-function DesktopLaunchSmoke() {
-  useEffect(() => window.domovoiLaunchSmoke?.ready(), [])
-  return <div data-domovoi-launch-smoke="ready" />
+function DesktopLaunchSmoke({ startup }: { startup: DesktopStartup }) {
+  useEffect(() => {
+    void verifyLaunchSmokeDaemon(startup).then(
+      () => window.domovoiLaunchSmoke?.ready(),
+      (error: unknown) => window.domovoiLaunchSmoke?.failed(error instanceof Error ? error.message : "Daemon verification failed"),
+    )
+  }, [startup])
+  return <div data-domovoi-launch-smoke="verifying-daemon" />
 }
 
 function startupFailure(error: unknown): DesktopState {
@@ -39,7 +45,10 @@ function DesktopApp() {
     let active = true
     resolveDesktopStartup(window).then(
       (startup) => { if (active) setState(startup) },
-      (error: unknown) => { if (active) setState(startupFailure(error)) },
+      (error: unknown) => {
+        window.domovoiLaunchSmoke?.failed(error instanceof Error ? error.message : "Startup failed")
+        if (active) setState(startupFailure(error))
+      },
     )
     return () => { active = false }
   }, [])
@@ -57,8 +66,8 @@ function DesktopApp() {
   )
 
   if (state.kind === "resolving") return null
-  if (state.kind === "launch-smoke") return <DesktopLaunchSmoke />
   if (state.kind === "failed") return <StartupError message={state.message} />
+  if (window.domovoiLaunchSmoke) return <DesktopLaunchSmoke startup={state} />
   if (state.kind === "refused") {
     return <DesktopDaemonRefused reason={state.reason} message={state.message} retrying={retrying} onRetry={retry} />
   }
