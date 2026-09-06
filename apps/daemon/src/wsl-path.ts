@@ -30,8 +30,10 @@ function ownShare(distribution: string, windowsPath: string): boolean {
 }
 
 function wslpath(distribution: string, run: WslRunner<string>, timeoutMs: number) {
+  // `--` only ends WSL's options. Its default Linux shell still consumes
+  // backslashes and expands dollar signs. --exec preserves the literal path.
   return (flag: "-u" | "-w", path: string) => withWslDeadline(
-    run("wsl.exe", ["-d", distribution, "--", "wslpath", flag, path], { timeoutMs }),
+    run("wsl.exe", ["-d", distribution, "--exec", "wslpath", flag, path], { timeoutMs }),
     timeoutMs,
   )
 }

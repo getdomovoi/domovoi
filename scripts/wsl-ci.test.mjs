@@ -113,6 +113,9 @@ test("provisions exactly one distro, requires it in the test process, then remov
   assert.equal(proof.options.env.DOMOVOI_WSL_REQUIRED_DISTRIBUTION, distribution)
   assert.equal(proof.options.env.DOMOVOI_WSL_EXPECTED_MOUNT_ROOT, "/domovoi-ci-drives/")
   assert.ok(calls.some(({ args }) => args.includes("uname")))
+  for (const { args } of calls.filter(({ args }) => args[0] === "-d")) {
+    assert.equal(args[4], "--exec", "provisioning must not add an implicit Linux shell")
+  }
   assert.deepEqual(calls.at(-1).args, ["--unregister", distribution])
   assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "native proofs", "cleanup"])
   assert.equal(result.tests, 6)

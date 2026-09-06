@@ -120,6 +120,25 @@ describe.skipIf(requiredDistribution === undefined && skipReason !== undefined)(
         timeoutMs: 20_000,
       })
       expect(placed).toBe("/tmp")
+
+      // An argument list to wsl.exe is not enough: its default shell would
+      // expand these names again. Exercise the production translation with
+      // real guest files through both UNC spellings, not a simulated wslpath.
+      const leaf = `domovoi-${randomBytes(6).toString("hex")} space $HOME $(printf altered)`
+      const directory = `/tmp/${leaf}`
+      await runWslText("wsl.exe", ["-d", running.name, "--exec", "mkdir", "--", directory], { timeoutMs: 20_000 })
+      try {
+        for (const host of ["wsl$", "wsl.localhost"]) {
+          const translated = await distributionPath({
+            distribution: running.name,
+            path: `\\\\${host}\\${running.name}\\tmp\\${leaf}`,
+            timeoutMs: 20_000,
+          })
+          expect(translated).toBe(directory)
+        }
+      } finally {
+        await runWslText("wsl.exe", ["-d", running.name, "--exec", "rmdir", "--", directory], { timeoutMs: 20_000 })
+      }
     }, 60_000)
 
     it("refuses the Windows system drive through a running WSL 2 distribution", async ({ skip }) => {
@@ -131,7 +150,7 @@ describe.skipIf(requiredDistribution === undefined && skipReason !== undefined)(
 
       const systemDrive = process.env["SystemDrive"] ?? "C:"
       if (expectedMountRoot !== undefined) {
-        const mounted = (await runWslText("wsl.exe", ["-d", running.name, "--", "wslpath", "-u", `${systemDrive}\\`], { timeoutMs: 20_000 })).trim()
+        const mounted = (await runWslText("wsl.exe", ["-d", running.name, "--exec", "wslpath", "-u", `${systemDrive}\\`], { timeoutMs: 20_000 })).trim()
         expect(mounted.replace(/\/+$/, "")).toBe(`${expectedMountRoot}${systemDrive[0]?.toLowerCase()}`)
         await expect(distroGitCommand({ distribution: running.name, repositoryPath: mounted, args: ["status"], timeoutMs: 20_000 }))
           .rejects.toThrow(/Windows drive/)

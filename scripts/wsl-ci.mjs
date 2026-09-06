@@ -99,7 +99,7 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
   const run = (deadline, command, args, options = {}) => deadline.run(() =>
     effects.run(command, args, { ...options, signal: deadline.signal }))
   const wsl = (deadline, args) => run(deadline, "wsl.exe", args)
-  const linux = (deadline, args) => wsl(deadline, ["-d", distribution, "-u", "root", "--", ...args])
+  const linux = (deadline, args) => wsl(deadline, ["-d", distribution, "-u", "root", "--exec", ...args])
 
   try {
     await phase("provision", budgets.provision, async (deadline) => {
