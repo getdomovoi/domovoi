@@ -484,7 +484,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add a searchable audit log with redaction and export
 <ul>
-<li><code>audit.query</code> and <code>audit.export</code> bounded their store reads with <code>agentTimeoutMs</code>, so a test daemon with a 5 ms agent budget timed a real read out on macOS CI. #250 gives them their own <code>auditReadTimeoutMs</code>, default 30 s, through the same deadline validation; open as of 2026-09-05.
+<li><code>audit.query</code> and <code>audit.export</code> bounded their store reads with <code>agentTimeoutMs</code>, so a test daemon with a 5 ms agent budget timed a real read out on macOS CI. #250 gives them their own <code>auditReadTimeoutMs</code>, default 30 s, through the same deadline validation, and is merged.
 </li>
 </ul>
 </li>
@@ -597,7 +597,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Context occupancy readout beside those totals
 <ul>
-<li><code>sessionUsageSchema</code> carries <code>contextTokens</code> and <code>contextWindowTokens</code>, and both are optional so a client shows the readout only when the provider reported the pair. No adapter populates them and no client reads them yet.
+<li><code>sessionUsageSchema</code> carries <code>contextTokens</code> and <code>contextWindowTokens</code>, and both are optional so a client shows the readout only when the provider reported the pair. The Codex, Claude, and ACP adapters report the pair, and <code>SessionUsageFooter</code> in <code>packages/ui/src/workspace-shell.tsx</code> renders it beside the session totals.
 </li>
 </ul>
 </li>
@@ -641,9 +641,11 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Give the prompt composer a total budget and a documented drop order
+<li>[x] Give the prompt composer a total budget and a documented drop order
 <ul>
-<li><code>apps/daemon/src/prompt-composer.ts</code> now assembles skills, annotations, working plan, handoff, and user text in one place, and <code>apps/daemon/src/prompt-composition.golden.test.ts</code> pins all sixteen section combinations byte for byte. Each section still truncates against its own limit with no knowledge of the others, so five sections that each pass can still compose a prompt none of them thought was too large. This is a deliberate behaviour change and needs its own tests; do not fold it into a refactor.
+<li><code>apps/daemon/src/prompt-composer.ts</code> assembles skills, annotations, working plan, handoff, and user text in one place, and <code>apps/daemon/src/prompt-composition.golden.test.ts</code> pins all sixteen section combinations byte for byte. Since #257 the composer measures the whole rendered prompt against one budget rather than each section against its own limit, and drops one item at a time in the exported <code>elasticPromptDropOrder</code>: project-default skills, open annotations, then handoff history, annotations, and artifacts.
+</li>
+<li>Required sections are measured first, so a turn whose user text and explicit selections alone exceed the budget is refused with those sections and their remedies named rather than quietly trimmed. <code>apps/daemon/src/server-prompt-budget.test.ts</code> drives a real daemon over a socket and asserts both the reported budget and that refusal.
 </li>
 </ul>
 </li>
@@ -697,13 +699,14 @@ td { color: var(--ink2); }
 </li>
 <li><a href="https://github.com/getdomovoi/domovoi/pull/248">#248</a> <code>Add device.rename for paired device labels</code> <code>MERGED</code>: label only, 1 to 128 characters shared with the pairing label limit, audited like <code>device.revoke</code>.
 </li>
-<li><a href="https://github.com/getdomovoi/domovoi/pull/250">#250</a> <code>Give audit reads their own deadline</code> <code>OPEN</code>: <code>audit.query</code> and <code>audit.export</code> read under their own <code>auditReadTimeoutMs</code> instead of <code>agentTimeoutMs</code>, after a macOS run of #245 timed a real audit read out under a 5 ms agent budget.
+<li><a href="https://github.com/getdomovoi/domovoi/pull/250">#250</a> <code>Give audit reads their own deadline</code> <code>MERGED</code>: <code>audit.query</code> and <code>audit.export</code> read under their own <code>auditReadTimeoutMs</code> instead of <code>agentTimeoutMs</code>, after a macOS run of #245 timed a real audit read out under a 5 ms agent budget.
 </li>
 </ul>
+<p>Every ledger entry is now merged.</p>
 <ul>
 <li>[ ] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
 <ul>
-<li>The schemas, <code>machine.json</code> identity, and local facts exist, and since #244 the daemon keeps one authenticated socket per remote row with a fifteen-second heartbeat. One production factory now serves both entry points: Desktop reaches a daemon only through <code>acquireLocalDaemon</code>, which builds the same runtime from the same <code>machine.json</code>, so no separate Desktop fallback identity remains. Startup reconciliation refuses to start when the stored workspace names a different machine, and on a match it replaces the stored name, platform, architecture, and version with this executable's current facts while keeping provider readiness. Close with a production-boundary restart over one real profile that asserts those refreshed facts.
+<li>The schemas, <code>machine.json</code> identity, and local facts exist, and since #244 the daemon keeps one authenticated socket per remote row with a fifteen-second heartbeat. One production factory now serves both entry points: Desktop reaches a daemon only through <code>acquireLocalDaemon</code>, which builds the same runtime from the same <code>machine.json</code>, so no separate Desktop fallback identity remains. Startup reconciliation refuses to start when the stored workspace names a different machine, and on a match it replaces the stored name, platform, architecture, and version with this executable's current facts while keeping provider readiness. <code>apps/daemon/src/fleet-production.test.ts</code> restarts a peer over its own real profile through that factory and asserts the source sees the renamed label. Only the platform, architecture, and version refresh is still proven by a directly constructed daemon over a hand-seeded store in <code>apps/daemon/src/server-machine-admission.test.ts</code>; close with a production-boundary restart that asserts those three.
 </li>
 </ul>
 </li>
@@ -757,7 +760,7 @@ td { color: var(--ink2); }
 <ul>
 <li>Direct selection and the relay slot ship. Nothing advertises or dials a relay yet; the open items below replace the earlier assumption that relay had to wait for the hosted Goal 3 service.
 </li>
-<li>The base schema, preference order, and bounded client/daemon fallback loops exist. Production now produces local, LAN and explicitly configured TLS tailnet advertisements. Source-local configured SSH forwards follow direct candidates without becoming target-authored facts or permanent remembered routes. Production socket tests cover TLS descriptor publication, transfer over a configured loopback endpoint, forget masking and configuration removal. They do not prove an external tailnet or an SSH process. Windows now produces source-local WSL candidates only after a paired daemon answers with the expected identity. The required hosted WSL 2 job proves real enrollment, heartbeat, authenticated dialing, stale-endpoint refusal and stopped-distro refusal: ten proofs passed, zero skipped, in run 34009889782. This closes the WSL producer part of D3/I6, not multi-distro routing, guest service supervision, mirrored networking, VPNs or a project/transfer through that route. Relay stays deferred under Goal 3. Client and daemon dialers reserve a share of the remaining overall deadline for each eligible route. Real socket tests prove fallback after silent upgrade and hello, with typed timeout refusals and losing-attempt cancellation. These bounds and their runtime disposal limits are documented in <code>docs/fleet-routing.md</code>.
+<li>The base schema, preference order, and bounded client/daemon fallback loops exist. Production now produces local, LAN and explicitly configured TLS tailnet advertisements. Source-local configured SSH forwards follow direct candidates without becoming target-authored facts or permanent remembered routes. Production socket tests cover TLS descriptor publication, transfer over a configured loopback endpoint, forget masking and configuration removal. They do not prove an external tailnet or an SSH process. Windows now produces source-local WSL candidates only after a paired daemon answers with the expected identity. The required hosted WSL 2 job proves real enrollment, heartbeat, authenticated dialing, stale-endpoint refusal and stopped-distro refusal: fifteen proofs passed, zero skipped, in run 34017787075. This closes the WSL producer part of D3/I6, not multi-distro routing, guest service supervision, mirrored networking, VPNs or a session transfer through that route. Relay stays deferred under Goal 3. Client and daemon dialers reserve a share of the remaining overall deadline for each eligible route. Real socket tests prove fallback after silent upgrade and hello, with typed timeout refusals and losing-attempt cancellation. These bounds and their runtime disposal limits are documented in <code>docs/fleet-routing.md</code>.
 </li>
 </ul>
 </li>
@@ -783,7 +786,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Install a frozen daemon runtime from a version-pinned release archive, checked against a caller-supplied SHA-256 and the <code>SHA256SUMS</code> the release publishes; signature verification is tracked under signed GitHub Release artifacts
 <ul>
-<li><code>node scripts/bootstrap-daemon.mjs &lt;version&gt; &lt;baseUrl&gt; &lt;destination&gt; &lt;expectedSha256&gt;</code> streams and verifies the archive into <code>&lt;destination&gt;/v&lt;version&gt;</code>, stages it privately, materialises its embedded integrity lock as <code>package-lock.json</code>, runs bundled npm 10.0.0 or newer with <code>npm ci</code>, verifies the installed graph, permits only the reviewed <code>node-pty</code> native build, and publishes a <code>runtime.json</code> receipt naming the installed directory. Same-release protocol bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download, installation, native build, verification, publication, and cleanup share five minutes.
+<li><code>node scripts/bootstrap-daemon.mjs &lt;version&gt; &lt;baseUrl&gt; &lt;destination&gt; &lt;expectedSha256&gt;</code> streams and verifies the archive into <code>&lt;destination&gt;/v&lt;version&gt;</code>, stages it privately, materialises its embedded integrity lock as <code>package-lock.json</code>, runs bundled npm 10.0.0 or newer with <code>npm ci</code>, verifies the installed graph, permits only the reviewed <code>node-pty</code> native build, and publishes a <code>runtime.json</code> receipt naming the installed directory. Same-release protocol bytes are bound inside the archive; provider SDKs are fetched, not bundled. Download, installation, native build, verification, and publication share five minutes. Removing an unpublished staging tree afterwards runs under its own fresh 30 seconds, never the exhausted budget.
 </li>
 <li>HTTPS downloads add a 30-second byte-progress inactivity allowance within that total. Redirects and empty chunks do not renew it; local disk backpressure spends only the total. Deterministic and real HTTPS regressions reject silent or late responses. Refusal does not promise immediate socket disposal: Node may retain a stalled TLS connection until its own connect timeout, delaying CLI exit. See the transport limits in <code>docs/distribution.md</code>.
 </li>
@@ -791,7 +794,7 @@ td { color: var(--ink2); }
 </li>
 <li>What lands is an installed runtime tree, not an installed command. The result's <code>runtimePath</code> is run as <code>node &lt;runtimePath&gt;/dist/index.js</code>. Nothing creates a <code>domovoid</code> entry on <code>PATH</code>, starts the daemon, configures daemon state, or installs supervision. The separately exported <code>bootstrapDaemon</code> download step on its own only publishes a verified archive and installs nothing.
 </li>
-<li>Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the external toolchain remain reproducibility limits. The protocol library keeps all three package managers. Tests drive the real bootstrap CLI with an isolated changing registry; a full clean-machine PATH, daemon-state, and service lifecycle is still unproven and is not performed by bootstrap. No release is published yet, so this path cannot be run against a real release today. See <code>docs/distribution.md</code>, and <code>docs/clean-machine-setup.md</code> for the operator steps that surround it.
+<li>Manual npm, pnpm, or Bun adds of the daemon are not frozen. Native compilation and the external toolchain remain reproducibility limits. The protocol library keeps all three package managers. Tests drive the real bootstrap CLI with an isolated changing registry, and <code>scripts/bootstrap-real-daemon.test.mjs</code> packs the real archive, installs it, then runs the installed tree on all three CI platforms: version and help, a real <code>node-pty</code> and keyring load, a <code>~/.domovoi</code> the daemon writes itself in an isolated home, an authenticated <code>system.hello</code>, and a withdrawn endpoint after a signalled stop. A clean-machine PATH entry and a supervised service lifecycle stay unproven and are not performed by bootstrap. That test injects the download step and the real-HTTPS test installs a fixture package, so no test yet fetches the real archive over HTTPS. No release is published yet, so this path cannot be run against a real release today. See <code>docs/distribution.md</code>, and <code>docs/clean-machine-setup.md</code> for the operator steps that surround it.
 </li>
 </ul>
 </li>
@@ -799,9 +802,9 @@ td { color: var(--ink2); }
 <ul>
 <li>Unit and task generators plus <code>service install</code>, <code>status</code>, and <code>remove</code> exist, and nothing is written to a system-wide location. Since #256 installation records the validated non-secret settings in <code>~/.domovoi/service.json</code> and replays them as the supervised environment: host, port, credential and identity paths, TLS material, advertised and tailnet hosts, SSH forwards, allowed origins, and the remote-transport opt-in. It refuses to retain <code>DOMOVOI_AUTH_TOKEN</code> rather than silently changing authority. Since #261 Desktop no longer contends for the port: it attaches to the verified local owner, and it refuses to start a fallback daemon at all when a service configuration is present.
 </li>
-<li>The Windows logon task still has no crash restart, where the systemd unit has <code>Restart=on-failure</code> and the launchd agent has <code>KeepAlive</code>. CI now reaches a real manager on all three legs. <code>apps/daemon/src/service/windows-task.native.test.ts</code> registers, stops, and removes a real scheduled task under a throwaway name. <code>systemd-unit.native.test.ts</code> installs, reports and removes a real user unit under a throwaway name, then crashes its process through the manager and requires exactly one restart, with a deliberate stop and a clean exit both required to stay stopped; the Ubuntu leg starts the user manager and asserts its socket so the test cannot skip silently.
+<li>The Windows logon task still has no crash restart, where the systemd unit has <code>Restart=on-failure</code> and the launchd agent has <code>KeepAlive</code>. CI reaches a real manager on all three legs. <code>apps/daemon/src/service/windows-task.native.test.ts</code> registers, stops, and removes a real scheduled task under a throwaway name on the Windows runner. <code>apps/daemon/src/service/systemd-unit.native.test.ts</code> installs, reports, and removes a real systemd user unit on the Linux runner, then crashes its main process through the manager and reads <code>NRestarts</code>, <code>ActiveState</code>, and a new <code>MainPID</code> back off it to require exactly one restart, with a deliberate stop and a clean exit both required to stay stopped. The Linux job starts the user manager and asserts its private socket, so a runner without one fails rather than skipping the proof.
 </li>
-<li><code>launchd-agent.native.test.ts</code> is the macOS counterpart and is written but unexecuted, because it was authored on Linux. It bootstraps a throwaway agent into the per-user domain the installer targets, crashes it through the manager, and requires launchd's own run count to increment, with a clean exit required to stay exited past launchd's throttle. The hosted-runner question it depended on is settled from evidence: <code>actions/runner-images</code> gives every macOS image GUI auto-login, and a green <code>macos-14</code> job published a <code>launchctl print</code> dump with a live audit session id, <code>state = running</code> and a real <code>pid</code>. The macOS leg asserts that same domain, so the first CI run either proves the assertions or fails by name. Until it runs, <code>KeepAlive</code> supervision stays unproven. See <code>docs/daemon-services.md</code>.
+<li><code>apps/daemon/src/service/launchd-agent.native.test.ts</code> (#306) is the macOS counterpart and has now run. It bootstraps a throwaway agent into the per-user <code>gui</code> domain the installer targets, crashes it through the manager, and requires launchd's own run count to increment, with a clean exit required to stay exited past launchd's throttle. The macOS job asserts that domain before the suite, and the test refuses to skip on a CI darwin leg, so an unreachable domain fails by name rather than disappearing from the run. The <code>macos-latest</code> leg of run 34016224755 ran all nine of its tests with none skipped, so <code>KeepAlive</code> supervision is proven against a real launchd. See <code>docs/daemon-services.md</code>.
 </li>
 <li><code>docs/clean-machine-setup.md</code> gives the operator sequence from an uninstalled machine through installation, first start, TLS, supervision, pairing, and recovery, and names what remains unproven per platform.
 </li>
@@ -809,19 +812,21 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Implement WSL discovery and a <code>domovoid open</code> Windows interop shim
 <ul>
-<li>Since #262 <code>domovoid wsl list</code> discovers each distribution and whether a daemon answers there, the daemon reports its own WSL facts on its machine descriptor, and <code>domovoid open</code> places a Windows path inside the distro. A <code>wsl.exe</code> that cannot answer is classified as absent, denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or daemon. Unit tests drive them with a fake <code>wsl.exe</code>. A corrupt listing returns no partial discovery: unreadable rows after a valid header and torn UTF-16 bytes propagate a corrupt classification and remedy through both CLI commands. The separate path-filtered and nightly Windows job provisions one pinned Ubuntu WSL 2 guest and requires every native proof with zero skips. Hosted run 34011937724 passed all 15: real CLI discovery and open through both UNC spellings, guest project ownership and Git, authenticated fleet routing, graceful daemon restart with the project and pairing preserved, and stale/stopped endpoint refusal. <code>docs/wsl-ci.md</code> records the run, timings and limits. Normal non-WSL runs still skip these native tests explicitly. WSL routes are source-local candidates produced only after the guest answers with the enrolled identity. No <code>domovoi</code> alias, service-launch WSL facts, multi-distro arbitration, mirrored-network or VPN proof is claimed.
+<li>Since #262 <code>domovoid wsl list</code> discovers each distribution and whether a daemon answers there, the daemon reports its own WSL facts on its machine descriptor, and <code>domovoid open</code> places a Windows path inside the distro. A <code>wsl.exe</code> that cannot answer is classified as absent, denied, timed out, unavailable, or corrupt rather than reported as a missing distribution or daemon. Unit tests drive them with a fake <code>wsl.exe</code>. A corrupt listing returns no partial discovery: unreadable rows after a valid header and torn UTF-16 bytes propagate a corrupt classification and remedy through both CLI commands. The <code>wsl-native</code> workflow in <code>.github/workflows/wsl.yml</code> is path-filtered and nightly, and it provisions one throwaway Ubuntu 24.04 WSL 2 guest from an image pinned by URL and <code>sha256</code>. <code>scripts/wsl-ci.mjs</code> names all fifteen proofs and requires exactly those to pass with none skipped, pending, or failed, so the job is red rather than green when a proof cannot run. <code>apps/daemon/src/wsl-windows.test.ts</code> and the proofs it registers skip by name off Windows or on a Windows machine without a guest, and refuse to skip once the job names a required distribution. Run 34017787075, on WSL sources and a workflow byte-identical to the merged ones, passed all fifteen: real CLI discovery, open through both the <code>wsl$</code> and <code>wsl.localhost</code> spellings, guest project ownership and real Git, authenticated fleet routing, a graceful daemon restart with the project and pairing intact, and refusal of a stale endpoint and of a stopped distribution. <code>docs/wsl-ci.md</code> records the run, timings, and limits. WSL routes are source-local candidates produced only after the guest answers with the enrolled identity; WSL is not a fleet candidate. Every proof runs against that single guest built from that single pinned image, so two distributions at once have never been exercised, and multi-distro arbitration, service-launch WSL facts, mirrored networking, VPNs, and a <code>domovoi</code> alias are unclaimed.
 </li>
 </ul>
 </li>
 <li>[x] Keep all WSL filesystem and Git work inside the distro daemon, never through <code>\\wsl$</code>
 <ul>
-<li>The open shim and the git runner both ask the distribution's own <code>wslpath</code> which Windows path a placed path reads back as, so a Windows drive is refused wherever the distribution mounts it, with a fake <code>wsl.exe</code> covering a custom automount root and a drive mounted by hand. The dedicated native job now proves the custom automount case at <code>/domovoi-ci-drives/</code>, including refusing a valid Windows Git repository through the real Windows open shim and Git-command preparation without changing either daemon's project. It also proves the Windows daemon refuses both WSL share spellings with the boundary-specific remedy, while the guest owns the native project and executes Git. Hand-mounted drive paths and repository-selecting Git arguments remain unit-tested, not native-tested. This does not prove a session transfer or non-root guest permissions.
+<li>The open shim and the git runner both ask the distribution's own <code>wslpath</code> which Windows path a placed path reads back as, so a Windows drive is refused wherever the distribution mounts it, with a fake <code>wsl.exe</code> covering a custom automount root and a drive mounted by hand. The dedicated native job now proves the custom automount case at <code>/domovoi-ci-drives/</code>, including refusing a valid Windows Git repository through the real Windows open shim and Git-command preparation without changing either daemon's project. It also proves the Windows daemon refuses both WSL share spellings with the boundary-specific remedy, while the guest owns the native project and executes real Git in a path carrying spaces and literal shell metacharacters. Hand-mounted drive paths and repository-selecting Git arguments remain unit-tested, not native-tested. The proofs run as root in that one distribution, so non-root guest permissions, a second distribution, and a session transfer are not proven.
 </li>
 </ul>
 </li>
-<li>[ ] Add fleet health, reconnect, version mismatch, and upgrade-required states
+<li>[x] Add fleet health, reconnect, version mismatch, and upgrade-required states
 <ul>
-<li>#244 adds the production remote row and refresh path these states run on, plus <code>pairing-required</code> for a target that refused this machine's credential and <code>credential-store-unavailable</code> for a keychain that could not be read. The two-daemon test covers revocation health; version mismatch and upgrade-required still have no production-boundary proof.
+<li>#244 adds the production remote row and refresh path these states run on, plus <code>pairing-required</code> for a target that refused this machine's credential and <code>credential-store-unavailable</code> for a keychain that could not be read. The two-daemon test covers revocation health and reconnect after a restart.
+</li>
+<li><code>apps/daemon/src/fleet-production-health.test.ts</code> (#255) grades a restarted peer as <code>version-mismatch</code> or <code>upgrade-required</code> between two production daemons, refuses the move each way with the matching reason, refuses re-pairing on the wire, and returns the row to healthy on upgrade without a new pairing. The other release is a different <code>advertisedProtocolVersion</code> on the same build rather than a second daemon build, so the states are proven, not a real cross-release deployment.
 </li>
 </ul>
 </li>
@@ -841,7 +846,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Stop transfer chunk directory cleanup failing with <code>EPERM</code> on Windows
 <ul>
-<li><code>transfer-transactions.test.ts</code> &quot;handles concurrent retries of the same chunk&quot; failed once on the Windows job of #245 (run 33938587480) with <code>EPERM: operation not permitted, rmdir</code> on the chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. A fix is in progress on a branch and is not merged.
+<li><code>transfer-transactions.test.ts</code> &quot;handles concurrent retries of the same chunk&quot; failed once on the Windows job of #245 (run 33938587480) with <code>EPERM: operation not permitted, rmdir</code> on the chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. #251 merged a guard: <code>apps/daemon/src/transfer-transactions.ts</code> reserves each chunk path in <code>activeMemberReceives</code> before the first await and refuses a second concurrent receive, so a removal never races an open handle. The item stays open because the refusal it models is simulated. The regression mocks <code>node:fs/promises</code> to throw the <code>EPERM</code>, no real Windows run has exercised it, and the reservation is process-local, so two daemon processes over one journal are still uncovered.
 </li>
 </ul>
 </li>
@@ -885,9 +890,9 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Give Undo on a rename an expected-label precondition
+<li>[x] Give Undo on a rename an expected-label precondition
 <ul>
-<li>Undo is one more rename back to the previous label with no precondition, so it can overwrite a concurrent rename by another client. The follow-up adds an expected-label field so a stale undo refuses instead.
+<li><code>device.rename</code> takes an optional <code>expectedLabel</code> (#253), and the daemon renames only the row that still carries it, refusing otherwise with a typed mismatch that returns the row as it stands. Undo always sends the label it opened against, so a rename by another client in the meantime is reported rather than overwritten.
 </li>
 </ul>
 </li>
@@ -901,7 +906,7 @@ td { color: var(--ink2); }
 </li>
 <li>revocation, rotation, and rename paths exist in the client;
 </li>
-<li>transfer safety is tested against constructed remote facts and once against a production peer;
+<li>transfer safety is tested against constructed remote facts, and against a production peer in the fleet, transport, and version-health production tests;
 </li>
 <li>repository bytes never flow through a filesystem sync layer.
 </li>
@@ -910,12 +915,14 @@ td { color: var(--ink2); }
 <ul>
 <li>the two-daemon test injects the OS keyring and provider readiness, so platform keychain behaviour and cross-host TLS are unproven, and no two physical machines have been paired;
 </li>
-<li>native service managers are driven for real on the Linux and Windows legs, and a real WSL 2 guest is provisioned by its own job, but the macOS launchd test has never run and Windows has no crash restart to test at all;
+<li>native service managers are driven for real on all three legs, with a crash restart proven on a real systemd user unit and on a real launchd agent, but the Windows logon task has no crash restart to test at all;
+</li>
+<li>a project is opened and Git is executed over the WSL route, but only inside one throwaway guest built from one pinned image and only as root, and no session has been transferred over it;
 </li>
 <li>no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 </li>
 </ul>
-<p>Required to close: two physical machines taken from pairing to a fleet row on real keychains, a bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a green macOS leg that actually ran the launchd test. A daemon must also remain reachable from a paired phone across private-network identity changes without exposing payload plaintext to the relay, and a bearer or channel key alone must not be enough to enter.</p>
+<p>Required to close: two physical machines taken from pairing to a fleet row on real keychains, a bounded ordered dial, a session move, reconnect, restart, revocation, and removal. A daemon must also remain reachable from a paired phone across private-network identity changes without exposing payload plaintext to the relay, and a bearer or channel key alone must not be enough to enter.</p>
 <h2 id="goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</h2>
 <p>Priority: <code>P2</code>. Make plan review and safe remote control work from iPad, phones, and guest browsers.</p>
 <h3 id="account-and-transport-services">Account and transport services</h3>
@@ -1022,11 +1029,13 @@ td { color: var(--ink2); }
 <ul>
 <li><code>.github/workflows/release.yml</code> does all of this through Changesets and npm trusted publishing, with the protocol published before the daemon.
 </li>
-<li>Its <code>gate</code> job runs <code>pnpm release:gate</code>, which refuses to continue until the <code>ci</code> run for the same commit has concluded success with every one of its jobs green. A release therefore inherits the Linux, macOS, and Windows matrix, the packed-daemon musl check, and the production dependency audit instead of re-running a Linux-only subset of them. Nothing else gates the release: <code>main</code> carries no branch protection and no required status check, so the workflow is the whole gate.
+<li>Its <code>gate</code> job runs <code>pnpm release:gate</code>, and <code>scripts/release-gate.mjs</code> refuses to continue until the <code>ci</code> run for that exact commit has concluded success with every one of its jobs concluded success too. A run reporting no job at all, and a job that was skipped rather than run, are refusals rather than passes. A release therefore inherits the Linux, macOS, and Windows matrix, the packed-daemon musl check, and the production dependency audit instead of re-running a Linux-only subset of them. While a run is still going, and while no run exists for the commit at all, the gate polls every 30 seconds for up to 45 minutes and then fails, so an absent or unfinished verdict is a refusal rather than a publish. <code>scripts/release-gate.test.mjs</code> covers each of those outcomes.
+</li>
+<li>Nothing else gates the release: <code>main</code> carries no branch protection and no ruleset, so there is no required status check anywhere and this workflow is the whole gate.
 </li>
 <li><code>wsl.yml</code> is path filtered and scheduled rather than run on every commit, so it is not part of that gate. Making a path-filtered workflow a per-commit requirement would leave it pending on every commit outside its paths.
 </li>
-<li>It stays inert until the <code>RELEASE_PUBLISHING</code> repository variable is set; the npm organisation and trusted publishers do not exist yet. See <code>docs/distribution.md</code>.
+<li>It stays inert until the <code>RELEASE_PUBLISHING</code> repository variable reads <code>enabled</code>; the npm organisation and trusted publishers do not exist yet. See <code>docs/distribution.md</code>.
 </li>
 </ul>
 </li>

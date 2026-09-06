@@ -342,21 +342,29 @@ Read these before relying on this guide for a fleet rollout.
 - Signature verification of release artifacts is not implemented. Checksums are not authenticity.
 - Native compilation and the external toolchain are not frozen by the integrity lock. Neither are
   separately installed provider CLIs.
-- Service installation is proven natively on Linux, where a test drives a real systemd user unit
-  through install, status, removal, a crash restart and a clean-exit non-restart, and on Windows,
-  where a test registers, stops and removes a real scheduled task. The macOS launchd equivalent is
-  written but has never run: it skips outside a session with a per-user launchd domain, and its
-  first run on the macOS CI leg is its evidence. A timed-out manager command may already have
-  changed OS state; inspect the manager before retrying.
+- Service installation is proven natively on all three platforms. On Linux a test drives a real
+  systemd user unit through install, status, removal, a crash restart and a clean-exit
+  non-restart. On Windows a test registers, stops and removes a real scheduled task. On macOS a
+  test bootstraps a throwaway launchd agent into the per-user domain the installer targets,
+  crashes it through the manager, and requires one relaunch while a clean exit stays exited; it
+  skips outside a session with a per-user launchd domain and refuses to skip on the macOS CI leg.
+  A timed-out manager command may already have changed OS state; inspect the manager before
+  retrying.
 - Windows crash restart of the logon task is not configured.
-- The [dedicated WSL job](wsl-ci.md) has passed six real discovery and path-boundary proofs
-  on a hosted Windows runner with one WSL 2 guest, including a non-default Windows-drive
-  mount root and literal shell metacharacters in paths. Authenticated distro daemon access,
-  repository work and daemon restart are not yet proven by that job.
-- WSL distributions are not fleet transport candidates. Only local, LAN, explicitly configured TLS
-  tailnet, and source-local SSH routes are produced today. Relay is not implemented.
-- Fleet health reporting covers revocation. Version mismatch and upgrade-required states have no
-  production proof yet.
+- The [dedicated WSL job](wsl-ci.md) has passed fifteen real proofs on a hosted Windows runner with
+  one WSL 2 guest, covering discovery, path boundaries with a non-default Windows-drive mount root
+  and literal shell metacharacters, an authenticated route to a daemon installed inside the guest,
+  opening a repository through the Windows CLI on both share spellings, guest-owned real Git, and a
+  graceful guest daemon restart with the project and pairing intact.
+- Those proofs run against one throwaway distribution built from one pinned Ubuntu 24.04 image, and
+  as root inside it. Two distributions at once, non-root guest permissions, a session transfer over
+  the route, mirrored networking, and VPNs are unproven.
+- A running WSL 2 distribution is a source-local transport route, not a fleet member of its own.
+  Local, LAN, explicitly configured TLS tailnet, source-local SSH, and WSL routes are produced
+  today. Relay is not implemented.
+- Fleet health reporting covers revocation, reconnect, version mismatch, and upgrade-required
+  between two production daemons. The differing release is a changed advertised protocol version on
+  one build, not a second daemon build.
 - A shared or compromised OS account is not a security boundary. It can already read the daemon
   credential.
 
