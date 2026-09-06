@@ -4,6 +4,7 @@ import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { OperationDeadline, OperationDeadlineExceededError, validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
 import { configuredSshTunnelsSchema, isLoopbackHost, type ConfiguredSshTunnel } from "./transport-config.js"
+import { openWslTransport, WslTransportError, type WslTransportConnection } from "./wsl-transport.js"
 
 export type MachineConnection = {
   call: (
@@ -15,7 +16,7 @@ export type MachineConnection = {
   close: () => void
 }
 
-export type MachineRouteConnection = MachineConnection & {
+export type MachineRouteConnection = WslTransportConnection | MachineConnection & {
   endpoint: string
   routeSource: "verified" | "advertised" | "ssh"
 }
@@ -49,8 +50,11 @@ function leavesThisMachine(endpoint: string): boolean {
 // fleet says about it, the credential pairing left here, and the transport
 // order the protocol defines.
 export function createMachineDialer(input: {
-  machine: (machineId: string) => Pick<FleetMachineFacts, "id" | "connection" | "transports" | "verifiedRoute"> | undefined
+  machine: (machineId: string) => Pick<FleetMachineFacts, "id" | "connection" | "transports" | "verifiedRoute" | "wsl"> | undefined
   credentials: AsyncMachineCredentials | undefined
+  // Test seam below the production factory. Remote peers cannot choose the
+  // source platform or grant access to its registered distributions.
+  wslPlatform?: NodeJS.Platform
   sshTunnels?: readonly ConfiguredSshTunnel[]
   dialTimeoutMs: number
   open: (input: {
@@ -81,19 +85,27 @@ export function createMachineDialer(input: {
       const machine = input.machine(machineId)
       if (!machine) throw new Error("That machine cannot be reached")
 
-      const routes: Array<Pick<MachineRouteConnection, "endpoint" | "routeSource">> = []
-      const addRoute = (endpoint: string, routeSource: MachineRouteConnection["routeSource"]) => {
-        if (!routes.some((route) => route.endpoint === endpoint)) routes.push({ endpoint, routeSource })
+      type Route = { routeSource: "wsl"; distribution: string }
+        | { endpoint: string; routeSource: "verified" | "advertised" | "ssh" }
+      const routes: Route[] = []
+      const localWsl = (input.wslPlatform ?? process.platform) === "win32" && machine.wsl !== undefined
+      const addRoute = (endpoint: string, routeSource: "verified" | "advertised" | "ssh") => {
+        if (!routes.some((route) => route.routeSource !== "wsl" && route.endpoint === endpoint)) routes.push({ endpoint, routeSource })
       }
-      if (machine.verifiedRoute && fleetDirectEndpointSchema.safeParse(machine.verifiedRoute.endpoint).success) {
+      if (machine.verifiedRoute && fleetDirectEndpointSchema.safeParse(machine.verifiedRoute.endpoint).success
+        && !(localWsl && isLoopbackHost(new URL(machine.verifiedRoute.endpoint).hostname))) {
         addRoute(machine.verifiedRoute.endpoint, "verified")
       }
+      // A remembered WSL loopback port is not permanent authority. Inspect the
+      // distribution afresh on every attempt, including after it stops or its
+      // daemon changes ports. Off-host direct routes retain their precedence.
+      if (localWsl) routes.push({ routeSource: "wsl", distribution: machine.wsl!.distribution })
       let refusedPlaintext = false
       for (const transport of usableTransports(machine.transports)) {
         // No relay can carry this plaintext RPC codec. A future encrypted relay
         // is a separate capability, not a caller-controlled availability flag.
         // A peer cannot assert that its loopback SSH forward is configured here.
-        if (transport.kind === "relay" || transport.kind === "ssh") continue
+        if (transport.kind === "relay" || transport.kind === "ssh" || transport.kind === "wsl") continue
         const staysHere = transport.kind === "local"
           && machine.connection === "local"
           && !leavesThisMachine(transport.endpoint)
@@ -116,7 +128,7 @@ export function createMachineDialer(input: {
         ? "Refusing to authenticate over an unencrypted connection"
         : "That machine advertises no usable transport")
       let lastError: unknown
-      for (const [index, { endpoint, routeSource }] of routes.entries()) {
+      for (const [index, route] of routes.entries()) {
         if (deadline.remainingMs() === 0 && lastError instanceof MachineDialTimeoutError) throw lastError
         deadline.throwIfExpired()
         if (signal?.aborted) throw new Error("The transfer was cancelled")
@@ -125,7 +137,19 @@ export function createMachineDialer(input: {
         // Recompute after fast failures so later routes can use the spare time.
         const attempt = deadline.limit(Math.max(1, deadline.remainingMs() / (routes.length - index)))
         try {
-          const connection = await boundedOpen(input.open({
+          // The keychain or distribution lookup can overlap Forget. Check the
+          // current eligibility at the actual socket seam, not just at entry.
+          const open: typeof input.open = (options) => {
+            attempt.throwIfExpired()
+            if (!input.machine(machineId)) throw new Error("That machine cannot be reached")
+            return input.open(options)
+          }
+          if (route.routeSource === "wsl") {
+            return await boundedOpen(openWslTransport({ ...route, expectedMachineId: machine.id,
+              credential, deadline: attempt, open, ...(signal ? { signal } : {}) }), attempt, signal)
+          }
+          const { endpoint, routeSource } = route
+          const connection = await boundedOpen(open({
             endpoint, expectedMachineId: machine.id, credential, deadline: attempt,
             ...(signal ? { signal } : {}),
           }), attempt, signal)
@@ -134,17 +158,20 @@ export function createMachineDialer(input: {
           // Failed identity/authority is not evidence to keep trying elsewhere.
           if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError
             || error instanceof MachineProtocolMismatchError || error instanceof MachineDescriptorError) throw error
-          lastError = error instanceof OperationDeadlineExceededError ? new MachineDialTimeoutError(endpoint) : error
+          lastError = error instanceof OperationDeadlineExceededError
+            ? route.routeSource === "wsl" ? new WslTransportError(route.distribution, "timed-out")
+              : new MachineDialTimeoutError(route.endpoint)
+            : error
         } finally { attempt.clear() }
       }
-      if (lastError instanceof MachineDialTimeoutError) throw lastError
+      if (lastError instanceof MachineDialTimeoutError || lastError instanceof WslTransportError) throw lastError
       deadline.throwIfExpired()
       throw lastError
     } finally { deadline.clear() }
   }
 }
 
-function boundedOpen(opening: Promise<MachineConnection>, deadline: OperationDeadline, signal?: AbortSignal): Promise<MachineConnection> {
+function boundedOpen<T extends MachineConnection>(opening: Promise<T>, deadline: OperationDeadline, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false
     const detach = () => {

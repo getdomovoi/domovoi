@@ -20,11 +20,17 @@ export const wslImage = {
   url: "https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-wsl-amd64.wsl",
   sha256: "9b2f7730dc68227dd04a9f3e5eab86ad85caf556b8606ad94f1f29ff5c4fd3f5",
 }
+// Node's official v22.23.2 SHASUMS256.txt, checked 2026-09-05. This is
+// fixture tooling, not the operator's Node or a second daemon installer.
+export const wslNode = {
+  url: "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz",
+  sha256: "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307",
+}
 const mountRoot = "/domovoi-ci-drives/"
 const rootDirectory = fileURLToPath(new URL("../", import.meta.url))
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const execute = promisify(execFile)
-const defaultBudgets = { provision: 300_000, proofs: 180_000, cleanup: 60_000 }
+const defaultBudgets = { provision: 300_000, runtime: 300_000, proofs: 240_000, cleanup: 60_000 }
 
 function text(bytes) {
   if (typeof bytes === "string") return bytes
@@ -49,15 +55,16 @@ export async function downloadWslImage(path, deadline, { download = downloadOver
 }
 
 export function assertWslReport(report) {
-  assert.ok(report?.success === true && report.numTotalTests >= 6
+  assert.ok(report?.success === true && report.numTotalTests >= 10
     && report.numPassedTests === report.numTotalTests && report.numFailedTests === 0
     && report.numPendingTests === 0 && report.numTodoTests === 0,
-  "WSL native proofs must pass at least six tests with no skipped, pending or failed tests")
+  "WSL native proofs must pass at least ten tests with no skipped, pending or failed tests")
 }
 
 const nodeEffects = {
   createStaging: () => mkdtemp(join(tmpdir(), "domovoi-wsl-ci-")),
   downloadImage: downloadWslImage,
+  downloadNode: (path, deadline) => downloadWslImage(path, deadline, { image: wslNode }),
   run: async (command, args, options) => {
     try {
       const result = await execute(command, args, { ...options, encoding: "buffer", killSignal: "SIGKILL", maxBuffer: 4 * 1024 * 1024 })
@@ -79,6 +86,7 @@ const nodeEffects = {
 export async function runWslCi({ platform = process.platform, effects = nodeEffects, budgets = defaultBudgets } = {}) {
   if (platform !== "win32") throw new Error("WSL native CI requires a Windows host with working WSL 2 and nested virtualization")
   const distribution = `domovoi-ci-${randomUUID()}`
+  budgets = { ...defaultBudgets, ...budgets }
   const phases = []
   let created
   let staging
@@ -127,6 +135,17 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
       // the disposable distro; cleanup terminates it even when proofs fail.
       await linux(deadline, ["sh", "-c", "nohup sleep 600 </dev/null >/dev/null 2>&1 &"])
     })
+    await phase("guest runtime", budgets.runtime, async (deadline) => {
+      const archive = join(staging, "node.tar.xz")
+      await deadline.run(() => effects.downloadNode(archive, deadline))
+      const guestArchive = (await linux(deadline, ["wslpath", "-u", archive])).trim()
+      const checkout = (await linux(deadline, ["wslpath", "-u", rootDirectory])).trim()
+      assert.ok(guestArchive.startsWith("/") && checkout.startsWith("/"), "WSL did not place the runtime inputs in its filesystem")
+      await linux(deadline, ["mkdir", "-m", "700", "/opt/domovoi-ci-node"])
+      await linux(deadline, ["tar", "-xJf", guestArchive, "--strip-components=1", "-C", "/opt/domovoi-ci-node"])
+      effects.log(await linux(deadline, ["/opt/domovoi-ci-node/bin/node", `${checkout.replace(/\/$/, "")}/scripts/wsl-ci-guest.mjs`,
+        checkout, "/opt/domovoi-ci-daemon"]))
+    })
     await phase("native proofs", budgets.proofs, async (deadline) => {
       const reportPath = join(staging, "native.json")
       const vitestCli = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs")
@@ -134,7 +153,8 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
         await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
           "--coverage.enabled=false", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`], {
           cwd: join(rootDirectory, "apps", "daemon"),
-          env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution, DOMOVOI_WSL_EXPECTED_MOUNT_ROOT: mountRoot },
+          env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution, DOMOVOI_WSL_EXPECTED_MOUNT_ROOT: mountRoot,
+            DOMOVOI_WSL_NATIVE_TRANSPORT: "1" },
         })
         report = await deadline.run(() => effects.readReport(reportPath))
         assertWslReport(report)
@@ -193,7 +213,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         await summary.run(() => appendFile(process.env.GITHUB_STEP_SUMMARY,
           `### WSL native proofs\n\n${result.tests} passed, zero skipped. One Ubuntu 24.04.4 WSL 2 distribution.\n\n`
           + result.phases.map(({ name, seconds }) => `- ${name}: ${seconds} seconds\n`).join("")
-          + "\nProves guest boot, discovery and filesystem boundaries. Does not prove a WSL transport producer, authenticated daemon access or daemon restart.\n"))
+          + "\nProves guest boot, filesystem boundaries, authenticated WSL fleet routes, stale endpoints and stopped-distribution refusal. Does not prove cross-distribution routing, mirrored networking or VPNs.\n"))
       } finally { summary.clear() }
     }
   } catch (error) {

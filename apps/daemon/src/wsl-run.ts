@@ -58,12 +58,13 @@ export function assertDistributionName(distribution: string): string {
 export async function runWslText(
   command: string,
   args: readonly string[],
-  options: { timeoutMs: number },
+  options: { timeoutMs: number; signal?: AbortSignal },
 ): Promise<string> {
   const { stdout } = await execute(command, [...args], {
     encoding: "utf8",
     timeout: options.timeoutMs,
     killSignal: "SIGKILL",
+    ...(options.signal ? { signal: options.signal } : {}),
   })
   return stdout
 }
@@ -71,12 +72,13 @@ export async function runWslText(
 export async function runWslBytes(
   command: string,
   args: readonly string[],
-  options: { timeoutMs: number },
+  options: { timeoutMs: number; signal?: AbortSignal },
 ): Promise<Buffer> {
   const { stdout } = await execute(command, [...args], {
     encoding: "buffer",
     timeout: options.timeoutMs,
     killSignal: "SIGKILL",
+    ...(options.signal ? { signal: options.signal } : {}),
   })
   return stdout
 }
