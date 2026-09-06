@@ -512,8 +512,12 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
     configured SSH forwards follow direct candidates without becoming target-authored facts or
     permanent remembered routes. Production socket tests cover TLS descriptor publication,
     transfer over a configured loopback endpoint, forget masking and configuration removal.
-    They do not prove an external tailnet or an SSH process. WSL transport production remains
-    open in its own lane; WSL facts and the open shim are not a transport producer. Relay stays
+    They do not prove an external tailnet or an SSH process. Windows now produces source-local
+    WSL candidates only after a paired daemon answers with the expected identity. The required
+    hosted WSL 2 job proves real enrollment, heartbeat, authenticated dialing, stale-endpoint
+    refusal and stopped-distro refusal: ten proofs passed, zero skipped, in run 34009889782.
+    This closes the WSL producer part of D3/I6, not multi-distro routing, guest service supervision,
+    mirrored networking, VPNs or a project/transfer through that route. Relay stays
     deferred under Goal 3. Client and daemon dialers reserve a share of the remaining overall
     deadline for each eligible route. Real socket tests prove fallback after silent upgrade and
     hello, with typed timeout refusals and losing-attempt cancellation. These bounds and their
