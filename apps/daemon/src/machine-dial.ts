@@ -55,6 +55,9 @@ export function createMachineDialer(input: {
   // Test seam below the production factory. Remote peers cannot choose the
   // source platform or grant access to its registered distributions.
   wslPlatform?: NodeJS.Platform
+  // Route discovery for an off-host client must not borrow this daemon's
+  // localhost, WSL distribution or configured SSH forward.
+  allowSourceLocal?: boolean
   sshTunnels?: readonly ConfiguredSshTunnel[]
   dialTimeoutMs: number
   open: (input: {
@@ -88,8 +91,10 @@ export function createMachineDialer(input: {
       type Route = { routeSource: "wsl"; distribution: string }
         | { endpoint: string; routeSource: "verified" | "advertised" | "ssh" }
       const routes: Route[] = []
-      const localWsl = (input.wslPlatform ?? process.platform) === "win32" && machine.wsl !== undefined
+      const allowSourceLocal = input.allowSourceLocal !== false
+      const localWsl = allowSourceLocal && (input.wslPlatform ?? process.platform) === "win32" && machine.wsl !== undefined
       const addRoute = (endpoint: string, routeSource: "verified" | "advertised" | "ssh") => {
+        if (!allowSourceLocal && isLoopbackHost(new URL(endpoint).hostname)) return
         if (!routes.some((route) => route.routeSource !== "wsl" && route.endpoint === endpoint)) routes.push({ endpoint, routeSource })
       }
       if (machine.verifiedRoute && fleetDirectEndpointSchema.safeParse(machine.verifiedRoute.endpoint).success

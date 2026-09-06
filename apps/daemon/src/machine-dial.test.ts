@@ -70,6 +70,19 @@ function dialer(overrides: {
 }
 
 describe("createMachineDialer", () => {
+  it("excludes every source-local producer when preparing a route for a remote client", async () => {
+    const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
+    const dial = createMachineDialer({
+      machine: () => machine({ connection: "local", verifiedRoute: { endpoint: "ws://127.0.0.1:47900/rpc", lastAuthenticatedAt: new Date(0).toISOString() },
+        transports: [{ kind: "local", endpoint: "ws://127.0.0.1:47900/rpc", authenticated: true }] }),
+      credentials: asyncTestCredentials({ save: () => {}, forget: () => {}, machines: () => [machineId], forMachine: () => credential }),
+      sshTunnels: [{ machineId, endpoint: "ws://127.0.0.1:47901/rpc" }],
+      allowSourceLocal: false, dialTimeoutMs: 1000, open,
+    })
+    await expect(dial(machineId)).rejects.toThrow("no usable transport")
+    expect(open).not.toHaveBeenCalled()
+  })
+
   it.each(["ineligible", "missing-credential", "different-machine"] as const)("cannot enable an SSH route past %s", async (scenario) => {
     const open = vi.fn(async () => ({ call: async () => ({}), close: () => {} }))
     const dial = createMachineDialer({

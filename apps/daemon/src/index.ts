@@ -21,7 +21,7 @@ import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
 import { discoverWslMachines } from "./wsl-discovery.js"
 import { runWslCommand } from "./wsl-command.js"
-import { type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { devicePairResultSchema, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -224,6 +224,9 @@ async function main() {
     const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
     process.exitCode = await runPairCommand(args, {
       issue: () => requestPairingCode(config, token),
+      grantClient: async (params) => devicePairResultSchema.parse(await callDaemon({
+        target: config, token, method: "device.pair", params: { ...params, client: "cli" },
+      })),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
