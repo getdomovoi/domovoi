@@ -63,7 +63,7 @@ export async function publishCanonicalRelease(release, { request, readVersion, u
       throw new Error(`Release asset ${file.name} was not verified after upload; the draft remains unpublished`)
     }
   }
-  if (complete.draft) await call(`/releases/${record.id}`, "PATCH", { draft: false, make_latest: "false" })
+  if (complete.draft) await call(`/releases/${record.id}`, "PATCH", { draft: false, make_latest: release.prerelease ? "false" : "true" })
   return { tag: release.gitTag, commit: release.commit, assets: release.files.map((file) => file.name) }
 }
 

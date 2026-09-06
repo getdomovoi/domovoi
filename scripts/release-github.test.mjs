@@ -14,7 +14,7 @@ function fixture(t, overrides = {}) {
   let record
   const request = async (path, method = "GET", body) => {
     if (method !== "GET") writes.push({ path, method, body })
-    if (path === "/git/ref/tags/v0.1.0-alpha.0") return undefined
+    if (path.startsWith("/git/ref/tags/")) return undefined
     if (path.startsWith("/releases/tags/")) return record
     if (path === "/releases?per_page=100") return []
     if (path === "/git/refs") return {}
@@ -47,6 +47,16 @@ test("creates the bootstrap tag at the checked commit and publishes only after e
   assert.match(create.body.body, new RegExp(release.commit))
   assert.deepEqual(writes.at(-1), { path: "/releases/12", method: "PATCH", body: { draft: false, make_latest: "false" } })
   assert.ok(writes.findIndex((call) => call.upload) < writes.length - 1)
+})
+
+test("a stable release becomes latest only after its assets are complete", async (t) => {
+  const { writes, ports } = fixture(t)
+  const stable = { ...release, version: "0.1.0", gitTag: "v0.1.0", prerelease: false,
+    packages: release.packages.map((pkg) => ({ ...pkg, version: "0.1.0" })) }
+  const { publishCanonicalRelease } = await import("./release-github.mjs")
+  await publishCanonicalRelease(stable, ports)
+  assert.equal(writes.find((call) => call.path === "/releases").body.make_latest, "false")
+  assert.deepEqual(writes.at(-1), { path: "/releases/12", method: "PATCH", body: { draft: false, make_latest: "true" } })
 })
 
 for (const broken of [

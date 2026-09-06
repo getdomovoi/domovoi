@@ -60,6 +60,12 @@ test("docs and tooling need no invented release", { timeout: 45_000 }, async (t)
   assert.equal((await check()).state, "no-release-change")
 })
 
+test("deleting an entire package still needs this PR's release metadata", { timeout: 45_000 }, async (t) => {
+  const { root, check } = await fixture(t)
+  await rm(join(root, "apps/daemon"), { recursive: true })
+  await assert.rejects(check(), /changeset|release metadata/i)
+})
+
 test("real Changesets version output is accepted but source edits on it are not", { timeout: 45_000 }, async (t) => {
   const { root, put, check } = await fixture(t)
   await command(root, process.execPath, [cli, "pre", "enter", "alpha"])
