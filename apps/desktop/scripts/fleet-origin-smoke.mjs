@@ -9,6 +9,7 @@ import ts from "typescript"
 
 const require = createRequire(import.meta.url)
 const directory = await mkdtemp(join(tmpdir(), "domovoi-fleet-origin-proof-"))
+let removalSafe = true
 try {
   await writeFile(join(directory, "package.json"), JSON.stringify({ type: "module" }))
   for (const name of ["fleet-origin", "renderer-security", "renderer-resources"]) {
@@ -25,17 +26,27 @@ try {
     const child = spawn(electron, ["--no-sandbox", fileURLToPath(new URL("./fleet-origin-smoke.fixture.cjs", import.meta.url)), directory], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "" }, stdio: ["ignore", "pipe", "pipe"],
     })
-    let text = ""
-    const timer = setTimeout(() => { child.kill(); reject(new Error(`Fleet origin proof expired\n${text}`)) }, 30_000)
-    child.stdout.on("data", (data) => { text += data.toString() })
-    child.stderr.on("data", (data) => { text += data.toString() })
-    child.once("error", (error) => { clearTimeout(timer); reject(error) })
+    let text = "", expired = false, force, teardown
+    const clear = () => { clearTimeout(timer); clearTimeout(force); clearTimeout(teardown) }
+    const timer = setTimeout(() => {
+      expired = true
+      child.kill()
+      force = setTimeout(() => child.kill("SIGKILL"), 5_000)
+      teardown = setTimeout(() => {
+        removalSafe = false
+        reject(new Error(`Fleet origin child did not exit; fixture retained at ${directory}`))
+      }, 10_000)
+    }, 30_000)
+    child.stdout.on("data", (data) => { text = (text + data).slice(-16_384) })
+    child.stderr.on("data", (data) => { text = (text + data).slice(-16_384) })
+    child.once("error", (error) => { clear(); removalSafe = child.pid === undefined; reject(error) })
     child.once("exit", (code) => {
-      clearTimeout(timer)
-      if (code === 0) resolve(text)
+      clear()
+      if (expired) reject(new Error(`Fleet origin proof expired\n${text}`))
+      else if (code === 0) resolve(text)
       else reject(new Error(`Fleet origin proof exited ${code}\n${text}`))
     })
   })
   assert.match(output, /DOMOVOI_FLEET_ORIGIN_PROOF_OK/u)
   process.stdout.write(output)
-} finally { await rm(directory, { recursive: true, force: true }) }
+} finally { if (removalSafe) await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }) }
