@@ -4,7 +4,7 @@ import type { AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { OperationDeadline, OperationDeadlineExceededError, validateOperationDeadlineBudget } from "./operation-deadline.js"
 import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
 import { configuredSshTunnelsSchema, isLoopbackHost, type ConfiguredSshTunnel } from "./transport-config.js"
-import { openWslTransport, type WslTransportConnection } from "./wsl-transport.js"
+import { openWslTransport, WslTransportError, type WslTransportConnection } from "./wsl-transport.js"
 
 export type MachineConnection = {
   call: (
@@ -158,11 +158,13 @@ export function createMachineDialer(input: {
           // Failed identity/authority is not evidence to keep trying elsewhere.
           if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError
             || error instanceof MachineProtocolMismatchError || error instanceof MachineDescriptorError) throw error
-          lastError = error instanceof OperationDeadlineExceededError && route.routeSource !== "wsl"
-            ? new MachineDialTimeoutError(route.endpoint) : error
+          lastError = error instanceof OperationDeadlineExceededError
+            ? route.routeSource === "wsl" ? new WslTransportError(route.distribution, "timed-out")
+              : new MachineDialTimeoutError(route.endpoint)
+            : error
         } finally { attempt.clear() }
       }
-      if (lastError instanceof MachineDialTimeoutError) throw lastError
+      if (lastError instanceof MachineDialTimeoutError || lastError instanceof WslTransportError) throw lastError
       deadline.throwIfExpired()
       throw lastError
     } finally { deadline.clear() }

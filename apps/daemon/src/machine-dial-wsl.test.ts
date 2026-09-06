@@ -64,4 +64,20 @@ describe("source-local WSL routes in the fleet dialer", () => {
       connection.close()
     } finally { deadline.clear() }
   })
+
+  it("keeps a final WSL timeout typed when the outer deadline wins the race", async () => {
+    const f = fixture()
+    f.open.mockImplementation(async () => new Promise(() => {}))
+    await expect(createMachineDialer({ ...f.input, dialTimeoutMs: 30,
+      machine: () => ({ ...f.machine, transports: [] }) })(id))
+      .rejects.toMatchObject({ name: "WslTransportError", reason: "timed-out", distribution: "Ubuntu" })
+  })
+
+  it("cannot reach WSL without an eligible enrolled peer", async () => {
+    const f = fixture()
+    await expect(createMachineDialer({ ...f.input, machine: () => undefined })(id)).rejects.toThrow()
+    expect(f.list).not.toHaveBeenCalled()
+    expect(f.read).not.toHaveBeenCalled()
+    expect(f.open).not.toHaveBeenCalled()
+  })
 })

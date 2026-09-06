@@ -2,7 +2,7 @@ import { transportCandidateSchema, type TransportCandidate } from "@getdomovoi/p
 
 import type { MachineConnection } from "./machine-dial.js"
 import { MachineDescriptorError, MachineIdentityMismatchError, MachinePairingRequiredError, MachineProtocolMismatchError } from "./machine-socket.js"
-import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
+import { beforeDeadline, OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 import { wslDaemonEndpointUrl } from "./wsl-discovery.js"
 import { readDistroEndpoint } from "./wsl-endpoint.js"
 import { listWslDistributions } from "./wsl-list.js"
@@ -72,6 +72,7 @@ export async function openWslTransport(input: {
     if (error instanceof MachinePairingRequiredError || error instanceof MachineIdentityMismatchError
       || error instanceof MachineProtocolMismatchError || error instanceof MachineDescriptorError) throw error
     if (error instanceof WslTransportError) throw error
+    if (deadline.signal.aborted && !(deadline.signal.reason instanceof OperationDeadlineExceededError)) throw deadline.signal.reason
     throw new WslTransportError(distribution, deadline.remainingMs() === 0 ? "timed-out"
       : error instanceof WslError ? error.kind : "unreachable")
   }
