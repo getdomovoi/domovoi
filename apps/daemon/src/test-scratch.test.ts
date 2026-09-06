@@ -10,13 +10,21 @@ async function scratch() {
   return mkdtemp(join(tmpdir(), "domovoi-scratch-"))
 }
 
-// A path under a regular file. Its removal fails with a code no retry can
-// clear, which is how a removal that must not be retried is spelled here.
-async function unremovable() {
-  const parent = await scratch()
-  const leaf = join(parent, "leaf")
-  await writeFile(leaf, "content")
-  return { parent, path: join(leaf, "child") }
+const blockedPath = join(tmpdir(), "domovoi-scratch-blocked")
+
+// A removal refused with a code no retry can clear, which is how a removal that
+// must not be retried is spelled here. It is injected rather than staged on
+// disk because no directory is unremovable on every platform: a path under a
+// regular file refuses with ENOTDIR on POSIX, while Windows reports it as
+// missing and a forced removal of a missing path succeeds. Every other path
+// still goes through the real filesystem.
+function refusing(blocked: string): ScratchRemoval {
+  return async (path, options) => {
+    if (path !== blocked) return rm(path, options)
+    throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${path}'`), {
+      code: "ENOTDIR", syscall: "rmdir", path,
+    })
+  }
 }
 
 describe("removeScratchDirectories", () => {
@@ -40,27 +48,25 @@ describe("removeScratchDirectories", () => {
 
   it("removes the other directories when one removal fails", async () => {
     const first = await scratch()
-    const blocked = await unremovable()
     const second = await scratch()
 
-    await expect(removeScratchDirectories([first, blocked.path, second])).rejects.toThrow()
+    await expect(removeScratchDirectories([first, blockedPath, second], refusing(blockedPath)))
+      .rejects.toThrow()
 
     await expect(stat(first)).rejects.toMatchObject({ code: "ENOENT" })
     await expect(stat(second)).rejects.toMatchObject({ code: "ENOENT" })
-    await rm(blocked.parent, { recursive: true, force: true })
   })
 
   it("keeps a directory it could not remove so the next cleanup retries it", async () => {
     const removable = await scratch()
-    const blocked = await unremovable()
-    const paths = [removable, blocked.path]
+    const paths = [removable, blockedPath]
 
-    await expect(removeScratchDirectories(paths)).rejects.toThrow()
+    await expect(removeScratchDirectories(paths, refusing(blockedPath))).rejects.toThrow()
 
     // Forgetting the path is what leaks it. Nothing leaves this list before it
     // is gone from disk, so a later cleanup still has something to remove.
-    expect(paths).toEqual([blocked.path])
-    await rm(blocked.parent, { recursive: true, force: true })
+    expect(paths).toEqual([blockedPath])
+    await expect(stat(removable)).rejects.toMatchObject({ code: "ENOENT" })
   })
 
   it("retries a removal refused while something still holds the directory", async () => {
