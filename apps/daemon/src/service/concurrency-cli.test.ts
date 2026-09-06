@@ -1,22 +1,30 @@
 import { execFile, fork } from "node:child_process"
 import { once } from "node:events"
-import { copyFile, mkdtemp, readFile, rm, stat } from "node:fs/promises"
+import { copyFile, mkdtemp, readFile, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
-import { expect, it } from "vitest"
+import { afterEach, expect, it } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
 import { serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 
 const cliPath = fileURLToPath(new URL("../../dist/index.js", import.meta.url))
 const managerSource = new URL("../../test-fixtures/service-manager.mjs", import.meta.url)
 const run = promisify(execFile)
 const budget = process.platform === "win32" ? 60_000 : 20_000
 const cleanupBudget = 10_000
+// A cleanup failure is reported here rather than thrown from the finally block
+// that found it, so it never replaces the assertion that failed the test.
+const cleanupFailures: unknown[] = []
+afterEach(() => {
+  const failures = cleanupFailures.splice(0)
+  if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
+})
 
 it.each(["install", "remove"])("excludes real CLI contenders while %s waits on its manager", async (first) => {
   const deadline = OperationDeadline.start(budget)
@@ -95,9 +103,15 @@ it.each(["install", "remove"])("excludes real CLI contenders while %s waits on i
     if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
     deadline.clear()
     const cleanup = OperationDeadline.start(cleanupBudget)
+    const failures: unknown[] = []
     try {
       if (exited) await withinServiceDeadline(cleanup, () => exited!)
-      await withinServiceDeadline(cleanup, () => rm(home, { recursive: true, force: true }))
+    } catch (error) {
+      failures.push(error)
     } finally { cleanup.clear() }
+    // Removal is never skipped because waiting for the child spent the budget,
+    // and it retries a home the exiting child still holds.
+    try { await removeScratchDirectory(home) } catch (error) { failures.push(error) }
+    cleanupFailures.push(...failures)
   }
 }, budget + cleanupBudget + 1_000)

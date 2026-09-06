@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { SqliteAuditLog } from "./audit-log.js"
 
 const scratchDirectories: string[] = []
-afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
+afterEach(async () => removeScratchDirectories(scratchDirectories))
 
 describe("SqliteAuditLog", () => {
   it("commits quarantine evidence only with the transaction that changed the registry", () => {

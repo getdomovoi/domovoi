@@ -25,8 +25,12 @@ let nextId = 0
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const socket of sockets.splice(0)) socket.terminate()
-  for (const daemon of daemons.splice(0)) await daemon.stop()
-  await removeScratchDirectories(roots.splice(0))
+  // One daemon that refuses to stop must not leave the others running and
+  // their roots on disk, so every stop settles before anything is reported.
+  const stops = await Promise.allSettled(daemons.splice(0).map((daemon) => daemon.stop()))
+  const failures = stops.flatMap((stop) => stop.status === "rejected" ? [stop.reason] : [])
+  try { await removeScratchDirectories(roots) } catch (error) { failures.push(error) }
+  if (failures.length > 0) throw new AggregateError(failures, "Cleanup failed")
 })
 
 async function target() {

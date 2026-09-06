@@ -19,7 +19,7 @@ const currentMachineId = `machine-${"c".repeat(32)}`
 const retiredMachineId = `machine-${"7".repeat(32)}`
 
 afterEach(async () => {
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 describe("SqliteWorkspaceStore", () => {

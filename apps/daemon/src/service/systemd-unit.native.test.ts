@@ -12,6 +12,7 @@ import { waitForDaemon } from "../test-wait-for.js"
 import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { installService, nodeServiceEffects, removeService, serviceStatus, type CapturedRun, type ServiceEffects, type ServicePlan } from "./install.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 
 const lifecycleBudget = 60_000
 const supervisionBudget = 90_000
@@ -177,7 +178,9 @@ async function withThrowawayUnit(
       const failed = await systemctl(["--user", "list-units", "--all", "--state=failed", "--no-legend", unit], cleanup)
       expect(failed.stdout.trim()).toBe("")
       const created = installedHome
-      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
+      // Removal stands on its own retry, so a cleanup budget the unit
+      // teardown spent does not leave the home behind.
+      if (created !== undefined) await removeScratchDirectory(created)
     } finally { cleanup.clear() }
   }
 }

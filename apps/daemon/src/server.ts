@@ -932,6 +932,7 @@ export class DomovoiDaemon {
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
   #transferTransactions: FileTransferTransactions
   #outgoingTransferTransactions: FileTransferTransactions
+  #ownedTransferRoot: string | undefined
   #sessionTransferTimeoutMs: number
   #sessionTransferRetryMs: number
   #transferReconciliationTimer: ReturnType<typeof setTimeout> | undefined
@@ -1022,9 +1023,13 @@ export class DomovoiDaemon {
       providers: [],
     })
     const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
-    const transferRoot = statePath === ":memory:"
+    // In-memory state has no directory to keep transfer packages beside, so
+    // this daemon makes one. It owns that tree and removes it when it stops;
+    // a temporary directory nobody reclaims is a leak on every run.
+    const ownedTransferRoot = statePath === ":memory:"
       ? join(tmpdir(), `domovoi-transfer-transactions-${randomUUID()}`)
-      : join(dirname(statePath), "transfers")
+      : undefined
+    const transferRoot = ownedTransferRoot ?? join(dirname(statePath), "transfers")
     this.#transferTransactions = options.transferTransactions ?? new FileTransferTransactions(
       join(transferRoot, "incoming"),
     )
@@ -1032,6 +1037,7 @@ export class DomovoiDaemon {
       ?? new FileTransferTransactions(
         join(transferRoot, "outgoing"),
       )
+    this.#ownedTransferRoot = ownedTransferRoot
     this.#annotationVisualContext = options.annotationVisualContext
       ?? new AnnotationVisualContextService({
         root: join(dirname(statePath), "annotation-crops"),
@@ -1420,6 +1426,20 @@ export class DomovoiDaemon {
       this.#usageLedger.close()
     } catch (error) {
       failures.push(error)
+    }
+    // Last, so nothing is still writing packages into it. Removal is retried
+    // because a transfer that just ended can still hold a file open.
+    const ownedTransferRoot = this.#ownedTransferRoot
+    if (ownedTransferRoot !== undefined) {
+      this.#ownedTransferRoot = undefined
+      try {
+        await rm(ownedTransferRoot, {
+          recursive: true, force: true, maxRetries: 10, retryDelay: 50,
+        })
+      } catch (error) {
+        this.#ownedTransferRoot = ownedTransferRoot
+        failures.push(error)
+      }
     }
     this.#stopped = true
     if (failures.length > 0) throw new AggregateError(failures, "Domovoi shutdown failed")

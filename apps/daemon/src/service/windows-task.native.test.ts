@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -10,6 +10,7 @@ import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, removeService, type ServiceCommand } from "./install.js"
 import { windowsPowerShellPath, windowsTaskRemovalPlan } from "./windows-task.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 
 const lifecycleBudget = 60_000
 const cleanupBudget = 30_000
@@ -118,7 +119,9 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
           await withinServiceDeadline(cleanup, () => effects.run("schtasks", ["/delete", "/tn", name, "/f"], cleanup))
         }
       }
-      if (directory) await withinServiceDeadline(cleanup, () => rm(directory!, { recursive: true, force: true }))
+      // Removal stands on its own retry, so a cleanup budget the task
+      // teardown spent does not leave the directory behind.
+      if (directory) await removeScratchDirectory(directory)
     } finally { cleanup.clear() }
   }
 }, lifecycleBudget + cleanupBudget + 1_000)

@@ -33,7 +33,7 @@ async function failNextRestoreClaimClose(error: Error) {
 afterEach(async () => {
   vi.mocked(open).mockReset()
   vi.mocked(unlink).mockReset()
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 describe("GitWorkspaceService", () => {

@@ -23,6 +23,7 @@ import { SqliteWorkspaceStore } from "./store.js"
 import { openMachineSocket } from "./machine-socket.js"
 import type { MachineConnection } from "./machine-dial.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 
 const renameSimulation = vi.hoisted(() => ({
   existingDirectoryIsBusy: false,
@@ -114,9 +115,7 @@ afterEach(async () => {
   chunkReadSimulation.pause = undefined
   chunkReadSimulation.openDirectories.clear()
   chunkReadSimulation.blockedRemovals.length = 0
-  await Promise.all(scratchDirectories.splice(0).map((path) => (
-    rm(path, { recursive: true, force: true })
-  )))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 function within<T>(deadline: OperationDeadline, operation: () => Promise<T>): Promise<T> {
