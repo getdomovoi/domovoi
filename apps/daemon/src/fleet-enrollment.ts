@@ -407,7 +407,9 @@ export class FleetEnrollmentService {
         // Refresh peer facts/contact without claiming the old direct route
         // authenticated now, and never put a local forward in advertisements.
         // A row that never stored a direct route stays an SSH observation.
-        ...(connection.routeSource !== "ssh"
+        ...(connection.routeSource === "wsl"
+          ? { connection: "wsl" }
+          : connection.routeSource !== "ssh"
           ? { connection: "direct", verifiedRoute: { endpoint: connection.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() } }
           : entry.facts.verifiedRoute
             ? { connection: "direct", verifiedRoute: entry.facts.verifiedRoute }
