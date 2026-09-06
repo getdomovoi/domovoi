@@ -166,8 +166,16 @@ async function withThrowawayUnit(
       await withinServiceDeadline(cleanup, () => rm(unitPath, { force: true }))
       await withinServiceDeadline(cleanup, () => rm(wantsPath, { force: true }))
       await systemctl(["--user", "daemon-reload"], cleanup)
+      // A unit whose last run ended in failure stays loaded and failed after
+      // its file is deleted, so removing files is not enough to leave the
+      // manager as it was found. This drops that entry. A unit that was never
+      // loaded answers non-zero here and is already in the end state wanted,
+      // so the listing below is the assertion, not this command's code.
+      await systemctl(["--user", "reset-failed", unit], cleanup)
       const left = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
       expect(left.stdout.trim()).toBe("LoadState=not-found")
+      const failed = await systemctl(["--user", "list-units", "--all", "--state=failed", "--no-legend", unit], cleanup)
+      expect(failed.stdout.trim()).toBe("")
       const created = installedHome
       if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
     } finally { cleanup.clear() }
