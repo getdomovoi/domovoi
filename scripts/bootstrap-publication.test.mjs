@@ -275,6 +275,30 @@ test("expiry during staging cannot publish when the late write settles",
     await assert.rejects(fs.lstat(join(destination, `v${version}`, archive)), { code: "ENOENT" })
   })
 
+test("names the staging an expiry abandons mid-creation", { timeout: testTimeoutMs }, async (context) => {
+  const destination = await fixture(context)
+  context.mock.timers.enable({ apis: ["setTimeout"] })
+  const mkdtemp = fs.mkdtemp
+  // A slow runner reaches the creation before the budget runs out and expires
+  // while it is still in flight, so only this operation knows the new path.
+  context.mock.method(fs, "mkdtemp", async (prefix, ...rest) => {
+    const created = await mkdtemp(prefix, ...rest)
+    context.mock.timers.tick(60_000)
+    await new Promise((resolve) => setImmediate(resolve))
+    return created
+  })
+  syncBuiltinESMExports()
+  context.after(() => { context.mock.timers.reset(); context.mock.restoreAll(); syncBuiltinESMExports() })
+  await assert.rejects(bootstrapDaemon({ ...input(destination, Buffer.from("release")), timeoutMs: 60_000 }), (error) => {
+    assert.match(error.message, /exceeded 60000 ms/)
+    assert.match(error.message, /\.bootstrap-/, "an abandoned creation must still name its retained staging")
+    return true
+  })
+  const release = join(destination, `v${version}`)
+  assert.equal((await fs.readdir(release)).filter((name) => name.startsWith(".bootstrap-")).length, 1,
+    "the retained staging the refusal names is the one left on disk")
+})
+
 test("checks the clock at settlement even before the expiry timer runs",
   { timeout: testTimeoutMs }, async (context) => {
     const destination = await fixture(context)

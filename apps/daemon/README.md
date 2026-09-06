@@ -483,6 +483,14 @@ with the remedy, and the command exits 1. A running distribution that could not 
 as `could not be asked` with the reason: `timed out`, `denied`, `wsl.exe failed`, or `endpoint
 file unreadable`. None of these is ever reported as a missing distribution or a missing daemon.
 
+The listing parser returns either a complete `listed` result or `corrupt` with the unreadable
+line number, never a partial list. A header followed by `Ubuntu Running broken`, a broken row
+beside a valid one, or a torn UTF-16 character therefore makes both `wsl list` and `open` refuse
+with a remedy: inspect `wsl.exe --list --verbose` and check `wsl.exe --status` before retrying.
+The refusal does not repeat the row contents. Only a valid header with no rows or an explicit
+no-distributions answer counts as an empty listing. The parser recognizes the `NAME STATE VERSION`
+header and `Running` or `Stopped` rows; an unrecognized format is unknown, not absence.
+
 `open` on a `\\wsl$\<distribution>\...` or `\\wsl.localhost\<distribution>\...` path, with either
 separator, asks that distribution's own `wslpath` where the path lives, asks it back which Windows
 path that is, and then sends `project.open` to the daemon inside the distribution with the

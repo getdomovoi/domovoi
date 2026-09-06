@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
+import { syncBuiltinESMExports } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -336,6 +337,68 @@ test("removes unpublished staging under a fresh budget after the total deadline 
   await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), /Bootstrap.*1000 ms/)
   const entries = await fs.readdir(join(options.destination, `v${version}`))
   assert.deepEqual(entries.filter((name) => name.startsWith(".runtime-")), [], "expired installs must not accumulate staging trees")
+})
+
+test("removes staging the total deadline abandons mid-creation", { timeout: testTimeout }, async (t) => {
+  const { options } = await fixture(t)
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const mkdtemp = fs.mkdtemp
+  // A slow runner reaches the creation before the budget runs out and expires
+  // while it is still in flight, so only this operation knows the new path.
+  t.mock.method(fs, "mkdtemp", async (prefix, ...rest) => {
+    const created = await mkdtemp(prefix, ...rest)
+    if (!String(prefix).includes(".runtime-")) return created
+    t.mock.timers.tick(60_000)
+    await new Promise((resolve) => setImmediate(resolve))
+    return created
+  })
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.timers.reset(); t.mock.restoreAll(); syncBuiltinESMExports() })
+  await assert.rejects(installer({ ...options, timeoutMs: 60_000 }), /Bootstrap.*60000 ms/)
+  const entries = await fs.readdir(join(options.destination, `v${version}`))
+  assert.deepEqual(entries.filter((name) => name.startsWith(".runtime-")), [],
+    "an abandoned creation must not leave its staging tree")
+})
+
+test("removes staging that an exiting npm child still holds", { timeout: testTimeout }, async (t) => {
+  const { options, fail } = await fixture(t)
+  fail(new Error("npm fixture failed"))
+  const attempts = []
+  const remove = async (target, settings) => {
+    attempts.push(target)
+    if (attempts.length > 2) return fs.rm(target, settings)
+    throw Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${target}'`), { code: "EBUSY" })
+  }
+  await assert.rejects(installer({ ...options, remove }), (error) => {
+    assert.equal(error.message, "npm fixture failed", "a removal that succeeds on retry must not add a failure")
+    return true
+  })
+  assert.equal(attempts.length, 3, "a held staging tree must be retried inside the cleanup bound")
+  const entries = await fs.readdir(join(options.destination, `v${version}`))
+  assert.deepEqual(entries.filter((name) => name.startsWith(".runtime-")), [],
+    "a held staging tree must still be removed")
+})
+
+test("keeps the tree a receipt the deadline abandoned already published", { timeout: testTimeout }, async (t) => {
+  const { options } = await fixture(t)
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  const link = fs.link
+  // The receipt is the published resource, and only the abandoned operation
+  // knows the link landed. Removing its tree strands an unusable receipt.
+  t.mock.method(fs, "link", async (source, destination, ...rest) => {
+    const created = await link(source, destination, ...rest)
+    if (!String(destination).endsWith("runtime.json")) return created
+    t.mock.timers.tick(60_000)
+    await new Promise((resolve) => setImmediate(resolve))
+    return created
+  })
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.timers.reset(); t.mock.restoreAll(); syncBuiltinESMExports() })
+  await assert.rejects(installer({ ...options, timeoutMs: 60_000 }), /Bootstrap.*60000 ms/)
+  const entries = await fs.readdir(join(options.destination, `v${version}`))
+  assert.ok(entries.includes("runtime.json"), "the link landed, so the receipt is published")
+  assert.ok(entries.some((name) => name.startsWith(".runtime-")),
+    "a published receipt must keep the runtime tree it names")
 })
 
 test("names retained staging when cleanup exceeds its own bound instead of hanging", { timeout: testTimeout }, async (t) => {
