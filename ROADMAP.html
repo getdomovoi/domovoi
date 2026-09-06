@@ -1018,7 +1018,11 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and GitHub Releases from the same immutable commit
 <ul>
-<li><code>.github/workflows/release.yml</code> does all of this through Changesets and npm trusted publishing, gated on the same checks as CI, with the protocol published before the daemon.
+<li><code>.github/workflows/release.yml</code> does all of this through Changesets and npm trusted publishing, with the protocol published before the daemon.
+</li>
+<li>Its <code>gate</code> job runs <code>pnpm release:gate</code>, which refuses to continue until the <code>ci</code> run for the same commit has concluded success with every one of its jobs green. A release therefore inherits the Linux, macOS, and Windows matrix, the packed-daemon musl check, and the production dependency audit instead of re-running a Linux-only subset of them. Nothing else gates the release: <code>main</code> carries no branch protection and no required status check, so the workflow is the whole gate.
+</li>
+<li><code>wsl.yml</code> is path filtered and scheduled rather than run on every commit, so it is not part of that gate. Making a path-filtered workflow a per-commit requirement would leave it pending on every commit outside its paths.
 </li>
 <li>It stays inert until the <code>RELEASE_PUBLISHING</code> repository variable is set; the npm organisation and trusted publishers do not exist yet. See <code>docs/distribution.md</code>.
 </li>
