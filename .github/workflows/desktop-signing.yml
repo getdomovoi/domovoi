@@ -1,0 +1,102 @@
+name: desktop-signing
+
+# Deliberate native proof and artifact production, not release publication.
+# No PR or push trigger, no release write permissions and no npm credentials.
+# Account setup and native proof still need a maintainer: docs/desktop-signing.md.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Native platform to build and sign
+        type: choice
+        required: true
+        options: [macos, windows]
+
+permissions: {}
+
+concurrency:
+  group: desktop-signing-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.repository == 'getdomovoi/domovoi' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
+        with:
+          install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+        timeout-minutes: 5
+      - name: Require the full CI verdict for this exact commit
+        run: pnpm release:gate
+        timeout-minutes: 50
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: gate
+    runs-on: ${{ inputs.platform == 'macos' && 'macos-latest' || 'windows-latest' }}
+    environment: ${{ inputs.platform == 'macos' && 'desktop-macos' || 'desktop-windows' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
+        with:
+          install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        timeout-minutes: 8
+      - name: Sign and notarize macOS application, then build DMG and ZIP
+        if: inputs.platform == 'macos'
+        run: pnpm package:desktop:mac
+        timeout-minutes: 50
+        env:
+          DOMOVOI_DESKTOP_REQUIRE_SIGNING: 'true'
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      - name: Sign Windows application and NSIS installer
+        if: inputs.platform == 'windows'
+        run: pnpm package:desktop:win
+        timeout-minutes: 50
+        env:
+          DOMOVOI_DESKTOP_REQUIRE_SIGNING: 'true'
+          DOMOVOI_WIN_PUBLISHER_NAME: ${{ vars.WINDOWS_PUBLISHER_NAME }}
+          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      - name: Retain only successful verified installers
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-${{ inputs.platform }}-${{ github.sha }}
+          path: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

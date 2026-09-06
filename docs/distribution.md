@@ -21,6 +21,11 @@ compilation or the external toolchain.
 | macOS | signed and notarized desktop app | GitHub release artifacts |
 | Linux | AppImage or native bundle plus daemon package | GitHub release artifacts |
 
+Desktop packaging and native signing use a separate, manual workflow. It has no publication
+permission and uses protected platform environments, not the npm environment. See
+[Desktop signing and notarization](desktop-signing.md) for the exact Apple and Windows credential
+requirements, unsigned development behavior, failure policy and native proofs still required.
+
 Package managers wrap the same versioned release artifacts. Formulae and manifests must not build
 from a moving branch or run an unpinned install script. Release automation will publish npm first,
 attach checksummed binaries, then update downstream package manifests.
