@@ -3,32 +3,15 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promi
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-import { bootstrapDeadline, defaultCleanupTimeoutMs } from "./bootstrap-deadline.mjs"
+import { bootstrapDeadline, defaultCleanupTimeoutMs, removeStaging } from "./bootstrap-deadline.mjs"
 import { inspectArchive, packPackage } from "./pack-package.mjs"
 import { daemonRuntimeLock } from "./runtime-lock.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
-
-// A packaging child the deadline aborted is killed but not yet reaped, and
-// Windows refuses to remove a directory any surviving handle still holds.
-// Retry inside the cleanup budget instead of reporting a leftover directory.
-const heldByAnExitingProcess = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"])
-
-async function removeStaging(staging, remove, cleanup) {
-  for (let attempt = 1; ; attempt += 1) {
-    try { return await remove(staging, { recursive: true, force: true }) }
-    catch (error) {
-      if (!heldByAnExitingProcess.has(error?.code)) throw error
-      cleanup.check()
-      await delay(Math.min(20 * attempt, 200), undefined, { signal: cleanup.signal })
-    }
-  }
-}
 
 export async function prepareDaemonRuntime({
   timeoutMs = 300_000, cleanupTimeoutMs = defaultCleanupTimeoutMs, stagingRoot = tmpdir(),

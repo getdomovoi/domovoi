@@ -1,11 +1,10 @@
 import { execFile } from "node:child_process"
 import { chmod, link, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { dirname, join, posix, win32 } from "node:path"
-import { setTimeout as delay } from "node:timers/promises"
 import { promisify } from "node:util"
 
 import { bootstrapDaemon, defaultBootstrapInactivityTimeoutMs, defaultBootstrapTimeoutMs } from "./bootstrap-download.mjs"
-import { bootstrapDeadline, defaultCleanupTimeoutMs, validateBootstrapTimeout } from "./bootstrap-deadline.mjs"
+import { bootstrapDeadline, defaultCleanupTimeoutMs, removeStaging, validateBootstrapTimeout } from "./bootstrap-deadline.mjs"
 import { pinnedSha256 } from "./bootstrap-plan.mjs"
 import { hashRuntimeFile, readRuntimeJson, runtimePlatform, validateRuntimeLock, verifyInstalledRuntime } from "./runtime-verification.mjs"
 
@@ -134,22 +133,6 @@ async function existingRuntime(release, archive, deadline, run) {
   await verifyInstalledRuntime(directory, input.lock, deadline)
   await verifyNativeRuntime(directory, input.lock, deadline, run)
   return { ...archive, runtimePath: directory }
-}
-
-// An npm child the deadline aborted is killed but not yet reaped, and Windows
-// refuses to remove a directory any surviving handle still holds. Retry inside
-// the cleanup budget instead of reporting a leftover tree.
-const heldByAnExitingProcess = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"])
-
-async function removeStaging(staging, remove, cleanup) {
-  for (let attempt = 1; ; attempt += 1) {
-    try { return await remove(staging, { recursive: true, force: true }) }
-    catch (error) {
-      if (!heldByAnExitingProcess.has(error?.code)) throw error
-      cleanup.check()
-      await delay(Math.min(20 * attempt, 200), undefined, { signal: cleanup.signal })
-    }
-  }
 }
 
 export async function installBootstrapDaemon(options) {
