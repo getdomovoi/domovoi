@@ -11,17 +11,19 @@ import { assertWslReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
-const passed = { numTotalTests: 6, numPassedTests: 6, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true }
+const passed = { numTotalTests: 10, numPassedTests: 10, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true }
 
 function fixture(overrides = {}) {
   const calls = []
   const effects = {
     downloadImage: async () => {},
+    downloadNode: async () => {},
     run: async (command, args, options) => {
       assert.ok(options.signal instanceof AbortSignal)
       assert.equal(options.signal.aborted, false)
       calls.push({ command, args, options })
-      return args.includes("uname") ? "6.6.87.2-microsoft-standard-WSL2\n" : ""
+      return args.includes("uname") ? "6.6.87.2-microsoft-standard-WSL2\n"
+        : args.includes("wslpath") ? "/fixture/path" : ""
     },
     readReport: async () => passed,
     log: () => {},
@@ -47,7 +49,7 @@ test("WSL job is separate, path-filtered, nightly and bounded", async () => {
   assert.deepEqual(Object.keys(workflow.jobs), ["native"])
   const job = workflow.jobs.native
   assert.equal(job["runs-on"], "windows-2025")
-  assert.equal(job["timeout-minutes"], 15)
+  assert.equal(job["timeout-minutes"], 25)
   assert.equal(job["continue-on-error"], undefined)
   assert.ok(job.steps.some((step) => step.run === "node scripts/wsl-ci.mjs"))
   for (const step of job.steps) assert.equal(step["continue-on-error"], undefined)
@@ -62,6 +64,10 @@ test("required native report rejects an empty, skipped or failed run", () => {
     { ...passed, numTodoTests: 1 }, { ...passed, numFailedTests: 1 }, { ...passed, success: false }]) {
     assert.throws(() => assertWslReport(bad), /WSL native proofs must pass.*no skipped/)
   }
+})
+
+test("six discovery proofs alone no longer satisfy the transport job", () => {
+  assert.throws(() => assertWslReport({ ...passed, numTotalTests: 6, numPassedTests: 6 }), /WSL native proofs/)
 })
 
 test("image download streams the pinned bytes and refuses a digest mismatch", { timeout: 5_000 }, async () => {
@@ -117,8 +123,8 @@ test("provisions exactly one distro, requires it in the test process, then remov
     assert.equal(args[4], "--exec", "provisioning must not add an implicit Linux shell")
   }
   assert.deepEqual(calls.at(-1).args, ["--unregister", distribution])
-  assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "native proofs", "cleanup"])
-  assert.equal(result.tests, 6)
+  assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "guest runtime", "native proofs", "cleanup"])
+  assert.equal(result.tests, 10)
 })
 
 test("missing virtualization fails before the proofs, not as a green skip", async () => {
