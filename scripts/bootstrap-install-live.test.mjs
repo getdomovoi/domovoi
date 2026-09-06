@@ -17,7 +17,39 @@ const execute = promisify(execFile)
 const digest = (bytes, algorithm) => createHash(algorithm).update(bytes).digest(algorithm === "sha256" ? "hex" : "base64")
 const sri = (bytes) => `sha512-${digest(bytes, "sha512")}`
 
-test("identical archives install the reviewed transitive bytes after the registry changes", { timeout: 90_000 }, async (t) => {
+// This test runs npm for real four times, and on a Windows runner that is the
+// slowest thing CI does. Measured on this test across every CI job since it
+// landed: 104 passing Linux runs took 2.8 to 8.3 seconds end to end and 98
+// passing macOS runs took 3.0 to 8.5, while 91 passing Windows runs took 8.0 to
+// 50.4, median 14.0. Two further Windows runs spent the whole of a 45 second
+// budget inside a single one of those installs, at 46.8 and 45.3 seconds end to
+// end, in CI runs 33982814495 and 34040862830. So 45 seconds was a fixed window
+// rather than a bound: it sat just above the whole test's typical Windows cost
+// and below what one stalled step there can reach.
+//
+// These are bounds on a stall, not on the work. The largest real npm install
+// measured on these runners is the packed daemon bootstrap next door, which
+// takes up to 142 seconds on Windows against its own 600 second budget, so a
+// per-install budget has to clear that before it can claim to be a bound.
+// Install stays under the 300000 ms production default, so this still refuses
+// sooner than a shipped bootstrap would.
+const installBudgetMs = 180_000
+// The shipped command spends the production default in its own process, and a
+// parent that killed it first would replace its named refusal with a signal.
+// This is the backstop for a child that never exits, not a phase budget.
+const commandBudgetMs = 180_000
+// Above any single phase budget, so one stalled step is reported by the
+// bootstrap message that names it rather than by a blunt outer timeout. Four
+// simultaneous maximal stalls would still land here, and that is deliberate.
+const testBudgetMs = 300_000
+// Every fixture spawn and loopback listen below carried the same fixed ten
+// second window, which is the bound that a bare where.exe spawn blew twice on
+// these runners at 10.1 and 10.8 seconds. The sibling that measured those
+// stalls settled the same class at sixty seconds. These guard against a hung
+// helper, and the test budget above still stops the run either way.
+const fixtureBudgetMs = 60_000
+
+test("identical archives install the reviewed transitive bytes after the registry changes", { timeout: testBudgetMs }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "domovoi-frozen-live-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const responses = new Map()
@@ -30,10 +62,10 @@ test("identical archives install the reviewed transitive bytes after the registr
     response.setHeader("content-type", Buffer.isBuffer(value) ? "application/octet-stream" : "application/json")
     response.end(Buffer.isBuffer(value) ? value : JSON.stringify(value))
   })
-  server.requestTimeout = 10_000
-  server.headersTimeout = 10_000
+  server.requestTimeout = fixtureBudgetMs
+  server.headersTimeout = fixtureBudgetMs
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Fixture registry did not listen in 10000 ms")), 10_000)
+    const timer = setTimeout(() => reject(new Error(`Fixture registry did not listen in ${fixtureBudgetMs} ms`)), fixtureBudgetMs)
     const fail = (error) => { clearTimeout(timer); reject(error) }
     server.once("error", fail)
     server.listen(0, "127.0.0.1", () => { clearTimeout(timer); server.off("error", fail); resolve() })
@@ -51,7 +83,7 @@ test("identical archives install the reviewed transitive bytes after the registr
       await writeFile(target, bytes)
     }
     const archive = `${directory}.tgz`
-    await execute("tar", ["-czf", archive, "-C", directory, "package"], { timeout: 10_000, killSignal: "SIGKILL" })
+    await execute("tar", ["-czf", archive, "-C", directory, "package"], { timeout: fixtureBudgetMs, killSignal: "SIGKILL" })
     const bytes = await readFile(archive)
     const path = `/${manifest.name}/-/${manifest.name.split("/").at(-1)}-${manifest.version}.tgz`
     responses.set(path, bytes)
@@ -107,14 +139,14 @@ test("identical archives install the reviewed transitive bytes after the registr
     return await runBootstrapCommand(command, args, options)
   }
   const install = (destination) => installBootstrapDaemon({
-    version: "1.0.0", destination, baseUrl: "https://release.test", expectedSha256: sha256, timeoutMs: 45_000, run,
+    version: "1.0.0", destination, baseUrl: "https://release.test", expectedSha256: sha256, timeoutMs: installBudgetMs, run,
     download: async (url) => url.endsWith("SHA256SUMS") ? `${sha256}  getdomovoi-daemon-1.0.0.tgz\n` : app.bytes,
   })
   const first = await install(join(root, "first"))
   await pack({ name: "domovoi-lock-leaf", version: "1.1.0" })
   const second = await install(join(root, "second"))
   for (const result of [first, second]) {
-    const outcome = await execute(process.execPath, [join(result.runtimePath, "dist/index.js")], { timeout: 10_000, killSignal: "SIGKILL" })
+    const outcome = await execute(process.execPath, [join(result.runtimePath, "dist/index.js")], { timeout: fixtureBudgetMs, killSignal: "SIGKILL" })
     assert.equal(outcome.stdout.trim(), "1.0.0")
     assert.equal(await readFile(join(result.runtimePath, "node_modules/node-pty/built.txt"), "utf8"), "reviewed build ran")
   }
@@ -128,23 +160,23 @@ test("identical archives install the reviewed transitive bytes after the registr
   const certificate = join(root, "release-cert.pem")
   await execute("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
     "-nodes", "-keyout", key, "-out", certificate, "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
-  { timeout: 10_000, killSignal: "SIGKILL" })
+  { timeout: fixtureBudgetMs, killSignal: "SIGKILL" })
   const releaseServer = createHttpsServer({ key: await readFile(key), cert: await readFile(certificate) }, (request, response) => {
     if (request.url === "/v1.0.0/SHA256SUMS") response.end(`${sha256}  getdomovoi-daemon-1.0.0.tgz\n`)
     else if (request.url === "/v1.0.0/getdomovoi-daemon-1.0.0.tgz") response.end(app.bytes)
     else response.writeHead(404).end()
   })
-  releaseServer.requestTimeout = 10_000
-  releaseServer.headersTimeout = 10_000
+  releaseServer.requestTimeout = fixtureBudgetMs
+  releaseServer.headersTimeout = fixtureBudgetMs
   t.after(() => { releaseServer.closeAllConnections(); releaseServer.close() })
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("HTTPS fixture listen timed out")), 10_000)
+    const timer = setTimeout(() => reject(new Error(`HTTPS fixture did not listen in ${fixtureBudgetMs} ms`)), fixtureBudgetMs)
     releaseServer.once("error", (error) => { clearTimeout(timer); reject(error) })
     releaseServer.listen(0, "127.0.0.1", () => { clearTimeout(timer); resolve() })
   })
   const cli = await execute(process.execPath, [fileURLToPath(new URL("./bootstrap-daemon.mjs", import.meta.url)),
     "1.0.0", `https://127.0.0.1:${releaseServer.address().port}`, join(root, "cli"), sha256], {
-    timeout: 45_000, killSignal: "SIGKILL", env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate,
+    timeout: commandBudgetMs, killSignal: "SIGKILL", env: { ...process.env, NODE_EXTRA_CA_CERTS: certificate,
       npm_config_registry: registry, npm_config_global: "true", npm_config_prefix: join(root, "ambient-prefix"),
       NPM_CONFIG_CACHE: join(root, "ambient-cache") },
   })

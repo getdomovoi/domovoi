@@ -141,6 +141,21 @@ export async function installBootstrapDaemon(options) {
   validateBootstrapTimeout(options.inactivityTimeoutMs === undefined ? defaultBootstrapInactivityTimeoutMs : options.inactivityTimeoutMs)
   const deadline = bootstrapDeadline(timeoutMs,
     `Bootstrap exceeded ${timeoutMs} ms, including installation and verification; inspect ${options.destination} before retrying`)
+  // The total alone says a machine was slow. It does not say whether the
+  // download, the dependency install, the native build or a verification pass
+  // held the clock, and only the expiring step can answer that. Nothing here
+  // changes what is cancelled or when: an expiry still rejects from the same
+  // operation, and only the reported reason gains the step and its elapsed time.
+  const during = async (step, operation) => {
+    const startedAt = performance.now()
+    try {
+      return await operation()
+    } catch (error) {
+      if (error !== deadline.signal.reason) throw error
+      throw new Error(`${error.message}. It expired during ${step}, ${Math.round(performance.now() - startedAt)} ms into that step`,
+        { cause: error })
+    }
+  }
   const run = options.run ?? runBootstrapCommand
   const remove = options.remove ?? rm
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? defaultCleanupTimeoutMs
@@ -151,56 +166,62 @@ export async function installBootstrapDaemon(options) {
   let result
   let failure
   try {
-    const npm = await bundledNpm(deadline, run)
-    const archive = await bootstrapDaemon({ ...options, deadline })
+    const npm = await during("the npm lookup", () => bundledNpm(deadline, run))
+    const archive = await during("the release archive download", () => bootstrapDaemon({ ...options, deadline }))
     release = dirname(archive.path)
-    result = await existingRuntime(release, archive, deadline, run)
+    result = await during("the check for an existing installation", () => existingRuntime(release, archive, deadline, run))
     if (result) { deadline.clear(); return result }
     // Hold the creation itself. An expiry rejects without waiting for the
     // operation, so this promise is the only remaining record of the path.
     created = mkdtemp(join(release, ".runtime-"))
-    const staging = await deadline.run(() => created)
-    await privateDirectory(staging, deadline, run)
-    await extractRuntime(archive.path, staging, run, deadline)
+    const staging = await during("private staging creation", () => deadline.run(() => created))
+    await during("private staging permissions", () => privateDirectory(staging, deadline, run))
+    await during("runtime archive extraction", () => extractRuntime(archive.path, staging, run, deadline))
     const directory = join(staging, "package")
-    await privateDirectory(directory, deadline, run)
-    const { lock, manifest, lockSha256 } = await lockedInput(directory, options.version, deadline)
+    await during("private package permissions", () => privateDirectory(directory, deadline, run))
+    const { lock, manifest, lockSha256 } = await during("the locked input read",
+      () => lockedInput(directory, options.version, deadline))
     // The non-special packaged name survives npm/pnpm packing. At the controlled
     // install root npm ci consumes these exact bytes, including under npm 12.
-    const bytes = await deadline.run(() => readFile(join(directory, "runtime/lock.json"), { signal: deadline.signal }))
-    await deadline.run(() => writeFile(join(directory, "package-lock.json"), bytes, { mode: 0o600, flag: "wx", signal: deadline.signal }))
-    await deadline.run(() => writeFile(join(directory, "package.json"), `${JSON.stringify(manifest)}\n`, { mode: 0o600, signal: deadline.signal }))
+    await during("the frozen lockfile write", async () => {
+      const bytes = await deadline.run(() => readFile(join(directory, "runtime/lock.json"), { signal: deadline.signal }))
+      await deadline.run(() => writeFile(join(directory, "package-lock.json"), bytes, { mode: 0o600, flag: "wx", signal: deadline.signal }))
+      await deadline.run(() => writeFile(join(directory, "package.json"), `${JSON.stringify(manifest)}\n`, { mode: 0o600, signal: deadline.signal }))
+    })
     const cache = join(staging, ".npm-cache")
     const commandOptions = { cwd: directory, deadline, env: { ...process.env, npm_config_cache: cache } }
     // cwd alone does not override an inherited npm prefix or global setting.
     // CLI options also avoid case-sensitive environment collisions on Windows.
     const location = ["--global=false", "--prefix", directory, "--cache", cache]
-    await deadline.run(() => run(process.execPath, [npm.entry, "ci", ...location, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], commandOptions))
-    await verifyInstalledRuntime(directory, lock, deadline)
+    await during("npm ci", () => deadline.run(() => run(process.execPath, [npm.entry, "ci", ...location, "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], commandOptions)))
+    await during("installed file verification", () => verifyInstalledRuntime(directory, lock, deadline))
     // The reviewed runtime's only build hook is node-pty. Do not grant every
     // downloaded package lifecycle execution because one native module needs it.
     if (lock.packages["node_modules/node-pty"]) {
       const nativeOptions = { ...commandOptions, env: nodePtyBuildEnvironment(runtimePlatform(), commandOptions.env) }
-      await deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", ...location, "--foreground-scripts", "--ignore-scripts=false"], nativeOptions))
-      await verifyInstalledRuntime(directory, lock, deadline)
+      await during("the native terminal module build", () => deadline.run(() => run(process.execPath, [npm.entry, "rebuild", "node-pty", ...location, "--foreground-scripts", "--ignore-scripts=false"], nativeOptions)))
+      await during("installed file verification after the native build", () => verifyInstalledRuntime(directory, lock, deadline))
     }
-    await verifyNativeRuntime(directory, lock, deadline, run)
-    const materializedHash = await hashRuntimeFile(join(directory, "package-lock.json"), "sha256", deadline)
+    await during("the native terminal module load", () => verifyNativeRuntime(directory, lock, deadline, run))
+    const materializedHash = await during("the materialized lockfile hash",
+      () => hashRuntimeFile(join(directory, "package-lock.json"), "sha256", deadline))
     if (materializedHash !== lockSha256) throw new Error("npm changed the frozen runtime lock. Installation was not published")
     const receipt = { format: 1, version: archive.version, sha256: archive.sha256, lockSha256,
       directory: posix.join(staging.split(/[\\/]/).at(-1), "package") }
     const receiptPath = join(staging, "receipt.json")
-    await deadline.run(() => writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { mode: 0o600, flag: "wx", flush: true, signal: deadline.signal }))
+    await during("the runtime receipt write",
+      () => deadline.run(() => writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { mode: 0o600, flag: "wx", flush: true, signal: deadline.signal })))
     try {
       // Atomic no-replace publication uses the same primitive as the archive.
       // Concurrent installers keep private trees until one verified receipt wins.
       // Hold this promise too: an expiry abandons the link without waiting, and
       // only its outcome says whether a receipt now names this tree.
       published = link(receiptPath, join(release, "runtime.json"))
-      await deadline.run(() => published)
+      await during("runtime receipt publication", () => deadline.run(() => published))
       keep = true
     } catch (error) { if (error.code !== "EEXIST") throw error }
-    result = await existingRuntime(release, archive, deadline, run)
+    result = await during("verification of the published installation",
+      () => existingRuntime(release, archive, deadline, run))
     if (!result) throw new Error("Verified runtime receipt disappeared before publication completed")
   } catch (error) { failure = error } finally { deadline.clear() }
   if (created && !keep) {
