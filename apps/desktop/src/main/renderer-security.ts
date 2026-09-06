@@ -1,9 +1,12 @@
 import { resolve } from "node:path"
-import { pathToFileURL } from "node:url"
 
 export type RendererTarget =
   | { kind: "file"; path: string }
   | { kind: "url"; url: string }
+
+export function rendererTargetUrl(target: RendererTarget): string {
+  return target.kind === "url" ? target.url : "domovoi-app://desktop/index.html"
+}
 
 type RendererFrame = {
   readonly url: string
@@ -46,9 +49,7 @@ export function resolveRendererTarget(options: {
 export function isTrustedRendererFrameUrl(frameUrl: string, target: RendererTarget): boolean {
   try {
     const actual = new URL(frameUrl)
-    const expected = target.kind === "url"
-      ? new URL(target.url)
-      : new URL(pathToFileURL(resolve(target.path)).href)
+    const expected = new URL(rendererTargetUrl(target))
     return actual.protocol === expected.protocol
       && actual.host === expected.host
       && actual.pathname === expected.pathname
@@ -81,7 +82,9 @@ export function rendererContentSecurityPolicy(endpointUrl: string | undefined): 
   const endpoint = url && (url.protocol === "ws:" || url.protocol === "wss:") && !url.hostname.startsWith("[")
     ? ` ${url.protocol}//${url.host}`
     : ""
+  const preview = endpoint.replace(/^ ws:/u, " http:").replace(/^ wss:/u, " https:")
   return `default-src 'self'; connect-src 'self' ${loopbackSources}${endpoint}; `
+    + `frame-src 'self'${preview}; `
     + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; script-src 'self'"
 }
 

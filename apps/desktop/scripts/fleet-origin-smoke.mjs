@@ -1,0 +1,41 @@
+import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
+import { mkdtemp, readFile, writeFile, copyFile, rm } from "node:fs/promises"
+import { createRequire } from "node:module"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import ts from "typescript"
+
+const require = createRequire(import.meta.url)
+const directory = await mkdtemp(join(tmpdir(), "domovoi-fleet-origin-proof-"))
+try {
+  await writeFile(join(directory, "package.json"), JSON.stringify({ type: "module" }))
+  for (const name of ["fleet-origin", "renderer-security", "renderer-resources"]) {
+    const source = await readFile(new URL(`../src/main/${name}.ts`, import.meta.url), "utf8")
+    await writeFile(join(directory, `${name}.js`), ts.transpileModule(source, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    }).outputText)
+  }
+  await copyFile(new URL("../src/renderer/public/fleet-socket.js", import.meta.url), join(directory, "fleet-socket.js"))
+  await writeFile(join(directory, "index.html"), "<!DOCTYPE html><html><body>Origin proof</body></html>")
+  const electron = require("electron")
+  // This child alone owns these resources. No process-name or group cleanup.
+  const output = await new Promise((resolve, reject) => {
+    const child = spawn(electron, ["--no-sandbox", fileURLToPath(new URL("./fleet-origin-smoke.fixture.cjs", import.meta.url)), directory], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "" }, stdio: ["ignore", "pipe", "pipe"],
+    })
+    let text = ""
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`Fleet origin proof expired\n${text}`)) }, 30_000)
+    child.stdout.on("data", (data) => { text += data.toString() })
+    child.stderr.on("data", (data) => { text += data.toString() })
+    child.once("error", (error) => { clearTimeout(timer); reject(error) })
+    child.once("exit", (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve(text)
+      else reject(new Error(`Fleet origin proof exited ${code}\n${text}`))
+    })
+  })
+  assert.match(output, /DOMOVOI_FLEET_ORIGIN_PROOF_OK/u)
+  process.stdout.write(output)
+} finally { await rm(directory, { recursive: true, force: true }) }

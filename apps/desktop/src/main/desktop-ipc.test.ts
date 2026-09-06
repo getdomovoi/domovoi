@@ -40,6 +40,8 @@ const channels: readonly ChannelSpec[] = [
   { channel: "window:close", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "domovoi:rpc-endpoint", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:rpc-endpoint-reconnect", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:fleet-route", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:fleet-route-forget", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
     channel: "domovoi:capture-annotation",
     via: "handle",
@@ -131,6 +133,8 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     focusMainWindow: vi.fn(),
     rpcEndpoint: vi.fn(async () => acquisition),
     reconnectRpcEndpoint: vi.fn(async () => reacquisition),
+    fleetRoute: vi.fn(async () => ({ outcome: "refused", reason: "not-enrolled" })),
+    forgetFleetRoute: vi.fn(),
     "openDirectoryDialog.showOpenDirectory": vi.fn(async () => ({ canceled: false, filePaths: ["/projects/app"] })),
     "clipboard.readText": vi.fn(async () => "pasted"),
     "clipboard.writeText": vi.fn(async () => true),
@@ -153,6 +157,8 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     focusMainWindow: effects.focusMainWindow,
     rpcEndpoint: effects.rpcEndpoint,
     reconnectRpcEndpoint: effects.reconnectRpcEndpoint,
+    fleetRoute: effects.fleetRoute,
+    forgetFleetRoute: effects.forgetFleetRoute,
     platform: "linux",
     fileSystem: {
       realpath: async (path) => path,
@@ -197,6 +203,15 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
 }
 
 describe("registerDesktopIpc", () => {
+  it("accepts only machine identity and budget, never a renderer-authored URL", async () => {
+    const target = harness()
+    const call = target.listener("handle", "domovoi:fleet-route")
+    expect(await call(target.event, "machine-peer", 2_000)).toEqual({ outcome: "refused", reason: "not-enrolled" })
+    expect(target.effects.fleetRoute).toHaveBeenCalledWith("machine-peer", 2_000)
+    expect(() => call(target.event, { endpoint: "wss://other.example/rpc" }, 2_000)).toThrow("invalid")
+    target.listener("handle", "domovoi:fleet-route-forget")(target.event, "machine-peer")
+    expect(target.effects.forgetFleetRoute).toHaveBeenCalledWith("machine-peer")
+  })
   it("registers exactly the documented channels", () => {
     const target = harness()
     const expected = channels.map((spec) => [spec.via, spec.channel] as const)

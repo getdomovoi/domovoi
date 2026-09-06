@@ -35,6 +35,8 @@ export type DesktopIpcWindow = {
 export type DesktopDeepLinkSink = (link: DesktopDeepLink) => void
 
 export type DesktopIpcDependencies = {
+  fleetRoute?(machineId: string, budgetMs: number): Promise<unknown>
+  forgetFleetRoute?(machineId: string): void
   authorized(event: DesktopIpcEvent): boolean
   mainWindow(): DesktopIpcWindow | undefined
   focusMainWindow(): void
@@ -96,6 +98,18 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
   ipcMain.handle("domovoi:rpc-endpoint-reconnect", (event) => {
     daemonRequest(event)
     return deps.reconnectRpcEndpoint()
+  })
+  ipcMain.handle("domovoi:fleet-route", (event, machineId, budgetMs) => {
+    daemonRequest(event)
+    if (typeof machineId !== "string" || machineId.length > 128 || typeof budgetMs !== "number") {
+      throw new Error("Fleet route request is invalid")
+    }
+    return deps.fleetRoute?.(machineId, budgetMs)
+  })
+  ipcMain.handle("domovoi:fleet-route-forget", (event, machineId) => {
+    daemonRequest(event)
+    if (typeof machineId !== "string" || machineId.length > 128) throw new Error("Fleet route request is invalid")
+    deps.forgetFleetRoute?.(machineId)
   })
   ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
     const window = deps.authorized(event) ? deps.mainWindow() : undefined

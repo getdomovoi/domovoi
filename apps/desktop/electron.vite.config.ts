@@ -20,16 +20,17 @@ const runtimeProvided = [
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
-    // Keep the startup artifact within its byte cap without changing names
-    // used in diagnostics or hiding startup code in an unmeasured chunk.
+    // Measure the full entry, with no startup code hidden in another chunk.
+    // Operator diagnostics are explicit strings, not inferred function names.
     build: { minify: "esbuild" },
-    esbuild: { keepNames: true },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
+      minify: "esbuild",
       rollupOptions: { external: runtimeProvided, output: { format: "cjs" } },
     },
+    esbuild: { keepNames: true },
   },
   renderer: {
     plugins: [react(), tailwindcss()],
