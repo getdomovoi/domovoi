@@ -110,6 +110,10 @@ the renderer or dropping drafts. The loader refuses outside paths, other app hos
 and unsupported resource extensions. The app origin is accepted explicitly by the daemon, not
 through a wildcard origin rule.
 
+The default daemon origin list includes `domovoi-app://desktop`. If the operator overrides
+`DOMOVOI_ALLOWED_ORIGINS`, include that exact origin and restart the daemon before using this
+Desktop build. Explicit origin lists are not silently widened.
+
 Existing `file://` browser-local appearance, layout and first-run preferences are not migrated
 to the app origin. An existing development profile may need those preferences selected again.
 Canonical sessions, provider configuration and paired devices remain in the same daemon profile.
