@@ -1,13 +1,19 @@
 name: release
 
 # Versions and publishes @getdomovoi/protocol and @getdomovoi/daemon with Changesets and
-# npm trusted publishing. Nothing runs until a maintainer sets the repository variable
-# RELEASE_PUBLISHING to "enabled". The human steps are in docs/distribution.md.
+# npm trusted publishing. RELEASE_PUBLISHING="version-only" permits version PRs;
+# "enabled" also permits publishing. An absent variable permits neither.
+# The one-time manual bootstrap and human steps are in docs/release-setup.md.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      first_publish:
+        description: One-time first alpha using the protected environment's temporary npm token
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -25,7 +31,7 @@ jobs:
     if: >-
       github.repository == 'getdomovoi/domovoi'
       && github.ref == 'refs/heads/main'
-      && vars.RELEASE_PUBLISHING == 'enabled'
+      && (vars.RELEASE_PUBLISHING == 'version-only' || vars.RELEASE_PUBLISHING == 'enabled')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -56,6 +62,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.mode == 'version'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -72,13 +79,15 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: changesets/action/version@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
+          script: pnpm release:version
           commit-message: "chore(release): version packages"
           pr-title: "chore(release): version packages"
 
   pack:
     needs: gate
-    if: needs.gate.outputs.mode == 'publish'
+    if: needs.gate.outputs.mode == 'publish' && vars.RELEASE_PUBLISHING == 'enabled'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -94,14 +103,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm release:artifacts
       - run: pnpm changeset publish-plan --output release/publish-plan.json
-      - run: pnpm release:order release/publish-plan.json
-      - run: pnpm changeset pack --from-publish-plan release/publish-plan.json --out-dir release/pack
-      - name: Confirm the tarballs to publish match SHA256SUMS
-        working-directory: release/pack/packages
-        run: |
-          for tarball in *.tgz; do
-            grep --fixed-strings "  $tarball" ../../SHA256SUMS | sha256sum --check --strict
-          done
+      - run: pnpm release:prepare
+      - run: pnpm release:verify
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release
@@ -112,6 +115,7 @@ jobs:
   publish:
     needs: pack
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     environment: npm
     permissions:
       contents: write
@@ -131,17 +135,35 @@ jobs:
         with:
           name: release
           path: release
-      - id: publish
-        uses: changesets/action/publish@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
-        with:
-          script: pnpm changeset publish --from-pack-dir release/pack
-      - name: Attach the tarballs, SBOMs, and SHA256SUMS to the GitHub releases
-        if: steps.publish.outputs.published == 'true'
+      - run: pnpm release:verify
+      - name: Refuse known registry or GitHub conflicts before publishing
         env:
           GH_TOKEN: ${{ github.token }}
-          PUBLISHED_PACKAGES: ${{ steps.publish.outputs.published-packages }}
-        run: |
-          jq --raw-output '.[] | "\(.name)@\(.version) \(.name | ltrimstr("@") | sub("/"; "-"))-\(.version)"' <<< "$PUBLISHED_PACKAGES" |
-            while read -r tag stem; do
-              gh release upload "$tag" "release/$stem.tgz" "release/$stem.sbom.json" release/SHA256SUMS --clobber
-            done
+        timeout-minutes: 2
+        run: pnpm release:preflight
+      - name: Admit trusted publishing or the one-time first alpha
+        env:
+          RELEASE_PUBLISHING: ${{ vars.RELEASE_PUBLISHING }}
+          FIRST_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.first_publish && 'true' || 'false' }}
+          NPM_BOOTSTRAP_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.first_publish && secrets.NPM_BOOTSTRAP_TOKEN || '' }}
+        timeout-minutes: 2
+        run: pnpm release:admit
+      - name: Configure token auth only for the admitted first publication
+        if: github.event_name == 'workflow_dispatch' && inputs.first_publish
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - id: publish
+        uses: changesets/action/publish@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        env:
+          npm_config_provenance: "true"
+          NODE_AUTH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.first_publish && secrets.NPM_BOOTSTRAP_TOKEN || '' }}
+        with:
+          script: pnpm changeset publish --from-pack-dir release/pack
+          create-github-releases: false
+      - name: Publish the canonical bootstrap release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 12
+        run: pnpm release:github
