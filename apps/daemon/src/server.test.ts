@@ -10341,10 +10341,19 @@ describe("DomovoiDaemon", () => {
     const terminalProcesses = new Map<string, { kill: ReturnType<typeof vi.fn> }>()
     const terminalService = {
       spawn: vi.fn(({ cwd }: { cwd: string }) => {
+        // A real pty exits after a kill, and the archive waits for that exit
+        // before it removes the worktree the shell is sitting in.
+        const exitListeners = new Set<(event: { exitCode: number; signal?: number }) => void>()
         const process = {
-          process: "/bin/sh", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+          process: "/bin/sh", write: vi.fn(), resize: vi.fn(),
+          kill: vi.fn(() => {
+            for (const listener of [...exitListeners]) listener({ exitCode: 0 })
+          }),
           onData: vi.fn(() => ({ dispose: vi.fn() })),
-          onExit: vi.fn(() => ({ dispose: vi.fn() })),
+          onExit: vi.fn((listener: (event: { exitCode: number; signal?: number }) => void) => {
+            exitListeners.add(listener)
+            return { dispose: () => exitListeners.delete(listener) }
+          }),
         }
         terminalProcesses.set(cwd, process)
         return process
@@ -10483,6 +10492,100 @@ describe("DomovoiDaemon", () => {
     )).toEqual(workingPlanBefore)
     expect(store.snapshot.sessions[0]).not.toHaveProperty("workspacePath")
     expect(agent.stopThread).toHaveBeenCalledTimes(2)
+  })
+
+  it("removes the archived worktree only after its terminal shell exits", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-billing"
+    delete session.providerThreadId
+    delete session.activeTurnId
+    snapshot.approvals = []
+    const activateTurns = deferLiveTurns(snapshot)
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    // A killed shell keeps the worktree as its working directory until it
+    // exits, and Windows refuses to remove a directory a live handle holds.
+    let exitShell: (() => void) | undefined
+    let shellRunning = true
+    const terminalProcess = {
+      process: "/bin/sh", write: vi.fn(), resize: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn((listener: (event: { exitCode: number }) => void) => {
+        const previous = exitShell
+        exitShell = () => { previous?.(); shellRunning = false; listener({ exitCode: 0 }) }
+        return { dispose: vi.fn() }
+      }),
+      kill: vi.fn(),
+    }
+    const removedWhileShellRunning: boolean[] = []
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      archiveSessionWorkspace: vi.fn(async () => { removedWhileShellRunning.push(shellRunning) }),
+      checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const store = {
+      snapshot,
+      load() { return this.snapshot },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: testAuthToken("archive-terminal-exit-token"),
+      store,
+      agents: { codex: agent },
+      workspaceService,
+      terminalService: { spawn: vi.fn(() => terminalProcess) },
+      errorSink: vi.fn(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    activateTurns()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    await rpc("terminal.create", {
+      terminalId: "billing-terminal", sessionId: session.id,
+      cols: 80, rows: 24, client: "desktop", clientId: "billing-client",
+    })
+
+    const archived = rpc("session.archive", { sessionId: session.id, client: "desktop" })
+    await waitForDaemon(() => expect(terminalProcess.kill).toHaveBeenCalledOnce())
+    expect(workspaceService.archiveSessionWorkspace).not.toHaveBeenCalled()
+
+    exitShell!()
+    await expect(archived).resolves.toMatchObject({ result: { sessions: expect.arrayContaining([
+      expect.objectContaining({ id: session.id, state: "archived" }),
+    ]) } })
+    expect(removedWhileShellRunning).toEqual([false])
+    socket.close()
   })
 
   it("ignores provider events after archive intent survives cleanup failure", async () => {

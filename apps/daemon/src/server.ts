@@ -7640,7 +7640,7 @@ export class DomovoiDaemon {
       await this.#saveAgentState()
     }
 
-    this.#closeSessionTerminals(sessionId)
+    const terminalExits = this.#closeSessionTerminals(sessionId)
 
     const approvals = this.#snapshot.approvals.filter(
       (approval) => approval.sessionId === sessionId,
@@ -7770,6 +7770,7 @@ export class DomovoiDaemon {
         throw new Error("Workspace service cannot preserve archive branches")
       }
       const workspacePath = session.workspacePath
+      await this.#awaitTerminalExits(terminalExits)
       await this.#withAbortTimeout(
         (signal) => this.#workspaceService.archiveSessionWorkspace!(workspacePath, signal),
         this.#agentTimeoutMs,
@@ -7966,9 +7967,29 @@ export class DomovoiDaemon {
     this.#artifactWatchers.clear()
   }
 
-  #closeSessionTerminals(sessionId: string): void {
+  // A kill only asks. The shell keeps the session worktree as its working
+  // directory until it actually exits, so the caller holds these and waits
+  // before removing that worktree.
+  #closeSessionTerminals(sessionId: string): Promise<void>[] {
+    const exits: Promise<void>[] = []
     for (const [terminalId, terminal] of this.#terminals) {
-      if (terminal.sessionId === sessionId) this.#closeTerminal(terminalId)
+      if (terminal.sessionId !== sessionId) continue
+      exits.push(terminalExit(terminal.process))
+      this.#closeTerminal(terminalId)
+    }
+    return exits
+  }
+
+  async #awaitTerminalExits(exits: readonly Promise<void>[]): Promise<void> {
+    if (exits.length === 0) return
+    try {
+      await withTimeout(
+        Promise.all(exits),
+        this.#agentTimeoutMs,
+        "Session terminal shutdown timed out",
+      )
+    } catch (error) {
+      this.#reportError("Domovoi could not confirm a session terminal exited", error)
     }
   }
 
@@ -8319,6 +8340,23 @@ async function resolveInsideReal(root: string, candidate: string): Promise<strin
   } catch {
     return undefined
   }
+}
+
+// Registered while the terminal is still tracked, which is before node-pty
+// emits its exit, so this observes the shell that a kill is about to end.
+function terminalExit(terminal: TerminalProcess): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let disposable: { dispose(): void } | undefined
+    let exited = false
+    const finish = (): void => {
+      exited = true
+      disposable?.dispose()
+      disposable = undefined
+      resolve()
+    }
+    disposable = terminal.onExit(finish)
+    if (exited) disposable.dispose()
+  })
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
