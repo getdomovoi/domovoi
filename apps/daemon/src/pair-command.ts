@@ -27,9 +27,9 @@ export async function runPairCommand(
         throw new Error("The daemon returned a different credential kind")
       }
       dependencies.stdout(`This ${client.data} credential grants session sends, approvals and terminals.\n`)
-      dependencies.stdout("It cannot manage paired devices or enroll more machines. Keep it private.\n")
+      dependencies.stdout("It cannot change paired devices or enroll more machines. Keep it private.\n")
       dependencies.stdout(`Client credential: ${granted.token}\n`)
-      dependencies.stdout(`Enter it under Authorize this client on the enrolled machine's Fleet row.\n`)
+      dependencies.stdout(`Use it only with a ${client.data} client connecting to this daemon.\n`)
       dependencies.stdout(`Revoke device ${granted.device.id} in this daemon's Devices list when it is no longer needed.\n`)
       return 0
     } catch (error) {

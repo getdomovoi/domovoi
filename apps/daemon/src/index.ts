@@ -75,6 +75,7 @@ async function openWorkspace(target: OpenTarget): Promise<void> {
 
 const help = `Usage: domovoid [options]
        domovoid pair
+       domovoid pair --client <desktop|web|tablet|phone|cli> --label <device label>
        domovoid fleet-keychain list
        domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
        domovoid open [path]
