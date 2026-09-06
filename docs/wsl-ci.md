@@ -184,7 +184,7 @@ root credential; the fleet route separately uses the paired machine credential.
 This does not add client admission to a machine credential or prove a session
 transfer. A second distribution is added only when a test needs two.
 
-Unit-only cases still include multiple distro arbitration, alternate mount
-spellings and manually bound drive paths beyond the configured automount root,
-and Git repository-selection argument refusals. Do not infer those outcomes
+Unit-only cases still include refusing a path that reads back as another
+distribution's share, alternate mount spellings and manually bound drive paths
+beyond the configured automount root, and Git repository-selection argument refusals. Do not infer those outcomes
 from the single-guest hosted result.
