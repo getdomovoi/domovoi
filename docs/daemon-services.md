@@ -137,13 +137,34 @@ A native Linux-only test drives systemd itself through the same install, status 
 functions the CLI calls. It installs a UUID-named user unit into the per-boot runtime unit
 directory, checks that the manager loaded that exact fragment, enabled it and started the process
 the unit names, then removes it and requires process exit, an absent unit, an absent enable symlink
-and an absent saved configuration. It runs `systemctl` only in the user scope, refuses a command
-naming any other unit, refuses to overwrite a name that already exists, and cleans up whatever the
-assertions did. That cleanup also resets the unit's failed state, because a run that ends in
+and an absent saved configuration. It allows only exact `systemctl --user` command shapes for that
+UUID unit, with `daemon-reload` the sole manager-wide operation required by the installer. Paths,
+wildcards, extra scope flags and other unit types are refused. File effects stay in the private home
+except for the exact runtime unit path; traversal and existing symlink components are refused.
+Preflight requires a successful manager query reporting absence and no unit or enable entry on
+disk, including dangling links. It repeats that check immediately before installation and arms
+manager cleanup only when the installation is attempted. A collision or unknown result never
+authorizes disabling a unit, resetting its state or deleting its files. That cleanup resets the
+attempted unit's failed state, because a run that ends in
 failure stays loaded and listed as failed after its fragment file is deleted, and it then requires
-the manager to list nothing failed under that name. Its gate is the systemd user manager's private socket, so a machine without a
-running user manager skips it. The Linux CI leg starts that manager and fails when the socket is
-missing, so the test cannot disappear from the run.
+the manager to list nothing failed under that name. Outside CI, a machine without the systemd user
+manager's private socket skips these native proofs. Linux CI starts that manager, and test
+collection itself also refuses a missing socket rather than trusting the earlier workflow check.
+A stale socket reaches the bounded manager query and fails instead of being treated as absence.
+The same harness has portable safety tests with a simulated manager and real private files; those
+tests exercise refusals without risking a pre-existing service on the developer's machine.
+Those lifecycle tests script unit text so Windows launch paths do not mask their assertions.
+A separate real-renderer test requires POSIX-absolute runtime and temporary paths; native Linux
+proofs always use the real renderer and manager.
+If cleanup cannot confirm the attempted unit stopped, it retains files rather than leaving a
+restartable job pointing at deleted launch input. The error names the UUID unit and paths to
+inspect and preserves the original assertion failure alongside the cleanup failure. Stop that
+test-owned unit before manually removing retained files. A preflight refusal never authorizes
+stopping or deleting the colliding unit.
+Once manager cleanup is confirmed, the private fixture home uses the shared
+scratch removal helper: held-directory refusals are retried and removal is
+verified by absence. That retry is independent of the manager cleanup deadline;
+it does not authorize removal when manager ownership or shutdown is unknown.
 
 A second native Linux-only test proves the restart supervision that unit declares. It reads
 `Restart` and `RestartSec` back from the manager's parse of the installed unit rather than from the
@@ -158,7 +179,7 @@ asked for through the fixture's private stop path, must also stay exited with th
 still at zero; that is the half the `on-failure` directive itself decides. Setting the unit to
 `Restart=no` fails the crash half, and `Restart=always` fails the clean-exit half, so the pair pins
 the directive from both sides. The test shares the throwaway unit name, the runtime unit path, the
-`systemctl` chokepoint, the refusing preflight and the always-run cleanup with the lifecycle test
+`systemctl` chokepoint, the refusing preflight and the ownership-gated cleanup with the lifecycle test
 rather than carrying a second copy of them.
 
 A native macOS-only test drives launchd itself through the same install, status and removal
