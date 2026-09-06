@@ -101,6 +101,8 @@ Main grants one opaque, single-use ticket for a worker script response. That res
 client socket. The ticket expires after 30 seconds, at most 128 tickets are retained, and removing
 access invalidates unused tickets and in-flight verification. A different port, host, unverified
 route, or replayed ticket remains blocked. Every new connection requests a fresh verified route.
+At most 128 verification calls may be live at once. Their records are released on settlement;
+failed identifiers cannot permanently exhaust admission or evict another active check.
 The bridge itself does not prove client authority; the hello and `device.current` exchange does.
 
 The packaged renderer uses `domovoi-app://desktop`, a restricted bundled-resource protocol. The

@@ -93,6 +93,8 @@ export class FleetAccessSession {
   clear(): void { for (const id of Object.keys(this.#states)) this.remove(id) }
 
   async inventory(machineId: string, signal: AbortSignal): Promise<FleetInventoryReader> {
+    // One comparison question, not a persistent reader. The collector closes
+    // it in finally. Connect and read share 30 seconds; timeout is not revocation.
     const access = this.#access.get(machineId)
     if (!access) throw new ClientAdmissionError("client-credential-required")
     const deadline = Deadline.start(30_000)

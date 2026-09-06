@@ -1020,7 +1020,10 @@ export function FleetView({
   onRemoveClientAccess?: (machineId: string) => void
 }) {
   const [authorizing, setAuthorizing] = useState<FleetMachine | null>(null)
-  const [removedAccess, setRemovedAccess] = useState<string | null>(null)
+  const [removedAccess, setRemovedAccess] = useState<{ machineId: string; label: string } | null>(null)
+  useEffect(() => {
+    if (removedAccess && clientAccess[removedAccess.machineId]?.state === "admitted") setRemovedAccess(null)
+  }, [clientAccess, removedAccess])
   const [devices, setDevices] = useState<PairedDeviceSummary[] | null>(null)
   const [devicesError, setDevicesError] = useState("")
   const [actionError, setActionError] = useState("")
@@ -1177,7 +1180,7 @@ export function FleetView({
           <section className="mt-5 flex flex-col gap-2.5" aria-label="Machines">
             <h2 className="m-0 text-[13px] font-semibold">Machines</h2>
             {removedAccess ? <Alert><AlertTitle>Local client access removed</AlertTitle><AlertDescription>
-              This app no longer holds the credential for {removedAccess}. Revoke this device in {removedAccess}'s Devices list to end its authority there.
+              This app no longer holds the credential for {removedAccess.label}. Revoke this device in {removedAccess.label}'s Devices list to end its authority there.
             </AlertDescription></Alert> : null}
             {fleetOverflow ? <FleetOverflowAlert overflow={fleetOverflow} /> : null}
             {forgetNotice?.outcome === "refused" ? (
@@ -1200,7 +1203,7 @@ export function FleetView({
                 {...(onAuthorizeClient ? { onAuthorize: setAuthorizing } : {})}
                 {...(onRemoveClientAccess ? { onRemoveAccess: (target: FleetMachine) => {
                   onRemoveClientAccess(target.id)
-                  setRemovedAccess(target.label)
+                  setRemovedAccess({ machineId: target.id, label: target.label })
                 } } : {})}
                 {...(onUseMachine ? { onUse: onUseMachine } : {})}
                 {...(onOpenMachineTerminal ? { onOpenTerminal: onOpenMachineTerminal } : {})}

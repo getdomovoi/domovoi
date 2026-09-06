@@ -8,6 +8,43 @@ const route = { outcome: "ready" as const, machineId, transport: {
 } }
 
 describe("Desktop fleet origin admission", () => {
+  it("does not let completed refusals exhaust admission for this window", async () => {
+    const verify = vi.fn(async (id: string) => id === machineId ? route : { outcome: "refused" as const, reason: "not-enrolled" as const })
+    const admission = new FleetOriginAdmission(verify, () => 0)
+    for (let index = 0; index < 130; index += 1) {
+      expect(await admission.authorize(`machine-missing-${index}`, 5_000)).toEqual({ outcome: "refused", reason: "not-enrolled" })
+    }
+    expect((await admission.authorize(machineId, 5_000)).outcome).toBe("ready")
+  })
+
+  it("bounds live checks without evicting another check and reclaims settled capacity", async () => {
+    const finishers: Array<(value: typeof route) => void> = []
+    const verify = vi.fn(() => new Promise<typeof route>(resolve => { finishers.push(resolve) }))
+    const admission = new FleetOriginAdmission(verify, () => 0)
+    const pending = Array.from({ length: 128 }, () => admission.authorize(machineId, 5_000))
+    expect(await admission.authorize(machineId, 5_000)).toEqual({ outcome: "refused", reason: "client-route-unavailable" })
+    expect(verify).toHaveBeenCalledTimes(128)
+    for (const finish of finishers) finish(route)
+    for (const result of await Promise.all(pending)) {
+      if (result.outcome !== "ready") throw new Error("An active verification was evicted")
+      expect(admission.consume(result.ticket)).toContain("wss://studio.example:47831")
+    }
+    verify.mockResolvedValue(route)
+    expect((await admission.authorize(machineId, 5_000)).outcome).toBe("ready")
+  })
+
+  it("keeps a concurrent verification alive when its sibling refuses", async () => {
+    let finish: (value: typeof route) => void = () => {}
+    const verify = vi.fn().mockResolvedValueOnce({ outcome: "refused", reason: "not-enrolled" })
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const admission = new FleetOriginAdmission(verify, () => 0)
+    const first = admission.authorize(machineId, 5_000)
+    const second = admission.authorize(machineId, 5_000)
+    expect((await first).outcome).toBe("refused")
+    finish(route)
+    expect((await second).outcome).toBe("ready")
+  })
+
   it("grants one origin only after the home daemon has verified it", async () => {
     let finish: (value: typeof route) => void = () => {}
     const verify = vi.fn(() => new Promise<typeof route>((resolve) => { finish = resolve }))

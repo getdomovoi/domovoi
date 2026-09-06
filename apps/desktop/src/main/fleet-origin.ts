@@ -21,7 +21,8 @@ function exactOrigin(endpoint: string): string | undefined {
 // worker gets only this origin in its own CSP; the main document is unchanged.
 export class FleetOriginAdmission {
   readonly #tickets = new Map<string, { machineId: string; origin: string; expires: number }>()
-  readonly #generation = new Map<string, symbol>()
+  readonly #generation = new Map<string, { pending: number }>()
+  #pending = 0
 
   constructor(
     private readonly verify: (machineId: string, budgetMs: number) => Promise<FleetClientRouteResult>,
@@ -33,25 +34,35 @@ export class FleetOriginAdmission {
     if (!Number.isFinite(budgetMs) || budgetMs <= 0) return { outcome: "refused", reason: "route-timeout" }
     const budget = Math.min(budgetMs, 30_000)
     const expires = this.now() + budget
-    if (!this.#generation.has(machineId) && this.#generation.size >= maximumTickets) {
+    if (this.#pending >= maximumTickets) {
       return { outcome: "refused", reason: "client-route-unavailable" }
     }
-    const generation = this.#generation.get(machineId) ?? Symbol()
+    const generation = this.#generation.get(machineId) ?? { pending: 0 }
+    generation.pending += 1
+    this.#pending += 1
     this.#generation.set(machineId, generation)
-    let result: FleetClientRouteResult
-    try { result = await this.verify(machineId, budget) }
-    catch { return { outcome: "refused", reason: "client-route-unavailable" } }
-    if (this.now() >= expires) return { outcome: "refused", reason: "route-timeout" }
-    if (this.#generation.get(machineId) !== generation) return { outcome: "refused", reason: "not-enrolled" }
-    if (result.outcome === "refused") return result
-    if (result.machineId !== machineId) return { outcome: "refused", reason: "identity-mismatch" }
-    const origin = exactOrigin(result.transport.endpoint)
-    if (!origin) return { outcome: "refused", reason: "client-route-unavailable" }
-    for (const [id, entry] of this.#tickets) if (entry.expires <= this.now()) this.#tickets.delete(id)
-    if (this.#tickets.size >= maximumTickets) return { outcome: "refused", reason: "client-route-unavailable" }
-    const ticket = randomUUID()
-    this.#tickets.set(ticket, { machineId, origin, expires: this.now() + ticketLifetimeMs })
-    return { ...result, ticket }
+    try {
+      let result: FleetClientRouteResult
+      try { result = await this.verify(machineId, budget) }
+      catch { return { outcome: "refused", reason: "client-route-unavailable" } }
+      if (this.now() >= expires) return { outcome: "refused", reason: "route-timeout" }
+      if (this.#generation.get(machineId) !== generation) return { outcome: "refused", reason: "not-enrolled" }
+      if (result.outcome === "refused") return result
+      if (result.machineId !== machineId) return { outcome: "refused", reason: "identity-mismatch" }
+      const origin = exactOrigin(result.transport.endpoint)
+      if (!origin) return { outcome: "refused", reason: "client-route-unavailable" }
+      for (const [id, entry] of this.#tickets) if (entry.expires <= this.now()) this.#tickets.delete(id)
+      if (this.#tickets.size >= maximumTickets) return { outcome: "refused", reason: "client-route-unavailable" }
+      const ticket = randomUUID()
+      this.#tickets.set(ticket, { machineId, origin, expires: this.now() + ticketLifetimeMs })
+      return { ...result, ticket }
+    } finally {
+      this.#pending -= 1
+      generation.pending -= 1
+      // Records protect live checks only. A refusal cannot strand capacity,
+      // and its cleanup cannot invalidate a sibling or a newer generation.
+      if (generation.pending === 0 && this.#generation.get(machineId) === generation) this.#generation.delete(machineId)
+    }
   }
 
   consume(ticket: string): string {

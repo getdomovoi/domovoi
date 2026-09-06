@@ -12,14 +12,15 @@ afterEach(() => { cleanup(); sockets.uninstall() })
 const settle = () => act(async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve() })
 const machineId = `machine-${"b".repeat(32)}`
 const deviceId = `device-${"c".repeat(32)}`
+const observedAt = "2026-09-06T00:00:00.000Z"
 const transport = { kind: "local", endpoint: "ws://127.0.0.1:49812/rpc", authenticated: true } as const
 const target = { ...workspaceSnapshot(), machine: { ...workspaceSnapshot().machine, id: machineId, name: "Studio" } }
 if (target.project) target.project = { ...target.project, machineId }
 const machine: FleetMachine = {
   id: machineId, label: "Studio", platform: "linux", arch: "x64", version: "0.0.1", protocolVersion,
   connection: "direct", health: "healthy", self: false, capabilities: ["sessions", "terminals", "skills"],
-  heartbeat: { state: "online", lastSeenAt: new Date().toISOString() },
-  verifiedRoute: { endpoint: "ws://127.0.0.1:49812/rpc", lastAuthenticatedAt: new Date().toISOString() },
+  heartbeat: { state: "online", lastSeenAt: observedAt },
+  verifiedRoute: { endpoint: "ws://127.0.0.1:49812/rpc", lastAuthenticatedAt: observedAt },
   transports: [transport],
 }
 
@@ -78,6 +79,22 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
   if (action === "Terminal on Studio") await user.click(screen.getByRole("button", { name: "Remove local access" }))
   expect(screen.getByRole("button", { name: "Use Studio" }).hasAttribute("disabled")).toBe(true)
   if (action === "Terminal on Studio") expect(screen.getByText(/This app no longer holds/).textContent).toContain("Devices list")
+  if (action === "Terminal on Studio") {
+    await user.click(screen.getByRole("button", { name: "Authorize this client for Studio" }))
+    const grant = screen.getByRole("dialog")
+    await user.type(within(grant).getByLabelText("Client credential"), "x".repeat(43))
+    await user.click(within(grant).getByRole("button", { name: "Verify client access" }))
+    await settle()
+    await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+    await settle()
+    const renewed = sockets.socket(3)
+    await act(async () => { completeHandshake(renewed, target) })
+    await settle()
+    await act(async () => { respond(renewed, "device.current", { kind: "client", machineId, deviceId, client: "web" }) })
+    await settle()
+    expect(screen.getByText("Client credential verified")).toBeTruthy()
+    expect(screen.queryByText(/This app no longer holds/)).toBeNull()
+  }
 })
 
 it("renders refusal and leaves Use disabled when the credential is a daemon root", async () => {
