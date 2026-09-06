@@ -160,16 +160,13 @@ export async function callDaemonOnce(input: {
     await exchange(socket, input.deadline, address, helloRequestId, "system.hello", {
       client: "cli", clientVersion: buildVersion, protocolVersion,
     })
-    const result = await exchange(socket, input.deadline, address, callRequestId, input.method, input.params)
-    socket.close()
-    return result
-  } catch (error) {
-    // A refused command drops the transport instead of asking a stalled peer
-    // for a close handshake it may never answer. Disposal is still Node's:
-    // a connection stalled inside a TLS handshake can outlive this call until
-    // Node's own connect timeout, delaying the CLI process exit.
+    return await exchange(socket, input.deadline, address, callRequestId, input.method, input.params)
+  } finally {
+    // A one-shot exchange has no work left after its complete reply or refusal.
+    // A graceful close would start a separate peer-controlled wait after the
+    // caller clears its deadline, keeping an answered CLI process alive. Drop
+    // the transport on both outcomes, including an unfinished TLS handshake.
     socket.terminate()
-    throw error
   }
 }
 

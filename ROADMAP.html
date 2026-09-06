@@ -714,7 +714,7 @@ td { color: var(--ink2); }
 <ul>
 <li>Audit item F5: machine claims now grant only a five-minute confirmation capability. The source journals and reads back its keychain token before confirmation activates it; a lost confirmation reply is replayable after restart. Pending tokens cannot authenticate or retire previous machine authority, and expired claims never activate. Protocol 0.5 requires updated peers but leaves existing active pairings intact. Production-socket tests cover failed local storage, target restart, expiry, and source recovery after a committed but unanswered confirm.
 </li>
-<li>Audit item F3. <code>domovoid pair</code> and <code>domovoid open</code> spend one 15-second deadline across connect, <code>system.hello</code>, and the call, so a listener that accepts the socket and then says nothing is refused with the address waited on and a remedy rather than holding the terminal. Refusal drops the transport instead of waiting for a close handshake, but disposal is Node's: a connection stalled inside a TLS handshake can outlive the refusal.
+<li>Audit item F3. <code>domovoid pair</code> and <code>domovoid open</code> spend one 15-second deadline across connect, <code>system.hello</code>, and the call, so a listener that accepts the socket and then says nothing is refused with the address waited on and a remedy rather than holding the terminal. Both a complete reply and a refusal drop the one-shot transport, without a new close-handshake wait after the command deadline clears. Real child-process tests require natural exit against a stalled TLS handshake and against a peer that answers RPC but withholds its close reply.
 </li>
 </ul>
 </li>
