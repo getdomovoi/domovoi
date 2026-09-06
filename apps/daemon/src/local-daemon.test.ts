@@ -7,8 +7,10 @@ import { WebSocket } from "ws"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
 import { readLocalOwnerRecord, writeLocalOwnerRecord } from "./local-owner-record.js"
-import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
-import { createProductionDaemon, type ProductionDaemonHandle } from "./production-daemon.js"
+import { beforeDeadline, OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
+import {
+  createProductionDaemon, productionDaemonDependencies, type ProductionDaemonHandle,
+} from "./production-daemon.js"
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -136,6 +138,19 @@ it("refuses busy startup and invalid records without changing the owner", async 
   expect(readLocalOwnerRecord(homeDirectory)).toEqual(record)
   await writeFile(join(homeDirectory, ".domovoi", "local-owner.json"), "malformed-private-value")
   expect(outcome(await acquire(homeDirectory))).toBe("refused profile-invalid")
+})
+
+it("classifies a startup step that timed out as unreachable, not an invalid profile", async () => {
+  const homeDirectory = await home()
+  // Credential initialization reports its own expiry, so the deadline arrives
+  // as the cause rather than as the thrown error. A slow machine is not a
+  // damaged profile, and telling its owner to inspect their private key is a
+  // wrong answer that outlives the stall that produced it.
+  vi.spyOn(productionDaemonDependencies, "loadOrCreateToken").mockRejectedValue(new Error(
+    "Daemon credential initialization timed out at daemon.token. No publication was started.",
+    { cause: new OperationDeadlineExceededError() },
+  ))
+  expect(outcome(await acquire(homeDirectory))).toBe("refused owner-unreachable")
 })
 
 it("refuses as unreachable when the deadline expires after a good final verification", async () => {
