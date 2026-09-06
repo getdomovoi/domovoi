@@ -7,6 +7,13 @@ import { z } from "zod"
 
 import { fleetProductionHarness } from "./test-fleet-production.js"
 
+// This test builds two production daemons and enrols them, so it must also
+// hold one harness call budget plus that setup. A fixed 15 seconds sat below
+// both the 30 second Windows platform default in vitest.config.ts and the
+// harness call budget, and the test has already reached 10235 ms there, so an
+// expired call would have been reported as the test rather than as the call.
+const testBudgetMs = process.platform === "win32" ? 40_000 : 15_000
+
 const { cleanup, machine, enroll } = fleetProductionHarness()
 afterEach(cleanup)
 
@@ -54,4 +61,4 @@ it("keeps legacy fleet calls working and offers quarantine remedies only on expl
   expect(forgotten).toMatchObject({ outcome: "forgotten", remoteRevocation: "unconfirmed" })
   expect(fleetSnapshotSchema.parse(await source.root.ok("fleet.list", { includeQuarantined: true })).registry).toBeUndefined()
   expect(source.credentials.forMachine(damaged.id)).toBeUndefined()
-}, 15_000)
+}, testBudgetMs)
