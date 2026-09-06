@@ -1,12 +1,38 @@
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
-export function launchSmokeElectronArgs({ platform, ci, desktopRoot }) {
+// A packaged build already knows where its application is. Passing a directory
+// as well makes Electron read it as a file argument, not as the app to run.
+export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = false }) {
   return [
     ...(platform === "linux" && ci ? ["--no-sandbox"] : []),
     "--headless",
     "--disable-gpu",
-    desktopRoot,
+    ...(packaged ? [] : [desktopRoot]),
   ]
+}
+
+// electron-builder names the unpacked directory after the platform and, for
+// anything but the host architecture, the architecture too. Both orders are
+// offered rather than guessed at, and the caller takes the one that exists.
+export function packagedAppCandidates({ platform, distDirectory, productName, executableName }) {
+  if (platform === "darwin") {
+    return ["mac", "mac-arm64", "mac-universal"].map((directory) =>
+      join(distDirectory, directory, `${productName}.app`, "Contents", "MacOS", productName))
+  }
+  if (platform === "win32") {
+    return ["win-unpacked", "win-arm64-unpacked"].map((directory) =>
+      join(distDirectory, directory, `${productName}.exe`))
+  }
+  return ["linux-unpacked", "linux-arm64-unpacked"].map((directory) =>
+    join(distDirectory, directory, executableName))
+}
+
+export function packagedAsarPath({ platform, executablePath }) {
+  // Contents/MacOS/Domovoi and Contents/Resources/app.asar are siblings one
+  // level up. Every other platform keeps resources beside the executable.
+  return platform === "darwin"
+    ? join(dirname(dirname(executablePath)), "Resources", "app.asar")
+    : join(dirname(executablePath), "resources", "app.asar")
 }
 
 // Electron cold start on a Windows CI runner is far slower than on Linux or

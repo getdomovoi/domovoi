@@ -20,6 +20,7 @@
     "package:desktop:linux": "pnpm --filter @getdomovoi/desktop package:linux",
     "package:desktop:mac": "pnpm --filter @getdomovoi/desktop package:mac",
     "package:desktop:win": "pnpm --filter @getdomovoi/desktop package:win",
+    "test:desktop:package": "pnpm --filter @getdomovoi/desktop test:package",
     "performance:budget": "node scripts/performance-budgets.mjs",
     "prerelease:artifacts": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "release:artifacts": "node scripts/release-artifacts.mjs",

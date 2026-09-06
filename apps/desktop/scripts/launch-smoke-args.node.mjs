@@ -1,7 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { launchSmokeElectronArgs, launchSmokeEnvironment, launchSmokeTimeoutMs } from "./launch-smoke-args.mjs"
+import {
+  launchSmokeElectronArgs,
+  launchSmokeEnvironment,
+  launchSmokeTimeoutMs,
+  packagedAppCandidates,
+  packagedAsarPath,
+} from "./launch-smoke-args.mjs"
 
 test("disables the Chromium sandbox only on Linux CI", () => {
   assert.deepEqual(
@@ -21,6 +27,45 @@ test("keeps the Chromium sandbox outside Linux CI", () => {
       ["--headless", "--disable-gpu", "/desktop"],
     )
   }
+})
+
+test("omits the application directory for a packaged build, which carries its own", () => {
+  assert.deepEqual(
+    launchSmokeElectronArgs({ platform: "linux", ci: true, desktopRoot: "/desktop", packaged: true }),
+    ["--no-sandbox", "--headless", "--disable-gpu"],
+  )
+})
+
+test("names every directory electron-builder writes an unpacked application to", () => {
+  const options = { distDirectory: "/dist", productName: "Domovoi", executableName: "domovoi-desktop" }
+  assert.deepEqual(packagedAppCandidates({ platform: "linux", ...options }), [
+    "/dist/linux-unpacked/domovoi-desktop",
+    "/dist/linux-arm64-unpacked/domovoi-desktop",
+  ])
+  assert.deepEqual(packagedAppCandidates({ platform: "win32", ...options }), [
+    "/dist/win-unpacked/Domovoi.exe",
+    "/dist/win-arm64-unpacked/Domovoi.exe",
+  ])
+  assert.deepEqual(packagedAppCandidates({ platform: "darwin", ...options }), [
+    "/dist/mac/Domovoi.app/Contents/MacOS/Domovoi",
+    "/dist/mac-arm64/Domovoi.app/Contents/MacOS/Domovoi",
+    "/dist/mac-universal/Domovoi.app/Contents/MacOS/Domovoi",
+  ])
+})
+
+test("finds the archive beside the packaged executable on every platform", () => {
+  assert.equal(
+    packagedAsarPath({ platform: "linux", executablePath: "/dist/linux-unpacked/domovoi-desktop" }),
+    "/dist/linux-unpacked/resources/app.asar",
+  )
+  assert.equal(
+    packagedAsarPath({ platform: "win32", executablePath: "/dist/win-unpacked/Domovoi.exe" }),
+    "/dist/win-unpacked/resources/app.asar",
+  )
+  assert.equal(
+    packagedAsarPath({ platform: "darwin", executablePath: "/dist/mac/Domovoi.app/Contents/MacOS/Domovoi" }),
+    "/dist/mac/Domovoi.app/Contents/Resources/app.asar",
+  )
 })
 
 test("gives Windows a longer launch budget, where Electron starts slowest on CI", () => {
