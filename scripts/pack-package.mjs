@@ -16,7 +16,7 @@ export async function packPackage(selector, destination, { deadline: parent } = 
     const pnpm = pnpmInvocation()
     await deadline.run(() => run(
       pnpm.command,
-      ["--filter", selector, "pack", "--json", "--pack-destination", destination],
+      [...pnpm.args, "--filter", selector, "pack", "--json", "--pack-destination", destination],
       { cwd: repositoryRoot, encoding: "utf8", shell: pnpm.shell, signal: deadline.signal, killSignal: "SIGKILL" },
     ))
     const archives = readdirSync(destination).filter((file) => file.endsWith(".tgz"))
