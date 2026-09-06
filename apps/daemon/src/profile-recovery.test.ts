@@ -18,6 +18,7 @@ import { CliProviderProbe } from "./providers.js"
 import { claimProfile } from "./profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./service/configuration.js"
 import { installService, nodeServiceEffects, removeService } from "./service/install.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -36,24 +37,56 @@ const handles: LocalDaemonHandle[] = []
 beforeEach(() => { vi.spyOn(CliProviderProbe.prototype, "inspect").mockResolvedValue([]) })
 afterEach(async () => {
   const deadline = OperationDeadline.start(cleanupBudget)
+  const failures: unknown[] = []
+  const stopping: Array<Promise<unknown>> = []
   try {
     for (const handle of handles.splice(0)) {
-      if (handle.kind === "owned") await beforeDeadline(handle.stop(), deadline)
-      else if (handle.kind === "attached") handle.detach()
+      try {
+        if (handle.kind === "owned") {
+          const stopped = handle.stop()
+          stopping.push(stopped.catch(() => {}))
+          await beforeDeadline(stopped, deadline)
+        } else if (handle.kind === "attached") handle.detach()
+      } catch (error) { failures.push(error) }
     }
     for (const { child, exited } of children.splice(0)) {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
-      await beforeDeadline(exited, deadline)
+      try { await beforeDeadline(exited, deadline) } catch (error) { failures.push(error) }
     }
-    for (const home of homes.splice(0)) await beforeDeadline(rm(home, { recursive: true, force: true }), deadline)
   } finally {
     deadline.clear()
-    vi.restoreAllMocks()
   }
+  // A deadline stops waiting for a stop, it does not stop the daemon. Removing
+  // a home under one that is still running is what wrote provider scaffolding
+  // back into a directory that had just been removed.
+  const settlement = OperationDeadline.start(cleanupBudget)
+  try { await beforeDeadline(Promise.all(stopping), settlement) }
+  catch (error) { failures.push(error) }
+  finally { settlement.clear() }
+  // Homes are removed last, each under its own retry, and none is forgotten
+  // before it is gone. The CLI probes the provider commands with HOME set
+  // here, and those children can outlive the daemon that started them.
+  try { await removeScratchDirectories(homes) } catch (error) { failures.push(error) }
+  vi.restoreAllMocks()
+  if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
 })
 
+// The child is the real CLI, so its provider probes run whatever kilo,
+// opencode or claude binary this machine has, with HOME pointed at the scratch
+// home. Those grandchildren outlive the daemon that started them and write
+// their configuration back into a home cleanup already removed. A PATH with no
+// commands in it makes every probe an immediate ENOENT instead. The in-process
+// probe is stubbed for the same reason.
+function withoutProviderCommands(home: string, values: NodeJS.ProcessEnv) {
+  const environmentWithoutPath: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(values)) {
+    if (name.toLowerCase() !== "path") environmentWithoutPath[name] = value
+  }
+  return { ...environmentWithoutPath, PATH: join(home, "no-commands") }
+}
+
 function environment(home: string) {
-  return {
+  return withoutProviderCommands(home, {
     ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1",
     DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0", DOMOVOI_AUTH_TOKEN: undefined,
     DOMOVOI_CREDENTIAL_PATH: join(home, ".domovoi", "daemon.token"),
@@ -61,7 +94,7 @@ function environment(home: string) {
     DOMOVOI_TLS_CERT_PATH: undefined, DOMOVOI_TLS_KEY_PATH: undefined,
     DOMOVOI_ADVERTISE_HOST: undefined, DOMOVOI_ALLOWED_ORIGINS: undefined,
     DOMOVOI_ALLOW_REMOTE_TRANSPORT: "0",
-  }
+  })
 }
 
 async function startOwner(home: string, deadline: OperationDeadline, service = false) {

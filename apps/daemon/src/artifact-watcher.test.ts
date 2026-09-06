@@ -23,7 +23,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 async function scratch(name: string): Promise<string> {

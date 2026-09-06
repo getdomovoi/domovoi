@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 
 const directories: string[] = []
 
@@ -14,7 +15,7 @@ async function home(): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(directories.splice(0).map((path) => rm(path, { force: true, recursive: true })))
+  await removeScratchDirectories(directories)
 })
 
 describe("publishEndpointFile", () => {

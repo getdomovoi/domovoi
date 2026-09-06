@@ -46,10 +46,10 @@ describe("renderer daemon smoke", () => {
     await verifyLaunchSmokeDaemon(startup)
     const deadline = root.connect.mock.calls[0]?.[0]
     expect(deadline).toBeInstanceOf(Deadline)
-    expect(deadline?.budgetMs).toBe(15_000)
+    expect(deadline?.budgetMs).toBe(30_000)
     expect(construct.mock.calls).toEqual([
-      [startup.rpcUrl, "desktop", { authToken: startup.rpcToken, budgets: { connectMs: 5_000, requestMs: 5_000 } }],
-      [startup.rpcUrl, "desktop", { authToken: "paired-smoke-token", budgets: { connectMs: 5_000, requestMs: 5_000 } }],
+      [startup.rpcUrl, "desktop", { authToken: startup.rpcToken, budgets: { connectMs: 20_000, requestMs: 20_000 } }],
+      [startup.rpcUrl, "desktop", { authToken: "paired-smoke-token", budgets: { connectMs: 20_000, requestMs: 20_000 } }],
     ])
     expect(root.request).toHaveBeenCalledWith("device.pair", { label: "Desktop launch smoke", client: "desktop" }, { deadline })
     expect(paired.connect).toHaveBeenCalledWith(deadline)
@@ -98,10 +98,40 @@ describe("renderer daemon smoke", () => {
   it("rejects late results even before the timer callback gets a turn", async () => {
     const { root } = clients()
     root.listDevices.mockImplementationOnce(async () => {
-      vi.setSystemTime(Date.now() + 15_001)
+      vi.setSystemTime(Date.now() + 30_001)
       return { devices: [{ id: "device-smoke", lastSeenAt: "seen", revokedAt: "revoked" }] }
     })
     await expect(verifyLaunchSmokeDaemon(startup)).rejects.toThrow("exceeded its deadline")
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("names the step it was waiting on and what its budget had left", async () => {
+    const { root } = clients()
+    root.connect.mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 20_000)
+      throw new Error("Timed out after 20000ms during open of ws://127.0.0.1:41001/rpc")
+    })
+    await expect(verifyLaunchSmokeDaemon(startup)).rejects.toThrow(
+      "while opening the first connection to the daemon it started, 10000ms left of its 30000ms budget: "
+      + "Timed out after 20000ms during open of ws://127.0.0.1:41001/rpc",
+    )
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("keeps the cause of a named step reachable", async () => {
+    const { root } = clients()
+    const cause = new Error("Timed out after 20000ms during hello of ws://127.0.0.1:41001/rpc")
+    root.request.mockRejectedValueOnce(cause)
+    await expect(verifyLaunchSmokeDaemon(startup)).rejects.toMatchObject({ cause })
+  })
+
+  it.each([
+    ["connect", "connecting as the paired device"],
+    ["request", "reading the workspace as the paired device"],
+  ] as const)("names the paired %s step", async (method, step) => {
+    const { paired } = clients()
+    paired[method].mockRejectedValueOnce(new Error("Paired RPC stalled"))
+    await expect(verifyLaunchSmokeDaemon(startup)).rejects.toThrow(`while ${step}, `)
     expect(vi.getTimerCount()).toBe(0)
   })
 

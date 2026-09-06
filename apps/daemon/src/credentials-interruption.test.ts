@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -12,6 +12,7 @@ import { OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemonWithDependencies, productionDaemonDependencies, type ProductionDaemonHandle } from "./production-daemon.js"
 import { withinServiceDeadline } from "./service/deadline.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 for (const file of ["daemon.token", "local-owner.key"]) {
   it(`starts a real daemon after a killed first writer of ${file}`, async () => {
@@ -64,8 +65,10 @@ for (const file of ["daemon.token", "local-owner.key"]) {
       try {
         if (exited) await withinServiceDeadline(cleanup, () => exited!)
         if (daemon) await withinServiceDeadline(cleanup, () => daemon!.stop())
-        if (home) await withinServiceDeadline(cleanup, () => rm(home!, { recursive: true, force: true }))
       } finally { cleanup.clear() }
+      // Removal never shares the budget the waits above may have spent, and it
+      // retries a home the exiting child still holds.
+      if (home) await removeScratchDirectory(home)
     }
   }, 51_000)
 }

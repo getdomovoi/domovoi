@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto"
 import { once } from "node:events"
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { OperationDeadline } from "./operation-deadline.js"
 import { CliProviderProbe } from "./providers.js"
 import { verifyLocalOwnerProof } from "./local-owner-proof.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 import {
   localOwnerRecordPath, localOwnerSecretPath, maximumLocalOwnerRecordBytes,
   readLocalOwnerRecord, readLocalOwnerSecret,
@@ -26,7 +27,7 @@ const handles: ProductionDaemonHandle[] = []
 beforeEach(() => { vi.spyOn(CliProviderProbe.prototype, "inspect").mockResolvedValue([]) })
 afterEach(async () => {
   await Promise.allSettled(handles.splice(0).map((handle) => handle.stop()))
-  await Promise.all(homes.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+  await removeScratchDirectories(homes)
   vi.restoreAllMocks()
 })
 async function owner() {
