@@ -49,6 +49,20 @@ jobs:
           test -S "$runtime/systemd/private"
           echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
           XDG_RUNTIME_DIR="$runtime" systemctl --user show --property=Version
+      # Same rule on the macOS leg: the native launchd test gates on the per-user
+      # gui domain the installer targets, so without one it would skip and prove
+      # nothing. Hosted macOS images auto-login the runner user, which is what
+      # creates that domain; this check fails the job rather than letting the
+      # test disappear from the run. Never run it under sudo, which would ask
+      # for gui/0 instead of the runner's own domain.
+      - name: Require a per-user launchd domain
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          uid="$(id -u)"
+          test "$uid" -ne 0
+          launchctl print "gui/$uid" > "$RUNNER_TEMP/launchd-domain.txt"
+          echo "gui/$uid answers with $(wc -l < "$RUNNER_TEMP/launchd-domain.txt") lines"
       - run: pnpm test
       - run: pnpm build
       - run: pnpm performance:budget
