@@ -221,3 +221,32 @@ test("Windows verification uses literal script arguments and propagates native f
     throw refusal
   }), (error) => error === refusal)
 })
+
+test("the native signing workflow is manual, protected, bounded and cannot publish", async () => {
+  const daemonRequire = createRequire(new URL("../../daemon/package.json", import.meta.url))
+  const { parse } = daemonRequire("yaml")
+  const workflow = parse(await readFile(resolve(desktopRoot, "../../.github/workflows/desktop-signing.yml"), "utf8"))
+  assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"])
+  assert.match(workflow.jobs.gate.if, /refs\/heads\/main/u)
+  assert.match(workflow.jobs.gate.if, /getdomovoi\/domovoi/u)
+  assert.ok(workflow.jobs.gate.steps.some((step) => step.run === "pnpm release:gate"))
+  const build = workflow.jobs.build
+  assert.equal(build.needs, "gate")
+  assert.match(build.environment, /desktop-macos/u)
+  assert.match(build.environment, /desktop-windows/u)
+  assert.deepEqual(build.permissions, { contents: "read" })
+  assert.ok(build["timeout-minutes"] > 0 && build["timeout-minutes"] <= 60)
+  const signingSteps = build.steps.filter((step) => step.run?.startsWith("pnpm package:desktop:"))
+  assert.equal(signingSteps.length, 2)
+  for (const step of signingSteps) {
+    assert.equal(step.env.DOMOVOI_DESKTOP_REQUIRE_SIGNING, "true")
+    assert.ok(step["timeout-minutes"] > 0 && step["timeout-minutes"] <= 50)
+  }
+  assert.equal(signingSteps[0].env.CSC_LINK, "${{ secrets.MAC_CSC_LINK }}")
+  assert.equal(signingSteps[1].env.AZURE_CLIENT_SECRET, "${{ secrets.AZURE_CLIENT_SECRET }}")
+  assert.equal(build.env, undefined, "signing secrets must not reach install or other steps")
+  const upload = build.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@"))
+  assert.equal(upload.with["if-no-files-found"], "error")
+  assert.equal(upload.if, undefined, "default success gate must withhold output after failed signing")
+  assert.ok(upload.with.path.split("\n").every((path) => path === "" || /\*\.(dmg|zip|exe)$/u.test(path)))
+})
