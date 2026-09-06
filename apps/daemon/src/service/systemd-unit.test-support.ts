@@ -118,6 +118,59 @@ export async function withThrowawayUnit(
   let pid: number | undefined
   let cleanupArmed = false
   const failures: unknown[] = []
+  async function cleanupUnit(): Promise<void> {
+    const cleanup = OperationDeadline.start(cleanupBudget)
+    try {
+      if (cleanupArmed) {
+        // Cleanup runs whatever the assertions did, and never depends on the
+        // removal under test having worked. A deliberately broken remover may
+        // have left a live process: ask the fixture to exit through its own
+        // private path, never kill by a PID which might have been reused.
+        const ready = readyPath
+        if (ready !== undefined && existsSync(ready)) {
+          await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
+        }
+        const disabled = await systemctl(["--user", "disable", "--now", unit], cleanup)
+        if (disabled.code !== 0) {
+          const remaining = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
+          if (remaining.code !== 0 || remaining.stdout.trim() !== "LoadState=not-found") {
+            throw new Error(`Cannot confirm ${unit} stopped: ${disabled.stderr || `systemctl exited ${disabled.code}`}`)
+          }
+        }
+        const started = pid
+        if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
+          cleanup.throwIfExpired()
+          expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+        }))
+        await withinServiceDeadline(cleanup, () => rm(unitPath, { force: true }))
+        await withinServiceDeadline(cleanup, () => rm(wantsPath, { force: true }))
+        await systemctl(["--user", "daemon-reload"], cleanup)
+        // A unit whose last run ended in failure stays loaded and failed after
+        // its file is deleted, so removing files is not enough to leave the
+        // manager as it was found. This drops that entry. A unit that was never
+        // loaded answers non-zero here and is already in the end state wanted,
+        // so the listing below is the assertion, not this command's code.
+        await systemctl(["--user", "reset-failed", unit], cleanup)
+        const left = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
+        expect(left.code, left.stderr).toBe(0)
+        expect(left.stdout.trim()).toBe("LoadState=not-found")
+        const failed = await systemctl(["--user", "list-units", "--all", "--state=failed", "--no-legend", unit], cleanup)
+        expect(failed.code, failed.stderr).toBe(0)
+        expect(failed.stdout.trim()).toBe("")
+      }
+      const created = installedHome
+      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
+    } catch (error) {
+      // Unconditional deletion here would leave a possibly restartable job
+      // pointing at removed files. Retain on uncertainty and preserve both the
+      // original failure and cleanup evidence, with exact recovery targets.
+      const retained = cleanupArmed
+        ? `${unitPath}, ${wantsPath}, ${installedHome}. Confirm the unit is stopped before removing retained files.`
+        : `${installedHome ?? "no known private home"}. No manager cleanup was authorized.`
+      throw new AggregateError([...failures, error], `Native systemd cleanup for ${unit} did not complete. Inspect ${retained}`, { cause: error })
+    } finally { cleanup.clear() }
+  }
+
   try {
     const home = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-systemd-")))
     installedHome = home
@@ -198,55 +251,6 @@ export async function withThrowawayUnit(
     throw error
   } finally {
     deadline.clear()
-    const cleanup = OperationDeadline.start(cleanupBudget)
-    try {
-      if (cleanupArmed) {
-        // Cleanup runs whatever the assertions did, and never depends on the
-        // removal under test having worked. A deliberately broken remover may
-        // have left a live process: ask the fixture to exit through its own
-        // private path, never kill by a PID which might have been reused.
-        const ready = readyPath
-        if (ready !== undefined && existsSync(ready)) {
-          await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
-        }
-        const disabled = await systemctl(["--user", "disable", "--now", unit], cleanup)
-        if (disabled.code !== 0) {
-          const remaining = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
-          if (remaining.code !== 0 || remaining.stdout.trim() !== "LoadState=not-found") {
-            throw new Error(`Cannot confirm ${unit} stopped: ${disabled.stderr || `systemctl exited ${disabled.code}`}`)
-          }
-        }
-        const started = pid
-        if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
-          cleanup.throwIfExpired()
-          expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
-        }))
-        await withinServiceDeadline(cleanup, () => rm(unitPath, { force: true }))
-        await withinServiceDeadline(cleanup, () => rm(wantsPath, { force: true }))
-        await systemctl(["--user", "daemon-reload"], cleanup)
-        // A unit whose last run ended in failure stays loaded and failed after
-        // its file is deleted, so removing files is not enough to leave the
-        // manager as it was found. This drops that entry. A unit that was never
-        // loaded answers non-zero here and is already in the end state wanted,
-        // so the listing below is the assertion, not this command's code.
-        await systemctl(["--user", "reset-failed", unit], cleanup)
-        const left = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
-        expect(left.code, left.stderr).toBe(0)
-        expect(left.stdout.trim()).toBe("LoadState=not-found")
-        const failed = await systemctl(["--user", "list-units", "--all", "--state=failed", "--no-legend", unit], cleanup)
-        expect(failed.code, failed.stderr).toBe(0)
-        expect(failed.stdout.trim()).toBe("")
-      }
-      const created = installedHome
-      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
-    } catch (error) {
-      // Unconditional deletion here would leave a possibly restartable job
-      // pointing at removed files. Retain on uncertainty and preserve both the
-      // original failure and cleanup evidence, with exact recovery targets.
-      const retained = cleanupArmed
-        ? `${unitPath}, ${wantsPath}, ${installedHome}. Confirm the unit is stopped before removing retained files.`
-        : `${installedHome ?? "no known private home"}. No manager cleanup was authorized.`
-      throw new AggregateError([...failures, error], `Native systemd cleanup for ${unit} did not complete. Inspect ${retained}`, { cause: error })
-    } finally { cleanup.clear() }
+    await cleanupUnit()
   }
 }
