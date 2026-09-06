@@ -70,6 +70,10 @@ test("six discovery proofs alone no longer satisfy the transport job", () => {
   assert.throws(() => assertWslReport({ ...passed, numTotalTests: 6, numPassedTests: 6 }), /WSL native proofs/)
 })
 
+test("a green transport report without repository boundary proofs is insufficient", () => {
+  assert.throws(() => assertWslReport(passed), /WSL native proofs.*repository/)
+})
+
 test("image download streams the pinned bytes and refuses a digest mismatch", { timeout: 5_000 }, async () => {
   const deadline = bootstrapDeadline(3_000, "test image deadline")
   let directory
