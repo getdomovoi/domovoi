@@ -799,7 +799,9 @@ td { color: var(--ink2); }
 <ul>
 <li>Unit and task generators plus <code>service install</code>, <code>status</code>, and <code>remove</code> exist, and nothing is written to a system-wide location. Since #256 installation records the validated non-secret settings in <code>~/.domovoi/service.json</code> and replays them as the supervised environment: host, port, credential and identity paths, TLS material, advertised and tailnet hosts, SSH forwards, allowed origins, and the remote-transport opt-in. It refuses to retain <code>DOMOVOI_AUTH_TOKEN</code> rather than silently changing authority. Since #261 Desktop no longer contends for the port: it attaches to the verified local owner, and it refuses to start a fallback daemon at all when a service configuration is present.
 </li>
-<li>The Windows logon task still has no crash restart, where the systemd unit has <code>Restart=on-failure</code> and the launchd agent has <code>KeepAlive</code>. CI reaches a real manager only on the Windows runner, where <code>apps/daemon/src/service/windows-task.native.test.ts</code> registers, stops, and removes a real scheduled task under a throwaway name. No test invokes a real systemd or launchd.
+<li>The Windows logon task still has no crash restart, where the systemd unit has <code>Restart=on-failure</code> and the launchd agent has <code>KeepAlive</code>. CI now reaches a real manager on all three legs. <code>apps/daemon/src/service/windows-task.native.test.ts</code> registers, stops, and removes a real scheduled task under a throwaway name. <code>systemd-unit.native.test.ts</code> installs, reports and removes a real user unit under a throwaway name, then crashes its process through the manager and requires exactly one restart, with a deliberate stop and a clean exit both required to stay stopped; the Ubuntu leg starts the user manager and asserts its socket so the test cannot skip silently.
+</li>
+<li><code>launchd-agent.native.test.ts</code> is the macOS counterpart and is written but unexecuted, because it was authored on Linux. It bootstraps a throwaway agent into the per-user domain the installer targets, crashes it through the manager, and requires launchd's own run count to increment, with a clean exit required to stay exited past launchd's throttle. The hosted-runner question it depended on is settled from evidence: <code>actions/runner-images</code> gives every macOS image GUI auto-login, and a green <code>macos-14</code> job published a <code>launchctl print</code> dump with a live audit session id, <code>state = running</code> and a real <code>pid</code>. The macOS leg asserts that same domain, so the first CI run either proves the assertions or fails by name. Until it runs, <code>KeepAlive</code> supervision stays unproven. See <code>docs/daemon-services.md</code>.
 </li>
 <li><code>docs/clean-machine-setup.md</code> gives the operator sequence from an uninstalled machine through installation, first start, TLS, supervision, pairing, and recovery, and names what remains unproven per platform.
 </li>
@@ -908,12 +910,12 @@ td { color: var(--ink2); }
 <ul>
 <li>the two-daemon test injects the OS keyring and provider readiness, so platform keychain behaviour and cross-host TLS are unproven, and no two physical machines have been paired;
 </li>
-<li>Windows and macOS run component suites, but service managers and WSL remain simulated;
+<li>native service managers are driven for real on the Linux and Windows legs, and a real WSL 2 guest is provisioned by its own job, but the macOS launchd test has never run and Windows has no crash restart to test at all;
 </li>
 <li>no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 </li>
 </ul>
-<p>Required to close: two physical machines taken from pairing to a fleet row on real keychains, a bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus jobs that invoke native service managers and a real WSL. A daemon must also remain reachable from a paired phone across private-network identity changes without exposing payload plaintext to the relay, and a bearer or channel key alone must not be enough to enter.</p>
+<p>Required to close: two physical machines taken from pairing to a fleet row on real keychains, a bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a green macOS leg that actually ran the launchd test. A daemon must also remain reachable from a paired phone across private-network identity changes without exposing payload plaintext to the relay, and a bearer or channel key alone must not be enough to enter.</p>
 <h2 id="goal-3-ship-hosted-web-phone-and-tablet-control">Goal 3: ship hosted web, phone, and tablet control</h2>
 <p>Priority: <code>P2</code>. Make plan review and safe remote control work from iPad, phones, and guest browsers.</p>
 <h3 id="account-and-transport-services">Account and transport services</h3>

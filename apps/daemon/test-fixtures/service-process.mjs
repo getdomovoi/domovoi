@@ -1,6 +1,7 @@
-// Harmless, finite process owned only by the native systemd user unit test.
-// Its lifetime exceeds the test budget, so natural exit cannot prove removal.
-// It exits zero on every path so Restart=on-failure never revives it.
+// Harmless, finite process owned only by the native service manager tests.
+// Its lifetime exceeds their budgets, so natural exit cannot prove removal.
+// It exits zero on every path, so neither systemd's Restart=on-failure nor
+// launchd's KeepAlive SuccessfulExit revives it after its own stop marker.
 import { existsSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
