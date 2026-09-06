@@ -867,7 +867,19 @@ before any public package or application publish.
   - `pnpm test:install` packs the protocol package, installs the tarball with each package manager,
     and imports it; a missing package manager fails CI.
 - [ ] Build signed desktop installers for macOS, Windows, and Linux
+  - `pnpm package:desktop` builds the host platform's installers with electron-builder from the
+    same electron-vite output the launch smoke runs, then proves the result with
+    `apps/desktop/scripts/package-smoke.mjs`.
+  - Linux is built and verified. The AppImage and the deb keep node-pty and the keyring binding
+    outside the asar, the packaged application loads both from the archive on the main thread and
+    in a worker thread, starts the production daemon, and renders its window.
+  - macOS and Windows are configured and unbuilt. Neither target has run on its own platform, so
+    the dmg, the zip, and the NSIS installer are unproven.
+  - Nothing is signed, so this item stays open until the line below closes.
 - [ ] Add macOS signing/notarization and Windows code signing
+  - `apps/desktop/electron-builder.yml` already carries the hardened runtime, the entitlements
+    file, `mac.notarize` set to false, and `win.signtoolOptions`. Enabling either is credentials
+    and a flag rather than a restructure.
 - [ ] Publish SHA-256 checksums and SBOMs for release artifacts
   - `pnpm release:artifacts` generates the tarballs, per-artifact CycloneDX SBOMs, and `SHA256SUMS`,
     and runs on Linux in CI.

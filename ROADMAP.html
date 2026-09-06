@@ -1053,8 +1053,22 @@ td { color: var(--ink2); }
 </ul>
 </li>
 <li>[ ] Build signed desktop installers for macOS, Windows, and Linux
+<ul>
+<li><code>pnpm package:desktop</code> builds the host platform's installers with electron-builder from the same electron-vite output the launch smoke runs, then proves the result with <code>apps/desktop/scripts/package-smoke.mjs</code>.
+</li>
+<li>Linux is built and verified. The AppImage and the deb keep node-pty and the keyring binding outside the asar, the packaged application loads both from the archive on the main thread and in a worker thread, starts the production daemon, and renders its window.
+</li>
+<li>macOS and Windows are configured and unbuilt. Neither target has run on its own platform, so the dmg, the zip, and the NSIS installer are unproven.
+</li>
+<li>Nothing is signed, so this item stays open until the line below closes.
+</li>
+</ul>
 </li>
 <li>[ ] Add macOS signing/notarization and Windows code signing
+<ul>
+<li><code>apps/desktop/electron-builder.yml</code> already carries the hardened runtime, the entitlements file, <code>mac.notarize</code> set to false, and <code>win.signtoolOptions</code>. Enabling either is credentials and a flag rather than a restructure.
+</li>
+</ul>
 </li>
 <li>[ ] Publish SHA-256 checksums and SBOMs for release artifacts
 <ul>
