@@ -28,10 +28,13 @@ installed WSL 1 distribution is not sufficient. The kernel must identify WSL 2.
 
 The native test process receives the exact required distro name. It must find
 that distro running under WSL 2, rather than selecting some other running guest.
-The report must contain the ten discovery/transport tests plus five named
-repository boundary assertions, all passed, and zero skipped, pending, todo or
-failed tests. The guard checks each repository assertion by name and status, not
-just a larger total that unrelated tests could satisfy. Missing virtualization, a corrupt listing, a
+The report must contain exactly fifteen named proofs: six discovery, four
+transport and five repository boundary tests. Each must appear once and pass,
+with zero skipped, pending, todo or failed tests. The required count comes from
+that named set, not a separate minimum. Local tests read the real test
+registrations, so adding or removing one requires an explicit contract update.
+Unrelated passes, duplicate names and extra assertions cannot satisfy the guard.
+Missing virtualization, a corrupt listing, a
 disappearing distro, a failed assertion or a missing report makes the job red.
 Success prints `DOMOVOI_WSL_NATIVE_OK`; failure prints
 `DOMOVOI_WSL_NATIVE_FAILED` with the underlying reason. Failed proofs print the

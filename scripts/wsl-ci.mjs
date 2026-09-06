@@ -54,24 +54,41 @@ export async function downloadWslImage(path, deadline, { download = downloadOver
   assert.equal(hash.digest("hex"), image.sha256, "WSL image sha256 differs from the pinned digest")
 }
 
+// Six discovery, four transport and five repository proofs, deliberately one
+// contract rather than two independently drifting minimum counts. The test
+// fixture reads the real registrations instead of copying this list.
+const requiredWslProofs = [
+  "lists the installed distributions, or says why it cannot, within its deadline",
+  "discovers each distribution as a machine fact without a credential in it",
+  "does not mistake a distribution wsl.exe does not have for one with no daemon",
+  "does not place a path in a distribution wsl.exe does not have",
+  "round-trips a path through a running WSL 2 distribution's own wslpath",
+  "refuses the Windows system drive through a running WSL 2 distribution",
+  "produces an authenticated WSL candidate through the production fleet heartbeat and dialer",
+  "refuses both a wrong pairing and the endpoint file's root token",
+  "produces no route from the real leftover endpoint after the daemon is killed",
+  "refuses a stopped distribution without starting it or reusing the old loopback port",
+  "opens the native repository through the Windows CLI without changing the Windows workspace",
+  "keeps the native repository owned by the guest while executing real Git",
+  "refuses the custom-mounted Windows drive through the Windows open shim",
+  "refuses WSL shares at the Windows daemon before repository inspection",
+  "rediscovers the restarted guest with its repository and pairing intact",
+]
+
 export function assertWslReport(report) {
-  assert.ok(report?.success === true && report.numTotalTests >= 15
+  assert.ok(report?.success === true && report.numTotalTests === requiredWslProofs.length
     && report.numPassedTests === report.numTotalTests && report.numFailedTests === 0
     && report.numPendingTests === 0 && report.numTodoTests === 0,
-  "WSL native proofs must pass at least fifteen tests including repository assertions with no skipped, pending or failed tests")
-  // A larger count could be unrelated tests. Require the actual boundary
-  // assertions too, so deleting their registration cannot leave a green job.
+  `WSL native proofs must pass exactly ${requiredWslProofs.length} discovery, transport and repository tests with no skipped, pending or failed tests`)
+  // Neither unrelated passes nor duplicate names may substitute for a proof.
+  // Adding a test requires an explicit update here, not a stale lower minimum.
   const assertions = report.testResults?.flatMap((suite) => suite.assertionResults ?? []) ?? []
-  for (const title of [
-    "opens the native repository through the Windows CLI without changing the Windows workspace",
-    "keeps the native repository owned by the guest while executing real Git",
-    "refuses the custom-mounted Windows drive through the Windows open shim",
-    "refuses WSL shares at the Windows daemon before repository inspection",
-    "rediscovers the restarted guest with its repository and pairing intact",
-  ]) {
-    assert.ok(assertions.some((test) => test.title === title && test.status === "passed"),
-      `WSL native proofs missing repository assertion: ${title}`)
+  for (const title of requiredWslProofs) {
+    const matches = assertions.filter((test) => test.title === title)
+    assert.ok(matches.length === 1 && matches[0].status === "passed",
+      `WSL native proofs require one passed assertion: ${title}`)
   }
+  assert.equal(assertions.length, requiredWslProofs.length, "WSL native proofs contain unaccounted assertions")
 }
 
 const nodeEffects = {

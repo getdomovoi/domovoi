@@ -11,14 +11,28 @@ import { assertWslReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
-const passed = { numTotalTests: 15, numPassedTests: 15, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true,
-  testResults: [{ assertionResults: [
-    "opens the native repository through the Windows CLI without changing the Windows workspace",
-    "keeps the native repository owned by the guest while executing real Git",
-    "refuses the custom-mounted Windows drive through the Windows open shim",
-    "refuses WSL shares at the Windows daemon before repository inspection",
-    "rediscovers the restarted guest with its repository and pairing intact",
-  ].map((title) => ({ title, status: "passed" })) }] }
+const ts = require("typescript")
+// Build the successful report from the real registrations, not the guard's
+// own list. Adding or removing a proof must change the accepted contract too.
+const nativeProofs = await Promise.all([
+  "wsl-windows.test.ts", "wsl-native-transport-proof.ts", "wsl-native-repository-proof.ts",
+].map(async (file) => {
+  const source = ts.createSourceFile(file, await readFile(new URL(`../apps/daemon/src/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true)
+  assert.equal(source.parseDiagnostics.length, 0, `${file} must parse before its proof names can be checked`)
+  const titles = []
+  function visit(node) {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "it") {
+      assert.ok(ts.isStringLiteral(node.arguments[0]), `${file} must register literal proof names`)
+      titles.push(node.arguments[0].text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return { file, titles }
+}))
+const assertionResults = nativeProofs.flatMap(({ titles }) => titles.map((title) => ({ title, status: "passed" })))
+const passed = { numTotalTests: assertionResults.length, numPassedTests: assertionResults.length,
+  numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true, testResults: [{ assertionResults }] }
 
 function fixture(overrides = {}) {
   const calls = []
@@ -75,6 +89,32 @@ test("required native report rejects an empty, skipped or failed run", () => {
 
 test("six discovery proofs alone no longer satisfy the transport job", () => {
   assert.throws(() => assertWslReport({ ...passed, numTotalTests: 6, numPassedTests: 6 }), /WSL native proofs/)
+})
+
+test("the report contract matches six discovery, four transport and five repository registrations", () => {
+  assert.deepEqual(nativeProofs.map(({ titles }) => titles.length), [6, 4, 5])
+  assert.equal(new Set(assertionResults.map(({ title }) => title)).size, 15)
+  assert.doesNotThrow(() => assertWslReport(passed))
+})
+
+test("unrelated passes cannot replace any discovery, transport or repository proof", () => {
+  for (const assertion of assertionResults) {
+    const substituted = { ...passed, testResults: [{ assertionResults: assertionResults.map((entry) => entry === assertion
+      ? { title: "unrelated passing test", status: "passed" } : entry) }] }
+    assert.throws(() => assertWslReport(substituted), (error) => error.message.includes(assertion.title))
+  }
+})
+
+test("a new registration requires an explicit report contract update", () => {
+  const expanded = [...assertionResults, { title: "new passing proof", status: "passed" }]
+  assert.throws(() => assertWslReport({ ...passed, numTotalTests: expanded.length, numPassedTests: expanded.length,
+    testResults: [{ assertionResults: expanded }] }), /WSL native proofs/)
+})
+
+test("report totals cannot hide additional skipped or duplicate assertions", () => {
+  for (const extra of [{ title: "hidden skipped proof", status: "pending" }, assertionResults[0]]) {
+    assert.throws(() => assertWslReport({ ...passed, testResults: [{ assertionResults: [...assertionResults, extra] }] }), /WSL native proofs/)
+  }
 })
 
 test("a green transport report without repository boundary proofs is insufficient", () => {
