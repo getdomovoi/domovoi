@@ -29,7 +29,7 @@ describe("readDistroEndpoint", () => {
       distribution,
       "--cd",
       "~",
-      "--",
+      "--exec",
       "cat",
       ".domovoi/endpoint.json",
     ], { timeoutMs: expect.any(Number) })

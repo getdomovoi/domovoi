@@ -9438,11 +9438,16 @@ describe("DomovoiDaemon", () => {
         recoveryCommit: "c".repeat(40),
       })),
     } satisfies WorkspaceService
+    let artifactWatcher: ArtifactWatcherOptions | undefined
     const daemon = new DomovoiDaemon({
       port: 0,
       statePath: ":memory:",
       agent,
       workspaceService,
+      artifactWatcherFactory: (options) => {
+        artifactWatcher = options
+        return { start: async () => {}, stop: () => {} }
+      },
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -9634,26 +9639,76 @@ describe("DomovoiDaemon", () => {
     const download = await fetch(`http://${address.host}:${address.port}/artifacts/${encodeURIComponent(downloadAccess.artifactId)}?session=${downloadAccess.sessionId}&revision=${downloadAccess.revision}&purpose=download&expires=${downloadAccess.expiresAt}&signature=${downloadAccess.signature}`)
     expect(download.headers.get("content-disposition")).toContain("attachment")
 
+    // A signed URL pins one revision, and rewriting the file it addresses moves
+    // the artifact to the next revision. The watcher change is delivered here
+    // instead of awaited from the filesystem, so each fetch below runs against a
+    // revision the daemon already holds rather than against a debounce.
+    const observePreviewWrite = (previousRevision: number): Promise<number> => {
+      const observed = new Promise<number>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as {
+            method?: string
+            params?: { artifacts?: Array<{ id: string; revision: number }> }
+          }
+          if (message.method !== "workspace.changed") return
+          const updated = message.params?.artifacts?.find((candidate) => candidate.id === artifact!.id)
+          if (!updated || updated.revision <= previousRevision) return
+          socket.off("message", receive)
+          resolve(updated.revision)
+        }
+        socket.on("message", receive)
+      })
+      artifactWatcher!.onChange({
+        path: "preview.html",
+        title: "preview.html",
+        type: "preview",
+        mimeType: "text/html",
+      })
+      return observed
+    }
+    const artifactUrlFor = (granted: typeof access, purpose: string): string =>
+      `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(granted.artifactId)}`
+      + `?session=${granted.sessionId}&revision=${granted.revision}&purpose=${purpose}`
+      + `&expires=${granted.expiresAt}&signature=${granted.signature}`
+
     await writeFile(join(worktree, "preview.html"), `<main>${"<div>".repeat(maximumPrintableArtifactDepth + 2)}Plan${"</div>".repeat(maximumPrintableArtifactDepth + 2)}</main>`)
-    const limited = await fetch(printUrl)
+    const limitedRevision = await observePreviewWrite(printAccess.revision)
+    expect(limitedRevision).toBeGreaterThan(printAccess.revision)
+    expect((await fetch(printUrl)).status).toBe(404)
+    const limitedAccess = (await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: limitedRevision,
+      purpose: "print",
+      client: "desktop",
+    })).result as typeof access
+    const limitedPrintUrl = artifactUrlFor(limitedAccess, "print")
+    const limited = await fetch(limitedPrintUrl)
     expect(limited.status).toBe(413)
     await expect(limited.json()).resolves.toEqual({ error: "artifact_limit" })
+    // Removing the file leaves the revision where it is, so this capability is
+    // still current and the refusal can only come from the missing content.
     await unlink(join(worktree, "preview.html"))
-    const missing = await fetch(printUrl)
+    const missing = await fetch(limitedPrintUrl)
     expect(missing.status).toBe(404)
     await expect(missing.json()).resolves.toEqual({ error: "not_found" })
     await writeFile(join(worktree, "preview.html"), "<h1>Domovoi preview</h1>")
+    const restoredRevision = await observePreviewWrite(limitedRevision)
 
-    await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: artifact!.revision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
-    // The writes above can raise the artifact's revision before this point, so
-    // the revision the daemon does not have is read now rather than assumed.
-    const currentSnapshot = await rpc("workspace.get", {})
-    const currentArtifact = (currentSnapshot.result as {
-      artifacts: Array<{ id: string; revision: number }>
-    }).artifacts.find((candidate) => candidate.id === artifact!.id)
-    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: currentArtifact!.revision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("artifact.authorize", { sessionId: "other-session", artifactId: artifact!.id, revision: restoredRevision, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
+    await expect(rpc("artifact.authorize", { sessionId, artifactId: artifact!.id, revision: restoredRevision + 1, purpose: "print", client: "desktop" })).resolves.toMatchObject({ error: { code: -32602 } })
 
-    const invalidBridge = await fetch(`${plainPreviewUrl}&bridge=short`)
+    // The preview capability signed before those writes named an earlier
+    // revision, so the daemon refuses it and the current revision is signed.
+    expect((await fetch(plainPreviewUrl)).status).toBe(404)
+    const restoredAccess = (await rpc("artifact.authorize", {
+      sessionId,
+      artifactId: artifact!.id,
+      revision: restoredRevision,
+      purpose: "preview",
+      client: "desktop",
+    })).result as typeof access
+    const invalidBridge = await fetch(`${artifactUrlFor(restoredAccess, "preview")}&bridge=short`)
     expect(invalidBridge.status).toBe(200)
     await expect(invalidBridge.text()).resolves.toBe("<h1>Domovoi preview</h1>")
 
@@ -10432,10 +10487,19 @@ describe("DomovoiDaemon", () => {
     const terminalProcesses = new Map<string, { kill: ReturnType<typeof vi.fn> }>()
     const terminalService = {
       spawn: vi.fn(({ cwd }: { cwd: string }) => {
+        // A real pty exits after a kill, and the archive waits for that exit
+        // before it removes the worktree the shell is sitting in.
+        const exitListeners = new Set<(event: { exitCode: number; signal?: number }) => void>()
         const process = {
-          process: "/bin/sh", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+          process: "/bin/sh", write: vi.fn(), resize: vi.fn(),
+          kill: vi.fn(() => {
+            for (const listener of [...exitListeners]) listener({ exitCode: 0 })
+          }),
           onData: vi.fn(() => ({ dispose: vi.fn() })),
-          onExit: vi.fn(() => ({ dispose: vi.fn() })),
+          onExit: vi.fn((listener: (event: { exitCode: number; signal?: number }) => void) => {
+            exitListeners.add(listener)
+            return { dispose: () => exitListeners.delete(listener) }
+          }),
         }
         terminalProcesses.set(cwd, process)
         return process
@@ -10574,6 +10638,100 @@ describe("DomovoiDaemon", () => {
     )).toEqual(workingPlanBefore)
     expect(store.snapshot.sessions[0]).not.toHaveProperty("workspacePath")
     expect(agent.stopThread).toHaveBeenCalledTimes(2)
+  })
+
+  it("removes the archived worktree only after its terminal shell exits", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.runtime.provider = "codex"
+    session.workspacePath = "/worktrees/session-billing"
+    delete session.providerThreadId
+    delete session.activeTurnId
+    snapshot.approvals = []
+    const activateTurns = deferLiveTurns(snapshot)
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    // A killed shell keeps the worktree as its working directory until it
+    // exits, and Windows refuses to remove a directory a live handle holds.
+    let exitShell: (() => void) | undefined
+    let shellRunning = true
+    const terminalProcess = {
+      process: "/bin/sh", write: vi.fn(), resize: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn((listener: (event: { exitCode: number }) => void) => {
+        const previous = exitShell
+        exitShell = () => { previous?.(); shellRunning = false; listener({ exitCode: 0 }) }
+        return { dispose: vi.fn() }
+      }),
+      kill: vi.fn(),
+    }
+    const removedWhileShellRunning: boolean[] = []
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      archiveSessionWorkspace: vi.fn(async () => { removedWhileShellRunning.push(shellRunning) }),
+      checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: [] })),
+      restore: vi.fn(),
+    } satisfies WorkspaceService
+    const store = {
+      snapshot,
+      load() { return this.snapshot },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      authToken: testAuthToken("archive-terminal-exit-token"),
+      store,
+      agents: { codex: agent },
+      workspaceService,
+      terminalService: { spawn: vi.fn(() => terminalProcess) },
+      errorSink: vi.fn(),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    activateTurns()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    await rpc("terminal.create", {
+      terminalId: "billing-terminal", sessionId: session.id,
+      cols: 80, rows: 24, client: "desktop", clientId: "billing-client",
+    })
+
+    const archived = rpc("session.archive", { sessionId: session.id, client: "desktop" })
+    await waitForDaemon(() => expect(terminalProcess.kill).toHaveBeenCalledOnce())
+    expect(workspaceService.archiveSessionWorkspace).not.toHaveBeenCalled()
+
+    exitShell!()
+    await expect(archived).resolves.toMatchObject({ result: { sessions: expect.arrayContaining([
+      expect.objectContaining({ id: session.id, state: "archived" }),
+    ]) } })
+    expect(removedWhileShellRunning).toEqual([false])
+    socket.close()
   })
 
   it("ignores provider events after archive intent survives cleanup failure", async () => {

@@ -96,8 +96,8 @@ function readEndpoint(document: Record<string, unknown>): DistroEndpoint {
   return { host, port, token }
 }
 
-// The file is read by asking the distribution to read it, never by opening it
-// through the wsl share, which is the rule the rest of this work follows.
+// Read the file inside the distribution without a default shell or its startup
+// output. The file is never opened through the wsl share.
 export async function readDistroEndpoint(
   input: DistroEndpointInput,
 ): Promise<DistroEndpoint | undefined> {
@@ -112,7 +112,7 @@ export async function readDistroEndpoint(
         distribution,
         "--cd",
         "~",
-        "--",
+        "--exec",
         "cat",
         endpointFile,
       ], { timeoutMs }),

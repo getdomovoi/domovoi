@@ -1,0 +1,61 @@
+name: wsl-native
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/wsl.yml'
+      - 'scripts/wsl-ci*'
+      - 'scripts/bootstrap-deadline.mjs'
+      - 'scripts/bootstrap-download.mjs'
+      - 'apps/daemon/src/wsl-*.ts'
+      - 'apps/daemon/src/open-*.ts'
+      - 'apps/daemon/src/index.ts'
+      - 'apps/daemon/src/production-daemon.ts'
+      - 'apps/daemon/src/advertised-transports.ts'
+      - 'apps/daemon/src/machine-dial.ts'
+      - 'apps/daemon/vitest.config.ts'
+      - 'apps/daemon/package.json'
+      - 'packages/protocol/src/fleet.ts'
+      - 'packages/protocol/src/transport.ts'
+      - 'packages/protocol/package.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'docs/wsl-ci.md'
+  schedule:
+    - cron: '23 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wsl-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# This is deliberately separate from ci.yml's Windows matrix leg. Unrelated
+# PRs do not provision WSL. Do not make a path-filtered workflow an unconditional
+# required check: GitHub leaves that check pending on PRs outside its paths.
+jobs:
+  native:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2
+        with:
+          install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install only daemon and protocol dependencies
+        run: pnpm --filter @getdomovoi/daemon... install --frozen-lockfile
+        timeout-minutes: 5
+      - run: pnpm --filter @getdomovoi/protocol build
+        timeout-minutes: 2
+      - name: Provision WSL 2 and require native proofs
+        run: node scripts/wsl-ci.mjs
+        timeout-minutes: 10

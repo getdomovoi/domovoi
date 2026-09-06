@@ -809,12 +809,14 @@ before any public package or application publish.
 - [ ] Add rollback and compatibility handling for daemon/client protocol mismatches
 - [x] Pin GitHub Actions by immutable commit SHA, verified by `pnpm release:invariants`
 - [x] Replace the no-op lint gate with real TypeScript/React linting
-- [ ] Remove the artifact preview revision race in `apps/daemon/src/server.test.ts`
-  - The signed print URL pins an artifact revision. Rewriting `preview.html` to exercise the
-    nesting limit can raise the revision through the file watcher before the fetch arrives, so
-    the daemon answers `404 not_found` instead of the expected `413 artifact_limit`.
-  - Observed on macOS CI for pull request #221 on 2026-09-03; the same commit passed on `main`.
-    Re-authorize after each write, or assert on whichever revision the daemon currently holds.
+- [x] Remove the artifact preview revision race in `apps/daemon/src/server.test.ts`
+  - A signed URL pins one artifact revision, so rewriting the file it addresses moves the artifact
+    to its next revision and the daemon refuses the pinned capability with `404 not_found`. That
+    refusal is the contract: the signature covers a revision whose content the file no longer
+    holds, and the daemon reads the file at fetch time.
+  - The test reused capabilities across its own writes and passed only while it beat the watcher
+    debounce. It now injects the artifact watcher, delivers each change itself, authorizes the
+    revision the daemon holds, and asserts that the stale capability is refused.
 - [ ] Review or replace dependencies whose licenses do not fit the public daemon
   - `pnpm license:audit` holds the publishable production graph to a permissive allowlist in CI.
   - One recorded exception remains: the proprietary Claude Code agent SDK. See
