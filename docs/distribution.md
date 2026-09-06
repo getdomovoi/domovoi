@@ -355,11 +355,28 @@ Once enabled, every push to `main` runs the workflow, which does one of three th
    publishes and creates one GitHub release per published package.
 3. **Nothing.** No changesets are pending and every version is already on the registry.
 
-The mode is chosen by `changesets/action/select-mode` at the end of the `verify` job, and
-`verify` runs the same commands as `ci.yml` first: lint, typecheck, tests, build, performance
-budgets, `pnpm release:invariants`, the license audit, and `pnpm test:install`. A release cannot
-ship a commit that CI would have refused, even if the version pull request merged without a CI
-run of its own.
+The mode is chosen by `changesets/action/select-mode` at the end of the `gate` job, and the gate
+comes first. `pnpm release:gate` reads the `ci` workflow runs for this exact commit and refuses to
+continue unless one of them has completed with `success` and with every job in it concluding
+`success` too. It waits while a run is still going, since a push to `main` starts `ci` and
+`release` at the same moment, and it fails if the run failed, if a job was skipped or cancelled,
+or if no `ci` run exists for the commit at all.
+
+That is the whole of the gate, and it is deliberately not a second run of the suite. The release
+inherits what `ci.yml` proves: lint, typecheck, tests, build, performance budgets,
+`pnpm release:invariants`, the license audit and `pnpm test:install` on Linux, macOS, and Windows,
+`pnpm release:artifacts` and the packed daemon's musl runtime check on Linux, and the `audit` job's
+`pnpm audit --prod --audit-level=high`. Re-running a Linux-only copy of those commands inside the
+release workflow would have published on a weaker result than `main` is held to, and would have
+said nothing about whether `ci` passed.
+
+`wsl.yml` is not part of the gate. It is path filtered and scheduled rather than run on every
+commit, so requiring it per commit would block every release whose commit does not touch its
+paths. A release can therefore ship WSL code proven only by the last scheduled or path-matched
+`wsl-native` run.
+
+`main` has no branch protection, no ruleset, and no required status check, so nothing outside this
+workflow stands between a commit and the registry. The gate job is the only thing that does.
 
 ### Publish order
 
@@ -415,9 +432,10 @@ is available has not been checked.
    value `enabled`. The next push to `main`, or a manual dispatch of the `release` workflow,
    opens the version pull request from the pending changesets.
 7. Review and merge the version pull request. The pull request is opened with the workflow's
-   own token, so GitHub does not start `ci` on it; the release workflow's `verify` job runs the
-   full suite on the merged commit before anything publishes. Close and reopen the pull request
-   to run `ci` on it as well, or configure a GitHub App token for the version job later.
+   own token, so GitHub does not start `ci` on it. Merging it is a push to `main`, which starts
+   `ci` on the merge commit, and the release workflow's `gate` job waits for that run and
+   refuses to publish unless it passed. Close and reopen the pull request to run `ci` on the
+   branch as well, or configure a GitHub App token for the version job later.
 
 To pause releases, delete the variable or set it to any other value. Runs already in progress
 finish; the concurrency group prevents two releases from overlapping.

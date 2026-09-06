@@ -840,9 +840,21 @@ before any public package or application publish.
 - [ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and
   GitHub Releases from the same immutable commit
   - `.github/workflows/release.yml` does all of this through Changesets and npm trusted
-    publishing, with the protocol published before the daemon. Its verify job runs on Linux only,
-    so it gates on fewer checks than CI: no macOS or Windows leg, no musl smoke, and no dependency
-    audit.
+    publishing, with the protocol published before the daemon.
+  - Its `gate` job runs `pnpm release:gate`, and `scripts/release-gate.mjs` refuses to continue
+    until the `ci` run for that exact commit has concluded success with every one of its jobs
+    concluded success too. A run reporting no job at all, and a job that was skipped rather than
+    run, are refusals rather than passes. A release therefore inherits the Linux, macOS, and
+    Windows matrix, the packed-daemon musl check, and the production dependency audit instead of
+    re-running a Linux-only subset of them. While a run is still going, and while no run exists
+    for the commit at all, the gate polls every 30 seconds for up to 45 minutes and then fails, so
+    an absent or unfinished verdict is a refusal rather than a publish.
+    `scripts/release-gate.test.mjs` covers each of those outcomes.
+  - Nothing else gates the release: `main` carries no branch protection and no ruleset, so there
+    is no required status check anywhere and this workflow is the whole gate.
+  - `wsl.yml` is path filtered and scheduled rather than run on every commit, so it is not part
+    of that gate. Making a path-filtered workflow a per-commit requirement would leave it
+    pending on every commit outside its paths.
   - It stays inert until the `RELEASE_PUBLISHING` repository variable reads `enabled`; the npm
     organisation and trusted publishers do not exist yet. See `docs/distribution.md`.
 - [ ] Add Homebrew and AUR publishing later, after signed and checksummed GitHub Release artifacts
