@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 
@@ -140,6 +140,32 @@ it("refuses a dot-dot file escape before filesystem effects", async () => {
       await expect(withinServiceDeadline(deadline, () => unit.effects.write(escaped, "escaped", deadline))).rejects.toThrow(/may not touch/)
       expect(existsSync(outsideFile)).toBe(false)
     })
+  })
+}, safetyBudget + 6_000)
+
+it("refuses symlink traversal out of the private home before writing", async () => {
+  await scenario({}, async ({ run, outsideFile }) => {
+    await run(async (unit, deadline) => {
+      const link = join(unit.home, "outside")
+      await withinServiceDeadline(deadline, () => symlink(join(outsideFile, ".."), link, "junction"))
+      await expect(withinServiceDeadline(deadline, () => unit.effects.write(join(link, "escaped"), "escaped", deadline))).rejects.toThrow(/may not touch/)
+      expect(existsSync(outsideFile)).toBe(false)
+    })
+  })
+}, safetyBudget + 6_000)
+
+it("counts a dangling unit entry as occupied rather than absence", async () => {
+  await scenario({}, async ({ run, outsideFile, paths, calls }) => {
+    await expect(run(async (unit, deadline) => {
+      const within = <T>(operation: () => Promise<T>) => withinServiceDeadline(deadline, operation)
+      await within(() => mkdir(outsideFile))
+      await within(() => symlink(outsideFile, unit.unitPath, "junction"))
+      await within(() => rm(outsideFile, { recursive: true }))
+      expect(existsSync(unit.unitPath)).toBe(false)
+      await unit.install(deadline)
+    })).rejects.toThrow(/already has files/)
+    expect(calls.map((args) => args[1])).toEqual(["show", "show"])
+    expect((await lstat(paths[0]!)).isSymbolicLink()).toBe(true)
   })
 }, safetyBudget + 6_000)
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, lstatSync } from "node:fs"
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join, posix, relative, resolve, sep } from "node:path"
@@ -16,6 +16,17 @@ export const lifecycleBudget = 60_000
 export const supervisionBudget = 90_000
 export const cleanupBudget = 30_000
 const productionUnit = "domovoid.service"
+
+// Broken links are occupied names too. existsSync follows them and would
+// incorrectly authorize replacing a pre-existing dangling unit or wants link.
+function entryAt(path: string) {
+  try { return lstatSync(path) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+}
+
 export function systemdManagerAvailable(options: {
   platform: NodeJS.Platform
   runtimeDirectory: string
@@ -120,6 +131,13 @@ export async function withThrowawayUnit(
       const resolved = resolve(path)
       const child = relative(home, resolved)
       if (!isAbsolute(path) || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) throw new Error(`This test may not touch ${path}`)
+      let parent = home
+      for (const component of child.split(sep)) {
+        parent = join(parent, component)
+        const entry = entryAt(parent)
+        if (entry === undefined) break
+        if (entry.isSymbolicLink()) throw new Error(`This test may not touch ${path} through symlink ${parent}`)
+      }
       return resolved
     }
     const effects: ServiceEffects = {
@@ -138,7 +156,7 @@ export async function withThrowawayUnit(
       const before = await systemctl(["--user", "show", unit, "--property=LoadState"], active)
       if (before.code !== 0) throw new Error(`Cannot confirm absence of ${unit}: ${before.stderr || `systemctl exited ${before.code}`}`)
       if (before.stdout.trim() !== "LoadState=not-found") throw new Error(`${unit} already exists or its state is unknown: ${before.stdout.trim()}`)
-      if (existsSync(unitPath) || existsSync(wantsPath)) throw new Error(`${unit} already has files on disk`)
+      if (entryAt(unitPath) !== undefined || entryAt(wantsPath) !== undefined) throw new Error(`${unit} already has files on disk`)
     }
     await requireAbsence(deadline)
 
