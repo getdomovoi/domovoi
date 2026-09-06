@@ -65,7 +65,8 @@ const nodeEffects = {
     } catch (error) {
       // wsl.exe writes its own diagnostics as UTF-16. Keep its reason readable,
       // including HCS_E_HYPERV_NOT_INSTALLED when nested virtualization goes.
-      throw new Error(`${command} failed: ${text(error.stderr ?? "") || text(error.stdout ?? "") || error.message}`, { cause: error })
+      const output = [text(error.stdout ?? ""), text(error.stderr ?? "")].filter(Boolean).join("\n")
+      throw new Error(`${command} failed: ${output || error.message}`, { cause: error })
     }
   },
   readReport: async (path) => JSON.parse(await readFile(path, "utf8")),
@@ -131,7 +132,7 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
       const vitestCli = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs")
       try {
         await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
-          "--coverage.enabled=false", "--reporter=json", `--outputFile=${reportPath}`], {
+          "--coverage.enabled=false", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`], {
           cwd: join(rootDirectory, "apps", "daemon"),
           env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution, DOMOVOI_WSL_EXPECTED_MOUNT_ROOT: mountRoot },
         })

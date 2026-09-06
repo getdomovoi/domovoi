@@ -112,11 +112,14 @@ describe.skipIf(requiredDistribution === undefined && skipReason !== undefined)(
       if (requiredDistribution !== undefined) expect(running, "Required WSL 2 distro went away before path proof").toBeDefined()
       if (!running) return skip("no running WSL 2 distribution on this machine")
 
-      await expect(distributionPath({
+      // Await directly so JSON and console reporters retain the original
+      // refusal. A .resolves assertion replaces it with a clipped wrapper.
+      const placed = await distributionPath({
         distribution: running.name,
         path: `\\\\wsl$\\${running.name}\\tmp`,
         timeoutMs: 20_000,
-      })).resolves.toBe("/tmp")
+      })
+      expect(placed).toBe("/tmp")
     }, 60_000)
 
     it("refuses the Windows system drive through a running WSL 2 distribution", async ({ skip }) => {

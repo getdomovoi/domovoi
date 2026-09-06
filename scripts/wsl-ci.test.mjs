@@ -108,6 +108,8 @@ test("provisions exactly one distro, requires it in the test process, then remov
   const distribution = install[0].args.at(-1)
   assert.match(distribution, /^domovoi-ci-[a-f0-9-]{36}$/)
   const proof = calls.find(({ args }) => args.includes("src/wsl-windows.test.ts"))
+  assert.ok(proof.args.includes("--reporter=default"), "keep readable error causes alongside the JSON report")
+  assert.ok(proof.args.includes("--reporter=json"))
   assert.equal(proof.options.env.DOMOVOI_WSL_REQUIRED_DISTRIBUTION, distribution)
   assert.equal(proof.options.env.DOMOVOI_WSL_EXPECTED_MOUNT_ROOT, "/domovoi-ci-drives/")
   assert.ok(calls.some(({ args }) => args.includes("uname")))
