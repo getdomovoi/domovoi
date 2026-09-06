@@ -220,6 +220,31 @@ test("spends download time from the same budget and refuses a late install resul
   await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
 })
 
+// A total and a destination say a machine was slow. They do not say whether the
+// download, the dependency install, the native build or a verification pass was
+// the slow one, and that is the difference between retrying and diagnosing.
+test("names the step still running when the total deadline expires", { timeout: testTimeout }, async (t) => {
+  const { options, afterInstall } = await fixture(t)
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  afterInstall(() => { now = 1_000 })
+  await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), (error) => {
+    assert.match(error.message, /^Bootstrap exceeded 1000 ms, including installation and verification; inspect /)
+    assert.match(error.message, /It expired during npm ci, 1000 ms into that step$/)
+    assert.equal(error.cause.message.includes("It expired during"), false, "the cause keeps the unannotated total")
+    return true
+  })
+})
+
+test("names the native build when that is the step that runs out the budget", { timeout: testTimeout }, async (t) => {
+  const { options, afterBuild } = await nativeFixture(t)
+  let now = 0
+  t.mock.method(performance, "now", () => now)
+  afterBuild(() => { now = 1_000 })
+  await assert.rejects(installer({ ...options, timeoutMs: 1_000 }),
+    /It expired during the native terminal module build, 1000 ms into that step$/)
+})
+
 test("refuses a missing or old npm with the supported minimum", { timeout: testTimeout }, async (t) => {
   const { options } = await fixture(t)
   for (const outcome of ["9.9.9", undefined]) {
