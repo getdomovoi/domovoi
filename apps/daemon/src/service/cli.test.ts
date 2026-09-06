@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
 import { protocolVersion } from "@getdomovoi/protocol"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { WebSocket } from "ws"
 
 import { OperationDeadline } from "../operation-deadline.js"
@@ -25,6 +25,13 @@ const budget = process.platform === "win32" ? 30_000 : 15_000
 // A real process also drains provider probes on shutdown. That is not the
 // idle observation budget used by waitForDaemon, and remains bounded here.
 const cleanupBudget = 10_000
+// A cleanup failure is reported here rather than thrown from the finally block
+// that found it, so it never replaces the assertion that failed the test.
+const cleanupFailures: unknown[] = []
+afterEach(() => {
+  const failures = cleanupFailures.splice(0)
+  if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
+})
 
 describe("distributed service CLI", () => {
   it("installs saved settings and serves them with a changed supervisor environment", async () => {
@@ -179,7 +186,7 @@ describe("distributed service CLI", () => {
       // Removal is never skipped because waiting for the child spent the
       // budget, and it retries a home the exiting child still holds.
       try { await removeScratchDirectory(home) } catch (error) { failures.push(error) }
-      if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
+      cleanupFailures.push(...failures)
     }
   }, budget + cleanupBudget + 1_000)
 

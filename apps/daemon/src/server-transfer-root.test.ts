@@ -23,12 +23,9 @@ const daemons: DomovoiDaemon[] = []
 afterEach(async () => {
   temporary.root = undefined
   const stops = await Promise.allSettled(daemons.splice(0).map((daemon) => daemon.stop()))
-  try {
-    await removeScratchDirectories(scratchDirectories)
-  } finally {
-    const failures = stops.flatMap((stop) => stop.status === "rejected" ? [stop.reason] : [])
-    if (failures.length > 0) throw new AggregateError(failures, "Daemon shutdown failed")
-  }
+  const failures = stops.flatMap((stop) => stop.status === "rejected" ? [stop.reason] : [])
+  try { await removeScratchDirectories(scratchDirectories) } catch (error) { failures.push(error) }
+  if (failures.length > 0) throw new AggregateError(failures, "Cleanup failed")
 })
 
 async function transferRoots(): Promise<string[]> {

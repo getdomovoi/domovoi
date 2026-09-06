@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
 import { claimProfile } from "../profile-lease.js"
@@ -13,6 +13,13 @@ import { removeScratchDirectory } from "../test-scratch.js"
 
 const budget = process.platform === "win32" ? 30_000 : 10_000
 const cleanupBudget = 5_000
+// A cleanup failure is reported here rather than thrown from the finally block
+// that found it, so it never replaces the assertion that failed the test.
+const cleanupFailures: unknown[] = []
+afterEach(() => {
+  const failures = cleanupFailures.splice(0)
+  if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
+})
 
 function latch() {
   let release = () => {}
@@ -90,7 +97,7 @@ describe("service command exclusion", () => {
       // Removal is never skipped because waiting for the pending operation
       // spent the budget, and it retries a home that operation still holds.
       try { await removeScratchDirectory(home) } catch (error) { failures.push(error) }
-      if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
+      cleanupFailures.push(...failures)
     }
   }, budget + cleanupBudget + 1_000)
 })

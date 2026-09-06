@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
-import { expect, it } from "vitest"
+import { afterEach, expect, it } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
 import { serviceConfigurationPath } from "./configuration.js"
@@ -18,6 +18,13 @@ const managerSource = new URL("../../test-fixtures/service-manager.mjs", import.
 const run = promisify(execFile)
 const budget = process.platform === "win32" ? 60_000 : 20_000
 const cleanupBudget = 10_000
+// A cleanup failure is reported here rather than thrown from the finally block
+// that found it, so it never replaces the assertion that failed the test.
+const cleanupFailures: unknown[] = []
+afterEach(() => {
+  const failures = cleanupFailures.splice(0)
+  if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
+})
 
 it.each(["install", "remove"])("excludes real CLI contenders while %s waits on its manager", async (first) => {
   const deadline = OperationDeadline.start(budget)
@@ -105,6 +112,6 @@ it.each(["install", "remove"])("excludes real CLI contenders while %s waits on i
     // Removal is never skipped because waiting for the child spent the budget,
     // and it retries a home the exiting child still holds.
     try { await removeScratchDirectory(home) } catch (error) { failures.push(error) }
-    if (failures.length > 0) throw new AggregateError(failures, "Test cleanup failed")
+    cleanupFailures.push(...failures)
   }
 }, budget + cleanupBudget + 1_000)
