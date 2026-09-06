@@ -597,16 +597,23 @@ Every ledger entry is now merged.
     contends for the port: it attaches to the verified local owner, and it refuses to start a
     fallback daemon at all when a service configuration is present.
   - The Windows logon task still has no crash restart, where the systemd unit has
-    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager on two
-    legs. `apps/daemon/src/service/windows-task.native.test.ts` registers, stops, and removes a
-    real scheduled task under a throwaway name on the Windows runner, and
+    `Restart=on-failure` and the launchd agent has `KeepAlive`. CI reaches a real manager on all
+    three legs. `apps/daemon/src/service/windows-task.native.test.ts` registers, stops, and removes
+    a real scheduled task under a throwaway name on the Windows runner.
     `apps/daemon/src/service/systemd-unit.native.test.ts` installs, reports, and removes a real
-    systemd user unit on the Linux runner, then kills its main process and reads `NRestarts`,
-    `ActiveState`, and a new `MainPID` back off the manager to prove that `Restart=on-failure`
-    restarts a crash, leaves a deliberate stop stopped, and does not restart a clean exit. The
-    Linux job starts the user manager and asserts its private socket, so a runner without one
-    fails rather than skipping the proof. No test invokes a real launchd, so `KeepAlive` on macOS
-    stays unproven.
+    systemd user unit on the Linux runner, then crashes its main process through the manager and
+    reads `NRestarts`, `ActiveState`, and a new `MainPID` back off it to require exactly one
+    restart, with a deliberate stop and a clean exit both required to stay stopped. The Linux job
+    starts the user manager and asserts its private socket, so a runner without one fails rather
+    than skipping the proof.
+  - `apps/daemon/src/service/launchd-agent.native.test.ts` (#306) is the macOS counterpart and has
+    now run. It bootstraps a throwaway agent into the per-user `gui` domain the installer targets,
+    crashes it through the manager, and requires launchd's own run count to increment, with a clean
+    exit required to stay exited past launchd's throttle. The macOS job asserts that domain before
+    the suite, and the test refuses to skip on a CI darwin leg, so an unreachable domain fails by
+    name rather than disappearing from the run. The `macos-latest` leg of run 34016224755 ran all
+    nine of its tests with none skipped, so `KeepAlive` supervision is proven against a real
+    launchd. See `docs/daemon-services.md`.
   - `docs/clean-machine-setup.md` gives the operator sequence from an uninstalled machine through
     installation, first start, TLS, supervision, pairing, and recovery, and names what remains
     unproven per platform.
@@ -735,14 +742,16 @@ Not covered, and the reason this goal is open:
 
 - the two-daemon test injects the OS keyring and provider readiness, so platform keychain
   behaviour and cross-host TLS are unproven, and no two physical machines have been paired;
-- macOS runs component suites and launchd is still simulated, and no project or Git work has run
-  over the proven WSL route;
+- native service managers are driven for real on all three legs, with a crash restart proven on a
+  real systemd user unit and on a real launchd agent, but the Windows logon task has no crash
+  restart to test at all;
+- a real WSL 2 guest is provisioned by its own job, and no project or Git work has run over the
+  proven WSL route;
 - no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
-bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a job that
-invokes a real launchd and a project opened and worked on over the WSL route; the systemd, Windows
-Task Scheduler, and WSL 2 jobs exist. A daemon must also remain reachable from a paired phone
+bounded ordered dial, a session move, reconnect, restart, revocation, and removal, plus a project
+opened and worked on over the WSL route. A daemon must also remain reachable from a paired phone
 across private-network identity changes without exposing payload plaintext to the relay, and a
 bearer or channel key alone must not be enough to enter.
 

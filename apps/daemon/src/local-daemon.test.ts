@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -11,6 +11,7 @@ import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { createProductionDaemon, type ProductionDaemonHandle } from "./production-daemon.js"
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
+import { removeScratchDirectories } from "./test-scratch.js"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
   ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
@@ -30,7 +31,7 @@ afterEach(async () => {
     if ("stop" in handle) await handle.stop()
     else if (handle.kind === "attached") handle.detach()
   }))
-  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })))
+  await removeScratchDirectories(homes)
   vi.restoreAllMocks()
 })
 async function home() {

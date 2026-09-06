@@ -342,10 +342,14 @@ Read these before relying on this guide for a fleet rollout.
 - Signature verification of release artifacts is not implemented. Checksums are not authenticity.
 - Native compilation and the external toolchain are not frozen by the integrity lock. Neither are
   separately installed provider CLIs.
-- Service installation is proven against a real systemd user manager on Linux CI, including crash
-  restart, and against a real Task Scheduler task on Windows CI. launchd has no native test, so
-  macOS supervision rests on configuration round-trip and concurrency tests alone. A timed-out
-  manager command may already have changed OS state; inspect the manager before retrying.
+- Service installation is proven natively on all three platforms. On Linux a test drives a real
+  systemd user unit through install, status, removal, a crash restart and a clean-exit
+  non-restart. On Windows a test registers, stops and removes a real scheduled task. On macOS a
+  test bootstraps a throwaway launchd agent into the per-user domain the installer targets,
+  crashes it through the manager, and requires one relaunch while a clean exit stays exited; it
+  skips outside a session with a per-user launchd domain and refuses to skip on the macOS CI leg.
+  A timed-out manager command may already have changed OS state; inspect the manager before
+  retrying.
 - Windows crash restart of the logon task is not configured.
 - The [dedicated WSL job](wsl-ci.md) has passed ten real proofs on a hosted Windows runner with one
   WSL 2 guest, covering discovery, path boundaries with a non-default Windows-drive mount root and

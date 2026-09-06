@@ -10,7 +10,7 @@ import { loadOrCreateDaemonToken } from "./credentials.js"
 const scratchDirectories: string[] = []
 
 afterEach(async () => {
-  await removeScratchDirectories(scratchDirectories.splice(0))
+  await removeScratchDirectories(scratchDirectories)
 })
 
 describe("loadOrCreateDaemonToken", () => {

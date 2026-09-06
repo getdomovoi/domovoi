@@ -12,6 +12,7 @@ import { waitForDaemon } from "../test-wait-for.js"
 import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { installService, nodeServiceEffects, removeService, serviceStatus, type CapturedRun, type ServiceEffects, type ServicePlan } from "./install.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 
 const lifecycleBudget = 60_000
 const supervisionBudget = 90_000
@@ -122,7 +123,7 @@ async function withThrowawayUnit(
     if (existsSync(unitPath) || existsSync(wantsPath)) throw new Error(`${unit} already has files on disk`)
 
     const script = join(home, "unit.mjs")
-    await withinServiceDeadline(deadline, () => copyFile(new URL("../../test-fixtures/systemd-unit.mjs", import.meta.url), script))
+    await withinServiceDeadline(deadline, () => copyFile(new URL("../../test-fixtures/service-process.mjs", import.meta.url), script))
     await withinServiceDeadline(deadline, () => mkdir(join(runtimeDirectory, "systemd", "user"), { recursive: true }))
 
     await body({
@@ -177,7 +178,9 @@ async function withThrowawayUnit(
       const failed = await systemctl(["--user", "list-units", "--all", "--state=failed", "--no-legend", unit], cleanup)
       expect(failed.stdout.trim()).toBe("")
       const created = installedHome
-      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
+      // Removal stands on its own retry, so a cleanup budget the unit
+      // teardown spent does not leave the home behind.
+      if (created !== undefined) await removeScratchDirectory(created)
     } finally { cleanup.clear() }
   }
 }
