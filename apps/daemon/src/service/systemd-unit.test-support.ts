@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, posix } from "node:path"
+import { isAbsolute, join, posix, relative, resolve, sep } from "node:path"
 
 import { expect } from "vitest"
 
@@ -22,8 +22,14 @@ export function systemdManagerAvailable(options: {
   required: boolean
   exists?: typeof existsSync
 }): boolean {
-  return options.platform === "linux" && options.runtimeDirectory !== ""
+  if (options.platform !== "linux") return false
+  const available = options.runtimeDirectory !== ""
     && (options.exists ?? existsSync)(join(options.runtimeDirectory, "systemd", "private"))
+  // The workflow preflight is an earlier observation, not authority to skip
+  // later. CI must fail here if the manager disappears before test collection.
+  // A stale socket instead reaches the bounded manager probe and fails there.
+  if (!available && options.required) throw new Error("The systemd user manager is required for Linux CI. Start it and set XDG_RUNTIME_DIR before running the native proofs.")
+  return available
 }
 
 // Every systemctl this test runs passes through here. It rewrites the daemon's
@@ -32,10 +38,21 @@ export function systemdManagerAvailable(options: {
 // even if the installer's command list changes.
 export function userScoped(command: string, args: readonly string[], unit: string): string[] {
   if (command !== "systemctl") throw new Error(`This test may only run systemctl, not ${command}`)
+  if (!/^domovoi-native-test-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.service$/.test(unit)) {
+    throw new Error("This test requires a UUID-scoped unit")
+  }
   const scoped = args.map((argument) => (argument === productionUnit ? unit : argument))
-  if (scoped[0] !== "--user") throw new Error("This test may only run systemctl in the user scope")
-  const foreign = scoped.find((argument) => argument.endsWith(".service") && argument !== unit)
-  if (foreign !== undefined) throw new Error(`This test may not name the unit ${foreign}`)
+  const exact = (...expected: string[]) => scoped.length === expected.length && scoped.every((argument, index) => argument === expected[index])
+  // daemon-reload is the sole manager-wide operation needed by the shipped
+  // installer. No extra flags, target units, wildcards, paths or remote scopes.
+  const allowed = exact("--user", "daemon-reload")
+    || ["enable", "disable"].some((verb) => exact("--user", verb, "--now", unit))
+    || ["start", "stop", "reset-failed", "is-active"].some((verb) => exact("--user", verb, unit))
+    || exact("--user", "kill", "--signal=SIGKILL", "--kill-whom=main", unit)
+    || exact("--user", "list-units", "--all", "--state=failed", "--no-legend", unit)
+    || (scoped[0] === "--user" && scoped[1] === "show" && scoped[2] === unit && scoped.length > 3
+      && scoped.slice(3).every((argument) => /^--property=[A-Za-z][A-Za-z0-9]*$/.test(argument)))
+  if (!allowed) throw new Error(`This test may not run systemctl ${args.join(" ")}`)
   return scoped
 }
 
@@ -64,7 +81,7 @@ export async function withThrowawayUnit(
 ): Promise<void> {
   const { runtimeDirectory, configHome } = host
   // This is the native boundary, not an interception of systemd. The unit is a
-  // UUID name that cannot collide with a real one, and it is written into the
+  // UUID name checked for collisions before use, and it is written into the
   // per-boot runtime unit directory so nothing this test creates outlives a
   // reboot. The install is the daemon's own enable --now, whose persistent
   // wants symlink the removal path and the cleanup below both delete.
@@ -88,6 +105,7 @@ export async function withThrowawayUnit(
   let installedHome: string | undefined
   let readyPath: string | undefined
   let pid: number | undefined
+  let cleanupArmed = false
   try {
     const home = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-systemd-")))
     installedHome = home
@@ -99,11 +117,14 @@ export async function withThrowawayUnit(
     // land on the UUID path this test preflighted.
     const scopedPath = (path: string) => {
       if (path === productionUnitPath) return unitPath
-      if (path !== home && !path.startsWith(`${home}/`)) throw new Error(`This test may not touch ${path}`)
-      return path
+      const resolved = resolve(path)
+      const child = relative(home, resolved)
+      if (!isAbsolute(path) || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) throw new Error(`This test may not touch ${path}`)
+      return resolved
     }
     const effects: ServiceEffects = {
       ...base,
+      claimServiceOperation: host.effects?.claimServiceOperation ?? nodeServiceEffects({ userHomeDirectory: home }).claimServiceOperation,
       write: (path, contents, active) => base.write(scopedPath(path), contents, active),
       exists: (path, active) => base.exists(scopedPath(path), active),
       remove: (path, active) => base.remove(scopedPath(path), active),
@@ -113,9 +134,13 @@ export async function withThrowawayUnit(
 
     // Refuse rather than overwrite. Nothing is installed until the manager and
     // the filesystem both agree this name is unused.
-    const before = await systemctl(["--user", "show", unit, "--property=LoadState"], deadline)
-    if (before.stdout.trim() !== "LoadState=not-found") throw new Error(`${unit} already exists as ${before.stdout.trim()}`)
-    if (existsSync(unitPath) || existsSync(wantsPath)) throw new Error(`${unit} already has files on disk`)
+    const requireAbsence = async (active: OperationDeadline) => {
+      const before = await systemctl(["--user", "show", unit, "--property=LoadState"], active)
+      if (before.code !== 0) throw new Error(`Cannot confirm absence of ${unit}: ${before.stderr || `systemctl exited ${before.code}`}`)
+      if (before.stdout.trim() !== "LoadState=not-found") throw new Error(`${unit} already exists or its state is unknown: ${before.stdout.trim()}`)
+      if (existsSync(unitPath) || existsSync(wantsPath)) throw new Error(`${unit} already has files on disk`)
+    }
+    await requireAbsence(deadline)
 
     const script = join(home, "unit.mjs")
     await withinServiceDeadline(deadline, () => copyFile(new URL("../../test-fixtures/systemd-unit.mjs", import.meta.url), script))
@@ -132,46 +157,58 @@ export async function withThrowawayUnit(
       effects,
       systemctl,
       show,
-      install: (active) => withinServiceDeadline(active, () => installService({
-        platform: "linux",
-        execPath: script,
-        runtime: process.execPath,
-        home,
-        configuration: createServiceConfiguration({}, { homeDirectory: home, platform: "linux", workingDirectory: home }),
-      }, effects)),
+      install: (active) => withinServiceDeadline(active, async () => {
+        // Recheck at the operation, not just before copying the fixture. Once
+        // installation starts it can fail after publishing or enabling, so arm
+        // before invoking it, never after its reply. A refusal arms nothing.
+        await requireAbsence(active)
+        active.throwIfExpired()
+        cleanupArmed = true
+        return installService({
+          platform: "linux",
+          execPath: script,
+          runtime: process.execPath,
+          home,
+          configuration: createServiceConfiguration({}, { homeDirectory: home, platform: "linux", workingDirectory: home }),
+        }, effects)
+      }),
       observed: (observed) => { pid = observed },
     }, deadline)
   } finally {
     deadline.clear()
     const cleanup = OperationDeadline.start(cleanupBudget)
     try {
-      // Cleanup runs whatever the assertions did, and never depends on the
-      // removal under test having worked. A deliberately broken remover may
-      // have left a live process: ask the fixture to exit through its own
-      // private path, never kill by a PID which might have been reused.
-      const ready = readyPath
-      if (ready !== undefined && existsSync(ready)) {
-        await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
+      if (cleanupArmed) {
+        // Cleanup runs whatever the assertions did, and never depends on the
+        // removal under test having worked. A deliberately broken remover may
+        // have left a live process: ask the fixture to exit through its own
+        // private path, never kill by a PID which might have been reused.
+        const ready = readyPath
+        if (ready !== undefined && existsSync(ready)) {
+          await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
+        }
+        await systemctl(["--user", "disable", "--now", unit], cleanup)
+        const started = pid
+        if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
+          cleanup.throwIfExpired()
+          expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+        }))
+        await withinServiceDeadline(cleanup, () => rm(unitPath, { force: true }))
+        await withinServiceDeadline(cleanup, () => rm(wantsPath, { force: true }))
+        await systemctl(["--user", "daemon-reload"], cleanup)
+        // A unit whose last run ended in failure stays loaded and failed after
+        // its file is deleted, so removing files is not enough to leave the
+        // manager as it was found. This drops that entry. A unit that was never
+        // loaded answers non-zero here and is already in the end state wanted,
+        // so the listing below is the assertion, not this command's code.
+        await systemctl(["--user", "reset-failed", unit], cleanup)
+        const left = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
+        expect(left.code, left.stderr).toBe(0)
+        expect(left.stdout.trim()).toBe("LoadState=not-found")
+        const failed = await systemctl(["--user", "list-units", "--all", "--state=failed", "--no-legend", unit], cleanup)
+        expect(failed.code, failed.stderr).toBe(0)
+        expect(failed.stdout.trim()).toBe("")
       }
-      await systemctl(["--user", "disable", "--now", unit], cleanup)
-      const started = pid
-      if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
-        cleanup.throwIfExpired()
-        expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
-      }))
-      await withinServiceDeadline(cleanup, () => rm(unitPath, { force: true }))
-      await withinServiceDeadline(cleanup, () => rm(wantsPath, { force: true }))
-      await systemctl(["--user", "daemon-reload"], cleanup)
-      // A unit whose last run ended in failure stays loaded and failed after
-      // its file is deleted, so removing files is not enough to leave the
-      // manager as it was found. This drops that entry. A unit that was never
-      // loaded answers non-zero here and is already in the end state wanted,
-      // so the listing below is the assertion, not this command's code.
-      await systemctl(["--user", "reset-failed", unit], cleanup)
-      const left = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)
-      expect(left.stdout.trim()).toBe("LoadState=not-found")
-      const failed = await systemctl(["--user", "list-units", "--all", "--state=failed", "--no-legend", unit], cleanup)
-      expect(failed.stdout.trim()).toBe("")
       const created = installedHome
       if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
     } finally { cleanup.clear() }

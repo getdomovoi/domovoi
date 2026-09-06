@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 
@@ -16,7 +16,7 @@ type Body = Parameters<typeof withThrowawayUnit>[1]
 // Run the exact native harness with real private files but no native manager.
 // Even its old, destructive cleanup can only remove this scenario's fixtures.
 async function scenario(
-  options: { collision?: "manager" | "files"; probe?: CapturedRun },
+  options: { collision?: "manager" | "files"; probe?: CapturedRun; failEnable?: boolean },
   check: (state: {
     run: (body: Body) => Promise<void>
     calls: string[][]
@@ -41,7 +41,13 @@ async function scenario(
         runtimeDirectory, configHome,
         effects: {
           ...base,
-          run: async (_command, args) => { calls.push(args) },
+          run: async (_command, args) => {
+            calls.push(args)
+            if (args[1] === "enable") {
+              loaded = true
+              if (options.failEnable) throw new Error("reply lost after enable")
+            }
+          },
           capture: async (_command, args, active) => {
             calls.push(args)
             if (first) {
@@ -107,11 +113,31 @@ it("still retires an attempted installation after the body fails", async () => {
   })
 }, safetyBudget + 6_000)
 
+it("arms cleanup before enable can fail after changing manager state", async () => {
+  await scenario({ failEnable: true }, async ({ run, calls, paths, loaded }) => {
+    await expect(run(async (unit, deadline) => { await unit.install(deadline) })).rejects.toThrow("reply lost after enable")
+    expect(calls.some((args) => args[1] === "disable")).toBe(true)
+    expect(loaded()).toBe(false)
+    for (const path of paths) expect(existsSync(path)).toBe(false)
+  })
+}, safetyBudget + 6_000)
+
+it("rechecks absence immediately before attempting installation", async () => {
+  await scenario({}, async ({ run, calls, paths }) => {
+    await expect(run(async (unit, deadline) => {
+      await withinServiceDeadline(deadline, () => writeFile(unit.unitPath, "another owner", { signal: deadline.signal }))
+      await unit.install(deadline)
+    })).rejects.toThrow(/already has files/)
+    expect(calls.map((args) => args[1])).toEqual(["show", "show"])
+    expect(await readFile(paths[0]!, "utf8")).toBe("another owner")
+  })
+}, safetyBudget + 6_000)
+
 it("refuses a dot-dot file escape before filesystem effects", async () => {
   await scenario({}, async ({ run, outsideFile }) => {
     await run(async (unit, deadline) => {
       const escaped = `${unit.home}/${relative(unit.home, outsideFile)}`
-      await expect(unit.effects.write(escaped, "escaped", deadline)).rejects.toThrow(/may not touch/)
+      await expect(withinServiceDeadline(deadline, () => unit.effects.write(escaped, "escaped", deadline))).rejects.toThrow(/may not touch/)
       expect(existsSync(outsideFile)).toBe(false)
     })
   })
@@ -140,4 +166,16 @@ it("keeps non-Linux and optional local native proofs gated", () => {
   expect(systemdManagerAvailable({ platform: "darwin", runtimeDirectory: "", required: true })).toBe(false)
   expect(systemdManagerAvailable({ platform: "linux", runtimeDirectory: "", required: false })).toBe(false)
   expect(systemdManagerAvailable({ platform: "linux", runtimeDirectory: "/present", required: true, exists: () => true })).toBe(true)
+})
+
+it.each([
+  ["--user", "daemon-reload"],
+  ["--user", "enable", "--now", "domovoid.service"],
+  ["--user", "disable", "--now", "domovoid.service"],
+  ["--user", "show", unit, "--property=LoadState", "--property=MainPID"],
+  ["--user", "kill", "--signal=SIGKILL", "--kill-whom=main", unit],
+  ["--user", "reset-failed", unit],
+  ["--user", "list-units", "--all", "--state=failed", "--no-legend", unit],
+].map((args) => ({ args })))("keeps the scoped native operation $args", ({ args }) => {
+  expect(userScoped("systemctl", args, unit)).toEqual(args.map((argument) => argument === "domovoid.service" ? unit : argument))
 })
