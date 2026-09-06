@@ -28,7 +28,7 @@ installed WSL 1 distribution is not sufficient. The kernel must identify WSL 2.
 
 The native test process receives the exact required distro name. It must find
 that distro running under WSL 2, rather than selecting some other running guest.
-The report must contain at least six passed native tests and zero skipped,
+The report must contain at least ten passed native tests and zero skipped,
 pending, todo or failed tests. Missing virtualization, a corrupt listing, a
 disappearing distro, a failed assertion or a missing report makes the job red.
 Success prints `DOMOVOI_WSL_NATIVE_OK`; failure prints
@@ -45,7 +45,19 @@ expand dollar signs. Path translation, endpoint reads and Git-command
 preparation now bypass that shell. The native path proof checks real guest
 filenames containing spaces, variable syntax and command-substitution syntax
 through both `wsl$` and `wsl.localhost` UNC forms. This does not add a transport
-producer.
+producer by itself.
+
+Before the added transport proofs, the job installs a pinned Linux Node 22.23.2
+runtime in that same guest. The checksum is recorded from
+[Node's release checksums](https://nodejs.org/dist/v22.23.2/SHASUMS256.txt).
+The daemon is built from this checkout. The guest copies its distribution and
+integrity-bearing runtime lock, installs with `npm ci --ignore-scripts`, verifies
+the graph, grants only node-pty its existing reviewed build permission, and
+verifies again. Windows node_modules and a floating registry daemon are never
+used. The real built CLI starts through `createProductionDaemon` and publishes
+its actual ephemeral loopback port. The test enrolls it through real sockets;
+the Windows source's platform keychain is replaced with the existing test store,
+not its daemon, protocol, SQLite registry, discovery, heartbeat or socket path.
 
 Cleanup runs after success and failure, with its own deadline. It terminates and
 unregisters only this invocation's UUID distro and deletes only its staging
@@ -58,11 +70,14 @@ on destruction of the ephemeral runner VM for final cleanup.
 
 - Dependency installation: 5-minute step cap, filtered to daemon and protocol.
 - Protocol build: 2-minute step cap.
+- Daemon build and runtime lock preparation: 5-minute step cap.
 - WSL download, install, configuration and boot: 5-minute total deadline.
-- Native proofs: 3-minute total deadline.
+- Pinned Node download and locked guest dependencies: 5-minute total deadline.
+- Native proofs: 4-minute total deadline.
 - Failed-proof report diagnostics: a separate 5-second deadline.
 - Cleanup: 1-minute total deadline, shared by its commands.
-- Entire job: 15-minute hard cap, including checkout and tool setup.
+- Entire job: 25-minute hard cap, including checkout and tool setup. The combined
+  provisioning/proof command has a 16-minute step cap.
 
 The [first successful Domovoi hosted run](https://github.com/getdomovoi/domovoi/actions/runs/34005827393/job/101412694701)
 completed in **1 minute 39 seconds**, with six native proofs passed and zero
@@ -71,6 +86,12 @@ It used WSL 2.7.12.0 on image `win25-vs2026` version `20260824.214.3`, with gues
 kernel `6.18.33.2-microsoft-standard-WSL2`. This is an observed run, not a future
 duration guarantee. Keep **3 to 6 minutes** as the planning allowance for cold
 dependency and image downloads.
+
+Those measurements cover the original six proofs, not the guest runtime and
+four new transport proofs. The first run of the expanded job is still pending.
+Allow an additional 2 to 5 minutes for cold Node and npm downloads until hosted
+measurements replace that estimate. No extra distribution or normal CI matrix
+leg is added.
 
 Every Domovoi invocation prints measured provisioning, proof and cleanup seconds
 and adds them to the Actions summary after success. Actions records the other
@@ -93,10 +114,15 @@ non-default automount root. It tests the existing implementation, not a parallel
 WSL adapter. Normal unit tests retain their optional native gate outside this
 dedicated job.
 
-It does **not** install or authenticate a daemon inside WSL, open a project over
-RPC, execute Git repository work inside that daemon, or prove daemon shutdown
-and restart. It does not produce or dial a WSL fleet transport, resolve two
-distribution identities, or cover Windows 11 mirrored networking and VPNs.
-Those are subsequent tests and implementation work. A second distribution is
-added only when a test needs two. The hosted result above is evidence for
-discovery and filesystem boundaries, not for those remaining outcome gaps.
+The expanded job requires production WSL route creation after authenticated
+heartbeat, a machine-authorized RPC over that route, wrong/root credential
+refusal, no route from a stale file after killing the guest daemon, and refusal
+of a stopped guest without waking it. These become evidence only when the new
+hosted run passes, not from Linux's skipped native tests.
+
+It still does **not** open a project or execute Git repository work over that
+route, prove daemon restart, resolve two distribution identities, or cover
+Windows 11 mirrored networking and VPNs. It does not prove the host keychain,
+multi-distro port collision handling or an atomic stop-versus-endpoint-read
+operation. A second distribution is added only when a test needs two. The hosted
+result above remains evidence for the original discovery/filesystem boundaries.
