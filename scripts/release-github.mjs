@@ -16,15 +16,19 @@ export function requirePublishedArtifact(pkg, published) {
 
 async function inspectCanonicalRelease(release, { request, deadline }) {
   const call = (...args) => deadline.run(() => request(...args))
-  const tagPath = `/git/ref/tags/${encodeURIComponent(release.gitTag)}`
-  const reference = await call(tagPath)
-  if (reference) {
-    let object = reference.object
+  let reference
+  // Changesets leaves existing package tags in place. Check their target as
+  // well as the canonical tag before trusting them or allowing publication.
+  for (const tag of [release.gitTag, ...release.packages.map((pkg) => `${pkg.name}@${pkg.version}`)]) {
+    const observed = await call(`/git/ref/tags/${encodeURIComponent(tag)}`)
+    if (tag === release.gitTag) reference = observed
+    if (!observed) continue
+    let object = observed.object
     for (let depth = 0; object?.type === "tag" && depth < 8; depth += 1) {
       object = (await call(`/git/tags/${object.sha}`))?.object
     }
     if (object?.type !== "commit" || object.sha !== release.commit) {
-      throw new Error(`${release.gitTag} already names another commit; it will not be moved`)
+      throw new Error(`${tag} already names another commit; it will not be moved`)
     }
   }
   let record = await call(`/releases/tags/${encodeURIComponent(release.gitTag)}`)

@@ -128,3 +128,14 @@ test("preflight refuses conflicting assets and existing npm bytes before another
   await assert.rejects(preflightCanonicalRelease(release, ports), /integrity/)
   assert.deepEqual(writes, [])
 })
+
+test("preflight refuses a conflicting package tag even when the canonical tag is absent", async (t) => {
+  const { preflightCanonicalRelease } = await import("./release-github.mjs")
+  const { ports, writes } = fixture(t, { readVersion: async () => undefined })
+  const request = ports.request
+  const tag = `${release.packages[0].name}@${release.version}`
+  ports.request = (path, ...args) => path === `/git/ref/tags/${encodeURIComponent(tag)}`
+    ? { object: { type: "commit", sha: "c".repeat(40) } } : request(path, ...args)
+  await assert.rejects(preflightCanonicalRelease(release, ports), /protocol.*another commit/)
+  assert.deepEqual(writes, [])
+})
