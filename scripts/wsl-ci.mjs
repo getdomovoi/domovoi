@@ -163,12 +163,12 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
       const reportPath = join(staging, "native.json")
       const vitestCli = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs")
       try {
-        await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
+        effects.log(await run(deadline, process.execPath, [vitestCli, "run", "src/wsl-windows.test.ts",
           "--coverage.enabled=false", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`], {
           cwd: join(rootDirectory, "apps", "daemon"),
           env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution, DOMOVOI_WSL_EXPECTED_MOUNT_ROOT: mountRoot,
-            DOMOVOI_WSL_NATIVE_TRANSPORT: "1" },
-        })
+            DOMOVOI_WSL_NATIVE_TRANSPORT: "1", DOMOVOI_WSL_NATIVE_BUDGET_MS: String(budgets.proofs) },
+        }))
         report = await deadline.run(() => effects.readReport(reportPath))
         assertWslReport(report)
       } catch (error) {

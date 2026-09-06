@@ -59,7 +59,9 @@ export function nativeWslTransportProofs(distribution: string | undefined): void
       async function startGuest(deadline: OperationDeadline) {
         deadline.throwIfExpired()
         guestLifetime?.clear()
-        guestLifetime = OperationDeadline.start(180_000)
+        // The job owns the total phase budget. A shorter independent lifetime
+        // would kill a slow valid guest before that phase actually expires.
+        guestLifetime = OperationDeadline.start(Number(process.env["DOMOVOI_WSL_NATIVE_BUDGET_MS"]))
         guestOutput = ""
         guestExit = undefined
         // Fixed paths in this job's UUID guest. Keep its production CLI in the

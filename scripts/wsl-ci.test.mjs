@@ -137,6 +137,7 @@ test("provisions exactly one distro, requires it in the test process, then remov
   assert.ok(proof.args.includes("--reporter=json"))
   assert.equal(proof.options.env.DOMOVOI_WSL_REQUIRED_DISTRIBUTION, distribution)
   assert.equal(proof.options.env.DOMOVOI_WSL_EXPECTED_MOUNT_ROOT, "/domovoi-ci-drives/")
+  assert.equal(proof.options.env.DOMOVOI_WSL_NATIVE_BUDGET_MS, "240000")
   assert.ok(calls.some(({ args }) => args.includes("uname")))
   for (const { args } of calls.filter(({ args }) => args[0] === "-d")) {
     assert.equal(args[4], "--exec", "provisioning must not add an implicit Linux shell")
@@ -156,6 +157,26 @@ test("missing virtualization fails before the proofs, not as a green skip", asyn
   await assert.rejects(runWslCi({ platform: "win32", effects }), /HCS_E_HYPERV_NOT_INSTALLED/)
   assert.equal(calls.some(({ args }) => args.includes("src/wsl-windows.test.ts")), false)
   assert.equal(calls.at(-1).args[0], "--unregister")
+})
+
+test("a changed proof budget also reaches the guest lifetime", async () => {
+  const { calls, effects } = fixture()
+  await runWslCi({ platform: "win32", effects, budgets: { proofs: 4_321 } })
+  const proof = calls.find(({ args }) => args.includes("src/wsl-windows.test.ts"))
+  assert.equal(proof.options.env.DOMOVOI_WSL_NATIVE_BUDGET_MS, "4321")
+})
+
+test("successful proofs retain real guest diagnostics in the job log", async () => {
+  const lines = []
+  const original = fixture()
+  const { effects } = fixture({
+    run: (command, args, options) => args.includes("src/wsl-windows.test.ts")
+      ? Promise.resolve("WSL repository Git: git version from the required guest\n")
+      : original.effects.run(command, args, options),
+    log: (line) => lines.push(line),
+  })
+  await runWslCi({ platform: "win32", effects })
+  assert.ok(lines.some((line) => line.includes("WSL repository Git: git version from the required guest")))
 })
 
 test("a working WSL executable with a WSL 1 guest is not enough", async () => {
