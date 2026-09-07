@@ -397,6 +397,40 @@ describe("file transfer transaction journal", () => {
     await expect(transactions.acceptMember(chunk)).resolves.toEqual({ state: "prepared", transferId })
   })
 
+  it("keeps unrelated transfers independent within the receiving process", async () => {
+    const { root, transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    // Distinct IDs sharing a short hash prefix must still remain independent.
+    const otherId = "transfer-00000000000000000000000000000005"
+    for (const id of [transferId, otherId]) {
+      const manifest = manifestFor(stateBytes, Buffer.from("repository"), id)
+      await transactions.prepare(manifest, sessionTransferManifestDigest(manifest))
+    }
+    const chunkPath = join(root, transferId, "chunks", memberJournalKey("state"), "0-1.chunk")
+    await mkdir(dirname(chunkPath))
+    await writeFile(chunkPath, stateBytes)
+    const deadline = OperationDeadline.start(daemonWaitTimeoutMs(process.platform))
+    const gate = new EventEmitter()
+    const opened = once(gate, "opened", { signal: deadline.signal })
+    chunkReadSimulation.path = chunkPath
+    chunkReadSimulation.pause = async () => {
+      const released = once(gate, "release", { signal: deadline.signal })
+      gate.emit("opened")
+      await released
+    }
+    const chunk = { transferId, memberId: "state", sequence: 0, bytes: stateBytes.toString("base64"), final: true, initiatedByClient: "desktop" as const }
+    const first = Promise.allSettled([transactions.acceptMember(chunk)])
+    try {
+      await opened
+      await expect(new FileTransferTransactions(root).acceptMember({ ...chunk, transferId: otherId }))
+        .resolves.toEqual({ state: "member-received", transferId: otherId, memberId: "state" })
+    } finally {
+      gate.emit("release")
+      try { await first } finally { deadline.clear() }
+    }
+    await expect(first).resolves.toEqual([{ status: "fulfilled", value: { state: "member-received", transferId, memberId: "state" } }])
+  })
+
   it.each(["release", "kill"] as const)("excludes a second daemon process until a chunk reader's %s", async (finish) => {
     const { root, transactions } = await journal()
     const stateBytes = Buffer.from("state")
@@ -445,13 +479,13 @@ describe("file transfer transaction journal", () => {
       expect(transferMemberResultSchema.parse(overlapping), diagnostics)
         .toEqual({ state: "refused", transferId, reason: "chunk-out-of-order" })
       await expect(readFile(chunkPath)).resolves.toEqual(stateBytes)
-      // A different member remains available in the other process.
+      // The receiving process owns this journal until its open receives drain.
       expect(await retry.connection.call("transfer.member", {
         ...chunk, memberId: "repository", bytes: repositoryBytes.toString("base64"),
-      }, undefined, deadline)).toEqual({ state: "member-received", transferId, memberId: "repository" })
+      }, undefined, deadline)).toEqual({ state: "refused", transferId, reason: "chunk-out-of-order" })
       if (finish === "release") {
         owner.child.send("release")
-        await expect(first, diagnostics).resolves.toEqual([{ status: "fulfilled", value: { state: "prepared", transferId } }])
+        await expect(first, diagnostics).resolves.toEqual([{ status: "fulfilled", value: { state: "member-received", transferId, memberId: "state" } }])
       } else {
         owner.child.kill("SIGKILL")
         await beforeDeadline(owner.exited, deadline)
@@ -459,7 +493,10 @@ describe("file transfer transaction journal", () => {
       }
       // OS ownership must drain on both ordinary completion and process death.
       expect(await retry.connection.call("transfer.member", chunk, undefined, deadline))
-        .toEqual({ state: "prepared", transferId })
+        .toEqual({ state: "member-received", transferId, memberId: "state" })
+      expect(await retry.connection.call("transfer.member", {
+        ...chunk, memberId: "repository", bytes: repositoryBytes.toString("base64"),
+      }, undefined, deadline)).toEqual({ state: "prepared", transferId })
       await expect(transactions.readMember(transferId, manifestDigest, "state")).resolves.toEqual(stateBytes)
       await expect(transactions.readMember(transferId, manifestDigest, "repository")).resolves.toEqual(repositoryBytes)
       await expect(transactions.status(transferId, manifestDigest)).resolves.toEqual({ state: "prepared", transferId })

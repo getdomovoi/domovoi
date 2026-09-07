@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
 import { open, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 import {
   sessionTransferManifestSchema,
@@ -38,8 +38,33 @@ const chunksDirectory = "chunks"
 const chunkName = /^(0|[1-9][0-9]*)-(0|1)\.chunk$/u
 const publicationTails = new Map<string, Promise<void>>()
 const activeMemberReceives = new Set<string>()
+const receivingJournals = new Map<string, { file: FileLease; users: number }>()
 
 class TransferMemberReceiveBusyError extends Error {}
+
+function claimJournalReceiveLease(root: string): FileLease {
+  // One process owns a journal's active receives. Its independent members
+  // share the lease; other processes must wait until every receive drains.
+  // Keep one permanent inode outside disposable transaction directories.
+  const shared = receivingJournals.get(root) ?? {
+    file: claimExclusiveFileLease(join(root, ".receive-lease.sqlite"), () => new TransferMemberReceiveBusyError()),
+    users: 0,
+  }
+  receivingJournals.set(root, shared)
+  shared.users += 1
+  let released = false
+  return {
+    release: () => {
+      if (released) return
+      if (shared.users === 1) {
+        shared.file.release()
+        receivingJournals.delete(root)
+      }
+      shared.users -= 1
+      released = true
+    },
+  }
+}
 
 export const defaultTransferJournalRetentionMs = 7 * 24 * 60 * 60 * 1_000
 
@@ -106,7 +131,7 @@ export class FileTransferTransactions {
   readonly #now: () => number
 
   constructor(root: string, options: FileTransferTransactionOptions = {}) {
-    this.#root = root
+    this.#root = resolve(root)
     this.#retentionMs = options.retentionMs ?? defaultTransferJournalRetentionMs
     this.#now = options.now ?? Date.now
     if (!Number.isSafeInteger(this.#retentionMs) || this.#retentionMs <= 0) {
@@ -220,7 +245,7 @@ export class FileTransferTransactions {
       try {
         // Kernel-backed exclusion spans processes and drains on process death.
         // Keep the lease through every chunk read, publication and removal.
-        lease = claimExclusiveFileLease(this.#receiveLeasePath(params), () => new TransferMemberReceiveBusyError())
+        lease = claimJournalReceiveLease(this.#root)
       } catch (error) {
         if (error instanceof TransferMemberReceiveBusyError) return this.#memberRefusal(params, "chunk-out-of-order")
         throw error
@@ -229,18 +254,6 @@ export class FileTransferTransactions {
     } finally {
       try { lease?.release() } finally { activeMemberReceives.delete(path) }
     }
-  }
-
-  #receiveLeasePath(params: Pick<TransferMemberParams, "transferId" | "memberId">): string {
-    // A lease inode must never be unlinked by journal cleanup. Use at most 256
-    // permanent files outside disposable transactions, rather than leaving a
-    // new inode per transfer forever. Hash collisions conservatively refuse a
-    // concurrent chunk with the same retryable refusal as same-member overlap.
-    const slot = createHash("sha256")
-      .update("domovoi.transfer-receive-lease.v1\0")
-      .update(params.transferId).update("\0").update(params.memberId)
-      .digest("hex").slice(0, 2)
-    return join(this.#root, ".receive-leases", `${slot}.sqlite`)
   }
 
   async #acceptReservedMember(params: TransferMemberParams): Promise<TransferMemberResult> {

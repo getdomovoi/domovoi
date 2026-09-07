@@ -696,10 +696,10 @@ Every ledger entry is now merged.
     chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. #251 merged a
     guard: `apps/daemon/src/transfer-transactions.ts` reserves each chunk path in
     `activeMemberReceives` before the first await and refuses a second concurrent receive.
-    Receives now also hold an OS-backed SQLite lease through publication and removal. Two real
-    daemon processes over one journal prove refusal while a chunk descriptor is open, independent
-    member progress and recovery after completion or process death, without synthetic filesystem
-    errors. The lease pool is bounded and stays outside disposable journals; see
+    Receives now also share a process-owned SQLite lease through publication and removal. Two
+    real daemon processes over one journal prove refusal while a chunk descriptor is open and
+    recovery after completion or process death, without synthetic filesystem errors. Independent
+    receives within the owning process share one permanent lease outside disposable journals; see
     `docs/transfer-receive-leases.md`. The remaining evidence gate is a passing Windows CI run of
     this process test.
 - [x] Transfer dialog in the client with preflight, method, and what travels, calling
