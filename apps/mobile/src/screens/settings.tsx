@@ -3,9 +3,20 @@ import { ScrollView, TextInput, View } from "react-native"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import { Text } from "../components/ui/text"
+import { cn } from "../lib/cn"
 import type { ConnectionFault } from "../lib/connection-fault"
 import type { DaemonStatus } from "../lib/daemon"
 import { colors } from "../theme/tokens.generated"
+
+// The four the handoff lists. They configure a machine rather than a phone, so
+// an unpaired phone cannot reach any of them. The handoff keeps them on screen
+// rather than hiding them, so what pairing buys is visible before it is done.
+const machineScoped = [
+  "Agents and models",
+  "Permission allow list",
+  "Skills",
+  "Machine defaults",
+] as const
 
 const statusLabel: Record<DaemonStatus, string> = {
   connecting: "Connecting",
@@ -22,6 +33,7 @@ export function SettingsScreen({
   onChangeToken,
   onConnect,
   onForget,
+  paired,
   bottomInset,
 }: {
   url: string
@@ -32,6 +44,9 @@ export function SettingsScreen({
   onChangeToken: (value: string) => void
   onConnect: () => void
   onForget: () => void
+  // Whether this phone has a daemon to talk to at all. Device settings work
+  // either way; the machine-scoped ones do not exist until one is paired.
+  paired: boolean
   // What the floating tab bar covers, so the list can pad by exactly that.
   bottomInset: number
 }) {
@@ -39,12 +54,15 @@ export function SettingsScreen({
     <View className="flex-1 bg-background">
       <View className="px-4 pb-3 pt-2">
         <Text variant="heading">Settings</Text>
+        {paired ? null : <Text variant="meta" className="mt-[3px]">No machines paired</Text>}
       </View>
 
       <ScrollView
         contentContainerClassName="gap-[9px] px-3"
         contentContainerStyle={{ paddingBottom: bottomInset }}
       >
+        <Text variant="label" className="px-1">This phone</Text>
+
         <Card className="gap-3">
           <View className="gap-1.5">
             <Text variant="label">Daemon address</Text>
@@ -98,6 +116,36 @@ export function SettingsScreen({
           hosted service. The token is held in this device's keychain, is never copied off it, and
           forgetting the daemon removes it.
         </Text>
+
+        {/* Listed, dimmed and not touchable. Hiding them would leave the screen
+            looking finished when it is not, and making them tappable would
+            offer a screen that cannot exist without a machine behind it. */}
+        {paired ? null : (
+          <View className="mt-1.5 gap-[7px]">
+            <Text variant="label" className="px-1">Needs a paired machine</Text>
+            <Card flush>
+              {machineScoped.map((label, index) => (
+                <View
+                  key={label}
+                  accessibilityLabel={`${label}, unavailable`}
+                  className={cn(
+                    "flex-row items-center gap-2.5 px-[13px] py-3 opacity-50",
+                    index > 0 && "border-t border-border",
+                  )}
+                >
+                  <Text className="flex-1 text-[12.5px]">{label}</Text>
+                  <Text className="font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint">
+                    Unavailable
+                  </Text>
+                </View>
+              ))}
+            </Card>
+            <Text variant="note" className="px-1 text-faint">
+              These live on the machine, not on this phone. They stay listed so you can see what
+              pairing unlocks.
+            </Text>
+          </View>
+        )}
       </ScrollView>
     </View>
   )

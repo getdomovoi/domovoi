@@ -34,8 +34,9 @@ import { annotationRows, reviewRows } from "./review-rows"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { SettingsScreen } from "./screens/settings"
+import { UnpairedScreen } from "./screens/unpaired"
 import { promptProblem, sessionDetail } from "./session-detail"
-import { shellState } from "./shell-state"
+import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
 import {
   missingSkillProblem,
@@ -125,6 +126,14 @@ export function App() {
     fault,
   })
   const waiting = snapshot ? waitingCount(snapshot) : 0
+  // No daemon has been named at all. That is a different screen from a daemon
+  // that will not answer: every tab has its own reason for being empty, and
+  // Settings is not empty at all. ShellNotice answers the reaching and refused
+  // states instead, so the two never both claim this one.
+  const unpaired = shell.kind === "unpaired"
+  // The same fact narrowed for the screen that draws it, so a state answered by
+  // UnpairedScreen cannot also reach ShellNotice.
+  const unreachable = unreachableShell(shell)
 
   // The snapshot describes the daemon this phone is talking to, so it is the
   // one machine in the fleet whose sessions and tools the phone can count.
@@ -461,7 +470,13 @@ export function App() {
       <SafeAreaView edges={["top", "left", "right"]} className="flex-1 bg-background">
         <View className="flex-1">
           {tab === "sessions" ? (
-            snapshot ? (
+            unpaired ? (
+              <UnpairedScreen
+                tab="sessions"
+                bottomInset={tabFootprint}
+                onPair={() => setTab("settings")}
+              />
+            ) : snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
                 machineCount={fleet?.filter((entry) => entry.kind === "machine").length}
@@ -483,17 +498,24 @@ export function App() {
                 onPauseAll={() => setConfirmPause(true)}
                 bottomInset={tabFootprint}
               />
-            ) : (
+            ) : unreachable ? (
               <ShellNotice
-                shell={shell}
+                shell={unreachable}
                 address={connectTo?.url ?? ""}
                 bottomInset={tabFootprint}
                 onOpenSettings={() => setTab("settings")}
                 onRetry={reconnect}
               />
-            )
+            ) : null
           ) : null}
           {tab === "review" ? (
+            unpaired ? (
+              <UnpairedScreen
+                tab="review"
+                bottomInset={tabFootprint}
+                onPair={() => setTab("settings")}
+              />
+            ) : (
             <ReviewScreen
               rows={review}
               notice={notice}
@@ -501,8 +523,16 @@ export function App() {
               onOpenArtifact={setOpenArtifactId}
               bottomInset={tabFootprint}
             />
+            )
           ) : null}
           {tab === "fleet" ? (
+            unpaired ? (
+              <UnpairedScreen
+                tab="fleet"
+                bottomInset={tabFootprint}
+                onPair={() => setTab("settings")}
+              />
+            ) : (
             <FleetScreen
               fleet={fleet}
               activity={activity}
@@ -515,6 +545,7 @@ export function App() {
               onOpen={() => setTab("sessions")}
               bottomInset={tabFootprint}
             />
+            )
           ) : null}
           {tab === "settings" ? (
             <SettingsScreen
@@ -535,6 +566,7 @@ export function App() {
                 setToken("")
                 void clearCredential()
               }}
+              paired={!unpaired}
               bottomInset={tabFootprint}
             />
           ) : null}

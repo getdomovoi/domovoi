@@ -1,7 +1,7 @@
 import { ScrollView, View } from "react-native"
 
 import { cn } from "../lib/cn"
-import type { ShellState } from "../shell-state"
+import type { UnreachableShell } from "../shell-state"
 import { Button } from "./ui/button"
 import { Card } from "./ui/card"
 import { Icon, type IconName } from "./ui/icon"
@@ -10,21 +10,19 @@ import { Text } from "./ui/text"
 // A phone that cannot see a daemon is not a broken screen. The handoff gives it
 // the whole screen: what was tried, what came back, and the one thing worth
 // pressing. It refuses to guess at session state, so nothing else is drawn.
-const marks: Record<ShellState["kind"], { icon: IconName, tone: "faint" | "destructive" }> = {
+const marks: Record<UnreachableShell["kind"], { icon: IconName, tone: "faint" | "destructive" }> = {
   restoring: { icon: "layers", tone: "faint" },
-  unpaired: { icon: "server", tone: "faint" },
   refused: { icon: "unplug", tone: "destructive" },
   reaching: { icon: "unplug", tone: "faint" },
-  ready: { icon: "layers", tone: "faint" },
 }
 
-// Two of these states are fixed in the same place. The other two are the phone
-// still working, where a button would only offer to interrupt it.
-const settled: ReadonlySet<ShellState["kind"]> = new Set(["unpaired", "refused"])
+// A credential the daemon has refused is fixed in one place. The other two are
+// the phone still working, where a button would only offer to interrupt it.
+const settled: ReadonlySet<UnreachableShell["kind"]> = new Set(["refused"])
 
 // Retrying is only worth offering where a retry can change the answer. A
 // credential the daemon refused gives the same answer to every attempt.
-const retriable: ReadonlySet<ShellState["kind"]> = new Set(["reaching"])
+const retriable: ReadonlySet<UnreachableShell["kind"]> = new Set(["reaching"])
 
 export function ShellNotice({
   shell,
@@ -33,7 +31,7 @@ export function ShellNotice({
   onOpenSettings,
   onRetry,
 }: {
-  shell: ShellState
+  shell: UnreachableShell
   // The one route this phone has. Named on screen because a wrong address and
   // a machine that is asleep look identical from here.
   address: string

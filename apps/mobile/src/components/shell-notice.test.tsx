@@ -2,9 +2,17 @@ import { describe, expect, it, jest } from "@jest/globals"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 
 import { ShellNotice } from "./shell-notice"
-import { shellState } from "../shell-state"
+import { shellState, unreachableShell, type UnreachableShell } from "../shell-state"
 
-const reaching = shellState({
+// The screen only ever draws states where a daemon is in hand and unreachable.
+// A phone with no daemon named at all is UnpairedScreen's, one tab at a time.
+function unreachable(shell: ReturnType<typeof shellState>): UnreachableShell {
+  const narrowed = unreachableShell(shell)
+  if (!narrowed) throw new Error("this state is not ShellNotice's to draw")
+  return narrowed
+}
+
+const reaching = unreachable(shellState({
   restoringCredential: false,
   hasCredential: true,
   hasSnapshot: false,
@@ -13,9 +21,9 @@ const reaching = shellState({
     headline: "Cannot reach the daemon",
     detail: "The connection did not open.",
   },
-})
+}))
 
-const refused = shellState({
+const refused = unreachable(shellState({
   restoringCredential: false,
   hasCredential: true,
   hasSnapshot: false,
@@ -24,14 +32,14 @@ const refused = shellState({
     headline: "The daemon refused this credential",
     detail: "The pairing token is wrong, or this device has been revoked. Pair again in Settings.",
   },
-})
+}))
 
-const unpaired = shellState({
-  restoringCredential: false,
+const restoring = unreachable(shellState({
+  restoringCredential: true,
   hasCredential: false,
   hasSnapshot: false,
   fault: undefined,
-})
+}))
 
 async function draw(overrides: Partial<Parameters<typeof ShellNotice>[0]> = {}) {
   const props = {
@@ -69,14 +77,16 @@ describe("ShellNotice", () => {
     expect(screen.getByRole("button", { name: "Settings" })).toBeOnTheScreen()
   })
 
-  it("does not claim a daemon is unreachable when none has been named", async () => {
-    await draw({ shell: unpaired, address: "" })
+  // Restoring is the phone still working. Calling that unreachable would be a
+  // failure reported before anything has failed.
+  it("does not call a credential that is still being read unreachable", async () => {
+    await draw({ shell: restoring, address: "" })
     expect(screen.queryByText("No daemon reachable")).toBeNull()
-    expect(screen.getAllByText("No daemon paired").length).toBeGreaterThan(0)
+    expect(screen.queryByRole("button", { name: "Retry now" })).toBeNull()
   })
 
   it("names no address it has not been given", async () => {
-    await draw({ shell: unpaired, address: "" })
+    await draw({ shell: restoring, address: "" })
     expect(screen.queryByText("Address")).toBeNull()
   })
 })
