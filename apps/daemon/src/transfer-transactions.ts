@@ -17,6 +17,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { sessionTransferManifestDigest } from "./session-transfer-package.js"
+import { claimExclusiveFileLease, type FileLease } from "./file-lease.js"
 
 type StoredManifest = {
   manifestDigest: string
@@ -37,6 +38,8 @@ const chunksDirectory = "chunks"
 const chunkName = /^(0|[1-9][0-9]*)-(0|1)\.chunk$/u
 const publicationTails = new Map<string, Promise<void>>()
 const activeMemberReceives = new Set<string>()
+
+class TransferMemberReceiveBusyError extends Error {}
 
 export const defaultTransferJournalRetentionMs = 7 * 24 * 60 * 60 * 1_000
 
@@ -212,11 +215,32 @@ export class FileTransferTransactions {
     // the existing retry refusal instead of adding an unbounded queue wait.
     if (activeMemberReceives.has(path)) return this.#memberRefusal(params, "chunk-out-of-order")
     activeMemberReceives.add(path)
+    let lease: FileLease | undefined
     try {
+      try {
+        // Kernel-backed exclusion spans processes and drains on process death.
+        // Keep the lease through every chunk read, publication and removal.
+        lease = claimExclusiveFileLease(this.#receiveLeasePath(params), () => new TransferMemberReceiveBusyError())
+      } catch (error) {
+        if (error instanceof TransferMemberReceiveBusyError) return this.#memberRefusal(params, "chunk-out-of-order")
+        throw error
+      }
       return await this.#acceptReservedMember(params)
     } finally {
-      activeMemberReceives.delete(path)
+      try { lease?.release() } finally { activeMemberReceives.delete(path) }
     }
+  }
+
+  #receiveLeasePath(params: Pick<TransferMemberParams, "transferId" | "memberId">): string {
+    // A lease inode must never be unlinked by journal cleanup. Use at most 256
+    // permanent files outside disposable transactions, rather than leaving a
+    // new inode per transfer forever. Hash collisions conservatively refuse a
+    // concurrent chunk with the same retryable refusal as same-member overlap.
+    const slot = createHash("sha256")
+      .update("domovoi.transfer-receive-lease.v1\0")
+      .update(params.transferId).update("\0").update(params.memberId)
+      .digest("hex").slice(0, 2)
+    return join(this.#root, ".receive-leases", `${slot}.sqlite`)
   }
 
   async #acceptReservedMember(params: TransferMemberParams): Promise<TransferMemberResult> {
