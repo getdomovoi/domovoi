@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import { sep } from "node:path"
 import test from "node:test"
 
@@ -9,6 +10,8 @@ import {
   packagedAppCandidates,
   packagedAsarPath,
 } from "./launch-smoke-args.mjs"
+import * as launch from "./launch-smoke-args.mjs"
+import { executableOnPath } from "./desktop-smoke.mjs"
 
 // Both path builders name a target platform's output directories, but the
 // paths themselves are opened and spawned on the machine doing the packaging,
@@ -42,6 +45,52 @@ test("keeps the Chromium sandbox outside Linux CI", () => {
       ["--headless", "--disable-gpu", "/desktop"],
     )
   }
+})
+
+test("wraps Linux Electron in the discovered X server without shell interpolation", () => {
+  const electronArgs = launchSmokeElectronArgs({ platform: "linux", ci: true, desktopRoot: "/proof with spaces" })
+  assert.deepEqual(launch.launchSmokeCommand({ platform: "linux", env: {}, electronPath: "/Electron path/electron", electronArgs, xvfb: "/tools/xvfb-run" }), {
+    command: "/tools/xvfb-run", args: ["--auto-servernum", "/Electron path/electron", ...electronArgs],
+  })
+})
+
+test("uses a local X or Wayland display when xvfb-run is absent", () => {
+  for (const env of [{ DISPLAY: ":1" }, { WAYLAND_DISPLAY: "wayland-0" }]) {
+    const electronArgs = launchSmokeElectronArgs({ platform: "linux", ci: false, desktopRoot: "/proof" })
+    assert.deepEqual(launch.launchSmokeCommand({ platform: "linux", env, electronPath: "/electron", electronArgs }), {
+      command: "/electron", args: electronArgs,
+    })
+  }
+})
+
+test("names the missing Linux display prerequisite instead of starting a doomed proof", () => {
+  assert.throws(() => launch.launchSmokeCommand({ platform: "linux", env: {}, electronPath: "/electron", electronArgs: [] }),
+    /Install xvfb-run.*DISPLAY.*WAYLAND_DISPLAY/u)
+})
+
+test("never adds an X server or Linux-only flag on Windows and macOS", () => {
+  for (const platform of ["win32", "darwin"]) {
+    const electronArgs = launchSmokeElectronArgs({ platform, ci: true, desktopRoot: "/proof" })
+    const result = launch.launchSmokeCommand({ platform, env: {}, electronPath: "/electron", electronArgs, xvfb: "/tools/xvfb-run" })
+    assert.deepEqual(result, { command: "/electron", args: ["--headless", "--disable-gpu", "/proof"] })
+  }
+})
+
+for (const name of ["fleet-origin-smoke.mjs", "fleet-client-smoke.mjs"]) {
+  test(`${name} uses the shared launch and environment policies`, async () => {
+    const source = await readFile(new URL(name, import.meta.url), "utf8")
+    for (const helper of ["launchSmokeElectronArgs", "launchSmokeCommand", "launchSmokeEnvironment"]) {
+      assert.match(source, new RegExp(`${helper}\\(`, "u"), `${name} bypasses ${helper}`)
+    }
+    assert.match(source, /executableOnPath\("xvfb-run"\)/u)
+    assert.doesNotMatch(source, /["']--no-sandbox["']|ELECTRON_RUN_AS_NODE\s*:/u)
+  })
+}
+
+test("display executable discovery cannot hang the proof before its child starts", { timeout: 1_000 }, async () => {
+  await assert.rejects(executableOnPath("xvfb-run", {
+    env: { PATH: "/silent" }, timeoutMs: 20, checkAccess: () => new Promise(() => {}),
+  }), /Timed out finding xvfb-run/u)
 })
 
 test("omits the application directory for a packaged build, which carries its own", () => {
