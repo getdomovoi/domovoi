@@ -22,6 +22,7 @@ import { Text } from "./components/ui/text"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
 import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
+import { connectedMachineActivity } from "./machine-activity"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { ArtifactScreen } from "./screens/artifact"
@@ -116,6 +117,13 @@ export function App() {
   })
   const waiting = snapshot ? waitingCount(snapshot) : 0
 
+  // The snapshot describes the daemon this phone is talking to, so it is the
+  // one machine in the fleet whose sessions and tools the phone can count.
+  const activity = useMemo(
+    () => snapshot ? connectedMachineActivity(snapshot) : undefined,
+    [snapshot],
+  )
+
   const openApproval = useMemo(
     () => snapshot?.approvals.find((approval) => approval.id === openApprovalId),
     [openApprovalId, snapshot],
@@ -206,8 +214,11 @@ export function App() {
     if (tab === "fleet" && status === "open") void loadFleet()
   }, [loadFleet, status, tab])
 
+  // Sessions measures how long an approval has waited and Fleet measures how
+  // long a machine has been silent, so the clock ticks for both and stops on
+  // the tab that reads no ages.
   useEffect(() => {
-    if (tab !== "sessions") return
+    if (tab !== "sessions" && tab !== "fleet") return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(timer)
@@ -439,11 +450,14 @@ export function App() {
           {tab === "fleet" ? (
             <FleetScreen
               fleet={fleet}
+              activity={activity}
               loading={fleetLoading}
               problem={fleetProblem}
               notice={notice}
               connected={status === "open"}
+              now={now}
               onRefresh={() => void loadFleet()}
+              onOpen={() => setTab("sessions")}
             />
           ) : null}
           {tab === "settings" ? (
