@@ -71,6 +71,7 @@ export function FloatingBar({
 
   return (
     <View
+      {...props}
       onLayout={onFootprint ? measure : undefined}
       style={{
         position: "absolute",
@@ -88,7 +89,6 @@ export function FloatingBar({
         shadowOffset: { width: 0, height: lifted ? 10 : 8 },
         elevation: lifted ? 16 : 12,
       }}
-      {...props}
     >
       <View className={cn("overflow-hidden border border-border", shapes[shape])}>
         <BlurView
