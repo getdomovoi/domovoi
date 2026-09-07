@@ -94,7 +94,19 @@ export function App() {
     return () => { live = false }
   }, [])
 
-  const { snapshot, status, fault, call, refresh } = useDaemon(connectTo?.url, connectTo?.token)
+  // Built before the connection, because the connection hands it every fleet the
+  // daemon pushes.
+  const [fleetLoads] = useState(() => fleetLoader({
+    setFleet,
+    setLoading: setFleetLoading,
+    setProblem: setFleetProblem,
+  }))
+
+  const { snapshot, status, fault, call, refresh } = useDaemon(
+    connectTo?.url,
+    connectTo?.token,
+    fleetLoads.accept,
+  )
   const notice = connectionNotice(status, fault, snapshot !== undefined)
   const shell = shellState({
     restoringCredential: restoring,
@@ -156,12 +168,6 @@ export function App() {
     }
   }, [call])
 
-  const [fleetLoads] = useState(() => fleetLoader({
-    setFleet,
-    setLoading: setFleetLoading,
-    setProblem: setFleetProblem,
-  }))
-
   const loadFleet = useCallback(() => fleetLoads.load(call), [call, fleetLoads])
 
   // Enablements ride the snapshot, so the phone is told the moment one changes
@@ -192,9 +198,10 @@ export function App() {
     void loadSkills()
   }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
 
-  // The list is asked for when the tab is opened rather than kept warm, because
-  // a phone should not hold a subscription it is not showing. Depending on the
-  // status is what makes it ask again when the connection comes back.
+  // The list is asked for when the tab is opened rather than polled. After that
+  // the daemon pushes every change on its own, so nothing here has to ask again
+  // to stay current. Depending on the status is what makes it ask once more
+  // when the connection comes back.
   useEffect(() => {
     if (tab === "fleet" && status === "open") void loadFleet()
   }, [loadFleet, status, tab])

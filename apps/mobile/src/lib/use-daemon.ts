@@ -3,6 +3,7 @@ import { AppState } from "react-native"
 import {
   applyWorkspaceDelta,
   workspaceSnapshotSchema,
+  type FleetEntry,
   type WorkspaceDelta,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -11,7 +12,13 @@ import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { DaemonConnection, type DaemonStatus } from "./daemon"
 import { retryDelayMs } from "./reconnect"
 
-export function useDaemon(url: string | undefined, token: string | undefined) {
+export function useDaemon(
+  url: string | undefined,
+  token: string | undefined,
+  // Where a pushed fleet goes. Held in a ref so the connection is not torn down
+  // and rebuilt every time the caller renders a new closure.
+  onFleet: (entries: FleetEntry[]) => void,
+) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | undefined>(undefined)
   const [status, setStatus] = useState<DaemonStatus>("closed")
   const [fault, setFault] = useState<ConnectionFault | undefined>(undefined)
@@ -22,6 +29,8 @@ export function useDaemon(url: string | undefined, token: string | undefined) {
   // Nothing reopens the connection after that except the person changing the
   // credential, which re-runs this effect and clears it.
   const givenUp = useRef(false)
+  const fleetSink = useRef(onFleet)
+  fleetSink.current = onFleet
 
   useEffect(() => {
     if (!url || !token) {
@@ -45,6 +54,7 @@ export function useDaemon(url: string | undefined, token: string | undefined) {
         },
         onDelta: (delta: WorkspaceDelta) =>
           setSnapshot((current) => current ? applyWorkspaceDelta(current, delta) : current),
+        onFleet: (entries) => fleetSink.current(entries),
         onStatus: setStatus,
         onError: (cause) => {
           const next = connectionFault(cause)
