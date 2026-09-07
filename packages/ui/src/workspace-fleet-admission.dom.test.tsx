@@ -24,6 +24,11 @@ const machine: FleetMachine = {
   transports: [transport],
 }
 
+// This full-shell journey includes authorization, switching, return, removal
+// and renewal. Windows CI exceeded the single-test default even after paste
+// replaced per-character input. Keep each request and observation bound intact.
+const admissionJourneyTimeoutMs = 15_000
+
 it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and home return with separate client authority", async (action) => {
   const user = userEvent.setup()
   render(<WorkspaceShell />)
@@ -98,7 +103,7 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
     expect(screen.getByText("Client credential verified")).toBeTruthy()
     expect(screen.queryByText(/This app no longer holds/)).toBeNull()
   }
-})
+}, admissionJourneyTimeoutMs)
 
 it("renders refusal and leaves Use disabled when the credential is a daemon root", async () => {
   const user = userEvent.setup()
