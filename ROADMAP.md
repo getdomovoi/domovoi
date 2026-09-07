@@ -786,7 +786,10 @@ Not covered, and the reason this goal is open:
   restart to test at all;
 - a project is opened and Git is executed over the WSL route, but only inside one throwaway guest
   built from one pinned image and only as root, and no session has been transferred over it;
-- no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
+- a client is admitted to a remote daemon and drives Use and Terminal, but only between two
+  production daemons on one machine under `fleet-client-smoke.mjs`. Credentials stay in app
+  memory, so retention does not revoke on the target, and remote preview frames still have no
+  verified path.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
 bounded ordered dial, a session move, reconnect, restart, revocation, and removal. A daemon must

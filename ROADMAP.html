@@ -933,7 +933,7 @@ td { color: var(--ink2); }
 </li>
 <li>a project is opened and Git is executed over the WSL route, but only inside one throwaway guest built from one pinned image and only as root, and no session has been transferred over it;
 </li>
-<li>no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
+<li>a client is admitted to a remote daemon and drives Use and Terminal, but only between two production daemons on one machine under <code>fleet-client-smoke.mjs</code>. Credentials stay in app memory, so retention does not revoke on the target, and remote preview frames still have no verified path.
 </li>
 </ul>
 <p>Required to close: two physical machines taken from pairing to a fleet row on real keychains, a bounded ordered dial, a session move, reconnect, restart, revocation, and removal. A daemon must also remain reachable from a paired phone across private-network identity changes without exposing payload plaintext to the relay, and a bearer or channel key alone must not be enough to enter.</p>
