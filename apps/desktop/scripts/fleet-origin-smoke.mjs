@@ -6,6 +6,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import ts from "typescript"
+import { executableOnPath } from "./desktop-smoke.mjs"
+import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
 
 const require = createRequire(import.meta.url)
 const directory = await mkdtemp(join(tmpdir(), "domovoi-fleet-origin-proof-"))
@@ -21,10 +23,15 @@ try {
   await copyFile(new URL("../src/renderer/public/fleet-socket.js", import.meta.url), join(directory, "fleet-socket.js"))
   await writeFile(join(directory, "index.html"), "<!DOCTYPE html><html><body>Origin proof</body></html>")
   const electron = require("electron")
+  const electronArgs = [...launchSmokeElectronArgs({ platform: process.platform, ci: process.env.CI === "true",
+    desktopRoot: fileURLToPath(new URL("./fleet-origin-smoke.fixture.cjs", import.meta.url)),
+  }), directory]
+  const xvfb = process.platform === "linux" ? await executableOnPath("xvfb-run") : undefined
+  const { command, args } = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath: electron, electronArgs, xvfb })
   // This child alone owns these resources. No process-name or group cleanup.
   const output = await new Promise((resolve, reject) => {
-    const child = spawn(electron, ["--no-sandbox", fileURLToPath(new URL("./fleet-origin-smoke.fixture.cjs", import.meta.url)), directory], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "" }, stdio: ["ignore", "pipe", "pipe"],
+    const child = spawn(command, args, {
+      env: launchSmokeEnvironment({ env: process.env, profileRoot: directory, timeoutMs: 30_000 }), stdio: ["ignore", "pipe", "pipe"],
     })
     let text = "", expired = false, force, teardown
     const clear = () => { clearTimeout(timer); clearTimeout(force); clearTimeout(teardown) }
@@ -40,7 +47,7 @@ try {
     child.stdout.on("data", (data) => { text = (text + data).slice(-16_384) })
     child.stderr.on("data", (data) => { text = (text + data).slice(-16_384) })
     child.once("error", (error) => { clear(); removalSafe = child.pid === undefined; reject(error) })
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       clear()
       if (expired) reject(new Error(`Fleet origin proof expired\n${text}`))
       else if (code === 0) resolve(text)

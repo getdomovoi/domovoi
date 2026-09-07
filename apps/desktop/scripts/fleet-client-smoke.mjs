@@ -7,7 +7,8 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import electron from "electron"
-import { launchSmokeEnvironment } from "./launch-smoke-args.mjs"
+import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
+import { executableOnPath } from "./desktop-smoke.mjs"
 
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url))
 const daemonRequire = createRequire(new URL("../../daemon/package.json", import.meta.url))
@@ -34,22 +35,32 @@ async function bounded(promise, label, maximum = 15_000) {
 }
 let backend, desktop, socket
 let backendOutput = "", desktopOutput = ""
+const closedChildren = new WeakSet()
+const trackChild = child => {
+  child.once("close", () => closedChildren.add(child))
+  return child
+}
 try {
+  const xvfb = process.platform === "linux" ? await bounded(executableOnPath("xvfb-run"), "display discovery") : undefined
+  const electronArgs = ["--remote-debugging-port=0", ...launchSmokeElectronArgs({
+    platform: process.platform, ci: process.env.CI === "true", desktopRoot,
+  })]
+  const launch = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath: electron, electronArgs, xvfb })
   const tsconfig = join(directory, "tsconfig.json")
   await writeFile(tsconfig, JSON.stringify({ compilerOptions: { paths: {} } }))
-  backend = fork(new URL("../../daemon/test-fixtures/fleet-desktop.mjs", import.meta.url), [directory], {
+  backend = trackChild(fork(new URL("../../daemon/test-fixtures/fleet-desktop.mjs", import.meta.url), [directory], {
     execArgv: ["--import", pathToFileURL(daemonRequire.resolve("tsx")).href],
     cwd: desktopRoot, env: { ...proofEnvironment(), TSX_TSCONFIG_PATH: tsconfig }, stdio: ["ignore", "pipe", "pipe", "ipc"],
-  })
+  }))
   backend.stdout.on("data", data => { backendOutput = (backendOutput + data).slice(-16_384) })
   backend.stderr.on("data", data => { backendOutput = (backendOutput + data).slice(-16_384) })
   const [fixture] = await bounded(Promise.race([once(backend, "message"), once(backend, "exit").then(() => { throw new Error("Fleet backend exited before ready") })]), "production daemon fixtures", 45_000)
   assert.equal(fixture.ready, true)
   console.info("Fleet proof: production daemons ready")
   const env = proofEnvironment()
-  desktop = spawn(electron, ["--no-sandbox", "--headless", "--disable-gpu", "--remote-debugging-port=0", desktopRoot], {
+  desktop = trackChild(spawn(launch.command, launch.args, {
     cwd: desktopRoot, env, stdio: ["ignore", "pipe", "pipe"],
-  })
+  }))
   const debugging = new Promise((resolve, reject) => {
     desktop.once("error", reject)
     desktop.once("exit", () => reject(new Error("Desktop exited before debugging was available")))
@@ -196,17 +207,17 @@ try {
   console.error(backendOutput, desktopOutput)
   throw error
 } finally {
-  socket?.terminate()
   // These exact child handles were created above in this worktree. Do not
   // signal names, patterns or process groups shared with other worktrees.
   async function retire(child, stop) {
-    if (!child || child.exitCode !== null || child.signalCode !== null) return
+    if (!child || child.pid === undefined || closedChildren.has(child)) return
     let force, deadline
     const exited = new Promise((resolve, reject) => {
       const onExit = () => { clearTimeout(deadline); resolve() }
-      child.once("exit", onExit)
+      // A wrapper exiting does not mean Electron released its inherited pipes.
+      child.once("close", onExit)
       deadline = setTimeout(() => {
-        child.removeListener("exit", onExit)
+        child.removeListener("close", onExit)
         reject(new Error(`Fleet proof child did not exit; fixture retained at ${directory}`))
       }, 15_000)
     })
@@ -217,10 +228,18 @@ try {
       await exited
     } finally { clearTimeout(force); clearTimeout(deadline) }
   }
-  const retired = await Promise.allSettled([
-    retire(desktop, () => desktop.kill()),
-    retire(backend, () => backend.connected ? backend.send("stop", () => {}) : backend.kill()),
-  ])
+  let retired
+  try {
+    retired = await Promise.allSettled([
+      retire(desktop, () => {
+        // Stop the browser, not just an xvfb-run parent. The existing cleanup
+        // clock still bounds shutdown if the debugging connection is silent.
+        if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ id: -1, method: "Browser.close" }))
+        else desktop.kill()
+      }),
+      retire(backend, () => backend.connected ? backend.send("stop", () => {}) : backend.kill()),
+    ])
+  } finally { socket?.terminate() }
   const failure = retired.find(result => result.status === "rejected")
   if (failure) throw failure.reason
   await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })

@@ -10,16 +10,28 @@ export const successMarker = "DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK"
 // The label the desktop pairs itself under while the smoke flag is set.
 export const smokeDeviceLabel = "Desktop launch smoke"
 
-export async function executableOnPath(name) {
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    if (!directory) continue
-    const candidate = join(directory, name)
-    try {
-      await access(candidate, constants.X_OK)
-      return candidate
-    } catch {}
+export async function executableOnPath(name, { env = process.env, timeoutMs = 5_000, checkAccess = access } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error("Executable lookup requires a finite positive budget")
+  const expires = performance.now() + timeoutMs
+  const timeout = new Error(`Timed out finding ${name} on PATH after ${timeoutMs} ms`)
+  const check = () => { if (performance.now() >= expires) throw timeout }
+  let timer
+  const lookup = async () => {
+    for (const directory of (env.PATH ?? "").split(delimiter)) {
+      check()
+      if (!directory) continue
+      const candidate = join(directory, name)
+      const found = await checkAccess(candidate, constants.X_OK).then(() => true, () => false)
+      check()
+      if (found) return candidate
+    }
+    return undefined
   }
-  return undefined
+  try {
+    return await Promise.race([lookup(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeout), timeoutMs)
+    })])
+  } finally { clearTimeout(timer) }
 }
 
 export async function createSmokeProfile(prefix) {

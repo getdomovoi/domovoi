@@ -11,6 +11,18 @@ export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = 
   ]
 }
 
+// Xvfb provides the X server, not an alternative proof. Without it a local
+// display is usable; a headless host must name the missing prerequisite.
+export function launchSmokeCommand({ platform, env, electronPath, electronArgs, xvfb }) {
+  if (platform === "linux") {
+    if (xvfb) return { command: xvfb, args: ["--auto-servernum", electronPath, ...electronArgs] }
+    if (!env.DISPLAY && !env.WAYLAND_DISPLAY) {
+      throw new Error("Electron smoke requires a Linux display. Install xvfb-run or provide a working DISPLAY or WAYLAND_DISPLAY.")
+    }
+  }
+  return { command: electronPath, args: electronArgs }
+}
+
 // electron-builder names the unpacked directory after the platform and, for
 // anything but the host architecture, the architecture too. Both orders are
 // offered rather than guessed at, and the caller takes the one that exists.

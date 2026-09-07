@@ -144,6 +144,13 @@ verification; they cover notification withholding, bounded queues, deadlines and
 
 `pnpm --filter @getdomovoi/desktop test:launch` includes two real Electron proofs:
 
+Both use the shared launch flags: `--no-sandbox` only on Linux CI, never on macOS or
+Windows. Linux uses `xvfb-run --auto-servernum` when available, otherwise its existing
+X or Wayland display. A headless host without either refuses with the missing-display
+remedy; it does not print a success marker or silently skip. PATH discovery has a five-second
+budget. The Xvfb decision and all platform argument sets are unit tested. Real Xvfb execution
+awaits CI; it has not been run locally.
+
 - `fleet-origin-smoke.mjs`: verified origin opens; an unverified origin, another port, and a
   consumed ticket do not. Replacing the exact source with a port wildcard makes the proof fail.
   Five literal or encoded directive/policy delimiter cases also refuse. Chromium's network hook

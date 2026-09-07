@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import { sep } from "node:path"
+import { delimiter, join, sep } from "node:path"
 import test from "node:test"
 
 import {
@@ -54,6 +54,18 @@ test("wraps Linux Electron in the discovered X server without shell interpolatio
   })
 })
 
+test("uses the executable returned by PATH discovery for the X server wrapper", async () => {
+  const checked = []
+  const found = join("/tools with spaces", "xvfb-run")
+  const xvfb = await executableOnPath("xvfb-run", {
+    env: { PATH: ["/missing", "/tools with spaces"].join(delimiter) },
+    checkAccess: async (path) => { checked.push(path); if (path !== found) throw new Error("absent") },
+  })
+  assert.deepEqual(checked, [join("/missing", "xvfb-run"), found])
+  const result = launch.launchSmokeCommand({ platform: "linux", env: {}, electronPath: "/electron", electronArgs: ["/proof"], xvfb })
+  assert.deepEqual(result, { command: found, args: ["--auto-servernum", "/electron", "/proof"] })
+})
+
 test("uses a local X or Wayland display when xvfb-run is absent", () => {
   for (const env of [{ DISPLAY: ":1" }, { WAYLAND_DISPLAY: "wayland-0" }]) {
     const electronArgs = launchSmokeElectronArgs({ platform: "linux", ci: false, desktopRoot: "/proof" })
@@ -72,6 +84,7 @@ test("never adds an X server or Linux-only flag on Windows and macOS", () => {
   for (const platform of ["win32", "darwin"]) {
     const electronArgs = launchSmokeElectronArgs({ platform, ci: true, desktopRoot: "/proof" })
     const result = launch.launchSmokeCommand({ platform, env: {}, electronPath: "/electron", electronArgs, xvfb: "/tools/xvfb-run" })
+    assert.equal(result.args.includes("--no-sandbox"), false, platform)
     assert.deepEqual(result, { command: "/electron", args: ["--headless", "--disable-gpu", "/proof"] })
   }
 })
@@ -91,6 +104,11 @@ test("display executable discovery cannot hang the proof before its child starts
   await assert.rejects(executableOnPath("xvfb-run", {
     env: { PATH: "/silent" }, timeoutMs: 20, checkAccess: () => new Promise(() => {}),
   }), /Timed out finding xvfb-run/u)
+})
+
+test("removes Electron Node-mode variables even when their value is empty", () => {
+  const env = launchSmokeEnvironment({ env: { ELECTRON_RUN_AS_NODE: "", electron_run_as_node: "", NODE_OPTIONS: "--inspect" }, profileRoot: "/proof", timeoutMs: 5_000 })
+  for (const key of ["ELECTRON_RUN_AS_NODE", "electron_run_as_node", "NODE_OPTIONS"]) assert.equal(Object.hasOwn(env, key), false)
 })
 
 test("omits the application directory for a packaged build, which carries its own", () => {
