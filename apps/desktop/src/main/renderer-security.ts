@@ -47,6 +47,18 @@ export function resolveRendererTarget(options: {
   return { kind: "file", path: resolve(options.bundledRendererPath) }
 }
 
+// The daemon's default origin list names the packaged app and the web client's
+// port. A development renderer is served by Vite on whatever port it took, so
+// the desktop names that origin itself rather than widening a shipped default.
+// An operator who set the list keeps it.
+export function developmentDaemonEnvironment(
+  environment: NodeJS.ProcessEnv,
+  target: RendererTarget,
+): NodeJS.ProcessEnv {
+  if (target.kind !== "url" || environment.DOMOVOI_ALLOWED_ORIGINS !== undefined) return environment
+  return { ...environment, DOMOVOI_ALLOWED_ORIGINS: new URL(target.url).origin }
+}
+
 export function isTrustedRendererFrameUrl(frameUrl: string, target: RendererTarget): boolean {
   try {
     const actual = new URL(frameUrl)

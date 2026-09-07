@@ -12,9 +12,10 @@ import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
+  developmentDaemonEnvironment,
+  inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
-  inlineScriptHashes,
   rendererContentSecurityPolicy,
   rendererTargetUrl,
   resolveRendererTarget,
@@ -103,7 +104,11 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
 
 // Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
-  environment: process.env,
+  // The window resolves its renderer target before the first acquisition, so a
+  // development daemon is told the origin its renderer is actually served from.
+  environment: mainRendererTarget
+    ? developmentDaemonEnvironment(process.env, mainRendererTarget)
+    : process.env,
   homeDirectory: homedir(),
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),

@@ -4,6 +4,7 @@ import { resolve } from "node:path"
 import { describe, expect, it } from "vitest"
 
 import {
+  developmentDaemonEnvironment,
   inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
@@ -252,5 +253,27 @@ describe("rendererContentSecurityPolicy script sources", () => {
 
     expect(sources).toEqual(["'self'", "'sha256-abc'", "'sha256-def'"])
     expect(sources).not.toContain("'unsafe-inline'")
+  })
+})
+
+describe("developmentDaemonEnvironment", () => {
+  const devTarget = { kind: "url", url: "http://localhost:5173/" } as const
+  const bundledTarget = { kind: "file", path: "/opt/domovoi/index.html" } as const
+
+  it("names the development renderer's own origin, whatever port Vite took", () => {
+    expect(developmentDaemonEnvironment({ PATH: "/usr/bin" }, devTarget))
+      .toEqual({ PATH: "/usr/bin", DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5173" })
+    expect(developmentDaemonEnvironment({}, { kind: "url", url: "http://127.0.0.1:5174/" }))
+      .toEqual({ DOMOVOI_ALLOWED_ORIGINS: "http://127.0.0.1:5174" })
+  })
+
+  it("leaves the packaged app alone", () => {
+    expect(developmentDaemonEnvironment({ PATH: "/usr/bin" }, bundledTarget)).toEqual({ PATH: "/usr/bin" })
+  })
+
+  it("never overrides an origin list the operator set", () => {
+    const environment = { DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5178" }
+
+    expect(developmentDaemonEnvironment(environment, devTarget)).toEqual(environment)
   })
 })
