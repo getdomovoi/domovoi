@@ -1,9 +1,11 @@
-import { ScrollView, TextInput, View } from "react-native"
+import { Platform, ScrollView, TextInput, View } from "react-native"
 
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
+import { clientVersion } from "../lib/protocol-facts"
+import { phoneFacts } from "../phone-facts"
 import type { ConnectionFault } from "../lib/connection-fault"
 import type { DaemonStatus } from "../lib/daemon"
 import { colors } from "../theme/tokens.generated"
@@ -58,10 +60,35 @@ export function SettingsScreen({
       </View>
 
       <ScrollView
-        contentContainerClassName="gap-[9px] px-3"
+        contentContainerClassName="gap-[14px] px-3"
         contentContainerStyle={{ paddingBottom: bottomInset }}
       >
-        <Text variant="label" className="px-1">This phone</Text>
+        {/* What this phone is. Every value is read from the platform or from
+            the release the greeting sends the daemon, so none of them can
+            disagree with what the machine has been told. None has anywhere to
+            go, so none is drawn with a chevron. */}
+        <View className="gap-[7px]">
+          <Text variant="label" className="px-1">This phone</Text>
+          <Card flush>
+            {phoneFacts({
+              os: Platform.OS,
+              osVersion: Platform.Version,
+              appVersion: clientVersion,
+            }).map((fact, index) => (
+              <View
+                key={fact.label}
+                accessibilityLabel={`${fact.label}, ${fact.value}`}
+                className={cn(
+                  "flex-row items-center gap-2.5 px-[13px] py-3",
+                  index > 0 && "border-t border-border",
+                )}
+              >
+                <Text className="flex-1 text-[12.5px]">{fact.label}</Text>
+                <Text variant="meta">{fact.value}</Text>
+              </View>
+            ))}
+          </Card>
+        </View>
 
         <Card className="gap-3">
           <View className="gap-1.5">

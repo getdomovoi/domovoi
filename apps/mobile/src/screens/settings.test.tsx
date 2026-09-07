@@ -1,7 +1,10 @@
 import { describe, expect, it, jest } from "@jest/globals"
+import { Platform } from "react-native"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 
 import { SettingsScreen } from "./settings"
+import { clientVersion } from "../lib/protocol-facts"
+import { deviceLabel } from "../phone-facts"
 
 const token = "dmv_pair_4f9c2e7a1b"
 const url = "ws://workshop.tailnet:47831/rpc"
@@ -102,5 +105,35 @@ describe("SettingsScreen", () => {
     const { onConnect } = await draw({ paired: false })
     await fireEvent.press(screen.getByRole("button", { name: "Connect" }))
     expect(onConnect).toHaveBeenCalledTimes(1)
+  })
+
+  // The handoff's values are fixture data. A screen that repeated them would
+  // tell a person the version of a build that does not exist.
+  it("reports the release the greeting sends the daemon, not a written down one", async () => {
+    await draw()
+    expect(screen.getByLabelText(`About, ${clientVersion}`)).toBeOnTheScreen()
+    expect(screen.queryByText("0.4.2")).toBeNull()
+  })
+
+  it("reports the platform it is running on, not the handoff's handset", async () => {
+    await draw()
+    expect(screen.getByLabelText(`This device, ${deviceLabel(Platform.OS, Platform.Version)}`))
+      .toBeOnTheScreen()
+    expect(screen.queryByText("iPhone 15 Pro")).toBeNull()
+    // A platform that reports no version must not print the word out loud.
+    expect(screen.queryByText(/undefined/)).toBeNull()
+  })
+
+  // Nothing on this screen navigates, so nothing on it is drawn as if it does.
+  it("draws the phone's own facts as facts rather than as links", async () => {
+    await draw()
+    const pressable = screen.getAllByRole("button").map((node) => node.props.accessibilityLabel)
+    expect(pressable).not.toContain(`About, ${clientVersion}`)
+    expect(pressable).not.toContain("Appearance, Dark")
+  })
+
+  it("keeps the phone's own facts on screen once a machine is paired", async () => {
+    await draw({ paired: true })
+    expect(screen.getByLabelText("Appearance, Dark")).toBeOnTheScreen()
   })
 })
