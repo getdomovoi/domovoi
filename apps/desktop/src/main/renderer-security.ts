@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { resolve } from "node:path"
 
 export type RendererTarget =
@@ -46,6 +47,18 @@ export function resolveRendererTarget(options: {
   return { kind: "file", path: resolve(options.bundledRendererPath) }
 }
 
+// The daemon's default origin list names the packaged app and the web client's
+// port. A development renderer is served by Vite on whatever port it took, so
+// the desktop names that origin itself rather than widening a shipped default.
+// An operator who set the list keeps it.
+export function developmentDaemonEnvironment(
+  environment: NodeJS.ProcessEnv,
+  target: RendererTarget,
+): NodeJS.ProcessEnv {
+  if (target.kind !== "url" || environment.DOMOVOI_ALLOWED_ORIGINS !== undefined) return environment
+  return { ...environment, DOMOVOI_ALLOWED_ORIGINS: new URL(target.url).origin }
+}
+
 export function isTrustedRendererFrameUrl(frameUrl: string, target: RendererTarget): boolean {
   try {
     const actual = new URL(frameUrl)
@@ -77,7 +90,23 @@ export function rendererEndpointUrl(endpointUrl: string): string {
   return url.href
 }
 
-export function rendererContentSecurityPolicy(endpointUrl: string | undefined): string {
+// Vite injects the react-refresh preamble as an inline script, so a development
+// page cannot load under script-src 'self' alone. Hashing what the page actually
+// carries keeps the policy exact: no 'unsafe-inline', and nothing pinned to a
+// preamble text that the plugin is free to change.
+const inlineScript = /<script(?![^>]*\ssrc[\s=])[^>]*>([\s\S]*?)<\/script>/giu
+
+export function inlineScriptHashes(html: string): readonly string[] {
+  return [...html.matchAll(inlineScript)]
+    .map((match) => match[1] ?? "")
+    .filter((body) => body.length > 0)
+    .map((body) => `'sha256-${createHash("sha256").update(body, "utf8").digest("base64")}'`)
+}
+
+export function rendererContentSecurityPolicy(
+  endpointUrl: string | undefined,
+  scriptHashes: readonly string[] = [],
+): string {
   const url = parsedEndpoint(endpointUrl && rendererEndpointUrl(endpointUrl))
   const endpoint = url && (url.protocol === "ws:" || url.protocol === "wss:") && !url.hostname.startsWith("[")
     ? ` ${url.protocol}//${url.host}`
@@ -85,7 +114,8 @@ export function rendererContentSecurityPolicy(endpointUrl: string | undefined): 
   const preview = endpoint.replace(/^ ws:/u, " http:").replace(/^ wss:/u, " https:")
   return `default-src 'self'; connect-src 'self' ${loopbackSources}${endpoint}; `
     + `frame-src 'self'${preview}; `
-    + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; script-src 'self'"
+    + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; "
+    + `script-src ${["'self'", ...scriptHashes].join(" ")}`
 }
 
 export function isAuthorizedRendererEvent(

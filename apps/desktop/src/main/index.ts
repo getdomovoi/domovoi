@@ -12,6 +12,8 @@ import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
+  developmentDaemonEnvironment,
+  inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
   rendererContentSecurityPolicy,
@@ -102,7 +104,11 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
 
 // Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
-  environment: process.env,
+  // The window resolves its renderer target before the first acquisition, so a
+  // development daemon is told the origin its renderer is actually served from.
+  environment: mainRendererTarget
+    ? developmentDaemonEnvironment(process.env, mainRendererTarget)
+    : process.env,
   homeDirectory: homedir(),
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
@@ -225,11 +231,29 @@ function createWindow(): void {
   })
   mainRendererTarget = target
   const window = mainWindow
-  const load = () => {
-    if (!window.isDestroyed()) void window.loadURL(rendererTargetUrl(target))
+  const load = async (): Promise<void> => {
+    // A development page carries Vite's inline react-refresh preamble, so the
+    // policy has to name that exact script before the document is asked for.
+    devScriptHashes = target.kind === "url" ? await observedInlineScripts(target.url) : []
+    if (!window.isDestroyed()) await window.loadURL(rendererTargetUrl(target))
   }
   // The document's policy names the acquired endpoint, so the load waits.
   void desktopDaemon.acquire().then(load, () => {})
+}
+
+// Hashes of the inline scripts the development page serves. Empty for the
+// packaged app, whose own HTML carries none.
+let devScriptHashes: readonly string[] = []
+
+async function observedInlineScripts(rendererUrl: string): Promise<readonly string[]> {
+  try {
+    const response = await fetch(rendererUrl)
+    return response.ok ? inlineScriptHashes(await response.text()) : []
+  } catch {
+    // The renderer load reports its own failure; a policy without hashes is the
+    // safe answer here rather than a wider one.
+    return []
+  }
 }
 
 // Served with the document so connect-src can name the acquired endpoint.
@@ -255,7 +279,10 @@ function serveRendererPolicy(): void {
         ...details.responseHeaders,
         "Content-Security-Policy": [
           worker ? fleetWorkerPolicy(details.url, fleetOrigins)
-            : rendererContentSecurityPolicy(acquisition?.kind === "refused" ? undefined : acquisition?.url),
+            : rendererContentSecurityPolicy(
+              acquisition?.kind === "refused" ? undefined : acquisition?.url,
+              devScriptHashes,
+            ),
         ],
         "Cache-Control": ["no-store"],
       },
