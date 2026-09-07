@@ -106,10 +106,20 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
   const usage = record(root?.usage) ?? record(root?.tokens)
   if (!root || !usage) return undefined
   const cache = record(usage.cache)
-  const inputTokens = counter(usage.input_tokens ?? usage.inputTokens ?? usage.input)
+  const reportedInputTokens = counter(usage.input_tokens ?? usage.inputTokens ?? usage.input)
   const cachedInputTokens = counter(
     usage.cache_read_input_tokens ?? usage.cachedInputTokens ?? cache?.read,
   )
+  // Anthropic reports cache reads and cache writes beside input_tokens rather
+  // than inside it, so a cached turn reports 4 input tokens next to 21,000 read
+  // from cache. The normalized counters treat cached input as part of input, so
+  // fold both cache counters in. Only Anthropic uses these two names, and a
+  // payload without them is untouched.
+  const anthropicCacheRead = counter(usage.cache_read_input_tokens)
+  const anthropicCacheWrite = counter(usage.cache_creation_input_tokens)
+  const inputTokens = anthropicCacheRead === undefined && anthropicCacheWrite === undefined
+    ? reportedInputTokens
+    : (reportedInputTokens ?? 0) + (anthropicCacheRead ?? 0) + (anthropicCacheWrite ?? 0)
   const reportedOutputTokens = counter(
     usage.output_tokens ?? usage.outputTokens ?? usage.output,
   )

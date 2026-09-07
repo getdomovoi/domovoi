@@ -623,11 +623,33 @@ describe("provider usage telemetry", () => {
     }
   })
 
+  it("counts Claude's cache reads and cache writes as input, because Anthropic reports them beside it", () => {
+    // A real Claude turn: 4 fresh input tokens beside 21,393 read from cache and
+    // 3,206 written to it. Read as a subset of input this is nonsense, and the
+    // turn used to fail on "Cached input tokens cannot exceed input tokens"
+    // after its reply had already been delivered.
+    expect(normalizeProviderUsage({
+      usage: {
+        input_tokens: 4,
+        cache_read_input_tokens: 21_393,
+        cache_creation_input_tokens: 3_206,
+        output_tokens: 9,
+      },
+    })).toMatchObject({
+      inputTokens: 24_603,
+      cachedInputTokens: 21_393,
+      outputTokens: 9,
+      totalTokens: 24_612,
+    })
+  })
+
   it("normalizes Claude, Codex, and OpenCode-shaped payloads conservatively", () => {
+    // Claude's 20 input tokens sit beside its 5 cached ones rather than
+    // including them, so the normalized input is 25.
     expect(normalizeProviderUsage({
       usage: { input_tokens: 20, cache_read_input_tokens: 5, output_tokens: 8 },
       total_cost_usd: 0.02,
-    })).toMatchObject({ inputTokens: 20, cachedInputTokens: 5, outputTokens: 8, costMicros: 20_000 })
+    })).toMatchObject({ inputTokens: 25, cachedInputTokens: 5, outputTokens: 8, costMicros: 20_000 })
     expect(normalizeProviderUsage({
       tokens: { input: 12, output: 4, reasoning: 2, cache: { read: 3 } },
       cost: 0.01,

@@ -445,8 +445,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     if (message.type === "result") {
       const failed = message.is_error === true || message.subtype !== "success"
       const context = failed ? {} : await claudeContextOccupancy(session.query)
-      const usage = normalizeProviderUsage({ ...message, ...context })
-      if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
+      // The reply has already reached the person. A counter that does not add
+      // up is an accounting problem, not a failed turn, so the usage is dropped
+      // and the turn is delivered as what it was.
+      try {
+        const usage = normalizeProviderUsage({ ...message, ...context })
+        if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
+      } catch {
+        // Nothing to report to the person: usage is a readout, not the work.
+      }
       const stderr = session.stderr.take()
       const error = failed ? resultError(message, session.assistantError, stderr) : undefined
       delete session.assistantError
