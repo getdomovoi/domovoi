@@ -115,7 +115,7 @@ export function rendererContentSecurityPolicy(
   return `default-src 'self'; connect-src 'self' ${loopbackSources}${endpoint}; `
     + `frame-src 'self'${preview}; `
     + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; "
-    + `script-src 'self'${scriptHashes.map((hash) => ` ${hash}`).join("")}`
+    + `script-src ${["'self'", ...scriptHashes].join(" ")}`
 }
 
 export function isAuthorizedRendererEvent(
