@@ -1,5 +1,4 @@
 import { resolve } from "node:path"
-import { pathToFileURL } from "node:url"
 
 import { describe, expect, it } from "vitest"
 
@@ -169,11 +168,12 @@ describe("resolveRendererTarget", () => {
 })
 
 describe("trusted renderer frames", () => {
-  it("trusts only the bundled renderer file path for a file target", () => {
+  it("trusts only the bundled app document, never a file URL", () => {
     const target = { kind: "file" as const, path: bundledRendererPath }
 
-    expect(isTrustedRendererFrameUrl(pathToFileURL(bundledRendererPath).href, target)).toBe(true)
-    expect(isTrustedRendererFrameUrl(`${pathToFileURL(bundledRendererPath).href}#session`, target)).toBe(true)
+    expect(isTrustedRendererFrameUrl("domovoi-app://desktop/index.html", target)).toBe(true)
+    expect(isTrustedRendererFrameUrl("domovoi-app://desktop/index.html#session", target)).toBe(true)
+    expect(isTrustedRendererFrameUrl("domovoi-app://other/index.html", target)).toBe(false)
     expect(isTrustedRendererFrameUrl("file:///opt/domovoi/out/renderer/hostile.html", target)).toBe(false)
     expect(isTrustedRendererFrameUrl("data:text/html,hostile", target)).toBe(false)
   })
@@ -189,7 +189,7 @@ describe("trusted renderer frames", () => {
   })
 
   it("binds authorization to the expected webContents, main frame, and trusted URL", () => {
-    const mainFrame = { url: pathToFileURL(bundledRendererPath).href }
+    const mainFrame = { url: "domovoi-app://desktop/index.html" }
     const expectedWebContents = { mainFrame }
     const target = { kind: "file" as const, path: bundledRendererPath }
 

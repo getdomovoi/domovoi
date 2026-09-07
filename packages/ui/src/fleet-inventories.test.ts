@@ -77,6 +77,17 @@ describe("inventoryMachineFor", () => {
 })
 
 describe("collectFleetInventories", () => {
+  it("uses a verified pairing route even without target advertisements", async () => {
+    const remote = inventory("hetzner-cx42")
+    const open = vi.fn(async () => ({ inventory: async () => remote, close: () => {} }))
+    const sources = await collectFleetInventories({ local, fleet: [machine({
+      transports: [],
+      verifiedRoute: { endpoint: "wss://studio.example/rpc", lastAuthenticatedAt: new Date().toISOString() },
+    })], open })
+    expect(open).toHaveBeenCalledOnce()
+    expect(sources[1]).toEqual({ state: "available", inventory: remote })
+  })
+
   it("keeps this machine first and adds one source per reachable member", async () => {
     const remote = inventory("hetzner-cx42")
     const sources = await collectFleetInventories({

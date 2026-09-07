@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 
 import {
   sessionTransferParamsSchema,
@@ -49,6 +50,7 @@ import {
 } from "./schema.js"
 import {
   deviceClaimParamsSchema,
+  deviceCurrentResultSchema,
   deviceClaimResultSchema,
   deviceConfirmClaimParamsSchema,
   deviceConfirmClaimResultSchema,
@@ -1174,10 +1176,12 @@ export const rpcMethods = {
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
+  "fleet.clientRoute": { params: fleetClientRouteParamsSchema, result: fleetClientRouteResultSchema },
   "fleet.enroll": { params: fleetEnrollParamsSchema, result: fleetEnrollResultSchema },
   "fleet.forget": { params: fleetForgetParamsSchema, result: fleetForgetResultSchema },
   "fleet.heartbeat": { params: z.object({}).strict(), result: fleetMachineDescriptorSchema },
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
+  "device.current": { params: deviceListParamsSchema, result: deviceCurrentResultSchema },
   // Reachable before authentication: a machine being paired has no credential
   // yet. Check protocol compatibility before consuming its one-time code.
   "device.claim": { params: deviceClaimParamsSchema, result: deviceClaimResultSchema },
@@ -1386,6 +1390,8 @@ export const rpcMethodMutations = {
   "transfer.preflight": "read-only",
   "transfer.status": "read-only",
   "device.list": "read-only",
+  "device.current": "read-only",
+  "fleet.clientRoute": "read-only",
   "session.evidence": "read-only",
   "session.history": "read-only",
   "session.usage": "read-only",

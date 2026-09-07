@@ -188,7 +188,7 @@ function parseAllowedOrigins(value: string | undefined): string[] | undefined {
 }
 
 function normalizeOrigin(value: string): string {
-  if (value === "file://") return value
+  if (value === "file://" || value === "domovoi-app://desktop") return value
   let url: URL
   try {
     url = new URL(value)

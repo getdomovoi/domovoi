@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url"
 
 import electronPath from "electron"
 
-import { launchSmokeElectronArgs, launchSmokeEnvironment, launchSmokeTimeoutMs } from "./launch-smoke-args.mjs"
+import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment, launchSmokeTimeoutMs } from "./launch-smoke-args.mjs"
 import {
   assertDaemonProfile,
   assertSmokeProcess,
@@ -22,17 +22,15 @@ const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: proces
 const desktopRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
 const profileRoot = await createSmokeProfile("domovoi-desktop-smoke-")
-const electronArgs = launchSmokeElectronArgs({
-  platform: process.platform,
-  ci: process.env.CI === "true",
-  desktopRoot,
-})
-const xvfb = process.platform === "linux" ? await executableOnPath("xvfb-run") : undefined
-const command = xvfb ?? electronPath
-const args = xvfb ? ["--auto-servernum", electronPath, ...electronArgs] : electronArgs
-
 let result
 try {
+  const electronArgs = launchSmokeElectronArgs({
+    platform: process.platform,
+    ci: process.env.CI === "true",
+    desktopRoot,
+  })
+  const xvfb = process.platform === "linux" ? await executableOnPath("xvfb-run") : undefined
+  const { command, args } = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath, electronArgs, xvfb })
   result = await runSmokeProcess({
     command,
     args,

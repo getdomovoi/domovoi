@@ -3,8 +3,8 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { acquireLocalDaemon } from "@getdomovoi/daemon"
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, session, shell } from "electron"
+import { acquireLocalDaemon, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
@@ -15,9 +15,12 @@ import {
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
   rendererContentSecurityPolicy,
+  rendererTargetUrl,
   resolveRendererTarget,
   type RendererTarget,
 } from "./renderer-security.js"
+import { FleetOriginAdmission } from "./fleet-origin.js"
+import { fleetWorkerPath, fleetWorkerPolicy, rendererResource } from "./renderer-resources.js"
 import { DesktopStartupMetrics } from "./startup-metrics.js"
 import { DesktopNotificationController } from "./desktop-notifications.js"
 import { registerDesktopIpc, type DesktopIpcEvent } from "./desktop-ipc.js"
@@ -46,6 +49,9 @@ if (process.platform !== "darwin" && process.platform !== "linux" && process.pla
 }
 
 let mainWindow: BrowserWindow | undefined
+protocol.registerSchemesAsPrivileged([{ scheme: "domovoi-app", privileges: {
+  standard: true, secure: true, supportFetchAPI: true, corsEnabled: true,
+} }])
 let mainRendererTarget: RendererTarget | undefined
 let activeWindowDecoration: WindowDecoration = "domovoi"
 let rendererDeepLinkSink: ((link: DesktopDeepLink) => void) | undefined
@@ -101,6 +107,11 @@ const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
 }))
+const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
+  const endpoint = desktopDaemon.current()
+  if (!endpoint || endpoint.kind === "refused") return { outcome: "refused", reason: "machine-unavailable" }
+  return verifyLocalFleetClientRoute({ endpoint, machineId, timeoutMs })
+})
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
@@ -198,6 +209,7 @@ function createWindow(): void {
     if (!launchSmoke) mainWindow?.show()
   })
   mainWindow.once("closed", () => {
+    fleetOrigins.clear()
     if (rendererDeepLinkSink) deepLinks.pause(rendererDeepLinkSink)
     rendererDeepLinkSink = undefined
     mainRendererTarget = undefined
@@ -214,7 +226,7 @@ function createWindow(): void {
   mainRendererTarget = target
   const window = mainWindow
   const load = () => {
-    if (!window.isDestroyed()) void (target.kind === "url" ? window.loadURL(target.url) : window.loadFile(target.path))
+    if (!window.isDestroyed()) void window.loadURL(rendererTargetUrl(target))
   }
   // The document's policy names the acquired endpoint, so the load waits.
   void desktopDaemon.acquire().then(load, () => {})
@@ -222,16 +234,30 @@ function createWindow(): void {
 
 // Served with the document so connect-src can name the acquired endpoint.
 function serveRendererPolicy(): void {
+  protocol.handle("domovoi-app", (request) => {
+    const acquisition = desktopDaemon.current()
+    return rendererResource({
+      url: request.url, method: request.method, directory: join(import.meta.dirname, "../renderer"),
+      endpoint: acquisition?.kind === "refused" ? undefined : acquisition?.url, origins: fleetOrigins,
+    })
+  })
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    // Packaged responses carry CSP through the app protocol. Development
+    // workers use the same admission table on the local Vite origin.
+    const worker = mainRendererTarget?.kind === "url"
+      && new URL(details.url).origin === new URL(mainRendererTarget.url).origin
+      && new URL(details.url).pathname === fleetWorkerPath
     const acquisition = desktopDaemon.current()
     const trusted = details.resourceType === "mainFrame" && mainRendererTarget
       && isTrustedRendererFrameUrl(details.url, mainRendererTarget)
-    callback(trusted ? {
+    callback(trusted || worker ? {
       responseHeaders: {
         ...details.responseHeaders,
         "Content-Security-Policy": [
-          rendererContentSecurityPolicy(acquisition?.kind === "refused" ? undefined : acquisition?.url),
+          worker ? fleetWorkerPolicy(details.url, fleetOrigins)
+            : rendererContentSecurityPolicy(acquisition?.kind === "refused" ? undefined : acquisition?.url),
         ],
+        "Cache-Control": ["no-store"],
       },
     } : {})
   })
@@ -248,6 +274,8 @@ ipcMain.handle("domovoi:window-decoration-set", (event, decoration: unknown) => 
 })
 
 registerDesktopIpc(ipcMain, {
+  fleetRoute: (machineId, budgetMs) => fleetOrigins.authorize(machineId, budgetMs),
+  forgetFleetRoute: (machineId) => fleetOrigins.forget(machineId),
   authorized: authorizedDesktopSender,
   mainWindow: () => mainWindow,
   focusMainWindow,

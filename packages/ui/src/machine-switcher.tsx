@@ -40,13 +40,13 @@ function sessionSummary(count: number): string {
 function MachineItem({
   machine,
   onSelectMachine,
+  admitted = false,
 }: {
   machine: FleetMachine
+  admitted?: boolean
   onSelectMachine: ((machineId: string) => void) | undefined
 }) {
-  // Attaching is a client dial, which needs a credential nothing issues yet, so
-  // the refusal is stated ahead of health: health can recover, this cannot.
-  const attachment = machineAttachment(machine)
+  const attachment = machineAttachment(machine, admitted)
   const selectable = attachment.selectable && Boolean(onSelectMachine)
   return (
     <DropdownMenuItem
@@ -70,10 +70,11 @@ function MachineItem({
 function entryItem(
   entry: FleetEntry,
   onSelectMachine: ((machineId: string) => void) | undefined,
+  admitted: ReadonlySet<string>,
 ): ReactNode {
   switch (entry.kind) {
     case "machine":
-      return <MachineItem key={entry.machine.id} machine={entry.machine} onSelectMachine={onSelectMachine} />
+      return <MachineItem key={entry.machine.id} machine={entry.machine} admitted={admitted.has(entry.machine.id)} onSelectMachine={onSelectMachine} />
     case "pending":
       return (
         <DropdownMenuItem key={entry.machineId} disabled className="flex-col items-start gap-0.5">
@@ -100,6 +101,8 @@ export function MachineSwitcher({
   onPairMachine,
   onSelectMachine,
   onTransferSession,
+  admittedMachines = new Set<string>(),
+  transferEntries,
 }: {
   entries: FleetEntry[]
   currentMachineId: string
@@ -107,12 +110,14 @@ export function MachineSwitcher({
   onPairMachine?: (() => void) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
   onTransferSession?: ((machineId: string) => void) | undefined
+  admittedMachines?: ReadonlySet<string> | undefined
+  transferEntries?: FleetEntry[] | undefined
 }) {
   const machines = fleetMachines(entries)
   const current = machines.find((machine) => machine.id === currentMachineId)
   const others = entries.filter((entry) => entry.kind !== "machine" || entry.machine.id !== currentMachineId)
   // A move lands on a daemon, and only a machine entry names one.
-  const transferTargets = machines.filter((machine) => machine.id !== currentMachineId)
+  const transferTargets = fleetMachines(transferEntries ?? entries).filter((machine) => machine.id !== currentMachineId)
 
   return (
     <DropdownMenu>
@@ -133,12 +138,12 @@ export function MachineSwitcher({
             <span className="font-medium text-strong">{current.label}</span>
             <span className="font-machine text-[10px] text-faint">
               {current.connection} · {healthLabel[current.health]} ·{" "}
-              {sessionSummary(currentSessionCount)} · This machine
+              {sessionSummary(currentSessionCount)} · {current.self ? "This machine" : "In use"}
             </span>
           </DropdownMenuItem>
         ) : null}
         {others.length > 0 ? <DropdownMenuSeparator /> : null}
-        {others.map((entry) => entryItem(entry, onSelectMachine))}
+        {others.map((entry) => entryItem(entry, onSelectMachine, admittedMachines))}
         {onTransferSession && transferTargets.length > 0 ? (
           <>
             <DropdownMenuSeparator />

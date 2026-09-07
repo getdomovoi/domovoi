@@ -3,10 +3,12 @@ import type { ClientKind, TransportCandidate } from "@getdomovoi/protocol"
 import { DomovoiClient, type DomovoiClientBudgets } from "./client.js"
 import { DeadlineExceededError, describeTarget, type Deadline } from "./deadline.js"
 import { dialTransport } from "./transport-dial.js"
+import type { ClientAdmission } from "./client-admission-policy.js"
 
 type MachineClientOptions = {
   reconnectDelayMs?: number
   clientId?: string
+  admission?: ClientAdmission
 }
 
 type ClientFactory = (

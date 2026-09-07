@@ -1,5 +1,9 @@
 import assert from "node:assert/strict"
-import { sep } from "node:path"
+import { EventEmitter } from "node:events"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { delimiter, join, sep } from "node:path"
+import { PassThrough } from "node:stream"
 import test from "node:test"
 
 import {
@@ -9,6 +13,9 @@ import {
   packagedAppCandidates,
   packagedAsarPath,
 } from "./launch-smoke-args.mjs"
+import * as launch from "./launch-smoke-args.mjs"
+import { executableOnPath } from "./desktop-smoke.mjs"
+import * as smoke from "./desktop-smoke.mjs"
 
 // Both path builders name a target platform's output directories, but the
 // paths themselves are opened and spawned on the machine doing the packaging,
@@ -42,6 +49,172 @@ test("keeps the Chromium sandbox outside Linux CI", () => {
       ["--headless", "--disable-gpu", "/desktop"],
     )
   }
+})
+
+test("wraps Linux Electron in the discovered X server without shell interpolation", () => {
+  const electronArgs = launchSmokeElectronArgs({ platform: "linux", ci: true, desktopRoot: "/proof with spaces" })
+  assert.deepEqual(launch.launchSmokeCommand({ platform: "linux", env: {}, electronPath: "/Electron path/electron", electronArgs, xvfb: "/tools/xvfb-run" }), {
+    command: "/tools/xvfb-run", args: ["--auto-servernum", "/Electron path/electron", ...electronArgs],
+  })
+})
+
+test("uses the executable returned by PATH discovery for the X server wrapper", async () => {
+  const checked = []
+  const found = join("/tools with spaces", "xvfb-run")
+  const xvfb = await executableOnPath("xvfb-run", {
+    env: { PATH: ["/missing", "/tools with spaces"].join(delimiter) },
+    checkAccess: async (path) => { checked.push(path); if (path !== found) throw new Error("absent") },
+  })
+  assert.deepEqual(checked, [join("/missing", "xvfb-run"), found])
+  const result = launch.launchSmokeCommand({ platform: "linux", env: {}, electronPath: "/electron", electronArgs: ["/proof"], xvfb })
+  assert.deepEqual(result, { command: found, args: ["--auto-servernum", "/electron", "/proof"] })
+})
+
+test("uses a local X or Wayland display when xvfb-run is absent", () => {
+  for (const env of [{ DISPLAY: ":1" }, { WAYLAND_DISPLAY: "wayland-0" }]) {
+    const electronArgs = launchSmokeElectronArgs({ platform: "linux", ci: false, desktopRoot: "/proof" })
+    assert.deepEqual(launch.launchSmokeCommand({ platform: "linux", env, electronPath: "/electron", electronArgs }), {
+      command: "/electron", args: electronArgs,
+    })
+  }
+})
+
+test("names the missing Linux display prerequisite instead of starting a doomed proof", () => {
+  assert.throws(() => launch.launchSmokeCommand({ platform: "linux", env: {}, electronPath: "/electron", electronArgs: [] }),
+    /Install xvfb-run.*DISPLAY.*WAYLAND_DISPLAY/u)
+})
+
+test("never adds an X server or Linux-only flag on Windows and macOS", () => {
+  for (const platform of ["win32", "darwin"]) {
+    const electronArgs = launchSmokeElectronArgs({ platform, ci: true, desktopRoot: "/proof" })
+    const result = launch.launchSmokeCommand({ platform, env: {}, electronPath: "/electron", electronArgs, xvfb: "/tools/xvfb-run" })
+    assert.equal(result.args.includes("--no-sandbox"), false, platform)
+    assert.deepEqual(result, { command: "/electron", args: ["--headless", "--disable-gpu", "/proof"] })
+  }
+})
+
+for (const name of ["fleet-origin-smoke.mjs", "fleet-client-smoke.mjs"]) {
+  test(`${name} uses the shared launch and environment policies`, async () => {
+    const source = await readFile(new URL(name, import.meta.url), "utf8")
+    for (const helper of ["launchSmokeElectronArgs", "launchSmokeCommand", "launchSmokeEnvironment"]) {
+      assert.match(source, new RegExp(`${helper}\\(`, "u"), `${name} bypasses ${helper}`)
+    }
+    assert.match(source, /executableOnPath\("xvfb-run"\)/u)
+    assert.doesNotMatch(source, /["']--no-sandbox["']|ELECTRON_RUN_AS_NODE\s*:/u)
+    if (name === "fleet-client-smoke.mjs") {
+      assert.match(source, /observeSmokeDebugging\(desktop, startupSignal\)/u)
+      assert.match(source, /debuggingLogFile:\s*chromiumLog/u)
+      assert.match(source, /userDataDirectory:\s*electronProfile/u)
+    }
+  })
+}
+
+test("display executable discovery cannot hang the proof before its child starts", { timeout: 1_000 }, async () => {
+  await assert.rejects(executableOnPath("xvfb-run", {
+    env: { PATH: "/silent" }, timeoutMs: 20, checkAccess: () => new Promise(() => {}),
+  }), /Timed out finding xvfb-run/u)
+})
+
+test("removes Electron Node-mode variables even when their value is empty", () => {
+  const env = launchSmokeEnvironment({ env: { ELECTRON_RUN_AS_NODE: "", electron_run_as_node: "", NODE_OPTIONS: "--inspect" }, profileRoot: "/proof", timeoutMs: 5_000 })
+  for (const key of ["ELECTRON_RUN_AS_NODE", "electron_run_as_node", "NODE_OPTIONS"]) assert.equal(Object.hasOwn(env, key), false)
+})
+
+function debuggingChild() {
+  const child = new EventEmitter()
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  return child
+}
+
+test("debugging startup reports the exit code and drains the final diagnostic", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const controller = new AbortController()
+  const observer = smoke.observeSmokeDebugging(child, controller.signal)
+  const rejected = assert.rejects(observer.ready, error => {
+    assert.match(error.message, /code 17.*signal none/u)
+    assert.match(error.message, /stdout:\nbooting/u)
+    assert.match(error.message, /stderr:\nfatal startup failure/u)
+    return true
+  })
+  child.stdout.write("booting\n")
+  child.emit("exit", 17, null)
+  child.stderr.write("fatal startup failure\n")
+  child.emit("close", 17, null)
+  await rejected
+  observer.dispose()
+})
+
+test("debugging startup names a signal exit even when the child wrote nothing", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const observer = smoke.observeSmokeDebugging(child, new AbortController().signal)
+  const rejected = assert.rejects(observer.ready, /code null.*signal SIGTERM[\s\S]*stderr:\n\(empty\)/u)
+  child.emit("close", null, "SIGTERM")
+  await rejected
+  observer.dispose()
+})
+
+test("debugging startup preserves split endpoint frames and later output", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const observer = smoke.observeSmokeDebugging(child, new AbortController().signal)
+  const address = "ws://127.0.0.1:4567/devtools/browser/proof"
+  child.stderr.write("DevTools listening on ws://127.0.0.1:4567/devtools/browser/pro")
+  child.stderr.write("of\r\n")
+  assert.equal(await observer.ready, address)
+  child.stdout.write("later output")
+  assert.match(observer.output(), /later output/u)
+  observer.dispose()
+  assert.equal(child.stderr.listenerCount("data"), 0)
+  assert.equal(child.listenerCount("close"), 0)
+})
+
+test("debugging startup bounds a silent child and includes any exit already observed", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const controller = new AbortController()
+  const observer = smoke.observeSmokeDebugging(child, controller.signal)
+  const rejected = assert.rejects(observer.ready, /deadline.*code 9.*signal none[\s\S]*last diagnostic/u)
+  child.emit("exit", 9, null)
+  child.stderr.write("last diagnostic")
+  controller.abort()
+  await rejected
+  observer.dispose()
+})
+
+test("debugging startup reports an executable launch error", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const observer = smoke.observeSmokeDebugging(child, new AbortController().signal)
+  const rejected = assert.rejects(observer.ready, /spawn.*ENOENT/u)
+  child.emit("error", new Error("spawn electron.exe ENOENT"))
+  await rejected
+  observer.dispose()
+})
+
+test("debugging flags and native file logging survive the Windows argument policy", () => {
+  const log = "C:\\Fleet proof\\chromium.log"
+  assert.deepEqual(launchSmokeElectronArgs({ platform: "win32", ci: true, desktopRoot: "D:\\desktop", debuggingLogFile: log }), [
+    "--headless", "--disable-gpu", "--remote-debugging-port=0", "--enable-logging=file", `--log-file=${log}`, "D:\\desktop",
+  ])
+})
+
+test("the full application proof gives Electron an explicit private user-data path", () => {
+  for (const platform of ["win32", "linux", "darwin"]) {
+    const profile = platform === "win32" ? "C:\\Fleet proof\\electron-profile" : "/tmp/Fleet proof/electron-profile"
+    const args = launchSmokeElectronArgs({ platform, ci: true, desktopRoot: "/desktop", userDataDirectory: profile })
+    assert.equal(args.filter(arg => arg.startsWith("--user-data-dir=")).length, 1)
+    assert.ok(args.includes(`--user-data-dir=${profile}`))
+  }
+})
+
+test("native startup file diagnostics are bounded and a missing file cannot mask the exit", { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "domovoi-smoke-log-"))
+  try {
+    const file = join(directory, "chromium.log")
+    assert.equal(await smoke.smokeDiagnosticLog(file), "(not created)")
+    await writeFile(file, "native check failed\n" + "x".repeat(32_768))
+    const log = await smoke.smokeDiagnosticLog(file)
+    assert.match(log, /^native check failed/u)
+    assert.ok(log.length <= 16_384)
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })
 
 test("omits the application directory for a packaged build, which carries its own", () => {

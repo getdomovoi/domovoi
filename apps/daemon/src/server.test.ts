@@ -3355,9 +3355,11 @@ describe("DomovoiDaemon", () => {
       "https://app.domovoi.sh",
       "http://localhost:5178",
       "file://",
+      "domovoi-app://desktop",
+      "domovoi-app://other",
       "javascript:alert(1)",
       "not a URL",
-    ])).toBe("https://app.domovoi.sh http://localhost:5178 file:")
+    ])).toBe("https://app.domovoi.sh http://localhost:5178 file: domovoi-app://desktop")
   })
 
   it("normalizes loopback Host authorities without widening them", () => {
