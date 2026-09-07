@@ -1,11 +1,15 @@
 import ArrowUp from "lucide-react-native/icons/arrow-up"
+import Ban from "lucide-react-native/icons/ban"
 import Check from "lucide-react-native/icons/check"
 import ChevronLeft from "lucide-react-native/icons/chevron-left"
 import ChevronRight from "lucide-react-native/icons/chevron-right"
 import Eye from "lucide-react-native/icons/eye"
 import Layers from "lucide-react-native/icons/layers"
+import Plus from "lucide-react-native/icons/plus"
+import RotateCw from "lucide-react-native/icons/rotate-cw"
 import Server from "lucide-react-native/icons/server"
 import Settings from "lucide-react-native/icons/settings"
+import Unplug from "lucide-react-native/icons/unplug"
 
 import { colors } from "../../theme/tokens.generated"
 
@@ -15,13 +19,17 @@ import { colors } from "../../theme/tokens.generated"
 // ends up wearing the emoji gear.
 const glyphs = {
   "arrow-up": ArrowUp,
+  ban: Ban,
   check: Check,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
   eye: Eye,
   layers: Layers,
+  plus: Plus,
+  "rotate-cw": RotateCw,
   server: Server,
   settings: Settings,
+  unplug: Unplug,
 }
 
 export type IconName = keyof typeof glyphs
@@ -35,6 +43,9 @@ const tones = {
   strong: colors.dark.strong,
   muted: colors.dark["muted-foreground"],
   success: colors.dark.success,
+  warning: colors.dark.warning,
+  destructive: colors.dark.destructive,
+  "danger-fg": colors.dark["danger-fg"],
   "warn-fg": colors.dark["warn-fg"],
 }
 

@@ -1,6 +1,8 @@
+import { useState } from "react"
 import { Pressable, ScrollView, View } from "react-native"
 import type { ApprovalRequest } from "@getdomovoi/protocol"
 
+import { FloatingBar } from "../components/floating-bar"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
@@ -27,13 +29,18 @@ export function ApprovalScreen({
   approval,
   pending,
   onDecide,
+  onDenyExplain,
   onBack,
 }: {
   approval: ApprovalRequest
   pending: boolean
   onDecide: (decision: "allow-once" | "deny") => void
+  // Denying with a reason is a second screen rather than a second tap, because
+  // the reason is the only thing the agent is given and it has to be written.
+  onDenyExplain: () => void
   onBack: () => void
 }) {
+  const [footprint, setFootprint] = useState(0)
   return (
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-2.5 px-3.5 pb-3 pt-1.5">
@@ -52,7 +59,10 @@ export function ApprovalScreen({
         {approval.risk === "hard-gate" ? <Badge label="Hard gate" tone="warning" pill /> : null}
       </View>
 
-      <ScrollView contentContainerClassName="gap-3 px-3.5 pb-8">
+      <ScrollView
+        contentContainerClassName="gap-3 px-3.5"
+        contentContainerStyle={{ paddingBottom: footprint }}
+      >
         <Text variant="body">{approval.operation}</Text>
 
         <Card className="bg-code px-3.5 py-3.5">
@@ -85,22 +95,33 @@ export function ApprovalScreen({
       {/* The decision sits in thumb reach at the foot of the screen rather than
           at the end of a scroll, and the affirmative one wears the warning the
           request wears, so neither answer reads as the safe default. */}
-      <View className="gap-2 border-t border-border px-3.5 py-3">
+      <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
         <Button
           title="Allow once"
           variant="affirm"
-          shape="block"
+          shape="wide"
           disabled={pending}
           onPress={() => onDecide("allow-once")}
         />
-        <Button
-          title="Deny"
-          variant="outline"
-          shape="block"
-          disabled={pending}
-          onPress={() => onDecide("deny")}
-        />
-      </View>
+        <View className="flex-row gap-2">
+          <Button
+            title="Deny"
+            variant="outline"
+            shape="wide"
+            className="flex-1"
+            disabled={pending}
+            onPress={() => onDecide("deny")}
+          />
+          <Button
+            title="Deny and explain"
+            variant="quiet"
+            shape="wide"
+            className="flex-1"
+            disabled={pending}
+            onPress={onDenyExplain}
+          />
+        </View>
+      </FloatingBar>
     </View>
   )
 }

@@ -25,6 +25,7 @@ import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
+import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen } from "./screens/artifact"
 import { fleetLoader } from "./fleet-load"
 import { FleetScreen } from "./screens/fleet"
@@ -54,6 +55,9 @@ export function App() {
   const [openSessionId, setOpenSessionId] = useState<string | undefined>(undefined)
   const [openArtifactId, setOpenArtifactId] = useState<string | undefined>(undefined)
   const [deciding, setDeciding] = useState(false)
+  // Denying with a reason is its own screen over the approval, so backing out
+  // of it returns to the decision rather than to the list.
+  const [explaining, setExplaining] = useState(false)
   const [pausing, setPausing] = useState(false)
   const [confirmPauseSession, setConfirmPauseSession] = useState(false)
   const [draft, setDraft] = useState("")
@@ -133,6 +137,13 @@ export function App() {
     () => snapshot?.approvals.find((approval) => approval.id === openApprovalId),
     [openApprovalId, snapshot],
   )
+
+  // An approval answered on another device leaves this phone holding a reason
+  // for a decision that no longer exists. The explain screen is closed with it,
+  // so the next approval opens on its own decision rather than on this one.
+  useEffect(() => {
+    if (!openApproval) setExplaining(false)
+  }, [openApproval])
 
   const openSession = useMemo(
     () => snapshot && openSessionId ? sessionDetail(snapshot, openSessionId) : undefined,
@@ -253,7 +264,7 @@ export function App() {
 
   useEffect(() => () => fleetLoads.invalidate(), [fleetLoads])
 
-  const decide = async (decision: ApprovalDecision) => {
+  const decide = async (decision: ApprovalDecision, explanation?: string) => {
     if (!openApproval) return
     setDeciding(true)
     try {
@@ -261,7 +272,9 @@ export function App() {
         approvalId: openApproval.id,
         decision,
         client: clientKind,
+        ...(explanation ? { explanation } : {}),
       })
+      setExplaining(false)
       setOpenApprovalId(undefined)
     } finally {
       setDeciding(false)
@@ -333,12 +346,22 @@ export function App() {
       <SafeAreaProvider>
         <StatusBar style="light" />
         <SafeAreaView className="flex-1 bg-background">
-          <ApprovalScreen
-            approval={openApproval}
-            pending={deciding}
-            onDecide={(decision) => void decide(decision)}
-            onBack={() => setOpenApprovalId(undefined)}
-          />
+          {explaining ? (
+            <DenyExplainScreen
+              approval={openApproval}
+              pending={deciding}
+              onSend={(explanation) => void decide("deny-explain", explanation)}
+              onBack={() => setExplaining(false)}
+            />
+          ) : (
+            <ApprovalScreen
+              approval={openApproval}
+              pending={deciding}
+              onDecide={(decision) => void decide(decision)}
+              onDenyExplain={() => setExplaining(true)}
+              onBack={() => setOpenApprovalId(undefined)}
+            />
+          )}
         </SafeAreaView>
       </SafeAreaProvider>
     )
