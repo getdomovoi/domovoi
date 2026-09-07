@@ -56,6 +56,122 @@ as `mutating` or `read-only`:
 `isMutatingRpcMethod` and `isRefusedWithoutPersistence` read that table. Use the table rather than
 guessing from a method name, because the classification is part of the wire contract.
 
+### Runtime discovery for a new session
+
+An authenticated phone uses `client: "phone"` (a tablet uses `"tablet"`). On the
+**execution machine's socket**, call:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"runtime.discover","params":{"provider":"codex","client":"phone"}}
+```
+
+The provider id comes from `snapshot.machine.providers[].id`. Discovery is scoped to
+that machine and provider, independent of the currently open project. There is no
+cross-machine fallback, global preferred provider, or project-specific model catalog.
+The caller selects the provider. A project does not have to be open to discover runtimes.
+
+A successful response has this shape. Model names below are illustrative; pass through
+the actual values returned by the daemon:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "machineId": "machine-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provider": "codex",
+    "status": "ready",
+    "models": [{
+      "provider": "codex",
+      "id": "provider-model-id",
+      "displayName": "Provider model name",
+      "description": "Provider model description",
+      "supportedReasoningEfforts": ["low", "high"],
+      "defaultReasoningEffort": "high",
+      "isDefault": true
+    }],
+    "defaultRuntime": {
+      "provider": "codex",
+      "model": "provider-model-id",
+      "reasoning": "high",
+      "permissionMode": "ask",
+      "auto": false
+    },
+    "permissionModes": ["ask", "plan", "build"],
+    "supportsAuto": false
+  }
+}
+```
+
+- Accepting the default means passing `result.defaultRuntime` unchanged as `runtime`
+  to `session.create`, alongside `title` and `client: "phone"`. A valid Git project
+  must first be open through `project.open`. `session.create` still returns a workspace
+  snapshot, with the created session selected by `activeSessionId`.
+- For a model picker, use `models[].displayName` as the label and `models[].id` as
+  `runtime.model`. On selection, use that model's `defaultReasoningEffort`. Offer its
+  `supportedReasoningEfforts` as choices; an empty array means keep the returned
+  default and show no reasoning selector. These values are opaque provider strings.
+- The daemon picks the first provider-marked default model, or the first returned
+  model if none is marked. It uses that model's default reasoning. Auto is always off.
+  The default permission mode is Ask when the adapter enforces read-only Ask, otherwise
+  Plan. Offer only `permissionModes`; `supportsAuto` permits Auto only in Build.
+- Readiness is probed on each discovery, including when models came from the daemon's
+  successful catalog cache (up to 60 seconds). Concurrent discoveries for a provider
+  share one request. Authentication loss invalidates its cached catalog. Creating or
+  changing a runtime checks readiness again before using the model catalog.
+
+An unavailable provider is a normal RPC result with **no** `models` or `defaultRuntime`:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "machineId": "machine-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "provider": "codex",
+    "status": "unavailable",
+    "reason": "auth-required",
+    "action": "sign-in",
+    "retryable": false,
+    "message": "Sign in to this provider on the execution machine, then retry discovery."
+  }
+}
+```
+
+| `reason` | `action` | `retryable` | Client behavior |
+| --- | --- | --- | --- |
+| `auth-required` | `sign-in` | false | Show sign-in instructions for the execution machine. |
+| `missing` | `install` | false | Show installation instructions for the execution machine. |
+| `readiness-unknown` | `retry` | true | Show that readiness could not be verified. |
+| `unsupported` | `choose-provider` | false | Offer a different provider. |
+| `timeout` | `retry` | true | Stop loading and offer Retry or a different provider. |
+| `discovery-failed` | `retry` | true | Show the refusal and offer Retry. |
+| `no-models` | `configure` | false | Ask the operator to configure model access on the execution machine. |
+
+Render `message` and disable Create for all unavailable results. `retryable: false`
+means an external action is needed first; the person can call discovery again after
+that action. Never fabricate a runtime or keep offering a previous provider's choices.
+Discard an old response if the selected machine or provider has changed while waiting.
+
+`maximumRuntimeDiscoveryMs` is 10,000 ms for the entire daemon operation, including
+readiness, connection setup and catalog retrieval. Keep a client-side deadline too
+(15 seconds allows 5 seconds of transport margin); a lost socket cannot deliver a
+daemon refusal. Discovery bypasses the mutation queue and remains available when
+persistence fails. Timed-out catalogs are cancelled, can be retried, and cannot replace
+a newer catalog when they answer late. Error messages contain fixed refusal copy,
+not CLI output, account details or credentials.
+
+`ready` reports the current authenticated local probe and provider catalog, not a
+reservation of provider capacity. Discovery sends no model prompt and creates no
+worktree or session. Authentication, quota or model access can change afterward, so
+handle a `session.create` error by retaining the form and rediscovering. This contract
+does not test a billable inference to prove quota availability.
+
+This addition keeps protocol version `0.5.0`. `runtime.models` and the required full
+`session.create.runtime` remain compatible. An older daemon may answer `runtime.discover`
+with `-32601`; show an upgrade requirement. Desktop can adopt this same call for its
+new-session form and permission controls; this change ships the protocol and daemon only.
+
 ### Diagnostic and test-harness methods
 
 `workspace.get` returns the current workspace snapshot and takes no parameters. It is a diagnostic

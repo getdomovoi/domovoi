@@ -29,7 +29,7 @@ async function machine(label) {
   const handle = await createProductionDaemonWithDependencies({ homeDirectory: join(directory, label), machineLabel: label, environment: { DOMOVOI_PORT: "0" } }, {
     ...productionDaemonDependencies,
     createMachineCredentials: () => asyncTestCredentials(store),
-    createProviderProbe: () => ({ inspect: async () => [] }),
+    createProviderProbe: () => ({ inspect: async () => [{ id: "claude-code", command: "claude", status: "ready" }] }),
     createDaemon: options => productionDaemonDependencies.createDaemon({ ...options, agents: { "claude-code": agent } }),
   })
   daemons.push(handle)

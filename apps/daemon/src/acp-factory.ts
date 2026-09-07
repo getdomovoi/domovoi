@@ -33,10 +33,11 @@ function createAdapter(
   return new AcpAgentAdapter({
     definition,
     createPeer,
-    listModels: async () => {
+    listModels: async (signal) => {
       for (const command of definition.commands) {
         try {
-          const result = await run(command, [...definition.modelArgs])
+          signal?.throwIfAborted()
+          const result = await run(command, [...definition.modelArgs], signal)
           if (result.exitCode !== 0) throw new Error(`${displayName} model catalog is unavailable`)
           return parseAcpModelCatalog(definition.id, result.stdout)
         } catch (error) {

@@ -523,6 +523,34 @@ A supervisor that starts the daemon without `WSL_DISTRO_NAME` leaves those facts
 the daemon is listed as plain Linux. Discovery does not enroll a distribution in the fleet; pair
 it with `domovoid pair` inside the distribution like any other machine.
 
+## Runtime discovery
+
+Remote clients call `runtime.discover` on the execution machine, with its provider id
+and their client kind. The result contains that provider's models and reasoning choices,
+a complete default runtime with Auto off, and supported permission controls, or a
+structured refusal with an action. The call checks local authentication readiness and
+has one 10-second budget for readiness, provider connection and model discovery.
+It works before a project is open. See the
+[phone RPC contract](../../packages/protocol/README.md#runtime-discovery-for-a-new-session)
+for exact request and response examples, defaults, caching, error states and compatibility.
+
+The automated `runtime-discovery-production.test.ts` suite uses production factories,
+authenticated sockets, pairing, SQLite, and Git worktrees, with substituted provider
+boundaries for deterministic refusal, cancellation and timeout cases. To prove the
+installed providers as well, build protocol and daemon, then run:
+
+```bash
+node apps/daemon/scripts/runtime-discovery-live.mjs /tmp/runtime-discovery-proof.json
+```
+
+Run that command from the repository root. It starts two production daemons in temporary
+profiles, authenticates a paired phone to each, discovers all providers, creates a real
+provider thread and Git worktree from a returned default, and verifies the session and
+phone credential after restarting each daemon. It sends no model prompt. It needs at
+least one installed, authenticated provider with a usable catalog. Temporary profiles
+and worktrees are removed; the optional report contains model metadata and outcomes,
+never credentials. The installed provider may retain its ordinary thread history.
+
 ## Programmatic use
 
 Node.js 22.13.0 or newer is required for unflagged `node:sqlite`.

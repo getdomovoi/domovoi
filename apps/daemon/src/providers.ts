@@ -13,10 +13,12 @@ export type CommandResult = {
 export type ProviderCommandRunner = (
   command: string,
   args: string[],
+  signal?: AbortSignal,
 ) => Promise<CommandResult>
 
 export interface ProviderProbe {
-  inspect(): Promise<ProviderDetection[]>
+  inspect(signal?: AbortSignal): Promise<ProviderDetection[]>
+  inspectProvider?(provider: string, signal?: AbortSignal): Promise<ProviderDetection | undefined>
 }
 
 type ProviderDefinition = {
@@ -72,16 +74,22 @@ export class CliProviderProbe implements ProviderProbe {
     this.#run = run
   }
 
-  async inspect(): Promise<ProviderDetection[]> {
-    return Promise.all(definitions.map((definition) => this.#inspect(definition)))
+  async inspect(signal?: AbortSignal): Promise<ProviderDetection[]> {
+    return Promise.all(definitions.map((definition) => this.#inspect(definition, signal)))
   }
 
-  async #inspect(definition: ProviderDefinition): Promise<ProviderDetection> {
+  async inspectProvider(provider: string, signal?: AbortSignal): Promise<ProviderDetection | undefined> {
+    const definition = definitions.find(({ id }) => id === provider)
+    return definition ? this.#inspect(definition, signal) : undefined
+  }
+
+  async #inspect(definition: ProviderDefinition, signal?: AbortSignal): Promise<ProviderDetection> {
     let command = definition.commands[0]!
     let versionResult: CommandResult | undefined
     for (const candidate of definition.commands) {
       try {
-        versionResult = await this.#run(candidate, ["--version"])
+        signal?.throwIfAborted()
+        versionResult = await this.#run(candidate, ["--version"], signal)
         command = candidate
         break
       } catch (error) {
@@ -99,7 +107,8 @@ export class CliProviderProbe implements ProviderProbe {
     let status: ProviderDetection["status"] = "unknown"
     if (definition.authArgs && definition.authStatus) {
       try {
-        status = definition.authStatus(await this.#run(command, definition.authArgs))
+        signal?.throwIfAborted()
+        status = definition.authStatus(await this.#run(command, definition.authArgs, signal))
       } catch {
         status = "unknown"
       }
@@ -125,9 +134,9 @@ function credentialListAuthStatus(result: CommandResult): ProviderDetection["sta
   return textAuthStatus(result)
 }
 
-export function runProviderCommand(command: string, args: string[]): Promise<CommandResult> {
+export function runProviderCommand(command: string, args: string[], signal?: AbortSignal): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout: 3_000, maxBuffer: 64 * 1_024 }, (error, stdout, stderr) => {
+    execFile(command, args, { timeout: 3_000, maxBuffer: 64 * 1_024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
       if (error && "code" in error && error.code === "ENOENT") {
         reject(error)
         return

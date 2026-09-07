@@ -3,6 +3,18 @@ import { describe, expect, it, vi } from "vitest"
 import { CliProviderProbe, type CommandResult, type ProviderCommandRunner } from "./providers.js"
 
 describe("CliProviderProbe", () => {
+  it("checks only the requested provider for interactive runtime discovery", async () => {
+    const run = vi.fn(async (_command: string, args: string[]): Promise<CommandResult> => ({
+      exitCode: 0, stdout: args[0] === "--version" ? "1.0.0" : "Logged in using ChatGPT", stderr: "",
+    }))
+    const probe = new CliProviderProbe(run)
+    await expect(probe.inspectProvider("codex")).resolves.toMatchObject({ id: "codex", status: "ready" })
+    expect(run.mock.calls.map(([command, args]) => [command, ...args]))
+      .toEqual([["codex", "--version"], ["codex", "login", "status"]])
+    await expect(probe.inspectProvider("unknown-provider")).resolves.toBeUndefined()
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
   it("reports versions and known authentication states without exposing account data", async () => {
     const run = vi.fn(async (command: string, args: string[]): Promise<CommandResult> => {
       const key = `${command} ${args.join(" ")}`

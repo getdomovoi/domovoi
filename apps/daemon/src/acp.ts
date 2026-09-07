@@ -76,7 +76,7 @@ export class AcpAgentAdapter implements AgentAdapter {
 
   readonly #definition: AcpProviderDefinition
   readonly #createPeer: (handlers: AcpPeerHandlers) => AcpPeer
-  readonly #listProviderModels: () => Promise<ProviderModel[]>
+  readonly #listProviderModels: (signal?: AbortSignal) => Promise<ProviderModel[]>
   readonly #createId: () => string
   readonly #listeners = new Set<(event: AgentEvent) => void>()
   readonly #activeTurns = new Map<string, ActiveTurn>()
@@ -88,7 +88,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   constructor(input: {
     definition: AcpProviderDefinition
     createPeer: (handlers: AcpPeerHandlers) => AcpPeer
-    listModels: () => Promise<ProviderModel[]>
+    listModels: (signal?: AbortSignal) => Promise<ProviderModel[]>
     createId?: () => string
   }) {
     this.#definition = input.definition
@@ -140,8 +140,8 @@ export class AcpAgentAdapter implements AgentAdapter {
     await this.close()
   }
 
-  listModels(): Promise<ProviderModel[]> {
-    return this.#listProviderModels()
+  listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
+    return this.#listProviderModels(signal)
   }
 
   async startThread(input: { cwd: string; runtime: Runtime }): Promise<string> {
