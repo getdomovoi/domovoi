@@ -1,5 +1,6 @@
-import { ScrollView, View } from "react-native"
+import { View } from "react-native"
 
+import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Icon, type IconName } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
@@ -67,9 +68,9 @@ export function UnpairedScreen({
         <Text variant="meta" className="mt-[3px]">No machines paired</Text>
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName="grow items-center justify-center gap-[11px] px-[26px]"
-        contentContainerStyle={{ paddingBottom: bottomInset }}
+        bottomInset={bottomInset}
       >
         <Icon name={screen.icon} tone="faint" size={24} />
         <Text className="text-center font-sans-medium text-[14.5px] text-foreground">
@@ -83,7 +84,7 @@ export function UnpairedScreen({
           className="mt-0.5 px-4 py-3"
         />
         <Text variant="note" className="text-center text-faint">{screen.footer}</Text>
-      </ScrollView>
+      </PageScroller>
     </View>
   )
 }

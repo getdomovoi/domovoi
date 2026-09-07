@@ -1,6 +1,7 @@
-import { ScrollView, View } from "react-native"
+import { View } from "react-native"
 
 import { ConnectionBanner } from "../components/connection-banner"
+import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Card, PressableCard } from "../components/ui/card"
 import { Icon } from "../components/ui/icon"
@@ -58,9 +59,9 @@ export function ReviewScreen({
         {hasSnapshot ? <Text variant="meta" className="mt-[3px]">{reviewSummary(rows)}</Text> : null}
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName="gap-[9px] px-3"
-        contentContainerStyle={{ paddingBottom: bottomInset }}
+        bottomInset={bottomInset}
       >
         <ConnectionBanner notice={notice} />
 
@@ -78,7 +79,7 @@ export function ReviewScreen({
         ) : null}
 
         {rows.map((row) => <ReviewCard key={row.id} row={row} onOpen={onOpenArtifact} />)}
-      </ScrollView>
+      </PageScroller>
     </View>
   )
 }

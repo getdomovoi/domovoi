@@ -1,6 +1,7 @@
 import { Pressable, ScrollView, View } from "react-native"
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
+import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Card } from "../components/ui/card"
 import { Icon } from "../components/ui/icon"
@@ -74,7 +75,7 @@ export function ArtifactScreen({
         {artifact.variant ? <Badge label={artifact.variant.label} tone="outline" /> : null}
       </View>
 
-      <ScrollView contentContainerClassName="gap-3 px-3.5 pb-8">
+      <PageScroller contentContainerClassName="gap-3 px-3.5 pb-8">
         {!body.readable ? (
           <Card className="border-info-border bg-info-bg">
             <Text className="text-[11.5px] leading-[18px] text-info-fg">{body.reason}</Text>
@@ -132,7 +133,7 @@ export function ArtifactScreen({
             No comments on this artifact. Anchoring one to the preview is done from the desktop.
           </Text>
         ) : null}
-      </ScrollView>
+      </PageScroller>
     </View>
   )
 }

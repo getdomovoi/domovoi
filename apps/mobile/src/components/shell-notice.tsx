@@ -1,7 +1,8 @@
-import { ScrollView, View } from "react-native"
+import { View } from "react-native"
 
 import { cn } from "../lib/cn"
 import type { UnreachableShell } from "../shell-state"
+import { PageScroller } from "./page-scroller"
 import { Button } from "./ui/button"
 import { Card } from "./ui/card"
 import { Icon, type IconName } from "./ui/icon"
@@ -53,9 +54,9 @@ export function ShellNotice({
         </Text>
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName="grow items-center justify-center gap-3 px-6"
-        contentContainerStyle={{ paddingBottom: bottomInset }}
+        bottomInset={bottomInset}
       >
         <Icon name={mark.icon} tone={mark.tone} size={24} />
         <Text className="text-center font-sans-medium text-[14.5px] text-foreground">
@@ -95,7 +96,7 @@ export function ShellNotice({
         {settled.has(shell.kind) ? (
           <Button title="Settings" onPress={onOpenSettings} className="mt-1 px-4 py-3" />
         ) : null}
-      </ScrollView>
+      </PageScroller>
     </View>
   )
 }

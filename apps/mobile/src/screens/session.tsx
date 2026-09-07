@@ -1,7 +1,8 @@
 import { useState } from "react"
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from "react-native"
+import { KeyboardAvoidingView, Platform, Pressable, View } from "react-native"
 
 import { Composer } from "../components/composer"
+import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
@@ -205,9 +206,9 @@ export function SessionScreen({
         <Badge label={detail.mode} tone="outline" />
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName="gap-3 px-3.5"
-        contentContainerStyle={{ paddingBottom: composerFootprint }}
+        bottomInset={composerFootprint}
       >
         {/* The reason the phone was picked up goes above the reading, because
             scrolling a thread to find the decision is the slow path. */}
@@ -255,7 +256,7 @@ export function SessionScreen({
             onPress={onPause}
           />
         </Card>
-      </ScrollView>
+      </PageScroller>
 
       <Composer
         draft={draft}

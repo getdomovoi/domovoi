@@ -1,5 +1,6 @@
-import { Platform, ScrollView, TextInput, View } from "react-native"
+import { Platform, TextInput, View } from "react-native"
 
+import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import { Text } from "../components/ui/text"
@@ -59,9 +60,9 @@ export function SettingsScreen({
         {paired ? null : <Text variant="meta" className="mt-[3px]">No machines paired</Text>}
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName="gap-[14px] px-3"
-        contentContainerStyle={{ paddingBottom: bottomInset }}
+        bottomInset={bottomInset}
       >
         {/* What this phone is. Every value is read from the platform or from
             the release the greeting sends the daemon, so none of them can
@@ -173,7 +174,7 @@ export function SettingsScreen({
             </Text>
           </View>
         )}
-      </ScrollView>
+      </PageScroller>
     </View>
   )
 }

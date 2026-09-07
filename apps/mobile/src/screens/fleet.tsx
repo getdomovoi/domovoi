@@ -1,7 +1,8 @@
-import { ScrollView, View } from "react-native"
+import { View } from "react-native"
 import type { FleetEntry } from "@getdomovoi/protocol"
 
 import { ConnectionBanner } from "../components/connection-banner"
+import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
@@ -109,9 +110,9 @@ export function FleetScreen({
         <Button title="Refresh" onPress={onRefresh} disabled={loading || !connected} />
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName={cn("gap-[9px] px-3", empty && "grow justify-center")}
-        contentContainerStyle={{ paddingBottom: bottomInset }}
+        bottomInset={bottomInset}
       >
         <ConnectionBanner notice={notice} />
 
@@ -178,7 +179,7 @@ export function FleetScreen({
             </Text>
           </Card>
         ) : null}
-      </ScrollView>
+      </PageScroller>
     </View>
   )
 }

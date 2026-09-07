@@ -1,8 +1,9 @@
 import { useState } from "react"
-import { Pressable, ScrollView, TextInput, View } from "react-native"
+import { Pressable, TextInput, View } from "react-native"
 import type { ApprovalRequest } from "@getdomovoi/protocol"
 
 import { FloatingBar } from "../components/floating-bar"
+import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import { Icon } from "../components/ui/icon"
@@ -68,9 +69,9 @@ export function DenyExplainScreen({
         </View>
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName="gap-3 px-3.5"
-        contentContainerStyle={{ paddingBottom: footprint }}
+        bottomInset={footprint}
       >
         {/* Struck through, because the point of this screen is that nothing
             ran and nothing is going to. */}
@@ -138,7 +139,7 @@ export function DenyExplainScreen({
             text, nothing else.
           </Text>
         </Card>
-      </ScrollView>
+      </PageScroller>
 
       <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
         <Button

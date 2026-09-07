@@ -1,8 +1,9 @@
 import { useState } from "react"
-import { Pressable, ScrollView, View } from "react-native"
+import { Pressable, View } from "react-native"
 import type { ApprovalRequest } from "@getdomovoi/protocol"
 
 import { FloatingBar } from "../components/floating-bar"
+import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
@@ -59,9 +60,9 @@ export function ApprovalScreen({
         {approval.risk === "hard-gate" ? <Badge label="Hard gate" tone="warning" pill /> : null}
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName="gap-3 px-3.5"
-        contentContainerStyle={{ paddingBottom: footprint }}
+        bottomInset={footprint}
       >
         <Text variant="body">{approval.operation}</Text>
 
@@ -90,7 +91,7 @@ export function ApprovalScreen({
             </View>
           ))}
         </Card>
-      </ScrollView>
+      </PageScroller>
 
       {/* The decision sits in thumb reach at the foot of the screen rather than
           at the end of a scroll, and the affirmative one wears the warning the

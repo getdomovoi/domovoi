@@ -1,7 +1,8 @@
-import { RefreshControl, ScrollView, View } from "react-native"
+import { RefreshControl, View } from "react-native"
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { ConnectionBanner } from "../components/connection-banner"
+import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
@@ -131,9 +132,9 @@ export function SessionsScreen({
         <Button title="Pause all" onPress={onPauseAll} />
       </View>
 
-      <ScrollView
+      <PageScroller
         contentContainerClassName={cn("gap-[9px] px-3", empty && "grow justify-center")}
-        contentContainerStyle={{ paddingBottom: bottomInset }}
+        bottomInset={bottomInset}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.dark["muted-foreground"]} />
         }
@@ -165,7 +166,7 @@ export function SessionsScreen({
         ) : null}
 
         {rows.map((row) => <SessionCard key={row.id} row={row} onOpen={onOpenSession} />)}
-      </ScrollView>
+      </PageScroller>
     </View>
   )
 }
