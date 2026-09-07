@@ -101,4 +101,13 @@ describe("PageScroller", () => {
     expect(onLayout).toHaveBeenCalledTimes(1)
     expect(onContentSizeChange).toHaveBeenCalledWith(390, 400)
   })
+
+  // The design system hides scrollbars on touch outright. The platform draws
+  // its own overlay indicator, so one from the app is a second one.
+  it("draws no scroll indicator of its own", async () => {
+    await draw()
+    await layOut(844)
+    await fill(1600)
+    expect(scroller().props.showsVerticalScrollIndicator).toBe(false)
+  })
 })

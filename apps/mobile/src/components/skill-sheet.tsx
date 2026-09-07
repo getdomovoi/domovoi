@@ -1,6 +1,7 @@
-import { Modal, Pressable, ScrollView, View } from "react-native"
+import { Modal, Pressable, View } from "react-native"
 
 import { cn } from "../lib/cn"
+import { PageScroller } from "./page-scroller"
 import type { SkillPickerRow } from "../turn-skills"
 import { Button } from "./ui/button"
 import { Icon } from "./ui/icon"
@@ -54,7 +55,7 @@ export function SkillSheet({
             )
             : null}
 
-          <ScrollView contentContainerClassName="gap-1.5">
+          <PageScroller contentContainerClassName="gap-1.5">
             {rows.map((row) => (
               <Pressable
                 key={row.id}
@@ -80,7 +81,7 @@ export function SkillSheet({
                 </View>
               </Pressable>
             ))}
-          </ScrollView>
+          </PageScroller>
 
           {chosen
             ? <Button title="Use the project default" variant="outline" shape="block" onPress={onUseDefault} />

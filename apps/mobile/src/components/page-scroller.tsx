@@ -54,6 +54,11 @@ export function PageScroller({
       {...props}
       onLayout={measureViewport}
       onContentSizeChange={measureContent}
+      // The design system hides scrollbars on touch outright, under
+      // "@media (hover: none), (pointer: coarse)": the platform overlays its
+      // own indicator, so a second one drawn by the app is a defect rather than
+      // a preference. Set here so it holds for every screen at once.
+      showsVerticalScrollIndicator={false}
       scrollEnabled={scrolls}
       // iOS bounces vertically whether or not scrolling is enabled, so turning
       // the scroll off is not enough on its own to stop the rubber band.

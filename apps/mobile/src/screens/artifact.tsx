@@ -86,7 +86,11 @@ export function ArtifactScreen({
         ) : null}
 
         {body.readable && artifact.type === "diff" ? (
-          <ScrollView horizontal contentContainerClassName="min-w-full">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerClassName="min-w-full"
+          >
             <View className="rounded-xl border border-border bg-code p-3">
               {diffLines(body.lines).map((line, index) => (
                 <Text
