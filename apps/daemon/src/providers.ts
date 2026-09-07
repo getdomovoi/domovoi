@@ -90,9 +90,11 @@ export class CliProviderProbe implements ProviderProbe {
       try {
         signal?.throwIfAborted()
         versionResult = await this.#run(candidate, ["--version"], signal)
+        signal?.throwIfAborted()
         command = candidate
         break
       } catch (error) {
+        signal?.throwIfAborted()
         if (!isMissingCommand(error)) {
           return { id: definition.id, command: candidate, status: "unknown" }
         }
@@ -108,8 +110,11 @@ export class CliProviderProbe implements ProviderProbe {
     if (definition.authArgs && definition.authStatus) {
       try {
         signal?.throwIfAborted()
-        status = definition.authStatus(await this.#run(command, definition.authArgs, signal))
+        const authentication = await this.#run(command, definition.authArgs, signal)
+        signal?.throwIfAborted()
+        status = definition.authStatus(authentication)
       } catch {
+        signal?.throwIfAborted()
         status = "unknown"
       }
     }

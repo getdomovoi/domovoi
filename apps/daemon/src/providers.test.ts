@@ -3,6 +3,26 @@ import { describe, expect, it, vi } from "vitest"
 import { CliProviderProbe, type CommandResult, type ProviderCommandRunner } from "./providers.js"
 
 describe("CliProviderProbe", () => {
+  it.each([
+    ["version", "reject"], ["authentication", "reject"],
+    ["version", "resolve"], ["authentication", "resolve"],
+  ] as const)("propagates cancellation during %s inspection when the runner calls %s", async (phase, outcome) => {
+    const controller = new AbortController()
+    const run: ProviderCommandRunner = async (_command, args, signal) => {
+      if ((args[0] === "--version") === (phase === "version")) {
+        return new Promise((resolve, reject) => signal!.addEventListener("abort", () => {
+          if (outcome === "reject") reject(signal!.reason)
+          else resolve({ exitCode: 1, stdout: "", stderr: "" })
+        }, { once: true }))
+      }
+      return { exitCode: 0, stdout: "1.0.0", stderr: "" }
+    }
+    const inspection = new CliProviderProbe(run).inspectProvider("codex", controller.signal)
+    await Promise.resolve()
+    controller.abort(new Error("Probe cancelled"))
+    await expect(inspection).rejects.toThrow("Probe cancelled")
+  })
+
   it("checks only the requested provider for interactive runtime discovery", async () => {
     const run = vi.fn(async (_command: string, args: string[]): Promise<CommandResult> => ({
       exitCode: 0, stdout: args[0] === "--version" ? "1.0.0" : "Logged in using ChatGPT", stderr: "",

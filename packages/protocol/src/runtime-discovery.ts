@@ -60,6 +60,9 @@ export const runtimeDiscoverResultSchema = z.discriminatedUnion("status", [
   if (new Set(result.permissionModes).size !== result.permissionModes.length) {
     context.addIssue({ code: "custom", path: ["permissionModes"], message: "Permission modes must be unique" })
   }
+  if (result.supportsAuto && !result.permissionModes.includes("build")) {
+    context.addIssue({ code: "custom", path: ["supportsAuto"], message: "Auto requires Build mode" })
+  }
   const ids = new Set<string>()
   for (const [index, model] of result.models.entries()) {
     if (model.provider !== result.provider || !model.id.trim() || model.id.length > 256 || ids.has(model.id)) {

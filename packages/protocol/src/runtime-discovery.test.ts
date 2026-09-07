@@ -42,6 +42,7 @@ describe("runtime discovery contract", () => {
       { defaultRuntime: { ...ready.defaultRuntime, reasoning: "invented" } },
       { defaultRuntime: { ...ready.defaultRuntime, permissionMode: "build", auto: true } },
       { permissionModes: ["plan", "build"] }, { permissionModes: ["ask", "ask"] },
+      { permissionModes: ["ask"], supportsAuto: true },
       { unexpected: true },
     ]) expect(rpcMethods["runtime.discover"].result.safeParse({ ...ready, ...patch }).success).toBe(false)
   })
