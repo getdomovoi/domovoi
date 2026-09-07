@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { resolve } from "node:path"
 
 export type RendererTarget =
@@ -77,7 +78,23 @@ export function rendererEndpointUrl(endpointUrl: string): string {
   return url.href
 }
 
-export function rendererContentSecurityPolicy(endpointUrl: string | undefined): string {
+// Vite injects the react-refresh preamble as an inline script, so a development
+// page cannot load under script-src 'self' alone. Hashing what the page actually
+// carries keeps the policy exact: no 'unsafe-inline', and nothing pinned to a
+// preamble text that the plugin is free to change.
+const inlineScript = /<script(?![^>]*\ssrc[\s=])[^>]*>([\s\S]*?)<\/script>/giu
+
+export function inlineScriptHashes(html: string): readonly string[] {
+  return [...html.matchAll(inlineScript)]
+    .map((match) => match[1] ?? "")
+    .filter((body) => body.length > 0)
+    .map((body) => `'sha256-${createHash("sha256").update(body, "utf8").digest("base64")}'`)
+}
+
+export function rendererContentSecurityPolicy(
+  endpointUrl: string | undefined,
+  scriptHashes: readonly string[] = [],
+): string {
   const url = parsedEndpoint(endpointUrl && rendererEndpointUrl(endpointUrl))
   const endpoint = url && (url.protocol === "ws:" || url.protocol === "wss:") && !url.hostname.startsWith("[")
     ? ` ${url.protocol}//${url.host}`
@@ -85,7 +102,8 @@ export function rendererContentSecurityPolicy(endpointUrl: string | undefined): 
   const preview = endpoint.replace(/^ ws:/u, " http:").replace(/^ wss:/u, " https:")
   return `default-src 'self'; connect-src 'self' ${loopbackSources}${endpoint}; `
     + `frame-src 'self'${preview}; `
-    + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; script-src 'self'"
+    + "style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; "
+    + `script-src 'self'${scriptHashes.map((hash) => ` ${hash}`).join("")}`
 }
 
 export function isAuthorizedRendererEvent(

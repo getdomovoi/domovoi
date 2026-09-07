@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto"
 import { resolve } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
 import {
+  inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
   rendererContentSecurityPolicy,
@@ -32,6 +34,12 @@ describe("rendererEndpointUrl", () => {
     expect(rendererEndpointUrl(endpoint)).toBe(endpoint)
   })
 })
+
+function scriptSources(policy: string): string[] {
+  const directive = policy.split(";").map((part) => part.trim()).find((part) => part.startsWith("script-src "))
+  if (!directive) throw new Error("script-src is missing")
+  return directive.slice("script-src ".length).split(/\s+/u)
+}
 
 function connectSources(policy: string): string[] {
   const directive = policy.split(";").map((part) => part.trim()).find((part) => part.startsWith("connect-src "))
@@ -207,5 +215,42 @@ describe("trusted renderer frames", () => {
     }, expectedWebContents, target)).toBe(false)
     expect(isAuthorizedRendererEvent({ sender: expectedWebContents, senderFrame: null }, expectedWebContents, target))
       .toBe(false)
+  })
+})
+
+describe("inlineScriptHashes", () => {
+  it("hashes exactly the inline scripts a development page carries", () => {
+    const preamble = 'import { injectIntoGlobalHook } from "/@react-refresh";\ninjectIntoGlobalHook(window);\n'
+    const html = `<!doctype html><html><head>`
+      + `<script type="module">${preamble}</script>`
+      + `<script type="module" src="/@vite/client"></script>`
+      + `</head><body><div id="root"></div></body></html>`
+    const expected = createHash("sha256").update(preamble, "utf8").digest("base64")
+
+    expect(inlineScriptHashes(html)).toEqual([`'sha256-${expected}'`])
+  })
+
+  it("ignores a script with a source and reports nothing for a page without inline scripts", () => {
+    expect(inlineScriptHashes(`<script src="/main.js"></script>`)).toEqual([])
+    expect(inlineScriptHashes("<html><body></body></html>")).toEqual([])
+  })
+
+  it("hashes every inline script rather than only the first", () => {
+    const html = `<script>one()</script><script type="module">two()</script>`
+
+    expect(inlineScriptHashes(html)).toHaveLength(2)
+  })
+})
+
+describe("rendererContentSecurityPolicy script sources", () => {
+  it("allows only 'self' when no inline script was observed", () => {
+    expect(scriptSources(rendererContentSecurityPolicy(undefined))).toEqual(["'self'"])
+  })
+
+  it("allows an observed inline script by hash and never by 'unsafe-inline'", () => {
+    const sources = scriptSources(rendererContentSecurityPolicy(undefined, ["'sha256-abc'", "'sha256-def'"]))
+
+    expect(sources).toEqual(["'self'", "'sha256-abc'", "'sha256-def'"])
+    expect(sources).not.toContain("'unsafe-inline'")
   })
 })

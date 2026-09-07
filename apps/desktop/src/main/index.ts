@@ -14,6 +14,7 @@ import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
+  inlineScriptHashes,
   rendererContentSecurityPolicy,
   rendererTargetUrl,
   resolveRendererTarget,
@@ -225,11 +226,29 @@ function createWindow(): void {
   })
   mainRendererTarget = target
   const window = mainWindow
-  const load = () => {
-    if (!window.isDestroyed()) void window.loadURL(rendererTargetUrl(target))
+  const load = async (): Promise<void> => {
+    // A development page carries Vite's inline react-refresh preamble, so the
+    // policy has to name that exact script before the document is asked for.
+    devScriptHashes = target.kind === "url" ? await observedInlineScripts(target.url) : []
+    if (!window.isDestroyed()) await window.loadURL(rendererTargetUrl(target))
   }
   // The document's policy names the acquired endpoint, so the load waits.
   void desktopDaemon.acquire().then(load, () => {})
+}
+
+// Hashes of the inline scripts the development page serves. Empty for the
+// packaged app, whose own HTML carries none.
+let devScriptHashes: readonly string[] = []
+
+async function observedInlineScripts(rendererUrl: string): Promise<readonly string[]> {
+  try {
+    const response = await fetch(rendererUrl)
+    return response.ok ? inlineScriptHashes(await response.text()) : []
+  } catch {
+    // The renderer load reports its own failure; a policy without hashes is the
+    // safe answer here rather than a wider one.
+    return []
+  }
 }
 
 // Served with the document so connect-src can name the acquired endpoint.
@@ -255,7 +274,10 @@ function serveRendererPolicy(): void {
         ...details.responseHeaders,
         "Content-Security-Policy": [
           worker ? fleetWorkerPolicy(details.url, fleetOrigins)
-            : rendererContentSecurityPolicy(acquisition?.kind === "refused" ? undefined : acquisition?.url),
+            : rendererContentSecurityPolicy(
+              acquisition?.kind === "refused" ? undefined : acquisition?.url,
+              devScriptHashes,
+            ),
         ],
         "Cache-Control": ["no-store"],
       },
