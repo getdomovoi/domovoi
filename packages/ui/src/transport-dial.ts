@@ -6,6 +6,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { DeadlineExceededError } from "./deadline.js"
+import { ClientAdmissionError } from "./client-admission-policy.js"
 
 export class TransportDialError extends Error {
   constructor(message: string) {
@@ -89,6 +90,9 @@ export async function dialTransport<Connection>(input: {
         remainingCandidates: usable.length - index,
       }) }
     } catch (error) {
+      // A different identity or rejected authority is terminal, not another
+      // network outage to try a bearer against on the next route.
+      if (error instanceof ClientAdmissionError) throw error
       // The failure text is deliberately not carried: a transport error can
       // quote the request that produced it, credential included.
       refusedBy.push(candidate.kind)

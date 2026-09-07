@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { constants } from "node:fs"
+import { constants, createReadStream } from "node:fs"
 import { access, mkdir, mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
@@ -10,16 +10,28 @@ export const successMarker = "DOMOVOI_DESKTOP_LAUNCH_SMOKE_OK"
 // The label the desktop pairs itself under while the smoke flag is set.
 export const smokeDeviceLabel = "Desktop launch smoke"
 
-export async function executableOnPath(name) {
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    if (!directory) continue
-    const candidate = join(directory, name)
-    try {
-      await access(candidate, constants.X_OK)
-      return candidate
-    } catch {}
+export async function executableOnPath(name, { env = process.env, timeoutMs = 5_000, checkAccess = access } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) throw new Error("Executable lookup requires a finite positive budget")
+  const expires = performance.now() + timeoutMs
+  const timeout = new Error(`Timed out finding ${name} on PATH after ${timeoutMs} ms`)
+  const check = () => { if (performance.now() >= expires) throw timeout }
+  let timer
+  const lookup = async () => {
+    for (const directory of (env.PATH ?? "").split(delimiter)) {
+      check()
+      if (!directory) continue
+      const candidate = join(directory, name)
+      const found = await checkAccess(candidate, constants.X_OK).then(() => true, () => false)
+      check()
+      if (found) return candidate
+    }
+    return undefined
   }
-  return undefined
+  try {
+    return await Promise.race([lookup(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(timeout), timeoutMs)
+    })])
+  } finally { clearTimeout(timer) }
 }
 
 export async function createSmokeProfile(prefix) {
@@ -30,6 +42,56 @@ export async function createSmokeProfile(prefix) {
     mkdir(join(profileRoot, "data")),
   ])
   return profileRoot
+}
+
+// Observe until stdio closes, not just process exit, so the final error is
+// not lost. The caller starts this deadline before spawning its child.
+export function observeSmokeDebugging(child, signal) {
+  let stdout = "", stderr = "", exit
+  let resolve, reject
+  const ready = new Promise((yes, no) => { resolve = yes; reject = no })
+  const output = () => `stdout:\n${stdout || "(empty)"}\nstderr:\n${stderr || "(empty)"}`
+  const status = () => exit ? `code ${exit.code ?? "null"}, signal ${exit.signal ?? "none"}` : "no exit observed"
+  const fail = reason => { signal.removeEventListener("abort", onAbort); reject(new Error(`${reason} (${status()})\n${output()}`)) }
+  const onAbort = () => fail("Desktop debugging startup deadline expired")
+  const onExit = (code, signal) => { exit = { code, signal } }
+  const onClose = (code, signal) => { onExit(code, signal); fail("Desktop exited before debugging was available") }
+  const onError = error => fail(`Desktop could not start: ${error.message}`)
+  const received = (stream, data) => {
+    if (stream === "stdout") stdout = (stdout + data).slice(-16_384)
+    else stderr = (stderr + data).slice(-16_384)
+    if (exit) return
+    const address = /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[^\s]+)\r?\n/u.exec(stream === "stdout" ? stdout : stderr)?.[1]
+    if (address) { signal.removeEventListener("abort", onAbort); resolve(address) }
+  }
+  const onStdout = data => received("stdout", data)
+  const onStderr = data => received("stderr", data)
+  child.stdout.on("data", onStdout)
+  child.stderr.on("data", onStderr)
+  child.once("exit", onExit)
+  child.once("close", onClose)
+  child.once("error", onError)
+  signal.addEventListener("abort", onAbort, { once: true })
+  if (signal.aborted) onAbort()
+  return { ready, output, dispose: () => {
+    child.stdout.removeListener("data", onStdout)
+    child.stderr.removeListener("data", onStderr)
+    child.removeListener("exit", onExit)
+    child.removeListener("close", onClose)
+    child.removeListener("error", onError)
+    signal.removeEventListener("abort", onAbort)
+  } }
+}
+
+// Native Windows failures may never reach stderr. This is an extra bounded
+// diagnostic, not a reason to replace the child exit or retain its profile.
+export async function smokeDiagnosticLog(path) {
+  try {
+    const chunks = []
+    const stream = createReadStream(path, { start: 0, end: 16_383, signal: AbortSignal.timeout(2_000) })
+    for await (const chunk of stream) chunks.push(chunk)
+    return Buffer.concat(chunks).toString("utf8") || "(empty)"
+  } catch (error) { return error.code === "ENOENT" ? "(not created)" : `(unreadable: ${error.message})` }
 }
 
 function stopProcessTree(child) {

@@ -27,7 +27,11 @@ describe("desktop daemon assembly", () => {
           .map((name) => name.trim())
           .filter((name) => name.length > 0 && !name.startsWith("type "))
         for (const name of values) {
-          if (name !== "acquireLocalDaemon") offenders.push(`${file}: imports ${name} from @getdomovoi/daemon`)
+          // Route verification uses an existing home owner; it cannot construct
+          // or acquire a daemon. Neither the constructor nor factory is allowed.
+          if (!["acquireLocalDaemon", "verifyLocalFleetClientRoute"].includes(name)) {
+            offenders.push(`${file}: imports ${name} from @getdomovoi/daemon`)
+          }
         }
       }
     }

@@ -42,6 +42,8 @@ import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { fleetUpdateAvailable } from "./fleet-updates.js"
 import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
 import { machineAttachment } from "./machine-selection.js"
+import { AuthorizeClientDialog } from "./authorize-client-dialog.js"
+import type { FleetAccessState } from "./fleet-access-session.js"
 import { deviceLabelMismatch, renamedElsewhereNotice } from "./rename-device.js"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -252,6 +254,9 @@ function MachineCard({
   onUse,
   onOpenTerminal,
   onForget,
+  clientAccess,
+  onAuthorize,
+  onRemoveAccess,
 }: {
   machine: FleetMachine
   fleet: readonly FleetEntry[]
@@ -261,14 +266,14 @@ function MachineCard({
   onUse?: ((machineId: string) => void) | undefined
   onOpenTerminal?: ((machineId: string) => void) | undefined
   onForget?: ((machine: FleetMachine) => void) | undefined
+  clientAccess?: FleetAccessState | undefined
+  onAuthorize?: ((machine: FleetMachine) => void) | undefined
+  onRemoveAccess?: ((machine: FleetMachine) => void) | undefined
 }) {
   const transports = orderedMachineTransports(machine)
   const updateVersion = fleetUpdateAvailable(machine, fleet)
   const note = healthNote[machine.health]?.(machine.label)
-  // Attaching and a terminal are client dials, and a remote machine has no
-  // client credential to dial with. The controls stay, disabled, with the
-  // reason beside them, so nobody hunts for a setting that does not exist.
-  const attachment = machineAttachment(machine)
+  const attachment = machineAttachment(machine, clientAccess?.state === "admitted")
   const canControl = connected && attachment.selectable
   const showsTerminal = onOpenTerminal && machine.capabilities.includes("terminals")
   return (
@@ -282,7 +287,7 @@ function MachineCard({
             UPDATE {updateVersion}
           </Badge>
         ) : null}
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex flex-wrap items-center gap-1.5">
           {inUse ? (
             <span className="font-machine text-[10px] text-faint">In use</span>
           ) : onUse ? (
@@ -321,6 +326,16 @@ function MachineCard({
           ) : null}
         </span>
       </div>
+      {!machine.self ? <div className="mt-2 flex flex-wrap items-center gap-2">
+        {clientAccess?.state === "admitted" ? <>
+          <Badge variant="success">Client credential verified</Badge>
+          {onRemoveAccess ? <Button variant="ghost" size="sm" onClick={() => onRemoveAccess(machine)}>Remove local access</Button> : null}
+        </> : onAuthorize ? <Button variant="outline" size="sm" disabled={!connected || clientAccess?.state === "checking"}
+          aria-label={`Authorize this client for ${machine.label}`} onClick={() => onAuthorize(machine)}>
+          {clientAccess?.state === "checking" ? "Verifying client access" : "Authorize this client"}
+        </Button> : null}
+        {clientAccess?.state === "refused" ? <p role="status" className="basis-full text-sm text-destructive">{clientAccess.message}</p> : null}
+      </div> : null}
       {!attachment.selectable && (onUse || showsTerminal) && !inUse ? (
         <p className="mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">
           {attachment.reason}
@@ -978,6 +993,10 @@ export function FleetView({
   onForgetMachine,
   onUseMachine,
   onOpenMachineTerminal,
+  clientKind = "desktop",
+  clientAccess = {},
+  onAuthorizeClient,
+  onRemoveClientAccess,
 }: {
   connected: boolean
   entries: FleetEntry[]
@@ -995,7 +1014,16 @@ export function FleetView({
   onForgetMachine?: ((machineId: string) => Promise<FleetForgetResult>) | undefined
   onUseMachine?: ((machineId: string) => void) | undefined
   onOpenMachineTerminal?: ((machineId: string) => void) | undefined
+  clientKind?: ClientKind
+  clientAccess?: Readonly<Record<string, FleetAccessState>>
+  onAuthorizeClient?: (machineId: string, credential: string, signal: AbortSignal) => Promise<void>
+  onRemoveClientAccess?: (machineId: string) => void
 }) {
+  const [authorizing, setAuthorizing] = useState<FleetMachine | null>(null)
+  const [removedAccess, setRemovedAccess] = useState<{ machineId: string; label: string } | null>(null)
+  useEffect(() => {
+    if (removedAccess && clientAccess[removedAccess.machineId]?.state === "admitted") setRemovedAccess(null)
+  }, [clientAccess, removedAccess])
   const [devices, setDevices] = useState<PairedDeviceSummary[] | null>(null)
   const [devicesError, setDevicesError] = useState("")
   const [actionError, setActionError] = useState("")
@@ -1151,6 +1179,9 @@ export function FleetView({
 
           <section className="mt-5 flex flex-col gap-2.5" aria-label="Machines">
             <h2 className="m-0 text-[13px] font-semibold">Machines</h2>
+            {removedAccess ? <Alert><AlertTitle>Local client access removed</AlertTitle><AlertDescription>
+              This app no longer holds the credential for {removedAccess.label}. Revoke this device in {removedAccess.label}'s Devices list to end its authority there.
+            </AlertDescription></Alert> : null}
             {fleetOverflow ? <FleetOverflowAlert overflow={fleetOverflow} /> : null}
             {forgetNotice?.outcome === "refused" ? (
               <Alert variant="destructive">
@@ -1168,6 +1199,12 @@ export function FleetView({
                 {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
                 inUse={machine.id === currentMachineId}
                 connected={connected}
+                clientAccess={clientAccess[machine.id]}
+                {...(onAuthorizeClient ? { onAuthorize: setAuthorizing } : {})}
+                {...(onRemoveClientAccess ? { onRemoveAccess: (target: FleetMachine) => {
+                  onRemoveClientAccess(target.id)
+                  setRemovedAccess({ machineId: target.id, label: target.label })
+                } } : {})}
                 {...(onUseMachine ? { onUse: onUseMachine } : {})}
                 {...(onOpenMachineTerminal ? { onOpenTerminal: onOpenMachineTerminal } : {})}
                 {...(onForgetMachine ? { onForget: (target: FleetMachine) => setForgetting(target) } : {})}
@@ -1270,6 +1307,8 @@ export function FleetView({
         onConfirm={(device) => void revokeDevice(device)}
         onClose={() => setRevoking(null)}
       />
+      {authorizing && onAuthorizeClient ? <AuthorizeClientDialog key={authorizing.id} machine={authorizing} kind={clientKind}
+        onAuthorize={onAuthorizeClient} onClose={() => setAuthorizing(null)} /> : null}
 
       <ForgetConfirmation
         machine={forgetting}

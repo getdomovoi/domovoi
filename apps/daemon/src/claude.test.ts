@@ -146,6 +146,24 @@ describe("ClaudeAgentSdkAdapter", () => {
     await expect(listing).rejects.toThrow("Claude model catalog returned invalid data")
   })
 
+  it("closes an expired discovery and never asks for models after late initialization", async () => {
+    const { calls, factory } = factoryHarness()
+    let finish: () => void = () => {}
+    const adapter = new ClaudeAgentSdkAdapter((input, options) => {
+      const query = factory(input, options)
+      calls[0]!.query.initializationResult.mockImplementationOnce(() => new Promise<object>((resolve) => { finish = () => resolve({}) }))
+      return query
+    })
+    const controller = new AbortController()
+    const listing = adapter.listModels(controller.signal)
+    controller.abort(new Error("Discovery expired"))
+    expect(calls[0]!.query.close).toHaveBeenCalledOnce()
+    finish()
+    await expect(listing).rejects.toThrow("Discovery expired")
+    expect(calls[0]!.query.supportedModels).not.toHaveBeenCalled()
+    expect(calls[0]!.query.close).toHaveBeenCalledOnce()
+  })
+
   it("starts a streaming session and emits turn text and completion", async () => {
     const { calls, factory } = factoryHarness()
     const turnId: ClaudeMessageId = "22222222-2222-4222-8222-222222222222"
@@ -204,6 +222,41 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(event).toHaveBeenCalledTimes(2)
+  })
+
+  it("delivers a turn whose usage counters cannot be normalized", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const event = vi.fn()
+    adapter.onEvent(event)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({
+      threadId,
+      cwd: "/worktree",
+      prompt: "Run tests",
+      runtime: runtime("build"),
+    })
+
+    // A reply already reached the person. An accounting counter that does not
+    // add up is not a reason to tell them their work failed.
+    calls[0]!.query.emit({
+      type: "result",
+      subtype: "success",
+      session_id: threadId,
+      is_error: false,
+      usage: { input_tokens: 10, output_tokens: 5, total_tokens: 1 },
+    })
+
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
+      type: "turn-completed",
+      params: { threadId, turnId, turn: { id: turnId, status: "completed" } },
+    }))
+    expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "usage" }))
+    await adapter.close()
   })
 
   it("reports current context from the Claude SDK after a turn", async () => {

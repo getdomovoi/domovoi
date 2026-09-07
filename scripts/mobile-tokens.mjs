@@ -17,6 +17,16 @@ const regenerateCommand = "pnpm mobile:tokens"
 // styles.css to the phone: a hand-copied palette drifts silently, a generated
 // one either matches byte for byte or fails release:invariants.
 
+// The stylesheet is the authority and is deliberately not sRGB-safe. Several
+// tokens ask for more chroma than sRGB holds, and a browser or a desktop window
+// on a wide-gamut display paints the full oklch value. The phone cannot, so this
+// script clips those channels to the nearest sRGB hex, which is a concession the
+// phone makes rather than a value the design gave up. --primary in the dark
+// theme is the widest miss and lands at roughly 86 percent of the asked chroma.
+// Every clipped token is listed in the generated outOfGamut export, so a phone
+// screenshot that does not match a browser screenshot on those hues is expected
+// behaviour and not a bug to file.
+
 // The faces the design uses. DESIGN.md sets body and machine text at 400,
 // labels at 500, and titles at 600. React Native names a font per face rather
 // than per family, so each weight the app can ask for has to be its own
@@ -107,6 +117,37 @@ export function oklchToSrgb(lightness, chroma, hue) {
   return linear.map((channel) => Math.min(1, Math.max(0, gamma(channel))))
 }
 
+// Every color-mix(in oklab, var(--X) N%, transparent) step the designs use.
+// The mix is alpha-only, so it is the base colour at N percent alpha. A step
+// that appears in a design and not here has no phone equivalent: add it, and
+// the emitted AlphaStep union starts accepting it.
+const alphaSteps = [12, 14, 16, 18, 20, 30, 35, 45, 60, 78, 82, 84, 88, 94]
+
+// A colour whose linear sRGB channels leave 0..1 before the transfer curve is
+// outside the gamut the phone can paint, and oklchToSrgb clips it.
+export function inSrgbGamut(value) {
+  const parsed = parseOklch(value)
+  if (!parsed) return undefined
+  const radians = (parsed.hue * Math.PI) / 180
+  const a = parsed.chroma * Math.cos(radians)
+  const b = parsed.chroma * Math.sin(radians)
+  const l = (parsed.lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3
+  const m = (parsed.lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3
+  const s = (parsed.lightness - 0.0894841775 * a - 1.291485548 * b) ** 3
+  const linear = [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ]
+  return linear.every((channel) => gamma(channel) >= -0.0005 && gamma(channel) <= 1.0005)
+}
+
+export function outOfGamutNames(resolved) {
+  return Object.entries(resolved)
+    .filter(([, value]) => inSrgbGamut(value) === false)
+    .map(([name]) => name)
+}
+
 function hexByte(value) {
   return Math.round(value * 255).toString(16).padStart(2, "0")
 }
@@ -136,6 +177,34 @@ export function themeColors(resolved) {
     if (hex) colors[name] = hex
   }
   return colors
+}
+
+// CSS states one box-shadow; React Native states four properties on iOS and a
+// single elevation scalar on Android. The blur radius halves because CSS blur is
+// about twice the Gaussian radius iOS asks for, and elevation is derived from
+// the vertical offset because Android has nothing finer to take. Spread, inset,
+// and any second shadow in a comma-separated list have no equivalent and are
+// rejected rather than silently dropped.
+export function shadowScale(resolved) {
+  const scale = {}
+  for (const [name, value] of Object.entries(resolved)) {
+    const step = /^shadow-(.+)$/.exec(name)
+    if (!step) continue
+    const match = /^(-?[\d.]+)(?:px)?\s+(-?[\d.]+)px\s+([\d.]+)px\s+(oklch\([^)]*\))$/.exec(value.trim())
+    if (!match) throw new Error(`unsupported shadow expression: ${value.trim()}`)
+    const parsed = parseOklch(match[4])
+    if (!parsed) throw new Error(`unsupported shadow expression: ${value.trim()}`)
+    const [r, g, b] = oklchToSrgb(parsed.lightness, parsed.chroma, parsed.hue)
+    const height = Number(match[2])
+    scale[step[1]] = {
+      shadowColor: `#${hexByte(r)}${hexByte(g)}${hexByte(b)}`,
+      shadowOpacity: parsed.alpha,
+      shadowRadius: Number((Number(match[3]) / 2).toFixed(2)),
+      shadowOffset: { width: Number(match[1]), height },
+      elevation: Math.round(height / 2),
+    }
+  }
+  return scale
 }
 
 function pxValue(text, radius) {
@@ -204,12 +273,18 @@ export function parseTokens(css) {
     if (!block) throw new Error(`${sourceFile} has no ${selector} block`)
     return block.body
   }
-  const light = resolveAliases(customProperties(find(":root, .light")))
+  const lightOwn = customProperties(find(":root, .light"))
+  const light = resolveAliases(lightOwn)
   const darkOwn = customProperties(find(".dark"))
   const dark = resolveAliases(darkOwn, light)
+  // Shadows read the merged declarations rather than the dark block alone, so a
+  // step the dark theme does not restate keeps the light one instead of vanishing.
+  const darkAll = resolveAliases({ ...lightOwn, ...darkOwn })
   const theme = find("@theme inline")
   return {
     colors: { light: themeColors(light), dark: themeColors(dark) },
+    shadows: { light: shadowScale(light), dark: shadowScale(darkAll) },
+    outOfGamut: { light: outOfGamutNames(light), dark: outOfGamutNames(dark) },
     radius: radiusScale(theme, light),
     fonts: fontFaces(theme),
   }
@@ -232,6 +307,14 @@ const header = [
   `// Run ${regenerateCommand} after changing the stylesheet; release:invariants`,
   "// fails when this file and the stylesheet disagree.",
 ]
+
+function shadowLines(record, indent) {
+  return Object.entries(record).map(([name, shadow]) => {
+    const offset = `{ width: ${shadow.shadowOffset.width}, height: ${shadow.shadowOffset.height} }`
+    return `${indent}${key(name)}: { shadowColor: ${literal(shadow.shadowColor)}, shadowOpacity: ${shadow.shadowOpacity}, ` +
+      `shadowRadius: ${shadow.shadowRadius}, shadowOffset: ${offset}, elevation: ${shadow.elevation} },`
+  })
+}
 
 export function renderModule(tokens) {
   const fontFamily = Object.fromEntries(tokens.fonts.map((face) => [face.utility, face.name]))
@@ -260,7 +343,28 @@ export function renderModule(tokens) {
     ...objectLines(fontFamily, "  "),
     "}",
     "",
-    "module.exports = { colors, radius, fonts, fontFamily }",
+    "const shadows = {",
+    "  light: {",
+    ...shadowLines(tokens.shadows.light, "    "),
+    "  },",
+    "  dark: {",
+    ...shadowLines(tokens.shadows.dark, "    "),
+    "  },",
+    "}",
+    "",
+    "const outOfGamut = {",
+    `  light: [${tokens.outOfGamut.light.map(literal).join(", ")}],`,
+    `  dark: [${tokens.outOfGamut.dark.map(literal).join(", ")}],`,
+    "}",
+    "",
+    `const alphaSteps = [${alphaSteps.join(", ")}]`,
+    "",
+    "function withAlpha(color, percent) {",
+    "  const alpha = Math.round(Math.min(100, Math.max(0, percent)) * 2.55)",
+    '  return color.slice(0, 7) + alpha.toString(16).padStart(2, "0")',
+    "}",
+    "",
+    "module.exports = { colors, radius, fonts, fontFamily, shadows, outOfGamut, alphaSteps, withAlpha }",
     "",
   ].join("\n")
 }
@@ -276,6 +380,7 @@ export function renderTypes(tokens) {
   return [
     ...header,
     "",
+    `export type AlphaStep = ${alphaSteps.join(" | ")}`,
     `export type LoadedFont = ${names}`,
     `export type FontUtility = ${utilities}`,
     "export interface FontFace {",
@@ -298,6 +403,25 @@ export function renderTypes(tokens) {
     "export declare const radius: {",
     ...typeLines(tokens.radius, "  "),
     "}",
+    "export interface Shadow {",
+    "  readonly shadowColor: string",
+    "  readonly shadowOpacity: number",
+    "  readonly shadowRadius: number",
+    "  readonly shadowOffset: { readonly width: number; readonly height: number }",
+    "  readonly elevation: number",
+    "}",
+    "export declare const shadows: {",
+    `  readonly light: { ${Object.keys(tokens.shadows.light).map((name) => `readonly ${key(name)}: Shadow`).join("; ")} }`,
+    `  readonly dark: { ${Object.keys(tokens.shadows.dark).map((name) => `readonly ${key(name)}: Shadow`).join("; ")} }`,
+    "}",
+    "// Tokens the stylesheet asks for outside sRGB. The phone paints the clipped",
+    "// hex above; a browser on a wide-gamut display paints more chroma.",
+    "export declare const outOfGamut: {",
+    `  readonly light: readonly [${tokens.outOfGamut.light.map(literal).join(", ")}]`,
+    `  readonly dark: readonly [${tokens.outOfGamut.dark.map(literal).join(", ")}]`,
+    "}",
+    "export declare const alphaSteps: readonly AlphaStep[]",
+    "export declare function withAlpha(color: string, percent: AlphaStep): string",
     "export declare const fonts: readonly FontFace[]",
     "export declare const fontFamily: {",
     ...typeLines(fontFamily, "  "),

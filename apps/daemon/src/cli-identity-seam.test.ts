@@ -7,9 +7,11 @@ import { WebSocket } from "ws"
 
 import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceService } from "./workspace.js"
+import { DomovoiClient } from "../../../packages/ui/src/client.js"
 
 const running: DomovoiDaemon[] = []
 const cliPath = fileURLToPath(new URL("../dist/index.js", import.meta.url))
+const machineId = `machine-${"a".repeat(32)}`
 
 function testAuthToken(label: string): string {
   return createHash("sha256").update(label).digest("base64url")
@@ -46,6 +48,7 @@ async function startDaemon(): Promise<DomovoiDaemon> {
     statePath: ":memory:",
     authToken: testAuthToken("cli-identity-seam"),
     workspaceService,
+    machineIdentity: { id: machineId, label: "CLI seam" },
   })
   running.push(daemon)
   await daemon.start()
@@ -93,6 +96,28 @@ async function runCli(daemon: DomovoiDaemon, args: readonly string[]) {
 }
 
 describe("domovoid CLI connection identity", () => {
+  it("grants a desktop credential through the binary and admits that client over a real socket", async () => {
+    const daemon = await startDaemon()
+    const result = await runCli(daemon, ["pair", "--client", "desktop", "--label", "Operator desktop"])
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" })
+    const token = /Client credential: (\S+)/u.exec(result.stdout)?.[1]
+    const deviceId = /Revoke device (device-[0-9a-f]{32})/u.exec(result.stdout)?.[1]
+    expect(token).toBeDefined()
+    expect(deviceId).toBeDefined()
+    expect(result.stdout).toContain("session sends, approvals and terminals")
+    expect(result.stdout).not.toContain(daemon.authToken)
+    const client = new DomovoiClient(`ws://${daemon.address!.host}:${daemon.address!.port}/rpc`, "desktop", {
+      budgets: { connectMs: 5_000, requestMs: 5_000 }, authToken: token!,
+      admission: { machineId, deviceId: deviceId! },
+    })
+    try {
+      await client.connect()
+      expect(await client.request("device.current", {})).toEqual({
+        kind: "client", machineId, deviceId, client: "desktop",
+      })
+    } finally { client.disconnect() }
+  }, 15_000)
+
   it("pairs through a real daemon socket", async () => {
     const received = vi.spyOn(WebSocket.prototype, "emit")
     const result = await runCli(await startDaemon(), ["pair"])

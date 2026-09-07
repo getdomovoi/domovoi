@@ -458,13 +458,15 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Stop translating a standing approval into provider-native persistence
 <ul>
-<li><code>always-project</code> currently becomes <code>acceptForSession</code> in <code>apps/daemon/src/codex.ts</code>, <code>always</code> in <code>apps/daemon/src/opencode.ts</code>, and provider-suggested <code>updatedPermissions</code> in <code>apps/daemon/src/claude.ts</code>. The provider then answers later requests itself, where Domovoi cannot see, audit, or revoke the approval. Providers must receive allow-once only, and the daemon must own every standing rule. This blocks the fingerprint work below, and it would also let a retired rule keep approving through the provider.
+<li><code>always-project</code> used to become <code>acceptForSession</code> in <code>apps/daemon/src/codex.ts</code>, <code>always</code> in <code>apps/daemon/src/opencode.ts</code>, and provider-suggested <code>updatedPermissions</code> in <code>apps/daemon/src/claude.ts</code>. The provider then answered later requests itself, where Domovoi could not see, audit, or revoke the approval.
+</li>
+<li>Providers now receive allow-once only. Every adapter maps both <code>allow-once</code> and <code>always-project</code> to a single accept for that one request, and <code>apps/daemon/src/agents.ts</code> types the provider decision as <code>Exclude&lt;ApprovalDecision, &quot;always-project&quot;&gt;</code>, so the standing form cannot reach a provider at all. The daemon owns every standing rule, and a retired rule stops approving immediately.
 </li>
 </ul>
 </li>
 <li>[x] Key standing rules on a fingerprint of the resolved command rather than its text
 <ul>
-<li>A rule matches on <code>projectId</code> and the literal command, so it keeps approving a script whose body has since changed. The fingerprint should cover the normalized command, the project-relative directory, recursively expanded script bodies, lifecycle scripts such as <code>pretest</code>, and the validated runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the approval and rule schemas.
+<li>A rule used to match on <code>projectId</code> and the literal command, so it kept approving a script whose body had since changed. <code>packages/protocol/src/execution.ts</code> now defines the resolved execution record a rule is keyed on: the normalized command, the project-relative directory, recursively expanded script bodies, lifecycle scripts such as <code>pretest</code>, and the validated runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be reused. The record declares its own <code>command-and-script-text</code> coverage, which is the honest bound on what it proves.
 </li>
 <li>The digest proves the command resolved to the same text, not that the same code runs. An unchanged <code>pnpm test</code> still executes whatever the runner resolves to, so a changed config, plugin, setup file, or dependency binary stays invisible to it. That gap is unresolved decision 3 and this item does not close it.
 </li>
@@ -544,11 +546,11 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Define the skill inventory contract and comparison model without distributing executables
 </li>
-<li>[ ] Fetch inventories from every reachable fleet member and compare them
+<li>[x] Fetch inventories from admitted reachable fleet members and compare them
 <ul>
-<li>The fan-out exists and is unit tested. <code>collectFleetInventories</code> in <code>packages/ui/src/fleet-inventories.ts</code> selects the paired machines that report the skills capability, dials each one, and reports <code>unreachable</code> or <code>unknown</code> rather than dropping a machine that does not answer. Metadata only stays the contract: no skill file crosses a machine boundary.
+<li>Opening Skills calls <code>collectFleetInventories</code> through separate, verified client credentials. Each reader checks machine identity and the pinned device receipt, with a bounded connect and read. No machine keychain secret reaches the client. Unadmitted or unavailable members remain <code>unknown</code> or <code>unreachable</code>; metadata only travels, never skill files or trust.
 </li>
-<li>Production never calls it. <code>packages/ui/src/workspace-shell.tsx</code> sets a single local source, because asking a fleet member for its inventory is a client dial with a client credential that no remote machine grants until client admission lands, so the comparison covers this machine rather than guessing at the others. Close with client admission, then a comparison across two real daemons.
+<li><code>fleet-client-smoke.mjs</code> drives the real Desktop renderer against two production-built daemons and checks the admitted inventory exchange and rendered machine comparison. Linux execution is proven locally; the same proof is in the Desktop launch check for CI.
 </li>
 </ul>
 </li>
@@ -736,9 +738,11 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
+<li>[x] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
 <ul>
-<li>Authenticated fleet enrollment establishes daemon-to-daemon authority only. It does not grant the initiating desktop a remote client credential. Until a separate client-admission slice exists, remote Use and Terminal stay disabled with a reason naming that missing credential. Direct phone-to-daemon client pairing is unchanged.
+<li>Authenticated fleet enrollment establishes daemon-to-daemon authority only. It does not grant the initiating desktop a remote client credential. Authorize this client explains the separate target command and full ordinary session, approval and terminal authority. Use and Terminal enable only after the machine identity and kind-bound client receipt verify.
+</li>
+<li>Desktop main verifies the enrolled route through the home daemon, then grants one exact worker socket origin. The packaged app uses an explicit bundled-resource origin so CSP is enforced. Real Electron proofs cover origin refusal, Use, Terminal, inventory and removal. App-memory retention does not revoke on the target; the UI names its Devices list. Remote HTTP previews need a separate verified frame path and remain explicitly unavailable. Direct phone-to-daemon client pairing is unchanged. See <code>docs/fleet-client-admission.md</code>.
 </li>
 </ul>
 </li>

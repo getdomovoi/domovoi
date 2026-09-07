@@ -171,7 +171,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
 
   async connect(): Promise<void> {}
 
-  async listModels(): Promise<ProviderModel[]> {
+  async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
+    signal?.throwIfAborted()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const runtime = this.#factory(input, {
@@ -179,9 +180,19 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       settingSources: [],
       stderr: (data) => stderr.push(data),
     })
+    let closed = false
+    const close = () => {
+      if (closed) return
+      closed = true
+      input.close()
+      runtime.close()
+    }
+    signal?.addEventListener("abort", close, { once: true })
     try {
       await runtime.initializationResult()
+      signal?.throwIfAborted()
       const models = requireClaudeModels(await runtime.supportedModels())
+      signal?.throwIfAborted()
       return models.map((model, index) => {
         const efforts = model.supportsEffort
           ? [...(model.supportedEffortLevels ?? [])]
@@ -202,8 +213,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     } catch (error) {
       throw claudeFailureError(error, stderr.take())
     } finally {
-      input.close()
-      runtime.close()
+      signal?.removeEventListener("abort", close)
+      close()
     }
   }
 
@@ -445,8 +456,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     if (message.type === "result") {
       const failed = message.is_error === true || message.subtype !== "success"
       const context = failed ? {} : await claudeContextOccupancy(session.query)
-      const usage = normalizeProviderUsage({ ...message, ...context })
-      if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
+      // The reply has already reached the person. A counter that does not add
+      // up is an accounting problem, not a failed turn, so the usage is dropped
+      // and the turn is delivered as what it was.
+      try {
+        const usage = normalizeProviderUsage({ ...message, ...context })
+        if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
+      } catch {
+        // Nothing to report to the person: usage is a readout, not the work.
+      }
       const stderr = session.stderr.take()
       const error = failed ? resultError(message, session.assistantError, stderr) : undefined
       delete session.assistantError

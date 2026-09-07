@@ -2,13 +2,27 @@ import { dirname, join } from "node:path"
 
 // A packaged build already knows where its application is. Passing a directory
 // as well makes Electron read it as a file argument, not as the app to run.
-export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = false }) {
+export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = false, debuggingLogFile, userDataDirectory }) {
   return [
     ...(platform === "linux" && ci ? ["--no-sandbox"] : []),
     "--headless",
     "--disable-gpu",
+    ...(userDataDirectory ? [`--user-data-dir=${userDataDirectory}`] : []),
+    ...(debuggingLogFile ? ["--remote-debugging-port=0", "--enable-logging=file", `--log-file=${debuggingLogFile}`] : []),
     ...(packaged ? [] : [desktopRoot]),
   ]
+}
+
+// Xvfb provides the X server, not an alternative proof. Without it a local
+// display is usable; a headless host must name the missing prerequisite.
+export function launchSmokeCommand({ platform, env, electronPath, electronArgs, xvfb }) {
+  if (platform === "linux") {
+    if (xvfb) return { command: xvfb, args: ["--auto-servernum", electronPath, ...electronArgs] }
+    if (!env.DISPLAY && !env.WAYLAND_DISPLAY) {
+      throw new Error("Electron smoke requires a Linux display. Install xvfb-run or provide a working DISPLAY or WAYLAND_DISPLAY.")
+    }
+  }
+  return { command: electronPath, args: electronArgs }
 }
 
 // electron-builder names the unpacked directory after the platform and, for

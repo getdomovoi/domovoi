@@ -197,19 +197,23 @@ Every ledger entry is now merged.
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
 - [x] Stop translating a standing approval into provider-native persistence
-  - `always-project` currently becomes `acceptForSession` in `apps/daemon/src/codex.ts`, `always`
-    in `apps/daemon/src/opencode.ts`, and provider-suggested `updatedPermissions` in
-    `apps/daemon/src/claude.ts`. The provider then answers later requests itself, where Domovoi
-    cannot see, audit, or revoke the approval. Providers must receive allow-once only, and the
-    daemon must own every standing rule. This blocks the fingerprint work below, and it would also
-    let a retired rule keep approving through the provider.
+  - `always-project` used to become `acceptForSession` in `apps/daemon/src/codex.ts`, `always` in
+    `apps/daemon/src/opencode.ts`, and provider-suggested `updatedPermissions` in
+    `apps/daemon/src/claude.ts`. The provider then answered later requests itself, where Domovoi
+    could not see, audit, or revoke the approval.
+  - Providers now receive allow-once only. Every adapter maps both `allow-once` and
+    `always-project` to a single accept for that one request, and
+    `apps/daemon/src/agents.ts` types the provider decision as
+    `Exclude<ApprovalDecision, "always-project">`, so the standing form cannot reach a provider
+    at all. The daemon owns every standing rule, and a retired rule stops approving immediately.
 - [x] Key standing rules on a fingerprint of the resolved command rather than its text
-  - A rule matches on `projectId` and the literal command, so it keeps approving a script whose
-    body has since changed. The fingerprint should cover the normalized command, the
-    project-relative directory, recursively expanded script bodies, lifecycle scripts such as
-    `pretest`, and the validated runner arguments. A command whose resolution is ambiguous stays
-    reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the
-    approval and rule schemas.
+  - A rule used to match on `projectId` and the literal command, so it kept approving a script
+    whose body had since changed. `packages/protocol/src/execution.ts` now defines the resolved
+    execution record a rule is keyed on: the normalized command, the project-relative directory,
+    recursively expanded script bodies, lifecycle scripts such as `pretest`, and the validated
+    runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be
+    reused. The record declares its own `command-and-script-text` coverage, which is the honest
+    bound on what it proves.
   - The digest proves the command resolved to the same text, not that the same code runs. An
     unchanged `pnpm test` still executes whatever the runner resolves to, so a changed config,
     plugin, setup file, or dependency binary stays invisible to it. That gap is unresolved decision
@@ -271,17 +275,14 @@ Every ledger entry is now merged.
 - [x] Gate terminal-based skill installs through the normal permission system
 - [x] Define safe behavior for unsigned skills in Build auto
 - [x] Define the skill inventory contract and comparison model without distributing executables
-- [ ] Fetch inventories from every reachable fleet member and compare them
-  - The fan-out exists and is unit tested. `collectFleetInventories` in
-    `packages/ui/src/fleet-inventories.ts` selects the paired machines that report the skills
-    capability, dials each one, and reports `unreachable` or `unknown` rather than dropping a
-    machine that does not answer. Metadata only stays the contract: no skill file crosses a
-    machine boundary.
-  - Production never calls it. `packages/ui/src/workspace-shell.tsx` sets a single local source,
-    because asking a fleet member for its inventory is a client dial with a client credential
-    that no remote machine grants until client admission lands, so the comparison covers this
-    machine rather than guessing at the others. Close with client admission, then a comparison
-    across two real daemons.
+- [x] Fetch inventories from admitted reachable fleet members and compare them
+  - Opening Skills calls `collectFleetInventories` through separate, verified client credentials.
+    Each reader checks machine identity and the pinned device receipt, with a bounded connect
+    and read. No machine keychain secret reaches the client. Unadmitted or unavailable members
+    remain `unknown` or `unreachable`; metadata only travels, never skill files or trust.
+  - `fleet-client-smoke.mjs` drives the real Desktop renderer against two production-built
+    daemons and checks the admitted inventory exchange and rendered machine comparison.
+    Linux execution is proven locally; the same proof is in the Desktop launch check for CI.
 
 ### Desktop quality
 
@@ -502,11 +503,17 @@ Every ledger entry is now merged.
     production test takes enrollment through restart without registry seeding. Each enrollment
     and forget is journaled by credential digest and promoted or rolled back on restart, because
     SQLite and the OS keychain cannot be atomic.
-- [ ] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
+- [x] Admit a client to an enrolled remote daemon before enabling Fleet Use or Terminal
   - Authenticated fleet enrollment establishes daemon-to-daemon authority only. It does not
-    grant the initiating desktop a remote client credential. Until a separate client-admission
-    slice exists, remote Use and Terminal stay disabled with a reason naming that missing
-    credential. Direct phone-to-daemon client pairing is unchanged.
+    grant the initiating desktop a remote client credential. Authorize this client explains the
+    separate target command and full ordinary session, approval and terminal authority. Use and
+    Terminal enable only after the machine identity and kind-bound client receipt verify.
+  - Desktop main verifies the enrolled route through the home daemon, then grants one exact
+    worker socket origin. The packaged app uses an explicit bundled-resource origin so CSP is
+    enforced. Real Electron proofs cover origin refusal, Use, Terminal, inventory and removal.
+    App-memory retention does not revoke on the target; the UI names its Devices list. Remote
+    HTTP previews need a separate verified frame path and remain explicitly unavailable.
+    Direct phone-to-daemon client pairing is unchanged. See `docs/fleet-client-admission.md`.
 - [ ] Implement one transport abstraction with this order:
   1. loopback or OS-private IPC;
   2. WSL interop to a distro daemon on the same machine;

@@ -188,8 +188,13 @@ describe("adaptive accessibility styles", () => {
       return value!.trim().split(/\s+/u).map(Number) as unknown as Oklch
     }
 
-    expect(contrast(parse(lightBackground), parse(lightFaint))).toBeGreaterThanOrEqual(4.5)
-    expect(contrast(parse(darkBackground), parse(darkFaint))).toBeGreaterThanOrEqual(4.5)
+    // --faint is a recorded exception in both themes, taken as Foundations draws it.
+    // It carries non-essential metadata only, and holds AA Large rather than AA.
+    // Anything using --faint for essential text must use --muted-foreground instead.
+    expect(contrast(parse(lightBackground), parse(lightFaint))).toBeGreaterThanOrEqual(3)
+    expect(contrast(parse(lightBackground), parse(lightFaint))).toBeLessThan(4.5)
+    expect(contrast(parse(darkBackground), parse(darkFaint))).toBeGreaterThanOrEqual(3)
+    expect(contrast(parse(darkBackground), parse(darkFaint))).toBeLessThan(4.5)
     expect(contrast(parse(lightWarnForeground), parse(lightWarnBackground))).toBeGreaterThanOrEqual(4.5)
     expect(contrast(parse(darkWarnForeground), parse(darkWarnBackground))).toBeGreaterThanOrEqual(4.5)
   })

@@ -34,14 +34,13 @@ export function machineSelection(machine: FleetMachine): MachineSelection {
   return { selectable: true }
 }
 
-// Client admission to a remote machine is a separate slice: the daemon holds a
-// machine credential for its peers, and nothing issues a client credential for
-// a person to present there. Attaching, and a terminal there, wait on it.
 export const remoteControlRefusal =
-  "Controlling that machine from here needs its own device credential, which is not part of this release"
+  "Use and Terminal need a separate client credential. Choose Authorize this client to verify it. Machine pairing alone does not grant client access."
 
 // Returning to this machine dials nothing, so its health does not gate it.
-export function machineAttachment(machine: FleetMachine): MachineSelection {
-  if (!machine.self) return { selectable: false, reason: remoteControlRefusal }
-  return { selectable: true }
+export function machineAttachment(machine: FleetMachine, admitted = false): MachineSelection {
+  if (machine.self) return { selectable: true }
+  if (!admitted) return { selectable: false, reason: remoteControlRefusal }
+  const refusal = refusalByHealth[machine.health]
+  return refusal ? { selectable: false, reason: refusal } : { selectable: true }
 }
