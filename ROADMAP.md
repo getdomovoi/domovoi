@@ -197,19 +197,23 @@ Every ledger entry is now merged.
 - [x] Approval cards with decision receipts and client attribution
 - [x] Per-project standing approval rules
 - [x] Stop translating a standing approval into provider-native persistence
-  - `always-project` currently becomes `acceptForSession` in `apps/daemon/src/codex.ts`, `always`
-    in `apps/daemon/src/opencode.ts`, and provider-suggested `updatedPermissions` in
-    `apps/daemon/src/claude.ts`. The provider then answers later requests itself, where Domovoi
-    cannot see, audit, or revoke the approval. Providers must receive allow-once only, and the
-    daemon must own every standing rule. This blocks the fingerprint work below, and it would also
-    let a retired rule keep approving through the provider.
+  - `always-project` used to become `acceptForSession` in `apps/daemon/src/codex.ts`, `always` in
+    `apps/daemon/src/opencode.ts`, and provider-suggested `updatedPermissions` in
+    `apps/daemon/src/claude.ts`. The provider then answered later requests itself, where Domovoi
+    could not see, audit, or revoke the approval.
+  - Providers now receive allow-once only. Every adapter maps both `allow-once` and
+    `always-project` to a single accept for that one request, and
+    `apps/daemon/src/agents.ts` types the provider decision as
+    `Exclude<ApprovalDecision, "always-project">`, so the standing form cannot reach a provider
+    at all. The daemon owns every standing rule, and a retired rule stops approving immediately.
 - [x] Key standing rules on a fingerprint of the resolved command rather than its text
-  - A rule matches on `projectId` and the literal command, so it keeps approving a script whose
-    body has since changed. The fingerprint should cover the normalized command, the
-    project-relative directory, recursively expanded script bodies, lifecycle scripts such as
-    `pretest`, and the validated runner arguments. A command whose resolution is ambiguous stays
-    reviewable but cannot be reused. Rules carry no fingerprint today, so this changes the
-    approval and rule schemas.
+  - A rule used to match on `projectId` and the literal command, so it kept approving a script
+    whose body had since changed. `packages/protocol/src/execution.ts` now defines the resolved
+    execution record a rule is keyed on: the normalized command, the project-relative directory,
+    recursively expanded script bodies, lifecycle scripts such as `pretest`, and the validated
+    runner arguments. A command whose resolution is ambiguous stays reviewable but cannot be
+    reused. The record declares its own `command-and-script-text` coverage, which is the honest
+    bound on what it proves.
   - The digest proves the command resolved to the same text, not that the same code runs. An
     unchanged `pnpm test` still executes whatever the runner resolves to, so a changed config,
     plugin, setup file, or dependency binary stays invisible to it. That gap is unresolved decision
