@@ -397,6 +397,25 @@ describe("CodexAppServerAdapter", () => {
     expect(transport.closeCount).toBe(1)
   })
 
+  it("cancels discovery without closing a shared transport or following a late page", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const controller = new AbortController()
+    const listing = adapter.listModels(controller.signal)
+    controller.abort(new Error("Discovery expired"))
+    await expect(listing).rejects.toThrow("Discovery expired")
+    transport.receive({ id: 2, result: { data: [], nextCursor: "late-page" } })
+    expect(transport.sent.filter(({ method }) => method === "model/list")).toHaveLength(1)
+    expect(transport.closeCount).toBe(0)
+    const retry = adapter.listModels()
+    transport.receive({ id: 3, result: { data: [], nextCursor: null } })
+    await expect(retry).resolves.toEqual([])
+    await adapter.close()
+  })
+
   it("cleans up a failed initialization and permits another connect", async () => {
     const first = new FakeTransport()
     const second = new FakeTransport()

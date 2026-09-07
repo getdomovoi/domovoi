@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
+import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 
 import {
   sessionTransferParamsSchema,
@@ -1300,6 +1301,10 @@ export const rpcMethods = {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
   },
+  "runtime.discover": {
+    params: runtimeDiscoverParamsSchema,
+    result: runtimeDiscoverResultSchema,
+  },
   "provider.refresh": {
     params: z.object({ client: clientKindSchema }).strict(),
     result: workspaceSnapshotSchema,
@@ -1403,6 +1408,7 @@ export const rpcMethodMutations = {
   "skill.read": "read-only",
   "skill.installPreview": "read-only",
   "runtime.models": "read-only",
+  "runtime.discover": "read-only",
   "provider.secret.list": "read-only",
   "device.pair": "mutating",
   "device.claim": "mutating",

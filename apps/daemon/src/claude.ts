@@ -171,7 +171,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
 
   async connect(): Promise<void> {}
 
-  async listModels(): Promise<ProviderModel[]> {
+  async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
+    signal?.throwIfAborted()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const runtime = this.#factory(input, {
@@ -179,9 +180,19 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       settingSources: [],
       stderr: (data) => stderr.push(data),
     })
+    let closed = false
+    const close = () => {
+      if (closed) return
+      closed = true
+      input.close()
+      runtime.close()
+    }
+    signal?.addEventListener("abort", close, { once: true })
     try {
       await runtime.initializationResult()
+      signal?.throwIfAborted()
       const models = requireClaudeModels(await runtime.supportedModels())
+      signal?.throwIfAborted()
       return models.map((model, index) => {
         const efforts = model.supportsEffort
           ? [...(model.supportedEffortLevels ?? [])]
@@ -202,8 +213,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     } catch (error) {
       throw claudeFailureError(error, stderr.take())
     } finally {
-      input.close()
-      runtime.close()
+      signal?.removeEventListener("abort", close)
+      close()
     }
   }
 

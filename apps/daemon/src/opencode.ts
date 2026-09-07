@@ -144,11 +144,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
   }
 
-  async listModels(): Promise<ProviderModel[]> {
+  async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
+    signal?.throwIfAborted()
     const client = await this.#client()
+    signal?.throwIfAborted()
     const [config, catalog] = await Promise.all([
-      client.config.get({ throwOnError: true }),
-      client.config.providers({ throwOnError: true }),
+      client.config.get({ throwOnError: true, ...(signal ? { signal } : {}) }),
+      client.config.providers({ throwOnError: true, ...(signal ? { signal } : {}) }),
     ])
     const configured = requireConfig(
       unwrap(config, `${this.#identity.providerName} config`),

@@ -228,7 +228,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     return threadId
   }
 
-  async listModels(): Promise<ProviderModel[]> {
+  async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     const models: ProviderModel[] = []
     const seenCursors = new Set<string>()
     let cursor: string | null = null
@@ -244,7 +244,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         includeHidden: false,
         limit: 100,
         ...(cursor ? { cursor } : {}),
-      }))
+      }, signal))
       for (const candidate of page.data) {
         const id = candidate.id
         if (!id || candidate.hidden) continue
@@ -352,16 +352,27 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await transport?.close()
   }
 
-  #request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  #request(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted()
     const transport = this.#transport
     if (!transport) return Promise.reject(new Error("Codex adapter is not connected"))
     const id = ++this.#nextId
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject })
+      const abort = () => {
+        this.#pending.delete(id)
+        reject(signal!.reason)
+      }
+      const cleanup = () => signal?.removeEventListener("abort", abort)
+      signal?.addEventListener("abort", abort, { once: true })
+      this.#pending.set(id, {
+        resolve: (value) => { cleanup(); resolve(value) },
+        reject: (error) => { cleanup(); reject(error) },
+      })
       try {
         transport.send({ id, method, params })
       } catch (error) {
         this.#pending.delete(id)
+        cleanup()
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     })
