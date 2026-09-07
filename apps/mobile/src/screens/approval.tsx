@@ -1,10 +1,12 @@
-import { ScrollView, View } from "react-native"
+import { Pressable, ScrollView, View } from "react-native"
 import type { ApprovalRequest } from "@getdomovoi/protocol"
 
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
+import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
+import { cn } from "../lib/cn"
 
 // The facts the handoff puts on this screen, in its order. A decision made
 // without them is a decision made blind, so none of them are behind a tap.
@@ -34,50 +36,71 @@ export function ApprovalScreen({
 }) {
   return (
     <View className="flex-1 bg-background">
-      <View className="flex-row items-center gap-3 px-4 py-3">
-        <Button title="Back" variant="ghost" onPress={onBack} className="px-2" />
+      <View className="flex-row items-center gap-2.5 px-3.5 pb-3 pt-1.5">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          onPress={onBack}
+          className="min-h-tap min-w-tap -ml-3 items-center justify-center active:opacity-70"
+        >
+          <Icon name="chevron-left" tone="primary" />
+        </Pressable>
         <View className="flex-1">
-          <Text variant="title">Approval</Text>
+          <Text variant="nav" numberOfLines={1}>Approval</Text>
           <Text variant="machine">{approval.machine}</Text>
         </View>
-        {approval.risk === "hard-gate" ? <Badge label="Hard gate" tone="warning" /> : null}
+        {approval.risk === "hard-gate" ? <Badge label="Hard gate" tone="warning" pill /> : null}
       </View>
 
-      <ScrollView contentContainerClassName="gap-3 px-4 pb-8">
-        <Text className="font-sans-medium">{approval.operation}</Text>
-        <Card className="bg-code">
-          <Text className="font-mono text-[12px] text-foreground">{approval.command}</Text>
+      <ScrollView contentContainerClassName="gap-3 px-3.5 pb-8">
+        <Text variant="body">{approval.operation}</Text>
+
+        <Card className="bg-code px-3.5 py-3.5">
+          <Text variant="machine" className="text-[12px] leading-[19px] text-warn-fg">
+            {approval.command}
+          </Text>
         </Card>
 
-        <Card className="gap-0 p-0">
+        <Card flush>
           {facts(approval).map((fact, index) => (
             <View
               key={fact.key}
-              className={`flex-row items-center justify-between px-3.5 py-3 ${index > 0 ? "border-t border-border" : ""}`}
+              className={cn(
+                "flex-row items-baseline gap-2.5 px-[13px] py-2.5",
+                index > 0 && "border-t border-border",
+              )}
             >
-              <Text variant="label">{fact.key}</Text>
-              <Text className={`font-mono text-[11px] ${fact.tone ?? "text-strong"}`}>
+              <Text variant="label" className="w-24">{fact.key}</Text>
+              <Text
+                variant="machine"
+                className={cn("flex-1 text-right text-[11px]", fact.tone ?? "text-strong")}
+              >
                 {fact.value}
               </Text>
             </View>
           ))}
         </Card>
-
-        <View className="gap-2 pt-2">
-          <Button
-            title="Allow once"
-            variant="primary"
-            disabled={pending}
-            onPress={() => onDecide("allow-once")}
-          />
-          <Button
-            title="Deny"
-            variant="destructive"
-            disabled={pending}
-            onPress={() => onDecide("deny")}
-          />
-        </View>
       </ScrollView>
+
+      {/* The decision sits in thumb reach at the foot of the screen rather than
+          at the end of a scroll, and the affirmative one wears the warning the
+          request wears, so neither answer reads as the safe default. */}
+      <View className="gap-2 border-t border-border px-3.5 py-3">
+        <Button
+          title="Allow once"
+          variant="affirm"
+          shape="block"
+          disabled={pending}
+          onPress={() => onDecide("allow-once")}
+        />
+        <Button
+          title="Deny"
+          variant="outline"
+          shape="block"
+          disabled={pending}
+          onPress={() => onDecide("deny")}
+        />
+      </View>
     </View>
   )
 }

@@ -16,9 +16,9 @@ import {
 import { artifactRows, findArtifact } from "./artifact-rows"
 import { connectionNotice } from "./connection-notice"
 import { ConfirmSheet } from "./components/confirm-sheet"
+import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
-import { Text } from "./components/ui/text"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
 import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
@@ -28,6 +28,8 @@ import { ApprovalScreen } from "./screens/approval"
 import { ArtifactScreen } from "./screens/artifact"
 import { fleetLoader } from "./fleet-load"
 import { FleetScreen } from "./screens/fleet"
+import { ReviewScreen } from "./screens/review"
+import { annotationRows, reviewRows } from "./review-rows"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { SettingsScreen } from "./screens/settings"
@@ -143,6 +145,16 @@ export function App() {
     () => snapshot && openArtifactId ? findArtifact(snapshot, openArtifactId) : undefined,
     [openArtifactId, snapshot],
   )
+
+  const openArtifactComments = useMemo(
+    () => snapshot && openArtifactId ? annotationRows(snapshot, openArtifactId) : [],
+    [openArtifactId, snapshot],
+  )
+
+  // Every artifact the workspace holds, whichever session made it, because the
+  // Review tab is opened to answer what is outstanding rather than to walk back
+  // into the session that produced it.
+  const review = useMemo(() => snapshot ? reviewRows(snapshot) : [], [snapshot])
 
   const openPlan = useMemo(() => {
     if (!snapshot || !openSessionId) return undefined
@@ -338,6 +350,7 @@ export function App() {
         <SafeAreaView className="flex-1 bg-background">
           <ArtifactScreen
             artifact={openArtifact}
+            comments={openArtifactComments}
             onBack={() => setOpenArtifactId(undefined)}
           />
         </SafeAreaView>
@@ -416,7 +429,10 @@ export function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <SafeAreaView className="flex-1 bg-background">
+      {/* The tab bar paints the bottom inset itself, so this view does not
+          reserve it. Handing the bottom edge to both leaves a strip of
+          --background below a --sidebar tab bar. */}
+      <SafeAreaView edges={["top", "left", "right"]} className="flex-1 bg-background">
         <View className="flex-1">
           {tab === "sessions" ? (
             snapshot ? (
@@ -441,11 +457,16 @@ export function App() {
                 onPauseAll={() => setConfirmPause(true)}
               />
             ) : (
-              <View className="flex-1 items-center justify-center gap-2 p-6">
-                <Text variant="title">{shell.headline}</Text>
-                <Text variant="meta" className="text-center">{shell.detail}</Text>
-              </View>
+              <ShellNotice shell={shell} onOpenSettings={() => setTab("settings")} />
             )
+          ) : null}
+          {tab === "review" ? (
+            <ReviewScreen
+              rows={review}
+              notice={notice}
+              hasSnapshot={snapshot !== undefined}
+              onOpenArtifact={setOpenArtifactId}
+            />
           ) : null}
           {tab === "fleet" ? (
             <FleetScreen

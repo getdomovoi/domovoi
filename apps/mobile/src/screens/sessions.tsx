@@ -17,6 +17,11 @@ const dotColour: Record<SessionRow["dot"], string> = {
   quiet: "bg-faint",
 }
 
+const attentionColour: Record<"approval" | "preview", string> = {
+  approval: "text-warning",
+  preview: "text-primary",
+}
+
 // The handoff leads the screen with this: the command, where it would run, and
 // how long it has been sitting there. A count alone tells a person that
 // something needs them without telling them what, which costs the scroll this
@@ -27,19 +32,21 @@ function ApprovalLeadCard({ lead, onOpen }: {
 }) {
   return (
     <PressableCard
-      className="gap-2 border-warn-border bg-warn-bg"
+      className="border-warn-border bg-warn-bg"
       accessibilityLabel={`${lead.headline}. ${lead.command}`}
       onPress={() => onOpen(lead.approvalId)}
     >
       <View className="flex-row items-center gap-2.5">
         <View className="h-[7px] w-[7px] rounded-full bg-warning" />
-        <Text className="flex-1 text-[12.5px] font-sans-medium text-warn-fg">{lead.headline}</Text>
+        <Text className="flex-1 font-sans-medium text-[12.5px] text-warn-fg">{lead.headline}</Text>
         {lead.waited
-          ? <Text variant="machine" className="text-[10px] text-warn-dim">{lead.waited}</Text>
+          ? <Text variant="machine" className="text-warn-dim">{lead.waited}</Text>
           : null}
       </View>
-      <Text variant="machine" className="text-[11px] text-warn-fg">{lead.command}</Text>
-      <Text className="text-[10.5px] text-warn-dim">{lead.context}</Text>
+      <Text variant="machine" className="mt-[7px] text-[11px] leading-[16px] text-warn-fg">
+        {lead.command}
+      </Text>
+      <Text variant="note" className="mt-[5px] text-warn-dim">{lead.context}</Text>
     </PressableCard>
   )
 }
@@ -48,24 +55,26 @@ function SessionCard({ row, onOpen }: { row: SessionRow, onOpen: (id: string) =>
   return (
     <PressableCard onPress={() => onOpen(row.id)} accessibilityLabel={row.title}>
       <View className="flex-row items-start gap-2.5">
-        <View className={cn("mt-1.5 h-2 w-2 rounded-full", dotColour[row.dot])} />
-        <View className="flex-1 gap-2">
-          <Text variant="title">{row.title}</Text>
-          <View className="flex-row flex-wrap items-center gap-1.5">
-            <Badge label={row.runtime} />
-            <Badge label={row.mode} />
-            {row.attention ? (
-              <Text className={cn(
-                "ml-auto font-mono text-[10px] uppercase tracking-[0.06em]",
-                row.attention === "approval" ? "text-warning" : "text-primary",
-              )}>
-                {row.attention}
-              </Text>
-            ) : null}
-          </View>
-          <Text variant="machine">{row.machine}</Text>
-        </View>
+        <View className={cn("mt-[5px] h-[7px] w-[7px] rounded-full", dotColour[row.dot])} />
+        <Text variant="title" className="flex-1">{row.title}</Text>
       </View>
+      {/* Indented past the dot and its gap, so the facts hang under the title
+          rather than under the state light. */}
+      <View className="mt-2 flex-row flex-wrap items-center gap-[5px] pl-[17px]">
+        <Badge label={row.runtime} />
+        <Badge label={row.mode} tone="outline" />
+        {row.attention ? (
+          <Text className={cn(
+            "ml-auto font-sans-medium text-[9.5px] uppercase tracking-[0.06em]",
+            attentionColour[row.attention],
+          )}>
+            {row.attention}
+          </Text>
+        ) : null}
+      </View>
+      <Text variant="machine" className="mt-[5px] pl-[17px] text-[9.5px] text-faint">
+        {row.machine}
+      </Text>
     </PressableCard>
   )
 }
@@ -100,17 +109,11 @@ export function SessionsScreen({
   const running = snapshot.sessions.filter((session) => session.state === "active").length
 
   return (
-    <ScrollView
-      className="flex-1 bg-background"
-      contentContainerClassName="gap-3 p-4 pb-8"
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.dark["muted-foreground"]} />
-      }
-    >
-      <View className="flex-row items-center justify-between">
-        <View className="gap-1">
+    <View className="flex-1 bg-background">
+      <View className="flex-row items-center gap-2.5 px-4 pb-3 pt-2">
+        <View className="flex-1">
           <Text variant="heading">Sessions</Text>
-          <Text variant="meta">
+          <Text variant="meta" className="mt-[3px]">
             {machineCount === undefined
               ? `${running} running`
               : `${machineCount} machine${machineCount === 1 ? "" : "s"} · ${running} running`}
@@ -119,21 +122,28 @@ export function SessionsScreen({
         <Button title="Pause all" onPress={onPauseAll} />
       </View>
 
-      <ConnectionBanner notice={notice} />
+      <ScrollView
+        contentContainerClassName="gap-[9px] px-3 pb-8"
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.dark["muted-foreground"]} />
+        }
+      >
+        <ConnectionBanner notice={notice} />
 
-      {lead ? <ApprovalLeadCard lead={lead} onOpen={onOpenApproval} /> : null}
+        {/* This snapshot came from the daemon, so an empty list is a fact about
+            the machine rather than a phone that has not been told anything. */}
+        {lead ? <ApprovalLeadCard lead={lead} onOpen={onOpenApproval} /> : null}
 
-      {/* This snapshot came from the daemon, so an empty list is a fact about
-          the machine rather than a phone that has not been told anything. */}
-      {rows.length === 0 ? (
-        <Card>
-          <Text variant="meta">
-            No sessions on this machine. Start one from the desktop.
-          </Text>
-        </Card>
-      ) : null}
+        {rows.length === 0 ? (
+          <Card className="border-dashed">
+            <Text variant="meta">
+              No sessions on this machine. Start one from the desktop.
+            </Text>
+          </Card>
+        ) : null}
 
-      {rows.map((row) => <SessionCard key={row.id} row={row} onOpen={onOpenSession} />)}
-    </ScrollView>
+        {rows.map((row) => <SessionCard key={row.id} row={row} onOpen={onOpenSession} />)}
+      </ScrollView>
+    </View>
   )
 }
