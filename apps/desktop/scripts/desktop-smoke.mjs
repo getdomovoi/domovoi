@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { constants } from "node:fs"
+import { constants, createReadStream } from "node:fs"
 import { access, mkdir, mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
@@ -81,6 +81,17 @@ export function observeSmokeDebugging(child, signal) {
     child.removeListener("error", onError)
     signal.removeEventListener("abort", onAbort)
   } }
+}
+
+// Native Windows failures may never reach stderr. This is an extra bounded
+// diagnostic, not a reason to replace the child exit or retain its profile.
+export async function smokeDiagnosticLog(path) {
+  try {
+    const chunks = []
+    const stream = createReadStream(path, { start: 0, end: 16_383, signal: AbortSignal.timeout(2_000) })
+    for await (const chunk of stream) chunks.push(chunk)
+    return Buffer.concat(chunks).toString("utf8") || "(empty)"
+  } catch (error) { return error.code === "ENOENT" ? "(not created)" : `(unreadable: ${error.message})` }
 }
 
 function stopProcessTree(child) {

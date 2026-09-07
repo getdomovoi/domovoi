@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { readFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { delimiter, join, sep } from "node:path"
 import { PassThrough } from "node:stream"
 import test from "node:test"
@@ -101,8 +102,8 @@ for (const name of ["fleet-origin-smoke.mjs", "fleet-client-smoke.mjs"]) {
     assert.match(source, /executableOnPath\("xvfb-run"\)/u)
     assert.doesNotMatch(source, /["']--no-sandbox["']|ELECTRON_RUN_AS_NODE\s*:/u)
     if (name === "fleet-client-smoke.mjs") {
-      assert.match(source, /"--remote-debugging-port=0"/u)
       assert.match(source, /observeSmokeDebugging\(desktop, startupSignal\)/u)
+      assert.match(source, /debuggingLogFile:\s*chromiumLog/u)
     }
   })
 }
@@ -185,6 +186,25 @@ test("debugging startup reports an executable launch error", { timeout: 1_000 },
   child.emit("error", new Error("spawn electron.exe ENOENT"))
   await rejected
   observer.dispose()
+})
+
+test("debugging flags and native file logging survive the Windows argument policy", () => {
+  const log = "C:\\Fleet proof\\chromium.log"
+  assert.deepEqual(launchSmokeElectronArgs({ platform: "win32", ci: true, desktopRoot: "D:\\desktop", debuggingLogFile: log }), [
+    "--headless", "--disable-gpu", "--remote-debugging-port=0", "--enable-logging=file", `--log-file=${log}`, "D:\\desktop",
+  ])
+})
+
+test("native startup file diagnostics are bounded and a missing file cannot mask the exit", { timeout: 5_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "domovoi-smoke-log-"))
+  try {
+    const file = join(directory, "chromium.log")
+    assert.equal(await smoke.smokeDiagnosticLog(file), "(not created)")
+    await writeFile(file, "native check failed\n" + "x".repeat(32_768))
+    const log = await smoke.smokeDiagnosticLog(file)
+    assert.match(log, /^native check failed/u)
+    assert.ok(log.length <= 16_384)
+  } finally { await rm(directory, { recursive: true, force: true }) }
 })
 
 test("omits the application directory for a packaged build, which carries its own", () => {

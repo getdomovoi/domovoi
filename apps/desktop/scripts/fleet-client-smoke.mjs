@@ -8,12 +8,13 @@ import { join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import electron from "electron"
 import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
-import { executableOnPath, observeSmokeDebugging } from "./desktop-smoke.mjs"
+import { executableOnPath, observeSmokeDebugging, smokeDiagnosticLog } from "./desktop-smoke.mjs"
 
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url))
 const daemonRequire = createRequire(new URL("../../daemon/package.json", import.meta.url))
 const { WebSocket } = daemonRequire("ws")
 const directory = await mkdtemp(join(tmpdir(), "domovoi-fleet-client-proof-"))
+const chromiumLog = join(directory, "chromium.log")
 const images = process.argv.find(arg => arg.startsWith("--screenshots="))?.slice("--screenshots=".length)
 // One clock, running before either child or any debugging socket exists.
 const end = Date.now() + (process.platform === "win32" ? 110_000 : 80_000)
@@ -42,9 +43,9 @@ const trackChild = child => {
 }
 try {
   const xvfb = process.platform === "linux" ? await bounded(executableOnPath("xvfb-run"), "display discovery") : undefined
-  const electronArgs = ["--remote-debugging-port=0", "--enable-logging", ...launchSmokeElectronArgs({
-    platform: process.platform, ci: process.env.CI === "true", desktopRoot,
-  })]
+  const electronArgs = launchSmokeElectronArgs({
+    platform: process.platform, ci: process.env.CI === "true", desktopRoot, debuggingLogFile: chromiumLog,
+  })
   const launch = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath: electron, electronArgs, xvfb })
   const tsconfig = join(directory, "tsconfig.json")
   await writeFile(tsconfig, JSON.stringify({ compilerOptions: { paths: {} } }))
@@ -197,6 +198,7 @@ try {
   console.info("DOMOVOI_FLEET_CLIENT_PROOF_OK use=1 terminal=1 inventory=1 comparison=1 remove=1")
 } catch (error) {
   console.error(backendOutput, debugging?.output() ?? "Desktop not spawned")
+  console.error(`Chromium startup log:\n${await smokeDiagnosticLog(chromiumLog)}`)
   throw error
 } finally {
   // These exact child handles were created above in this worktree. Do not
