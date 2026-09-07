@@ -171,6 +171,18 @@ Every ledger entry is now merged.
 - [x] Grok CLI adapter
 - [x] Provider account and readiness settings from the signed handoff
 - [x] OS-keychain storage for direct provider API keys and other secrets
+- [x] Let a client discover a provider's models and a default runtime before a session exists
+  - `runtime.discover` (#326) is read-only, scoped to the execution machine and the provider the
+    caller names, and answers with no project open. A ready result carries the provider's models,
+    a `defaultRuntime` bound to one of those models and its default reasoning effort, the
+    permission modes the adapter supports, and whether Auto is available. Auto requires Build, and
+    the returned default always has Auto off.
+  - An unavailable result carries one of seven reasons, each with the fixed action, retryability,
+    and message the protocol pins to it, so a client shows sign-in, install, retry,
+    choose-provider, or configure rather than an unknown failure. Readiness, connection, and
+    catalog share one `maximumRuntimeDiscoveryMs` budget of 10 seconds.
+  - There is no cross-machine fallback, no global preferred provider, and no project-scoped
+    catalog. `packages/protocol/README.md` documents the call for the phone and tablet clients.
 - [ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
   - Only OS-keychain key storage ships; `docs/provider-capabilities.md` lists no direct adapter.
   - Deferred past the alpha on 2026-09-03. `PRODUCT.md` line 41 commits to subscription-backed
@@ -301,9 +313,10 @@ Every ledger entry is now merged.
 - [x] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
 - [x] Sessions sidebar footer bound to the live machine name and fleet count
 
-### Handoff surfaces not yet built
+### Handoff surfaces from the desktop handoff
 
-The desktop handoff specifies these; `main` does not implement them yet.
+The desktop handoff specifies these and `main` implements them. Where a surface stops short of
+the mockup on purpose, the note under it says so.
 
 - [x] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
   Terminal, and Revoke actions
