@@ -31,7 +31,7 @@
     "prepackage:win": "pnpm prepackage",
     "package:win": "electron-vite build && electron-builder --config electron-builder.cjs --win --publish never",
     "test": "node --test scripts/signing.node.mjs && vitest run",
-    "test:launch": "node --test scripts/launch-smoke-args.node.mjs && electron-vite build && node scripts/launch-smoke.mjs",
+    "test:launch": "node --test scripts/launch-smoke-args.node.mjs && electron-vite build && node scripts/launch-smoke.mjs && node scripts/fleet-origin-smoke.mjs && node scripts/fleet-client-smoke.mjs",
     "test:package": "node scripts/package-smoke.mjs",
     "typecheck": "tsc --noEmit"
   },

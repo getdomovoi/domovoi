@@ -55,6 +55,7 @@ import {
   type ProviderModel,
   type ProjectSwitchConfirmation,
   type RpcParams,
+  type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
   workspaceSnapshotSchema,
@@ -204,6 +205,7 @@ import {
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
+import { resolveFleetClientRoute } from "./fleet-client-route.js"
 import {
   appendDurableOutput,
   DurableOutputRedactor,
@@ -894,6 +896,7 @@ export class DomovoiDaemon {
   #connectionIds = new WeakMap<WebSocket, string>()
   #preAuthAuditDeadlines = new Map<PreAuthAuditKind, number>()
   #pairingClaimAdmission = new PairingClaimAdmission()
+  #clientRoute: (params: RpcParams<"fleet.clientRoute">, signal?: AbortSignal) => Promise<RpcResult<"fleet.clientRoute">>
   #socketSources = new WeakMap<WebSocket, string>()
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
@@ -974,6 +977,16 @@ export class DomovoiDaemon {
       throw new RangeError("Advertised protocol version must be a three-part semver")
     }
     this.#machineCredentials = options.machineCredentials
+    this.#clientRoute = async (params, signal) => {
+      const deadline = OperationDeadline.start(defaultMachineHandshakeTimeoutMs, signal ? { signal } : {})
+      try {
+        return await resolveFleetClientRoute({ params, deadline,
+          machine: () => this.#store.fleet?.lookupMachine(params.machineId, this.#snapshot.machine.id, Date.now()),
+          credentials: this.#machineCredentials,
+          ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
+        })
+      } finally { deadline.clear() }
+    }
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
     this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
     this.#sessionTransferRetryMs = options.sessionTransferRetryMs ?? 30_000
@@ -1005,7 +1018,7 @@ export class DomovoiDaemon {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
     this.allowedOrigins = new Set(
-      options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
+      options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
     )
     this.#rpcOutbound = new RpcOutboundBackpressure(options.rpcOutboundBackpressure)
     const machinePlatform = platform()
@@ -2936,6 +2949,8 @@ export class DomovoiDaemon {
         || request.method === "audit.export"
         || request.method === "fleet.heartbeat"
         || request.method === "fleet.list"
+        || request.method === "fleet.clientRoute"
+        || request.method === "device.current"
         || request.method === "fleet.enroll"
         || request.method === "fleet.forget"
         || request.method === "device.revokeCurrent"
@@ -3472,6 +3487,20 @@ export class DomovoiDaemon {
     try {
       let changed = false
       let alreadyPersisted = false
+      if (method === "device.current") {
+        const verified = this.#deviceCredentials.get(socket)?.verified
+        const result = verified?.binding.kind === "client"
+          ? { kind: "client", machineId: this.#snapshot.machine.id, deviceId: verified.device.id, client: verified.binding.client }
+          : { kind: "daemon", machineId: this.#snapshot.machine.id }
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        return
+      }
+      if (method === "fleet.clientRoute") {
+        const result = await this.#clientRoute(paramsResult.data as RpcParams<"fleet.clientRoute">, signal)
+        if (result.outcome === "refused") this.#amendPendingAudit(socket, request.id, { outcome: "denied", detail: `reason=${result.reason}` })
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result })
+        return
+      }
       if (method === "fleet.heartbeat" || method === "device.revokeCurrent") {
         const credential = this.#deviceCredentials.get(socket)?.verified
         if (authenticatedActor?.kind !== "machine" || credential?.binding.kind !== "machine") {
@@ -4678,7 +4707,7 @@ export class DomovoiDaemon {
                 label: (params as { label: string }).label,
                 binding: {
                   kind: "client",
-                  client: (params as RpcParams<"device.pair">).client,
+                  client: (params as RpcParams<"device.pair">).targetClient ?? (params as RpcParams<"device.pair">).client,
                 },
               })
             : method === "device.list"
@@ -8289,7 +8318,8 @@ export function frameAncestorsFor(origins: Iterable<string>): string {
   for (const origin of origins) {
     try {
       const parsed = new URL(origin)
-      if (parsed.protocol === "file:") sources.push("file:")
+      if (origin === "domovoi-app://desktop") sources.push(origin)
+      else if (parsed.protocol === "file:") sources.push("file:")
       else if (parsed.protocol === "http:" || parsed.protocol === "https:") {
         sources.push(parsed.origin)
       }
