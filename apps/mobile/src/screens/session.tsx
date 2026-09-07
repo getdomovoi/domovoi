@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from "react-native"
 
 import { Composer } from "../components/composer"
@@ -179,6 +180,9 @@ export function SessionScreen({
   onSend: () => void
   onOpenSkills: () => void
 }) {
+  // The composer floats over the thread, so the thread pads by what the
+  // composer reports covering rather than by a guess at its height.
+  const [composerFootprint, setComposerFootprint] = useState(0)
   const approvalId = detail.approvalId
   return (
     <KeyboardAvoidingView
@@ -201,7 +205,10 @@ export function SessionScreen({
         <Badge label={detail.mode} tone="outline" />
       </View>
 
-      <ScrollView contentContainerClassName="gap-3 px-3.5 pb-8">
+      <ScrollView
+        contentContainerClassName="gap-3 px-3.5"
+        contentContainerStyle={{ paddingBottom: composerFootprint }}
+      >
         {/* The reason the phone was picked up goes above the reading, because
             scrolling a thread to find the decision is the slow path. */}
         {approvalId ? (
@@ -259,6 +266,7 @@ export function SessionScreen({
         onChangeDraft={onChangeDraft}
         onSend={onSend}
         onOpenSkills={onOpenSkills}
+        onFootprint={setComposerFootprint}
       />
     </KeyboardAvoidingView>
   )
