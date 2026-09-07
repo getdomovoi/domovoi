@@ -39,6 +39,7 @@ export function ReviewScreen({
   notice,
   hasSnapshot,
   onOpenArtifact,
+  bottomInset,
 }: {
   rows: ReviewRow[]
   notice: ConnectionNotice | undefined
@@ -47,6 +48,8 @@ export function ReviewScreen({
   // it, and the two read the same on screen unless the screen says which.
   hasSnapshot: boolean
   onOpenArtifact: (artifactId: string) => void
+  // What the floating tab bar covers, so the list can pad by exactly that.
+  bottomInset: number
 }) {
   return (
     <View className="flex-1 bg-background">
@@ -55,7 +58,10 @@ export function ReviewScreen({
         {hasSnapshot ? <Text variant="meta" className="mt-[3px]">{reviewSummary(rows)}</Text> : null}
       </View>
 
-      <ScrollView contentContainerClassName="gap-[9px] px-3 pb-8">
+      <ScrollView
+        contentContainerClassName="gap-[9px] px-3"
+        contentContainerStyle={{ paddingBottom: bottomInset }}
+      >
         <ConnectionBanner notice={notice} />
 
         {!hasSnapshot ? (

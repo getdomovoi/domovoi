@@ -15,6 +15,7 @@ async function draw(overrides: Partial<Parameters<typeof ReviewScreen>[0]> = {})
     notice: undefined,
     hasSnapshot: true,
     onOpenArtifact: jest.fn<(artifactId: string) => void>(),
+    bottomInset: 0,
     ...overrides,
   }
   await render(<ReviewScreen {...props} />)

@@ -22,6 +22,7 @@ export function SettingsScreen({
   onChangeToken,
   onConnect,
   onForget,
+  bottomInset,
 }: {
   url: string
   token: string
@@ -31,6 +32,8 @@ export function SettingsScreen({
   onChangeToken: (value: string) => void
   onConnect: () => void
   onForget: () => void
+  // What the floating tab bar covers, so the list can pad by exactly that.
+  bottomInset: number
 }) {
   return (
     <View className="flex-1 bg-background">
@@ -38,7 +41,10 @@ export function SettingsScreen({
         <Text variant="heading">Settings</Text>
       </View>
 
-      <ScrollView contentContainerClassName="gap-[9px] px-3 pb-8">
+      <ScrollView
+        contentContainerClassName="gap-[9px] px-3"
+        contentContainerStyle={{ paddingBottom: bottomInset }}
+      >
         <Card className="gap-3">
           <View className="gap-1.5">
             <Text variant="label">Daemon address</Text>

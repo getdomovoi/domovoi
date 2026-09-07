@@ -19,6 +19,7 @@ async function draw(overrides: Partial<Parameters<typeof SessionsScreen>[0]> = {
     onOpenApproval: jest.fn<(approvalId: string) => void>(),
     onPauseAll: jest.fn<() => void>(),
     onRefresh: jest.fn<() => void>(),
+    bottomInset: 0,
     ...overrides,
   }
   await render(<SessionsScreen {...props} />)

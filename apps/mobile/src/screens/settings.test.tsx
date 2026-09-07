@@ -16,6 +16,7 @@ async function draw(overrides: Partial<Parameters<typeof SettingsScreen>[0]> = {
     onChangeToken: jest.fn<(value: string) => void>(),
     onConnect: jest.fn<() => void>(),
     onForget: jest.fn<() => void>(),
+    bottomInset: 0,
     ...overrides,
   }
   await render(<SettingsScreen {...props} />)

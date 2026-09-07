@@ -55,6 +55,7 @@ async function draw(overrides: Partial<Parameters<typeof FleetScreen>[0]> = {}) 
     now,
     onRefresh: jest.fn<() => void>(),
     onOpen: jest.fn<() => void>(),
+    bottomInset: 0,
     ...overrides,
   }
   await render(<FleetScreen {...props} />)

@@ -80,6 +80,9 @@ export function App() {
   // clock it was measured against. It ticks while the list is on screen and
   // stops when it is not, because nothing off screen needs a fresh minute.
   const [now, setNow] = useState(() => Date.now())
+  // The tab bar floats over the screen behind it, so the screen behind it has
+  // to be told what it covers. The bar measures itself and reports that here.
+  const [tabFootprint, setTabFootprint] = useState(0)
 
   // The saved credential is what makes the app usable the second time it is
   // opened, so it is restored before anything is drawn.
@@ -429,9 +432,9 @@ export function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      {/* The tab bar paints the bottom inset itself, so this view does not
-          reserve it. Handing the bottom edge to both leaves a strip of
-          --background below a --sidebar tab bar. */}
+      {/* The tab bar floats over the screen rather than sitting under it, so
+          this view does not reserve the bottom edge. What the bar covers is
+          measured and handed to each screen, which pads its own scroller. */}
       <SafeAreaView edges={["top", "left", "right"]} className="flex-1 bg-background">
         <View className="flex-1">
           {tab === "sessions" ? (
@@ -455,6 +458,7 @@ export function App() {
                   setOpenSessionId(sessionId)
                 }}
                 onPauseAll={() => setConfirmPause(true)}
+                bottomInset={tabFootprint}
               />
             ) : (
               <ShellNotice shell={shell} onOpenSettings={() => setTab("settings")} />
@@ -466,6 +470,7 @@ export function App() {
               notice={notice}
               hasSnapshot={snapshot !== undefined}
               onOpenArtifact={setOpenArtifactId}
+              bottomInset={tabFootprint}
             />
           ) : null}
           {tab === "fleet" ? (
@@ -479,6 +484,7 @@ export function App() {
               now={now}
               onRefresh={() => void loadFleet()}
               onOpen={() => setTab("sessions")}
+              bottomInset={tabFootprint}
             />
           ) : null}
           {tab === "settings" ? (
@@ -500,10 +506,16 @@ export function App() {
                 setToken("")
                 void clearCredential()
               }}
+              bottomInset={tabFootprint}
             />
           ) : null}
         </View>
-        <TabBar active={tab} waiting={waiting} onSelect={setTab} />
+        <TabBar
+          active={tab}
+          waiting={waiting}
+          onSelect={setTab}
+          onFootprint={setTabFootprint}
+        />
         <ConfirmSheet
           open={confirmPause}
           title="Pause every session?"

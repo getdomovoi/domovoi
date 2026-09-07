@@ -89,6 +89,7 @@ export function SessionsScreen({
   onOpenApproval,
   onPauseAll,
   onRefresh,
+  bottomInset,
 }: {
   snapshot: WorkspaceSnapshot
   // Unknown until the fleet has been asked, and a phone claiming one machine
@@ -103,6 +104,9 @@ export function SessionsScreen({
   onOpenApproval: (approvalId: string) => void
   onPauseAll: () => void
   onRefresh: () => void
+  // What the floating tab bar covers. The list runs underneath it, so the
+  // last row is only readable if the scroller pads by what the bar reports.
+  bottomInset: number
 }) {
   const rows = sessionRows(snapshot)
   const lead = approvalLead(snapshot, now)
@@ -123,7 +127,8 @@ export function SessionsScreen({
       </View>
 
       <ScrollView
-        contentContainerClassName="gap-[9px] px-3 pb-8"
+        contentContainerClassName="gap-[9px] px-3"
+        contentContainerStyle={{ paddingBottom: bottomInset }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.dark["muted-foreground"]} />
         }

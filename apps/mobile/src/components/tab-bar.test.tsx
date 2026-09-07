@@ -5,8 +5,8 @@ import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 import { TabBar, type Tab } from "./tab-bar"
 
 // A notched iPhone reserves room under the bar for the home indicator. The bar
-// paints that room itself, so the screen behind it does not have to, and the
-// sidebar fill reaches the bottom edge instead of stopping short of it.
+// floats above that room rather than filling it, and reports the whole
+// footprint so the list behind it can pad by exactly that much.
 const notched: Metrics = {
   frame: { x: 0, y: 0, width: 390, height: 844 },
   insets: { top: 59, left: 0, right: 0, bottom: 34 },
@@ -20,6 +20,7 @@ async function draw(
     active: "sessions" as Tab,
     waiting: 0,
     onSelect: jest.fn<(tab: Tab) => void>(),
+    onFootprint: jest.fn<(footprint: number) => void>(),
     ...overrides,
   }
   await render(
@@ -30,11 +31,11 @@ async function draw(
   return props
 }
 
-function barPadding(): number | undefined {
-  const bar = screen.getAllByRole("tab")[0]?.parent
-  const style = bar?.props.style
-  const list = Array.isArray(style) ? style : [style]
-  return Object.assign({}, ...list.filter(Boolean)).paddingBottom
+async function layOut(height: number) {
+  const bar = screen.getByTestId("tab-bar")
+  await fireEvent(bar, "layout", {
+    nativeEvent: { layout: { x: 0, y: 0, width: 362, height } },
+  })
 }
 
 describe("TabBar", () => {
@@ -70,16 +71,20 @@ describe("TabBar", () => {
     expect(onSelect).toHaveBeenCalledWith("fleet")
   })
 
-  it("reserves the home indicator inside the bar rather than under it", async () => {
-    await draw()
-    expect(barPadding()).toBe(notched.insets.bottom)
+  // The bar floats over the list rather than sitting under it, so the list has
+  // to know what it covers. Getting this wrong hides the last session.
+  it("tells the list what it covers, home indicator included", async () => {
+    const { onFootprint } = await draw()
+    await layOut(54)
+    expect(onFootprint).toHaveBeenCalledWith(54 + notched.insets.bottom)
   })
 
-  it("keeps the design's own footing where a device reserves nothing", async () => {
-    await draw({}, {
+  it("keeps the handoff's own footing where a device reserves nothing", async () => {
+    const { onFootprint } = await draw({}, {
       frame: { x: 0, y: 0, width: 390, height: 844 },
       insets: { top: 20, left: 0, right: 0, bottom: 0 },
     })
-    expect(barPadding()).toBe(10)
+    await layOut(54)
+    expect(onFootprint).toHaveBeenCalledWith(54 + 22)
   })
 })

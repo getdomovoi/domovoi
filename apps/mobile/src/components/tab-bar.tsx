@@ -1,7 +1,7 @@
 import { Pressable, View } from "react-native"
-import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { cn } from "../lib/cn"
+import { FloatingBar } from "./floating-bar"
 import { Icon, type IconName } from "./ui/icon"
 import { Text } from "./ui/text"
 
@@ -18,22 +18,19 @@ export function TabBar({
   active,
   waiting,
   onSelect,
+  onFootprint,
 }: {
   active: Tab
   // Approvals are the reason to pick the phone up, so the count rides the tab
   // rather than waiting to be discovered on the screen behind it.
   waiting: number
   onSelect: (tab: Tab) => void
+  // The list scrolls underneath this bar, so the list has to be told how much
+  // of its own bottom the bar is covering.
+  onFootprint?: (footprint: number) => void
 }) {
-  const insets = useSafeAreaInsets()
   return (
-    // The bar runs to the bottom edge so the sidebar fill reaches it, with the
-    // home indicator sitting over the bar rather than over the page behind it.
-    // Where the device reserves nothing, the design's own bottom padding stands in.
-    <View
-      className="flex-row items-start border-t border-border bg-sidebar pt-2"
-      style={{ paddingBottom: insets.bottom > 0 ? insets.bottom : 10 }}
-    >
+    <FloatingBar testID="tab-bar" padding="tabs" onFootprint={onFootprint}>
       {tabs.map((tab) => {
         const selected = tab.id === active
         return (
@@ -45,7 +42,12 @@ export function TabBar({
               ? `Sessions, ${waiting} waiting`
               : tab.label}
             onPress={() => onSelect(tab.id)}
-            className="min-h-tap flex-1 items-center gap-[3px] px-1 py-0.5"
+            // The handoff draws a 52pt bar and four 44pt targets do not fit
+            // inside one. The drawn tab keeps the size it is drawn at and the
+            // target is grown past it instead, so the bar reads right and a
+            // thumb still lands where iOS asks it to.
+            hitSlop={{ top: 9, bottom: 9 }}
+            className="flex-1 items-center gap-[3px] px-1 py-0.5"
           >
             <View className="h-[22px] justify-center">
               <Icon name={tab.icon} tone={selected ? "primary" : "faint"} />
@@ -64,6 +66,6 @@ export function TabBar({
           </Pressable>
         )
       })}
-    </View>
+    </FloatingBar>
   )
 }

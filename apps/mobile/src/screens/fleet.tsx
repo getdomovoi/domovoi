@@ -77,6 +77,7 @@ export function FleetScreen({
   now,
   onRefresh,
   onOpen,
+  bottomInset,
 }: {
   fleet: FleetEntry[] | undefined
   // What the connected daemon is doing. Undefined until a snapshot has arrived,
@@ -91,6 +92,8 @@ export function FleetScreen({
   now: number
   onRefresh: () => void
   onOpen: () => void
+  // What the floating tab bar covers, so the list can pad by exactly that.
+  bottomInset: number
 }) {
   const rows = fleet ? machineRows(fleet, now, activity) : []
   const summary = fleet ? fleetSummary(fleet) : undefined
@@ -104,7 +107,10 @@ export function FleetScreen({
         <Button title="Refresh" onPress={onRefresh} disabled={loading || !connected} />
       </View>
 
-      <ScrollView contentContainerClassName="gap-[9px] px-3 pb-8">
+      <ScrollView
+        contentContainerClassName="gap-[9px] px-3"
+        contentContainerStyle={{ paddingBottom: bottomInset }}
+      >
         <ConnectionBanner notice={notice} />
 
         {problem ? <Text variant="meta" className="text-destructive">{problem}</Text> : null}
