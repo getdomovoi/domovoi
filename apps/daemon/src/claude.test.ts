@@ -146,6 +146,24 @@ describe("ClaudeAgentSdkAdapter", () => {
     await expect(listing).rejects.toThrow("Claude model catalog returned invalid data")
   })
 
+  it("closes an expired discovery and never asks for models after late initialization", async () => {
+    const { calls, factory } = factoryHarness()
+    let finish: () => void = () => {}
+    const adapter = new ClaudeAgentSdkAdapter((input, options) => {
+      const query = factory(input, options)
+      calls[0]!.query.initializationResult.mockImplementationOnce(() => new Promise<object>((resolve) => { finish = () => resolve({}) }))
+      return query
+    })
+    const controller = new AbortController()
+    const listing = adapter.listModels(controller.signal)
+    controller.abort(new Error("Discovery expired"))
+    expect(calls[0]!.query.close).toHaveBeenCalledOnce()
+    finish()
+    await expect(listing).rejects.toThrow("Discovery expired")
+    expect(calls[0]!.query.supportedModels).not.toHaveBeenCalled()
+    expect(calls[0]!.query.close).toHaveBeenCalledOnce()
+  })
+
   it("starts a streaming session and emits turn text and completion", async () => {
     const { calls, factory } = factoryHarness()
     const turnId: ClaudeMessageId = "22222222-2222-4222-8222-222222222222"
