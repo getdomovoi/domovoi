@@ -1,6 +1,8 @@
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
 import { readFile } from "node:fs/promises"
 import { delimiter, join, sep } from "node:path"
+import { PassThrough } from "node:stream"
 import test from "node:test"
 
 import {
@@ -12,6 +14,7 @@ import {
 } from "./launch-smoke-args.mjs"
 import * as launch from "./launch-smoke-args.mjs"
 import { executableOnPath } from "./desktop-smoke.mjs"
+import * as smoke from "./desktop-smoke.mjs"
 
 // Both path builders name a target platform's output directories, but the
 // paths themselves are opened and spawned on the machine doing the packaging,
@@ -97,6 +100,10 @@ for (const name of ["fleet-origin-smoke.mjs", "fleet-client-smoke.mjs"]) {
     }
     assert.match(source, /executableOnPath\("xvfb-run"\)/u)
     assert.doesNotMatch(source, /["']--no-sandbox["']|ELECTRON_RUN_AS_NODE\s*:/u)
+    if (name === "fleet-client-smoke.mjs") {
+      assert.match(source, /"--remote-debugging-port=0"/u)
+      assert.match(source, /observeSmokeDebugging\(desktop, startupSignal\)/u)
+    }
   })
 }
 
@@ -109,6 +116,75 @@ test("display executable discovery cannot hang the proof before its child starts
 test("removes Electron Node-mode variables even when their value is empty", () => {
   const env = launchSmokeEnvironment({ env: { ELECTRON_RUN_AS_NODE: "", electron_run_as_node: "", NODE_OPTIONS: "--inspect" }, profileRoot: "/proof", timeoutMs: 5_000 })
   for (const key of ["ELECTRON_RUN_AS_NODE", "electron_run_as_node", "NODE_OPTIONS"]) assert.equal(Object.hasOwn(env, key), false)
+})
+
+function debuggingChild() {
+  const child = new EventEmitter()
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  return child
+}
+
+test("debugging startup reports the exit code and drains the final diagnostic", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const controller = new AbortController()
+  const observer = smoke.observeSmokeDebugging(child, controller.signal)
+  const rejected = assert.rejects(observer.ready, error => {
+    assert.match(error.message, /code 17.*signal none/u)
+    assert.match(error.message, /stdout:\nbooting/u)
+    assert.match(error.message, /stderr:\nfatal startup failure/u)
+    return true
+  })
+  child.stdout.write("booting\n")
+  child.emit("exit", 17, null)
+  child.stderr.write("fatal startup failure\n")
+  child.emit("close", 17, null)
+  await rejected
+  observer.dispose()
+})
+
+test("debugging startup names a signal exit even when the child wrote nothing", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const observer = smoke.observeSmokeDebugging(child, new AbortController().signal)
+  const rejected = assert.rejects(observer.ready, /code null.*signal SIGTERM[\s\S]*stderr:\n\(empty\)/u)
+  child.emit("close", null, "SIGTERM")
+  await rejected
+  observer.dispose()
+})
+
+test("debugging startup preserves split endpoint frames and later output", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const observer = smoke.observeSmokeDebugging(child, new AbortController().signal)
+  const address = "ws://127.0.0.1:4567/devtools/browser/proof"
+  child.stderr.write("DevTools listening on ws://127.0.0.1:4567/devtools/browser/pro")
+  child.stderr.write("of\r\n")
+  assert.equal(await observer.ready, address)
+  child.stdout.write("later output")
+  assert.match(observer.output(), /later output/u)
+  observer.dispose()
+  assert.equal(child.stderr.listenerCount("data"), 0)
+  assert.equal(child.listenerCount("close"), 0)
+})
+
+test("debugging startup bounds a silent child and includes any exit already observed", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const controller = new AbortController()
+  const observer = smoke.observeSmokeDebugging(child, controller.signal)
+  const rejected = assert.rejects(observer.ready, /deadline.*code 9.*signal none[\s\S]*last diagnostic/u)
+  child.emit("exit", 9, null)
+  child.stderr.write("last diagnostic")
+  controller.abort()
+  await rejected
+  observer.dispose()
+})
+
+test("debugging startup reports an executable launch error", { timeout: 1_000 }, async () => {
+  const child = debuggingChild()
+  const observer = smoke.observeSmokeDebugging(child, new AbortController().signal)
+  const rejected = assert.rejects(observer.ready, /spawn.*ENOENT/u)
+  child.emit("error", new Error("spawn electron.exe ENOENT"))
+  await rejected
+  observer.dispose()
 })
 
 test("omits the application directory for a packaged build, which carries its own", () => {

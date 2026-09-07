@@ -44,6 +44,45 @@ export async function createSmokeProfile(prefix) {
   return profileRoot
 }
 
+// Observe until stdio closes, not just process exit, so the final error is
+// not lost. The caller starts this deadline before spawning its child.
+export function observeSmokeDebugging(child, signal) {
+  let stdout = "", stderr = "", exit
+  let resolve, reject
+  const ready = new Promise((yes, no) => { resolve = yes; reject = no })
+  const output = () => `stdout:\n${stdout || "(empty)"}\nstderr:\n${stderr || "(empty)"}`
+  const status = () => exit ? `code ${exit.code ?? "null"}, signal ${exit.signal ?? "none"}` : "no exit observed"
+  const fail = reason => { signal.removeEventListener("abort", onAbort); reject(new Error(`${reason} (${status()})\n${output()}`)) }
+  const onAbort = () => fail("Desktop debugging startup deadline expired")
+  const onExit = (code, signal) => { exit = { code, signal } }
+  const onClose = (code, signal) => { onExit(code, signal); fail("Desktop exited before debugging was available") }
+  const onError = error => fail(`Desktop could not start: ${error.message}`)
+  const received = (stream, data) => {
+    if (stream === "stdout") stdout = (stdout + data).slice(-16_384)
+    else stderr = (stderr + data).slice(-16_384)
+    if (exit) return
+    const address = /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[^\s]+)\r?\n/u.exec(stream === "stdout" ? stdout : stderr)?.[1]
+    if (address) { signal.removeEventListener("abort", onAbort); resolve(address) }
+  }
+  const onStdout = data => received("stdout", data)
+  const onStderr = data => received("stderr", data)
+  child.stdout.on("data", onStdout)
+  child.stderr.on("data", onStderr)
+  child.once("exit", onExit)
+  child.once("close", onClose)
+  child.once("error", onError)
+  signal.addEventListener("abort", onAbort, { once: true })
+  if (signal.aborted) onAbort()
+  return { ready, output, dispose: () => {
+    child.stdout.removeListener("data", onStdout)
+    child.stderr.removeListener("data", onStderr)
+    child.removeListener("exit", onExit)
+    child.removeListener("close", onClose)
+    child.removeListener("error", onError)
+    signal.removeEventListener("abort", onAbort)
+  } }
+}
+
 function stopProcessTree(child) {
   if (!child.pid) return
   if (process.platform === "win32") {

@@ -8,7 +8,7 @@ import { join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import electron from "electron"
 import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
-import { executableOnPath } from "./desktop-smoke.mjs"
+import { executableOnPath, observeSmokeDebugging } from "./desktop-smoke.mjs"
 
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url))
 const daemonRequire = createRequire(new URL("../../daemon/package.json", import.meta.url))
@@ -33,8 +33,8 @@ async function bounded(promise, label, maximum = 15_000) {
     })])
   } finally { clearTimeout(timer) }
 }
-let backend, desktop, socket
-let backendOutput = "", desktopOutput = ""
+let backend, desktop, socket, debugging
+let backendOutput = ""
 const closedChildren = new WeakSet()
 const trackChild = child => {
   child.once("close", () => closedChildren.add(child))
@@ -42,7 +42,7 @@ const trackChild = child => {
 }
 try {
   const xvfb = process.platform === "linux" ? await bounded(executableOnPath("xvfb-run"), "display discovery") : undefined
-  const electronArgs = ["--remote-debugging-port=0", ...launchSmokeElectronArgs({
+  const electronArgs = ["--remote-debugging-port=0", "--enable-logging", ...launchSmokeElectronArgs({
     platform: process.platform, ci: process.env.CI === "true", desktopRoot,
   })]
   const launch = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath: electron, electronArgs, xvfb })
@@ -58,21 +58,13 @@ try {
   assert.equal(fixture.ready, true)
   console.info("Fleet proof: production daemons ready")
   const env = proofEnvironment()
+  if (remaining() <= 0) throw new Error("Fleet Desktop proof expired before Desktop startup")
+  const startupSignal = AbortSignal.timeout(Math.min(30_000, remaining()))
   desktop = trackChild(spawn(launch.command, launch.args, {
     cwd: desktopRoot, env, stdio: ["ignore", "pipe", "pipe"],
   }))
-  const debugging = new Promise((resolve, reject) => {
-    desktop.once("error", reject)
-    desktop.once("exit", () => reject(new Error("Desktop exited before debugging was available")))
-    const received = data => {
-      desktopOutput = (desktopOutput + data).slice(-16_384)
-      const address = /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[^\s]+)/u.exec(desktopOutput)?.[1]
-      if (address) resolve(address)
-    }
-    desktop.stdout.on("data", received)
-    desktop.stderr.on("data", received)
-  })
-  socket = new WebSocket(await bounded(debugging, "Desktop startup", 30_000), { handshakeTimeout: Math.min(5_000, remaining()), maxPayload: 32 * 1024 * 1024 })
+  debugging = observeSmokeDebugging(desktop, startupSignal)
+  socket = new WebSocket(await debugging.ready, { handshakeTimeout: Math.min(5_000, remaining()), maxPayload: 32 * 1024 * 1024 })
   await bounded(once(socket, "open"), "debugging connection")
   let sequence = 0
   const waiting = new Map()
@@ -204,7 +196,7 @@ try {
   assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)
   console.info("DOMOVOI_FLEET_CLIENT_PROOF_OK use=1 terminal=1 inventory=1 comparison=1 remove=1")
 } catch (error) {
-  console.error(backendOutput, desktopOutput)
+  console.error(backendOutput, debugging?.output() ?? "Desktop not spawned")
   throw error
 } finally {
   // These exact child handles were created above in this worktree. Do not
@@ -239,7 +231,7 @@ try {
       }),
       retire(backend, () => backend.connected ? backend.send("stop", () => {}) : backend.kill()),
     ])
-  } finally { socket?.terminate() }
+  } finally { socket?.terminate(); debugging?.dispose() }
   const failure = retired.find(result => result.status === "rejected")
   if (failure) throw failure.reason
   await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
