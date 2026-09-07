@@ -151,4 +151,22 @@ describe("FleetScreen", () => {
     expect(screen.getByRole("button", { name: "Refresh" }).props.accessibilityState)
       .toMatchObject({ disabled: true })
   })
+
+  // A fleet the daemon has answered with nothing in it is not the same as a
+  // fleet nobody has asked for. Only the answered one names the two commands.
+  it("tells an answered empty fleet how a machine is made", async () => {
+    await draw({ fleet: [] })
+
+    expect(screen.getByText("Nothing paired to this phone")).toBeOnTheScreen()
+    expect(screen.getByText("curl -fsSL domovoi.sh/install | sh")).toBeOnTheScreen()
+    expect(screen.getByText("domovoi pair")).toBeOnTheScreen()
+    expect(screen.queryByText("Pair a machine")).toBeNull()
+  })
+
+  it("claims nothing about an empty fleet before the daemon has answered", async () => {
+    await draw({ fleet: undefined })
+
+    expect(screen.queryByText("Nothing paired to this phone")).toBeNull()
+    expect(screen.queryByText("domovoi pair")).toBeNull()
+  })
 })

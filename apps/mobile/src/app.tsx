@@ -112,7 +112,7 @@ export function App() {
     setProblem: setFleetProblem,
   }))
 
-  const { snapshot, status, fault, call, refresh } = useDaemon(
+  const { snapshot, status, fault, call, refresh, reconnect } = useDaemon(
     connectTo?.url,
     connectTo?.token,
     fleetLoads.accept,
@@ -484,7 +484,13 @@ export function App() {
                 bottomInset={tabFootprint}
               />
             ) : (
-              <ShellNotice shell={shell} onOpenSettings={() => setTab("settings")} />
+              <ShellNotice
+                shell={shell}
+                address={connectTo?.url ?? ""}
+                bottomInset={tabFootprint}
+                onOpenSettings={() => setTab("settings")}
+                onRetry={reconnect}
+              />
             )
           ) : null}
           {tab === "review" ? (

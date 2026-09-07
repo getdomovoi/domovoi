@@ -5,6 +5,7 @@ import { ConnectionBanner } from "../components/connection-banner"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
+import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
@@ -97,6 +98,7 @@ export function FleetScreen({
 }) {
   const rows = fleet ? machineRows(fleet, now, activity) : []
   const summary = fleet ? fleetSummary(fleet) : undefined
+  const empty = fleet !== undefined && rows.length === 0
   return (
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-2.5 px-4 pb-3 pt-2">
@@ -108,7 +110,7 @@ export function FleetScreen({
       </View>
 
       <ScrollView
-        contentContainerClassName="gap-[9px] px-3"
+        contentContainerClassName={cn("gap-[9px] px-3", empty && "grow justify-center")}
         contentContainerStyle={{ paddingBottom: bottomInset }}
       >
         <ConnectionBanner notice={notice} />
@@ -127,9 +129,34 @@ export function FleetScreen({
                 : "The fleet has not been read on this connection."}
           </Text>
         ) : null}
-        {fleet && rows.length === 0
-          ? <Text variant="meta">No machines are paired with this daemon.</Text>
-          : null}
+        {/* The phone never runs an agent itself, so an empty fleet is a fact
+            about the machines rather than a phone that has failed to look. */}
+        {empty ? (
+          <View className="items-center gap-3 px-4">
+            <Icon name="server" tone="faint" size={24} />
+            <Text className="font-sans-medium text-[14.5px] text-foreground">
+              Nothing paired to this phone
+            </Text>
+            <Text variant="meta" className="text-center leading-[19px]">
+              A machine appears here once its daemon is running and has accepted this device. The
+              phone never runs an agent itself, so an empty fleet means there is nothing to show.
+            </Text>
+            <Card className="w-full bg-code">
+              <Text variant="label">On the machine</Text>
+              <Text variant="machine" className="mt-1.5 text-[10.5px] leading-[19px] text-strong">
+                curl -fsSL domovoi.sh/install | sh
+              </Text>
+              <Text variant="machine" className="text-[10.5px] leading-[19px] text-strong">
+                domovoi pair
+              </Text>
+            </Card>
+            <Text variant="note" className="text-center text-faint">
+              Pairing is a direct exchange with the machine. It is done on the machine, which holds
+              the credential, and this phone reaches one daemon at a time by the address under
+              Settings.
+            </Text>
+          </View>
+        ) : null}
         {/* A list read before the connection dropped is not a claim about now. */}
         {fleet && rows.length > 0 && !connected
           ? <Text variant="meta">Last read while connected.</Text>
@@ -141,7 +168,7 @@ export function FleetScreen({
             the daemon's to do and no credential reaches a client, so the card says
             where it happens rather than starting something this phone cannot
             finish. */}
-        {fleet ? (
+        {fleet && !empty ? (
           <Card className="border-dashed">
             <Text className="text-[12px]">Pair a machine</Text>
             <Text variant="note" className="mt-1">

@@ -5,6 +5,7 @@ import { ConnectionBanner } from "../components/connection-banner"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
+import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
@@ -111,6 +112,10 @@ export function SessionsScreen({
   const rows = sessionRows(snapshot)
   const lead = approvalLead(snapshot, now)
   const running = snapshot.sessions.filter((session) => session.state === "active").length
+  // The handoff says "none running" rather than "0 running". A zero reads as a
+  // measurement that failed; the word reads as a fleet that is simply idle.
+  const runningLabel = running === 0 ? "none running" : `${running} running`
+  const empty = rows.length === 0 && !lead
 
   return (
     <View className="flex-1 bg-background">
@@ -119,15 +124,15 @@ export function SessionsScreen({
           <Text variant="heading">Sessions</Text>
           <Text variant="meta" className="mt-[3px]">
             {machineCount === undefined
-              ? `${running} running`
-              : `${machineCount} machine${machineCount === 1 ? "" : "s"} · ${running} running`}
+              ? runningLabel
+              : `${machineCount} machine${machineCount === 1 ? "" : "s"} · ${runningLabel}`}
           </Text>
         </View>
         <Button title="Pause all" onPress={onPauseAll} />
       </View>
 
       <ScrollView
-        contentContainerClassName="gap-[9px] px-3"
+        contentContainerClassName={cn("gap-[9px] px-3", empty && "grow justify-center")}
         contentContainerStyle={{ paddingBottom: bottomInset }}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.dark["muted-foreground"]} />
@@ -139,12 +144,24 @@ export function SessionsScreen({
             the machine rather than a phone that has not been told anything. */}
         {lead ? <ApprovalLeadCard lead={lead} onOpen={onOpenApproval} /> : null}
 
-        {rows.length === 0 ? (
-          <Card className="border-dashed">
-            <Text variant="meta">
-              No sessions on this machine. Start one from the desktop.
+        {/* Empty is not failure. The daemon answered and has nothing open, so
+            the screen says so and names the way to start one. */}
+        {empty ? (
+          <View className="items-center gap-3 px-6">
+            <Icon name="layers" tone="faint" size={24} />
+            <Text className="font-sans-medium text-[14.5px] text-foreground">
+              No sessions running
             </Text>
-          </Card>
+            <Text variant="meta" className="text-center leading-[19px]">
+              This machine reported in and has nothing open. Run the CLI on it and the session
+              appears here within a second.
+            </Text>
+            <Card className="bg-code px-[11px] py-2">
+              <Text variant="machine" className="text-[10.5px] text-strong">
+                domovoi new --machine {snapshot.machine.name}
+              </Text>
+            </Card>
+          </View>
         ) : null}
 
         {rows.map((row) => <SessionCard key={row.id} row={row} onOpen={onOpenSession} />)}

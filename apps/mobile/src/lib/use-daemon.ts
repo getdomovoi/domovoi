@@ -29,6 +29,10 @@ export function useDaemon(
   // Nothing reopens the connection after that except the person changing the
   // credential, which re-runs this effect and clears it.
   const givenUp = useRef(false)
+  // Set by the effect that owns the socket, so asking for a connection now is
+  // the same code path the app uses when the phone comes back from the
+  // background rather than a second, subtly different one.
+  const reopen = useRef<(() => void) | undefined>(undefined)
   const fleetSink = useRef(onFleet)
   fleetSink.current = onFleet
 
@@ -71,6 +75,18 @@ export function useDaemon(
       daemon.connect()
     }
 
+    // The backoff exists so a daemon that is genuinely gone is not hammered
+    // from a device on a battery. Asking for it now skips the wait once,
+    // without abandoning the backoff for the times nobody asked.
+    const now = () => {
+      if (givenUp.current) return
+      if (connection.current?.isOpen()) return
+      if (timer.current) clearTimeout(timer.current)
+      attempt.current = 0
+      open()
+    }
+    reopen.current = now
+
     open()
 
     // Coming back from the background is the most common moment for a phone to
@@ -78,15 +94,12 @@ export function useDaemon(
     // the person staring at a stale screen.
     const subscription = AppState.addEventListener("change", (next) => {
       if (next !== "active") return
-      if (givenUp.current) return
-      if (connection.current?.isOpen()) return
-      if (timer.current) clearTimeout(timer.current)
-      attempt.current = 0
-      open()
+      now()
     })
 
     return () => {
       live = false
+      reopen.current = undefined
       subscription.remove()
       if (timer.current) clearTimeout(timer.current)
       connection.current?.close()
@@ -109,5 +122,9 @@ export function useDaemon(
     setSnapshot(workspaceSnapshotSchema.parse(await daemon.call("workspace.get", {})))
   }, [])
 
-  return { snapshot, status, fault, call, refresh }
+  // Nothing here overrides a refusal the daemon will repeat: a wrong token is
+  // still wrong however many times it is asked.
+  const reconnect = useCallback(() => reopen.current?.(), [])
+
+  return { snapshot, status, fault, call, refresh, reconnect }
 }
