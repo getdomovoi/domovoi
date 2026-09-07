@@ -104,6 +104,7 @@ for (const name of ["fleet-origin-smoke.mjs", "fleet-client-smoke.mjs"]) {
     if (name === "fleet-client-smoke.mjs") {
       assert.match(source, /observeSmokeDebugging\(desktop, startupSignal\)/u)
       assert.match(source, /debuggingLogFile:\s*chromiumLog/u)
+      assert.match(source, /userDataDirectory:\s*electronProfile/u)
     }
   })
 }
@@ -193,6 +194,15 @@ test("debugging flags and native file logging survive the Windows argument polic
   assert.deepEqual(launchSmokeElectronArgs({ platform: "win32", ci: true, desktopRoot: "D:\\desktop", debuggingLogFile: log }), [
     "--headless", "--disable-gpu", "--remote-debugging-port=0", "--enable-logging=file", `--log-file=${log}`, "D:\\desktop",
   ])
+})
+
+test("the full application proof gives Electron an explicit private user-data path", () => {
+  for (const platform of ["win32", "linux", "darwin"]) {
+    const profile = platform === "win32" ? "C:\\Fleet proof\\electron-profile" : "/tmp/Fleet proof/electron-profile"
+    const args = launchSmokeElectronArgs({ platform, ci: true, desktopRoot: "/desktop", userDataDirectory: profile })
+    assert.equal(args.filter(arg => arg.startsWith("--user-data-dir=")).length, 1)
+    assert.ok(args.includes(`--user-data-dir=${profile}`))
+  }
 })
 
 test("native startup file diagnostics are bounded and a missing file cannot mask the exit", { timeout: 5_000 }, async () => {

@@ -2,11 +2,12 @@ import { dirname, join } from "node:path"
 
 // A packaged build already knows where its application is. Passing a directory
 // as well makes Electron read it as a file argument, not as the app to run.
-export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = false, debuggingLogFile }) {
+export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = false, debuggingLogFile, userDataDirectory }) {
   return [
     ...(platform === "linux" && ci ? ["--no-sandbox"] : []),
     "--headless",
     "--disable-gpu",
+    ...(userDataDirectory ? [`--user-data-dir=${userDataDirectory}`] : []),
     ...(debuggingLogFile ? ["--remote-debugging-port=0", "--enable-logging=file", `--log-file=${debuggingLogFile}`] : []),
     ...(packaged ? [] : [desktopRoot]),
   ]

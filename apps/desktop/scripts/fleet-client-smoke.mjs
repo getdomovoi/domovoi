@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { fork, spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -15,6 +15,9 @@ const daemonRequire = createRequire(new URL("../../daemon/package.json", import.
 const { WebSocket } = daemonRequire("ws")
 const directory = await mkdtemp(join(tmpdir(), "domovoi-fleet-client-proof-"))
 const chromiumLog = join(directory, "chromium.log")
+// This runs the normal application, not its launch-smoke profile override.
+// HOME alone does not select Electron's native user-data path on Windows.
+const electronProfile = join(directory, "electron-profile")
 const images = process.argv.find(arg => arg.startsWith("--screenshots="))?.slice("--screenshots=".length)
 // One clock, running before either child or any debugging socket exists.
 const end = Date.now() + (process.platform === "win32" ? 110_000 : 80_000)
@@ -45,6 +48,7 @@ try {
   const xvfb = process.platform === "linux" ? await bounded(executableOnPath("xvfb-run"), "display discovery") : undefined
   const electronArgs = launchSmokeElectronArgs({
     platform: process.platform, ci: process.env.CI === "true", desktopRoot, debuggingLogFile: chromiumLog,
+    userDataDirectory: electronProfile,
   })
   const launch = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath: electron, electronArgs, xvfb })
   const tsconfig = join(directory, "tsconfig.json")
@@ -65,7 +69,9 @@ try {
     cwd: desktopRoot, env, stdio: ["ignore", "pipe", "pipe"],
   }))
   debugging = observeSmokeDebugging(desktop, startupSignal)
-  socket = new WebSocket(await debugging.ready, { handshakeTimeout: Math.min(5_000, remaining()), maxPayload: 32 * 1024 * 1024 })
+  const debuggingAddress = await debugging.ready
+  assert.equal((await bounded(stat(electronProfile), "Electron profile creation")).isDirectory(), true)
+  socket = new WebSocket(debuggingAddress, { handshakeTimeout: Math.min(5_000, remaining()), maxPayload: 32 * 1024 * 1024 })
   await bounded(once(socket, "open"), "debugging connection")
   let sequence = 0
   const waiting = new Map()
