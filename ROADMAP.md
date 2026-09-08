@@ -585,6 +585,11 @@ Every ledger entry is now merged.
   - Still unproven: iOS. Secure Enclave needs an Xcode 26 build, Expo SDK 57 is written in Swift
     6.2, and Xcode 26 requires Apple Silicon, so the Intel Mac available here cannot build the app
     at all. One Android device is also not a fleet.
+  - Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM
+    using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK,
+    daemon responder and established-frame costs are recorded for one Intel Linux host in
+    `docs/relay-node-benchmarks.md`. Phone costs and protected key-service latency remain open;
+    this does not freeze a suite or supply real phone-runtime evidence.
 - [ ] Make relay routes and capabilities a discriminated protocol contract
   - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
     encrypted artifact-byte path exists, and clients read that absence from the route rather than
