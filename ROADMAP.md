@@ -553,6 +553,20 @@ Every ledger entry is now merged.
     alpha.
 - [ ] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise
   suite or public-key shape in protocol
+  - Phone-side key custody is proven for P-256. `apps/mobile/modules/domovoi-device-key` generates
+    the static key inside the platform key service and never returns it, and the probe in
+    `apps/mobile/src/lib/device-key.ts` checks the key by agreeing against a software key and
+    requiring both shared secrets to match. On a Pixel 10 running GrapheneOS the run reported
+    `strongbox` custody, a 65 byte public point, a handle that survived a reopen, and a 32 byte
+    shared secret identical on both sides. An Android emulator on API 36 passes the same steps and
+    reports `software`, which is what an emulator can offer.
+  - Building that probe found the divergence the vector work is for: Hermes has no WebCrypto, so a
+    pure JS codec calling `crypto.getRandomValues` throws on a phone while passing under Node. The
+    probe takes its randomness from the platform key service instead. Vectors run by two Node
+    runners cannot catch this class of defect.
+  - Still unproven: iOS. Secure Enclave needs an Xcode 26 build, Expo SDK 57 is written in Swift
+    6.2, and Xcode 26 requires Apple Silicon, so the Intel Mac available here cannot build the app
+    at all. One Android device is also not a fleet.
 - [ ] Make relay routes and capabilities a discriminated protocol contract
   - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
     encrypted artifact-byte path exists, and clients read that absence from the route rather than
