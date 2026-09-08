@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   isCorruption,
+  projectWorkspaceState,
   resolveWorkspaceRedactionModule,
   SqliteWorkspaceStore,
   type WorkspaceWriter,
@@ -23,6 +24,75 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("reopens persisted minute-precision state and pairing timestamps without quarantine", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-timestamp-compat-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const original = new SqliteWorkspaceStore(databasePath, structuredClone(demoWorkspace))
+    const paired = original.devices.pair({ label: "phone", binding: { kind: "client", client: "phone" } })
+    const before = original.load()
+    await original.close()
+    const legacy = structuredClone(before)
+    legacy.sessions[0]!.updatedAt = "2026-09-07T12:30Z"
+    legacy.thread[0]!.createdAt = "2026-09-07T12:29Z"
+    const pairedAt = "2026-09-07T12:30-06:00"
+    const lastSeenAt = "2026-09-07T12:31Z"
+    // Seed the bytes an older validator admitted, bypassing today's write path.
+    const database = new DatabaseSync(databasePath)
+    try {
+      database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
+      database.prepare("UPDATE workspace_projects SET state = ? WHERE project_id = ?")
+        .run(JSON.stringify(projectWorkspaceState(legacy)), legacy.project!.id)
+      database.prepare("UPDATE paired_devices SET paired_at = ?, last_seen_at = ? WHERE id = ?")
+        .run(pairedAt, lastSeenAt, paired.device.id)
+    } finally { database.close() }
+
+    for (let restart = 0; restart < 2; restart += 1) {
+      const reopened = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+      try {
+        expect(reopened.recovery).toBeUndefined()
+        expect(reopened.load()).toEqual(legacy)
+        expect(reopened.devices.list()).toEqual([{ ...paired.device, pairedAt, lastSeenAt }])
+        expect(reopened.devices.isActive(paired.token)).toBe(true)
+        expect(reopened.loadProject(legacy.project!.id)?.sessions[0]!.updatedAt).toBe("2026-09-07T12:30Z")
+      } finally { await reopened.close() }
+    }
+    expect((await readdir(scratch)).some((entry) => entry.includes("corrupt"))).toBe(false)
+    const durable = new DatabaseSync(databasePath)
+    try {
+      const row = durable.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
+      expect(JSON.parse(row.snapshot)).toEqual(legacy)
+      expect(durable.prepare("SELECT paired_at, last_seen_at FROM paired_devices WHERE id = ?").get(paired.device.id))
+        .toEqual({ paired_at: pairedAt, last_seen_at: lastSeenAt })
+    } finally { durable.close() }
+  })
+
+  it.each([
+    "2026-02-30T12:30Z",
+    "2026-09-07T12:60Z",
+    "2026-09-07T12:30",
+    "2026-09-07T12:30+00:00",
+  ])("still quarantines a persisted invalid UTC timestamp: %j", async (updatedAt) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-invalid-timestamp-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const original = new SqliteWorkspaceStore(databasePath, structuredClone(demoWorkspace))
+    const damaged = original.load()
+    await original.close()
+    damaged.sessions[0]!.updatedAt = updatedAt
+    const bytes = JSON.stringify(damaged)
+    const database = new DatabaseSync(databasePath)
+    try {
+      database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(bytes)
+    } finally { database.close() }
+    const reopened = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+    try {
+      expect(reopened.recovery?.kind).toBe("snapshot")
+      expect(await readFile(reopened.recovery!.quarantinedPath, "utf8")).toBe(bytes)
+      expect(reopened.load().sessions).toEqual([])
+    } finally { await reopened.close() }
+  })
+
   it("preserves 0.3 workspace state and bound credentials across the 0.4 wire change", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-protocol-migration-"))
     scratchDirectories.push(scratch)
