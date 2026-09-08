@@ -3355,9 +3355,11 @@ describe("DomovoiDaemon", () => {
       "https://app.domovoi.sh",
       "http://localhost:5178",
       "file://",
+      "domovoi-app://desktop",
+      "domovoi-app://other",
       "javascript:alert(1)",
       "not a URL",
-    ])).toBe("https://app.domovoi.sh http://localhost:5178 file:")
+    ])).toBe("https://app.domovoi.sh http://localhost:5178 file: domovoi-app://desktop")
   })
 
   it("normalizes loopback Host authorities without widening them", () => {
@@ -5198,20 +5200,23 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     const usage = rpc("session.usage", { sessionId: first.id })
-    const responsiveness = await Promise.race([
-      unrelated.then(() => "responsive" as const),
-      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
-    ])
-    const usageResponsiveness = await Promise.race([
-      usage.then(() => "responsive" as const),
-      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
-    ])
+    const answeredWhileFirstTurnParked = { unrelated: false, usage: false }
+    void unrelated.then(() => { answeredWhileFirstTurnParked.unrelated = true })
+    void usage.then(() => { answeredWhileFirstTurnParked.usage = true })
+
+    // The claim is ordering, not latency. Both of these have to answer while
+    // the first session's turn is still parked inside startTurn, so waiting for
+    // them here, before the release below, asks exactly that: a daemon that let
+    // one session block another answers neither until the release. Racing a
+    // fixed hundred milliseconds asked instead how fast the runner was that
+    // minute, and a starved macOS runner reported a block for a daemon that had
+    // blocked nothing.
+    await waitForDaemon(() => expect(answeredWhileFirstTurnParked)
+      .toEqual({ unrelated: true, usage: true }))
     expect(agent.steerTurn).not.toHaveBeenCalled()
     releaseFirstTurn!("turn-first")
     await Promise.all([firstTurn, queuedSameSession, unrelated, usage])
 
-    expect(responsiveness).toBe("responsive")
-    expect(usageResponsiveness).toBe("responsive")
     expect(agent.steerTurn).toHaveBeenCalledWith(
       "thread-first",
       "turn-first",

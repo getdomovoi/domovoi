@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
-import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions } from "./client"
+import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
+import type { ClientAdmission } from "./client-admission-policy"
 import { Deadline } from "./deadline"
 import { applyWorkspaceDelta } from "@getdomovoi/protocol"
 import { fleetListingOverflow } from "./fleet-overflow"
@@ -76,7 +77,10 @@ export const workspaceBudgets: DomovoiClientBudgets = {
 export const pairingBudgetMs = 60_000
 export const machineDialBudgetMs = 45_000
 
-export type WorkspaceEndpointResolver = () => Promise<{ url: string; token: string }>
+export type WorkspaceEndpointResolver = (deadline: Deadline) => Promise<DomovoiEndpoint>
+export type WorkspaceClientConnection = { state: "disabled" } | {
+  state: "client"; admission: Required<ClientAdmission>; resolveEndpoint: WorkspaceEndpointResolver
+}
 
 // A resolver, when given, is asked before every dial the client makes, so a
 // desktop attached to a daemon owner follows that owner across restarts. The
@@ -86,8 +90,12 @@ export function useWorkspace(
   kind: ClientKind,
   authToken?: string,
   resolveRpcEndpoint?: WorkspaceEndpointResolver,
+  connection?: WorkspaceClientConnection,
 ) {
-  const target = `${kind}:${url}`
+  const enabled = connection?.state !== "disabled"
+  const admission = connection?.state === "client" ? connection.admission : undefined
+  const resolver = connection?.state === "client" ? connection.resolveEndpoint : resolveRpcEndpoint
+  const target = `${kind}:${url}:${admission?.machineId ?? "home"}:${admission?.deviceId ?? ""}`
   const clientRef = useRef<DomovoiClient | null>(null)
   const emergencyStopClientRef = useRef<DomovoiClient | null>(null)
   const clientIdRef = useRef(crypto.randomUUID())
@@ -109,7 +117,7 @@ export function useWorkspace(
   // A withheld list is the daemon's verdict, not an empty fleet, and it is
   // held apart from `fleet` so no surface can read null as nothing paired.
   const [fleetOverflow, setFleetOverflow] = useState<FleetSnapshotOverflow | null>(null)
-  const snapshot = visibleWorkspaceSnapshot(workspace, target)
+  const snapshot = enabled ? visibleWorkspaceSnapshot(workspace, target) : null
   const updateSnapshotFrom = useCallback((client: DomovoiClient, next: WorkspaceSnapshot) => {
     setWorkspace((current) => applyConnectionSnapshot(
       clientRef.current,
@@ -127,11 +135,13 @@ export function useWorkspace(
         : current
     })
   }, [target])
-  const resolverRef = useRef(resolveRpcEndpoint)
+  const resolverRef = useRef(resolver)
   useEffect(() => {
-    resolverRef.current = resolveRpcEndpoint
-  }, [resolveRpcEndpoint])
-  const resolves = resolveRpcEndpoint !== undefined
+    resolverRef.current = resolver
+  }, [resolver])
+  const resolves = resolver !== undefined
+  const admissionMachineId = admission?.machineId
+  const admissionDeviceId = admission?.deviceId
 
   useEffect(() => {
     let active = true
@@ -147,12 +157,14 @@ export function useWorkspace(
     setFleetOverflow(null)
     setWorkspace({ target, snapshot: null })
     setEndpointUrl(url)
+    if (!enabled) return
     const client = new DomovoiClient(url, kind, {
       budgets: workspaceBudgets,
       ...(authToken ? { authToken } : {}),
       ...(resolves ? {
-        resolveEndpoint: () => resolverRef.current?.() ?? Promise.resolve({ url, token: authToken ?? "" }),
+        resolveEndpoint: (deadline) => resolverRef.current?.(deadline) ?? Promise.resolve({ url, token: authToken ?? "" }),
       } : {}),
+      ...(admissionMachineId && admissionDeviceId ? { admission: { machineId: admissionMachineId, deviceId: admissionDeviceId } } : {}),
       clientId: clientIdRef.current,
     })
     clientRef.current = client
@@ -250,7 +262,13 @@ export function useWorkspace(
       client.disconnect()
       clientRef.current = null
     }
-  }, [authToken, kind, resolves, target, updateDeltaFrom, updateSnapshotFrom, url])
+  }, [authToken, kind, resolves, target, updateDeltaFrom, updateSnapshotFrom, url, enabled, admissionMachineId, admissionDeviceId])
+
+  const fleetClientRoute = useCallback((params: RpcParams<"fleet.clientRoute">, options: DomovoiRequestOptions) => {
+    const client = clientRef.current
+    if (!client) return Promise.reject(new Error("Home daemon is not connected"))
+    return client.fleetClientRoute(params, options)
+  }, [])
 
   const resolveApproval = useCallback(
     async (
@@ -767,6 +785,7 @@ export function useWorkspace(
   }, [updateSnapshotFrom])
 
   return {
+    fleetClientRoute,
     activateSession,
     archiveSession,
     authorizeArtifact,

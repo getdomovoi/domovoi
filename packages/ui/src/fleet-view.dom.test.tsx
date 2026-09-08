@@ -12,6 +12,22 @@ import { remoteControlRefusal } from "./machine-selection.js"
 
 afterEach(cleanup)
 
+it("shows client authorization next to disabled remote controls and names its authority", async () => {
+  const user = userEvent.setup()
+  render(<TooltipProvider><FleetView connected entries={entries(local, studio)} fleetOverflow={null}
+    currentMachineId={local.id} currentSessionCount={2} onOpenSkills={() => {}}
+    onListDevices={async () => ({ devices: [] })} onRevokeDevice={vi.fn()} onRotateDevice={vi.fn()} onRenameDevice={vi.fn()}
+    onUseMachine={vi.fn()} onOpenMachineTerminal={vi.fn()} clientKind="desktop" onAuthorizeClient={vi.fn()}
+  /></TooltipProvider>)
+  expect(screen.getByRole("button", { name: "Use studio" }).hasAttribute("disabled")).toBe(true)
+  await user.click(screen.getByRole("button", { name: "Authorize this client for studio" }))
+  const dialog = screen.getByRole("dialog")
+  expect(within(dialog).getByText('domovoid pair --client desktop --label "My desktop"')).toBeTruthy()
+  expect(dialog.textContent).toContain("session sends, approvals and terminals")
+  expect(dialog.textContent).toContain("Devices list")
+  expect(within(dialog).getByLabelText("Client credential").getAttribute("type")).toBe("password")
+})
+
 const local: FleetMachine = {
   id: `machine-${"a".repeat(32)}`,
   label: "workshop",

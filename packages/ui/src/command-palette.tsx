@@ -114,6 +114,7 @@ export function buildWorkspaceCommands({
   setSurface,
   sessions,
   entries,
+  admittedMachines,
   skills,
   activateSession,
   selectMachine,
@@ -133,6 +134,7 @@ export function buildWorkspaceCommands({
   setSurface: (surface: WorkspaceSurface) => void
   sessions?: readonly WorkspaceSnapshot["sessions"][number][] | undefined
   entries?: readonly FleetEntry[] | null | undefined
+  admittedMachines?: ReadonlySet<string> | undefined
   skills?: readonly { id: string; name: string; scope: string }[] | undefined
   activateSession?: ((sessionId: string) => void) | undefined
   selectMachine?: ((machineId: string) => void) | undefined
@@ -168,7 +170,7 @@ export function buildWorkspaceCommands({
     // Only a machine entry can be selected. A pending or unenrolled entry has
     // nothing to attach to, so the palette does not list it.
     ...(selectMachine ? fleetMachines(entries ?? []).map((machine) => {
-      const selection = machineAttachment(machine)
+      const selection = machineAttachment(machine, admittedMachines?.has(machine.id))
       return {
         id: `machine-${machine.id}`,
         label: machine.label,

@@ -82,12 +82,27 @@ export const pairedDeviceSchema = z.object({
 export const devicePairParamsSchema = z.object({
   label: deviceLabelSchema,
   client: clientKindSchema,
+  // client remains the authenticated issuer. Only local root can mint this
+  // separate kind-bound credential. Omission retains the existing behavior.
+  targetClient: clientKindSchema.optional(),
 }).strict()
 
 export const devicePairResultSchema = z.object({
   device: pairedDeviceSchema,
   token: deviceCredentialSchema,
 }).strict()
+
+// The server derives this receipt from the authenticated socket, not a caller
+// id, label or token in the request. A root bearer is not a paired client.
+export const deviceCurrentResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("daemon"), machineId: machineIdSchema }).strict(),
+  z.object({
+    kind: z.literal("client"), machineId: machineIdSchema,
+    deviceId: deviceIdSchema, client: clientKindSchema,
+  }).strict(),
+])
+
+export type DeviceCurrent = z.infer<typeof deviceCurrentResultSchema>
 
 export const deviceRevokeParamsSchema = z.object({
   deviceId: deviceIdSchema,

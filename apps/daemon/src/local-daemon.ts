@@ -78,7 +78,10 @@ async function attach(
     const socket = new WebSocket(record.url, {
       headers: { "x-domovoi-owner-nonce": nonce },
       followRedirects: false, maxPayload: 2 * 1024 * 1024,
-      ...(ca ? { ca } : {}),
+      // The owner publishes its server chain, which normally omits the root.
+      // Trust the configured chain as an anchor, including an intermediate;
+      // certificate dates, hostname checks and the owner proof still apply.
+      ...(ca ? { ca, allowPartialTrustChain: true } : {}),
     })
     // A lifetime notification, not a reconnect attempt or operation timeout.
     // It stays registered after discovery settles and never rejects.

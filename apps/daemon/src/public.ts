@@ -7,6 +7,7 @@ export {
 } from "./production-daemon.js"
 
 export type { DaemonErrorEntry, DaemonErrorSink } from "./server.js"
+export { verifyLocalFleetClientRoute } from "./local-client-route.js"
 export {
   acquireLocalDaemon,
   type AcquireLocalDaemonOptions,

@@ -33,6 +33,8 @@ export function workspaceWindowDecorationLabel(decoration: WorkspaceWindowDecora
 }
 
 export type DesktopWindowBridge = {
+  fleetRoute?(machineId: string, budgetMs: number): Promise<unknown>
+  forgetFleetRoute?(machineId: string): Promise<unknown>
   platform: "darwin" | "linux" | "win32"
   getRpcEndpoint(): Promise<{ url: string; token: string }>
   captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{

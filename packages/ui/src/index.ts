@@ -18,6 +18,7 @@ export {
   type DomovoiRequestOptions,
 } from "./client"
 export { connectMachineClient, type ConnectedMachineClient } from "./machine-client"
+export { ClientAdmissionError, type ClientAdmission, type ClientAdmissionRefusal } from "./client-admission-policy"
 export {
   dialTransport,
   TransportDialTimeoutError,

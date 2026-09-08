@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -141,12 +141,6 @@ import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
 import { machineAttachment } from "./machine-selection.js"
-import {
-  beganMachineSwitch,
-  failedMachineSwitch,
-  homeMachineSwitch,
-  type MachineSwitchState,
-} from "./machine-switch-state.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
 import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
@@ -156,6 +150,11 @@ import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { ProjectSwitchConfirmationError } from "./client"
 import { useWorkspace } from "./use-workspace"
+import { FleetAccessSession } from "./fleet-access-session"
+import { ClientAdmissionError } from "./client-admission-policy"
+import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
+import { Deadline } from "./deadline"
+import { collectFleetInventories } from "./fleet-inventories"
 import { DomovoiMark } from "./domovoi-mark"
 import { annotationsForActiveSession } from "./annotations"
 import { annotationCaptureUpload } from "./annotation-capture"
@@ -1429,6 +1428,8 @@ export function Thread({
   connected,
   emergencyStopPending = false,
   fleet,
+  transferFleet,
+  admittedMachines,
   currentMachineId,
   onResolve,
   onSetRuntime,
@@ -1457,6 +1458,8 @@ export function Thread({
   connected: boolean
   emergencyStopPending?: boolean | undefined
   fleet?: FleetEntry[] | undefined
+  transferFleet?: FleetEntry[] | undefined
+  admittedMachines?: ReadonlySet<string> | undefined
   currentMachineId?: string | undefined
   onResolve: (
     approvalId: string,
@@ -1546,7 +1549,7 @@ export function Thread({
   }
 
   const entries = fleet ?? [localFleetEntry(snapshot)]
-  const machines = fleetMachines(entries)
+  const machines = fleetMachines(transferFleet ?? entries)
   const sourceMachine = machines.find(
     (machine) => machine.id === (currentMachineId ?? snapshot.machine.id),
   ) ?? localMachineEntry(snapshot)
@@ -1891,6 +1894,8 @@ export function Thread({
               ) : null}
               <MachineSwitcher
                 entries={entries}
+                transferEntries={transferFleet}
+                admittedMachines={admittedMachines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
                 currentSessionCount={activeSessionCount(snapshot)}
                 onPairMachine={onPairMachine ? () => setPairingMachine(true) : undefined}
@@ -2500,11 +2505,13 @@ export function ArtifactDock({
   onLoadSessionEvidence,
   onRevertSessionFile,
   captureAnnotation,
+  previewRefusal,
 }: {
   snapshot: WorkspaceSnapshot
   onCollapse: () => void
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
+  previewRefusal?: string | undefined
   usage?: SessionUsage | null | undefined
   onEditPlan?: ((edit: {
     basedOnStructureRevision: number
@@ -2644,7 +2651,7 @@ export function ArtifactDock({
     setPreviewUrl(undefined)
     setPreviewError("")
     const [target] = artifactAuthorizationTargets(previewAuthorizationKey)
-    if (!target || !connected) return () => { active = false }
+    if (!target || !connected || previewRefusal) return () => { active = false }
     void authorizeArtifact({ sessionId: target.sessionId, artifactId: target.id, revision: target.revision, purpose: "preview", bridgeChannel, parentOrigin: window.location.origin }).then(
       (access) => {
         if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access))
@@ -2658,13 +2665,13 @@ export function ArtifactDock({
       },
     )
     return () => { active = false }
-  }, [authorizeArtifact, bridgeChannel, connected, previewAuthorizationKey, rpcUrl])
+  }, [authorizeArtifact, bridgeChannel, connected, previewAuthorizationKey, rpcUrl, previewRefusal])
 
   useEffect(() => {
     let active = true
     setComparisonStageUrls(new Map())
     const targets = artifactAuthorizationTargets(comparisonAuthorizationKey)
-    if (!targets.length || !connected) return () => { active = false }
+    if (!targets.length || !connected || previewRefusal) return () => { active = false }
     const authorizeComparisonStages = async () => {
       const entries: Array<readonly [string, string]> = []
       await Promise.all(targets.map(async (target) => {
@@ -2684,7 +2691,7 @@ export function ArtifactDock({
     }
     void authorizeComparisonStages()
     return () => { active = false }
-  }, [authorizeArtifact, comparisonAuthorizationKey, connected, rpcUrl])
+  }, [authorizeArtifact, comparisonAuthorizationKey, connected, rpcUrl, previewRefusal])
 
   const postPickerState = useCallback((active: boolean) => {
     const message: PreviewBridgePickerMessage = {
@@ -2888,7 +2895,7 @@ export function ArtifactDock({
           <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
         </div>
         <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
-          {preview ? (
+          {previewRefusal ? <Alert><AlertTitle>Remote preview unavailable</AlertTitle><AlertDescription>{previewRefusal}</AlertDescription></Alert> : preview ? (
             <div className="flex min-h-full flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
               {previewVariants.length > 1 ? (
                 <div className="border-b p-2">
@@ -3318,10 +3325,32 @@ function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandB
 }
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential }: WorkspaceShellProps) {
-  const [machineSwitch, setMachineSwitch] = useState<MachineSwitchState>(homeMachineSwitch)
-  const attached = machineSwitch.state === "attached" ? machineSwitch.target : null
-  const activeRpcUrl = attached?.endpoint ?? rpcUrl
-  const activeRpcToken = attached?.credential ?? rpcToken
+  const [attached, setAttached] = useState<{ machineId: string } | null>(null)
+  const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint)
+  const homeMachineId = home.snapshot?.machine.id ?? null
+  const accessScope = JSON.stringify([homeMachineId, clientKind, rpcUrl, rpcToken])
+  const accessInputs = useRef({ scope: accessScope, homeUrl: home.endpointUrl, kind: clientKind, route: home.fleetClientRoute,
+    ...(windowBridge ? { bridge: windowBridge } : {}) })
+  accessInputs.current = { scope: accessScope, homeUrl: home.endpointUrl, kind: clientKind, route: home.fleetClientRoute,
+    ...(windowBridge ? { bridge: windowBridge } : {}) }
+  const accessSession = useMemo(() => new FleetAccessSession(() => {
+    const { scope, ...inputs } = accessInputs.current
+    if (scope !== accessScope) throw new ClientAdmissionError("not-enrolled")
+    return inputs
+  }), [accessScope])
+  const clientAccess = useSyncExternalStore(accessSession.subscribe, accessSession.snapshot, accessSession.snapshot)
+  const admittedMachines = useMemo(() => new Set(Object.entries(clientAccess).filter(([, access]) => access.state === "admitted").map(([id]) => id)), [clientAccess])
+  useEffect(() => () => accessSession.clear(), [accessSession])
+  useEffect(() => {
+    if (home.fleet) accessSession.retain(fleetMachines(home.fleet.entries))
+  }, [home.fleet, accessSession])
+  const access = attached ? accessSession.access(attached.machineId) : undefined
+  const remote = useWorkspace(rpcUrl, clientKind, undefined, undefined,
+    access ? { state: "client", admission: access,
+      resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
+    } : { state: "disabled" })
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, revokeDevice, rotateDevice, renameDevice } = home
+  const homeSkillInventory = home.getSkillInventory
   const {
     activateSession,
     archiveSession,
@@ -3340,10 +3369,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     forkSession,
     getSkillInventory,
     createTerminal,
-    fleet,
-    fleetOverflow,
-    forgetMachine,
-    listDevices,
     listModels,
     listProviderSecrets,
     listSkills,
@@ -3351,7 +3376,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     loadSessionHistory,
     loadSessionEvidence,
     openProject,
-    pairMachine,
     pauseSession,
     queryAudit,
     readSkill,
@@ -3365,9 +3389,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     resizeTerminal,
     resolveApproval,
     replyToAnnotation,
-    revokeDevice,
-    rotateDevice,
-    renameDevice,
     reviewSkill,
     previewSkillInstall,
     installSkill,
@@ -3387,7 +3408,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     authenticationRequired,
     protocolError,
     reconnecting,
-  } = useWorkspace(activeRpcUrl, clientKind, activeRpcToken, attached ? undefined : resolveRpcEndpoint)
+  } = attached ? remote : home
   const terminalControls = useMemo<TerminalControls>(() => ({
     clientId: terminalClientId,
     create: createTerminal,
@@ -3397,30 +3418,32 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     close: closeTerminal,
     subscribe: subscribeTerminal,
   }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
-  // The machine reached through the credential this client started with, which
-  // is where selecting it again returns to.
-  const [homeMachineId, setHomeMachineId] = useState<string | null>(null)
+  // Home remains connected while a remote workspace is in use. Its registry,
+  // enrollment and client-route verifier never come from the selected target.
   useEffect(() => {
-    if (machineSwitch.state !== "home" || !snapshot) return
-    setHomeMachineId(snapshot.machine.id)
-  }, [machineSwitch.state, snapshot])
+    if (attached && remote.authenticationRequired) accessSession.refuse(attached.machineId, remote.authenticationRequired)
+  }, [attached, remote.authenticationRequired, accessSession])
 
-  // Attaching to another machine is a client dial with a client credential,
-  // and nothing issues one for a remote machine yet. The switch records the
-  // refusal instead of dialing, so the composer reports the same sentence the
-  // menu already shows rather than a transport error.
   const switchMachine = useCallback((machineId: string) => {
     if (machineId === homeMachineId) {
-      setMachineSwitch(homeMachineSwitch)
+      setAttached(null)
       return
     }
     const machine = fleetMachines(fleet?.entries ?? []).find((candidate) => candidate.id === machineId)
     if (!machine) return
-    const attachment = machineAttachment(machine)
-    if (attachment.selectable) return
-    setMachineSwitch((current) => beganMachineSwitch(current, machineId, homeMachineId ?? undefined))
-    setMachineSwitch((current) => failedMachineSwitch(current, attachment.reason, machineId))
-  }, [fleet, homeMachineId])
+    const selected = accessSession.access(machineId)
+    if (!home.connected || !selected || !machineAttachment(machine, true).selectable) return
+    setAttached({ machineId })
+  }, [fleet, homeMachineId, accessSession, home.connected])
+  const removeClientAccess = (machineId: string) => {
+    accessSession.remove(machineId)
+    if (attached?.machineId === machineId) setAttached(null)
+    const forgetRoute = windowBridge?.forgetFleetRoute
+    if (forgetRoute) {
+      const deadline = Deadline.start(5_000)
+      void withinFleetDeadline(deadline, () => forgetRoute(machineId)).catch(() => {}).finally(() => deadline.clear())
+    }
+  }
 
   const shellRef = useRef<HTMLDivElement>(null)
   const sidebarCollapseButtonRef = useRef<HTMLButtonElement>(null)
@@ -3520,6 +3543,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [providerSecrets, setProviderSecrets] = useState<ProviderSecretStatus[]>([])
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillInventories, setSkillInventories] = useState<SkillInventorySource[]>([])
+  const [localSkillInventory, setLocalSkillInventory] = useState<SkillInventorySource | null>(null)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
@@ -3662,13 +3686,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
   const requestOpenProject = () => {
     setWorkspaceError("")
-    if (windowBridge) {
+    if (windowBridge && !attached) {
       void openProjectFromDesktop(windowBridge, openProjectSafely).catch((cause: unknown) => {
         setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open the selected project")
       })
       return
     }
-    if (!platform) {
+    if (!platform || attached) {
       setLauncherMode("project")
       return
     }
@@ -3684,7 +3708,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
   }
   const openActiveWorkspaceInEditor = () => {
-    if (!windowBridge || !activeWorkspacePath) return
+    if (!windowBridge || !activeWorkspacePath || attached) return
     setWorkspaceError("")
     void openDesktopPath(windowBridge, activeWorkspacePath, externalEditor).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
@@ -3716,7 +3740,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setCommandPaletteOpen(true)
   }
   const workspaceCommands = buildWorkspaceCommands({
-    ...((windowBridge || platform) && activeWorkspacePath ? {
+    ...((windowBridge || platform) && activeWorkspacePath && !attached ? {
       activeWorkspacePath,
       copyWorktreePath: copyActiveWorkspacePath,
     } : {}),
@@ -3734,6 +3758,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setSurface,
     sessions: snapshot?.sessions ?? [],
     entries: fleet?.entries,
+    admittedMachines,
     skills,
     activateSession: (sessionId) => {
       setSurface("workspace")
@@ -3911,6 +3936,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useEffect(() => {
     if (!skillsWanted) return
     if (!connected) {
+      setLocalSkillInventory(null)
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{
         state: "unreachable",
@@ -3928,10 +3954,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       ([discovered, inventory]) => {
         if (!active) return
         setSkills(discovered)
-        // Only this machine answers. Asking a fleet member for its inventory is
-        // a client dial with a client credential, which no remote machine has
-        // until client admission lands, so the comparison covers this machine
-        // rather than guessing at the others.
+        setLocalSkillInventory({ state: "available", inventory })
         setSkillInventories([{ state: "available", inventory }])
       },
       (cause: unknown) => {
@@ -3961,6 +3984,27 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   ])
 
   useEffect(() => {
+    if (surface !== "skills" || !connected || localSkillInventory?.state !== "available") return
+    const refresh = new AbortController()
+    const inventory = localSkillInventory.inventory
+    // Comparison follows home enrollment. Each remote reader proves its own
+    // client binding; no read can fall back to the machine credential store.
+    void collectFleetInventories({
+      local: inventory,
+      fleet: fleetMachines(fleet?.entries ?? []).map((machine) => ({ ...machine, self: machine.id === inventory.machine.id })),
+      signal: refresh.signal,
+      open: async (machine, signal) => {
+        if (machine.id !== homeMachineId) return accessSession.inventory(machine.id, signal)
+        const deadline = Deadline.start(30_000)
+        return { inventory: () => homeSkillInventory({ signal, deadline }), close: () => deadline.clear() }
+      },
+    }).then((inventories) => {
+      if (!refresh.signal.aborted) setSkillInventories(inventories)
+    }, () => {})
+    return () => refresh.abort()
+  }, [surface, connected, localSkillInventory, fleet, homeMachineId, homeSkillInventory, accessSession, admittedMachines])
+
+  useEffect(() => {
     const shell = shellRef.current
     if (!shell) return
     const observer = new ResizeObserver(([entry]) => {
@@ -3983,16 +4027,20 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           protocolError={protocolError}
           connectionError={connectionError}
           machineName={snapshot?.machine.name}
-          onChangeCredential={onChangeCredential}
+          onChangeCredential={attached ? undefined : onChangeCredential}
           onReconnect={reconnectDaemon}
         />
+        {attached ? <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2 text-sm" role="status">
+          <span>{!access ? "Client access is no longer verified for" : connected ? "Using" : "Connecting to"} <span className="font-machine">{fleetMachines(fleet?.entries ?? []).find((machine) => machine.id === attached.machineId)?.label ?? attached.machineId}</span>{access ? " with this app's client credential." : ". Return home and authorize this client again."}</span>
+          <Button variant="outline" size="sm" onClick={() => setAttached(null)}>Return to home daemon</Button>
+        </div> : null}
         {snapshot ? <div className="flex min-h-0 flex-1">
           <WorkspaceRail surface={surface} dockTab={dockTab} machineName={snapshot.machine.name} onSelectSurface={setSurface} onSelectDockTab={openDockTab} />
           {surface === "providers" ? (
           <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
-            {...(localDaemon ? { localDaemon } : {})}
+            {...(localDaemon && !attached ? { localDaemon } : {})}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {
@@ -4053,9 +4101,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : surface === "fleet" ? (
           <FleetView
-            connected={connected}
-            entries={fleet?.entries ?? [localFleetEntry(snapshot)]}
+            connected={home.connected}
+            entries={fleet?.entries ?? (home.snapshot ? [localFleetEntry(home.snapshot)] : [])}
             fleetOverflow={fleetOverflow}
+            clientKind={clientKind}
+            clientAccess={clientAccess}
+            onAuthorizeClient={(machineId, credential, signal) => accessSession.authorize(machineId, credential, signal)}
+            onRemoveClientAccess={removeClientAccess}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
             currentSessionCount={activeSessionCount(snapshot)}
             onOpenSkills={() => setSurface("skills")}
@@ -4064,7 +4116,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onRotateDevice={rotateDevice}
             onRenameDevice={renameDevice}
             onPairMachine={pairMachine}
-            onForgetMachine={(machineId: string) => forgetMachine({ machineId })}
+            onForgetMachine={async (machineId: string) => {
+              const result = await forgetMachine({ machineId })
+              if (result.outcome === "forgotten") removeClientAccess(machineId)
+              return result
+            }}
             onUseMachine={(machineId: string) => {
               switchMachine(machineId)
               setSurface("workspace")
@@ -4099,8 +4155,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet?.entries ?? null} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={pairMachine} fleet={fleet?.entries} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
             </ResizablePanelGroup>
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>

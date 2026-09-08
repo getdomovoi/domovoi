@@ -6,6 +6,7 @@ import { Deadline } from "./deadline.js"
 import { connectMachineClient } from "./machine-client.js"
 import { completeHandshake, installFakeWebSocket } from "./test-support/fake-websocket.js"
 import { TransportDialError } from "./transport-dial.js"
+import { ClientAdmissionError } from "./client-admission-policy.js"
 
 const loopback: TransportCandidate = {
   kind: "local",
@@ -55,6 +56,21 @@ describe("connectMachineClient", () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it("does not present a rejected client credential to a fallback route", async () => {
+    const { createClient } = fakeClients()
+    const disconnect = vi.fn()
+    createClient.mockImplementationOnce((url) => ({ url, connect: async () => {
+      throw new ClientAdmissionError("client-credential-required")
+    }, disconnect }) as never)
+    const deadline = Deadline.start(1_000)
+    try {
+      await expect(connectMachineClient({ candidates: [lan, tailnet], credential, kind: "desktop", budgets, deadline,
+        createClient: createClient as never })).rejects.toMatchObject({ reason: "client-credential-required" })
+      expect(createClient).toHaveBeenCalledTimes(1)
+      expect(disconnect).toHaveBeenCalledOnce()
+    } finally { deadline.clear() }
   })
 
   it("gives each route its share without renewing the overall deadline", async () => {

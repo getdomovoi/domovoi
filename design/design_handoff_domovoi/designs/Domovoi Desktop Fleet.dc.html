@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: var(--primary); }
+  input::placeholder { color: var(--faint); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); }
+  ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%); border-radius: 11px; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 55%, var(--border)) 0%, var(--border) 100%); background-clip: content-box; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  @keyframes dvPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+  @keyframes dvPopIn { from { opacity: 0; transform: var(--dv-tip-from); } to { opacity: 1; transform: var(--dv-tip-to); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .78);
+    --shadow-md: oklch(0 0 0 / .4); --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --success-foreground: oklch(0.17 0.03 158);
+    --warning: oklch(0.79 0.13 62); --warning-foreground: oklch(0.2 0.04 62);
+    --destructive: oklch(0.63 0.19 25); --destructive-foreground: oklch(0.98 0.01 25);
+    --info: oklch(0.72 0.1 240); --info-foreground: oklch(0.17 0.03 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25);
+    --danger-dim: oklch(0.78 0.06 25); --danger-on: oklch(0.24 0.07 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-md: oklch(0.2 0.01 285 / .1); --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --success-foreground: oklch(0.99 0.01 158);
+    --warning: oklch(0.6 0.13 62); --warning-foreground: oklch(0.99 0.01 62);
+    --destructive: oklch(0.55 0.2 25); --destructive-foreground: oklch(0.99 0.01 25);
+    --info: oklch(0.52 0.14 240); --info-foreground: oklch(0.99 0.01 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25);
+    --danger-dim: oklch(0.54 0.14 25); --danger-on: oklch(0.99 0.01 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+  }
+</style>
+</helmet>
+
+<!--
+  Domovoi Desktop Fleet. Catch-up pass over two built settings surfaces:
+  packages/ui/src/fleet-view.tsx and packages/ui/src/audit-log-view.tsx.
+  The audit log was never designed at all; the Fleet page in the build is much
+  larger than the one in Domovoi Desktop.dc.html.
+
+  Every user-facing string here is lifted from the build. The sources for the
+  strings that do not live in the two view files:
+    - machine-selection.ts       remoteControlRefusal, on every non-self card
+    - fleet-entries.ts           pendingOperationWord, pendingOperationNote,
+                                 unenrolledNote, shortMachineId
+    - fleet-overflow.ts          fleetOverflowNotice title, detail, remedy
+    - rename-device.ts           renamedElsewhereNotice
+    - forget-machine.ts          forgetRefusalMessage (not drawn here)
+
+  Machine names, device labels, paths, ids, timestamps and audit detail bodies
+  are sample data, not UI copy.
+
+  ICONS: the build imports lucide-react. This file uses the project's Unicode
+  stand-ins, marked as such in Domovoi Foundations.dc.html. The lucide name is
+  named in a comment wherever a glyph stands in for one.
+-->
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --popover: var(--card); --input: var(--border); --ring: var(--primary); min-height: 100vh; padding: 40px 44px 72px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="display: flex; align-items: flex-end; gap: 22px; flex-wrap: wrap; margin-bottom: 34px;">
+    <div>
+      <div style="font-size: 11px; letter-spacing: .16em; color: var(--primary);">DOMOVOI · DESKTOP FLEET AND AUDIT LOG</div>
+      <div style="font-size: 30px; font-weight: 600; letter-spacing: -.02em; margin-top: 10px;">The Fleet page as the build has it, and the audit log nobody drew</div>
+      <div style="font-size: 13.5px; line-height: 1.7; color: var(--muted-foreground); margin-top: 10px; max-width: 780px; text-wrap: pretty;">Both surfaces are settings pages: a 236px navigation aside, then a lane centred at 900px. Full pages are drawn at 1200px, which is the window width where the lane reaches its maximum. Panels that only ever appear inside the lane are drawn at 836px, the lane's content width. Dialogs are drawn at 512px.</div>
+    </div>
+    <span style="flex: 1;"></span>
+    <div style="display: flex; flex-direction: column; gap: 7px;">
+      <a href="Domovoi Desktop.dc.html" style="display: flex; align-items: center; gap: 9px; padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">01</span>Desktop app</a>
+      <a href="Domovoi Desktop Dock.dc.html" style="display: flex; align-items: center; gap: 9px; padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">02</span>Desktop dock</a>
+      <a href="Domovoi Foundations.dc.html" style="display: flex; align-items: center; gap: 9px; padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">03</span>Foundations</a>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 11px; padding: 13px 15px; margin-bottom: 34px; max-width: 1200px; background: var(--info-bg); border: 1px solid var(--info-border); border-radius: var(--radius);">
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--info-fg); flex: 0 0 auto;">NOTE</span>
+    <div style="font-size: 12px; line-height: 1.65; color: var(--info-dim); text-wrap: pretty;">Use and Terminal are disabled on every machine that is not this one, and every one of those cards carries the sentence from <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">machine-selection.ts</span>: "Controlling that machine from here needs its own device credential, which is not part of this release". That is the real state of the build today, not a mock of a loading state. A remote machine's health does not change it; the refusal is the same on an online machine and an unreachable one.</div>
+  </div>
+
+  <sc-if value="{{ tipText }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ tipStyle }}">{{ tipText }}<span style="{{ tipArrowStyle }}"></span></div>
+  </sc-if>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">01 · FLEET PAGE · PAIRED DEVICES TABLE</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">fleet-view.tsx · FleetView</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 44px;">
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 1200px; flex: 0 0 auto; display: flex; background: var(--background); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+
+        <div style="flex: 0 0 236px; width: 236px; display: flex; flex-direction: column; gap: 2px; padding: 10px; background: var(--sidebar); border-right: 1px solid var(--border);">
+          <div style="padding: 8px; font-size: 16px; font-weight: 600;">Settings</div>
+          <div style="display: flex; align-items: center; height: 32px; padding: 0 9px; border-radius: calc(var(--radius) - 3px); font-size: 12.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Skills</div>
+          <div style="display: flex; align-items: center; height: 32px; padding: 0 9px; border-radius: calc(var(--radius) - 3px); font-size: 12.5px; font-weight: 500; background: var(--accent); border: 1px solid var(--border); color: var(--foreground);">Fleet</div>
+        </div>
+
+        <div style="flex: 1; min-width: 0; display: flex; justify-content: center; padding: 28px 32px 36px;">
+          <div style="width: 100%; max-width: 836px; display: flex; flex-direction: column;">
+
+            <div style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
+              <div>
+                <div style="font-size: 17px; font-weight: 600;">Fleet</div>
+                <div style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 6px; max-width: 62ch; text-wrap: pretty;">Machines this daemon can reach, and the devices paired with it. Every connection is direct between your own machines.</div>
+              </div>
+              <!-- lucide PlusIcon, data-icon="inline-start" -->
+              <div style="display: flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 7px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 12px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);"><span style="font-size: 12px; color: var(--muted-foreground);">＋</span>Pair a machine</div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 20px;">
+              <div style="font-size: 13px; font-weight: 600;">Machines</div>
+
+              <sc-for list="{{ machines }}" as="m" hint-placeholder-count="5">
+                <div style="padding: 14px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                    <span style="font-size: 13px; font-weight: 600; color: var(--strong);">{{ m.label }}</span>
+                    <span style="{{ m.healthStyle }}">{{ m.health }}</span>
+                    <sc-if value="{{ m.self }}" hint-placeholder-val="{{ false }}"><span style="padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; font-size: 10px; color: var(--muted-foreground);">This machine</span></sc-if>
+                    <sc-if value="{{ m.update }}" hint-placeholder-val="{{ false }}"><span title="{{ m.updateTitle }}" style="padding: 1px 7px; border: 1px solid var(--warn-border); border-radius: 999px; background: color-mix(in oklab, var(--warning) 16%, transparent); font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: .06em; color: var(--warning);">{{ m.update }}</span></sc-if>
+                    <span style="flex: 1;"></span>
+                    <span style="display: flex; align-items: center; gap: 6px; position: relative;">
+                      <sc-if value="{{ m.inUse }}" hint-placeholder-val="{{ false }}"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">In use</span></sc-if>
+                      <sc-if value="{{ m.showUse }}" hint-placeholder-val="{{ true }}"><span style="{{ m.controlStyle }}">Use</span></sc-if>
+                      <sc-if value="{{ m.showTerminal }}" hint-placeholder-val="{{ true }}"><span style="{{ m.controlStyle }}">Terminal</span></sc-if>
+                      <sc-if value="{{ m.showForget }}" hint-placeholder-val="{{ true }}"><span onMouseEnter="{{ m.showTip }}" onMouseLeave="{{ hideTip }}" style="padding: 5px 7px; border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--faint); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--destructive) 18%, transparent); color: var(--destructive);">Forget</span></sc-if>
+                    </span>
+                  </div>
+                  <sc-if value="{{ m.refusal }}" hint-placeholder-val="{{ true }}">
+                    <div style="margin-top: 6px; max-width: 68ch; font-size: 11px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ m.refusal }}</div>
+                  </sc-if>
+                  <sc-if value="{{ m.note }}" hint-placeholder-val="{{ false }}">
+                    <div style="margin-top: 6px; max-width: 68ch; font-size: 11px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ m.note }}</div>
+                  </sc-if>
+                  <div style="margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ m.meta }}</div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
+                    <sc-if value="{{ m.capsEmpty }}" hint-placeholder-val="{{ false }}"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">No capability reported</span></sc-if>
+                    <sc-for list="{{ m.caps }}" as="c" hint-placeholder-count="3">
+                      <span style="padding: 1px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground);">{{ c }}</span>
+                    </sc-for>
+                  </div>
+                  <div style="margin-top: 12px; font-size: 11px; font-weight: 600;">Transports</div>
+                  <sc-if value="{{ m.transportsEmpty }}" hint-placeholder-val="{{ false }}"><div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">No usable transport advertised</div></sc-if>
+                  <div style="display: flex; flex-direction: column; gap: 2px; margin-top: 4px; padding-left: 16px;">
+                    <sc-for list="{{ m.transports }}" as="t" hint-placeholder-count="2">
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint); list-style: decimal;">{{ t }}</div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+
+            <div style="margin-top: 28px;">
+              <div style="font-size: 13.5px; font-weight: 500;">Paired devices</div>
+              <div style="margin-top: 6px; max-width: 620px; font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">Every credential this machine accepts, and what holds it. A revoked credential cannot reconnect. Rotating issues a new one and retires the old one.</div>
+
+              <table style="width: 100%; border-collapse: collapse; margin-top: 16px;">
+                <thead>
+                  <tr>
+                    <th style="width: 14%; border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Kind</th>
+                    <th style="border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Device</th>
+                    <th style="width: 11%; border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Paired</th>
+                    <th style="width: 14%; border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Last seen</th>
+                    <th style="width: 22%; border-bottom: 1px solid var(--border); padding: 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <sc-for list="{{ devices }}" as="d" hint-placeholder-count="8">
+                    <tr>
+                      <td style="{{ d.kindCellStyle }}">
+                        <!-- lucide MonitorIcon / SmartphoneIcon / TabletIcon / GlobeIcon / TerminalIcon / ServerIcon / UnplugIcon -->
+                        <span style="display: flex; align-items: center; gap: 6px; line-height: 1;">
+                          <span style="font-size: 12px; color: var(--muted-foreground);">{{ d.glyph }}</span>
+                          <span style="font-size: 12px; font-weight: 500; color: var(--foreground);">{{ d.kind }}</span>
+                        </span>
+                        <span style="{{ d.subStyle }}">{{ d.sub }}</span>
+                      </td>
+                      <td style="border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; text-align: left; vertical-align: top;">
+                        <sc-if value="{{ d.editing }}" hint-placeholder-val="{{ false }}">
+                          <span style="display: flex; align-items: center; gap: 6px; height: 28px; max-width: 40ch; padding-right: 4px; background: var(--background); border: 1px solid var(--input); border-radius: calc(var(--radius) - 3px);">
+                            <input value="{{ draft }}" onChange="{{ onDraft }}" maxlength="48" style="flex: 1; min-width: 0; height: 26px; padding: 0 8px; background: transparent; border: 0; outline: none; font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12.5px; font-weight: 500; color: var(--strong);" />
+                            <span onClick="{{ d.save }}" style="display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; background: var(--primary); font-size: 10.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;">Save</span>
+                            <span onClick="{{ d.cancel }}" style="display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; font-size: 10.5px; font-weight: 500; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Cancel</span>
+                          </span>
+                        </sc-if>
+                        <sc-if value="{{ d.resting }}" hint-placeholder-val="{{ true }}">
+                          <span style="display: flex; align-items: center; gap: 8px; height: 28px;">
+                            <span style="{{ d.labelStyle }}">{{ d.label }}</span>
+                            <sc-if value="{{ d.undoable }}" hint-placeholder-val="{{ false }}"><span onClick="{{ d.undo }}" style="padding: 5px 7px; border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--faint); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Undo</span></sc-if>
+                            <sc-if value="{{ d.renameable }}" hint-placeholder-val="{{ true }}"><span onClick="{{ d.rename }}" style="padding: 5px 7px; border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--faint); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Rename</span></sc-if>
+                          </span>
+                        </sc-if>
+                        <sc-if value="{{ d.revokedChip }}" hint-placeholder-val="{{ false }}">
+                          <span style="display: block; margin-top: 8px;"><span style="display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 4px; background: color-mix(in oklab, var(--destructive) 16%, transparent); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--destructive);">Revoked</span></span>
+                        </sc-if>
+                        <sc-if value="{{ d.upgradeChip }}" hint-placeholder-val="{{ false }}">
+                          <span style="display: flex; align-items: center; gap: 10px; margin-top: 8px; position: relative;">
+                            <span onMouseEnter="{{ d.showUpgradeTip }}" onMouseLeave="{{ hideTip }}" style="display: inline-flex; align-items: center; flex: 0 0 auto; padding: 2px 7px; border-radius: 4px; background: color-mix(in oklab, var(--warning) 16%, transparent); font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--warning); cursor: default;">Revoked by upgrade</span>
+                          </span>
+                        </sc-if>
+                      </td>
+                      <td style="border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; vertical-align: top; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted-foreground);">{{ d.paired }}</td>
+                      <td style="border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; vertical-align: top; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted-foreground);">{{ d.lastSeen }}</td>
+                      <td style="border-bottom: 1px solid var(--border); padding: 10px 0; vertical-align: top;">
+                        <div style="display: flex; align-items: center; gap: 8px; position: relative;">
+                          <span style="{{ d.rotateStyle }}">Rotate</span>
+                          <span style="flex: 1;"></span>
+                          <span onMouseEnter="{{ d.showTip }}" onMouseLeave="{{ hideTip }}" style="{{ d.revokeStyle }}">Revoke</span>
+                        </div>
+                      </td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+        </div>
+      </div>
+      <div style="width: 1200px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Fleet, populated. Five machines, one of them this one; then every device kind the protocol binds. Rename, Save, Cancel and Undo are live. Hover Forget on a remote machine, Revoke on any row that is not revoked, or the Revoked by upgrade chip: the tooltip anchors to that control on the side the build asks for, left for the two actions and right for the chip. A machine credential and a person's device say different things.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 900px; padding: 24px 32px; background: var(--background); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="font-size: 13.5px; font-weight: 500;">Paired devices</div>
+          <div style="margin-top: 6px; max-width: 620px; font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground);">Every credential this machine accepts, and what holds it. A revoked credential cannot reconnect. Rotating issues a new one and retires the old one.</div>
+          <table style="width: 100%; border-collapse: collapse; margin-top: 16px; animation: dvPulse 2s ease-in-out infinite;">
+            <thead>
+              <tr>
+                <th style="width: 14%; border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Kind</th>
+                <th style="border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Device</th>
+                <th style="width: 11%; border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Paired</th>
+                <th style="width: 14%; border-bottom: 1px solid var(--border); padding: 8px 12px 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Last seen</th>
+                <th style="width: 22%; border-bottom: 1px solid var(--border); padding: 8px 0; text-align: left; vertical-align: bottom; font-weight: 400; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <sc-for list="{{ skeletons }}" as="s" hint-placeholder-count="3">
+                <tr>
+                  <td style="border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; vertical-align: top;">
+                    <span style="display: block; width: 64px; height: 12px; border-radius: 4px; background: var(--muted);"></span>
+                    <span style="display: block; width: 96px; height: 12px; margin-top: 6px; border-radius: 4px; background: color-mix(in oklab, var(--muted) 60%, transparent);"></span>
+                  </td>
+                  <td style="border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; vertical-align: top;">
+                    <span style="{{ s.labelStyle }}"></span>
+                  </td>
+                  <td style="border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; vertical-align: top;">
+                    <span style="display: block; width: 80px; height: 12px; border-radius: 4px; background: color-mix(in oklab, var(--muted) 60%, transparent);"></span>
+                  </td>
+                  <td style="border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; vertical-align: top;">
+                    <span style="display: block; width: 80px; height: 12px; border-radius: 4px; background: color-mix(in oklab, var(--muted) 60%, transparent);"></span>
+                  </td>
+                  <td style="border-bottom: 1px solid var(--border); padding: 10px 0; vertical-align: top;">
+                    <span style="display: block; width: 160px; height: 32px; border-radius: 4px; background: color-mix(in oklab, var(--muted) 60%, transparent);"></span>
+                  </td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+          <div style="margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--faint);">Loading paired devices</div>
+        </div>
+        <div style="width: 900px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">The skeleton, which is what the section shows before the first listing answers. Three rows, the second one wider, pulsing as one block.</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 900px; padding: 24px 32px; background: var(--background); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="font-size: 13.5px; font-weight: 500;">Paired devices</div>
+          <div style="margin-top: 6px; max-width: 620px; font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground);">Every credential this machine accepts, and what holds it. A revoked credential cannot reconnect. Rotating issues a new one and retires the old one.</div>
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; min-height: 160px; margin-top: 16px; padding: 24px; border: 1px solid var(--border); border-radius: 14px; text-align: center;">
+            <!-- lucide ServerIcon -->
+            <span style="display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); font-size: 15px; color: var(--muted-foreground);">▤</span>
+            <div style="font-size: 13px; font-weight: 500;">No device is paired with this machine</div>
+            <div style="font-size: 12px; line-height: 1.6; color: var(--muted-foreground);">Run <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">domovoid pair</span> on the other machine to pair one.</div>
+          </div>
+        </div>
+        <div style="width: 900px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Empty. The remedy is a command on the other machine, so it is set in the machine face.</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 900px; display: flex; flex-direction: column; gap: 14px; padding: 24px 32px; background: var(--background); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="display: flex; gap: 10px; padding: 12px 14px; background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);">
+            <!-- lucide CircleStopIcon -->
+            <span style="font-size: 11px; color: var(--danger-fg);">⦸</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12.5px; font-weight: 500; color: var(--danger-fg);">Paired devices unavailable</div>
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 5px; font-size: 11.5px; line-height: 1.55; color: var(--danger-dim);">Lost the daemon on mbp-14-local, the socket closed
+                <span style="flex: 0 0 auto; padding: 7px 11px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Retry</span>
+              </div>
+            </div>
+          </div>
+          <div style="display: flex; gap: 10px; padding: 12px 14px; background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);">
+            <span style="font-size: 11px; color: var(--danger-fg);">⦸</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12.5px; font-weight: 500; color: var(--danger-fg);">Device action failed</div>
+              <div style="margin-top: 5px; font-size: 11.5px; line-height: 1.55; color: var(--danger-dim); text-wrap: pretty;">The name was changed elsewhere: iPad by the sofa is now iPad in the study. Undo changed nothing.</div>
+            </div>
+          </div>
+        </div>
+        <div style="width: 900px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">The two alerts the section can raise. The second is the sentence from <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">rename-device.ts</span>, which is what an Undo gets when another client renamed the row first. The first alert's body is the daemon's own error text, so it varies.</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">02 · ONE-TIME CREDENTIAL, AFTER A ROTATE</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">fleet-view.tsx · RotationReceipt, CredentialPanel</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 44px;">
+    <sc-for list="{{ receipts }}" as="r" hint-placeholder-count="3">
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 836px; padding: 14px 15px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+          <div style="font-size: 13.5px; font-weight: 500;">New credential for {{ r.device }}</div>
+          <div style="margin-top: 6px; max-width: 72ch; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ r.instruction }}</div>
+          <div style="margin-top: 12px; padding: 14px 15px; background: var(--accent); border: 1px solid var(--border); border-radius: 14px;">
+            <div style="font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);">New credential, shown once</div>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 10px;">
+              <span style="{{ r.tokenStyle }}">{{ r.token }}</span>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <!-- lucide CopyIcon, CheckIcon when copied -->
+                <span onClick="{{ r.copy }}" style="display: flex; align-items: center; gap: 6px; padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); font-size: 11.5px; font-weight: 500; color: var(--primary-foreground); cursor: pointer;"><span style="font-size: 10px;">{{ r.copyGlyph }}</span>{{ r.copyLabel }}</span>
+                <!-- lucide EyeIcon / EyeOffIcon -->
+                <span onClick="{{ r.toggle }}" title="{{ r.revealTitle }}" style="display: flex; align-items: center; padding: 7px 9px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">{{ r.revealGlyph }}</span>
+              </div>
+            </div>
+            <div style="margin-top: 8px; font-size: 11px; line-height: 1.6; color: var(--muted-foreground);">{{ r.note }}</div>
+          </div>
+        </div>
+        <div style="width: 836px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">{{ r.caption }}</div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">03 · THREE CONFIRMATIONS, THREE DIFFERENT LOSSES</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">fleet-view.tsx · RevokeConfirmation, ForgetConfirmation</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 44px;">
+    <sc-for list="{{ dialogs }}" as="g" hint-placeholder-count="3">
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 512px; padding: 18px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 30px 80px var(--shadow-xl);">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="flex: 1; min-width: 0; font-size: 13.5px; font-weight: 500; overflow-wrap: break-word;">{{ g.title }}</div>
+            <sc-if value="{{ g.badge }}" hint-placeholder-val="{{ false }}"><span style="flex: 0 0 auto; padding: 1px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground);">{{ g.badge }}</span></sc-if>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--muted-foreground);">
+            <div style="text-wrap: pretty;">{{ g.first }}</div>
+            <div style="text-wrap: pretty;">{{ g.second }}</div>
+          </div>
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px;">
+            <span style="padding: 7px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">{{ g.keep }}</span>
+            <span style="padding: 8px 15px; border: 1px solid var(--danger-border); border-radius: calc(var(--radius) - 2px); background: var(--danger-bg); font-size: 11.5px; font-weight: 500; color: var(--danger-fg); cursor: pointer;" style-hover="background: color-mix(in oklab, var(--danger-bg), var(--destructive) 25%);">{{ g.confirm }}</span>
+          </div>
+        </div>
+        <div style="width: 512px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">{{ g.caption }}</div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">04 · FLEET LIST WITHHELD · 05 · PENDING AND NEVER ENROLLED</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">fleet-overflow.ts · fleet-entries.ts</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 44px;">
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 836px; display: flex; gap: 10px; padding: 13px 15px; background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);">
+        <!-- lucide CircleStopIcon -->
+        <span style="font-size: 11px; color: var(--danger-fg);">⦸</span>
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-size: 12.5px; font-weight: 500; color: var(--danger-fg);">Fleet list withheld</div>
+          <div style="margin-top: 6px; font-size: 11.5px; line-height: 1.6; color: var(--danger-dim); text-wrap: pretty;">The daemon's keychain holds 214 fleet entries, more than the 128 this list can carry, so it returned none of them rather than a shortened list. 214 entries are not shown. This is not an empty fleet.</div>
+          <div style="margin-top: 8px; font-size: 11.5px; line-height: 1.7; color: var(--danger-dim); text-wrap: pretty;">On the daemon's own machine, run <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-fg);">domovoid fleet-keychain list</span>, then <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-fg);">domovoid fleet-keychain forget &lt;machine-id&gt; --confirm-daemon-stopped</span> for each entry you no longer need. Stop Domovoi and its supervisor first. Local removal does not revoke the credential on the target.</div>
+        </div>
+      </div>
+      <div style="width: 836px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">The refusal that explains an empty list. It stands above the machine cards, which at that point are this machine alone and must not read as the fleet. Both counts and the limit come from the daemon, so they are mono inside a sans sentence only where the sentence needs them; the commands are wholly mono.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 836px; padding: 14px; background: var(--card); border: 1px dashed var(--border); border-radius: 14px;">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+          <span style="font-size: 13px; font-weight: 600; color: var(--strong);">Enrolling</span>
+          <span title="4c9e0a71b3d85f26e1a7" style="padding: 1px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground);">4c9e0a71b3d85f26…</span>
+          <span style="padding: 1px 7px; border: 1px solid var(--warn-border); border-radius: 999px; background: color-mix(in oklab, var(--warning) 16%, transparent); font-size: 10px; color: var(--warning);">In progress</span>
+        </div>
+        <div style="margin-top: 6px; font-size: 11px; line-height: 1.6; color: var(--muted-foreground);">This daemon resumes it on its own</div>
+        <div style="margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">started 06 Sep 20:31</div>
+      </div>
+      <div style="width: 836px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Pending. Dashed border, no button: the operation is the daemon's, and a client cannot resume or cancel it.</div>
+
+      <div style="width: 836px; padding: 14px; background: var(--card); border: 1px dashed var(--border); border-radius: 14px;">
+        <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+          <span style="font-size: 13px; font-weight: 600; color: var(--strong);">Never enrolled</span>
+          <span title="b8172fd340ac95e6c0b4" style="padding: 1px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground);">b8172fd340ac95e6…</span>
+        </div>
+        <div style="margin-top: 6px; max-width: 68ch; font-size: 11px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">A credential exists but this machine was never enrolled. Pair it again to enroll it.</div>
+      </div>
+      <div style="width: 836px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Never enrolled. A keyring entry with no descriptor behind it, so the card has an identity and nothing else to say.</div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">06 · AUDIT LOG · NEVER DESIGNED</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">audit-log-view.tsx · AuditLogView</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 44px;">
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 1200px; display: flex; background: var(--background); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 26px 72px var(--shadow-lg);">
+        <div style="flex: 0 0 236px; width: 236px; display: flex; flex-direction: column; gap: 2px; padding: 10px; background: var(--sidebar); border-right: 1px solid var(--border);">
+          <div style="padding: 8px; font-size: 16px; font-weight: 600;">Settings</div>
+          <div style="display: flex; align-items: center; height: 32px; padding: 0 9px; border-radius: calc(var(--radius) - 3px); font-size: 12.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Skills</div>
+          <div style="display: flex; align-items: center; height: 32px; padding: 0 9px; border-radius: calc(var(--radius) - 3px); font-size: 12.5px; font-weight: 500; background: var(--accent); border: 1px solid var(--border); color: var(--foreground);">Audit log</div>
+        </div>
+
+        <div style="flex: 1; min-width: 0; display: flex; justify-content: center; padding: 28px 32px 36px;">
+          <div style="width: 100%; max-width: 836px; display: flex; flex-direction: column;">
+            <div style="display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px;">
+              <div>
+                <div style="font-size: 17px; font-weight: 600;">Audit log</div>
+                <div style="margin-top: 6px; max-width: 62ch; font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">Search redacted security, session, provider, approval, tool, and terminal events stored on this machine.</div>
+              </div>
+              <!-- lucide DownloadIcon, data-icon="inline-start" -->
+              <div onClick="{{ toggleExport }}" style="{{ exportStyle }}"><span style="font-size: 11px; color: var(--muted-foreground);">⤓</span>{{ exportLabel }}</div>
+            </div>
+
+            <div style="display: flex; gap: 12px; margin-top: 20px;">
+              <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+                <div style="font-size: 11.5px; font-weight: 500; color: var(--strong);">Search</div>
+                <input value="{{ auditQuery }}" onChange="{{ onAuditQuery }}" maxlength="512" placeholder="Actor, target, action, or redacted detail" style="height: 34px; padding: 0 11px; background: var(--background); border: 1px solid var(--input); border-radius: calc(var(--radius) - 3px); outline: none; font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12px; color: var(--foreground);" />
+              </div>
+              <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+                <div style="font-size: 11.5px; font-weight: 500; color: var(--strong);">Action</div>
+                <input value="{{ auditAction }}" onChange="{{ onAuditAction }}" maxlength="512" placeholder="terminal.create" style="height: 34px; padding: 0 11px; background: var(--background); border: 1px solid var(--input); border-radius: calc(var(--radius) - 3px); outline: none; font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 12px; color: var(--foreground);" />
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 12px;">
+              <div style="font-size: 11.5px; font-weight: 500; color: var(--strong);">Outcome</div>
+              <div style="display: flex; flex-wrap: wrap;">
+                <sc-for list="{{ outcomeItems }}" as="o" hint-placeholder-count="6">
+                  <span onClick="{{ o.pick }}" style="{{ o.style }}">{{ o.label }}</span>
+                </sc-for>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; margin-top: 20px;">
+              <sc-for list="{{ auditEntries }}" as="e" hint-placeholder-count="7">
+                <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--border);">
+                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500;">{{ e.action }}</span>
+                    <span style="{{ e.outcomeStyle }}">{{ e.outcome }}</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);">{{ e.time }}</span>
+                  </div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground);">
+                    <span>{{ e.actor }}</span>
+                    <sc-if value="{{ e.session }}" hint-placeholder-val="{{ true }}"><span>session · {{ e.session }}</span></sc-if>
+                    <sc-if value="{{ e.target }}" hint-placeholder-val="{{ true }}"><span>target · {{ e.target }}</span></sc-if>
+                  </div>
+                  <sc-if value="{{ e.detail }}" hint-placeholder-val="{{ false }}">
+                    <div style="max-height: 160px; overflow: auto; padding: 10px; background: var(--code); border-radius: calc(var(--radius) - 3px); white-space: pre-wrap; overflow-wrap: break-word; font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.6; color: var(--muted-foreground);">{{ e.detail }}</div>
+                  </sc-if>
+                </div>
+              </sc-for>
+              <div style="align-self: center; margin-top: 16px; padding: 6px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--strong); cursor: pointer;" style-hover="background: var(--accent);">Load older</div>
+              <!-- lucide ShieldCheckIcon -->
+              <div style="display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 16px; font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint);"><span>⛨</span> Stored and exported fields are redacted by the daemon.</div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+      <div style="width: 1200px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Audit log, populated. Search, Action and the six-value outcome group are live, and Export JSONL switches to Cancel export while an export is collecting its pages. Every field on a row is machine-authored, so the whole row is mono except the redaction footer.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 836px; padding: 24px 28px; background: var(--background); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; min-height: 208px; border: 1px solid var(--border); border-radius: 14px; padding: 24px; text-align: center;">
+            <!-- lucide SearchIcon -->
+            <span style="display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); font-size: 15px; color: var(--muted-foreground);">⌕</span>
+            <div style="font-size: 13px; font-weight: 500;">No matching audit entries</div>
+            <div style="font-size: 12px; line-height: 1.6; color: var(--muted-foreground);">Change search terms, action, or outcome.</div>
+          </div>
+        </div>
+        <div style="width: 836px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Empty. Drawn only when a query answered with nothing; before the first answer the lane shows the loading line instead.</div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 11px;">
+        <div style="width: 836px; padding: 24px 28px; background: var(--background); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 26px 72px var(--shadow-lg);">
+          <div style="display: flex; gap: 10px; padding: 12px 14px; background: var(--danger-bg); border: 1px solid var(--danger-border); border-radius: var(--radius);">
+            <span style="font-size: 11px; color: var(--danger-fg);">⦸</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12.5px; font-weight: 500; color: var(--danger-fg);">Audit log unavailable</div>
+              <div style="margin-top: 5px; font-size: 11.5px; line-height: 1.55; color: var(--danger-dim);">Reconnect to the execution machine to read its audit log.</div>
+            </div>
+          </div>
+          <div style="margin-top: 14px; padding: 24px 0; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">Loading audit log</div>
+        </div>
+        <div style="width: 836px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Reconnect required. Losing the connection drops the page it was holding and cancels an export in flight, so the lane has no rows to show under the alert. The loading line below it is the other pre-answer state, drawn here for the pair.</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 18px;">
+    <span style="font-size: 10px; letter-spacing: .14em; color: var(--faint);">07 · WHERE THE BUILD AND THE DESIGN DISAGREE</span>
+    <span style="flex: 1; height: 1px; background: var(--border);"></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">packages/ui/src/styles.css</span>
+  </div>
+
+  <div style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;">
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 460px; padding: 16px 18px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Token differences, unresolved</div>
+        <div style="display: flex; flex-direction: column; gap: 11px; margin-top: 12px;">
+          <sc-for list="{{ disagreements }}" as="d" hint-placeholder-count="5">
+            <div style="padding-bottom: 11px; border-bottom: 1px solid var(--border);">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warning);">{{ d.token }}</div>
+              <div style="margin-top: 5px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ d.note }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="margin-top: 12px; font-size: 11px; line-height: 1.65; color: var(--faint); text-wrap: pretty;">This file uses the values from Domovoi Desktop.dc.html, because that is the surface it extends. Nothing here picks a winner.</div>
+      </div>
+      <div style="width: 460px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Read at the same tree as the strings. The fourth row is new since the dock pass; the first three are unchanged.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 460px; padding: 16px 18px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Strings I could not find, and what I drew instead</div>
+        <div style="display: flex; flex-direction: column; gap: 11px; margin-top: 12px;">
+          <sc-for list="{{ gaps }}" as="g" hint-placeholder-count="3">
+            <div style="padding-bottom: 11px; border-bottom: 1px solid var(--border);">
+              <div style="font-size: 11.5px; font-weight: 500; color: var(--strong);">{{ g.what }}</div>
+              <div style="margin-top: 5px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ g.note }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="width: 460px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Gaps, not inventions. Where the build renders a value the daemon supplies, the drawn text is sample data and says so here.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="width: 460px; padding: 16px 18px; background: var(--card); border: 1px solid var(--border); border-radius: 14px;">
+        <div style="font-size: 12.5px; font-weight: 500;">Not drawn</div>
+        <div style="display: flex; flex-direction: column; gap: 11px; margin-top: 12px;">
+          <sc-for list="{{ notDrawn }}" as="n" hint-placeholder-count="4">
+            <div style="padding-bottom: 11px; border-bottom: 1px solid var(--border);">
+              <div style="font-size: 11.5px; font-weight: 500; color: var(--strong);">{{ n.what }}</div>
+              <div style="margin-top: 5px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ n.note }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div style="width: 460px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Parts of the two views this pass leaves for a later one, so the absence is a decision rather than an oversight.</div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1560,&quot;height&quot;:1100},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = {
+    editingId: "dev-phone",
+    draft: "Pixel 8 in the kitchen",
+    undoId: "dev-tablet",
+    revealed: { hidden: false, revealed: true, refused: false },
+    copied: {},
+    outcome: "denied",
+    auditQuery: "",
+    auditAction: "",
+    exporting: false,
+    tip: null
+  };
+
+  // Radix anchors a tooltip to its trigger on a named side, centred on that
+  // edge, with a 4px side offset, an arrow, and the fade-and-zoom entry
+  // shadcn/ui ships. The side matches the TooltipContent side prop in
+  // fleet-view.tsx: left for Forget and Revoke, right for the upgrade chip.
+  tipAt(text, side) {
+    return event => {
+      const r = event.currentTarget.getBoundingClientRect();
+      this.setState({ tip: { text, side, left: r.left, right: r.right, mid: r.top + r.height / 2 } });
+    };
+  }
+
+  // The build's secondary control: bordered ghost, 7px 11px, 11px.
+  secondary(disabled) {
+    return "flex: 0 0 auto; padding: 7px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--muted-foreground);" +
+      (disabled ? " opacity: .42; cursor: default;" : " cursor: pointer;");
+  }
+
+  badge(tone) {
+    const map = {
+      success: ["var(--success)", "var(--success)"],
+      warning: ["var(--warning)", "var(--warning)"],
+      destructive: ["var(--destructive)", "var(--destructive)"]
+    };
+    const c = map[tone] || map.warning;
+    return "padding: 1px 7px; border-radius: 999px; border: 1px solid color-mix(in oklab, " + c[1] +
+      " 45%, transparent); background: color-mix(in oklab, " + c[0] + " 16%, transparent); font-size: 10px; color: " + c[1] + ";";
+  }
+
+  renderVals() {
+    const st = this.state;
+
+    // healthLabel and healthVariant, fleet-view.tsx
+    const machines = [
+      {
+        label: "mbp-14-local", health: "Online", tone: "success", self: true, inUse: true,
+        showUse: false, showTerminal: false, showForget: false, refusal: false, note: false,
+        meta: "macOS 15.3 · arm64 · 0.9.4 · loopback · 3 sessions",
+        caps: ["sessions", "terminals", "git", "preview"],
+        transports: ["loopback · 127.0.0.1:8787"]
+      },
+      {
+        label: "hetzner-cx42", health: "Online", tone: "success", self: false, inUse: false,
+        showUse: true, showTerminal: true, showForget: true, forgetTooltip: true,
+        refusal: "Controlling that machine from here needs its own device credential, which is not part of this release",
+        note: false,
+        meta: "Debian 12 · x86_64 · 0.9.4 · tailnet",
+        caps: ["sessions", "terminals", "git"],
+        transports: ["lan · 10.0.0.7:8787", "tailnet · 100.84.19.3:8787"]
+      },
+      {
+        label: "wsl-ubuntu-24", health: "Pair again", tone: "destructive", self: false, inUse: false,
+        showUse: true, showTerminal: true, showForget: true,
+        refusal: "Controlling that machine from here needs its own device credential, which is not part of this release",
+        note: "wsl-ubuntu-24 refused the credential this machine holds for it. Pair it again to restore it.",
+        meta: "Ubuntu 24.04 on WSL2 · x86_64 · 0.9.4 · loopback",
+        caps: ["sessions", "terminals", "git"],
+        transports: ["loopback · 127.0.0.1:8801"]
+      },
+      {
+        label: "ci-runner-03", health: "Keychain unavailable", tone: "warning", self: false, inUse: false,
+        showUse: true, showTerminal: true, showForget: true,
+        refusal: "Controlling that machine from here needs its own device credential, which is not part of this release",
+        note: "The keychain on this machine could not be read, so nothing was presented to ci-runner-03. Pairing again would not fix it.",
+        meta: "Ubuntu 22.04 · x86_64 · 0.9.4 · tailnet",
+        caps: ["sessions", "git"],
+        transports: ["tailnet · 100.71.4.18:8787"]
+      },
+      {
+        label: "mini-nixos", health: "Unreachable", tone: "destructive", self: false, inUse: false,
+        showUse: true, showTerminal: true, showForget: true,
+        update: "UPDATE 0.9.4", updateTitle: "This machine runs 0.8.1",
+        refusal: "Controlling that machine from here needs its own device credential, which is not part of this release",
+        note: false,
+        meta: "NixOS 24.11 · aarch64 · 0.8.1 · lan",
+        caps: [],
+        transports: []
+      }
+    ].map(m => Object.assign({}, m, {
+      healthStyle: this.badge(m.tone),
+      controlStyle: this.secondary(true),
+      caps: m.caps,
+      capsEmpty: m.caps.length === 0,
+      transportsEmpty: m.transports.length === 0,
+      update: m.update || false,
+      updateTitle: m.updateTitle || "",
+      showTip: this.tipAt("Deletes the credential this machine holds for it. Sessions there keep running, and revoking this machine on that side may still be yours to do.", "left")
+    }));
+
+    // clientWord, kindWord and the Kind column's second line, fleet-view.tsx
+    const rows = [
+      { id: "dev-desktop", kind: "Desktop", glyph: "▢", sub: "client", label: "MacBook Pro",
+        paired: "02 Jul 09:14", lastSeen: "06 Sep 20:12" },
+      { id: "dev-phone", kind: "Phone", glyph: "▯", sub: "client", label: "Pixel 8 in the kitchen",
+        paired: "11 Jul 21:40", lastSeen: "06 Sep 19:58" },
+      { id: "dev-tablet", kind: "Tablet", glyph: "▭", sub: "client", label: "iPad by the sofa",
+        paired: "18 Jul 08:02", lastSeen: "05 Sep 22:31" },
+      { id: "dev-web", kind: "Browser", glyph: "◍", sub: "client", label: "Chrome on the work laptop",
+        paired: "02 Aug 13:26", lastSeen: "06 Sep 09:47" },
+      { id: "dev-cli", kind: "Terminal", glyph: "›_", sub: "client", label: "domovoi CLI on hetzner-cx42",
+        paired: "05 Aug 17:11", lastSeen: "06 Sep 18:03" },
+      { id: "dev-machine", kind: "Machine", glyph: "▤", machineId: "7f3c9a1b0e2d4f5a6b7c", label: "hetzner-cx42",
+        paired: "05 Aug 17:19", lastSeen: "06 Sep 20:09", revokeTooltipOpen: true },
+      { id: "dev-unbound", kind: "Unbound", glyph: "⊘", sub: "role not recorded", label: "Browser credential from June",
+        paired: "09 Jun 10:35", lastSeen: "revoked 03 Sep 11:40", revoked: true, upgrade: true },
+      { id: "dev-old-phone", kind: "Unbound", glyph: "⊘", sub: "was phone", label: "Old phone in the drawer",
+        paired: "14 Mar 19:52", lastSeen: "revoked 14 Aug 09:12", revoked: true }
+    ];
+
+    const devices = rows.map(r => {
+      const editing = st.editingId === r.id;
+      const undoable = st.undoId === r.id && !editing;
+      const machine = r.kind === "Machine";
+      return {
+        glyph: r.glyph,
+        kind: r.kind,
+        sub: machine ? r.machineId.slice(0, 16) + "\u2026" : r.sub,
+        subStyle: machine
+          ? "display: inline-flex; align-items: center; margin-top: 6px; padding: 1px 7px; border: 1px solid var(--border); border-radius: 4px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--muted-foreground);"
+          : "display: block; margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);",
+        kindCellStyle: "border-bottom: 1px solid var(--border); padding: 10px 12px 10px 0; vertical-align: top;" +
+          (r.revoked ? " opacity: .55;" : ""),
+        label: r.label,
+        labelStyle: "min-width: 0; max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: " +
+          (r.revoked ? "var(--muted-foreground)" : "var(--strong)") + ";",
+        editing,
+        resting: !editing,
+        undoable,
+        renameable: !undoable,
+        rename: () => this.setState({ editingId: r.id, draft: r.label }),
+        cancel: () => this.setState({ editingId: null }),
+        save: () => this.setState({ editingId: null, undoId: r.id }),
+        undo: () => this.setState({ undoId: null }),
+        revokedChip: !!r.revoked && !r.upgrade,
+        upgradeChip: !!r.upgrade,
+        showUpgradeTip: this.tipAt("This pairing predates bound credentials. Pair this device again to restore it.", "right"),
+        paired: r.paired,
+        lastSeen: r.lastSeen,
+        rotateStyle: this.secondary(!!r.revoked),
+        revokeStyle: "padding: 5px 7px; border-radius: calc(var(--radius) - 4px); font-size: 11px; color: var(--faint);" +
+          (r.revoked ? " opacity: .42; cursor: default;" : " cursor: pointer;"),
+        // revokeConsequence(binding), fleet-view.tsx. A revoked row's Revoke is
+        // disabled and carries no tooltip in the build, so it has none here.
+        showTip: r.revoked ? undefined : this.tipAt(machine
+          ? "Cuts this machine off. Its sessions keep running there; transfers to it are refused."
+          : "Signs this device out. Someone has to pair it again from the device.", "left")
+      };
+    });
+
+    const maskedRun = "\u2022".repeat(20);
+    const sampleToken = "dv1_8fk3Qm2xR7bTz9LpWc4V";
+    const receiptSpec = [
+      { key: "hidden", device: "Pixel 8 in the kitchen",
+        instruction: "Enter it on that phone. It is shown once, and the old credential no longer works.",
+        caption: "Hidden, which is how the panel opens. The mask is a fixed run of twenty bullets, so its length never says how long the credential is. Reveal and Copy are live." },
+      { key: "revealed", device: "hetzner-cx42",
+        instruction: "Nobody has to be at that machine. Save it on the machine itself. It is shown once, the old credential no longer works, and sessions already running there are untouched.",
+        caption: "Revealed, on a machine credential. The instruction differs from a person's device: nobody has to be at the machine, and the sessions running there are untouched." },
+      { key: "refused", device: "Chrome on the work laptop",
+        instruction: "Enter it on that browser. It is shown once, and the old credential no longer works.",
+        caption: "The clipboard refused. The panel stops telling you not to read the value, because reading it is now the only way to move it." }
+    ];
+
+    const receipts = receiptSpec.map(r => {
+      const revealed = st.revealed[r.key];
+      const copied = !!st.copied[r.key];
+      const note = r.key === "refused"
+        ? "This browser refused the clipboard. Reveal it and copy it by hand."
+        : copied
+          ? "Copied to the clipboard."
+          : "Copy it without reading it. Nothing here needs the value on screen.";
+      return {
+        device: r.device,
+        instruction: r.instruction,
+        caption: r.caption,
+        note,
+        token: revealed ? sampleToken : maskedRun,
+        tokenStyle: "flex: 1; min-width: 220px; font-family: 'JetBrains Mono', monospace; font-size: 15px; letter-spacing: .1em; color: " +
+          (revealed ? "var(--primary)" : "var(--faint)") + ";" + (revealed ? " overflow-wrap: break-word;" : ""),
+        copyLabel: copied ? "Copied" : "Copy",
+        copyGlyph: copied ? "✓" : "⧉",
+        revealGlyph: revealed ? "⦰" : "◉",
+        revealTitle: revealed ? "Hide the credential" : "Show the credential",
+        toggle: () => this.setState({ revealed: Object.assign({}, st.revealed, { [r.key]: !revealed }) }),
+        copy: () => {
+          if (r.key === "refused") return;
+          this.setState({ copied: Object.assign({}, st.copied, { [r.key]: true }) });
+        }
+      };
+    });
+
+    const dialogs = [
+      {
+        title: "Revoke Pixel 8 in the kitchen", badge: false,
+        first: "That phone loses access to this machine immediately and has to be paired again, from the phone, to come back.",
+        second: "Sessions already on this machine are untouched.",
+        keep: "Keep device", confirm: "Revoke device",
+        caption: "Revoke a person's device. The thing lost is access from that device, and the remedy is on the device."
+      },
+      {
+        title: "Revoke hetzner-cx42", badge: "7f3c9a1b0e2d4f5a\u2026",
+        first: "This machine stops accepting that one. Sessions running there keep running and stay reachable from that machine, but this one can no longer reach them, and a transfer to it is refused rather than queued.",
+        second: "Pairing it again needs someone with access to that machine, not to this one.",
+        keep: "Keep machine", confirm: "Revoke machine",
+        caption: "Revoke a machine credential. Sessions survive but leave this window's reach, and a transfer is refused rather than queued."
+      },
+      {
+        title: "Forget hetzner-cx42", badge: "7f3c9a1b0e2d4f5a\u2026",
+        first: "This machine deletes the credential it holds for hetzner-cx42 and stops reaching it. Sessions running there keep running.",
+        second: "There is no revocation across machines. hetzner-cx42 is asked to revoke this machine, and if it does not confirm, you revoke this machine in its Devices list yourself.",
+        keep: "Keep machine", confirm: "Forget machine",
+        caption: "Forget a machine. Destructive here, a request there, and the second paragraph says who finishes the job if the request is not confirmed."
+      }
+    ];
+
+    const outcomeStyles = { succeeded: "success", started: "warning", failed: "destructive", denied: "destructive" };
+    const entries = [
+      { action: "terminal.create", outcome: "succeeded", actor: "desktop · desktop-9f2a1c",
+        session: "session-migrate-billing-webhooks", target: "wsl-ubuntu-24", time: "06/09/2026, 20:41:12" },
+      { action: "approval.decide", outcome: "denied", actor: "desktop · desktop-9f2a1c",
+        session: "session-migrate-billing-webhooks", target: "tool:shell",
+        detail: "decision=deny\nrule=none matched\ncommand=[redacted 62 bytes]", time: "06/09/2026, 20:39:04" },
+      { action: "provider.token.store", outcome: "failed", actor: "daemon · secrets", session: false, target: "anthropic",
+        detail: "keychain refused the write: item not found (-25300)", time: "06/09/2026, 20:22:57" },
+      { action: "session.fork", outcome: "succeeded", actor: "phone · phone-4b81e7",
+        session: "session-replay-idempotency-spec", target: "session-migrate-billing-webhooks", time: "06/09/2026, 19:58:31" },
+      { action: "tool.exec", outcome: "started", actor: "anthropic · thread_01H9YB4T2QK",
+        session: "session-migrate-billing-webhooks", target: "tool:apply_patch", time: "06/09/2026, 19:57:02" },
+      { action: "security.device.revoke", outcome: "succeeded", actor: "machine · 7f3c9a1b0e2d4f5a…",
+        session: false, target: "Old phone in the drawer", time: "14/08/2026, 09:12:44" },
+      { action: "fleet.forget", outcome: "cancelled", actor: "desktop · desktop-9f2a1c", session: false,
+        target: "mini-nixos", time: "12/08/2026, 16:04:19" }
+    ].map(e => Object.assign({}, e, {
+      detail: e.detail || false,
+      session: e.session || false,
+      target: e.target || false,
+      outcomeStyle: outcomeStyles[e.outcome]
+        ? this.badge(outcomeStyles[e.outcome])
+        : "padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; font-size: 10px; color: var(--muted-foreground);"
+    }));
+
+    const outcomeItems = ["all", "started", "succeeded", "failed", "denied", "cancelled"].map((label, i, all) => {
+      const on = st.outcome === label;
+      return {
+        label,
+        pick: () => this.setState({ outcome: label }),
+        style: "display: inline-flex; align-items: center; height: 28px; padding: 0 11px; border: 1px solid var(--border); font-size: 11px; cursor: pointer;" +
+          (i === 0 ? " border-radius: calc(var(--radius) - 3px) 0 0 calc(var(--radius) - 3px);" : " border-left: 0;") +
+          (i === all.length - 1 ? " border-radius: 0 calc(var(--radius) - 3px) calc(var(--radius) - 3px) 0;" : "") +
+          (on ? " background: var(--accent); color: var(--foreground);" : " color: var(--muted-foreground);")
+      };
+    });
+
+    return {
+      themeClass: (this.props.theme ?? "dark") === "light" ? "dv-light" : "dv-dark",
+
+      machines,
+      devices,
+      hideTip: () => this.setState({ tip: null }),
+      tipText: st.tip ? st.tip.text : false,
+      tipStyle: st.tip
+        ? "position: fixed; z-index: 40; top: " + st.tip.mid + "px; " +
+          (st.tip.side === "right"
+            ? "left: " + (st.tip.right + 4) + "px; --dv-tip-from: translateY(-50%) translateX(-4px) scale(.96); "
+            : "right: " + (window.innerWidth - st.tip.left + 4) + "px; --dv-tip-from: translateY(-50%) translateX(4px) scale(.96); ") +
+          "--dv-tip-to: translateY(-50%) scale(1); transform: translateY(-50%); width: 290px; padding: 8px 11px; background: var(--popover); border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); box-shadow: 0 10px 30px var(--shadow-lg); font-size: 11.5px; line-height: 1.6; color: var(--foreground); text-wrap: pretty; pointer-events: none; animation: dvPopIn 140ms cubic-bezier(.16,1,.3,1);"
+        : "display: none;",
+      tipArrowStyle: st.tip
+        ? "position: absolute; top: 50%; " + (st.tip.side === "right" ? "left: -4px;" : "right: -4px;") +
+          " width: 8px; height: 8px; margin-top: -4px; background: var(--popover); border: 1px solid var(--border); border-" +
+          (st.tip.side === "right" ? "top" : "bottom") + ": 0; border-" +
+          (st.tip.side === "right" ? "right" : "left") + ": 0; transform: rotate(45deg);"
+        : "display: none;",
+      draft: st.draft,
+      onDraft: e => this.setState({ draft: e.target.value }),
+
+      skeletons: [
+        { labelStyle: "display: block; width: 128px; height: 12px; border-radius: 4px; background: var(--muted);" },
+        { labelStyle: "display: block; width: 224px; height: 12px; border-radius: 4px; background: var(--muted);" },
+        { labelStyle: "display: block; width: 128px; height: 12px; border-radius: 4px; background: var(--muted);" }
+      ],
+
+      receipts,
+      dialogs,
+
+      auditEntries: entries,
+      outcomeItems,
+      auditQuery: st.auditQuery,
+      auditAction: st.auditAction,
+      onAuditQuery: e => this.setState({ auditQuery: e.target.value }),
+      onAuditAction: e => this.setState({ auditAction: e.target.value }),
+      exportLabel: st.exporting ? "Cancel export" : "Export JSONL",
+      exportStyle: "display: flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 7px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); font-size: 12px; cursor: pointer; color: " +
+        (st.exporting ? "var(--foreground)" : "var(--strong)") + ";" + (st.exporting ? " background: var(--accent);" : ""),
+      toggleExport: () => this.setState({ exporting: !st.exporting }),
+
+      disagreements: [
+        { token: "--faint, dark", note: "The build ships oklch(0.59 0.01 285). The root design files use oklch(0.53 0.01 285). Every mono metadata line on both surfaces sits on that token." },
+        { token: "--faint, light", note: "The build ships oklch(0.56 0.011 285). The design files use oklch(0.63 0.011 285). New since the dock pass, and it is the darker of the two, so the build reads heavier in light mode rather than fainter." },
+        { token: "--warning, light", note: "The build ships oklch(0.56 0.13 62). The design files use oklch(0.6 0.13 62). It changes how the Keychain unavailable and UPDATE badges read in light mode." },
+        { token: ":root default theme", note: "In the build :root is light and .dark opts in. The design system says :root carries the dark default. Whichever wins, one of the two documents is wrong." }
+      ],
+
+      gaps: [
+        { what: "Health badge labels beyond the five drawn", note: "healthLabel has eight entries. Reconnecting, Not responding and Version mismatch are real strings I did not have a card for; they are one badge swap on any machine here." },
+        { what: "The daemon's own error text", note: "Paired devices unavailable and Device action failed print whatever the daemon threw. The listing failure body drawn here is sample text in the product's voice, not a string from the code. The rename mismatch sentence under it is exact." },
+        { what: "Audit actions, ids and detail bodies", note: "The action names, session ids, targets and redacted detail are sample data. Only the labels, placeholders, outcome words, empty state, footer and error titles are the build's strings." },
+        { what: "Machine platform line", note: "machinePlatformLabel lives in the protocol package, which I did not read. The platform words here are sample data; the separator, arch, version, connection and session count follow the code's order." }
+      ],
+
+      notDrawn: [
+        { what: "Pair a machine dialog", note: "PairMachineDialog is its own file. The button that opens it is drawn; the dialog is a pass of its own." },
+        { what: "Forget receipts", note: "forgetMachineNotice has three outcomes, forgotten, pending and refused, each with its own sentence pair. The refused one renders as an alert; the other two as a live region above the cards." },
+        { what: "Skills settings page", note: "The aside's other item. Reached from both surfaces and drawn nowhere yet." },
+        { what: "Touch fallbacks", note: "Every tooltip here has a standing-text twin under pointer-coarse, for tablet and phone. Those belong in Domovoi Tablet.dc.html and Domovoi Mobile.dc.html, not on a desktop sheet." }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

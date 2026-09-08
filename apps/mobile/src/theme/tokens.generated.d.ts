@@ -2,6 +2,7 @@
 // Run pnpm mobile:tokens after changing the stylesheet; release:invariants
 // fails when this file and the stylesheet disagree.
 
+export type AlphaStep = 12 | 14 | 16 | 18 | 20 | 30 | 35 | 45 | 60 | 78 | 82 | 84 | 88 | 94
 export type LoadedFont = "InstrumentSans_400Regular" | "InstrumentSans_500Medium" | "InstrumentSans_600SemiBold" | "JetBrainsMono_400Regular"
 export type FontUtility = "sans" | "sans-medium" | "sans-semibold" | "mono"
 export interface FontFace {
@@ -15,54 +16,56 @@ export interface FontFace {
 
 export declare const colors: {
   readonly light: {
-    readonly background: "#fdfdfe"
+    readonly background: "#fbfaf8"
     readonly foreground: "#1a1a1f"
     readonly card: "#ffffff"
     readonly "card-foreground": "#1a1a1f"
     readonly popover: "#ffffff"
     readonly "popover-foreground": "#1a1a1f"
-    readonly primary: "#4d53d9"
+    readonly primary: "#4e56d3"
     readonly "primary-foreground": "#fbfcff"
-    readonly secondary: "#f0f0f3"
-    readonly "secondary-foreground": "#35353b"
-    readonly muted: "#e9e9ed"
-    readonly "muted-foreground": "#62626a"
-    readonly accent: "#f0f0f3"
+    readonly secondary: "#eeede9"
+    readonly "secondary-foreground": "#323238"
+    readonly muted: "#e7e6e2"
+    readonly "muted-foreground": "#5d5d63"
+    readonly accent: "#eeede9"
     readonly "accent-foreground": "#1a1a1f"
-    readonly destructive: "#cc272e"
+    readonly destructive: "#c51d28"
     readonly "destructive-foreground": "#fff9f8"
-    readonly border: "#dddde2"
-    readonly input: "#dddde2"
-    readonly ring: "#4d53d9"
-    readonly sidebar: "#f6f6f9"
-    readonly "sidebar-foreground": "#35353b"
-    readonly "sidebar-border": "#dddde2"
-    readonly "sidebar-accent": "#f0f0f3"
+    readonly border: "#d6d4d0"
+    readonly input: "#d6d4d0"
+    readonly ring: "#4e56d3"
+    readonly sidebar: "#f4f3f0"
+    readonly "sidebar-foreground": "#323238"
+    readonly "sidebar-border": "#d6d4d0"
+    readonly "sidebar-accent": "#eeede9"
     readonly "sidebar-accent-foreground": "#1a1a1f"
-    readonly success: "#007e4b"
+    readonly success: "#007a43"
     readonly "success-foreground": "#f7fef9"
-    readonly warning: "#a96000"
+    readonly warning: "#a15700"
     readonly "warning-foreground": "#fffaf5"
-    readonly info: "#0070b0"
+    readonly info: "#0068ad"
     readonly "info-foreground": "#f6fdff"
-    readonly strong: "#35353b"
-    readonly faint: "#73747b"
-    readonly code: "#f5f5f8"
-    readonly desk: "#e6e6e9"
+    readonly strong: "#323238"
+    readonly faint: "#7f7f86"
+    readonly code: "#f1f0ed"
+    readonly desk: "#e1dfdc"
     readonly overlay: "#2d2d3361"
-    readonly "warn-bg": "#fff6e4"
-    readonly "warn-border": "#f4c98e"
-    readonly "warn-fg": "#633500"
-    readonly "warn-dim": "#8e5c2d"
+    readonly "warn-fill": "#fec348"
+    readonly "warn-fill-fg": "#4c2904"
+    readonly "warn-bg": "#fff6df"
+    readonly "warn-border": "#f3cf9f"
+    readonly "warn-fg": "#723f00"
+    readonly "warn-dim": "#885620"
     readonly "warn-bg-deep": "#fbebcb"
-    readonly "danger-bg": "#ffefed"
-    readonly "danger-border": "#ffc3bd"
-    readonly "danger-fg": "#892122"
-    readonly "danger-dim": "#b24743"
+    readonly "danger-bg": "#fff2f0"
+    readonly "danger-border": "#fdc9c4"
+    readonly "danger-fg": "#9b1e22"
+    readonly "danger-dim": "#ae4440"
     readonly "danger-on": "#fff9f8"
-    readonly "info-bg": "#e8f6ff"
-    readonly "info-border": "#b7d9f2"
-    readonly "info-fg": "#00426c"
+    readonly "info-bg": "#edf9ff"
+    readonly "info-border": "#bedcf3"
+    readonly "info-fg": "#12527a"
     readonly "info-dim": "#006495"
   }
   readonly dark: {
@@ -97,10 +100,12 @@ export declare const colors: {
     readonly info: "#67addd"
     readonly "info-foreground": "#03111b"
     readonly strong: "#dadadd"
-    readonly faint: "#7c7c83"
+    readonly faint: "#6b6b72"
     readonly code: "#0a0a0c"
     readonly desk: "#040405"
     readonly overlay: "#040405c7"
+    readonly "warn-fill": "#f6a65d"
+    readonly "warn-fill-fg": "#231103"
     readonly "warn-bg": "#2d1905"
     readonly "warn-border": "#60370b"
     readonly "warn-fg": "#ffe6c8"
@@ -124,6 +129,25 @@ export declare const radius: {
   readonly xl: "10.4px"
   readonly "2xl": "14px"
 }
+export interface Shadow {
+  readonly shadowColor: string
+  readonly shadowOpacity: number
+  readonly shadowRadius: number
+  readonly shadowOffset: { readonly width: number; readonly height: number }
+  readonly elevation: number
+}
+export declare const shadows: {
+  readonly light: { readonly md: Shadow; readonly lg: Shadow; readonly xl: Shadow }
+  readonly dark: { readonly md: Shadow; readonly lg: Shadow; readonly xl: Shadow }
+}
+// Tokens the stylesheet asks for outside sRGB. The phone paints the clipped
+// hex above; a browser on a wide-gamut display paints more chroma.
+export declare const outOfGamut: {
+  readonly light: readonly ["primary-foreground", "destructive-foreground", "success", "warning", "warning-foreground", "info", "info-foreground", "warn-bg", "warn-fg", "danger-bg", "danger-on", "info-bg", "info-dim"]
+  readonly dark: readonly ["primary", "destructive-foreground", "ring", "warn-fg", "danger-fg"]
+}
+export declare const alphaSteps: readonly AlphaStep[]
+export declare function withAlpha(color: string, percent: AlphaStep): string
 export declare const fonts: readonly FontFace[]
 export declare const fontFamily: {
   readonly sans: "InstrumentSans_400Regular"

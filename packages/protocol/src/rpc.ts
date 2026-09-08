@@ -1,4 +1,6 @@
 import { z } from "zod"
+import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
+import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 
 import {
   sessionTransferParamsSchema,
@@ -49,6 +51,7 @@ import {
 } from "./schema.js"
 import {
   deviceClaimParamsSchema,
+  deviceCurrentResultSchema,
   deviceClaimResultSchema,
   deviceConfirmClaimParamsSchema,
   deviceConfirmClaimResultSchema,
@@ -1174,10 +1177,12 @@ export const rpcMethods = {
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
   "fleet.list": { params: fleetListParamsSchema, result: fleetSnapshotSchema },
+  "fleet.clientRoute": { params: fleetClientRouteParamsSchema, result: fleetClientRouteResultSchema },
   "fleet.enroll": { params: fleetEnrollParamsSchema, result: fleetEnrollResultSchema },
   "fleet.forget": { params: fleetForgetParamsSchema, result: fleetForgetResultSchema },
   "fleet.heartbeat": { params: z.object({}).strict(), result: fleetMachineDescriptorSchema },
   "device.pair": { params: devicePairParamsSchema, result: devicePairResultSchema },
+  "device.current": { params: deviceListParamsSchema, result: deviceCurrentResultSchema },
   // Reachable before authentication: a machine being paired has no credential
   // yet. Check protocol compatibility before consuming its one-time code.
   "device.claim": { params: deviceClaimParamsSchema, result: deviceClaimResultSchema },
@@ -1296,6 +1301,10 @@ export const rpcMethods = {
     params: runtimeModelsParamsSchema,
     result: providerModelsSchema,
   },
+  "runtime.discover": {
+    params: runtimeDiscoverParamsSchema,
+    result: runtimeDiscoverResultSchema,
+  },
   "provider.refresh": {
     params: z.object({ client: clientKindSchema }).strict(),
     result: workspaceSnapshotSchema,
@@ -1386,6 +1395,8 @@ export const rpcMethodMutations = {
   "transfer.preflight": "read-only",
   "transfer.status": "read-only",
   "device.list": "read-only",
+  "device.current": "read-only",
+  "fleet.clientRoute": "read-only",
   "session.evidence": "read-only",
   "session.history": "read-only",
   "session.usage": "read-only",
@@ -1397,6 +1408,7 @@ export const rpcMethodMutations = {
   "skill.read": "read-only",
   "skill.installPreview": "read-only",
   "runtime.models": "read-only",
+  "runtime.discover": "read-only",
   "provider.secret.list": "read-only",
   "device.pair": "mutating",
   "device.claim": "mutating",

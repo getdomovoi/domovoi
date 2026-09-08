@@ -9,6 +9,7 @@ function recorder() {
   return {
     out,
     err,
+    grantClient: vi.fn(),
     stdout: (text: string) => out.push(text),
     stderr: (text: string) => err.push(text),
   }
@@ -17,6 +18,29 @@ function recorder() {
 const issued = { code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" }
 
 describe("runPairCommand", () => {
+  it("grants an explicitly requested client kind without issuing a machine pairing code", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => issued)
+    const grantClient = vi.fn(async () => ({ token: "n".repeat(43), device: {
+      id: `device-${"a".repeat(32)}`, label: "Laptop desktop", pairedAt: "2026-09-06T12:00:00Z",
+      binding: { kind: "client" as const, client: "desktop" as const },
+    } }))
+    expect(await runPairCommand(["pair", "--client", "desktop", "--label", "Laptop desktop"], { ...io, issue, grantClient })).toBe(0)
+    expect(issue).not.toHaveBeenCalled()
+    expect(grantClient).toHaveBeenCalledWith({ targetClient: "desktop", label: "Laptop desktop" })
+    expect(io.out.join("")).toContain("n".repeat(43))
+    expect(io.out.join("")).toContain("session sends, approvals and terminals")
+    expect(io.out.join("")).toContain("Revoke")
+  })
+
+  it("rejects invalid client grants before contacting the daemon", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => issued)
+    expect(await runPairCommand(["pair", "--client", "machine", "--label", "wrong role"], { ...io, issue })).toBe(1)
+    expect(io.grantClient).not.toHaveBeenCalled()
+    expect(issue).not.toHaveBeenCalled()
+  })
+
   it("prints the code a person reads to the other machine", async () => {
     const io = recorder()
     const issue = vi.fn(async () => issued)

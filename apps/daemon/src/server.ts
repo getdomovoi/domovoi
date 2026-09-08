@@ -55,6 +55,7 @@ import {
   type ProviderModel,
   type ProjectSwitchConfirmation,
   type RpcParams,
+  type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
   workspaceSnapshotSchema,
@@ -82,7 +83,11 @@ import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
 import { defaultFleetHeartbeatIntervalMs, defaultFleetOperationTimeoutMs, FleetEnrollmentService } from "./fleet-enrollment.js"
-import { OperationDeadline, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import { beforeDeadline, OperationDeadline, OperationDeadlineExceededError, validateOperationDeadlineBudget } from "./operation-deadline.js"
+import {
+  maximumRuntimeDiscoveryMs, runtimeDiscoveryRefusals,
+  type RuntimeDiscoverResult, type RuntimeDiscoveryRefusalReason,
+} from "@getdomovoi/protocol"
 import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
@@ -158,7 +163,7 @@ import {
   type TerminalProcess,
   type TerminalService,
 } from "./terminal.js"
-import type { ProviderProbe } from "./providers.js"
+import type { ProviderDetection, ProviderProbe } from "./providers.js"
 import { SkillInstallError, SkillSourceError } from "./skill-install.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
@@ -204,6 +209,7 @@ import {
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
+import { resolveFleetClientRoute } from "./fleet-client-route.js"
 import {
   appendDurableOutput,
   DurableOutputRedactor,
@@ -287,6 +293,7 @@ function skillInstallAuditDetail(values: Record<string, unknown>): string {
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
   "runtime.models",
+  "runtime.discover",
   "skill.list",
   "skill.inventory",
   "skill.read",
@@ -774,6 +781,8 @@ export type DaemonServerOptions = {
   auditReadTimeoutMs?: number
   providerPromptBudgetCodeUnits?: number
   modelCacheTtlMs?: number
+  // Tests may shorten the public end-to-end discovery deadline.
+  runtimeDiscoveryTimeoutMs?: number
   authToken?: string
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
@@ -871,6 +880,10 @@ export class DomovoiDaemon {
   #agentConnectionResets = new Map<string, Promise<void>>()
   #providerModels = new Map<string, { models: ProviderModel[]; cachedAt: number }>()
   #providerModelRequests = new Map<string, Promise<ProviderModel[]>>()
+  #runtimeDiscoveries = new Map<string, Promise<RuntimeDiscoverResult>>()
+  #runtimeReadiness = new Map<string, Promise<ProviderDetection | undefined>>()
+  #runtimeDiscoveryTimeoutMs: number
+  #runtimeDiscoveryAbort = new AbortController()
   #providerEpochs = new Map<string, number>()
   #loadedAgentThreads = new Set<string>()
   #unsubscribeAgents: Array<() => void>
@@ -894,6 +907,7 @@ export class DomovoiDaemon {
   #connectionIds = new WeakMap<WebSocket, string>()
   #preAuthAuditDeadlines = new Map<PreAuthAuditKind, number>()
   #pairingClaimAdmission = new PairingClaimAdmission()
+  #clientRoute: (params: RpcParams<"fleet.clientRoute">, signal?: AbortSignal) => Promise<RpcResult<"fleet.clientRoute">>
   #socketSources = new WeakMap<WebSocket, string>()
   #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
   #authenticationFailures = new WeakMap<WebSocket, number>()
@@ -963,6 +977,8 @@ export class DomovoiDaemon {
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
+    this.#runtimeDiscoveryTimeoutMs = Math.min(options.runtimeDiscoveryTimeoutMs ?? maximumRuntimeDiscoveryMs, maximumRuntimeDiscoveryMs)
+    validateOperationDeadlineBudget(this.#runtimeDiscoveryTimeoutMs)
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
     this.#localOwner = options.localOwner
@@ -974,6 +990,16 @@ export class DomovoiDaemon {
       throw new RangeError("Advertised protocol version must be a three-part semver")
     }
     this.#machineCredentials = options.machineCredentials
+    this.#clientRoute = async (params, signal) => {
+      const deadline = OperationDeadline.start(defaultMachineHandshakeTimeoutMs, signal ? { signal } : {})
+      try {
+        return await resolveFleetClientRoute({ params, deadline,
+          machine: () => this.#store.fleet?.lookupMachine(params.machineId, this.#snapshot.machine.id, Date.now()),
+          credentials: this.#machineCredentials,
+          ...(options.sshTunnels ? { sshTunnels: options.sshTunnels } : {}),
+        })
+      } finally { deadline.clear() }
+    }
     this.#readTransferBundle = options.readTransferBundle ?? ((bundlePath) => readFile(bundlePath))
     this.#sessionTransferTimeoutMs = options.sessionTransferTimeoutMs ?? defaultSessionTransferTimeoutMs
     this.#sessionTransferRetryMs = options.sessionTransferRetryMs ?? 30_000
@@ -1005,7 +1031,7 @@ export class DomovoiDaemon {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
     this.allowedOrigins = new Set(
-      options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://"],
+      options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
     )
     this.#rpcOutbound = new RpcOutboundBackpressure(options.rpcOutboundBackpressure)
     const machinePlatform = platform()
@@ -1359,6 +1385,7 @@ export class DomovoiDaemon {
   stop(): Promise<void> {
     if (this.#stopPromise) return this.#stopPromise
     this.#stopping = true
+    this.#runtimeDiscoveryAbort.abort(new Error("Daemon stopping"))
     const fleetStopped = this.#fleetEnrollment.stop()
     if (this.#transferReconciliationTimer) {
       clearTimeout(this.#transferReconciliationTimer)
@@ -2924,6 +2951,7 @@ export class DomovoiDaemon {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
+        || request.method === "runtime.discover"
         || request.method === "provider.refresh"
         || request.method === "provider.secret.list"
         || request.method === "session.usage"
@@ -2936,6 +2964,8 @@ export class DomovoiDaemon {
         || request.method === "audit.export"
         || request.method === "fleet.heartbeat"
         || request.method === "fleet.list"
+        || request.method === "fleet.clientRoute"
+        || request.method === "device.current"
         || request.method === "fleet.enroll"
         || request.method === "fleet.forget"
         || request.method === "device.revokeCurrent"
@@ -3019,16 +3049,28 @@ export class DomovoiDaemon {
     return agent
   }
 
-  async #listProviderModels(provider: string): Promise<ProviderModel[]> {
+  async #listProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
+    deadline?.throwIfExpired()
     const cached = this.#providerModels.get(provider)
     if (cached && Date.now() - cached.cachedAt < this.#modelCacheTtlMs) return cached.models
-    const agent = await this.#ensureAgentConnected(provider)
+    const connecting = this.#ensureAgentConnected(provider)
+    const agent = await (deadline ? beforeDeadline(connecting, deadline) : connecting)
+    deadline?.throwIfExpired()
     if (!this.#providerModelRequests.has(provider)) {
       const epoch = this.#providerEpoch(provider)
-      const discovery = agent.listModels().then((models) => {
+      const modelDeadline = deadline ? deadline.limit(this.#agentTimeoutMs)
+        : OperationDeadline.start(this.#agentTimeoutMs, { signal: this.#runtimeDiscoveryAbort.signal })
+      const discovery = beforeDeadline(
+        Promise.resolve().then(() => { modelDeadline.throwIfExpired(); return agent.listModels(modelDeadline.signal) }),
+        modelDeadline,
+      ).catch((error: unknown) => {
+        if (error instanceof OperationDeadlineExceededError) throw new OperationTimeoutError("Model discovery timed out")
+        throw error
+      }).finally(() => modelDeadline.clear()).then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
           .filter((model) => model.provider === provider)
-        if (parsed.length > 0 && this.#providerEpoch(provider) === epoch) {
+        if (parsed.length > 0 && this.#providerEpoch(provider) === epoch
+          && this.#providerModelRequests.get(provider) === discovery) {
           this.#providerModels.set(provider, { models: parsed, cachedAt: Date.now() })
         }
         return parsed
@@ -3039,11 +3081,82 @@ export class DomovoiDaemon {
         () => { if (this.#providerModelRequests.get(provider) === discovery) this.#providerModelRequests.delete(provider) },
       )
     }
-    return withTimeout(
-      this.#providerModelRequests.get(provider)!,
-      this.#agentTimeoutMs,
-      "Model discovery timed out",
-    )
+    const request = this.#providerModelRequests.get(provider)!
+    try {
+      return await (deadline ? beforeDeadline(request, deadline) : request)
+    } catch (error) {
+      if (this.#providerModelRequests.get(provider) === request) this.#providerModelRequests.delete(provider)
+      throw error
+    }
+  }
+
+  #inspectRuntimeReadiness(provider: string): Promise<ProviderDetection | undefined> {
+    let inspection = this.#runtimeReadiness.get(provider)
+    if (!inspection) {
+      const deadline = OperationDeadline.start(this.#runtimeDiscoveryTimeoutMs, { signal: this.#runtimeDiscoveryAbort.signal })
+      inspection = beforeDeadline(Promise.resolve().then(async () => {
+        if (this.#providerProbe?.inspectProvider) return this.#providerProbe.inspectProvider(provider, deadline.signal)
+        return (await this.#providerProbe?.inspect(deadline.signal))?.find((candidate) => candidate.id === provider)
+      }), deadline)
+        .finally(() => {
+          deadline.clear()
+          if (this.#runtimeReadiness.get(provider) === inspection) this.#runtimeReadiness.delete(provider)
+        })
+      this.#runtimeReadiness.set(provider, inspection)
+    }
+    return inspection
+  }
+
+  async #runtimeReadinessRefusal(provider: string, deadline: OperationDeadline): Promise<RuntimeDiscoveryRefusalReason | undefined> {
+    const detection = await beforeDeadline(this.#inspectRuntimeReadiness(provider), deadline)
+    const status = detection?.status
+    if (status === "ready") return undefined
+    // An authentication change also invalidates catalogs from the old account.
+    this.#providerModels.delete(provider)
+    this.#providerModelRequests.delete(provider)
+    return status === "auth-required" || status === "missing" ? status : "readiness-unknown"
+  }
+
+  #discoverRuntime(provider: string): Promise<RuntimeDiscoverResult> {
+    let discovery = this.#runtimeDiscoveries.get(provider)
+    if (!discovery) {
+      discovery = this.#discoverRuntimeOnce(provider).finally(() => {
+        if (this.#runtimeDiscoveries.get(provider) === discovery) this.#runtimeDiscoveries.delete(provider)
+      })
+      this.#runtimeDiscoveries.set(provider, discovery)
+    }
+    return discovery
+  }
+
+  async #discoverRuntimeOnce(provider: string): Promise<RuntimeDiscoverResult> {
+    const identity = { machineId: this.#snapshot.machine.id, provider }
+    const refused = (reason: RuntimeDiscoveryRefusalReason): RuntimeDiscoverResult => ({
+      ...identity, status: "unavailable", reason, ...runtimeDiscoveryRefusals[reason],
+    })
+    const deadline = OperationDeadline.start(this.#runtimeDiscoveryTimeoutMs, { signal: this.#runtimeDiscoveryAbort.signal })
+    try {
+      const agent = this.#agents.require(provider)
+      const reason = await this.#runtimeReadinessRefusal(provider, deadline)
+      if (reason) return refused(reason)
+      const models = await this.#listProviderModels(provider, deadline)
+      const model = models.find((candidate) => candidate.isDefault) ?? models[0]
+      if (!model) return refused("no-models")
+      const ask = agent.permissionCapabilities?.ask === "read-only"
+      return rpcMethods["runtime.discover"].result.parse({
+        ...identity, status: "ready", models,
+        defaultRuntime: { provider, model: model.id, reasoning: model.defaultReasoningEffort, permissionMode: ask ? "ask" : "plan", auto: false },
+        permissionModes: ask ? ["ask", "plan", "build"] : ["plan", "build"],
+        supportsAuto: agent.permissionCapabilities?.buildAuto === "pre-execution",
+      })
+    } catch (error) {
+      this.#providerModels.delete(provider)
+      if (error instanceof AgentProviderUnavailableError) return refused("unsupported")
+      if (error instanceof OperationTimeoutError || error instanceof OperationDeadlineExceededError) return refused("timeout")
+      if (classifyProviderFailure(error).kind === "authentication-expired") return refused("auth-required")
+      return refused("discovery-failed")
+    } finally {
+      deadline.clear()
+    }
   }
 
   async #resolveRuntime(runtime: Runtime): Promise<Runtime> {
@@ -3058,6 +3171,19 @@ export class DomovoiDaemon {
     }
     const violation = permissionViolation(runtime, agent)
     if (violation) throw new RuntimeValidationError(violation)
+    if (this.#providerProbe) {
+      const deadline = OperationDeadline.start(this.#runtimeDiscoveryTimeoutMs, { signal: this.#runtimeDiscoveryAbort.signal })
+      try {
+        const reason = await this.#runtimeReadinessRefusal(runtime.provider, deadline)
+        if (reason) throw new RuntimeValidationError(runtimeDiscoveryRefusals[reason].message)
+      } catch (error) {
+        if (error instanceof RuntimeValidationError) throw error
+        const reason = error instanceof OperationDeadlineExceededError ? "timeout" : "readiness-unknown"
+        throw new RuntimeValidationError(runtimeDiscoveryRefusals[reason].message)
+      } finally {
+        deadline.clear()
+      }
+    }
     let models: ProviderModel[]
     try {
       models = await this.#listProviderModels(runtime.provider)
@@ -3472,6 +3598,20 @@ export class DomovoiDaemon {
     try {
       let changed = false
       let alreadyPersisted = false
+      if (method === "device.current") {
+        const verified = this.#deviceCredentials.get(socket)?.verified
+        const result = verified?.binding.kind === "client"
+          ? { kind: "client", machineId: this.#snapshot.machine.id, deviceId: verified.device.id, client: verified.binding.client }
+          : { kind: "daemon", machineId: this.#snapshot.machine.id }
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        return
+      }
+      if (method === "fleet.clientRoute") {
+        const result = await this.#clientRoute(paramsResult.data as RpcParams<"fleet.clientRoute">, signal)
+        if (result.outcome === "refused") this.#amendPendingAudit(socket, request.id, { outcome: "denied", detail: `reason=${result.reason}` })
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result })
+        return
+      }
       if (method === "fleet.heartbeat" || method === "device.revokeCurrent") {
         const credential = this.#deviceCredentials.get(socket)?.verified
         if (authenticatedActor?.kind !== "machine" || credential?.binding.kind !== "machine") {
@@ -3853,6 +3993,14 @@ export class DomovoiDaemon {
               },
             ),
           }),
+        })
+        return
+      }
+
+      if (method === "runtime.discover") {
+        const params = paramsResult.data as RpcParams<"runtime.discover">
+        this.#send(socket, { jsonrpc: "2.0", id: request.id,
+          result: rpcMethods[method].result.parse(await this.#discoverRuntime(params.provider)),
         })
         return
       }
@@ -4678,7 +4826,7 @@ export class DomovoiDaemon {
                 label: (params as { label: string }).label,
                 binding: {
                   kind: "client",
-                  client: (params as RpcParams<"device.pair">).client,
+                  client: (params as RpcParams<"device.pair">).targetClient ?? (params as RpcParams<"device.pair">).client,
                 },
               })
             : method === "device.list"
@@ -8289,7 +8437,8 @@ export function frameAncestorsFor(origins: Iterable<string>): string {
   for (const origin of origins) {
     try {
       const parsed = new URL(origin)
-      if (parsed.protocol === "file:") sources.push("file:")
+      if (origin === "domovoi-app://desktop") sources.push(origin)
+      else if (parsed.protocol === "file:") sources.push("file:")
       else if (parsed.protocol === "http:" || parsed.protocol === "https:") {
         sources.push(parsed.origin)
       }

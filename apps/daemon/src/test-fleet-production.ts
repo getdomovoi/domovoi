@@ -8,13 +8,14 @@ import { promisify } from "node:util"
 
 import {
   fleetEnrollResultSchema, protocolVersion, rpcMethods, workspaceSnapshotSchema,
-  type FleetSnapshot, type RpcMethod, type RpcParams,
+  type FleetSnapshot, type RpcMethod, type RpcParams, type RpcResult,
 } from "@getdomovoi/protocol"
 import { expect } from "vitest"
 import { WebSocket, type ClientOptions } from "ws"
 
 import type { AgentAdapter } from "./agents.js"
 import type { DaemonEnvironment } from "./config.js"
+import type { ProviderProbe } from "./providers.js"
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
@@ -39,6 +40,9 @@ export type FleetDaemonStart = {
   protocolVersion?: string
   environment?: DaemonEnvironment
   clientOptions?: ClientOptions
+  providerProbe?: ProviderProbe
+  agents?: Readonly<Record<string, AgentAdapter>>
+  runtimeDiscoveryTimeoutMs?: number
 }
 
 // A provider boundary that can create a session without any real agent.
@@ -132,10 +136,10 @@ export function fleetProductionHarness() {
     }
     return {
       socket, call, notifications,
-      async ok<M extends RpcMethod>(method: M, params: RpcParams<M>) {
+      async ok<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<RpcResult<M>> {
         const response = await call(method, params)
         expect(response.error, `RPC ${method}`).toBeUndefined()
-        return rpcMethods[method].result.parse(response.result)
+        return rpcMethods[method].result.parse(response.result) as RpcResult<M>
       },
     }
   }
@@ -146,17 +150,20 @@ export function fleetProductionHarness() {
     const credentials = new MachineCredentialStore({
       get: (id) => values.get(id), set: (id, value) => { values.set(id, value) }, delete: (id) => values.delete(id),
     })
-    const start = async ({ port = 0, advertisedHost, protocolVersion: advertisedProtocolVersion, environment = {}, clientOptions }: FleetDaemonStart = {}) => {
+    const start = async ({ port = 0, advertisedHost, protocolVersion: advertisedProtocolVersion, environment = {}, clientOptions,
+      providerProbe, agents, runtimeDiscoveryTimeoutMs }: FleetDaemonStart = {}) => {
       const handle = await createProductionDaemonWithDependencies({ environment, homeDirectory, machineLabel: label }, {
         ...productionDaemonDependencies,
-        createProviderProbe: () => ({ inspect: async () => [] }),
+        createProviderProbe: () => providerProbe ?? ({ inspect: async () => agent
+          ? [{ id: "claude-code", command: "claude", status: "ready" }] : [] }),
         createMachineCredentials: () => asyncTestCredentials(credentials),
         // The production dependency builds the daemon; only its tuning changes.
         createDaemon: (options) => productionDaemonDependencies.createDaemon({
           ...options, port, fleetHeartbeatIntervalMs: 50, fleetOperationTimeoutMs: 2_000,
           ...(advertisedHost ? { advertiseHost: advertisedHost } : {}),
           ...(advertisedProtocolVersion ? { advertisedProtocolVersion } : {}),
-          ...(agent ? { agents: { "claude-code": agent } } : {}),
+          ...(agents ? { agents } : agent ? { agents: { "claude-code": agent } } : {}),
+          ...(runtimeDiscoveryTimeoutMs !== undefined ? { runtimeDiscoveryTimeoutMs } : {}),
         }),
       })
       daemons.push(handle)

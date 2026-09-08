@@ -142,6 +142,8 @@ export function createDesktopWindowBridge(
   const acquireDaemon = async () => daemonAcquisitionResult(await ipc.invoke("domovoi:rpc-endpoint"))
   return {
     platform,
+    fleetRoute: (machineId, budgetMs) => ipc.invoke("domovoi:fleet-route", machineId, budgetMs),
+    forgetFleetRoute: (machineId) => ipc.invoke("domovoi:fleet-route-forget", machineId),
     acquireDaemon,
     reacquireDaemon: async () => daemonAcquisitionResult(await ipc.invoke("domovoi:rpc-endpoint-reconnect")),
     getRpcEndpoint: async () => {
