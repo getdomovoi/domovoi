@@ -116,7 +116,8 @@ it('refusal retains the message without automatic retry', async () => {
   await settle()
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
   expect(screen.getByText('retry only by choice')).toBeTruthy()
-  expect(screen.getByText(/Held because sending failed/)).toBeTruthy()
+  // The refusal is shown as what it is, with the provider's own words.
+  expect(screen.getByText(/not sent: Provider refused the turn/)).toBeTruthy()
   await snapshot(socket, idle(value))
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
 })
@@ -248,4 +249,40 @@ it('waits for a pending catalog instead of claiming the chosen skill is gone', a
   await settle()
   expect(falseMissingNotice).toBeNull()
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+})
+
+it('keeps both a newer instruction and the one that was refused', async () => {
+  const value = running()
+  const socket = await open(value)
+  queue('the refused one')
+  await snapshot(socket, idle(value))
+  queue('the newer one')
+  await act(async () => fail(socket, 'session.send', { code: -32000, message: 'Provider refused the turn' }))
+  await settle()
+  // Neither may be silently dropped: the person wrote both.
+  expect(screen.getByText('the refused one')).toBeTruthy()
+  expect(screen.getByText('the newer one')).toBeTruthy()
+  expect(screen.getByText(/not sent: Provider refused the turn/)).toBeTruthy()
+})
+
+
+it('settling an earlier refusal wakes a newer queue whose turn already ended', async () => {
+  const value = running()
+  const socket = await open(value)
+  queue('first instruction')
+  await snapshot(socket, idle(value))
+  expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+  const nextTurn = structuredClone(value)
+  nextTurn.sessions.find(session => session.id === value.activeSessionId)!.activeTurnId = 'a-new-turn'
+  await snapshot(socket, nextTurn)
+  queue('newer instruction')
+  await snapshot(socket, idle(nextTurn))
+  // Still blocked: the first dispatch has not answered, so the session is
+  // marked in flight and the newer message cannot go yet.
+  expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+  await act(async () => fail(socket, 'session.send', { code: -32000, message: 'Provider refused the turn' }))
+  await settle()
+  // The settlement itself must wake it. Nothing else is going to.
+  expect(sentRequests(socket, 'session.send')).toHaveLength(2)
+  expect(sentRequests(socket, 'session.send')[1]?.params).toMatchObject({ prompt: 'newer instruction' })
 })
