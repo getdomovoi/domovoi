@@ -22,9 +22,31 @@ function receipt(overrides: Partial<Receipt> = {}): Receipt {
   }
 }
 
-it("says the work is revertible and names the checkpoint", () => {
+it("names the recorded reference without promising the work can be undone", () => {
   render(<ApprovalReceipt receipt={receipt()} />)
-  expect(screen.getByText(/Checkpoint ckpt_7f24 was taken before it/)).toBeTruthy()
+  // Not a SHA, so it is shown whole: "ckpt_7f" would name something else.
+  expect(screen.getByText(/Recorded against ckpt_7f24\./)).toBeTruthy()
+  // The daemon takes no per-operation checkpoint, and a commit restores files
+  // in the worktree only.
+  expect(screen.getByText(/cannot undo effects outside it/)).toBeTruthy()
+  expect(screen.queryByText(/so this is revertible/)).toBeNull()
+})
+
+it("shortens a full commit SHA but never a named reference", () => {
+  render(<ApprovalReceipt receipt={receipt({ checkpoint: "a".repeat(39) + "f" })} />)
+  expect(screen.getByText(/Recorded against aaaaaaa\./)).toBeTruthy()
+})
+
+it("says when there is no reference at all rather than naming one", () => {
+  render(<ApprovalReceipt receipt={receipt({ checkpoint: "unavailable" })} />)
+  expect(screen.getByText(/No reference was recorded for this session/)).toBeTruthy()
+  expect(screen.queryByText(/Recorded against/)).toBeNull()
+})
+
+it("does not claim the agent heard a denial explanation", () => {
+  render(<ApprovalReceipt receipt={receipt({ decision: "deny-explain" })} />)
+  expect(screen.getByText(/the agent was told only that you denied it/)).toBeTruthy()
+  expect(screen.queryByText(/The agent was told why/)).toBeNull()
 })
 
 it("says a one-off allowance saved no rule", () => {

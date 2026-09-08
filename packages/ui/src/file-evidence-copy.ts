@@ -32,7 +32,9 @@ export function revertPrompt(path: string, target: FileRevertTarget | undefined)
       // The generic verb, because without a target this cannot say whether the
       // file will come back or go away.
       verb: "Revert",
-      confirmation: `Revert ${path} to the session base commit? Only this file changes.`,
+      // Without a target this cannot say whether the file comes back or goes
+      // away, and hiding that behind "revert" would understate the action.
+      confirmation: `Revert ${path} to the session base commit? This daemon did not describe the target, so this may restore an earlier version, or remove the file and discard its uncommitted changes. Only this file changes.`,
     }
   }
   if (target.kind === "unavailable") {
