@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
+
 import {
   canonicalBase64DecodedByteLength,
   clientKindSchema,
@@ -49,7 +51,7 @@ export const sessionTransferMemberSchema = z.discriminatedUnion("kind", [
   z.object({
     ...memberCommon,
     kind: z.literal("artifact-source"),
-    artifactId: z.string().trim().min(1).max(512),
+    artifactId: z.string().trim().min(1).check(utf16MaxLength(512)),
   }).strict(),
   z.object({
     ...memberCommon,
@@ -62,7 +64,7 @@ export const sessionTransferMemberSchema = z.discriminatedUnion("kind", [
   }),
 ])
 
-const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/).max(128)
+const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/).check(utf16MaxLength(128))
 const sessionRefSchema = z.string().regex(/^refs\/domovoi\/sessions\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/)
 
 export const sessionTransferRepositorySchema = z.discriminatedUnion("method", [
@@ -104,9 +106,9 @@ const sessionTransferTargetNonConflictRefusalSchema = sessionTransferTargetRefus
 
 export const transferTargetPreflightParamsSchema = z.object({
   contractVersion: sessionTransferContractVersionSchema,
-  sessionId: z.string().trim().min(1).max(128),
+  sessionId: z.string().trim().min(1).check(utf16MaxLength(128)),
   sourceMachineId: machineIdSchema,
-  sourceProjectId: z.string().trim().min(1).max(512),
+  sourceProjectId: z.string().trim().min(1).check(utf16MaxLength(512)),
   lineageCommit: commitShaSchema,
   ownershipGeneration: safeGenerationSchema,
   method: transferMethodSchema,
@@ -117,7 +119,7 @@ export const transferTargetPreflightParamsSchema = z.object({
 export const transferTargetPreflightResultSchema = z.union([
   z.object({
     allowed: z.literal(true),
-    targetProjectId: z.string().trim().min(1).max(512),
+    targetProjectId: z.string().trim().min(1).check(utf16MaxLength(512)),
     lineageCommit: commitShaSchema,
   }).strict(),
   z.object({
@@ -138,14 +140,14 @@ export const sessionTransferManifestSchema = z.object({
   sourceMachineId: machineIdSchema,
   targetMachineId: machineIdSchema,
   intentDigest: sessionTransferIntentDigestSchema,
-  createdAt: z.string().datetime({ offset: true }),
+  createdAt: offsetDateTimeSchema,
   ownership: z.object({
     fromGeneration: safeGenerationSchema,
     toGeneration: safeGenerationSchema,
   }).strict(),
   project: z.object({
-    sourceProjectId: z.string().trim().min(1).max(512),
-    targetProjectId: z.string().trim().min(1).max(512),
+    sourceProjectId: z.string().trim().min(1).check(utf16MaxLength(512)),
+    targetProjectId: z.string().trim().min(1).check(utf16MaxLength(512)),
     lineageCommit: commitShaSchema,
     checkpointCommit: commitShaSchema,
   }).strict(),

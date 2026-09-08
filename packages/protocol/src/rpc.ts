@@ -1,4 +1,6 @@
 import { z } from "zod"
+
+import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 
@@ -101,7 +103,7 @@ import {
 } from "./skills.js"
 
 export const requestIdSchema = z.union([
-  z.string().min(1).max(512),
+  z.string().min(1).check(utf16MaxLength(512)),
   z.number().int().safe(),
 ])
 export const daemonAuthenticationErrorCode = -32001 as const
@@ -238,22 +240,22 @@ export const maximumSessionEvidenceOutputLength = 4_096
 export const maximumEmergencyStopFailures = 100
 export const maximumEmergencyStopFailureMessageLength = 512
 
-const streamedIdSchema = z.string().min(1).max(512)
-const historyEntryIdSchema = z.string().min(1).max(1_024)
-const streamedChunkSchema = z.string().min(1).max(maximumWorkspaceDeltaChunkLength)
+const streamedIdSchema = z.string().min(1).check(utf16MaxLength(512))
+const historyEntryIdSchema = z.string().min(1).check(utf16MaxLength(1_024))
+const streamedChunkSchema = z.string().min(1).check(utf16MaxLength(maximumWorkspaceDeltaChunkLength))
 
 export const workspaceDeltaOperationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("assistant.append"),
     id: streamedIdSchema,
     delta: streamedChunkSchema,
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
   z.object({
     kind: z.literal("tool-output.append"),
     id: streamedIdSchema,
     delta: streamedChunkSchema,
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
   z.object({
     kind: z.literal("plan.append"),
@@ -265,7 +267,7 @@ export const workspaceDeltaOperationSchema = z.discriminatedUnion("kind", [
 
 export const workspaceDeltaSchema = z.object({
   sessionId: streamedIdSchema,
-  updatedAt: z.string().datetime(),
+  updatedAt: dateTimeSchema,
   operations: z.array(workspaceDeltaOperationSchema).min(1).max(maximumWorkspaceDeltaOperations),
 })
 
@@ -283,7 +285,7 @@ const historyEntryBase = {
   id: historyEntryIdSchema,
   sourceId: streamedIdSchema,
   sessionId: streamedIdSchema,
-  createdAt: z.string().datetime(),
+  createdAt: dateTimeSchema,
 }
 
 const historyToolFields = {
@@ -358,7 +360,7 @@ export const sessionHistoryParamsSchema = z.object({
     (categories) => new Set(categories).size === categories.length,
     "History categories must be unique",
   ).optional(),
-  query: z.string().trim().min(1).max(maximumSessionHistoryQueryLength).optional(),
+  query: z.string().trim().min(1).check(utf16MaxLength(maximumSessionHistoryQueryLength)).optional(),
 })
 
 export const sessionHistoryPageSchema = z.object({
@@ -412,7 +414,7 @@ export const sessionHistoryPageSchema = z.object({
   }
 })
 
-const auditTextSchema = z.string().trim().min(1).max(512)
+const auditTextSchema = z.string().trim().min(1).check(utf16MaxLength(512))
 export const auditOutcomeSchema = z.enum([
   "started",
   "succeeded",
@@ -420,7 +422,7 @@ export const auditOutcomeSchema = z.enum([
   "denied",
   "cancelled",
 ])
-const auditActorReferenceSchema = z.string().trim().min(1).max(128)
+const auditActorReferenceSchema = z.string().trim().min(1).check(utf16MaxLength(128))
 export const auditActorSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("client"),
@@ -444,14 +446,14 @@ export const auditActorSchema = z.discriminatedUnion("kind", [
 ])
 export const auditEntrySchema = z.object({
   id: streamedIdSchema,
-  occurredAt: z.string().datetime(),
+  occurredAt: dateTimeSchema,
   actor: auditActorSchema,
   action: auditTextSchema,
   outcome: auditOutcomeSchema,
   sessionId: streamedIdSchema.optional(),
   projectId: streamedIdSchema.optional(),
   target: auditTextSchema.optional(),
-  detail: z.string().max(4_096).optional(),
+  detail: z.string().check(utf16MaxLength(4_096)).optional(),
 }).strict()
 
 const auditQueryFiltersSchema = z.object({
@@ -511,9 +513,9 @@ export const auditQueryPageSchema = z.object({
 
 export const auditExportResultSchema = z.object({
   format: z.literal("jsonl"),
-  exportedAt: z.string().datetime(),
+  exportedAt: dateTimeSchema,
   entryCount: z.number().int().min(0).max(maximumAuditExportItems),
-  content: z.string().max(maximumAuditExportLength),
+  content: z.string().check(utf16MaxLength(maximumAuditExportLength)),
   hasMore: z.boolean(),
   nextCursor: streamedIdSchema.optional(),
 }).superRefine((result, context) => {
@@ -575,8 +577,8 @@ function auditExportLines(content: string, context: z.RefinementCtx): string[] {
   return content.slice(0, -1).split("\n")
 }
 export const changedFileEvidenceSchema = z.object({
-  path: z.string().min(1).max(4_096),
-  previousPath: z.string().min(1).max(4_096).optional(),
+  path: z.string().min(1).check(utf16MaxLength(4_096)),
+  previousPath: z.string().min(1).check(utf16MaxLength(4_096)).optional(),
   status: z.enum([
     "added",
     "modified",
@@ -610,7 +612,7 @@ export const changedFileEvidenceSchema = z.object({
 
 export const workspaceEvidenceSchema = z.object({
   baseCommit: commitShaSchema,
-  diff: z.string().max(maximumSessionEvidenceDiffLength),
+  diff: z.string().check(utf16MaxLength(maximumSessionEvidenceDiffLength)),
   diffTruncated: z.boolean(),
   totalChangedFiles: z.number().int().nonnegative(),
   files: z.array(changedFileEvidenceSchema).max(maximumSessionEvidenceFiles),
@@ -642,12 +644,12 @@ export const workspaceEvidenceSchema = z.object({
 
 export const testRunEvidenceSchema = z.object({
   id: streamedIdSchema,
-  command: z.string().min(1).max(maximumSessionEvidenceCommandLength),
+  command: z.string().min(1).check(utf16MaxLength(maximumSessionEvidenceCommandLength)),
   commandTruncated: z.boolean(),
   status: z.enum(["passed", "failed"]),
-  output: z.string().max(maximumSessionEvidenceOutputLength).optional(),
+  output: z.string().check(utf16MaxLength(maximumSessionEvidenceOutputLength)).optional(),
   outputTruncated: z.boolean(),
-  createdAt: z.string().datetime(),
+  createdAt: dateTimeSchema,
 }).strict()
 
 export const testEvidenceSchema = z.object({
@@ -707,7 +709,7 @@ export const testEvidenceSchema = z.object({
 
 export const sessionEvidenceSchema = z.object({
   sessionId: streamedIdSchema,
-  refreshedAt: z.string().datetime(),
+  refreshedAt: dateTimeSchema,
   workspace: workspaceEvidenceSchema,
   tests: testEvidenceSchema,
 }).strict()
@@ -722,14 +724,14 @@ const protocolVersionPatternSchema = z.string().regex(/^\d+\.\d+\.\d+$/, "Protoc
 const clientHelloParamsSchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema.optional(),
-  clientVersion: z.string().min(1).max(64),
+  clientVersion: z.string().min(1).check(utf16MaxLength(64)),
   protocolVersion: protocolVersionPatternSchema.optional(),
   authToken: credentialSchema.optional(),
 }).strict()
 
 const machineHelloParamsSchema = z.object({
   client: z.literal("machine"),
-  clientVersion: z.string().min(1).max(64),
+  clientVersion: z.string().min(1).check(utf16MaxLength(64)),
   protocolVersion: protocolVersionPatternSchema.optional(),
   authToken: credentialSchema.optional(),
 }).strict()
@@ -773,7 +775,7 @@ export const artifactAuthorizeResultSchema = z.object({
   signature: credentialSchema,
 }).strict()
 
-const terminalIdSchema = z.string().min(1).max(128)
+const terminalIdSchema = z.string().min(1).check(utf16MaxLength(128))
 const terminalDimensionSchema = z.number().int().min(2).max(1_000)
 
 export const terminalOwnerSchema = z.object({
@@ -792,7 +794,7 @@ export const terminalCreateParamsSchema = z.object({
 
 export const terminalInputParamsSchema = z.object({
   terminalId: terminalIdSchema,
-  data: z.string().min(1).max(65_536),
+  data: z.string().min(1).check(utf16MaxLength(65_536)),
 }).extend(terminalClientIdentitySchema.shape)
 
 export const terminalResizeParamsSchema = z.object({
@@ -823,7 +825,7 @@ export const terminalSessionSchema = z.object({
 export const terminalAcceptedSchema = z.object({ accepted: z.literal(true) })
 export const terminalOutputNotificationSchema = z.object({
   terminalId: terminalIdSchema,
-  data: z.string().min(1).max(maximumTerminalOutputChunkCharacters),
+  data: z.string().min(1).check(utf16MaxLength(maximumTerminalOutputChunkCharacters)),
 })
 export const terminalClosedNotificationSchema = z.object({
   terminalId: terminalIdSchema,
@@ -863,14 +865,14 @@ export const emergencyStopFailureSchema = z.object({
     "provider",
     "persistence",
   ]),
-  targetId: z.string().trim().min(1).max(512).optional(),
-  message: z.string().trim().min(1).max(maximumEmergencyStopFailureMessageLength),
+  targetId: z.string().trim().min(1).check(utf16MaxLength(512)).optional(),
+  message: z.string().trim().min(1).check(utf16MaxLength(maximumEmergencyStopFailureMessageLength)),
 }).strict()
 
 export const systemEmergencyStopResultSchema = z.object({
   snapshot: workspaceSnapshotSchema,
-  stopId: z.string().trim().min(1).max(128),
-  requestedAt: z.string().datetime(),
+  stopId: z.string().trim().min(1).check(utf16MaxLength(128)),
+  requestedAt: dateTimeSchema,
   client: clientKindSchema,
   outcomes: emergencyStopOutcomesSchema,
   failures: z.array(emergencyStopFailureSchema).max(maximumEmergencyStopFailures),
@@ -884,7 +886,7 @@ export const approvalResolveParamsSchema = z
   .object({
     approvalId: z.string().min(1),
     decision: approvalDecisionSchema,
-    explanation: z.string().trim().min(1).max(4_096).optional(),
+    explanation: z.string().trim().min(1).check(utf16MaxLength(4_096)).optional(),
   })
   .superRefine((params, context) => {
     if (params.decision === "deny-explain" && !params.explanation) {
@@ -909,18 +911,18 @@ export const sessionRestartProviderThreadParamsSchema = z.object({
 }).strict()
 
 export const runtimeModelsParamsSchema = z.object({
-  provider: z.string().trim().min(1).max(64),
+  provider: z.string().trim().min(1).check(utf16MaxLength(64)),
   client: clientKindSchema,
 })
 
 export const projectOpenParamsSchema = z.object({
-  path: z.string().min(1).max(4_096),
+  path: z.string().min(1).check(utf16MaxLength(4_096)),
   client: clientKindSchema,
   confirmation: projectSwitchConfirmationSchema.optional(),
 }).strict()
 
 export const sessionCreateParamsSchema = z.object({
-  title: z.string().trim().min(1).max(512),
+  title: z.string().trim().min(1).check(utf16MaxLength(512)),
   runtime: runtimeSchema,
   client: clientKindSchema,
 })
@@ -950,7 +952,7 @@ export const sessionEvidenceParamsSchema = z.object({
 // A revert names one file inside the session worktree, so anything that could
 // leave it, or that git would read as an option rather than a path, is refused
 // before the daemon touches the worktree.
-export const worktreeFilePathSchema = z.string().min(1).max(1024).refine(
+export const worktreeFilePathSchema = z.string().min(1).check(utf16MaxLength(1024)).refine(
   (value) => {
     if (value.startsWith("-") || value.includes("\0")) return false
     if (value.startsWith("/") || value.startsWith("\\")) return false
@@ -975,14 +977,14 @@ export const sessionArchiveParamsSchema = z.object({
 
 export const sessionSendParamsSchema = z.object({
   sessionId: z.string().min(1),
-  prompt: z.string().trim().min(1).max(maximumSessionPromptCharacters),
+  prompt: z.string().trim().min(1).check(utf16MaxLength(maximumSessionPromptCharacters)),
   client: clientKindSchema,
   skillSelection: turnSkillSelectionSchema.optional(),
 })
 
 export const checkpointCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
-  label: z.string().trim().min(1).max(512).optional(),
+  label: z.string().trim().min(1).check(utf16MaxLength(512)).optional(),
   client: clientKindSchema,
 })
 
@@ -1046,7 +1048,7 @@ export const planEditDispositionSchema = z.enum([
 ])
 
 export const planEditReceiptSchema = z.object({
-  id: z.string().trim().min(1).max(256),
+  id: z.string().trim().min(1).check(utf16MaxLength(256)),
   editId: pendingWorkingPlanEditSchema.shape.id,
   sessionId: z.string().min(1),
   disposition: planEditDispositionSchema,
@@ -1054,7 +1056,7 @@ export const planEditReceiptSchema = z.object({
   planRevision: z.number().int().positive(),
   structureRevision: z.number().int().nonnegative(),
   ...workingPlanClientAttributionSchema.shape,
-  createdAt: z.string().datetime(),
+  createdAt: dateTimeSchema,
 }).strict()
 
 export const planMutationResultSchema = z.object({
@@ -1069,13 +1071,13 @@ export const annotationCreateParamsSchema = z.object({
   artifactId: z.string().min(1),
   variantId: z.string().min(1).optional(),
   anchor: annotationAnchorSchema,
-  body: z.string().trim().min(1).max(8_192),
+  body: z.string().trim().min(1).check(utf16MaxLength(8_192)),
   visualContextUpload: z.object({
     artifactRevision: z.number().int().positive(),
     mimeType: z.literal("image/png"),
     width: z.number().int().positive().max(2048),
     height: z.number().int().positive().max(2048),
-    data: z.string().min(4).max(2_000_000).refine(
+    data: z.string().min(4).check(utf16MaxLength(2_000_000)).refine(
       (value) => {
         const decodedBytes = canonicalBase64DecodedByteLength(value)
         return decodedBytes !== undefined && decodedBytes <= 1_500_000
@@ -1088,7 +1090,7 @@ export const annotationCreateParamsSchema = z.object({
 
 export const annotationReplyParamsSchema = z.object({
   annotationId: z.string().min(1),
-  body: z.string().trim().min(1).max(8_192),
+  body: z.string().trim().min(1).check(utf16MaxLength(8_192)),
   client: clientKindSchema,
 })
 
@@ -1112,7 +1114,7 @@ const usageTotalsSchema = z.object({
   reasoningTokens: z.number().int().nonnegative(),
   totalTokens: z.number().int().nonnegative(),
   costMicros: z.number().int().nonnegative(),
-  currency: z.string().length(3).optional(),
+  currency: z.string().check(utf16Length(3)).optional(),
 }).strict()
 export const sessionUsageSchema = usageTotalsSchema.extend({
   sessionId: z.string().min(1),
@@ -1145,8 +1147,8 @@ export const sessionUsageSchema = usageTotalsSchema.extend({
 })
 
 export const usageWindowParamsSchema = z.object({
-  start: z.string().datetime(),
-  end: z.string().datetime(),
+  start: dateTimeSchema,
+  end: dateTimeSchema,
 }).strict().superRefine((window, context) => {
   if (Date.parse(window.start) < Date.parse(window.end)) return
   context.addIssue({

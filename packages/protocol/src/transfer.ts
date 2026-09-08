@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { offsetDateTimeSchema } from "./validation.js"
+
 import { clientIdentityIdSchema, commitShaSchema, machineIdSchema } from "./identifiers.js"
 import { clientKindSchema, type SessionSummary } from "./schema.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
@@ -135,8 +137,8 @@ export const transferReceiptSchema = z.object({
     client: clientKindSchema,
     clientId: clientIdentityIdSchema.optional(),
   }).strict(),
-  startedAt: z.string().datetime({ offset: true }),
-  completedAt: z.string().datetime({ offset: true }),
+  startedAt: offsetDateTimeSchema,
+  completedAt: offsetDateTimeSchema,
 }).strict().superRefine((receipt, context) => {
   if (receipt.outcome === "succeeded" && receipt.reason !== undefined) {
     context.addIssue({

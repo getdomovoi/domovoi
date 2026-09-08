@@ -1,0 +1,47 @@
+{
+  "_source": {
+    "url": "https://github.com/centromere/cacophony/blob/8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247/vectors/cacophony.txt",
+    "commit": "8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247",
+    "sha256": "3bde7c09a6f349ee11c825c50fcc02649f8f02a47c857a459206b357f9386cae",
+    "derivation": "Cacophony inputs, locally derived P-256 outputs; not a published Cacophony vector",
+    "profile": "Snow 0.10.0 P256: 65-byte uncompressed SEC1 public key, 32-byte big-endian ECDH x coordinate",
+    "profile_commit": "4bb43f50370bdb3e8b1b57814ac662864db2704f",
+    "generator": "derive-p256-fixture.py; Python cryptography 50.0.1; checked against published A and B first",
+    "private_key_interpretation": "The same public fixture bytes interpreted as big-endian P-256 scalars"
+  },
+  "protocol_name": "Noise_IK_P256_AESGCM_SHA256",
+  "init_prologue": "4a6f686e2047616c74",
+  "init_static": "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+  "init_ephemeral": "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+  "init_remote_static": "048bbf2f46fab4c8a02dcbf34741c444fb235f43dd80fdc4d02c1e2b21c41e2cd2ac2111ec092fe6a5a00f8dfc274d73b57fefd7e4e32654ed7d360bda205ee31d",
+  "resp_prologue": "4a6f686e2047616c74",
+  "resp_static": "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+  "resp_ephemeral": "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+  "handshake_hash": "cfcb7b82da1008ef9c020fd3144de3d0752656c9426de1752d8a7565df6176df",
+  "messages": [
+    {
+      "payload": "4c756477696720766f6e204d69736573",
+      "ciphertext": "040d0021eee086f694c2dc4e8bc3e0a3d65425cc8a02f7176f8089cad33c1ce50b95f121d9c086be434f3b8f79f3a1863caa824dbde6fd7f15bfa24bbb2bc921b564597b056fb5a7c681200f0bb2ea89509c0887aba5ccfd8a962ed391cf641d76a9524f1f24d237c8253bc539afe40322ec026a55c253b534a970c3ce4f7807b094c2562633e5729e75b43ddfa0c8d768847705ce08242fcf8f1c6a354cc2de68ad79d7267a294b3c4fbefcd01f9651a640"
+    },
+    {
+      "payload": "4d757272617920526f746862617264",
+      "ciphertext": "04daee6caf74ba797451942f87593abc1e5d4af737e4aa06adf1ef1f9c0f8aa3dc1ac35db349b9a8d63857b7cff88d337f45f650ad0987c075309f41b336360fcf76a301bc9b4df893701a56e0b7395171c9b09785e00f054fa369219f29d993"
+    },
+    {
+      "payload": "462e20412e20486179656b",
+      "ciphertext": "7c936c008a28b8cabb755d4a787ca90457b760e74c2b98f9bbb3b2"
+    },
+    {
+      "payload": "4361726c204d656e676572",
+      "ciphertext": "6a28371a0dfe4f5e689f3c78a3606ec3c5d03a290ee856de33e707"
+    },
+    {
+      "payload": "4a65616e2d426170746973746520536179",
+      "ciphertext": "a21251da6b99e7dce4b6d27d6cc564a76eb66e33028be99643c602d073f5bbdf40"
+    },
+    {
+      "payload": "457567656e2042f6686d20766f6e2042617765726b",
+      "ciphertext": "3dba2ce6614a303f15aee004c7870f0c94a69548a853e4f12e734ad59ffb4afca88733bcf7"
+    }
+  ]
+}

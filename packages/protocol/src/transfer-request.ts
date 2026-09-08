@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { utf16MaxLength } from "./validation.js"
+
 import { commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
 import { clientKindSchema, workspaceSnapshotSchema } from "./schema.js"
 import {
@@ -23,10 +25,10 @@ import {
 } from "./transfer-transaction.js"
 
 // A remote name reaches git, where a leading dash would be read as an option.
-export const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/).max(128)
+export const gitRemoteNameSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/).check(utf16MaxLength(128))
 
 const sessionTransferRequestFields = {
-  sessionId: z.string().trim().min(1).max(128),
+  sessionId: z.string().trim().min(1).check(utf16MaxLength(128)),
   targetMachineId: machineIdSchema,
   initiatedByClient: clientKindSchema,
   // The bundle keeps repository bytes on the machines involved, so it is what
@@ -68,7 +70,7 @@ export const sessionTransferParamsSchema = z.object({
 })
 
 export const sessionTransferRecoverSourceParamsSchema = z.object({
-  sessionId: z.string().trim().min(1).max(128),
+  sessionId: z.string().trim().min(1).check(utf16MaxLength(128)),
   transferId: transferIdSchema,
   confirmation: z.literal("target-does-not-have-session"),
   initiatedByClient: clientKindSchema,
@@ -77,7 +79,7 @@ export const sessionTransferRecoverSourceParamsSchema = z.object({
 export const sessionTransferRecoverSourceResultSchema = workspaceSnapshotSchema
 
 export const sessionTransferResolveConflictParamsSchema = z.object({
-  sessionId: z.string().trim().min(1).max(128),
+  sessionId: z.string().trim().min(1).check(utf16MaxLength(128)),
   transferId: transferIdSchema,
   confirmation: z.literal("keep-target-session"),
   initiatedByClient: clientKindSchema,
