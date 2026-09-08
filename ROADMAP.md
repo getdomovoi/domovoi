@@ -171,6 +171,18 @@ Every ledger entry is now merged.
 - [x] Grok CLI adapter
 - [x] Provider account and readiness settings from the signed handoff
 - [x] OS-keychain storage for direct provider API keys and other secrets
+- [x] Let a client discover a provider's models and a default runtime before a session exists
+  - `runtime.discover` (#326) is read-only, scoped to the execution machine and the provider the
+    caller names, and answers with no project open. A ready result carries the provider's models,
+    a `defaultRuntime` bound to one of those models and its default reasoning effort, the
+    permission modes the adapter supports, and whether Auto is available. Auto requires Build, and
+    the returned default always has Auto off.
+  - An unavailable result carries one of seven reasons, each with the fixed action, retryability,
+    and message the protocol pins to it, so a client shows sign-in, install, retry,
+    choose-provider, or configure rather than an unknown failure. Readiness, connection, and
+    catalog share one `maximumRuntimeDiscoveryMs` budget of 10 seconds.
+  - There is no cross-machine fallback, no global preferred provider, and no project-scoped
+    catalog. `packages/protocol/README.md` documents the call for the phone and tablet clients.
 - [ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
   - Only OS-keychain key storage ships; `docs/provider-capabilities.md` lists no direct adapter.
   - Deferred past the alpha on 2026-09-03. `PRODUCT.md` line 41 commits to subscription-backed
@@ -301,9 +313,10 @@ Every ledger entry is now merged.
 - [x] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
 - [x] Sessions sidebar footer bound to the live machine name and fleet count
 
-### Handoff surfaces not yet built
+### Handoff surfaces from the desktop handoff
 
-The desktop handoff specifies these; `main` does not implement them yet.
+The desktop handoff specifies these and `main` implements them. Where a surface stops short of
+the mockup on purpose, the note under it says so.
 
 - [x] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
   Terminal, and Revoke actions
@@ -789,7 +802,10 @@ Not covered, and the reason this goal is open:
   restart to test at all;
 - a project is opened and Git is executed over the WSL route, but only inside one throwaway guest
   built from one pinned image and only as root, and no session has been transferred over it;
-- no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
+- a client is admitted to a remote daemon and drives Use and Terminal, but only between two
+  production daemons on one machine under `fleet-client-smoke.mjs`. Credentials stay in app
+  memory, so retention does not revoke on the target, and remote preview frames still have no
+  verified path.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
 bounded ordered dial, a session move, reconnect, restart, revocation, and removal. A daemon must
@@ -798,7 +814,7 @@ payload plaintext to the relay, and a bearer or channel key alone must not be en
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
-Priority: `P2`. Make plan review and safe remote control work from iPad, phones, and guest browsers.
+Priority: `P2`. Make plan review and safe remote control work from iPad, phones, and browsers.
 
 ### Account and transport services
 
@@ -840,15 +856,6 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
   - Building the tab against the mockup found four gaps: the protocol has no paused fact for a
     fleet machine, no wake RPC, and no per-machine session or tool counts, and the phone has no
     pairing flow of its own; it takes a daemon address and pairing token in Settings.
-
-### Guest sessions
-
-- [ ] Short-lived guest login with passkey or second-factor enforcement
-- [ ] No persisted daemon tokens, project content, terminal history, or provider credentials after
-  logout
-- [ ] Guest session listing and immediate revocation from a paired device
-- [ ] Distinct guest attribution in every audit receipt
-- [ ] Enforce the approved guest hard-gate capability policy
 
 ## Goal 4: package and release the open core
 
@@ -1023,14 +1030,12 @@ dependent work starts.
    bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no,
     every package manager command is a hard gate and Build auto is narrower than this roadmap
     describes.
-4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
-   whether each decision requires a second factor.
-5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
+4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
    hosted service exists.
-6. **Public site direction:** architecture-led or folklore-led narrative after real product
+5. **Public site direction:** architecture-led or folklore-led narrative after real product
    screenshots are available.
-7. **Packaging formats:** final Linux package set and Windows package-manager targets.
-8. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
+6. **Packaging formats:** final Linux package set and Windows package-manager targets.
+7. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
    and security backport duration.
 
 ## Resolved architecture decisions
@@ -1040,6 +1045,11 @@ dependent work starts.
 - WebSocket JSON-RPC is the client/daemon protocol; gRPC is not required for the current surfaces.
 - The daemon owns sessions, Git, tools, terminals, credentials, and canonical state.
 - Code stays on its execution machine; Domovoi does not add a filesystem sync layer.
+- No credential grants control of a machine whose owner did not grant it, and membership of an
+  organization is never itself a grant. A machine is owned by a person or by an organization,
+  and only an organization's own machines, such as a shared development server or an
+  on-premises inference machine, can be granted to other people. This holds at every price;
+  there is no tier that reaches another person's machine.
 - Remote connectivity prefers direct private-network transport, then a configured end-to-end
   encrypted relay. The route protocol and daemon connection manager are Apache-2.0; the official
   relay implementation and operated service are separately licensed commercial components.
@@ -1048,6 +1058,11 @@ dependent work starts.
   official relay implementation and hosted account, billing, vault, and team services are
   separately licensed commercial components.
 - Claude Design's app and brand handoffs remain the design source of truth.
+- Guest sessions are not a product feature. Short-lived guest access existed to keep early daemon
+  development from locking itself out, and that need is gone. Domovoi sells reachability to a
+  person's own machines, so a guest login, guest attribution, and a guest hard-gate policy are
+  out of scope. The signed design handoff still names guest browsers; it is not edited here and
+  a future handoff has to settle that difference.
 - A session transfer is refused at the moment it is requested rather than queued, so a session never
   changes hands later and unattended. Transfer preflight refuses an unreachable target, a target
   that is not answering, a target on an incompatible protocol in either direction, a target that
