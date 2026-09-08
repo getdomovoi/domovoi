@@ -23,12 +23,13 @@ export const workspaceUiStorageKey = "domovoi.workspace-ui"
 export type WorkspaceSurface = "workspace" | "providers" | "skills" | "fleet" | "audit"
 
 const surfaces = new Set<WorkspaceSurface>(["workspace", "providers", "skills", "fleet", "audit"])
-const layoutKeys = new Set(["sidebar.dock", "sidebar.rail", "rail.dock", "rail.rail"])
-const panelIds = new Set(["sessions", "thread", "dock"])
+// v2 put sessions in a drawer, so the only panels left are the thread and the
+// machine dock, and the only layouts are those two arrangements.
+const layoutKeys = new Set(["drawer.dock", "drawer.rail"])
+const panelIds = new Set(["thread", "dock"])
 
 export type WorkspaceUiState = {
-  version: 4
-  sidebarCollapsed: boolean
+  version: 5
   dockCollapsed: boolean
   // v2 opens the machine surfaces as a sheet over the thread. Pinning turns
   // that sheet into the panel beside it, which is what dockCollapsed already
@@ -52,8 +53,7 @@ export type WorkspaceUiDaemonTruth = {
 
 export function defaultWorkspaceUiState(): WorkspaceUiState {
   return {
-    version: 4,
-    sidebarCollapsed: false,
+    version: 5,
     dockCollapsed: false,
     dockPinned: false,
     surface: "workspace",
@@ -87,30 +87,28 @@ function parseLayouts(value: unknown): WorkspaceUiState["layouts"] | undefined {
   if (!isRecord(value)) return undefined
   const parsed: WorkspaceUiState["layouts"] = {}
   for (const [layoutKey, layout] of Object.entries(value)) {
-    if (!layoutKeys.has(layoutKey) || !isRecord(layout)) return undefined
+    // A layout this build does not recognise belongs to another version of the
+    // shell, not to a corrupt file. Dropping it keeps the theme, the editor and
+    // everything else the person set; rejecting the lot would silently throw
+    // their preferences away the first time they resized a panel.
+    if (!layoutKeys.has(layoutKey) || !isRecord(layout)) continue
     const panels: Record<string, number> = {}
-    const entries = Object.entries(layout)
-    if (entries.length === 0) return undefined
-    for (const [panelId, size] of entries) {
-      if (
-        !panelIds.has(panelId)
-        || typeof size !== "number"
-        || !Number.isFinite(size)
-        || size <= 0
-        || size > 100
-      ) return undefined
+    for (const [panelId, size] of Object.entries(layout)) {
+      if (!panelIds.has(panelId)) continue
+      // A size that is not a size is corruption, and that is still fatal.
+      if (typeof size !== "number" || !Number.isFinite(size) || size <= 0 || size > 100) return undefined
       panels[panelId] = size
     }
-    parsed[layoutKey] = panels
+    if (Object.keys(panels).length > 0) parsed[layoutKey] = panels
   }
   return parsed
 }
 
 export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefined {
-  if (!isRecord(value) || ![1, 2, 3, 4].includes(value.version as number)) return undefined
-  if (typeof value.sidebarCollapsed !== "boolean" || typeof value.dockCollapsed !== "boolean") {
-    return undefined
-  }
+  if (!isRecord(value) || ![1, 2, 3, 4, 5].includes(value.version as number)) return undefined
+  // sidebarCollapsed was required until v5. It described a panel that no longer
+  // exists, so it is neither read nor demanded now.
+  if (typeof value.dockCollapsed !== "boolean") return undefined
   if (typeof value.surface !== "string" || !surfaces.has(value.surface as WorkspaceSurface)) {
     return undefined
   }
@@ -118,8 +116,7 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
   const layouts = parseLayouts(value.layouts)
   if (!layouts) return undefined
   return {
-    version: 4,
-    sidebarCollapsed: value.sidebarCollapsed,
+    version: 5,
     dockCollapsed: value.dockCollapsed,
     // Absent in every state written before v2, and false is the v2 default.
     dockPinned: value.dockPinned === true,
