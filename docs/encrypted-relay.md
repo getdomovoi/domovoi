@@ -12,12 +12,16 @@ outward to one stable rendezvous. Neither endpoint needs to accept a new public 
 or remain on the same private network.
 
 The first operational relay does not require the full hosted Goal 3 stack: Domovoi accounts,
-subscriptions, entitlements, billing, guest sessions, or multitenant routing. It may be deployed
+subscriptions, entitlements, billing, or multitenant routing. It may be deployed
 privately for project dogfooding before those services exist. That deployment mode does not make
 the official relay a free self-hosted component.
 
 Direct private transports remain preferred. The relay is the last transport, used only when a
 configured encrypted route is available.
+
+The [production Noise options](relay-noise-options.md) compare wire bytes, native dependencies,
+pin encodings, and phone requirements. They contain Codex's recommendation for fetzy to decide;
+they do not select a suite or unblock the production schema.
 
 ## Open-core and trust boundaries
 
@@ -77,15 +81,31 @@ The client stores the descriptor with its paired machine. The descriptor contain
 and key-pinning material only. The relay registration secret, a device bearer, and every private
 key are excluded from fleet snapshots and route descriptors.
 
-`transportCandidate` becomes a discriminated union when this schema lands. Direct candidates
-retain their current endpoint shape. A relay candidate carries `RelayRouteV1` plus
-transport-scoped capabilities. Capability availability must be data in the protocol, not a list a
-client remembers independently.
+`transportCandidate` already discriminates transport kinds. Its current relay variant is reserved,
+has no capabilities, and is always excluded by transport selection. When the descriptor schema
+lands, direct candidates retain their current endpoint shape and a relay candidate carries
+`RelayRouteV1` plus transport-scoped capabilities. Capability availability must be data in the
+protocol, not a list a client remembers independently.
 
 Relay v1 carries encrypted JSON-RPC and terminal traffic. It does not advertise artifact previews,
 downloads, or print URLs. Those use signed HTTP access today and have no encrypted relay byte path.
 Preview capability stays absent until such a path exists; clients must explain that previews need
 a direct connection rather than silently hiding them.
+
+The RPC/terminal capability policy is independent of the crypto choice and is settled here.
+The production route contract remains blocked: an accepted `RelayRouteV1` must also validate its
+channel suite and responder pin. A standalone capability list would not supply that descriptor,
+and an optional or permissive `channel` would bypass the crypto gate. This item stays open rather
+than introducing a second, incomplete relay route shape for clients to consume.
+
+To unblock it, select and review the production Noise integration and prove a phone native key
+operation boundary with supported key types, fresh entropy, device-only storage, backup exclusion,
+and forget/key-loss behavior. That evidence must determine the exact suite and public-key byte
+constraints. The shared vectors must also run through the chosen phone implementation; the
+current two Node runners and hermesc compilation leave real Hermes/device execution unproven.
+Then add the strict route variant and its capability data together, with rejection tests for
+preview claims, invalid pins, misplaced credentials, and unsupported versions. A valid descriptor
+alone will still not enable relay dialing before the encrypted channel and admission exist.
 
 ## End-to-end channel and admission
 
@@ -167,7 +187,11 @@ both halves plainly.
 
 ## Open cryptography decision
 
-The next slice is a cross-runtime crypto spike and codec with no networking. It must work in Node
+The next slice is a cross-runtime crypto spike and codec with no networking. The first
+[experimental evidence](relay-crypto-spike.md) reproduces published vectors in the daemon Node
+suite and phone jest-expo suite, plus Metro/hermesc compilation. Both runners use Node; real
+Hermes execution, native entropy/key operations, and the production Noise implementation remain
+open. This is not permission to freeze the suite or public-key shape. The codec must work in Node
 and the phone runtime without assuming `node:crypto` or generally available WebCrypto.
 
 The candidate is Noise IK over X25519, ChaCha20-Poly1305, and SHA-256, potentially using
@@ -190,7 +214,8 @@ shipped merely to let networking start.
 1. Credential prerequisites: strong fixed-width credentials, exact client or machine bindings,
    verified durable attribution, hello-time activity, and a single migration for both legacy
    credential shapes. Implemented. Channel keys wait for the crypto decision.
-2. Cross-runtime crypto spike and codec with deterministic vectors and no networking. Next.
+2. Cross-runtime crypto spike and codec with deterministic vectors and no networking. Experimental
+   two-runner agreement exists; remaining crypto gates are in `docs/relay-crypto-spike.md`.
 3. Protocol route, channel-key, and transport-capability schemas, reviewed before callers build on
    them.
 4. In-process hostile-relay tests proving plaintext and endpoint credentials never cross the
@@ -201,7 +226,7 @@ shipped merely to let networking start.
 7. Encrypted artifact delivery before a relay route can advertise preview capability.
 
 A privately operated commercial relay may precede Goal 3 for dogfooding. Hosted accounts,
-entitlements, billing, guest access, and multitenant scaling remain Goal 3 work. The exact repository
+entitlements, billing, and multitenant scaling remain Goal 3 work. The exact repository
 and delivery channel for the commercial server must be settled before slice 5, but it cannot be
 part of the Apache-2.0 daemon binary or package.
 

@@ -8,7 +8,7 @@ const preset = require("jest-expo/jest-preset")
 // longer recognises into a failure rather than a module that quietly does not
 // compile.
 const marker = "(?!(.pnpm|"
-const transformed = ["lucide-react-native", "react-native-svg"]
+const transformed = ["@noble/", "lucide-react-native", "react-native-svg"]
 const transformIgnorePatterns = preset.transformIgnorePatterns.map((pattern) =>
   pattern.includes(marker)
     ? pattern.replace(marker, `${marker}${transformed.join("|")}|`)
