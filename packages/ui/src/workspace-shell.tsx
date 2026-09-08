@@ -190,6 +190,7 @@ import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
 import { MachineSheet } from "./machine-sheet"
+import { PlanStrip } from "./plan-strip"
 import { withAuto, withPermissionMode } from "./permission-mode"
 import { submitFromComposer } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
@@ -1899,6 +1900,10 @@ export function Thread({
         {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
+        <PlanStrip
+          plan={snapshot.workingPlans.find((candidate) => candidate.sessionId === active.id)}
+          className="mx-auto mb-2 max-w-[var(--shell-thread)]"
+        />
         <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
           {queued ? (
             <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
