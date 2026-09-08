@@ -2,7 +2,9 @@
 
 Status, 2026-09-07: one experimental codec, two runners, identical published
 vectors. The suite and public-key shape remain unresolved in production protocol.
-The route and capability schema remains gated on that decision.
+The production route schema remains gated on that decision. The RPC/terminal
+capability policy is independent of it; the [route decision](encrypted-relay.md#public-route-descriptor)
+explains why a capability list alone does not complete the descriptor contract.
 
 ## Reproduced evidence
 

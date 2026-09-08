@@ -563,10 +563,16 @@ Every ledger entry is now merged.
   - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
     encrypted artifact-byte path exists, and clients read that absence from the route rather than
     maintaining their own list.
-  - Schema work waits for the crypto decision above. The approved September 7 priority moves this
-    relay work ahead under Goal 3 while Goal 2 stays open. The remaining Goal 2 evidence is not
-    solely hardware: its Windows logon task still has no crash restart. That supervision gap is
-    recorded separately from the physical-machine and cross-host TLS proofs.
+  - Capability policy does not depend on the crypto choice, but an accepted relay descriptor must
+    validate its suite and responder pin. The existing kind discriminator keeps relay unavailable
+    with no capabilities. The complete route contract waits for a reviewed production Noise
+    integration and evidence for phone native key operations to settle the suite/key constraints;
+    a capability list or permissive channel placeholder does not close this item. See the exact
+    unblock conditions in `docs/encrypted-relay.md`, Public route descriptor.
+  - The approved September 7 priority moves this relay work ahead under Goal 3 while Goal 2 stays
+    open. The remaining Goal 2 evidence is not solely hardware: its Windows logon task still has
+    no crash restart. That supervision gap is recorded separately from the physical-machine and
+    cross-host TLS proofs.
 - [ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app
   with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
 - [x] Install a frozen daemon runtime from a version-pinned release archive, checked against a

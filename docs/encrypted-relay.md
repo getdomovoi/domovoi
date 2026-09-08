@@ -77,15 +77,31 @@ The client stores the descriptor with its paired machine. The descriptor contain
 and key-pinning material only. The relay registration secret, a device bearer, and every private
 key are excluded from fleet snapshots and route descriptors.
 
-`transportCandidate` becomes a discriminated union when this schema lands. Direct candidates
-retain their current endpoint shape. A relay candidate carries `RelayRouteV1` plus
-transport-scoped capabilities. Capability availability must be data in the protocol, not a list a
-client remembers independently.
+`transportCandidate` already discriminates transport kinds. Its current relay variant is reserved,
+has no capabilities, and is always excluded by transport selection. When the descriptor schema
+lands, direct candidates retain their current endpoint shape and a relay candidate carries
+`RelayRouteV1` plus transport-scoped capabilities. Capability availability must be data in the
+protocol, not a list a client remembers independently.
 
 Relay v1 carries encrypted JSON-RPC and terminal traffic. It does not advertise artifact previews,
 downloads, or print URLs. Those use signed HTTP access today and have no encrypted relay byte path.
 Preview capability stays absent until such a path exists; clients must explain that previews need
 a direct connection rather than silently hiding them.
+
+The RPC/terminal capability policy is independent of the crypto choice and is settled here.
+The production route contract remains blocked: an accepted `RelayRouteV1` must also validate its
+channel suite and responder pin. A standalone capability list would not supply that descriptor,
+and an optional or permissive `channel` would bypass the crypto gate. This item stays open rather
+than introducing a second, incomplete relay route shape for clients to consume.
+
+To unblock it, select and review the production Noise integration and prove a phone native key
+operation boundary with supported key types, fresh entropy, device-only storage, backup exclusion,
+and forget/key-loss behavior. That evidence must determine the exact suite and public-key byte
+constraints. The shared vectors must also run through the chosen phone implementation; the
+current two Node runners and hermesc compilation leave real Hermes/device execution unproven.
+Then add the strict route variant and its capability data together, with rejection tests for
+preview claims, invalid pins, misplaced credentials, and unsupported versions. A valid descriptor
+alone will still not enable relay dialing before the encrypted channel and admission exist.
 
 ## End-to-end channel and admission
 

@@ -1,4 +1,9 @@
 {
+  "_source": {
+    "url": "https://github.com/centromere/cacophony/blob/8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247/vectors/cacophony.txt",
+    "commit": "8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247",
+    "sha256": "3bde7c09a6f349ee11c825c50fcc02649f8f02a47c857a459206b357f9386cae"
+  },
   "protocol_name": "Noise_IK_25519_ChaChaPoly_SHA256",
   "init_prologue": "4a6f686e2047616c74",
   "init_static": "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
