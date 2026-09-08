@@ -112,7 +112,7 @@ it('refusal retains the message without automatic retry', async () => {
   const socket = await open(value)
   queue('retry only by choice')
   await snapshot(socket, idle(value))
-  await act(async () => fail(socket, 'session.send', { code: -32000, message: 'Provider refused the turn' }))
+  await act(async () => fail(socket, 'session.send', { code: -32015, message: 'Provider refused the turn' }))
   await settle()
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
   expect(screen.getByText('retry only by choice')).toBeTruthy()
@@ -257,7 +257,7 @@ it('keeps both a newer instruction and the one that was refused', async () => {
   queue('the refused one')
   await snapshot(socket, idle(value))
   queue('the newer one')
-  await act(async () => fail(socket, 'session.send', { code: -32000, message: 'Provider refused the turn' }))
+  await act(async () => fail(socket, 'session.send', { code: -32015, message: 'Provider refused the turn' }))
   await settle()
   // Neither may be silently dropped: the person wrote both.
   expect(screen.getByText('the refused one')).toBeTruthy()
@@ -280,7 +280,7 @@ it('settling an earlier refusal wakes a newer queue whose turn already ended', a
   // Still blocked: the first dispatch has not answered, so the session is
   // marked in flight and the newer message cannot go yet.
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
-  await act(async () => fail(socket, 'session.send', { code: -32000, message: 'Provider refused the turn' }))
+  await act(async () => fail(socket, 'session.send', { code: -32015, message: 'Provider refused the turn' }))
   await settle()
   // The settlement itself must wake it. Nothing else is going to.
   expect(sentRequests(socket, 'session.send')).toHaveLength(2)
@@ -326,7 +326,7 @@ it('queue-again retries a recorded refusal only on explicit action', async () =>
   const socket = await open(value)
   queue('retry only by choice')
   await snapshot(socket, idle(value))
-  await act(async () => fail(socket, 'session.send', { code: -32000, message: 'Provider refused the turn' }))
+  await act(async () => fail(socket, 'session.send', { code: -32015, message: 'Provider refused the turn' }))
   await settle()
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
   fireEvent.click(screen.getByRole('button', { name: 'Queue again' }))
@@ -345,11 +345,52 @@ it('dismissing a refusal does not dismiss or send the newer queue', async () => 
   nextTurn.sessions.find(session => session.id === value.activeSessionId)!.activeTurnId = 'a-new-turn'
   await snapshot(socket, nextTurn)
   queue('newer instruction')
-  await act(async () => fail(socket, 'session.send', { code: -32000, message: 'Provider refused the turn' }))
+  await act(async () => fail(socket, 'session.send', { code: -32015, message: 'Provider refused the turn' }))
   await settle()
   fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
   await settle()
   expect(screen.queryByText('first instruction')).toBeNull()
   expect(screen.queryByText('newer instruction')).not.toBeNull()
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+})
+
+it('does not claim nothing ran when the error could have come after the turn started', async () => {
+  const value = running()
+  const socket = await open(value)
+  queue('instruction with an ambiguous failure')
+  await snapshot(socket, idle(value))
+  // -32603 is an internal error. The daemon can raise it after startTurn has
+  // already succeeded, so this cannot say the work did not happen.
+  await act(async () => fail(socket, 'session.send', { code: -32603, message: 'Session state could not be saved' }))
+  await settle()
+  expect(screen.queryByText(/not sent:/)).toBeNull()
+  expect(screen.getByText(/delivery could not be confirmed/)).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Send anyway' })).toBeTruthy()
+})
+
+
+it('gives refusals in different sessions their own receipts', async () => {
+  const value = running()
+  const socket = await open(value)
+  const firstId = value.activeSessionId!
+  const other = value.sessions.find(session => session.id !== firstId)!
+  queue('for the first session')
+  await snapshot(socket, idle(value))
+  await act(async () => fail(socket, 'session.send', { code: -32015, message: 'first refusal' }))
+  await settle()
+
+  await snapshot(socket, visible(idle(value), other.id))
+  queue('for the other session')
+  const bothIdle = idle(visible(idle(value), other.id), other.id)
+  await snapshot(socket, bothIdle)
+  await act(async () => fail(socket, 'session.send', { code: -32015, message: 'second refusal' }))
+  await settle()
+  expect(screen.getByText('for the other session')).toBeTruthy()
+
+  // Dismissing one session's receipt must not reach into another's. Sharing an
+  // id across sessions is exactly how that happens.
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+  await settle()
+  await snapshot(socket, visible(bothIdle, firstId))
+  expect(screen.queryByText('for the first session')).not.toBeNull()
 })
