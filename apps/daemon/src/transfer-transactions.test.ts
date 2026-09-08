@@ -1,6 +1,7 @@
+import { fork, type ChildProcess } from "node:child_process"
 import { createHash } from "node:crypto"
 import { EventEmitter, once } from "node:events"
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -10,13 +11,14 @@ import {
   createEmptyWorkspace,
   demoWorkspace,
   sessionTransferManifestSchema,
+  transferMemberResultSchema,
   transferMemberChunkBytes,
   type SessionTransferManifest,
 } from "@getdomovoi/protocol"
 
 import { sessionTransferManifestDigest } from "./session-transfer-package.js"
 import { FileTransferTransactions, writeAllTransferBytes } from "./transfer-transactions.js"
-import { OperationDeadline } from "./operation-deadline.js"
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { daemonWaitTimeoutMs } from "./test-wait-for.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
@@ -394,6 +396,122 @@ describe("file transfer transaction journal", () => {
     // Once the owner finishes, retrying is ordinarily idempotent again.
     await expect(transactions.acceptMember(chunk)).resolves.toEqual({ state: "prepared", transferId })
   })
+
+  it("keeps unrelated transfers independent within the receiving process", async () => {
+    const { root, transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    // Distinct IDs sharing a short hash prefix must still remain independent.
+    const otherId = "transfer-00000000000000000000000000000005"
+    for (const id of [transferId, otherId]) {
+      const manifest = manifestFor(stateBytes, Buffer.from("repository"), id)
+      await transactions.prepare(manifest, sessionTransferManifestDigest(manifest))
+    }
+    const chunkPath = join(root, transferId, "chunks", memberJournalKey("state"), "0-1.chunk")
+    await mkdir(dirname(chunkPath))
+    await writeFile(chunkPath, stateBytes)
+    const deadline = OperationDeadline.start(daemonWaitTimeoutMs(process.platform))
+    const gate = new EventEmitter()
+    const opened = once(gate, "opened", { signal: deadline.signal })
+    chunkReadSimulation.path = chunkPath
+    chunkReadSimulation.pause = async () => {
+      const released = once(gate, "release", { signal: deadline.signal })
+      gate.emit("opened")
+      await released
+    }
+    const chunk = { transferId, memberId: "state", sequence: 0, bytes: stateBytes.toString("base64"), final: true, initiatedByClient: "desktop" as const }
+    const first = Promise.allSettled([transactions.acceptMember(chunk)])
+    try {
+      await opened
+      await expect(new FileTransferTransactions(root).acceptMember({ ...chunk, transferId: otherId }))
+        .resolves.toEqual({ state: "member-received", transferId: otherId, memberId: "state" })
+    } finally {
+      gate.emit("release")
+      try { await first } finally { deadline.clear() }
+    }
+    await expect(first).resolves.toEqual([{ status: "fulfilled", value: { state: "member-received", transferId, memberId: "state" } }])
+  })
+
+  it.each(["release", "kill"] as const)("excludes a second daemon process until a chunk reader's %s", async (finish) => {
+    const { root, transactions } = await journal()
+    const stateBytes = Buffer.from("state")
+    const repositoryBytes = Buffer.from("repository")
+    const manifest = manifestFor(stateBytes, repositoryBytes)
+    const manifestDigest = sessionTransferManifestDigest(manifest)
+    await transactions.prepare(manifest, manifestDigest)
+    const chunkPath = join(root, transferId, "chunks", memberJournalKey("state"), "0-1.chunk")
+    await mkdir(dirname(chunkPath))
+    // A durable final chunk left before publication, as after a restart.
+    await writeFile(chunkPath, stateBytes, { mode: 0o600 })
+    const deadline = OperationDeadline.start(25_000)
+    const processes: Array<{ child: ChildProcess; exited: Promise<unknown> }> = []
+    const connections: MachineConnection[] = []
+    let diagnostics = ""
+    async function start(pausedPath?: string) {
+      const child = fork(new URL("../test-fixtures/transfer-journal-process.mjs", import.meta.url), [root, ...(pausedPath ? [pausedPath] : [])], {
+        execArgv: ["--import", import.meta.resolve("tsx")], stdio: ["ignore", "ignore", "pipe", "ipc"],
+      })
+      child.stderr?.on("data", (bytes: Buffer) => { diagnostics = (diagnostics + bytes.toString()).slice(-8_192) })
+      const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })))
+      processes.push({ child, exited })
+      const opened = new Promise<void>((resolve) => child.on("message", (message: { state?: string }) => {
+        if (message.state === "chunk-open") resolve()
+      }))
+      const ready = new Promise<{ endpoint: string; credential: string }>((resolve, reject) => {
+        child.on("error", reject)
+        child.on("message", (message: { state?: string; endpoint: string; credential: string }) => {
+          if (message.state === "ready") resolve(message)
+        })
+        void exited.then((result) => reject(new Error(`Transfer fixture exited before ready: ${JSON.stringify(result)} ${diagnostics}`)))
+      })
+      const facts = await beforeDeadline(ready, deadline)
+      const connection = await openMachineSocket({ ...facts, expectedMachineId: targetMachineId, deadline, callTimeoutMs: 25_000 })
+      connections.push(connection)
+      return { child, exited, opened, connection }
+    }
+    try {
+      const owner = await start(chunkPath)
+      const retry = await start()
+      expect(owner.child.pid).not.toBe(retry.child.pid)
+      const chunk = { transferId, memberId: "state", sequence: 0, bytes: stateBytes.toString("base64"), final: true, initiatedByClient: "desktop" }
+      const first = Promise.allSettled([owner.connection.call("transfer.member", chunk, undefined, deadline)])
+      await beforeDeadline(owner.opened, deadline)
+      const overlapping = await retry.connection.call("transfer.member", chunk, undefined, deadline)
+      expect(transferMemberResultSchema.parse(overlapping), diagnostics)
+        .toEqual({ state: "refused", transferId, reason: "chunk-out-of-order" })
+      await expect(readFile(chunkPath)).resolves.toEqual(stateBytes)
+      // The receiving process owns this journal until its open receives drain.
+      expect(await retry.connection.call("transfer.member", {
+        ...chunk, memberId: "repository", bytes: repositoryBytes.toString("base64"),
+      }, undefined, deadline)).toEqual({ state: "refused", transferId, reason: "chunk-out-of-order" })
+      if (finish === "release") {
+        owner.child.send("release")
+        await expect(first, diagnostics).resolves.toEqual([{ status: "fulfilled", value: { state: "member-received", transferId, memberId: "state" } }])
+      } else {
+        owner.child.kill("SIGKILL")
+        await beforeDeadline(owner.exited, deadline)
+        await expect(first).resolves.toMatchObject([{ status: "rejected" }])
+      }
+      // OS ownership must drain on both ordinary completion and process death.
+      expect(await retry.connection.call("transfer.member", chunk, undefined, deadline))
+        .toEqual({ state: "member-received", transferId, memberId: "state" })
+      expect(await retry.connection.call("transfer.member", {
+        ...chunk, memberId: "repository", bytes: repositoryBytes.toString("base64"),
+      }, undefined, deadline)).toEqual({ state: "prepared", transferId })
+      await expect(transactions.readMember(transferId, manifestDigest, "state")).resolves.toEqual(stateBytes)
+      await expect(transactions.readMember(transferId, manifestDigest, "repository")).resolves.toEqual(repositoryBytes)
+      await expect(transactions.status(transferId, manifestDigest)).resolves.toEqual({ state: "prepared", transferId })
+    } finally {
+      deadline.clear()
+      for (const connection of connections) connection.close()
+      const cleanup = OperationDeadline.start(10_000)
+      try {
+        for (const { child } of processes) {
+          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+        }
+        await beforeDeadline(Promise.all(processes.map(({ exited }) => exited)), cleanup)
+      } finally { cleanup.clear() }
+    }
+  }, 40_000)
 
   it("releases a member reservation after a chunk read fails", async () => {
     const { root, transactions } = await journal()

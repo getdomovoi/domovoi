@@ -461,7 +461,7 @@ Live-verified against `getdomovoi/domovoi` on 2026-09-05 (America/Boise):
 
 Every ledger entry is now merged.
 
-- [ ] Define stable machine identity, device credentials, labels, platform facts, versions,
+- [x] Define stable machine identity, device credentials, labels, platform facts, versions,
   capabilities, and heartbeat state
   - The schemas, `machine.json` identity, and local facts exist, and since #244 the daemon keeps
     one authenticated socket per remote row with a fifteen-second heartbeat. One production
@@ -471,10 +471,12 @@ Every ledger entry is now merged.
     stored workspace names a different machine, and on a match it replaces the stored name,
     platform, architecture, and version with this executable's current facts while keeping
     provider readiness. `apps/daemon/src/fleet-production.test.ts` restarts a peer over its own
-    real profile through that factory and asserts the source sees the renamed label. Only the
-    platform, architecture, and version refresh is still proven by a directly constructed daemon
-    over a hand-seeded store in `apps/daemon/src/server-machine-admission.test.ts`; close with a
-    production-boundary restart that asserts those three.
+    real profile through that factory and asserts the source sees the renamed label.
+    `apps/daemon/src/fleet-machine-facts.test.ts` gives the first production boot older OS and
+    build facts, verifies it persisted them, then restarts the same profile with current facts.
+    Platform, architecture and version refresh in the local workspace, local fleet row, enrolled
+    peer heartbeat and persisted snapshot, while `machine.json` and the machine ID stay stable.
+    Removing each field's refresh independently makes this proof fail.
 - [x] Add device pairing, revocation, and credential rotation to the daemon and protocol
   - Audit item F5: machine claims now grant only a five-minute confirmation capability. The
     source journals and reads back its keychain token before confirmation activates it; a lost
@@ -681,20 +683,26 @@ Every ledger entry is now merged.
     Contention fails at once; nothing waits, steals a timed-out claim, or removes another owner's
     file. A claim left by a killed process is named in the error and removed by hand with every
     Domovoi process stopped.
-- [ ] Give restore claim release a deadline and a lifecycle
-  - The claim write and the ownership read are bounded, but the claim close and unlink have no
-    deadline yet, so a stalled cleanup holds the process-local reservation and every later restore
-    of that session refuses. This needs a lifecycle design, not a bare race fix.
-- [ ] Stop transfer chunk directory cleanup failing with `EPERM` on Windows
+- [x] Give restore claim release a deadline and a lifecycle
+  - Close, ownership read, and unlink share a fresh ten-second release deadline. Expiry returns
+    the restore outcome and quarantines pending I/O; no later cleanup step starts after expiry,
+    and exclusion ends only when that I/O settles. Replacement claims survive late close/read
+    completions, and pending unlink excludes a successor even when the pathname is absent.
+    `workspace.test.ts` proves late success and failure for all three phases. Recovery requires
+    stopped daemons before removing a confirmed stale claim. See `docs/restore-claims.md`.
+- [x] Stop transfer chunk directory cleanup failing with `EPERM` on Windows
   - `transfer-transactions.test.ts` "handles concurrent retries of the same chunk" failed once on
     the Windows job of #245 (run 33938587480) with `EPERM: operation not permitted, rmdir` on the
     chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. #251 merged a
     guard: `apps/daemon/src/transfer-transactions.ts` reserves each chunk path in
-    `activeMemberReceives` before the first await and refuses a second concurrent receive, so a
-    removal never races an open handle. The item stays open because the refusal it models is
-    simulated. The regression mocks `node:fs/promises` to throw the `EPERM`, no real Windows run
-    has exercised it, and the reservation is process-local, so two daemon processes over one
-    journal are still uncovered.
+    `activeMemberReceives` before the first await and refuses a second concurrent receive.
+    Receives now also share a process-owned SQLite lease through publication and removal. Two
+    real daemon processes over one journal prove refusal while a chunk descriptor is open and
+    recovery after completion or process death, without synthetic filesystem errors. Independent
+    receives within the owning process share one permanent lease outside disposable journals; see
+    `docs/transfer-receive-leases.md`. Native Windows `pnpm test` passed in
+    [run 34171599299](https://github.com/getdomovoi/domovoi/actions/runs/34171599299/job/101892809299)
+    at `c37da78`, including both process-lifecycle cases without a platform skip.
 - [x] Transfer dialog in the client with preflight, method, and what travels, calling
   `session.transfer`
   - `packages/ui/src/transfer-session-dialog.tsx` is wired into the workspace shell and
