@@ -148,7 +148,7 @@ import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
-import { ProjectSwitchConfirmationError } from "./client"
+import { DaemonRpcError, ProjectSwitchConfirmationError } from "./client"
 import { useWorkspace } from "./use-workspace"
 import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
@@ -195,7 +195,7 @@ import { PlanStrip } from "./plan-strip"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
-import { heldAfter, holdAllAfterStop, releasableQueues, setQueue, submitFromComposer, type QueuedMessage, type SessionQueues } from "./turn-queue"
+import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
@@ -1436,8 +1436,8 @@ export function Thread({
   emergencyStopPending = false,
   queued,
   onQueuedChange,
-  failure,
-  onFailureChange,
+  failures,
+  onDismissFailure,
   fleet,
   transferFleet,
   admittedMachines,
@@ -1472,10 +1472,10 @@ export function Thread({
   // happens to be open later would send someone's message to the wrong agent.
   queued?: QueuedMessage | undefined
   onQueuedChange: (next: QueuedMessage | undefined) => void
-  // A message the daemon refused. Shown beside the queue rather than in it,
-  // because it is a thing that did not happen, not a thing that will.
-  failure?: QueuedMessage | undefined
-  onFailureChange?: ((next: QueuedMessage | undefined) => void) | undefined
+  // Sends that never came back. Shown beside the queue rather than in it,
+  // because they are things that did not complete, not things that will.
+  failures?: readonly FailedAttempt[] | undefined
+  onDismissFailure?: ((id: string) => void) | undefined
   fleet?: FleetEntry[] | undefined
   transferFleet?: FleetEntry[] | undefined
   admittedMachines?: ReadonlySet<string> | undefined
@@ -1929,29 +1929,31 @@ export function Thread({
           className="mx-auto mb-2 max-w-[var(--shell-thread)]"
         />
         <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
-          {failure?.sessionId === active.id ? (
-            <div className="flex items-center gap-2 rounded-lg border border-danger-border bg-danger-background px-3 py-2">
+          {(failures ?? []).filter((attempt) => attempt.sessionId === active.id).map((attempt) => (
+            <div key={attempt.id} className="flex items-center gap-2 rounded-lg border border-danger-border bg-danger-background px-3 py-2">
               <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-danger-foreground" />
-              <span className="min-w-0 flex-1 truncate text-[12px] text-danger-foreground">{failure.text}</span>
-              <span className="font-machine text-[10.5px] whitespace-nowrap text-danger-dim">
-                not sent: {failure.reason}
-              </span>
+              <span className="min-w-0 flex-1 truncate text-[12px] text-danger-foreground">{attempt.text}</span>
+              <span className="text-[10.5px] whitespace-nowrap text-danger-dim">{deliveryLabel(attempt)}</span>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => {
                   // Queueing it again replaces whatever is waiting, which the
                   // person can see beside it before they press.
-                  const { reason: _reason, ...message } = failure
-                  onQueuedChange({ ...message, state: "waiting" })
-                  onFailureChange?.(undefined)
+                  onQueuedChange({
+                    sessionId: attempt.sessionId,
+                    text: attempt.text,
+                    state: "waiting",
+                    ...(attempt.skillIds ? { skillIds: attempt.skillIds } : {}),
+                  })
+                  onDismissFailure?.(attempt.id)
                 }}
               >
-                Queue again
+                {attempt.delivery === "refused" ? "Queue again" : "Send anyway"}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => onFailureChange?.(undefined)}>Dismiss</Button>
+              <Button variant="ghost" size="sm" onClick={() => onDismissFailure?.(attempt.id)}>Dismiss</Button>
             </div>
-          ) : null}
+          ))}
           {queued?.sessionId === active.id ? (
             <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
               <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
@@ -3426,10 +3428,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // queued in A must leave at A's next turn boundary whether or not anyone is
   // looking at A.
   const [queues, setQueues] = useState<SessionQueues>({})
-  // A send that failed is a receipt, not a queue entry. It lives beside the
-  // queue so a newer instruction and a failed one never compete for one slot:
-  // dropping either loses something the person wrote.
-  const [failures, setFailures] = useState<SessionQueues>({})
+  // Every send that did not come back, kept by identity. One slot per session
+  // was still one slot: a second refusal would erase the first receipt and the
+  // reason with it.
+  const [failures, setFailures] = useState<readonly FailedAttempt[]>([])
+  const nextAttemptId = useRef(0)
   const releasing = useRef<Set<string>>(new Set())
   // Bumped when a dispatch settles. A settlement that changed nothing else
   // would otherwise leave a session that became eligible mid-flight waiting
@@ -3818,10 +3821,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         .catch((cause: unknown) => {
           // Recorded, never re-queued: a refused message put back as waiting
           // would be retried by this effect on the very next render, forever.
-          setFailures((current) => setQueue(current, session.id, heldAfter(
+          // A daemon error means nothing ran. Anything else means the answer
+          // was lost, and Domovoi cannot say whether the turn started.
+          nextAttemptId.current += 1
+          setFailures((current) => [...current, failedAttempt(
+            `attempt-${nextAttemptId.current}`,
             message,
-            cause instanceof Error ? cause.message : "The message could not be sent",
-          )))
+            {
+              refused: cause instanceof DaemonRpcError,
+              reason: cause instanceof Error ? cause.message : "The message could not be sent",
+            },
+          )])
         })
         .finally(() => {
           releasing.current.delete(session.id)
@@ -4332,7 +4342,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet?.entries ?? null} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failure={snapshot.activeSessionId ? failures[snapshot.activeSessionId] : undefined} onFailureChange={(next) => snapshot.activeSessionId ? setFailures((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
