@@ -73,3 +73,32 @@ it("closes on Escape without activating anything", async () => {
   expect(screen.queryByRole("region", { name: "RUNNING" })).toBeNull()
   expect(onActivate).not.toHaveBeenCalled()
 })
+
+it("keeps its actions reachable when the list is long", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const base = snapshot.sessions[0]!
+  snapshot.sessions = Array.from({ length: 43 }, (_, index) => {
+    const session = { ...base, id: `s${index}`, title: `Review session ${index}`, state: "idle" as const }
+    delete (session as { activeTurnId?: string }).activeTurnId
+    return session
+  })
+  snapshot.activeSessionId = "s0"
+  snapshot.approvals = []
+
+  function Long() {
+    const [open, setOpen] = useState(false)
+    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onNewSession={vi.fn()} />
+  }
+  render(<Long />)
+  await user.click(screen.getByRole("button", { name: /Sessions/ }))
+
+  // Measured in a real browser at 1280x800: 43 sessions rendered 2440px tall
+  // with no cap and no scroll, putting New session 1679px below the fold.
+  const surface = screen.getByRole("group", { name: "Sessions" })
+  expect(surface.className).toContain("max-h-[70vh]")
+  const scroller = surface.querySelector(".overflow-y-auto")
+  expect(scroller).not.toBeNull()
+  const action = screen.getByRole("button", { name: "New session" })
+  expect(scroller!.contains(action)).toBe(false)
+})

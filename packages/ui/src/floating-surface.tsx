@@ -62,7 +62,10 @@ export function FloatingSurface({
       role="group"
       aria-label={label}
       className={cn(
-        "absolute top-[calc(100%+6px)] z-50 min-w-56 rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg",
+        // A surface never grows past the window. Without this a long list runs
+        // off the bottom of the screen and whatever sits under it, an action
+        // or the last row, cannot be reached at all.
+        "absolute top-[calc(100%+6px)] z-50 max-h-[70vh] min-w-56 overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg",
         align === "end" ? "right-0" : "left-0",
         className,
       )}
