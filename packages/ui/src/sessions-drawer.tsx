@@ -74,15 +74,23 @@ export function SessionsDrawer({
                   onOpenChange(false)
                 }}
                 className={cn(
-                  // The tint is a second signal only. aria-current is what says
-                  // which session is open, because colour never carries meaning
-                  // on its own here.
+                  // The tint is the third signal, after the Current mark and
+                  // aria-current. Colour never carries this on its own.
                   "flex w-full flex-col items-start gap-1 rounded-md px-2 py-1.5 text-left hover:bg-accent",
                   entry.id === snapshot.activeSessionId && "bg-accent",
                 )}
               >
                 <span className="line-clamp-2 text-[12px] text-strong">{entry.title}</span>
-                <StatusDot meaning={entry.meaning} label={entry.note} size="inline" />
+                <span className="flex w-full items-center gap-2">
+                  <StatusDot meaning={entry.meaning} label={entry.note} size="inline" />
+                  {entry.id === snapshot.activeSessionId ? (
+                    // Says in words what the tint says in colour. The outline
+                    // carries it again as shape, so neither one is alone.
+                    <span className="ml-auto rounded-full border border-border px-1.5 py-[1px] text-[10.5px] text-muted-foreground">
+                      Current
+                    </span>
+                  ) : null}
+                </span>
               </button>
             ))}
           </section>
