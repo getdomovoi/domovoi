@@ -138,6 +138,7 @@ import {
 } from "./agents.js"
 import {
   FileRevertIncompleteError,
+  FileRevertTargetChangedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -199,6 +200,7 @@ import {
   type SessionArtifactWatcherFactory,
 } from "./artifact-watcher.js"
 import { testEvidence } from "./test-evidence.js"
+import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer } from "./terminal-replay.js"
@@ -5135,7 +5137,9 @@ export class DomovoiDaemon {
         let workspace
         try {
           workspace = await this.#withAbortTimeout(
-            (signal) => this.#workspaceService.evidence!(session.workspacePath!, signal),
+            (signal) => params.includeFileAssociations
+              ? this.#workspaceService.evidence!(session.workspacePath!, signal, true)
+              : this.#workspaceService.evidence!(session.workspacePath!, signal),
             this.#agentTimeoutMs,
             "Session evidence timed out",
           )
@@ -5145,16 +5149,19 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const items = this.#snapshot.thread.filter((item) => item.sessionId === session.id)
+        const { revertTargets: _revertTargets, ...publicWorkspace } = workspace
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
             sessionId: session.id,
             refreshedAt: new Date().toISOString(),
-            workspace,
-            tests: testEvidence(this.#snapshot.thread.filter(
-              (item) => item.sessionId === session.id,
-            )),
+            workspace: publicWorkspace,
+            tests: testEvidence(items),
+            ...(params.includeFileAssociations ? {
+              fileAssociations: fileEvidenceAssociations(workspace, session.id, items),
+            } : {}),
           }),
         })
         return
@@ -6751,11 +6758,15 @@ export class DomovoiDaemon {
               session.workspacePath!,
               params.path,
               signal,
+              params.expectedBaseCommit,
             ),
             this.#agentTimeoutMs,
             "File revert timed out",
           )
         } catch (error) {
+          if (error instanceof FileRevertTargetChangedError) {
+            throw new PublicRpcError(invalidParams, error.message)
+          }
           // A revert that stopped after its recovery checkpoint left work in a
           // commit the session cannot see yet, so the checkpoint is recorded
           // before the failure is reported.

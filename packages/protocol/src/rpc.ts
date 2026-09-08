@@ -707,12 +707,77 @@ export const testEvidenceSchema = z.object({
   }
 })
 
+// "known" means a complete file-access observation for every retained run,
+// never a path guessed from command text or output. An empty runIds is proof
+// of no association only within that retained evidence, not lifetime coverage.
+export const fileTestAssociationSchema = z.discriminatedUnion("state", [
+  z.object({
+    state: z.literal("unknown"),
+    reason: z.literal("file-access-not-recorded"),
+  }).strict(),
+  z.object({
+    state: z.literal("known"),
+    runIds: z.array(streamedIdSchema).max(maximumSessionEvidenceRuns)
+      .refine((ids) => new Set(ids).size === ids.length, "Associated run IDs must be unique"),
+  }).strict(),
+])
+
+const observedFileRevertTarget = {
+  baseCommit: commitShaSchema,
+  // Only an observed checkpoint record for this session and exact commit may
+  // supply this ID. An ordinary Git commit need not have a checkpoint label.
+  checkpointId: streamedIdSchema.optional(),
+}
+
+export const fileRevertTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("restore"), ...observedFileRevertTarget }).strict(),
+  z.object({ kind: z.literal("remove"), ...observedFileRevertTarget }).strict(),
+  z.object({
+    kind: z.literal("unavailable"),
+    reason: z.enum(["target-not-observed", "unsupported-path"]),
+  }).strict(),
+])
+
+export const fileEvidenceAssociationSchema = z.object({
+  path: z.string().min(1).check(utf16MaxLength(4_096)),
+  tests: fileTestAssociationSchema,
+  revertTarget: fileRevertTargetSchema,
+}).strict()
+
 export const sessionEvidenceSchema = z.object({
   sessionId: streamedIdSchema,
   refreshedAt: dateTimeSchema,
   workspace: workspaceEvidenceSchema,
   tests: testEvidenceSchema,
-}).strict()
+  // Opt-in response extension. Missing means unknown, never an empty set.
+  fileAssociations: z.array(fileEvidenceAssociationSchema).max(maximumSessionEvidenceFiles).optional(),
+}).strict().superRefine((evidence, context) => {
+  if (evidence.fileAssociations === undefined) return
+  const paths = new Set(evidence.workspace.files.map((file) => file.path))
+  const seen = new Set<string>()
+  const runIds = new Set(evidence.tests.runs.map((run) => run.id))
+  evidence.fileAssociations.forEach((association, index) => {
+    const path = ["fileAssociations", index]
+    if (!paths.has(association.path) || seen.has(association.path)) {
+      context.addIssue({ code: "custom", path: [...path, "path"], message: "Each association must name a unique visible changed file" })
+    }
+    seen.add(association.path)
+    if (association.tests.state === "known") {
+      if (evidence.tests.runsTruncated || association.tests.runIds.some((id) => !runIds.has(id))) {
+        context.addIssue({ code: "custom", path: [...path, "tests"], message: "Known file associations require a complete run list and existing run IDs" })
+      }
+    }
+    if (association.revertTarget.kind !== "unavailable" && association.revertTarget.baseCommit !== evidence.workspace.baseCommit) {
+      context.addIssue({ code: "custom", path: [...path, "revertTarget", "baseCommit"], message: "File revert target must match the observed workspace commit" })
+    }
+    if (association.revertTarget.kind !== "unavailable" && !worktreeFilePathSchema.safeParse(association.path).success) {
+      context.addIssue({ code: "custom", path: [...path, "revertTarget"], message: "This path cannot advertise an available file revert" })
+    }
+  })
+  if (evidence.fileAssociations.length !== paths.size) {
+    context.addIssue({ code: "custom", path: ["fileAssociations"], message: "File associations must cover every visible changed file" })
+  }
+})
 
 // The protocol version every client spoke before the handshake carried one.
 // It is a fixed historical fact, not the daemon's current version, so a
@@ -947,6 +1012,7 @@ export const sessionPauseParamsSchema = z.object({
 
 export const sessionEvidenceParamsSchema = z.object({
   sessionId: streamedIdSchema,
+  includeFileAssociations: z.literal(true).optional(),
 })
 
 // A revert names one file inside the session worktree, so anything that could
@@ -968,6 +1034,7 @@ export const sessionRevertFileParamsSchema = z.object({
   sessionId: z.string().min(1),
   path: worktreeFilePathSchema,
   client: clientKindSchema,
+  expectedBaseCommit: commitShaSchema.optional(),
 }).strict()
 
 export const sessionArchiveParamsSchema = z.object({
@@ -1511,5 +1578,8 @@ export type SessionUsage = z.infer<typeof sessionUsageSchema>
 export type UsageWindowParams = z.infer<typeof usageWindowParamsSchema>
 export type UsageWindow = z.infer<typeof usageWindowSchema>
 export type SessionEvidence = z.infer<typeof sessionEvidenceSchema>
+export type FileEvidenceAssociation = z.infer<typeof fileEvidenceAssociationSchema>
+export type FileTestAssociation = z.infer<typeof fileTestAssociationSchema>
+export type FileRevertTarget = z.infer<typeof fileRevertTargetSchema>
 export type ChangedFileEvidence = z.infer<typeof changedFileEvidenceSchema>
 export type TestRunEvidence = z.infer<typeof testRunEvidenceSchema>

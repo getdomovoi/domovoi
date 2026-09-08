@@ -78,6 +78,9 @@ export type WorkspaceEvidence = {
   totalChangedFiles: number
   files: ChangedFileEvidence[]
   filesTruncated: boolean
+  // Internal observations projected into session.evidence.fileAssociations.
+  // Absence means the service did not observe a target, not that paths are new.
+  revertTargets?: Array<{ path: string; kind: "restore" | "remove" }>
 }
 
 export const maximumEvidenceFiles = 200
@@ -188,6 +191,13 @@ async function releaseRestoreClaim(
   return errors
 }
 
+export class FileRevertTargetChangedError extends Error {
+  constructor() {
+    super("Revert target changed; refresh file evidence before confirming again")
+    this.name = "FileRevertTargetChangedError"
+  }
+}
+
 // The recovery checkpoint is taken before the worktree moves, so a revert that
 // stops afterwards still has somewhere to put the work back. The commit travels
 // with the failure rather than being lost with it.
@@ -233,8 +243,8 @@ export interface WorkspaceService {
   archiveSessionWorkspace?(worktreePath: string, signal?: AbortSignal): Promise<void>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
-  revertFile?(worktreePath: string, path: string, signal?: AbortSignal): Promise<FileRevert>
-  evidence?(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence>
+  revertFile?(worktreePath: string, path: string, signal?: AbortSignal, expectedBaseCommit?: string): Promise<FileRevert>
+  evidence?(worktreePath: string, signal?: AbortSignal, includeRevertTargets?: boolean): Promise<WorkspaceEvidence>
   bundleSession?(
     worktreePath: string,
     bundlePath: string,
@@ -355,6 +365,19 @@ async function git(
     signal,
   })
   return result.stdout.trim()
+}
+
+async function pathsAtCommit(worktreePath: string, commit: string, signal?: AbortSignal): Promise<Set<string>> {
+  // NUL delimiters preserve spaces, tabs and newlines. Read the complete tree
+  // under git's output/deadline bounds; a failed read must never mean absent.
+  const tree = await boundedGit(
+    worktreePath,
+    ["ls-tree", "-r", "-z", "--name-only", "--full-tree", commit],
+    maximumGitOutputBytes,
+    signal,
+  )
+  if (tree.truncated) throw new Error("Git tree is too large to determine file revert targets")
+  return new Set(tree.output.split("\0").filter(Boolean))
 }
 
 async function verifiedCheckpointRefs(
@@ -852,7 +875,7 @@ export class GitWorkspaceService implements WorkspaceService {
     return { path: await realpath(path), branch, baseCommit: checkpointCommit }
   }
 
-  async evidence(worktreePath: string, signal?: AbortSignal): Promise<WorkspaceEvidence> {
+  async evidence(worktreePath: string, signal?: AbortSignal, includeRevertTargets = false): Promise<WorkspaceEvidence> {
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
       const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, signal)
       const [baseCommit, status] = await Promise.all([
@@ -867,7 +890,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ], signal),
       ])
       await this.#afterEvidenceObservation?.("status")
-      const [numstat, diff] = await Promise.all([
+      const [numstat, diff, basePaths] = await Promise.all([
         git(worktreePath, [
           "-c",
           "core.fsmonitor=false",
@@ -894,6 +917,7 @@ export class GitWorkspaceService implements WorkspaceService {
           maximumEvidenceDiffBytes,
           signal,
         ),
+        includeRevertTargets ? pathsAtCommit(worktreePath, baseCommit, signal) : undefined,
       ])
       const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, signal)
       if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
@@ -915,6 +939,12 @@ export class GitWorkspaceService implements WorkspaceService {
         totalChangedFiles: allFiles.length,
         files: allFiles.slice(0, maximumEvidenceFiles),
         filesTruncated: allFiles.length > maximumEvidenceFiles,
+        ...(basePaths === undefined ? {} : {
+          revertTargets: allFiles.slice(0, maximumEvidenceFiles).map((file) => ({
+            path: file.path,
+            kind: basePaths.has(file.path) ? "restore" as const : "remove" as const,
+          })),
+        }),
       }
     }
     throw new WorkspaceEvidenceUnstableError()
@@ -1491,12 +1521,16 @@ export class GitWorkspaceService implements WorkspaceService {
     worktreePath: string,
     path: string,
     signal?: AbortSignal,
+    expectedBaseCommit?: string,
   ): Promise<FileRevert> {
     if (!isWorktreeRelativePath(path)) {
       throw new Error("File path must stay inside the session worktree")
     }
     const pathspec = `:(literal)${path}`
     const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
+    if (expectedBaseCommit !== undefined && baseCommit !== expectedBaseCommit) {
+      throw new FileRevertTargetChangedError()
+    }
     const status = await git(worktreePath, [
       "status",
       "--porcelain",

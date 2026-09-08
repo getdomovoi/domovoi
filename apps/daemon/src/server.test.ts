@@ -76,6 +76,7 @@ import {
 import { FileSkillCatalog, SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import {
   FileRevertIncompleteError,
+  FileRevertTargetChangedError,
   WorkspaceEvidenceUnstableError,
   type WorkspaceService,
 } from "./workspace.js"
@@ -1120,7 +1121,7 @@ describe("DomovoiDaemon", () => {
     }))
   })
 
-  it("returns real Git and recorded test-run evidence without persisting it", async () => {
+  it.each([false, true])("returns real evidence with file associations opt-in = %s without persisting it", async (includeFileAssociations) => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/session-evidence"
@@ -1131,9 +1132,13 @@ describe("DomovoiDaemon", () => {
       kind: "tool",
       tool: "command",
       status: "completed",
-      title: "pnpm test",
+      title: "pnpm test src/app.ts",
       output: "42 tests passed",
       createdAt: "2026-08-29T12:00:00.000Z",
+    })
+    snapshot.thread.push({
+      id: "checkpoint-target", sessionId: session.id, kind: "checkpoint",
+      label: "observed baseline", commit: "a".repeat(40), createdAt: "2026-08-29T11:00:00.000Z",
     })
     const save = vi.fn()
     const workspaceService = {
@@ -1157,6 +1162,7 @@ describe("DomovoiDaemon", () => {
           binary: false,
         }],
         filesTruncated: false,
+        revertTargets: [{ path: "src/app.ts", kind: "restore" as const }],
       })),
     } satisfies WorkspaceService
     const daemon = new DomovoiDaemon({
@@ -1183,7 +1189,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 1,
       method: "session.evidence",
-      params: { sessionId: session.id },
+      params: { sessionId: session.id, ...(includeFileAssociations ? { includeFileAssociations: true } : {}) },
     }))
 
     await expect(response).resolves.toMatchObject({
@@ -1201,15 +1207,26 @@ describe("DomovoiDaemon", () => {
           totalRuns: 1,
           runs: [expect.objectContaining({
             id: "tool-test-evidence",
-            command: "pnpm test",
+            command: "pnpm test src/app.ts",
             commandTruncated: false,
           })],
         },
       },
     })
+    const result = (await response).result as Record<string, unknown>
+    if (includeFileAssociations) {
+      expect(result.fileAssociations).toEqual([{
+        path: "src/app.ts",
+        tests: { state: "unknown", reason: "file-access-not-recorded" },
+        revertTarget: { kind: "restore", baseCommit: "a".repeat(40), checkpointId: "checkpoint-target" },
+      }])
+    } else {
+      expect(result).not.toHaveProperty("fileAssociations")
+    }
     expect(workspaceService.evidence).toHaveBeenCalledWith(
       session.workspacePath,
       expect.any(AbortSignal),
+      ...(includeFileAssociations ? [true] : []),
     )
     expect(save).not.toHaveBeenCalled()
   })
@@ -12627,11 +12644,13 @@ describe("DomovoiDaemon session transfer requests", () => {
       sessionId: session.id,
       path: "src/webhooks.ts",
       client: "desktop",
+      expectedBaseCommit: "a".repeat(40),
     })
     expect(revertFile).toHaveBeenCalledWith(
       "/worktrees/session-revert",
       "src/webhooks.ts",
       expect.any(AbortSignal),
+      "a".repeat(40),
     )
     expect(reverted).toMatchObject({
       result: {
@@ -12651,6 +12670,14 @@ describe("DomovoiDaemon session transfer requests", () => {
         ]),
       },
     })
+
+    revertFile.mockImplementationOnce(async () => { throw new FileRevertTargetChangedError() })
+    const stale = await rpc("session.revertFile", {
+      sessionId: session.id, path: "src/webhooks.ts", client: "desktop", expectedBaseCommit: "b".repeat(40),
+    })
+    expect(stale).toMatchObject({ error: {
+      code: -32602, message: "Revert target changed; refresh file evidence before confirming again",
+    } })
 
     // A revert that stops after its recovery checkpoint still has to leave the
     // checkpoint where the session can restore it.
