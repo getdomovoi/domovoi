@@ -1,5 +1,5 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -59,20 +59,6 @@ it("queues a message sent while a turn is running rather than sending it", async
   expect(screen.getByText("also update the changelog")).toBeTruthy()
 })
 
-it("sends the queued message once the turn ends", async () => {
-  const user = userEvent.setup()
-  const onSend = vi.fn<SendSpy>(async () => {})
-  const { rerender } = render(<ThreadWith snapshot={withActiveTurn(true)} onSend={onSend} />)
-
-  await user.type(screen.getByLabelText("Message"), "also update the changelog")
-  await user.click(screen.getByRole("button", { name: "Send message" }))
-  expect(onSend).not.toHaveBeenCalled()
-
-  rerender(<ThreadWith snapshot={withActiveTurn(false)} onSend={onSend} />)
-
-  await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
-  expect(onSend.mock.calls[0]![1]).toBe("also update the changelog")
-})
 
 it("keeps one queued message rather than stacking them", async () => {
   const user = userEvent.setup()

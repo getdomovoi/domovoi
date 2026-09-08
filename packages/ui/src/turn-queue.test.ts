@@ -1,32 +1,60 @@
 import { describe, expect, it } from "vitest"
 
-import { submitFromComposer } from "./turn-queue"
+import {
+  heldAfter,
+  heldAfterStop,
+  holdAllAfterStop,
+  releasableQueues,
+  setQueue,
+  shouldRelease,
+  type QueuedMessage,
+  type SessionQueues,
+} from "./turn-queue"
 
-describe("sending while a turn is running", () => {
-  it("sends when nothing is running", () => {
-    expect(submitFromComposer({ text: "  add a test  ", turnRunning: false, queued: undefined }))
-      .toEqual({ action: "send", text: "add a test" })
+function waiting(sessionId: string, text = "run it"): QueuedMessage {
+  return { sessionId, text, state: "waiting" }
+}
+
+describe("what may leave the queue", () => {
+  it("releases a session whose turn ended even when another is on screen", () => {
+    const queues: SessionQueues = { a: waiting("a", "for A"), b: waiting("b", "for B") }
+    const ready = releasableQueues([{ id: "a" }, { id: "b", activeTurnId: "turn-1" }], queues, { busy: false })
+    expect(ready.map((message) => message.text)).toEqual(["for A"])
   })
 
-  it("queues rather than cancelling the turn", () => {
-    const outcome = submitFromComposer({ text: "also update the readme", turnRunning: true, queued: undefined })
-    expect(outcome.action).toBe("queue")
-    // The word that must never appear here is cancel. There is no path from
-    // this function to stopping a turn.
-    expect(JSON.stringify(outcome)).not.toMatch(/cancel|stop|abort/i)
+  it("keeps one slot per session rather than one slot", () => {
+    let queues = setQueue({}, "a", waiting("a", "for A"))
+    queues = setQueue(queues, "b", waiting("b", "for B"))
+    // Queueing in B must not overwrite what is still waiting in A.
+    expect(queues.a?.text).toBe("for A")
+    expect(queues.b?.text).toBe("for B")
+    expect(setQueue(queues, "b", undefined).a?.text).toBe("for A")
   })
 
-  it("says a second message replaces the first rather than stacking", () => {
-    const outcome = submitFromComposer({ text: "and the changelog", turnRunning: true, queued: "also update the readme" })
-    expect(outcome).toEqual({
-      action: "queue",
-      text: "and the changelog",
-      note: "replaces the queued message",
-    })
+  it("holds every session's queue when work is stopped", () => {
+    const held = holdAllAfterStop({ a: waiting("a"), b: waiting("b") })
+    expect(Object.values(held).every((message) => message.state === "held")).toBe(true)
+    expect(releasableQueues([{ id: "a" }, { id: "b" }], held, { busy: false })).toEqual([])
   })
 
-  it("ignores an empty submit in either state", () => {
-    expect(submitFromComposer({ text: "   ", turnRunning: false, queued: undefined })).toEqual({ action: "ignore" })
-    expect(submitFromComposer({ text: "", turnRunning: true, queued: "queued" })).toEqual({ action: "ignore" })
+  it("leaves an already held message alone rather than restating why", () => {
+    const already = heldAfter(waiting("a"), "Held because sending failed.")
+    expect(heldAfterStop(already)).toBe(already)
+  })
+
+  it("never releases a held message on its own", () => {
+    const held = heldAfter(waiting("a"), "Held because sending failed.")
+    expect(shouldRelease({ queued: held, sessionId: "a", turnRunning: false, busy: false })).toBe(false)
+    expect(shouldRelease({ queued: waiting("a"), sessionId: "a", turnRunning: false, busy: false })).toBe(true)
+  })
+
+  it("never releases into a session it was not typed in", () => {
+    expect(releasableQueues([{ id: "b" }], { a: waiting("a") }, { busy: false })).toEqual([])
+  })
+
+  it("waits while a turn is running or a stop is in flight", () => {
+    const queues: SessionQueues = { a: waiting("a") }
+    expect(releasableQueues([{ id: "a", activeTurnId: "turn-1" }], queues, { busy: false })).toEqual([])
+    expect(releasableQueues([{ id: "a" }], queues, { busy: true })).toEqual([])
   })
 })

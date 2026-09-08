@@ -195,7 +195,7 @@ import { PlanStrip } from "./plan-strip"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
-import { heldAfterStop, shouldRelease, submitFromComposer, type QueuedMessage } from "./turn-queue"
+import { heldAfter, holdAllAfterStop, releasableQueues, setQueue, submitFromComposer, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
@@ -1533,13 +1533,6 @@ export function Thread({
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
   const [desktopError, setDesktopError] = useState("")
-  // The boundary is the daemon reporting no active turn. Releasing on that
-  // rather than on a timer means a turn ending in a refusal still releases it.
-  const releaseQueued = useRef<() => void>(() => {})
-  useEffect(() => {
-    releaseQueued.current()
-  }, [queued, active?.activeTurnId, pending])
-
   if (!active) {
     const hasProject = snapshot.project !== null
     return (
@@ -1622,15 +1615,6 @@ export function Thread({
     }
   }
 
-  releaseQueued.current = () => {
-    if (!queued) return
-    const busy = pending || emergencyStopPending || providerRestartRequired
-    if (!shouldRelease({ queued, sessionId: active.id, turnRunning: Boolean(active.activeTurnId), busy })) return
-    const next = queued.text
-    onQueuedChange(undefined)
-    void sendPrompt(next, { fromComposer: false })
-  }
-
   // A message sent while a turn is running is queued, never sent on top of it
   // and never a reason to cancel it. One queued message, replaced rather than
   // stacked, and it leaves at the next turn boundary.
@@ -1643,7 +1627,12 @@ export function Thread({
     })
     if (outcome.action === "ignore") return
     if (outcome.action === "queue") {
-      onQueuedChange({ sessionId: active.id, text: outcome.text, state: "waiting" })
+      onQueuedChange({
+        sessionId: active.id,
+        text: outcome.text,
+        state: "waiting",
+        ...(skillSelection ? { skillIds: [...skillSelection] } : {}),
+      })
       setPrompt("")
       return
     }
@@ -1693,6 +1682,9 @@ export function Thread({
     if (pending || !active.activeTurnId) return
     setPending(true)
     setSendError("")
+    // Stopping is a refusal to run more work in this session. Without this the
+    // queue would leave at the boundary the stop itself created.
+    if (queued) onQueuedChange(heldAfter(queued, "Held because this session was stopped. Send it when you want it to run."))
     try {
       await onPauseSession(active.id)
     } catch (cause) {
@@ -3400,10 +3392,12 @@ function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandB
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
-  // The queue outlives the thread view. Thread is keyed by session, so a
-  // session switch unmounts it; a message queued in A must still be there when
-  // the person comes back to A.
-  const [queued, setQueued] = useState<QueuedMessage>()
+  // The queue outlives the thread view and is not limited to the session on
+  // screen. Thread is keyed by session, so a switch unmounts it; and a message
+  // queued in A must leave at A's next turn boundary whether or not anyone is
+  // looking at A.
+  const [queues, setQueues] = useState<SessionQueues>({})
+  const releasing = useRef<Set<string>>(new Set())
   const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint)
   const homeMachineId = home.snapshot?.machine.id ?? null
   const accessScope = JSON.stringify([homeMachineId, clientKind, rpcUrl, rpcToken])
@@ -3735,11 +3729,53 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
   }
   const pauseActiveTurns = () => {
-    // Stopping is a refusal to run more work. Releasing the queue at the
-    // boundary the stop just created would restart what the stop ended.
-    setQueued(heldAfterStop)
     void emergencyStop()
   }
+
+  // Any client's stop, not just this one's. The daemon broadcasts
+  // system.emergencyStopped and use-workspace surfaces it here, so a stop
+  // pressed on a phone holds the queue on the desktop too.
+  useEffect(() => {
+    if (!emergencyStopOutcome && !emergencyStopPending) return
+    setQueues(holdAllAfterStop)
+  }, [emergencyStopOutcome, emergencyStopPending])
+
+  // The release lives here rather than in Thread because a turn ending in A is
+  // A's business whether or not A is the session on screen.
+  useEffect(() => {
+    for (const message of releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })) {
+      const session = { id: message.sessionId }
+      if (releasing.current.has(session.id)) continue
+      const chosen = message.skillIds
+      const { selection, missing } = turnSkillSelectionFor(
+        chosen ? new Set(chosen) : undefined,
+        selectableTurnSkills(skills, snapshot?.skillEnablements ?? [], snapshot?.project?.id),
+      )
+      // Sending without them would quietly become a smaller selection, or an
+      // explicit "no skills" if every chosen skill has gone.
+      if (missing.length > 0) {
+        setQueues((current) => setQueue(current, session.id, heldAfter(
+          message,
+          `Held because ${missing.length === 1 ? "a skill" : `${missing.length} skills`} you chose is no longer in this project's catalog.`,
+        )))
+        continue
+      }
+      releasing.current.add(session.id)
+      setQueues((current) => setQueue(current, session.id, undefined))
+      void sendMessage(session.id, message.text, selection)
+        .catch((cause: unknown) => {
+          // Held, not waiting: a refused message that went back as waiting
+          // would be retried by this effect on the very next render, forever.
+          setQueues((current) => setQueue(current, session.id, heldAfter(
+            message,
+            cause instanceof Error
+              ? `Held because sending failed: ${cause.message}`
+              : "Held because sending failed. Send it again when you want to retry.",
+          )))
+        })
+        .finally(() => releasing.current.delete(session.id))
+    }
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -4243,7 +4279,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet?.entries ?? null} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={queued} onQueuedChange={setQueued} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
