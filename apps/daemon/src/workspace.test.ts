@@ -11,7 +11,7 @@ import { GitWorkspaceService, utf8GitPaths, WorkspaceEvidenceUnstableError } fro
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
-  return { ...actual, open: vi.fn(actual.open), unlink: vi.fn(actual.unlink) }
+  return { ...actual, open: vi.fn(actual.open), readFile: vi.fn(actual.readFile), unlink: vi.fn(actual.unlink) }
 })
 
 const execute = promisify(execFile)
@@ -32,6 +32,7 @@ async function failNextRestoreClaimClose(error: Error) {
 
 afterEach(async () => {
   vi.mocked(open).mockReset()
+  vi.mocked(readFile).mockReset()
   vi.mocked(unlink).mockReset()
   await removeScratchDirectories(scratchDirectories)
 })
@@ -1244,6 +1245,104 @@ describe("GitWorkspaceService bundle restore", () => {
     await expect(lstat(claimPath)).rejects.toMatchObject({ code: "ENOENT" })
     await expect(target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
       .resolves.toMatchObject({ branch: "domovoi/session-1" })
+  })
+
+  it.each([
+    ["close", "completed", "resolve"], ["close", "failed", "reject"],
+    ["read", "completed", "resolve"], ["read", "failed", "reject"],
+    ["unlink", "completed", "resolve"], ["unlink", "failed", "reject"],
+  ] as const)("bounds claim %s after a %s restore, then drains a late %s", async (phase, outcome, settlement) => {
+    const { scratch, targetRepositoryPath, bundle } = await sourceWithBundle("domovoi-restore-release-deadline-")
+    const root = join(scratch, "target-worktrees")
+    const claimPath = join(root, ".restore-claims", "session-1")
+    const target = new GitWorkspaceService(root)
+    const competing = new GitWorkspaceService(root)
+    const entered = restoreGate()
+    const resume = restoreGate()
+    const drained = restoreGate()
+    const restoreError = Object.freeze(new Error("restore failed before cleanup"))
+    const lateError = new Error("late claim I/O failure")
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    const inspect = vi.spyOn(target, "inspect")
+    if (outcome === "failed") inspect.mockRejectedValueOnce(restoreError)
+    const hold = async () => {
+      entered.release()
+      await resume.promise
+      drained.release()
+      if (settlement === "reject") throw lateError
+    }
+    if (phase === "close") {
+      vi.mocked(open).mockImplementationOnce(async (...args) => {
+        const handle = await actual.open(...args)
+        const close = handle.close.bind(handle)
+        vi.spyOn(handle, "close").mockImplementationOnce(async () => {
+          // Close the real descriptor so the replacement probe also runs on Windows.
+          await close()
+          await hold()
+        })
+        return handle
+      })
+    } else if (phase === "read") {
+      vi.mocked(readFile).mockImplementationOnce(async (...args) => {
+        const token = await actual.readFile(...args)
+        await hold()
+        return token
+      })
+    } else {
+      vi.mocked(unlink).mockImplementationOnce(async (...args) => {
+        // An absent pathname does not mean an unacknowledged unlink is safe
+        // to overlap with a new owner. Keep exclusion until it settles.
+        await actual.unlink(...args)
+        await hold()
+      })
+    }
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] })
+    let result: { error: unknown } | undefined
+    const restoring = target.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath })
+      .then(() => { result = { error: undefined } }, (error: unknown) => { result = { error } })
+    try {
+      await entered.promise
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(result, "restore must settle at the release deadline while I/O is still pending").toBeDefined()
+      expect(result?.error).toMatchObject({
+        name: "SessionRestoreClaimCleanupError", restoreCompleted: outcome === "completed", claimPath,
+        message: expect.stringContaining("deadline"),
+      })
+      if (outcome === "failed") {
+        expect((result?.error as Error).cause).toBe(restoreError)
+        expect((result?.error as AggregateError).errors[0]).toBe(restoreError)
+      }
+      await expect(competing.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .rejects.toMatchObject({ name: "SessionRestoreClaimQuarantinedError", claimPath })
+      // Quarantine is per session; unrelated restores still work.
+      await expect(competing.restoreSessionFromBundle(bundle.path, "session-2", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-2" })
+
+      const replacementToken = "replacement-owner"
+      if (phase !== "unlink") {
+        await actual.unlink(claimPath)
+        await writeFile(claimPath, replacementToken, { flag: "wx" })
+      }
+      resume.release()
+      await drained.promise
+      await vi.advanceTimersByTimeAsync(0)
+      if (phase !== "unlink") {
+        // No ownership read or unlink may begin after a timed-out step drains,
+        // even when a delayed read returns the original owner's token.
+        await expect(actual.readFile(claimPath, "utf8")).resolves.toBe(replacementToken)
+        await expect(competing.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+          .rejects.toThrow(claimPath)
+        await actual.unlink(claimPath)
+      }
+      await expect(competing.restoreSessionFromBundle(bundle.path, "session-1", { repositoryPath: targetRepositoryPath }))
+        .resolves.toMatchObject({ branch: "domovoi/session-1" })
+    } finally {
+      resume.release()
+      await restoring
+      await vi.advanceTimersByTimeAsync(0)
+      vi.useRealTimers()
+      inspect.mockRestore()
+    }
   })
 
   it("does not delete an unverified claim when writing its owner token fails", async () => {

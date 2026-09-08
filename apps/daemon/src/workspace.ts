@@ -7,6 +7,8 @@ import { promisify } from "node:util"
 
 import { maximumPreviewSourceBytes } from "@getdomovoi/protocol"
 
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
+
 const execute = promisify(execFile)
 const safeSessionId = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 const safeRemoteName = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/
@@ -14,7 +16,8 @@ const commitSha = /^[a-f0-9]{40}$/u
 // Reserve synchronously before the first await, across service instances.
 // Otherwise a delayed claim opener could acquire after the winner completes
 // and turn a concurrent request into an apparently sequential update.
-const activeBundleRestores = new Set<string>()
+type RestoreClaimReservation = { state: "restoring" | "releasing" | "quarantined" }
+const activeBundleRestores = new Map<string, RestoreClaimReservation>()
 
 function checkpointRef(commit: string): string {
   return `refs/domovoi/checkpoints/${commit}`
@@ -92,6 +95,20 @@ export class SessionWorktreeExistsError extends Error {
   }
 }
 
+export class SessionRestoreClaimQuarantinedError extends Error {
+  constructor(readonly claimPath: string) {
+    super(`Restore claim cleanup is still pending at ${claimPath}. Wait for cleanup to settle, or stop every Domovoi process and its supervisor before inspecting and removing a confirmed stale claim.`)
+    this.name = "SessionRestoreClaimQuarantinedError"
+  }
+}
+
+class RestoreClaimReleaseDeadlineError extends Error {
+  constructor(phase: string) {
+    super(`Restore claim ${phase} exceeded the ${restoreClaimIoTimeoutMs} ms release deadline. Pending I/O remains quarantined until it settles. Stop every Domovoi process and its supervisor before removing a confirmed stale claim.`)
+    this.name = "RestoreClaimReleaseDeadlineError"
+  }
+}
+
 class RestoreClaimOwnerVerificationError extends Error {
   constructor(tokenWritten: boolean) {
     super(tokenWritten
@@ -110,7 +127,8 @@ export class SessionRestoreClaimCleanupError extends AggregateError {
     restoreFailure?: { error: unknown },
   ) {
     const ownershipError = cleanupErrors.find((error) => error instanceof RestoreClaimOwnerVerificationError)
-    const diagnostic = `Restore claim cleanup failed at ${claimPath}${ownershipError ? `. ${ownershipError.message}` : ""}`
+    const deadlineError = cleanupErrors.find((error) => error instanceof RestoreClaimReleaseDeadlineError)
+    const diagnostic = `Restore claim cleanup failed at ${claimPath}${ownershipError ? `. ${ownershipError.message}` : ""}${deadlineError ? `. ${deadlineError.message}` : ""}`
     super(
       restoreFailure ? [restoreFailure.error, ...cleanupErrors] : cleanupErrors,
       restoreFailure
@@ -121,6 +139,53 @@ export class SessionRestoreClaimCleanupError extends AggregateError {
     this.name = "SessionRestoreClaimCleanupError"
     this.restoreCompleted = restoreFailure === undefined
   }
+}
+
+async function releaseRestoreClaim(
+  claim: Awaited<ReturnType<typeof open>>,
+  claimPath: string,
+  claimToken: string,
+  claimTokenWritten: boolean,
+  reservation: RestoreClaimReservation,
+): Promise<unknown[]> {
+  const errors: unknown[] = []
+  // Release gets one fresh budget even when the restore was cancelled. A
+  // timeout bounds the caller's wait, not an uncancellable close or unlink.
+  const deadline = OperationDeadline.start(restoreClaimIoTimeoutMs)
+  reservation.state = "releasing"
+  let phase = "close"
+  const releasing = (async () => {
+    try {
+      // An immediate close failure must still allow ownership-checked unlink.
+      try { await claim.close() } catch (error) { errors.push(error) }
+      deadline.throwIfExpired()
+      phase = "ownership read"
+      const currentToken = await readFile(claimPath, { encoding: "utf8", signal: deadline.signal })
+      deadline.throwIfExpired()
+      if (currentToken !== claimToken) throw new RestoreClaimOwnerVerificationError(claimTokenWritten)
+      phase = "unlink"
+      // Path verification and unlink are not atomic. Manual removal requires
+      // stopped daemons, including when the release deadline has expired.
+      await unlink(claimPath)
+    } finally {
+      // Only actual settlement releases exclusion. In particular, a pending
+      // unlink must never overlap a successor, even if the path is absent.
+      if (activeBundleRestores.get(claimPath) === reservation) activeBundleRestores.delete(claimPath)
+    }
+  })()
+  try {
+    await beforeDeadline(releasing, deadline)
+  } catch (error) {
+    if (deadline.signal.aborted) {
+      if (activeBundleRestores.get(claimPath) === reservation) reservation.state = "quarantined"
+      errors.push(new RestoreClaimReleaseDeadlineError(phase))
+    } else {
+      errors.push(error)
+    }
+  } finally {
+    deadline.clear()
+  }
+  return errors
 }
 
 // The recovery checkpoint is taken before the worktree moves, so a revert that
@@ -1250,12 +1315,15 @@ export class GitWorkspaceService implements WorkspaceService {
     const claimDirectory = join(this.worktreeRoot, ".restore-claims")
     const claimPath = join(claimDirectory, sessionId)
     const claimToken = randomUUID()
-    if (activeBundleRestores.has(claimPath)) throw new SessionWorktreeExistsError()
-    activeBundleRestores.add(claimPath)
+    const active = activeBundleRestores.get(claimPath)
+    if (active?.state === "quarantined") throw new SessionRestoreClaimQuarantinedError(claimPath)
+    if (active) throw new SessionWorktreeExistsError()
+    const reservation: RestoreClaimReservation = { state: "restoring" }
+    activeBundleRestores.set(claimPath, reservation)
     let claim: Awaited<ReturnType<typeof open>> | undefined
     let claimTokenWritten = false
     let outcome: { completed: true; workspace: SessionWorkspace } | { completed: false; error: unknown }
-    const cleanupErrors: unknown[] = []
+    let cleanupErrors: unknown[] = []
     try {
       await mkdir(claimDirectory, { recursive: true })
       signal?.throwIfAborted()
@@ -1280,24 +1348,9 @@ export class GitWorkspaceService implements WorkspaceService {
     } catch (error) {
       outcome = { completed: false, error }
     } finally {
-      try {
-        if (claim) {
-          // A close failure must not skip unlink. Neither cleanup failure may
-          // hide the restore outcome or keep the process reservation occupied.
-          try { await claim.close() } catch (error) { cleanupErrors.push(error) }
-          try {
-            // The ownership read has its own deadline after cancellation too.
-            // Check the pathname, not the original handle, which may now refer
-            // to an unlinked file. Manual deletion still requires stopped
-            // daemons: token verification and unlink are not one atomic action.
-            const readSignal = AbortSignal.timeout(restoreClaimIoTimeoutMs)
-            const currentToken = await readFile(claimPath, { encoding: "utf8", signal: readSignal })
-            readSignal.throwIfAborted()
-            if (currentToken !== claimToken) cleanupErrors.push(new RestoreClaimOwnerVerificationError(claimTokenWritten))
-            else await unlink(claimPath)
-          } catch (error) { cleanupErrors.push(error) }
-        }
-      } finally {
+      if (claim) {
+        cleanupErrors = await releaseRestoreClaim(claim, claimPath, claimToken, claimTokenWritten, reservation)
+      } else {
         activeBundleRestores.delete(claimPath)
       }
     }
