@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react"
+import { useEffect, useRef, type ReactNode, type RefObject } from "react"
 
 import { cn } from "./lib/utils"
 
@@ -12,6 +12,7 @@ export function FloatingSurface({
   onClose,
   label,
   align = "start",
+  trigger,
   children,
   className,
 }: {
@@ -19,6 +20,7 @@ export function FloatingSurface({
   onClose: () => void
   label: string
   align?: "start" | "end"
+  trigger?: RefObject<HTMLElement | null> | undefined
   children: ReactNode
   className?: string
 }) {
@@ -40,7 +42,12 @@ export function FloatingSurface({
       }
     }
     const onPointer = (event: MouseEvent) => {
-      if (!surface.current?.contains(event.target as Node)) close.current()
+      const target = event.target as Node
+      if (surface.current?.contains(target)) return
+      // The trigger owns the toggle. Closing here would let its own click see a
+      // closed surface and open it straight back up.
+      if (trigger?.current?.contains(target)) return
+      close.current()
     }
     document.addEventListener("keydown", onKey)
     // Pointer close runs on the next frame so the click that opened this
@@ -53,7 +60,7 @@ export function FloatingSurface({
       const previous = opener.current
       if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
     }
-  }, [open])
+  }, [open, trigger])
 
   if (!open) return null
   return (

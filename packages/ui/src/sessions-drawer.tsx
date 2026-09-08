@@ -1,3 +1,5 @@
+import { useRef } from "react"
+
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { FloatingSurface } from "./floating-surface"
@@ -26,12 +28,14 @@ export function SessionsDrawer({
   onOpenProviderSettings?: (() => void) | undefined
   className?: string
 }) {
+  const trigger = useRef<HTMLButtonElement>(null)
   const groups = groupSessions(snapshot)
   const needsYou = groups.find((group) => group.id === "needs-you")?.sessions.length ?? 0
 
   return (
     <div className={cn("relative", className)}>
       <button
+        ref={trigger}
         type="button"
         aria-expanded={open}
         onClick={() => onOpenChange(!open)}
@@ -50,7 +54,7 @@ export function SessionsDrawer({
         ) : null}
       </button>
 
-      <FloatingSurface open={open} onClose={() => onOpenChange(false)} label="Sessions" className="flex w-[var(--shell-sidebar)] flex-col overflow-hidden">
+      <FloatingSurface open={open} onClose={() => onOpenChange(false)} label="Sessions" trigger={trigger} className="flex w-[var(--shell-sidebar)] flex-col overflow-hidden">
         <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.length === 0 ? (
           <p className="m-0 px-2 py-3 text-[11.5px] text-faint">

@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { Chip } from "./chip"
@@ -108,5 +108,27 @@ describe("FloatingSurface", () => {
     await user.click(screen.getByRole("button", { name: "Open" }))
     await user.click(screen.getByRole("button", { name: "Inside" }))
     expect(screen.getByRole("group", { name: "Sessions" })).toBeTruthy()
+  })
+
+  it("lets its own trigger close it again", async () => {
+    const user = userEvent.setup()
+    function Toggle() {
+      const trigger = useRef<HTMLButtonElement>(null)
+      const [open, setOpen] = useState(false)
+      return (
+        <div>
+          <button ref={trigger} type="button" onClick={() => setOpen(!open)}>Toggle</button>
+          <FloatingSurface open={open} onClose={() => setOpen(false)} label="Modes" trigger={trigger}>
+            <button type="button">Inside</button>
+          </FloatingSurface>
+        </div>
+      )
+    }
+    render(<Toggle />)
+    const toggle = screen.getByRole("button", { name: "Toggle" })
+    await user.click(toggle)
+    expect(screen.getByRole("group", { name: "Modes" })).toBeTruthy()
+    await user.click(toggle)
+    expect(screen.queryByRole("group", { name: "Modes" })).toBeNull()
   })
 })
