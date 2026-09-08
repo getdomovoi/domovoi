@@ -3398,6 +3398,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // looking at A.
   const [queues, setQueues] = useState<SessionQueues>({})
   const releasing = useRef<Set<string>>(new Set())
+  const [seenStop, setSeenStop] = useState<SystemEmergencyStopResult | null>(null)
   const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint)
   const homeMachineId = home.snapshot?.machine.id ?? null
   const accessScope = JSON.stringify([homeMachineId, clientKind, rpcUrl, rpcToken])
@@ -3735,10 +3736,20 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Any client's stop, not just this one's. The daemon broadcasts
   // system.emergencyStopped and use-workspace surfaces it here, so a stop
   // pressed on a phone holds the queue on the desktop too.
-  useEffect(() => {
-    if (!emergencyStopOutcome && !emergencyStopPending) return
+  //
+  // Adjusted during render rather than in an effect on purpose. A stop arrives
+  // with the idle snapshot in the same render, and two effects on one commit
+  // race: the release effect would read the queues of that render, still
+  // waiting, and send the work the stop just ended. Setting state during
+  // render makes React re-run this component before any effect fires.
+  if (emergencyStopOutcome && emergencyStopOutcome !== seenStop) {
+    setSeenStop(emergencyStopOutcome)
     setQueues(holdAllAfterStop)
-  }, [emergencyStopOutcome, emergencyStopPending])
+  }
+  useEffect(() => {
+    if (!emergencyStopPending) return
+    setQueues(holdAllAfterStop)
+  }, [emergencyStopPending])
 
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
@@ -3747,6 +3758,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       const session = { id: message.sessionId }
       if (releasing.current.has(session.id)) continue
       const chosen = message.skillIds
+      // Waiting, not held: an unloaded catalog says nothing about whether the
+      // chosen skill still exists, and "your skill is gone" is a lie until it
+      // has answered.
+      if (chosen && chosen.length > 0 && localSkillInventory?.state !== "available") continue
       const { selection, missing } = turnSkillSelectionFor(
         chosen ? new Set(chosen) : undefined,
         selectableTurnSkills(skills, snapshot?.skillEnablements ?? [], snapshot?.project?.id),
@@ -3766,7 +3781,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         .catch((cause: unknown) => {
           // Held, not waiting: a refused message that went back as waiting
           // would be retried by this effect on the very next render, forever.
-          setQueues((current) => setQueue(current, session.id, heldAfter(
+          // And only into an empty slot: the person may have queued something
+          // newer while this one was in flight, and that one is what they mean.
+          setQueues((current) => current[session.id] ? current : setQueue(current, session.id, heldAfter(
             message,
             cause instanceof Error
               ? `Held because sending failed: ${cause.message}`
@@ -3775,7 +3792,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         })
         .finally(() => releasing.current.delete(session.id))
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
