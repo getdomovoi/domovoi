@@ -26,8 +26,7 @@ describe("workspace UI persistence", () => {
   it("round-trips only versioned non-secret navigation and layout state", () => {
     const storage = memoryStorage()
     const state = {
-      version: 4,
-      sidebarCollapsed: true,
+      version: 5,
       dockCollapsed: false,
       dockPinned: true,
       surface: "skills",
@@ -38,7 +37,7 @@ describe("workspace UI persistence", () => {
       windowDecoration: "system",
       notifications: { completion: true, failure: true, approvalNeeded: true },
       layouts: {
-        "rail.dock": { thread: 68, dock: 32 },
+        "drawer.dock": { thread: 68, dock: 32 },
       },
       rpcToken: "must-not-persist",
       providerApiKey: "must-not-persist",
@@ -50,8 +49,7 @@ describe("workspace UI persistence", () => {
     const raw = storage.getItem("domovoi.workspace-ui")!
     expect(raw).not.toContain("must-not-persist")
     expect(loadWorkspaceUiState(storage)).toEqual({
-      version: 4,
-      sidebarCollapsed: true,
+      version: 5,
       dockCollapsed: false,
       dockPinned: true,
       surface: "skills",
@@ -62,7 +60,7 @@ describe("workspace UI persistence", () => {
       windowDecoration: "system",
       notifications: { completion: true, failure: true, approvalNeeded: true },
       layouts: {
-        "rail.dock": { thread: 68, dock: 32 },
+        "drawer.dock": { thread: 68, dock: 32 },
       },
     })
   })
@@ -126,7 +124,7 @@ describe("workspace UI persistence", () => {
       layouts: {},
     })
     expect(loadWorkspaceUiState(memoryStorage(versionOne))).toMatchObject({
-      version: 4,
+      version: 5,
       surface: "skills",
       externalEditor: "system",
       theme: "system",
@@ -146,10 +144,10 @@ describe("workspace UI persistence", () => {
 
   it.each([
     ["invalid JSON", "{"],
-    ["unknown version", JSON.stringify({ ...defaultWorkspaceUiState(), version: 4 })],
+    ["unknown version", JSON.stringify({ ...defaultWorkspaceUiState(), version: 99 })],
     ["unknown surface", JSON.stringify({ ...defaultWorkspaceUiState(), surface: "terminal" })],
     ["invalid identifiers", JSON.stringify({ ...defaultWorkspaceUiState(), projectId: "" })],
-    ["invalid layout", JSON.stringify({ ...defaultWorkspaceUiState(), layouts: { "sidebar.dock": { thread: Number.NaN } } })],
+    ["a size that is not a size", JSON.stringify({ ...defaultWorkspaceUiState(), layouts: { "drawer.dock": { thread: Number.NaN } } })],
   ])("falls back safely for %s", (_label, raw) => {
     expect(loadWorkspaceUiState(memoryStorage(raw))).toEqual(defaultWorkspaceUiState())
   })
@@ -237,7 +235,7 @@ it("keeps every notification kind on when upgrading a version 3 state", () => {
     layouts: {},
   })
 
-  expect(parsed?.version).toBe(4)
+  expect(parsed?.version).toBe(5)
   expect(parsed?.notifications).toEqual({ completion: true, failure: true, approvalNeeded: true })
 })
 
@@ -248,4 +246,42 @@ it("round-trips a stored notification preference", () => {
   })
 
   expect(parsed?.notifications.failure).toBe(false)
+})
+
+it("keeps what a person set when the stored layout is from another version", () => {
+  // The bug this guards: v2 renamed the layout key to drawer.*, and a stored
+  // sidebar.* layout made the whole state parse as invalid. The next save then
+  // threw away their theme, editor and notification choices with it.
+  const parsed = parseWorkspaceUiState({
+    version: 4,
+    sidebarCollapsed: true,
+    dockCollapsed: false,
+    surface: "workspace",
+    projectId: null,
+    sessionId: null,
+    externalEditor: "cursor",
+    theme: "light",
+    windowDecoration: "system",
+    notifications: { completion: false, failure: true, approvalNeeded: true },
+    layouts: {
+      "sidebar.dock": { sessions: 240, thread: 48, dock: 28 },
+      "drawer.dock": { thread: 68, dock: 32 },
+    },
+  })
+
+  expect(parsed).toBeDefined()
+  expect(parsed!.theme).toBe("light")
+  expect(parsed!.externalEditor).toBe("cursor")
+  expect(parsed!.notifications.completion).toBe(false)
+  // The retired layout is dropped, the current one kept.
+  expect(parsed!.layouts).toEqual({ "drawer.dock": { thread: 68, dock: 32 } })
+})
+
+it("drops a panel that no longer exists without discarding its layout", () => {
+  const parsed = parseWorkspaceUiState({
+    ...defaultWorkspaceUiState(),
+    layouts: { "drawer.dock": { sessions: 240, thread: 68, dock: 32 } },
+  })
+
+  expect(parsed!.layouts).toEqual({ "drawer.dock": { thread: 68, dock: 32 } })
 })
