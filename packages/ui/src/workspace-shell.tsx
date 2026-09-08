@@ -190,6 +190,7 @@ import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
 import { MachineSheet } from "./machine-sheet"
+import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
@@ -1871,7 +1872,7 @@ export function Thread({
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
-              return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><CheckIcon /><AlertTitle>{item.operation}: {item.decision}</AlertTitle><AlertDescription>Checkpoint {item.checkpoint} · decided from {item.client}{item.connectionId ? ` · connection ${item.connectionId}` : item.clientId ? ` · declared client ${item.clientId}` : ""}{item.explanation ? ` · ${item.explanation}` : ""}</AlertDescription></Alert>
+              return <ApprovalReceipt key={item.id} receipt={item} />
             }
             // Grouping consumed every tool item, so nothing reaches here.
             if (item.kind === "tool") return null

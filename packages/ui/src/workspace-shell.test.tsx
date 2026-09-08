@@ -146,7 +146,7 @@ describe("RuntimeControls", () => {
 
     const markup = renderToStaticMarkup(<Thread snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
 
-    expect(markup).toContain("decided from web · connection 11111111-1111-4111-8111-111111111111")
+    expect(markup).toContain("decided from web, connection 11111111-1111-4111-8111-111111111111")
   })
 
   it("bounds initial rendered thread work with the canonical effective limit", () => {
