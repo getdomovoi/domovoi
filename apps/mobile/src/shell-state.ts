@@ -45,3 +45,16 @@ export function shellState(input: {
     detail: input.fault?.detail ?? "Nothing has been received from this daemon yet.",
   }
 }
+
+// "unpaired" is answered by UnpairedScreen, one per tab, and "ready" draws the
+// workspace itself. What is left is the three states where the phone has a
+// daemon in hand and still cannot show it, which is the one screen ShellNotice
+// draws. Narrowing here is what stops the two ever both answering a state.
+export type UnreachableShell = Omit<ShellState, "kind"> & {
+  kind: Exclude<ShellState["kind"], "unpaired" | "ready">
+}
+
+export function unreachableShell(shell: ShellState): UnreachableShell | undefined {
+  if (shell.kind === "unpaired" || shell.kind === "ready") return undefined
+  return { ...shell, kind: shell.kind }
+}
