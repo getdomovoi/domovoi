@@ -172,6 +172,9 @@ test("does not publish when the entry loads but the lazy native binding is broke
 test("native load verification cannot extend the installation deadline", { timeout: testTimeout }, async (t) => {
   const { options, calls } = await nativeFixture(t)
   let now = 0
+  // Control both expiry paths. A real timer could otherwise exhaust the budget
+  // before a slow runner reaches the probe, even while this clock stays at zero.
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   t.mock.method(performance, "now", () => now)
   const run = options.run
   options.run = async (command, args, context) => {
@@ -179,7 +182,8 @@ test("native load verification cannot extend the installation deadline", { timeo
     if (args.includes("--eval")) now = 1_000
     return result
   }
-  await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), /Bootstrap.*1000 ms/)
+  await assert.rejects(installer({ ...options, timeoutMs: 1_000 }),
+    /Bootstrap.*1000 ms.*It expired during the native terminal module load, 1000 ms into that step$/)
   assert.equal(calls.filter(({ args }) => args.includes("--eval")).length, 1)
   assert.ok(calls.every(({ deadline }) => deadline === calls[0].deadline))
   await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
@@ -211,6 +215,7 @@ for (const reason of ["npm failure", "dependency drift"]) {
 test("spends download time from the same budget and refuses a late install result", { timeout: testTimeout }, async (t) => {
   const { options, calls, afterInstall } = await fixture(t)
   let now = 0
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   t.mock.method(performance, "now", () => now)
   const download = options.download
   options.download = (...args) => { now += 100; return download(...args) }
@@ -226,6 +231,7 @@ test("spends download time from the same budget and refuses a late install resul
 test("names the step still running when the total deadline expires", { timeout: testTimeout }, async (t) => {
   const { options, afterInstall } = await fixture(t)
   let now = 0
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   t.mock.method(performance, "now", () => now)
   afterInstall(() => { now = 1_000 })
   await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), (error) => {
@@ -237,12 +243,16 @@ test("names the step still running when the total deadline expires", { timeout: 
 })
 
 test("names the native build when that is the step that runs out the budget", { timeout: testTimeout }, async (t) => {
-  const { options, afterBuild } = await nativeFixture(t)
+  const { options, calls, afterBuild } = await nativeFixture(t)
   let now = 0
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   t.mock.method(performance, "now", () => now)
   afterBuild(() => { now = 1_000 })
   await assert.rejects(installer({ ...options, timeoutMs: 1_000 }),
     /It expired during the native terminal module build, 1000 ms into that step$/)
+  assert.equal(calls.filter(({ args }) => args.includes("--eval")).length, 0,
+    "an expired build must not start native load verification")
+  await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
 })
 
 test("refuses a missing or old npm with the supported minimum", { timeout: testTimeout }, async (t) => {
@@ -357,6 +367,7 @@ for (const mutation of ["version", "integrity", "extra", "missing", "lifecycle"]
 test("removes unpublished staging under a fresh budget after the total deadline expires", { timeout: testTimeout }, async (t) => {
   const { options, afterInstall } = await fixture(t)
   let now = 0
+  t.mock.timers.enable({ apis: ["setTimeout"] })
   t.mock.method(performance, "now", () => now)
   afterInstall(() => { now = 1_000 })
   await assert.rejects(installer({ ...options, timeoutMs: 1_000 }), /Bootstrap.*1000 ms/)
