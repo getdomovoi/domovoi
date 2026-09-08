@@ -19,6 +19,7 @@
     "@expo-google-fonts/instrument-sans": "0.4.2",
     "@expo-google-fonts/jetbrains-mono": "0.4.1",
     "@getdomovoi/protocol": "workspace:*",
+    "@noble/curves": "2.4.0",
     "expo": "~57.0.20",
     "expo-font": "~57.0.3",
     "expo-secure-store": "^57.0.3",
