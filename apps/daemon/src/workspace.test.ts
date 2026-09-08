@@ -295,6 +295,7 @@ describe("GitWorkspaceService", () => {
     await mkdir(join(repositoryPath, "src"))
     await writeFile(join(repositoryPath, "README.md"), "before\n")
     await writeFile(join(repositoryPath, "binary.dat"), Buffer.from([0, 1, 2]))
+    await writeFile(join(repositoryPath, " leading space.ts"), "before\n")
     await writeFile(join(repositoryPath, "src", "old.ts"), "export const old = true\n")
     await writeFile(join(repositoryPath, "remove.txt"), "remove me\n")
     await execute("git", ["-C", repositoryPath, "add", "."])
@@ -315,21 +316,24 @@ describe("GitWorkspaceService", () => {
     await writeFile(join(repositoryPath, "README.md"), "staged\n")
     await execute("git", ["-C", repositoryPath, "add", "README.md"])
     await writeFile(join(repositoryPath, "README.md"), "unstaged too\n")
+    await writeFile(join(repositoryPath, " leading space.ts"), "after\n")
     await writeFile(join(repositoryPath, "binary.dat"), Buffer.from([0, 1, 3]))
     await execute("git", ["-C", repositoryPath, "mv", "src/old.ts", "src/new name.ts"])
     await rm(join(repositoryPath, "remove.txt"))
     await writeFile(join(repositoryPath, "untracked file.ts"), "export const fresh = true\n")
 
-    const evidence = await new GitWorkspaceService(join(scratch, "worktrees"))
-      .evidence(repositoryPath)
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    expect(await service.evidence(repositoryPath)).not.toHaveProperty("revertTargets")
+    const evidence = await service.evidence(repositoryPath, undefined, true)
 
     expect(evidence).toMatchObject({
       baseCommit,
-      totalChangedFiles: 5,
+      totalChangedFiles: 6,
       filesTruncated: false,
       diffTruncated: false,
     })
     expect(evidence.files).toEqual([
+      expect.objectContaining({ path: " leading space.ts", status: "modified" }),
       expect.objectContaining({
         path: "binary.dat",
         status: "modified",
@@ -369,6 +373,14 @@ describe("GitWorkspaceService", () => {
     expect(evidence.diff).toContain("diff --git a/README.md b/README.md")
     expect(evidence.diff).toContain("unstaged too")
     expect(evidence.diff).not.toContain("untracked file.ts")
+    expect(evidence).toHaveProperty("revertTargets", [
+      { path: " leading space.ts", kind: "restore" },
+      { path: "binary.dat", kind: "restore" },
+      { path: "README.md", kind: "restore" },
+      { path: "remove.txt", kind: "restore" },
+      { path: "src/new name.ts", kind: "remove" },
+      { path: "untracked file.ts", kind: "remove" },
+    ])
   })
 
   it("retries when the worktree changes between Git evidence observations", async () => {
@@ -1790,6 +1802,21 @@ describe("GitWorkspaceService file revert", () => {
     ])).stdout.trim()).toBe(reverted.recoveryCommit)
     expect((await execute("git", ["-C", workspace.path, "status", "--porcelain"])).stdout)
       .not.toContain("kept.ts")
+
+    // A confirmation read before another checkpoint must not silently restore
+    // from that newer commit. Refusal happens before even the recovery write.
+    const confirmed = await service.evidence(workspace.path)
+    const newer = await service.checkpoint(workspace.path, "newer baseline")
+    await writeFile(join(workspace.path, "kept.ts"), "keep this work\n")
+    const checkpoint = vi.spyOn(service, "checkpoint")
+    await expect(service.revertFile(workspace.path, "kept.ts", undefined, confirmed.baseCommit))
+      .rejects.toThrow("Revert target changed; refresh file evidence before confirming again")
+    expect(checkpoint).not.toHaveBeenCalled()
+    expect(await readFile(join(workspace.path, "kept.ts"), "utf8")).toBe("keep this work\n")
+    expect((await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])).stdout.trim())
+      .toBe(newer.commit)
+    await expect(service.revertFile(workspace.path, "kept.ts", undefined, newer.commit))
+      .resolves.toMatchObject({ outcome: "restored", baseCommit: newer.commit })
   })
 
   it("removes an untracked file and refuses paths it cannot revert", async () => {
