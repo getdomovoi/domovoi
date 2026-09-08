@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { utf16MaxLength } from "./validation.js"
+
 import { annotationAnchorSchema } from "./schema.js"
 
 export const previewBridgeChannelSchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/)
@@ -25,30 +27,30 @@ export const previewBridgeSelectionMessageSchema = z.object({
   channel: previewBridgeChannelSchema,
   artifactId: z.string().min(1),
   anchor: annotationAnchorSchema,
-  label: z.string().trim().min(1).max(240),
+  label: z.string().trim().min(1).check(utf16MaxLength(240)),
 })
 
 const previewBridgeAnnotationAnchorSchema = z.object({
-  annotationId: z.string().trim().min(1).max(256),
+  annotationId: z.string().trim().min(1).check(utf16MaxLength(256)),
   anchor: annotationAnchorSchema,
 }).strict()
 
 export const previewBridgeResolveAnchorsMessageSchema = z.object({
   type: z.literal("domovoi.preview.resolve-anchors"),
   channel: previewBridgeChannelSchema,
-  artifactId: z.string().min(1).max(256),
+  artifactId: z.string().min(1).check(utf16MaxLength(256)),
   requestId: previewBridgeChannelSchema,
   annotations: z.array(previewBridgeAnnotationAnchorSchema).max(100),
 }).strict()
 
 const previewBridgeAnchorResolutionSchema = z.discriminatedUnion("status", [
   z.object({
-    annotationId: z.string().trim().min(1).max(256),
+    annotationId: z.string().trim().min(1).check(utf16MaxLength(256)),
     status: z.literal("resolved"),
     strategy: z.enum(["selector", "text-quote", "bounding-box"]),
   }).strict(),
   z.object({
-    annotationId: z.string().trim().min(1).max(256),
+    annotationId: z.string().trim().min(1).check(utf16MaxLength(256)),
     status: z.literal("unresolved"),
   }).strict(),
 ])
@@ -56,7 +58,7 @@ const previewBridgeAnchorResolutionSchema = z.discriminatedUnion("status", [
 export const previewBridgeAnchorResolutionsMessageSchema = z.object({
   type: z.literal("domovoi.preview.anchor-resolutions"),
   channel: previewBridgeChannelSchema,
-  artifactId: z.string().min(1).max(256),
+  artifactId: z.string().min(1).check(utf16MaxLength(256)),
   requestId: previewBridgeChannelSchema,
   resolutions: z.array(previewBridgeAnchorResolutionSchema).max(100),
 }).strict()

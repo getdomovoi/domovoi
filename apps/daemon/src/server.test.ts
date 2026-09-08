@@ -3894,6 +3894,35 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("keeps validation refusals readable and leaves an oversized Unicode rename unapplied", async () => {
+    const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
+    const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
+    running.push(daemon)
+    await daemon.start()
+    const { socket, call } = await pairingClient(daemon)
+    try {
+      const paired = await call(2, "device.pair", { label: "studio-ipad", client: "desktop" })
+      const device = (paired.result as { device: { id: string } }).device
+      const oversized = "😀".repeat(65)
+      expect(oversized.length).toBe(130)
+      expect([...oversized]).toHaveLength(65)
+      for (const [index, params] of [
+        { deviceId: device.id, label: oversized },
+        { deviceId: device.id, label: "bad\nlabel", unknown: true },
+      ].entries()) {
+        expect(await call(3 + index, "device.rename", params)).toEqual({
+          jsonrpc: "2.0", id: 3 + index,
+          error: { code: -32602, message: "Method parameters are invalid" },
+        })
+        expect(store.devices.list()).toEqual([device])
+      }
+      expect(await call(5, "device.rename", { deviceId: device.id, label: "kitchen-ipad" }))
+        .toMatchObject({ result: { device: { label: "kitchen-ipad" } } })
+    } finally {
+      socket.close()
+    }
+  })
+
   it("refuses a rename whose expected label is stale and returns the current row", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })

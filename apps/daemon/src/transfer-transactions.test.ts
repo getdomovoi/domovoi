@@ -183,6 +183,29 @@ function manifestFor(
 }
 
 describe("file transfer transaction journal", () => {
+  it("reads a persisted minute-precision manifest without changing its digest", async () => {
+    const { root } = await journal()
+    const manifest = {
+      ...manifestFor(Buffer.from("state"), Buffer.from("repository")),
+      createdAt: "2026-09-03T21:00Z",
+    }
+    // Fixed digest of the legacy canonical JSON, computed before the upgrade.
+    // Writing raw bytes keeps this regression on the journal's read path.
+    const manifestDigest = "sha256:41400ea0d7ad768e391bed8eef34a39e0208986e49f036c6cad73694f7dca667"
+    const path = join(root, transferId, "manifest.json")
+    const bytes = JSON.stringify({ manifestDigest, manifest })
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, bytes)
+
+    const reopened = new FileTransferTransactions(root)
+    const loaded = await reopened.manifest(transferId, manifestDigest)
+    expect(loaded).toEqual(manifest)
+    expect(sessionTransferManifestDigest(loaded)).toBe(manifestDigest)
+    expect(await readFile(path, "utf8")).toBe(bytes)
+    expect(sessionTransferManifestDigest({ ...loaded, createdAt: "2026-09-03T21:00:00Z" }))
+      .not.toBe(manifestDigest)
+  })
+
   it("retries short filesystem writes until every member byte is durable", async () => {
     const writes: Buffer[] = []
     const writer = {
