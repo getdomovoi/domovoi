@@ -111,3 +111,11 @@ it("closes again when its own trigger is clicked", async () => {
   await user.click(screen.getByRole("button", { name: /^Hide sessions / }))
   expect(screen.queryByRole("group", { name: "Sessions" })).toBeNull()
 })
+
+it("says which session is open, without leaving it to the background colour", async () => {
+  const user = userEvent.setup()
+  render(<Harness onActivate={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: /^Sessions / }))
+  expect(screen.getByRole("button", { name: /Migrate billing webhooks/ }).getAttribute("aria-current")).toBe("true")
+  expect(screen.getByRole("button", { name: /Port the CLI auth flow/ }).getAttribute("aria-current")).toBeNull()
+})

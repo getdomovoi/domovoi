@@ -68,11 +68,15 @@ export function SessionsDrawer({
               <button
                 type="button"
                 key={entry.id}
+                aria-current={entry.id === snapshot.activeSessionId ? "true" : undefined}
                 onClick={() => {
                   onActivate(entry.id)
                   onOpenChange(false)
                 }}
                 className={cn(
+                  // The tint is a second signal only. aria-current is what says
+                  // which session is open, because colour never carries meaning
+                  // on its own here.
                   "flex w-full flex-col items-start gap-1 rounded-md px-2 py-1.5 text-left hover:bg-accent",
                   entry.id === snapshot.activeSessionId && "bg-accent",
                 )}
