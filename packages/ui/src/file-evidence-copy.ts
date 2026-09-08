@@ -49,8 +49,8 @@ export function revertPrompt(path: string, target: FileRevertTarget | undefined)
   // A file absent from the base commit has no version to restore, so the honest
   // verb is remove. Saying "revert to the version in ..." would be a lie.
   const confirmation = target.kind === "restore"
-    ? `Restore ${path} to the version in ${source}? Only this file changes, and the agent is told so it does not rewrite it blindly.`
-    : `Remove ${path}? It does not exist in ${source}, so there is no earlier version to restore. Only this file changes.`
+    ? `Restore ${path} to the version in ${source}? Only this file changes. The worktree changes underneath the agent, which does not learn of it until its next read.`
+    : `Remove ${path}? It does not exist in ${source}, so there is no earlier version to restore. Only this file changes, and the agent does not learn of it until its next read.`
   return {
     available: true,
     verb: target.kind === "restore" ? "Restore" : "Remove",

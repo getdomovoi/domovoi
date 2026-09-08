@@ -1514,7 +1514,9 @@ export function Thread({
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
   const [prompt, setPrompt] = useState("")
-  const [queued, setQueued] = useState<string>()
+  // Bound to the session it was typed in: releasing it into whatever session
+  // happens to be open later would send someone's message to the wrong agent.
+  const [queued, setQueued] = useState<{ sessionId: string, text: string }>()
   const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(undefined)
   const [skillRefusal, setSkillRefusal] = useState<TurnSkillSelectionRefusal | undefined>(undefined)
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
@@ -1579,7 +1581,7 @@ export function Thread({
   ).at(-1)
   const forkReason = forkSessionBlockedReason(active, forkCheckpoint)
 
-  const sendPrompt = async (nextPrompt: string) => {
+  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }) => {
     setPending(true)
     setSendError("")
     setSkillRefusal(undefined)
@@ -1595,26 +1597,34 @@ export function Thread({
           `${missing.length === 1 ? "A skill" : `${missing.length} skills`} you chose for this turn `
           + "is no longer in this project's catalog. Open Skills to review, then choose again.",
         )
+        // A refusal must not swallow the message. Put it back where it was.
+        if (!fromComposer) setQueued({ sessionId: active.id, text: nextPrompt })
         return
       }
       await onSend(active.id, nextPrompt, selection)
-      setPrompt("")
+      // Only clear the box when the box is what was sent. A queued message
+      // released while someone types would otherwise erase the new draft.
+      if (fromComposer) setPrompt("")
       // The daemon accepted this selection, so it stops being a draft.
       setSkillSelection(undefined)
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
       if (refusal) setSkillRefusal(refusal)
       setSendError(cause instanceof Error ? cause.message : "The message could not be sent")
+      if (!fromComposer) setQueued({ sessionId: active.id, text: nextPrompt })
     } finally {
       setPending(false)
     }
   }
 
   releaseQueued.current = () => {
-    if (!queued || active.activeTurnId || pending) return
-    const next = queued
+    if (!queued || queued.sessionId !== active.id) return
+    // An emergency stop is a refusal to run more work, so it holds the queue
+    // rather than flushing it the moment the turn ends.
+    if (active.activeTurnId || pending || emergencyStopPending || providerRestartRequired) return
+    const next = queued.text
     setQueued(undefined)
-    void sendPrompt(next)
+    void sendPrompt(next, { fromComposer: false })
   }
 
   // A message sent while a turn is running is queued, never sent on top of it
@@ -1625,15 +1635,15 @@ export function Thread({
     const outcome = submitFromComposer({
       text: prompt,
       turnRunning: Boolean(active.activeTurnId),
-      queued,
+      queued: queued?.sessionId === active.id ? queued.text : undefined,
     })
     if (outcome.action === "ignore") return
     if (outcome.action === "queue") {
-      setQueued(outcome.text)
+      setQueued({ sessionId: active.id, text: outcome.text })
       setPrompt("")
       return
     }
-    await sendPrompt(outcome.text)
+    await sendPrompt(outcome.text, { fromComposer: true })
   }
 
   const restartProvider = async () => {
@@ -1917,10 +1927,10 @@ export function Thread({
           className="mx-auto mb-2 max-w-[var(--shell-thread)]"
         />
         <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
-          {queued ? (
+          {queued?.sessionId === active.id ? (
             <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
               <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
-              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{queued}</span>
+              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{queued.text}</span>
               <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">sends at the next turn boundary</span>
               <Button variant="ghost" size="sm" onClick={() => setQueued(undefined)}>Remove</Button>
             </div>
