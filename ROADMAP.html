@@ -706,9 +706,9 @@ td { color: var(--ink2); }
 </ul>
 <p>Every ledger entry is now merged.</p>
 <ul>
-<li>[ ] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
+<li>[x] Define stable machine identity, device credentials, labels, platform facts, versions, capabilities, and heartbeat state
 <ul>
-<li>The schemas, <code>machine.json</code> identity, and local facts exist, and since #244 the daemon keeps one authenticated socket per remote row with a fifteen-second heartbeat. One production factory now serves both entry points: Desktop reaches a daemon only through <code>acquireLocalDaemon</code>, which builds the same runtime from the same <code>machine.json</code>, so no separate Desktop fallback identity remains. Startup reconciliation refuses to start when the stored workspace names a different machine, and on a match it replaces the stored name, platform, architecture, and version with this executable's current facts while keeping provider readiness. <code>apps/daemon/src/fleet-production.test.ts</code> restarts a peer over its own real profile through that factory and asserts the source sees the renamed label. Only the platform, architecture, and version refresh is still proven by a directly constructed daemon over a hand-seeded store in <code>apps/daemon/src/server-machine-admission.test.ts</code>; close with a production-boundary restart that asserts those three.
+<li>The schemas, <code>machine.json</code> identity, and local facts exist, and since #244 the daemon keeps one authenticated socket per remote row with a fifteen-second heartbeat. One production factory now serves both entry points: Desktop reaches a daemon only through <code>acquireLocalDaemon</code>, which builds the same runtime from the same <code>machine.json</code>, so no separate Desktop fallback identity remains. Startup reconciliation refuses to start when the stored workspace names a different machine, and on a match it replaces the stored name, platform, architecture, and version with this executable's current facts while keeping provider readiness. <code>apps/daemon/src/fleet-production.test.ts</code> restarts a peer over its own real profile through that factory and asserts the source sees the renamed label. <code>apps/daemon/src/fleet-machine-facts.test.ts</code> gives the first production boot older OS and build facts, verifies it persisted them, then restarts the same profile with current facts. Platform, architecture and version refresh in the local workspace, local fleet row, enrolled peer heartbeat and persisted snapshot, while <code>machine.json</code> and the machine ID stay stable. Removing each field's refresh independently makes this proof fail.
 </li>
 </ul>
 </li>
@@ -842,15 +842,15 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Give restore claim release a deadline and a lifecycle
+<li>[x] Give restore claim release a deadline and a lifecycle
 <ul>
-<li>The claim write and the ownership read are bounded, but the claim close and unlink have no deadline yet, so a stalled cleanup holds the process-local reservation and every later restore of that session refuses. This needs a lifecycle design, not a bare race fix.
+<li>Close, ownership read, and unlink share a fresh ten-second release deadline. Expiry returns the restore outcome and quarantines pending I/O; no later cleanup step starts after expiry, and exclusion ends only when that I/O settles. Replacement claims survive late close/read completions, and pending unlink excludes a successor even when the pathname is absent. <code>workspace.test.ts</code> proves late success and failure for all three phases. Recovery requires stopped daemons before removing a confirmed stale claim. See <code>docs/restore-claims.md</code>.
 </li>
 </ul>
 </li>
-<li>[ ] Stop transfer chunk directory cleanup failing with <code>EPERM</code> on Windows
+<li>[x] Stop transfer chunk directory cleanup failing with <code>EPERM</code> on Windows
 <ul>
-<li><code>transfer-transactions.test.ts</code> &quot;handles concurrent retries of the same chunk&quot; failed once on the Windows job of #245 (run 33938587480) with <code>EPERM: operation not permitted, rmdir</code> on the chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. #251 merged a guard: <code>apps/daemon/src/transfer-transactions.ts</code> reserves each chunk path in <code>activeMemberReceives</code> before the first await and refuses a second concurrent receive, so a removal never races an open handle. The item stays open because the refusal it models is simulated. The regression mocks <code>node:fs/promises</code> to throw the <code>EPERM</code>, no real Windows run has exercised it, and the reservation is process-local, so two daemon processes over one journal are still uncovered.
+<li><code>transfer-transactions.test.ts</code> &quot;handles concurrent retries of the same chunk&quot; failed once on the Windows job of #245 (run 33938587480) with <code>EPERM: operation not permitted, rmdir</code> on the chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. #251 merged a guard: <code>apps/daemon/src/transfer-transactions.ts</code> reserves each chunk path in <code>activeMemberReceives</code> before the first await and refuses a second concurrent receive. Receives now also share a process-owned SQLite lease through publication and removal. Two real daemon processes over one journal prove refusal while a chunk descriptor is open and recovery after completion or process death, without synthetic filesystem errors. Independent receives within the owning process share one permanent lease outside disposable journals; see <code>docs/transfer-receive-leases.md</code>. Native Windows <code>pnpm test</code> passed in <a href="https://github.com/getdomovoi/domovoi/actions/runs/34171599299/job/101892809299">run 34171599299</a> at <code>c37da78</code>, including both process-lifecycle cases without a platform skip.
 </li>
 </ul>
 </li>
