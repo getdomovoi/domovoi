@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, type ApprovalRequest } from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
+import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { ApprovalScreen } from "./approval"
 
@@ -10,15 +11,27 @@ function approval(): ApprovalRequest {
   return request
 }
 
+// The bottom chrome floats above the home indicator, so it needs the metrics a
+// device reports rather than a guess.
+const metrics: Metrics = {
+  frame: { x: 0, y: 0, width: 390, height: 844 },
+  insets: { top: 59, left: 0, right: 0, bottom: 34 },
+}
+
 async function draw(overrides: Partial<Parameters<typeof ApprovalScreen>[0]> = {}) {
   const props = {
     approval: approval(),
     pending: false,
     onDecide: jest.fn<(decision: "allow-once" | "deny") => void>(),
+    onDenyExplain: jest.fn<() => void>(),
     onBack: jest.fn<() => void>(),
     ...overrides,
   }
-  await render(<ApprovalScreen {...props} />)
+  await render(
+    <SafeAreaProvider initialMetrics={metrics}>
+      <ApprovalScreen {...props} />
+    </SafeAreaProvider>,
+  )
   return props
 }
 
@@ -78,5 +91,14 @@ describe("ApprovalScreen", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Back" }))
 
     expect(onBack).toHaveBeenCalledTimes(1)
+  })
+
+  // Denying with a reason is the third answer the handoff offers, and it costs
+  // a screen rather than a tap, so it must not resolve the approval from here.
+  it("hands off to the explain screen without deciding anything", async () => {
+    const { onDecide, onDenyExplain } = await draw()
+    await fireEvent.press(screen.getByRole("button", { name: "Deny and explain" }))
+    expect(onDenyExplain).toHaveBeenCalledTimes(1)
+    expect(onDecide).not.toHaveBeenCalled()
   })
 })

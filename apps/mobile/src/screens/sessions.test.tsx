@@ -19,6 +19,7 @@ async function draw(overrides: Partial<Parameters<typeof SessionsScreen>[0]> = {
     onOpenApproval: jest.fn<(approvalId: string) => void>(),
     onPauseAll: jest.fn<() => void>(),
     onRefresh: jest.fn<() => void>(),
+    bottomInset: 0,
     ...overrides,
   }
   await render(<SessionsScreen {...props} />)
@@ -92,5 +93,23 @@ describe("SessionsScreen", () => {
 
     await draw({ machineCount: 3 })
     expect(screen.getByText(/^3 machines · /)).toBeOnTheScreen()
+  })
+
+  // The daemon answered and has nothing open. That is a fact about the machine,
+  // not a phone that has failed to look, and the screen has to say which.
+  it("names an idle machine rather than counting to zero", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    await draw({ snapshot: idle, machineCount: 4 })
+
+    expect(screen.getByText("No sessions running")).toBeOnTheScreen()
+    expect(screen.getByText("4 machines · none running")).toBeOnTheScreen()
+    expect(screen.getByText(`domovoi new --machine ${idle.machine.name}`)).toBeOnTheScreen()
+  })
+
+  it("says nothing about being empty while a session is listed", async () => {
+    await draw()
+    expect(screen.queryByText("No sessions running")).toBeNull()
   })
 })
