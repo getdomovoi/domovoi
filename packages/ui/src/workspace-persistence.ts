@@ -30,6 +30,10 @@ export type WorkspaceUiState = {
   version: 4
   sidebarCollapsed: boolean
   dockCollapsed: boolean
+  // v2 opens the machine surfaces as a sheet over the thread. Pinning turns
+  // that sheet into the panel beside it, which is what dockCollapsed already
+  // describes, so pinned is remembered separately from open.
+  dockPinned: boolean
   surface: WorkspaceSurface
   projectId: string | null
   sessionId: string | null
@@ -51,6 +55,7 @@ export function defaultWorkspaceUiState(): WorkspaceUiState {
     version: 4,
     sidebarCollapsed: false,
     dockCollapsed: false,
+    dockPinned: false,
     surface: "workspace",
     projectId: null,
     sessionId: null,
@@ -116,6 +121,8 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
     version: 4,
     sidebarCollapsed: value.sidebarCollapsed,
     dockCollapsed: value.dockCollapsed,
+    // Absent in every state written before v2, and false is the v2 default.
+    dockPinned: value.dockPinned === true,
     surface: value.surface as WorkspaceSurface,
     projectId: value.projectId,
     sessionId: value.sessionId,
