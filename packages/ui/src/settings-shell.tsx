@@ -8,6 +8,7 @@ import type { WorkspaceTheme } from "./appearance.js"
 import type { DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
 import { NotificationSettings } from "./notification-settings.js"
 import type { NotificationPreferences } from "./notification-preferences.js"
+import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
 import { PermissionRuleSettings } from "./permission-settings.js"
 
 export type SettingsPane = "providers" | "appearance" | "permissions" | "external-editor" | "notifications"
@@ -32,6 +33,7 @@ export type SettingsShellProps = {
   approvalRules: readonly ApprovalRule[]
   notifications: NotificationPreferences
   onNotificationsChange: (preferences: NotificationPreferences) => void
+  clientCapabilities?: WorkspaceClientCapabilities
   onOpenFleet: () => void
   onOpenSkills: () => void
   onOpenAudit: () => void
@@ -60,6 +62,7 @@ export function SettingsShell({
   localDaemon,
   approvalRules,
   notifications,
+  clientCapabilities,
   externalEditor,
   windowDecoration,
   activeWindowDecoration,
@@ -133,7 +136,7 @@ export function SettingsShell({
           ) : activePane === "permissions" ? (
             <PermissionRuleSettings rules={approvalRules} />
           ) : activePane === "notifications" ? (
-            <NotificationSettings preferences={notifications} onChange={onNotificationsChange} />
+            <NotificationSettings preferences={notifications} onChange={onNotificationsChange} {...(clientCapabilities ? { client: clientCapabilities } : {})} />
           ) : activePane === "external-editor" && editorCapability ? (
             <ExternalEditorSettings editor={editorCapability.editor} onEditorChange={editorCapability.onChange} />
           ) : (

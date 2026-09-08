@@ -12,12 +12,16 @@ outward to one stable rendezvous. Neither endpoint needs to accept a new public 
 or remain on the same private network.
 
 The first operational relay does not require the full hosted Goal 3 stack: Domovoi accounts,
-subscriptions, entitlements, billing, guest sessions, or multitenant routing. It may be deployed
+subscriptions, entitlements, billing, or multitenant routing. It may be deployed
 privately for project dogfooding before those services exist. That deployment mode does not make
 the official relay a free self-hosted component.
 
 Direct private transports remain preferred. The relay is the last transport, used only when a
 configured encrypted route is available.
+
+The [production Noise options](relay-noise-options.md) compare wire bytes, native dependencies,
+pin encodings, and phone requirements. They contain Codex's recommendation for fetzy to decide;
+they do not select a suite or unblock the production schema.
 
 ## Open-core and trust boundaries
 
@@ -222,7 +226,7 @@ shipped merely to let networking start.
 7. Encrypted artifact delivery before a relay route can advertise preview capability.
 
 A privately operated commercial relay may precede Goal 3 for dogfooding. Hosted accounts,
-entitlements, billing, guest access, and multitenant scaling remain Goal 3 work. The exact repository
+entitlements, billing, and multitenant scaling remain Goal 3 work. The exact repository
 and delivery channel for the commercial server must be settled before slice 5, but it cannot be
 part of the Apache-2.0 daemon binary or package.
 

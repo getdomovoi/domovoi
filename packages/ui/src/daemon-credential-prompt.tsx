@@ -13,6 +13,7 @@ import {
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
 } from "./components/ui/field"
@@ -21,15 +22,19 @@ import { DomovoiMark } from "./domovoi-mark"
 
 export function DaemonCredentialPrompt({
   onSubmit,
+  pending = false,
+  error = "",
 }: {
   onSubmit: (credential: string) => void
+  pending?: boolean
+  error?: string
 }) {
   const [credential, setCredential] = useState("")
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const value = credential.trim()
-    if (value) onSubmit(value)
+    if (value && !pending) onSubmit(value)
   }
 
   return (
@@ -47,7 +52,7 @@ export function DaemonCredentialPrompt({
         <form onSubmit={submit}>
           <CardContent>
             <FieldGroup>
-              <Field>
+              <Field data-invalid={Boolean(error)}>
                 <FieldLabel htmlFor="daemon-credential">Daemon credential</FieldLabel>
                 <Input
                   id="daemon-credential"
@@ -55,20 +60,25 @@ export function DaemonCredentialPrompt({
                   autoComplete="off"
                   spellCheck={false}
                   autoFocus
+                  aria-invalid={Boolean(error)}
+                  disabled={pending}
                   value={credential}
                   onChange={(event) => setCredential(event.target.value)}
                 />
                 <FieldDescription>
                   Read it from <code className="font-machine text-foreground">~/.domovoi/daemon.token</code> on
-                  the execution machine. It is kept only for this browser session.
+                  the execution machine. Domovoi trades it for a credential that names this browser as its own
+                  paired device, keeps only that one for this browser session, and never stores the credential
+                  you paste.
                 </FieldDescription>
+                {error ? <FieldError>{error}</FieldError> : null}
               </Field>
             </FieldGroup>
           </CardContent>
           <CardFooter className="mt-5 flex justify-end">
-            <Button type="submit" disabled={!credential.trim()}>
+            <Button type="submit" disabled={pending || !credential.trim()}>
               <KeyRoundIcon data-icon="inline-start" />
-              Connect
+              {pending ? "Pairing this browser" : "Connect"}
             </Button>
           </CardFooter>
         </form>
