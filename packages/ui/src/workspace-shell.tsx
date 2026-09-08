@@ -2609,7 +2609,7 @@ export function ArtifactDock({
     requestOptions?: { signal?: AbortSignal },
   ) => Promise<SessionHistoryPage>
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
-  onRevertSessionFile: (sessionId: string, path: string) => Promise<void>
+  onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const workingPlan = snapshot.workingPlans.find(
