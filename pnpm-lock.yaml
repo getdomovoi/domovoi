@@ -61,10 +61,10 @@ importers:
         version: 1.4.0(zod@4.5.2)
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.251
-        version: 0.3.251(@anthropic-ai/sdk@0.121.0(zod@4.5.2))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(zod@4.5.2)
+        version: 0.3.251(@anthropic-ai/sdk@0.122.0(zod@4.5.2))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(zod@4.5.2)
       '@anthropic-ai/sdk':
-        specifier: ^0.121.0
-        version: 0.121.0(zod@4.5.2)
+        specifier: ^0.122.0
+        version: 0.122.0(zod@4.5.2)
       '@getdomovoi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -492,8 +492,8 @@ packages:
       '@modelcontextprotocol/sdk': ^1.29.0
       zod: ^4.0.0
 
-  '@anthropic-ai/sdk@0.121.0':
-    resolution: {integrity: sha512-WFzwcH8l49CZHv0vQ9QQT51VJ1/DLDQfNSs9awpGlnKBdaSnqtdZa+tw/3cxxosTPIgK8uw1GqsJ2dSbCBD1Lg==}
+  '@anthropic-ai/sdk@0.122.0':
+    resolution: {integrity: sha512-GGPNftt0caaz9MDlmNQGHX8855Ojaduyy5pm9Sm1h7HalCn0cWNb5/bweadJF+4yzbal+QL6ztBa09WAAOzLmQ==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -8090,9 +8090,9 @@ snapshots:
   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.251':
     optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.251(@anthropic-ai/sdk@0.121.0(zod@4.5.2))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(zod@4.5.2)':
+  '@anthropic-ai/claude-agent-sdk@0.3.251(@anthropic-ai/sdk@0.122.0(zod@4.5.2))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.2))(zod@4.5.2)':
     dependencies:
-      '@anthropic-ai/sdk': 0.121.0(zod@4.5.2)
+      '@anthropic-ai/sdk': 0.122.0(zod@4.5.2)
       '@modelcontextprotocol/sdk': 1.30.0(zod@4.5.2)
       zod: 4.5.2
     optionalDependencies:
@@ -8105,7 +8105,7 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.251
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.251
 
-  '@anthropic-ai/sdk@0.121.0(zod@4.5.2)':
+  '@anthropic-ai/sdk@0.122.0(zod@4.5.2)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.1.1
