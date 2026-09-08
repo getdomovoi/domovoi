@@ -113,3 +113,38 @@ export function releasableQueues(
   }
   return ready
 }
+
+// A send that did not come back with a result. The distinction matters: the
+// daemon answering with an error means nothing ran, while a socket that
+// dropped before answering means Domovoi does not know what ran.
+export type FailedAttempt = {
+  id: string
+  sessionId: string
+  text: string
+  delivery: "refused" | "unconfirmed"
+  reason: string
+  skillIds?: readonly string[]
+}
+
+export function failedAttempt(
+  id: string,
+  message: QueuedMessage,
+  { refused, reason }: { refused: boolean, reason: string },
+): FailedAttempt {
+  return {
+    id,
+    sessionId: message.sessionId,
+    text: message.text,
+    delivery: refused ? "refused" : "unconfirmed",
+    reason,
+    ...(message.skillIds ? { skillIds: message.skillIds } : {}),
+  }
+}
+
+// What the row says. "Not sent" is only true when the daemon refused it; a
+// lost answer must not claim the work did not happen.
+export function deliveryLabel(attempt: FailedAttempt): string {
+  return attempt.delivery === "refused"
+    ? `not sent: ${attempt.reason}`
+    : `Domovoi never got an answer, so this may have run: ${attempt.reason}`
+}
