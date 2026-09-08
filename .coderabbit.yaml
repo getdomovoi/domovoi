@@ -36,7 +36,7 @@ reviews:
 
   auto_review:
     enabled: true
-    drafts: false
+    drafts: true
     auto_incremental_review: true
     auto_pause_after_reviewed_commits: 10
     labels:

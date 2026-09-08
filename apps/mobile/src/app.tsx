@@ -16,22 +16,27 @@ import {
 import { artifactRows, findArtifact } from "./artifact-rows"
 import { connectionNotice } from "./connection-notice"
 import { ConfirmSheet } from "./components/confirm-sheet"
+import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
-import { Text } from "./components/ui/text"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
 import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
+import { connectedMachineActivity } from "./machine-activity"
 import { planForSession, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
+import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen } from "./screens/artifact"
 import { fleetLoader } from "./fleet-load"
 import { FleetScreen } from "./screens/fleet"
+import { ReviewScreen } from "./screens/review"
+import { annotationRows, reviewRows } from "./review-rows"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { SettingsScreen } from "./screens/settings"
+import { UnpairedScreen } from "./screens/unpaired"
 import { promptProblem, sessionDetail } from "./session-detail"
-import { shellState } from "./shell-state"
+import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
 import {
   missingSkillProblem,
@@ -51,6 +56,9 @@ export function App() {
   const [openSessionId, setOpenSessionId] = useState<string | undefined>(undefined)
   const [openArtifactId, setOpenArtifactId] = useState<string | undefined>(undefined)
   const [deciding, setDeciding] = useState(false)
+  // Denying with a reason is its own screen over the approval, so backing out
+  // of it returns to the decision rather than to the list.
+  const [explaining, setExplaining] = useState(false)
   const [pausing, setPausing] = useState(false)
   const [confirmPauseSession, setConfirmPauseSession] = useState(false)
   const [draft, setDraft] = useState("")
@@ -77,6 +85,9 @@ export function App() {
   // clock it was measured against. It ticks while the list is on screen and
   // stops when it is not, because nothing off screen needs a fresh minute.
   const [now, setNow] = useState(() => Date.now())
+  // The tab bar floats over the screen behind it, so the screen behind it has
+  // to be told what it covers. The bar measures itself and reports that here.
+  const [tabFootprint, setTabFootprint] = useState(0)
 
   // The saved credential is what makes the app usable the second time it is
   // opened, so it is restored before anything is drawn.
@@ -94,7 +105,19 @@ export function App() {
     return () => { live = false }
   }, [])
 
-  const { snapshot, status, fault, call, refresh } = useDaemon(connectTo?.url, connectTo?.token)
+  // Built before the connection, because the connection hands it every fleet the
+  // daemon pushes.
+  const [fleetLoads] = useState(() => fleetLoader({
+    setFleet,
+    setLoading: setFleetLoading,
+    setProblem: setFleetProblem,
+  }))
+
+  const { snapshot, status, fault, call, refresh, reconnect } = useDaemon(
+    connectTo?.url,
+    connectTo?.token,
+    fleetLoads.accept,
+  )
   const notice = connectionNotice(status, fault, snapshot !== undefined)
   const shell = shellState({
     restoringCredential: restoring,
@@ -103,11 +126,33 @@ export function App() {
     fault,
   })
   const waiting = snapshot ? waitingCount(snapshot) : 0
+  // No daemon has been named at all. That is a different screen from a daemon
+  // that will not answer: every tab has its own reason for being empty, and
+  // Settings is not empty at all. ShellNotice answers the reaching and refused
+  // states instead, so the two never both claim this one.
+  const unpaired = shell.kind === "unpaired"
+  // The same fact narrowed for the screen that draws it, so a state answered by
+  // UnpairedScreen cannot also reach ShellNotice.
+  const unreachable = unreachableShell(shell)
+
+  // The snapshot describes the daemon this phone is talking to, so it is the
+  // one machine in the fleet whose sessions and tools the phone can count.
+  const activity = useMemo(
+    () => snapshot ? connectedMachineActivity(snapshot) : undefined,
+    [snapshot],
+  )
 
   const openApproval = useMemo(
     () => snapshot?.approvals.find((approval) => approval.id === openApprovalId),
     [openApprovalId, snapshot],
   )
+
+  // An approval answered on another device leaves this phone holding a reason
+  // for a decision that no longer exists. The explain screen is closed with it,
+  // so the next approval opens on its own decision rather than on this one.
+  useEffect(() => {
+    if (!openApproval) setExplaining(false)
+  }, [openApproval])
 
   const openSession = useMemo(
     () => snapshot && openSessionId ? sessionDetail(snapshot, openSessionId) : undefined,
@@ -123,6 +168,16 @@ export function App() {
     () => snapshot && openArtifactId ? findArtifact(snapshot, openArtifactId) : undefined,
     [openArtifactId, snapshot],
   )
+
+  const openArtifactComments = useMemo(
+    () => snapshot && openArtifactId ? annotationRows(snapshot, openArtifactId) : [],
+    [openArtifactId, snapshot],
+  )
+
+  // Every artifact the workspace holds, whichever session made it, because the
+  // Review tab is opened to answer what is outstanding rather than to walk back
+  // into the session that produced it.
+  const review = useMemo(() => snapshot ? reviewRows(snapshot) : [], [snapshot])
 
   const openPlan = useMemo(() => {
     if (!snapshot || !openSessionId) return undefined
@@ -156,12 +211,6 @@ export function App() {
     }
   }, [call])
 
-  const [fleetLoads] = useState(() => fleetLoader({
-    setFleet,
-    setLoading: setFleetLoading,
-    setProblem: setFleetProblem,
-  }))
-
   const loadFleet = useCallback(() => fleetLoads.load(call), [call, fleetLoads])
 
   // Enablements ride the snapshot, so the phone is told the moment one changes
@@ -192,15 +241,19 @@ export function App() {
     void loadSkills()
   }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
 
-  // The list is asked for when the tab is opened rather than kept warm, because
-  // a phone should not hold a subscription it is not showing. Depending on the
-  // status is what makes it ask again when the connection comes back.
+  // The list is asked for when the tab is opened rather than polled. After that
+  // the daemon pushes every change on its own, so nothing here has to ask again
+  // to stay current. Depending on the status is what makes it ask once more
+  // when the connection comes back.
   useEffect(() => {
     if (tab === "fleet" && status === "open") void loadFleet()
   }, [loadFleet, status, tab])
 
+  // Sessions measures how long an approval has waited and Fleet measures how
+  // long a machine has been silent, so the clock ticks for both and stops on
+  // the tab that reads no ages.
   useEffect(() => {
-    if (tab !== "sessions") return
+    if (tab !== "sessions" && tab !== "fleet") return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(timer)
@@ -220,7 +273,7 @@ export function App() {
 
   useEffect(() => () => fleetLoads.invalidate(), [fleetLoads])
 
-  const decide = async (decision: ApprovalDecision) => {
+  const decide = async (decision: ApprovalDecision, explanation?: string) => {
     if (!openApproval) return
     setDeciding(true)
     try {
@@ -228,7 +281,9 @@ export function App() {
         approvalId: openApproval.id,
         decision,
         client: clientKind,
+        ...(explanation ? { explanation } : {}),
       })
+      setExplaining(false)
       setOpenApprovalId(undefined)
     } finally {
       setDeciding(false)
@@ -300,12 +355,22 @@ export function App() {
       <SafeAreaProvider>
         <StatusBar style="light" />
         <SafeAreaView className="flex-1 bg-background">
-          <ApprovalScreen
-            approval={openApproval}
-            pending={deciding}
-            onDecide={(decision) => void decide(decision)}
-            onBack={() => setOpenApprovalId(undefined)}
-          />
+          {explaining ? (
+            <DenyExplainScreen
+              approval={openApproval}
+              pending={deciding}
+              onSend={(explanation) => void decide("deny-explain", explanation)}
+              onBack={() => setExplaining(false)}
+            />
+          ) : (
+            <ApprovalScreen
+              approval={openApproval}
+              pending={deciding}
+              onDecide={(decision) => void decide(decision)}
+              onDenyExplain={() => setExplaining(true)}
+              onBack={() => setOpenApprovalId(undefined)}
+            />
+          )}
         </SafeAreaView>
       </SafeAreaProvider>
     )
@@ -320,6 +385,7 @@ export function App() {
         <SafeAreaView className="flex-1 bg-background">
           <ArtifactScreen
             artifact={openArtifact}
+            comments={openArtifactComments}
             onBack={() => setOpenArtifactId(undefined)}
           />
         </SafeAreaView>
@@ -398,10 +464,19 @@ export function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <SafeAreaView className="flex-1 bg-background">
+      {/* The tab bar floats over the screen rather than sitting under it, so
+          this view does not reserve the bottom edge. What the bar covers is
+          measured and handed to each screen, which pads its own scroller. */}
+      <SafeAreaView edges={["top", "left", "right"]} className="flex-1 bg-background">
         <View className="flex-1">
           {tab === "sessions" ? (
-            snapshot ? (
+            unpaired ? (
+              <UnpairedScreen
+                tab="sessions"
+                bottomInset={tabFootprint}
+                onPair={() => setTab("settings")}
+              />
+            ) : snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
                 machineCount={fleet?.filter((entry) => entry.kind === "machine").length}
@@ -421,23 +496,56 @@ export function App() {
                   setOpenSessionId(sessionId)
                 }}
                 onPauseAll={() => setConfirmPause(true)}
+                bottomInset={tabFootprint}
+              />
+            ) : unreachable ? (
+              <ShellNotice
+                shell={unreachable}
+                address={connectTo?.url ?? ""}
+                bottomInset={tabFootprint}
+                onOpenSettings={() => setTab("settings")}
+                onRetry={reconnect}
+              />
+            ) : null
+          ) : null}
+          {tab === "review" ? (
+            unpaired ? (
+              <UnpairedScreen
+                tab="review"
+                bottomInset={tabFootprint}
+                onPair={() => setTab("settings")}
               />
             ) : (
-              <View className="flex-1 items-center justify-center gap-2 p-6">
-                <Text variant="title">{shell.headline}</Text>
-                <Text variant="meta" className="text-center">{shell.detail}</Text>
-              </View>
+            <ReviewScreen
+              rows={review}
+              notice={notice}
+              hasSnapshot={snapshot !== undefined}
+              onOpenArtifact={setOpenArtifactId}
+              bottomInset={tabFootprint}
+            />
             )
           ) : null}
           {tab === "fleet" ? (
+            unpaired ? (
+              <UnpairedScreen
+                tab="fleet"
+                bottomInset={tabFootprint}
+                onPair={() => setTab("settings")}
+              />
+            ) : (
             <FleetScreen
               fleet={fleet}
+              activity={activity}
               loading={fleetLoading}
               problem={fleetProblem}
               notice={notice}
               connected={status === "open"}
+              now={now}
               onRefresh={() => void loadFleet()}
+              onOpen={() => setTab("sessions")}
+              bottomInset={tabFootprint}
             />
+            )
           ) : null}
           {tab === "settings" ? (
             <SettingsScreen
@@ -458,10 +566,17 @@ export function App() {
                 setToken("")
                 void clearCredential()
               }}
+              paired={!unpaired}
+              bottomInset={tabFootprint}
             />
           ) : null}
         </View>
-        <TabBar active={tab} waiting={waiting} onSelect={setTab} />
+        <TabBar
+          active={tab}
+          waiting={waiting}
+          onSelect={setTab}
+          onFootprint={setTabFootprint}
+        />
         <ConfirmSheet
           open={confirmPause}
           title="Pause every session?"
