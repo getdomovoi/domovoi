@@ -102,3 +102,12 @@ it("keeps its actions reachable when the list is long", async () => {
   const action = screen.getByRole("button", { name: "New session" })
   expect(scroller!.contains(action)).toBe(false)
 })
+
+it("closes again when its own trigger is clicked", async () => {
+  const user = userEvent.setup()
+  render(<Harness onActivate={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: /^Sessions / }))
+  expect(screen.getByRole("group", { name: "Sessions" })).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: /^Hide sessions / }))
+  expect(screen.queryByRole("group", { name: "Sessions" })).toBeNull()
+})
