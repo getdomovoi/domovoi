@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdtemp, readFile, unlink, utimes, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { waitForDaemon } from "./test-wait-for.js"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -346,15 +347,12 @@ function cropRef(bytes: Uint8Array): string {
   return `crop-${createHash("sha256").update(bytes).digest("hex")}`
 }
 
+// A hundred event-loop turns is not a budget for observing a file the service
+// writes: the turns cost microseconds while the write costs a disk. A loaded
+// Ubuntu worker exhausted them and the test failed on a crop that was on its
+// way, so this waits on the clock the way every other daemon observation does.
 async function waitForFile(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      await readFile(path)
-      return
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-      await new Promise<void>((resolve) => setImmediate(resolve))
-    }
-  }
-  throw new Error(`Timed out waiting for ${path}`)
+  await waitForDaemon(async () => {
+    await readFile(path)
+  })
 }
