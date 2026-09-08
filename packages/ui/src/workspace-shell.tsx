@@ -189,6 +189,8 @@ import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
+import { withAuto, withPermissionMode } from "./permission-mode"
+import { submitFromComposer } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
@@ -1507,6 +1509,7 @@ export function Thread({
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
   const [prompt, setPrompt] = useState("")
+  const [queued, setQueued] = useState<string>()
   const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(undefined)
   const [skillRefusal, setSkillRefusal] = useState<TurnSkillSelectionRefusal | undefined>(undefined)
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
@@ -1520,6 +1523,12 @@ export function Thread({
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
   const [desktopError, setDesktopError] = useState("")
+  // The boundary is the daemon reporting no active turn. Releasing on that
+  // rather than on a timer means a turn ending in a refusal still releases it.
+  const releaseQueued = useRef<() => void>(() => {})
+  useEffect(() => {
+    releaseQueued.current()
+  }, [queued, active?.activeTurnId, pending])
 
   if (!active) {
     const hasProject = snapshot.project !== null
@@ -1565,9 +1574,7 @@ export function Thread({
   ).at(-1)
   const forkReason = forkSessionBlockedReason(active, forkCheckpoint)
 
-  const submitPrompt = async () => {
-    const nextPrompt = prompt.trim()
-    if (!nextPrompt || pending || providerRestartRequired || emergencyStopPending) return
+  const sendPrompt = async (nextPrompt: string) => {
     setPending(true)
     setSendError("")
     setSkillRefusal(undefined)
@@ -1596,6 +1603,32 @@ export function Thread({
     } finally {
       setPending(false)
     }
+  }
+
+  releaseQueued.current = () => {
+    if (!queued || active.activeTurnId || pending) return
+    const next = queued
+    setQueued(undefined)
+    void sendPrompt(next)
+  }
+
+  // A message sent while a turn is running is queued, never sent on top of it
+  // and never a reason to cancel it. One queued message, replaced rather than
+  // stacked, and it leaves at the next turn boundary.
+  const submitPrompt = async () => {
+    if (pending || providerRestartRequired || emergencyStopPending) return
+    const outcome = submitFromComposer({
+      text: prompt,
+      turnRunning: Boolean(active.activeTurnId),
+      queued,
+    })
+    if (outcome.action === "ignore") return
+    if (outcome.action === "queue") {
+      setQueued(outcome.text)
+      setPrompt("")
+      return
+    }
+    await sendPrompt(outcome.text)
   }
 
   const restartProvider = async () => {
@@ -1866,11 +1899,19 @@ export function Thread({
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
+          {queued ? (
+            <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
+              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
+              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{queued}</span>
+              <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">sends at the next turn boundary</span>
+              <Button variant="ghost" size="sm" onClick={() => setQueued(undefined)}>Remove</Button>
+            </div>
+          ) : null}
           <Textarea
             aria-label="Message"
             rows={2}
             className="min-h-12 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
-            placeholder="Message the agent"
+            placeholder={active.activeTurnId ? "Send to queue for the next turn" : "Message the agent"}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             onKeyDown={(event) => {
@@ -2106,11 +2147,7 @@ export function forkProviderChoice(
 }
 
 export function normalizePermissionMode(runtime: Runtime, permissionMode: PermissionMode): Runtime {
-  return {
-    ...runtime,
-    permissionMode,
-    auto: permissionMode === "build" && runtime.auto,
-  }
+  return withPermissionMode(runtime, permissionMode)
 }
 
 export function RuntimeControls({
@@ -2264,7 +2301,7 @@ export function RuntimeControls({
       <ToggleGroup type="single" value={runtime.permissionMode} disabled={pending} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
-      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange({ ...runtime, auto: runtime.permissionMode === "build" && auto })} />Auto</label>
+      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange(withAuto(runtime, auto))} />Auto</label>
       <AlertDialog
         open={providerChoice !== undefined}
         onOpenChange={(open) => {

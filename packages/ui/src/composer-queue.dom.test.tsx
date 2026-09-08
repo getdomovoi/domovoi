@@ -1,0 +1,83 @@
+import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { afterEach, expect, it, vi } from "vitest"
+
+import { Thread } from "./workspace-shell.js"
+
+afterEach(cleanup)
+
+type SendSpy = (sessionId: string, prompt: string) => Promise<void>
+
+function threadWith(snapshot: WorkspaceSnapshot, onSend: SendSpy) {
+  return (
+    <Thread
+      snapshot={snapshot}
+      connected
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={onSend}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+      onArchiveSession={vi.fn(async () => {})}
+    />
+  )
+}
+
+function withActiveTurn(running: boolean): WorkspaceSnapshot {
+  const snapshot = structuredClone(demoWorkspace)
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+  if (running) active.activeTurnId = "turn-running"
+  else delete (active as { activeTurnId?: string }).activeTurnId
+  // The approval would otherwise interrupt, and the gate is not what this
+  // test is about.
+  snapshot.approvals = []
+  return snapshot
+}
+
+it("queues a message sent while a turn is running rather than sending it", async () => {
+  const user = userEvent.setup()
+  const onSend = vi.fn<SendSpy>(async () => {})
+  render(threadWith(withActiveTurn(true), onSend))
+
+  await user.type(screen.getByLabelText("Message"), "also update the changelog")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+
+  expect(onSend).not.toHaveBeenCalled()
+  expect(screen.getByText("sends at the next turn boundary")).toBeTruthy()
+  expect(screen.getByText("also update the changelog")).toBeTruthy()
+})
+
+it("sends the queued message once the turn ends", async () => {
+  const user = userEvent.setup()
+  const onSend = vi.fn<SendSpy>(async () => {})
+  const { rerender } = render(threadWith(withActiveTurn(true), onSend))
+
+  await user.type(screen.getByLabelText("Message"), "also update the changelog")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+  expect(onSend).not.toHaveBeenCalled()
+
+  rerender(threadWith(withActiveTurn(false), onSend))
+
+  await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+  expect(onSend.mock.calls[0]![1]).toBe("also update the changelog")
+})
+
+it("keeps one queued message rather than stacking them", async () => {
+  const user = userEvent.setup()
+  const onSend = vi.fn<SendSpy>(async () => {})
+  render(threadWith(withActiveTurn(true), onSend))
+
+  const box = screen.getByLabelText("Message")
+  await user.type(box, "first")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+  await user.type(box, "second")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+
+  expect(screen.queryByText("first")).toBeNull()
+  expect(screen.getByText("second")).toBeTruthy()
+})
