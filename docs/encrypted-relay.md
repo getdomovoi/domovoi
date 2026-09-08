@@ -167,7 +167,11 @@ both halves plainly.
 
 ## Open cryptography decision
 
-The next slice is a cross-runtime crypto spike and codec with no networking. It must work in Node
+The next slice is a cross-runtime crypto spike and codec with no networking. The first
+[experimental evidence](relay-crypto-spike.md) reproduces published vectors in the daemon Node
+suite and phone jest-expo suite, plus Metro/hermesc compilation. Both runners use Node; real
+Hermes execution, native entropy/key operations, and the production Noise implementation remain
+open. This is not permission to freeze the suite or public-key shape. The codec must work in Node
 and the phone runtime without assuming `node:crypto` or generally available WebCrypto.
 
 The candidate is Noise IK over X25519, ChaCha20-Poly1305, and SHA-256, potentially using
@@ -190,7 +194,8 @@ shipped merely to let networking start.
 1. Credential prerequisites: strong fixed-width credentials, exact client or machine bindings,
    verified durable attribution, hello-time activity, and a single migration for both legacy
    credential shapes. Implemented. Channel keys wait for the crypto decision.
-2. Cross-runtime crypto spike and codec with deterministic vectors and no networking. Next.
+2. Cross-runtime crypto spike and codec with deterministic vectors and no networking. Experimental
+   two-runner agreement exists; remaining crypto gates are in `docs/relay-crypto-spike.md`.
 3. Protocol route, channel-key, and transport-capability schemas, reviewed before callers build on
    them.
 4. In-process hostile-relay tests proving plaintext and endpoint credentials never cross the

@@ -4,7 +4,13 @@
 // collect the same file. jest-expo 57 already excludes pnpm's node_modules/.pnpm
 // layout from transformIgnorePatterns, which is what let React Native's own
 // modules go untransformed in earlier attempts.
+const expoPreset = require("jest-expo/jest-preset")
+
 module.exports = {
   preset: "jest-expo",
   testMatch: ["<rootDir>/src/**/*.test.tsx"],
+  // Exercise noble's real ESM modules through the phone's Babel transform.
+  // Preserve Expo's exclusions for transformer plugins and presets.
+  transformIgnorePatterns: expoPreset.transformIgnorePatterns.map((pattern) =>
+    pattern.replace("(.pnpm|", "(@noble/|.pnpm|")),
 }
