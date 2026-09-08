@@ -1029,6 +1029,11 @@ dependent work starts.
 - WebSocket JSON-RPC is the client/daemon protocol; gRPC is not required for the current surfaces.
 - The daemon owns sessions, Git, tools, terminals, credentials, and canonical state.
 - Code stays on its execution machine; Domovoi does not add a filesystem sync layer.
+- No credential grants control of a machine whose owner did not grant it, and membership of an
+  organization is never itself a grant. A machine is owned by a person or by an organization,
+  and only an organization's own machines, such as a shared development server or an
+  on-premises inference machine, can be granted to other people. This holds at every price;
+  there is no tier that reaches another person's machine.
 - Remote connectivity prefers direct private-network transport, then a configured end-to-end
   encrypted relay. The route protocol and daemon connection manager are Apache-2.0; the official
   relay implementation and operated service are separately licensed commercial components.
