@@ -4,6 +4,7 @@ import {
   fleetRemoteRevocationSchema,
   fleetVerifiedRouteSchema,
   machineIdSchema,
+  offsetDateTimeSchema,
   pendingDeviceClaimSchema,
   sha256DigestSchema,
   type FleetPendingOperation,
@@ -14,7 +15,7 @@ const operation = z.object({
   version: z.literal(1),
   id: z.string().uuid(),
   machineId: machineIdSchema,
-  startedAt: z.string().datetime({ offset: true }),
+  startedAt: offsetDateTimeSchema,
 }).strict()
 
 export const fleetEnrollmentOperationSchema = operation.extend({

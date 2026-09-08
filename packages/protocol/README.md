@@ -42,6 +42,17 @@ console.log(protocolVersion, request, snapshot)
 The package exports the versioned JSON-RPC schemas, workspace and session types, preview bridge
 messages, and test fixtures used by Domovoi implementations.
 
+String maxima and exact lengths use UTF-16 code units, matching JavaScript `String.length`
+and the daemon/client prechecks. Schemas use `utf16MaxLength` and `utf16Length` explicitly;
+Zod 4.5's default string bounds count Unicode code points instead. Array and numeric bounds
+retain their existing units and limits.
+
+Timestamp fields retain the previously accepted seconds-or-minutes grammar. `dateTimeSchema`
+requires UTC (`Z`); `offsetDateTimeSchema` also accepts numeric offsets. Both validate calendar
+dates and times and reject local datetimes. Minute-only values such as `2026-09-07T12:30Z`
+remain unchanged on read, including in persisted state and hashed transfer manifests. Adding
+seconds on load would change a manifest's digest. Writers continue using `toISOString()`.
+
 ## RPC surface
 
 `rpcMethods` is the whole method surface. Every method is also classified in `rpcMethodMutations`
