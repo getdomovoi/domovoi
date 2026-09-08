@@ -36,6 +36,34 @@ export type QueuedMessage = {
   text: string
   state: "waiting" | "held"
   reason?: string
+  // The skills chosen when it was queued. Kept so the release resolves the
+  // same choice the person made, and refuses if one has since gone.
+  skillIds?: readonly string[]
+}
+
+// One slot per session, not one slot. Queueing in B must not overwrite what is
+// waiting in A: the person queued two messages for two agents, and silently
+// dropping one is worse than refusing it.
+export type SessionQueues = Readonly<Record<string, QueuedMessage>>
+
+export function setQueue(
+  queues: SessionQueues,
+  sessionId: string,
+  next: QueuedMessage | undefined,
+): SessionQueues {
+  const { [sessionId]: previous, ...rest } = queues
+  void previous
+  return next ? { ...rest, [sessionId]: next } : rest
+}
+
+// A stop ends every running turn, so it holds every queue, not just the one on
+// screen. Any client's stop counts: the work stops on the machine either way.
+export function holdAllAfterStop(queues: SessionQueues): SessionQueues {
+  const held: Record<string, QueuedMessage> = {}
+  for (const [sessionId, queued] of Object.entries(queues)) {
+    held[sessionId] = heldAfterStop(queued) ?? queued
+  }
+  return held
 }
 
 export function shouldRelease({
@@ -63,4 +91,25 @@ export function heldAfter(queued: QueuedMessage, reason: string): QueuedMessage 
 export function heldAfterStop(queued: QueuedMessage | undefined): QueuedMessage | undefined {
   if (!queued || queued.state === "held") return queued
   return heldAfter(queued, "Held because work was stopped. Send it when you want it to run.")
+}
+
+// Which queues may go right now. Sessions, not the session on screen: a turn
+// ending in A releases A's message whether or not anyone is looking at A.
+export function releasableQueues(
+  sessions: readonly { id: string, activeTurnId?: string | undefined }[],
+  queues: SessionQueues,
+  { busy }: { busy: boolean },
+): QueuedMessage[] {
+  const ready: QueuedMessage[] = []
+  for (const session of sessions) {
+    const queued = queues[session.id]
+    if (!shouldRelease({
+      queued,
+      sessionId: session.id,
+      turnRunning: Boolean(session.activeTurnId),
+      busy,
+    })) continue
+    ready.push(queued!)
+  }
+  return ready
 }
