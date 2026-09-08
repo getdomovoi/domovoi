@@ -26,9 +26,28 @@ export function decisionSummary(receipt: Receipt): { verdict: string, rule: stri
     case "deny-explain":
       return {
         verdict: "Denied with an explanation",
-        rule: "Nothing ran. The agent was told why, so it can propose something else.",
+        // The daemon records the explanation on the receipt. No adapter passes
+        // it to the provider, which answers with a generic denial, so this
+        // cannot claim the agent heard it.
+        rule: "Nothing ran. The explanation is recorded here; the agent was told only that you denied it.",
       }
   }
+}
+
+// The daemon puts the session's base commit here, or the string "unavailable".
+// It does not take a checkpoint per operation, and restoring only ever touches
+// files in the worktree, so the note names the reference and stops there.
+export function recoveryNote(receipt: Receipt): string {
+  if (receipt.checkpoint === "unavailable") {
+    return "No reference was recorded for this session, so Domovoi has nothing to compare this against."
+  }
+  return `Recorded against ${shortReference(receipt.checkpoint)}. Going back to it restores files in the worktree; it cannot undo effects outside it.`
+}
+
+// Only a full commit SHA is safe to shorten. Every other id the daemon may put
+// here is a name, and half a name is a different name.
+function shortReference(reference: string): string {
+  return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
 }
 
 export function ApprovalReceipt({ receipt, className }: { receipt: Receipt, className?: string }) {
@@ -57,11 +76,7 @@ export function ApprovalReceipt({ receipt, className }: { receipt: Receipt, clas
         {receipt.operation}
       </p>
       <p className={cn("m-0 text-[11.5px]", denied ? "text-faint" : "text-info-dim")}>{rule}</p>
-      {denied ? null : (
-        <p className="m-0 text-[11.5px] text-info-dim">
-          Checkpoint {receipt.checkpoint} was taken before it, so this is revertible.
-        </p>
-      )}
+      {denied ? null : <p className="m-0 text-[11.5px] text-info-dim">{recoveryNote(receipt)}</p>}
       {receipt.explanation ? (
         <p className="m-0 text-[11.5px] text-muted-foreground">{receipt.explanation}</p>
       ) : null}
