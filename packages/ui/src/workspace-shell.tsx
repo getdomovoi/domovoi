@@ -244,7 +244,7 @@ import {
 } from "./command-palette"
 import { useAppearanceTheme, type WorkspaceTheme } from "./appearance"
 import { PromptEditorDialog } from "./prompt-editor"
-import { WorkspaceNotificationTracker } from "./desktop-notifications"
+import { WorkspaceNotificationTracker, type DesktopNotificationRequest } from "./desktop-notifications"
 import {
   copyDesktopText,
   desktopExternalActionLabel,
@@ -255,6 +255,11 @@ import {
   type DesktopWindowBridge,
   type WorkspaceWindowDecoration,
 } from "./desktop-platform"
+import type {
+  WorkspaceInstallState,
+  WorkspaceNotificationDelivery,
+  WorkspacePlatform,
+} from "./workspace-platform"
 
 const TerminalPane = lazy(async () => {
   const module = await import("./terminal-pane")
@@ -268,6 +273,7 @@ export type WorkspaceShellProps = {
   resolveRpcEndpoint?: () => Promise<{ url: string; token: string }>
   localDaemon?: LocalDaemonDescription
   windowBridge?: DesktopWindowBridge
+  platform?: WorkspacePlatform
   onChangeCredential?: () => void
 }
 
@@ -996,6 +1002,7 @@ export function ProviderReadinessList({
 
 export function LauncherDialog({
   mode,
+  projectNote,
   providers,
   defaultProviderId,
   defaultPermissionMode,
@@ -1005,6 +1012,7 @@ export function LauncherDialog({
   onListModels,
 }: {
   mode: LauncherMode
+  projectNote?: string
   providers: readonly ProviderRuntime[]
   defaultProviderId?: string
   defaultPermissionMode: PermissionMode
@@ -1107,6 +1115,9 @@ export function LauncherDialog({
   }
 
   const isProject = mode === "project"
+  const projectDescription = projectNote
+    ? `Choose a local Git repository. Code stays on this machine. ${projectNote}`
+    : "Choose a local Git repository. Code stays on this machine."
   const selectedProvider = providers.find((provider) => provider.id === runtime.provider)
   const selectedModel = models.find((model) =>
     model.provider === runtime.provider && model.id === runtime.model,
@@ -1143,7 +1154,7 @@ export function LauncherDialog({
             <DialogTitle>{isProject ? "Open a project" : "Start a session"}</DialogTitle>
             <DialogDescription>
               {isProject
-                ? "Choose a local Git repository. Code stays on this machine."
+                ? projectDescription
                 : "Domovoi creates an isolated worktree before the first agent turn."}
             </DialogDescription>
           </DialogHeader>
@@ -3313,7 +3324,7 @@ function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandB
   )
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, onChangeCredential }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint)
   const homeMachineId = home.snapshot?.machine.id ?? null
@@ -3446,6 +3457,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [requestedSkillId, setRequestedSkillId] = useState<string>()
   const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
+  const [launcherProjectNote, setLauncherProjectNote] = useState("")
+  const [notificationDelivery, setNotificationDelivery] = useState<WorkspaceNotificationDelivery | undefined>(
+    () => platform?.notifications.delivery(),
+  )
+  const [installState, setInstallState] = useState<WorkspaceInstallState | undefined>(
+    () => platform?.install.state(),
+  )
   const [workspaceUi, setWorkspaceUi] = useState(() =>
     loadWorkspaceUiState(browserWorkspaceUiStorage()),
   )
@@ -3667,12 +3685,25 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     }
   }
   const requestOpenProject = () => {
-    if (!windowBridge || attached) {
+    setWorkspaceError("")
+    if (windowBridge && !attached) {
+      void openProjectFromDesktop(windowBridge, openProjectSafely).catch((cause: unknown) => {
+        setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open the selected project")
+      })
+      return
+    }
+    if (!platform || attached) {
       setLauncherMode("project")
       return
     }
-    setWorkspaceError("")
-    void openProjectFromDesktop(windowBridge, openProjectSafely).catch((cause: unknown) => {
+    void platform.dialogs.pickProjectDirectory().then(async (choice) => {
+      if (choice.status === "selected") {
+        await openProjectSafely(choice.path)
+        return
+      }
+      setLauncherProjectNote(choice.message)
+      setLauncherMode("project")
+    }).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "Domovoi could not open the selected project")
     })
   }
@@ -3684,11 +3715,23 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
   }
   const copyActiveWorkspacePath = () => {
-    if (!windowBridge || !activeWorkspacePath) return
+    if (!activeWorkspacePath) return
+    const copied = windowBridge
+      ? copyDesktopText(windowBridge, activeWorkspacePath)
+      : platform?.clipboard.writeText(activeWorkspacePath)
+    if (!copied) return
     setWorkspaceError("")
-    void copyDesktopText(windowBridge, activeWorkspacePath).catch((cause: unknown) => {
+    void copied.catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "Clipboard text could not be copied")
     })
+  }
+  const requestNotificationDelivery = () => {
+    if (!platform) return
+    void platform.notifications.request().then(setNotificationDelivery)
+  }
+  const requestInstall = () => {
+    if (!platform) return
+    void platform.install.prompt().then(setInstallState)
   }
   const openCommandPalette = () => {
     commandPaletteFocusRef.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
@@ -3697,9 +3740,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setCommandPaletteOpen(true)
   }
   const workspaceCommands = buildWorkspaceCommands({
-    ...(windowBridge && activeWorkspacePath && !attached ? {
+    ...((windowBridge || platform) && activeWorkspacePath && !attached ? {
       activeWorkspacePath,
       copyWorktreePath: copyActiveWorkspacePath,
+    } : {}),
+    ...(windowBridge && activeWorkspacePath ? {
       openInEditor: openActiveWorkspaceInEditor,
       externalEditor,
     } : {}),
@@ -3817,12 +3862,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useEffect(() => {
     if (!snapshot) return
     const notifications = notificationTrackerRef.current.observe(snapshot)
-    if (!windowBridge) return
+    const raise = windowBridge
+      ? (request: DesktopNotificationRequest) => windowBridge.notify(request)
+      : platform
+        ? (request: DesktopNotificationRequest) => platform.notifications.notify(request)
+        : undefined
+    if (!raise) return
     for (const notification of notifications) {
       if (!notificationPreferenceFor(notificationPreferences, notification.kind)) continue
-      void windowBridge.notify(notification).catch(() => {})
+      void raise(notification).catch(() => {})
     }
-  }, [notificationPreferences, snapshot, windowBridge])
+  }, [notificationPreferences, platform, snapshot, windowBridge])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -3996,6 +4046,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onNotificationsChange={(next: NotificationPreferences) => {
               setWorkspaceUi((current) => ({ ...current, notifications: next }))
             }}
+            {...(notificationDelivery && installState ? {
+              clientCapabilities: {
+                delivery: notificationDelivery,
+                install: installState,
+                onRequestDelivery: requestNotificationDelivery,
+                onInstall: requestInstall,
+              },
+            } : {})}
             onOpenFleet={() => setSurface("fleet")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
@@ -4126,6 +4184,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : null}
         {snapshot ? <LauncherDialog
           mode={launcherMode}
+          {...(launcherProjectNote ? { projectNote: launcherProjectNote } : {})}
           providers={snapshot.machine.providers}
           {...(desktopFirstRun.persisted.status === "complete"
             ? { defaultProviderId: desktopFirstRun.persisted.providerId }

@@ -830,8 +830,25 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
 
 ### Hosted client
 
-- [ ] Browser `PlatformAdapter` for dialogs, notifications, credentials, clipboard, and install state
+- [x] Browser `PlatformAdapter` for dialogs, notifications, credentials, clipboard, and install state
+  - `apps/web/src/browser-platform.ts` answers the host questions the desktop answers through its
+    preload bridge, and `WorkspaceShell` takes it as `platform`. Workspace notifications now reach
+    the browser, so the Notifications pane is no longer three switches with nothing behind them: it
+    names the browser's permission and install state, and a browser that will not raise them
+    disables the kinds instead of recording a preference it cannot honour. The clipboard copies the
+    worktree path and reports its own refusal. A folder picker refuses, because a File System
+    Access handle names a folder on the device holding the browser rather than one on the execution
+    machine. Every refusal is typed and takes its copy from one table in
+    `apps/web/src/platform-refusals.ts`. A notification click focuses the tab; it does not open the
+    session the way the desktop deep link does.
 - [ ] Supply authenticated daemon credentials without embedding long-lived secrets in the bundle
+  - The browser no longer keeps the daemon's root bearer. It spends the pasted credential once on
+    `device.pair` and stores only the client-bound device credential that came back, which
+    `device.revoke` can withdraw on its own from a paired client, and it drops the bearer an
+    earlier build had parked in session storage. What remains needs the protocol and the daemon:
+    there is no client-bound pairing code, so the root bearer still passes through the browser
+    once, `device.claim` binds a machine rather than a client, a device credential has no expiry,
+    and `device.revokeCurrent` is machine-only, so this browser cannot withdraw itself at sign out.
 - [ ] Select any paired machine and resume its daemon-owned sessions
 - [ ] Full-fidelity plan/design preview on iPad, tablet, and phone
 - [ ] Read, annotate, reply, resolve, and select variants from touch devices
