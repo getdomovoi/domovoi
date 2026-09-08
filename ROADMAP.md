@@ -798,7 +798,7 @@ payload plaintext to the relay, and a bearer or channel key alone must not be en
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
-Priority: `P2`. Make plan review and safe remote control work from iPad, phones, and guest browsers.
+Priority: `P2`. Make plan review and safe remote control work from iPad, phones, and browsers.
 
 ### Account and transport services
 
@@ -840,15 +840,6 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
   - Building the tab against the mockup found four gaps: the protocol has no paused fact for a
     fleet machine, no wake RPC, and no per-machine session or tool counts, and the phone has no
     pairing flow of its own; it takes a daemon address and pairing token in Settings.
-
-### Guest sessions
-
-- [ ] Short-lived guest login with passkey or second-factor enforcement
-- [ ] No persisted daemon tokens, project content, terminal history, or provider credentials after
-  logout
-- [ ] Guest session listing and immediate revocation from a paired device
-- [ ] Distinct guest attribution in every audit receipt
-- [ ] Enforce the approved guest hard-gate capability policy
 
 ## Goal 4: package and release the open core
 
@@ -1023,14 +1014,12 @@ dependent work starts.
    bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no,
     every package manager command is a hard gate and Build auto is narrower than this roadmap
     describes.
-4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
-   whether each decision requires a second factor.
-5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
+4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
    hosted service exists.
-6. **Public site direction:** architecture-led or folklore-led narrative after real product
+5. **Public site direction:** architecture-led or folklore-led narrative after real product
    screenshots are available.
-7. **Packaging formats:** final Linux package set and Windows package-manager targets.
-8. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
+6. **Packaging formats:** final Linux package set and Windows package-manager targets.
+7. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
    and security backport duration.
 
 ## Resolved architecture decisions
@@ -1048,6 +1037,11 @@ dependent work starts.
   official relay implementation and hosted account, billing, vault, and team services are
   separately licensed commercial components.
 - Claude Design's app and brand handoffs remain the design source of truth.
+- Guest sessions are not a product feature. Short-lived guest access existed to keep early daemon
+  development from locking itself out, and that need is gone. Domovoi sells reachability to a
+  person's own machines, so a guest login, guest attribution, and a guest hard-gate policy are
+  out of scope. The signed design handoff still names guest browsers; it is not edited here and
+  a future handoff has to settle that difference.
 - A session transfer is refused at the moment it is requested rather than queued, so a session never
   changes hands later and unattended. Transfer preflight refuses an unreachable target, a target
   that is not answering, a target on an incompatible protocol in either direction, a target that
