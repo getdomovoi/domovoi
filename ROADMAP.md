@@ -171,6 +171,18 @@ Every ledger entry is now merged.
 - [x] Grok CLI adapter
 - [x] Provider account and readiness settings from the signed handoff
 - [x] OS-keychain storage for direct provider API keys and other secrets
+- [x] Let a client discover a provider's models and a default runtime before a session exists
+  - `runtime.discover` (#326) is read-only, scoped to the execution machine and the provider the
+    caller names, and answers with no project open. A ready result carries the provider's models,
+    a `defaultRuntime` bound to one of those models and its default reasoning effort, the
+    permission modes the adapter supports, and whether Auto is available. Auto requires Build, and
+    the returned default always has Auto off.
+  - An unavailable result carries one of seven reasons, each with the fixed action, retryability,
+    and message the protocol pins to it, so a client shows sign-in, install, retry,
+    choose-provider, or configure rather than an unknown failure. Readiness, connection, and
+    catalog share one `maximumRuntimeDiscoveryMs` budget of 10 seconds.
+  - There is no cross-machine fallback, no global preferred provider, and no project-scoped
+    catalog. `packages/protocol/README.md` documents the call for the phone and tablet clients.
 - [ ] Direct API adapters where they add capabilities unavailable through subscription CLIs
   - Only OS-keychain key storage ships; `docs/provider-capabilities.md` lists no direct adapter.
   - Deferred past the alpha on 2026-09-03. `PRODUCT.md` line 41 commits to subscription-backed
@@ -301,9 +313,10 @@ Every ledger entry is now merged.
 - [x] Performance budgets for startup, memory, long threads, terminal throughput, and large previews
 - [x] Sessions sidebar footer bound to the live machine name and fleet count
 
-### Handoff surfaces not yet built
+### Handoff surfaces from the desktop handoff
 
-The desktop handoff specifies these; `main` does not implement them yet.
+The desktop handoff specifies these and `main` implements them. Where a surface stops short of
+the mockup on purpose, the note under it says so.
 
 - [x] Fleet screen with transport order, machine cards, version and `UPDATE` state, and Use,
   Terminal, and Revoke actions
@@ -553,6 +566,11 @@ Every ledger entry is now merged.
     alpha.
 - [ ] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise
   suite or public-key shape in protocol
+  - `packages/protocol/experimental/relay` checks one candidate codec against the same published
+    Cacophony handshake, transport and transcript fixtures in the daemon Node suite and the phone
+    jest-expo suite. Both runners use Node; this proves one codec, two runners, identical vectors.
+    Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution of that codec, and
+    selection and review of the production Noise layer, remain open. No production suite or key shape is frozen. See `docs/relay-crypto-spike.md`.
   - Phone-side key custody is proven for P-256. `apps/mobile/modules/domovoi-device-key` generates
     the static key inside the platform key service and never returns it, and the probe in
     `apps/mobile/src/lib/device-key.ts` checks the key by agreeing against a software key and
@@ -571,6 +589,16 @@ Every ledger entry is now merged.
   - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
     encrypted artifact-byte path exists, and clients read that absence from the route rather than
     maintaining their own list.
+  - Capability policy does not depend on the crypto choice, but an accepted relay descriptor must
+    validate its suite and responder pin. The existing kind discriminator keeps relay unavailable
+    with no capabilities. The complete route contract waits for a reviewed production Noise
+    integration and evidence for phone native key operations to settle the suite/key constraints;
+    a capability list or permissive channel placeholder does not close this item. See the exact
+    unblock conditions in `docs/encrypted-relay.md`, Public route descriptor.
+  - The approved September 7 priority moves this relay work ahead under Goal 3 while Goal 2 stays
+    open. The remaining Goal 2 evidence is not solely hardware: its Windows logon task still has
+    no crash restart. That supervision gap is recorded separately from the physical-machine and
+    cross-host TLS proofs.
 - [ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app
   with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
 - [x] Install a frozen daemon runtime from a version-pinned release archive, checked against a
@@ -787,7 +815,10 @@ Not covered, and the reason this goal is open:
   restart to test at all;
 - a project is opened and Git is executed over the WSL route, but only inside one throwaway guest
   built from one pinned image and only as root, and no session has been transferred over it;
-- no client has been admitted to a remote daemon, so remote Use and Terminal have never run.
+- a client is admitted to a remote daemon and drives Use and Terminal, but only between two
+  production daemons on one machine under `fleet-client-smoke.mjs`. Credentials stay in app
+  memory, so retention does not revoke on the target, and remote preview frames still have no
+  verified path.
 
 Required to close: two physical machines taken from pairing to a fleet row on real keychains, a
 bounded ordered dial, a session move, reconnect, restart, revocation, and removal. A daemon must
@@ -796,7 +827,7 @@ payload plaintext to the relay, and a bearer or channel key alone must not be en
 
 ## Goal 3: ship hosted web, phone, and tablet control
 
-Priority: `P2`. Make plan review and safe remote control work from iPad, phones, and guest browsers.
+Priority: `P2`. Make plan review and safe remote control work from iPad, phones, and browsers.
 
 ### Account and transport services
 
@@ -812,8 +843,25 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
 
 ### Hosted client
 
-- [ ] Browser `PlatformAdapter` for dialogs, notifications, credentials, clipboard, and install state
+- [x] Browser `PlatformAdapter` for dialogs, notifications, credentials, clipboard, and install state
+  - `apps/web/src/browser-platform.ts` answers the host questions the desktop answers through its
+    preload bridge, and `WorkspaceShell` takes it as `platform`. Workspace notifications now reach
+    the browser, so the Notifications pane is no longer three switches with nothing behind them: it
+    names the browser's permission and install state, and a browser that will not raise them
+    disables the kinds instead of recording a preference it cannot honour. The clipboard copies the
+    worktree path and reports its own refusal. A folder picker refuses, because a File System
+    Access handle names a folder on the device holding the browser rather than one on the execution
+    machine. Every refusal is typed and takes its copy from one table in
+    `apps/web/src/platform-refusals.ts`. A notification click focuses the tab; it does not open the
+    session the way the desktop deep link does.
 - [ ] Supply authenticated daemon credentials without embedding long-lived secrets in the bundle
+  - The browser no longer keeps the daemon's root bearer. It spends the pasted credential once on
+    `device.pair` and stores only the client-bound device credential that came back, which
+    `device.revoke` can withdraw on its own from a paired client, and it drops the bearer an
+    earlier build had parked in session storage. What remains needs the protocol and the daemon:
+    there is no client-bound pairing code, so the root bearer still passes through the browser
+    once, `device.claim` binds a machine rather than a client, a device credential has no expiry,
+    and `device.revokeCurrent` is machine-only, so this browser cannot withdraw itself at sign out.
 - [ ] Select any paired machine and resume its daemon-owned sessions
 - [ ] Full-fidelity plan/design preview on iPad, tablet, and phone
 - [ ] Read, annotate, reply, resolve, and select variants from touch devices
@@ -838,15 +886,6 @@ Priority: `P2`. Make plan review and safe remote control work from iPad, phones,
   - Building the tab against the mockup found four gaps: the protocol has no paused fact for a
     fleet machine, no wake RPC, and no per-machine session or tool counts, and the phone has no
     pairing flow of its own; it takes a daemon address and pairing token in Settings.
-
-### Guest sessions
-
-- [ ] Short-lived guest login with passkey or second-factor enforcement
-- [ ] No persisted daemon tokens, project content, terminal history, or provider credentials after
-  logout
-- [ ] Guest session listing and immediate revocation from a paired device
-- [ ] Distinct guest attribution in every audit receipt
-- [ ] Enforce the approved guest hard-gate capability policy
 
 ## Goal 4: package and release the open core
 
@@ -1021,14 +1060,12 @@ dependent work starts.
    bounded by sandbox and capabilities rather than by a list of trusted command names. If it is no,
     every package manager command is a hard gate and Build auto is narrower than this roadmap
     describes.
-4. **Guest hard gates:** whether guest clients may approve migrations, deploys, or secret reads and
-   whether each decision requires a second factor.
-5. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
+4. **Account requirement:** which local capabilities, if any, require a Domovoi account after the
    hosted service exists.
-6. **Public site direction:** architecture-led or folklore-led narrative after real product
+5. **Public site direction:** architecture-led or folklore-led narrative after real product
    screenshots are available.
-7. **Packaging formats:** final Linux package set and Windows package-manager targets.
-8. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
+6. **Packaging formats:** final Linux package set and Windows package-manager targets.
+7. **Support policy:** stable release cadence, supported versions, protocol compatibility window,
    and security backport duration.
 
 ## Resolved architecture decisions
@@ -1038,6 +1075,11 @@ dependent work starts.
 - WebSocket JSON-RPC is the client/daemon protocol; gRPC is not required for the current surfaces.
 - The daemon owns sessions, Git, tools, terminals, credentials, and canonical state.
 - Code stays on its execution machine; Domovoi does not add a filesystem sync layer.
+- No credential grants control of a machine whose owner did not grant it, and membership of an
+  organization is never itself a grant. A machine is owned by a person or by an organization,
+  and only an organization's own machines, such as a shared development server or an
+  on-premises inference machine, can be granted to other people. This holds at every price;
+  there is no tier that reaches another person's machine.
 - Remote connectivity prefers direct private-network transport, then a configured end-to-end
   encrypted relay. The route protocol and daemon connection manager are Apache-2.0; the official
   relay implementation and operated service are separately licensed commercial components.
@@ -1046,6 +1088,11 @@ dependent work starts.
   official relay implementation and hosted account, billing, vault, and team services are
   separately licensed commercial components.
 - Claude Design's app and brand handoffs remain the design source of truth.
+- Guest sessions are not a product feature. Short-lived guest access existed to keep early daemon
+  development from locking itself out, and that need is gone. Domovoi sells reachability to a
+  person's own machines, so a guest login, guest attribution, and a guest hard-gate policy are
+  out of scope. The signed design handoff still names guest browsers; it is not edited here and
+  a future handoff has to settle that difference.
 - A session transfer is refused at the moment it is requested rather than queued, so a session never
   changes hands later and unattended. Transfer preflight refuses an unreachable target, a target
   that is not answering, a target on an incompatible protocol in either direction, a target that

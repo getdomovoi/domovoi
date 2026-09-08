@@ -39,6 +39,9 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "@vitest/coverage-v8": "catalog:",
     "tsup": "^8.5.0",
     "typescript": "catalog:",
