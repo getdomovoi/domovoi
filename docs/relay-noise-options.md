@@ -1,11 +1,12 @@
 # Production relay Noise suite options
 
-Status, 2026-09-07: proposed by Codex, awaiting fetzy's decision. This is an options document,
-not a production suite selection or protocol schema.
+Status, 2026-09-07: updated with reported Android hardware evidence, awaiting fetzy's decision.
+This is an options document, not a production suite selection or protocol schema.
 
-**Recommendation:** investigate `Noise_IK_P256_AESGCM_SHA256`, with the P-256 wire profile used by
-Snow 0.10.0, for the production channel. Its attraction is a documented path to phone private-key
-operations inside the platform's protected key service. Its price is an extension to official
+**Recommendation:** choose `Noise_IK_P256_AESGCM_SHA256`, with the P-256 wire profile used by
+Snow 0.10.0, subject to the remaining integration, iOS, and review gates below. Android private-key
+operations inside the platform key service are now demonstrated on a Pixel 10 reporting StrongBox.
+That increases confidence in C; it does not change the recommended suite. Its price is an extension to official
 Noise, larger public keys, native integration, and an explicit review commitment. This is a
 recommendation, not approval to freeze the suite or adopt Snow unchanged.
 
@@ -63,7 +64,9 @@ id remains 43 base64url characters for every option; endpoint and JSON field cos
 The A/B arithmetic was checked against both complete suites in
 [Cacophony commit 8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247](https://github.com/centromere/cacophony/blob/8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247/vectors/cacophony.txt),
 subtracting each fixture's plaintext length from its ciphertext length. C's cost is calculated
-from the inspected encoding and IK pattern; no P-256 handshake execution is claimed here.
+from the inspected encoding and IK pattern. The subsequent
+[Node experiment in #339](https://github.com/getdomovoi/domovoi/pull/339) reproduces locally derived
+P-256 IK vectors; it does not execute a complete Noise handshake on the phone.
 
 Noise uses implicit transport counters, so a separate nonce is not included in these counts.
 AESGCM means AES-256-GCM with a 16-byte tag and a nonce formed from four zero bytes plus the
@@ -75,15 +78,18 @@ also includes the nonce and cannot be copied verbatim as a Noise record.
 
 ## Native dependencies and phone obligations
 
-These are dependency paths to evaluate, not libraries added by this document. Native binary size,
-handshake latency, key-service latency, and battery cost have not been measured. A suite fixes
-algorithms and encodings; it does not fix the language or implementation package.
+These are dependency paths to evaluate, not libraries added by this document. The
+[Node 22 measurements](https://github.com/getdomovoi/domovoi/blob/44e9e7cdd2da7193bb46fcfcec861f092e6f4e26/docs/relay-node-benchmarks.md)
+put a full IK exchange at 1.24 ms for A and 2.01 ms for C on one Intel Linux development machine;
+at 65,519 payload bytes, seal plus open took 85.53 us for A and 51.48 us for C. These are daemon-side
+software measurements. Phone binary size, complete handshake latency, key-service latency, and
+battery cost remain unmeasured. A suite fixes algorithms and encodings, not an implementation package.
 
 | Option | Daemon implementation cost | Phone implementation cost and required proof |
 | --- | --- | --- |
 | A | Existing Node/OpenSSL primitives or the experimental noble JS primitives can supply X25519, ChaCha20-Poly1305, SHA-256 and HMAC. A production Noise state machine still needs selection and review. No additional native crypto package is inherently required on Node. | Native fresh entropy plus X25519 static-key operations through a non-exportable platform handle. That custody path is unproven. CryptoKit software Curve25519 or a bundled X25519 library supplies arithmetic, not proof of protected custody. A native bridge is still required even if the rest of Noise stays JS. |
 | B | Same X25519/hash requirements as A; substitute AES-256-GCM. Node/OpenSSL can supply the primitive without another native package. This does not remove Noise review work. | Same unresolved X25519 custody as A. AES-GCM can use platform providers, but changing the cipher does not give the static X25519 key a protected operation API. Must reproduce the AES nonce/tag layout and SHA-256/HMAC key schedule. |
-| C | Node/OpenSSL can supply P-256 ECDH, AES-GCM and SHA-256/HMAC. Using Snow instead adds a Rust Noise dependency and Node native bindings/builds across supported daemon platforms. Its P-256 profile needs explicit interop review in either implementation. | A Swift bridge to Secure Enclave P-256 key agreement and a Kotlin bridge to Android Keystore ECDH are documented starting points. Ephemeral P-256 generation, 32-byte ECDH results, AES-256-GCM, SHA-256/HMAC, and opaque static-key handle lifecycle must work together. A shared Rust Noise layer would also need phone builds and a resolver adapted to platform handles. |
+| C | Node/OpenSSL P-256 ECDH, AES-GCM and SHA-256/HMAC are exercised by #339. Using Snow instead adds a Rust Noise dependency and Node native bindings/builds across supported daemon platforms. Its P-256 profile needs explicit interop review in either implementation. | The Android bridge now demonstrates platform entropy, fresh P-256 peer generation, a 65-byte static public point, a 32-byte ECDH result, and create/reopen/agreement/delete through an opaque key alias. Pixel 10 reports StrongBox; the API 36 emulator reports software. iOS Secure Enclave remains unproven. Full Noise composition, AES-GCM nonce/tag behavior and the SHA-256/HMAC schedule still need phone integration and review. A shared Rust layer would also need phone builds and a resolver adapted to platform handles. |
 
 The daemon primitive claims follow the [Node 22 crypto API](https://nodejs.org/docs/latest-v22.x/api/crypto.html).
 The pure JS codec in [#337](https://github.com/getdomovoi/domovoi/pull/337) uses exact noble 2.4.0
@@ -91,6 +97,9 @@ development dependencies outside production exports. Its twelve shared cases pro
 under two Node runners, including jest-expo. Metro/hermesc compilation proves compiler acceptance.
 Neither establishes Hermes execution, native key custody, or an audit of the composition. Its
 expected ciphertexts apply to A and do not validate B or C implementations.
+
+The separate Android probe supplies actual Hermes and key-service evidence for P-256. It does
+not change what those twelve Node-runner fixtures prove, and it does not run their full IK suite.
 
 For A/B, Android lists general `XDH` support from API 33, but this is not a promise that
 `AndroidKeyStore` can generate and use a non-exportable X25519 key. An available software provider
@@ -102,8 +111,9 @@ is P-256. These are the reasons A/B remain custody questions despite their lower
 For C, Android's `PURPOSE_AGREE_KEY` begins at API 31, and its official example uses `secp256r1`
 with the `AndroidKeyStore` provider. The proposed relay path therefore requires that API and
 successful key generation/agreement on the device; older or unsupported devices remain direct-only.
-Keystore use does not by itself promise StrongBox hardware. Record the actual security level and
-decide the supported device policy from the spike, rather than claiming universal hardware support.
+Keystore use does not by itself promise StrongBox hardware. The probe reads the actual security
+level. Fetzy still needs a supported-device policy covering StrongBox, other hardware backing,
+software backing, and unsupported devices; one successful handset does not establish that policy.
 [Android key purposes](https://developer.android.com/reference/android/security/keystore/KeyProperties#PURPOSE_AGREE_KEY),
 [ECDH example](https://developer.android.com/reference/kotlin/android/security/keystore/KeyGenParameterSpec.html),
 [Keystore security levels](https://developer.android.com/privacy-and-security/keystore)
@@ -111,11 +121,52 @@ decide the supported device policy from the spike, rather than claiming universa
 AES-GCM has documented platform entry points in
 [CryptoKit](https://developer.apple.com/documentation/cryptokit/aes/gcm?changes=_5) and
 [Android Cipher](https://developer.android.com/reference/javax/crypto/Cipher).
-This makes C a useful first native feasibility target; it is not a performance result or a claim
-that AES-GCM and its derived session keys execute inside the hardware protecting the static key.
-The current [mobile credential adapter](../apps/mobile/src/lib/credentials.ts) only stores and
-returns bearer strings through [Expo SecureStore](https://docs.expo.dev/versions/latest/sdk/securestore/).
-It supplies none of the required key-agreement operations.
+The Android ECDH proof does not claim that AES-GCM and its derived session keys execute inside the
+hardware protecting the static key. The [bearer credential adapter](../apps/mobile/src/lib/credentials.ts)
+still stores and returns strings through [Expo SecureStore](https://docs.expo.dev/versions/latest/sdk/securestore/).
+The new device-key module is a separate operation API for channel keys.
+
+## Observed Android custody and remaining phone evidence
+
+Claude Code reported two successful runs through the app's own UI on a **Pixel 10, GrapheneOS,
+Android API 37**. The [phone probe and roadmap record](https://github.com/getdomovoi/domovoi/commit/ea75620)
+are separate from Codex's Node measurements. The report contains:
+
+| Check | Observed result |
+| --- | --- |
+| Platform key service | Key agreement supported |
+| System entropy | 32 bytes returned; 30 distinct values in the reported sample |
+| Static key creation | 65-byte public point; reported security level `strongbox` |
+| Handle reopen | Same public point returned for the stored alias |
+| Agreement against a fresh software peer | Both sides produced the same 32-byte ECDH secret |
+| Key removal | Probe key deleted |
+
+The native module uses `KeyPairGenerator` in `AndroidKeyStore`, `PURPOSE_AGREE_KEY`, and
+`secp256r1`, requesting StrongBox and reading the resulting security level. The static private key
+stays inside the key service; the bridge returns an alias, a public point, and agreement results.
+The software peer draws its scalar from the platform random-byte API, validates that scalar,
+and computes the matching agreement against the platform public point. That establishes fresh
+ephemeral peer generation and the static handle's create/reopen/agreement/delete lifecycle on
+the tested device. The sample-byte check exercises entropy delivery, not a statistical RNG audit.
+An Android API 36 emulator passes the same steps and reports `software`.
+
+The hardware run also exposed a concrete runtime dependency: noble's ambient key generator threw
+`crypto.getRandomValues must be defined` under Hermes. The probe now supplies platform entropy
+explicitly. Every production phone codec must receive an explicit native entropy source for
+fresh keys and account for any primitive's randomness needs, including blinding; ambient WebCrypto
+availability cannot be assumed. Static private-key operations must keep using the native handle.
+
+**iOS remains unproven.** The available Intel Mac could not build the Expo SDK 57 / Swift 6.2
+probe with its available toolchain, so there is no Secure Enclave execution result. This records
+that build-environment limit, not a blanket claim that Xcode 26 requires Apple Silicon: Apple's
+[support matrix](https://developer.apple.com/xcode/system-requirements) lists Xcode 26.0 through
+26.3 on macOS Sequoia 15.6, and its [Xcode 26 overview](https://developer.apple.com/videos/play/wwdc2025/247/)
+describes Intel simulator support as omitted from the default download. A working supported
+toolchain and an iOS hardware run are still required.
+
+Android API 31 remains the proposed ECDH floor. The successful Pixel run closes Android P-256
+custody feasibility for that configuration; iOS, broader device policy, full phone Noise execution,
+and the remaining production lifecycle cases below remain separate gates.
 
 ## What the responder pin must carry
 
@@ -159,14 +210,15 @@ adapter cost, not to bless its current source as the production dependency. Fetz
 otherwise arrange review of the selected exact implementation, its native adapter, and the
 Domovoi admission binding. Historical audits of individual primitives do not establish that result.
 
-The requested phone evidence for C, owned by Claude Code, is:
+The remaining phone integration evidence for C, owned by Claude Code, is:
 
-1. Create a fresh device-only P-256 static key, retrieve its public point, and perform agreement
-   against known peers without exporting the private scalar. Prove relaunch, backup exclusion,
-   deletion, and key-loss refusal. Apple Secure Enclave keys cannot be imported just to fit a
+1. Reproduce the Android static-handle and ECDH proof through iOS Secure Enclave. Extend the
+   Android create/reopen/agreement/delete result with app relaunch, backup exclusion, and
+   key-loss refusal cases. Apple Secure Enclave keys cannot be imported just to fit a
    fixture: deterministic software vectors and a separately generated native-handle interop case
    prove different parts of the boundary.
-2. Supply fresh native entropy and ephemeral P-256 keys. IK needs four DH operations per peer,
+2. Wire the proven Android native entropy and fresh P-256 peer generation into the full IK
+   composition, and establish that path on iOS. IK needs four DH operations per peer,
    including two uses of the static key: the phone uses it against the daemon static pin and the
    daemon's fresh ephemeral key. An ECDSA signing-only handle does not satisfy that requirement.
 3. Reproduce the exact public point, raw ECDH result, SHA-256/HMAC schedule, AES-GCM nonce and tag
@@ -198,9 +250,11 @@ about custody and rotation; neither blocks the other or makes its authority deci
 ## Decision for fetzy
 
 **Recommendation, not a settled choice:** preserve the current phone key-operation requirement
-and authorize evaluation of C, `Noise_IK_P256_AESGCM_SHA256`, using the pinned uncompressed P-256
-profile, platform handles, and a separately reviewed Noise integration. Claude Code's native
-results and the review findings must precede any production schema or release commitment.
+and select C, `Noise_IK_P256_AESGCM_SHA256`, using the pinned uncompressed P-256 profile, platform
+handles, and a separately reviewed Noise integration. The Android hardware proof strengthens this
+recommendation without changing it. Fetzy must choose the supported custody/device policy and
+whether to gate release on iOS proof or keep iOS relay unavailable until it is proven. Full phone
+composition and the review findings must precede a production schema or release commitment.
 
 Choosing C forecloses an official-revision-34-only suite, the 32-byte responder pin, and unchanged
 reuse of #337's codec. It accepts native bridge/build maintenance, extension interop work, and a
