@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
+
 import { fleetHealthSchema } from "./fleet-health.js"
 import { machineIdSchema } from "./identifiers.js"
 import { directTransportEndpointSchema, transportCandidateSchema } from "./transport.js"
@@ -26,13 +28,13 @@ export const heartbeatStateSchema = z.enum(["online", "stale", "offline"])
 // true and not enough: the fleet needs to say which distribution, and whether
 // WSL 2 gives it a network stack of its own.
 export const machineWslFactsSchema = z.object({
-  distribution: z.string().trim().min(1).max(128),
+  distribution: z.string().trim().min(1).check(utf16MaxLength(128)),
   version: z.union([z.literal(1), z.literal(2)]),
 }).strict()
 
 export const machineHeartbeatSchema = z.object({
   state: heartbeatStateSchema,
-  lastSeenAt: z.string().datetime({ offset: true }),
+  lastSeenAt: offsetDateTimeSchema,
 }).strict()
 
 // The facts a machine reports about itself are read in three places: its
@@ -68,7 +70,7 @@ export const fleetDirectEndpointSchema = directTransportEndpointSchema
 
 export const fleetVerifiedRouteSchema = z.object({
   endpoint: fleetDirectEndpointSchema,
-  lastAuthenticatedAt: z.string().datetime({ offset: true }),
+  lastAuthenticatedAt: offsetDateTimeSchema,
 }).strict()
 
 // `direct` is a source observation, not a new target-advertised transport kind.
@@ -76,10 +78,10 @@ export const fleetConnectionKindSchema = z.enum([...connectionKindSchema.options
 
 const fleetMachineDescriptorObject = z.object({
   id: machineIdSchema,
-  label: z.string().trim().min(1).max(128),
-  platform: z.string().trim().min(1).max(64),
-  arch: z.string().trim().min(1).max(64),
-  version: z.string().trim().min(1).max(64),
+  label: z.string().trim().min(1).check(utf16MaxLength(128)),
+  platform: z.string().trim().min(1).check(utf16MaxLength(64)),
+  arch: z.string().trim().min(1).check(utf16MaxLength(64)),
+  version: z.string().trim().min(1).check(utf16MaxLength(64)),
   capabilities: z.array(machineCapabilitySchema).max(16),
   protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
   // Only endpoints the dialer would accept: the schema refuses an
@@ -126,7 +128,7 @@ export const fleetPendingOperationSchema = z.object({
   id: z.string().uuid(),
   machineId: machineIdSchema,
   operation: z.enum(["enroll", "forget"]),
-  startedAt: z.string().datetime({ offset: true }),
+  startedAt: offsetDateTimeSchema,
 }).strict()
 
 export const fleetEntrySchema = z.discriminatedUnion("kind", [
@@ -148,7 +150,7 @@ export const fleetQuarantinedEntrySchema = z.object({
   id: z.string().uuid(),
   machineId: machineIdSchema.optional(),
   reason: z.enum(["invalid-json", "invalid-facts"]),
-  detectedAt: z.string().datetime({ offset: true }),
+  detectedAt: offsetDateTimeSchema,
   recoveryAction: z.enum(["forget-and-enroll", "repair-registry-offline"]),
 }).strict().refine((entry) => (entry.machineId !== undefined) === (entry.recoveryAction === "forget-and-enroll"),
   "Only a valid machine identity can be forgotten and enrolled again")

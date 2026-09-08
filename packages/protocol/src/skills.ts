@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
+
 import { clientIdentityIdSchema, clientKindSchema } from "./identifiers.js"
 
 export const skillScopeSchema = z.enum(["user", "project", "system"])
@@ -31,7 +33,7 @@ export const skillFrontmatterConfigSchema = z.object({
 const signatureEvidenceSchema = z.object({
   algorithm: z.literal("ed25519"),
   keyId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/),
-  value: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).min(16).max(1_024),
+  value: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/).min(16).check(utf16MaxLength(1_024)),
 })
 
 export const skillContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -46,8 +48,8 @@ export const skillSignatureSchema = z.discriminatedUnion("state", [
   signatureEvidenceSchema.extend({ state: z.literal("unverified") }).strict(),
   signatureEvidenceSchema.extend({
     state: z.literal("verified"),
-    verifiedBy: z.string().trim().min(1).max(256),
-    verifiedAt: z.string().datetime({ offset: true }),
+    verifiedBy: z.string().trim().min(1).check(utf16MaxLength(256)),
+    verifiedAt: offsetDateTimeSchema,
   }).strict(),
   z.object({
     state: z.literal("invalid"),
@@ -63,7 +65,7 @@ export const skillTrustSchema = z.discriminatedUnion("state", [
   z.object({
     state: z.literal("trusted"),
     reason: z.enum(["verified-signature", "manual-review"]),
-    authority: z.string().trim().min(1).max(256),
+    authority: z.string().trim().min(1).check(utf16MaxLength(256)),
   }).strict(),
   z.object({
     state: z.literal("blocked"),
@@ -73,8 +75,8 @@ export const skillTrustSchema = z.discriminatedUnion("state", [
 
 export const skillSummarySchema = z.object({
   id: skillIdSchema,
-  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
-  description: z.string().trim().min(1).max(2_048),
+  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).check(utf16MaxLength(64)),
+  description: z.string().trim().min(1).check(utf16MaxLength(2_048)),
   path: z.string().regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/),
   scope: skillScopeSchema,
   source: skillSourceSchema,
@@ -87,7 +89,7 @@ export const skillSummarySchema = z.object({
 export const skillSummariesSchema = z.array(skillSummarySchema).max(512)
 export const skillDocumentSchema = z.object({
   skill: skillSummarySchema,
-  content: z.string().max(128 * 1_024),
+  content: z.string().check(utf16MaxLength(128 * 1_024)),
 })
 
 export const skillInventorySignatureSchema = z.discriminatedUnion("state", [
@@ -117,7 +119,7 @@ export const skillInventoryTrustSchema = z.discriminatedUnion("state", [
 
 export const skillInventoryEntrySchema = z.object({
   id: skillIdSchema,
-  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).check(utf16MaxLength(64)),
   scope: skillScopeSchema,
   source: skillSourceSchema,
   manifest: skillCapabilityManifestSchema,
@@ -127,11 +129,11 @@ export const skillInventoryEntrySchema = z.object({
 }).strict()
 
 export const skillInventoryMachineSchema = z.object({
-  id: z.string().trim().min(1).max(128),
-  name: z.string().trim().min(1).max(256),
-  platform: z.string().trim().min(1).max(64),
-  arch: z.string().trim().min(1).max(64),
-  version: z.string().trim().min(1).max(64),
+  id: z.string().trim().min(1).check(utf16MaxLength(128)),
+  name: z.string().trim().min(1).check(utf16MaxLength(256)),
+  platform: z.string().trim().min(1).check(utf16MaxLength(64)),
+  arch: z.string().trim().min(1).check(utf16MaxLength(64)),
+  version: z.string().trim().min(1).check(utf16MaxLength(64)),
 }).strict()
 
 export const skillInventorySchema = z.object({
@@ -163,12 +165,12 @@ export function skillInventoryEntryFromSummary(skill: SkillSummary): SkillInvent
 }
 
 export const skillEnablementReviewSchema = z.object({
-  projectId: z.string().trim().min(1).max(512),
+  projectId: z.string().trim().min(1).check(utf16MaxLength(512)),
   skillId: skillIdSchema,
   enabled: z.boolean(),
   contentDigest: skillContentDigestSchema,
   manifest: skillCapabilityManifestSchema,
-  reviewedAt: z.string().datetime({ offset: true }),
+  reviewedAt: offsetDateTimeSchema,
   reviewedBy: z.object({
     client: clientKindSchema,
     clientId: clientIdentityIdSchema.optional(),
@@ -210,8 +212,8 @@ export const skillReviewDecisionSchema = z.enum(["trust", "revoke"])
 
 export const maximumSkillInstallFiles = 256
 export const skillInstallScopeSchema = z.enum(["project", "user"])
-const skillInstallPathSchema = z.string().min(1).max(1_024).regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/)
-const skillInstallRelativePathSchema = z.string().min(1).max(1_024)
+const skillInstallPathSchema = z.string().min(1).check(utf16MaxLength(1_024)).regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/)
+const skillInstallRelativePathSchema = z.string().min(1).check(utf16MaxLength(1_024))
 
 export const skillInstallSourceSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("path"), path: skillInstallPathSchema }).strict(),
@@ -255,7 +257,7 @@ export const skillInstallPreviewSchema = z.object({
 export const skillManualReviewSchema = z.object({
   skillId: skillIdSchema,
   contentDigest: skillContentDigestSchema,
-  reviewedAt: z.string().datetime({ offset: true }),
+  reviewedAt: offsetDateTimeSchema,
   reviewedBy: z.object({
     client: clientKindSchema,
     clientId: clientIdentityIdSchema.optional(),

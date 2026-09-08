@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { loopbackTransportEndpointSchema, machineIdSchema, maximumFleetMachines } from "@getdomovoi/protocol"
+import { loopbackTransportEndpointSchema, machineIdSchema, maximumFleetMachines, utf16MaxLength } from "@getdomovoi/protocol"
 
 export const maximumSshConfigurationBytes = 32 * 1_024
 
@@ -18,7 +18,7 @@ export function isLoopbackHost(host: string): boolean {
 
 // This is an operator's explicit route classification, not inferred membership
 // or evidence that a name/IP range protects traffic. Remote listeners still need TLS.
-export const tailnetHostSchema = z.string().min(1).max(253).refine((host) => {
+export const tailnetHostSchema = z.string().min(1).check(utf16MaxLength(253)).refine((host) => {
   if (/[\s/@?#\\%]/u.test(host)) return false
   try {
     const url = new URL(`wss://${endpointHost(host)}:1/rpc`)

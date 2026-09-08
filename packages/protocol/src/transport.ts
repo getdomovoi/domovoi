@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { utf16MaxLength } from "./validation.js"
+
 import { connectionKindSchema } from "./schema.js"
 
 // Private transports first, relay last: repository bytes should leave the
@@ -24,7 +26,7 @@ function endpointUrl(endpoint: string): URL | undefined {
   try { return new URL(endpoint) } catch { return undefined }
 }
 
-const websocketEndpointSchema = z.string().max(2048).refine((endpoint) =>
+const websocketEndpointSchema = z.string().check(utf16MaxLength(2048)).refine((endpoint) =>
   // Check the raw spelling before url() can trim it. Consumers must not see
   // a different endpoint from the one a schema accepted on their behalf.
   (endpoint.startsWith("ws://") || endpoint.startsWith("wss://")) && !/[\s\\]/u.test(endpoint),

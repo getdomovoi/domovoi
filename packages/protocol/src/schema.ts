@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
+
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
 
@@ -46,11 +48,11 @@ export const approvalDecisionSchema = z.enum([
   "deny",
   "deny-explain",
 ])
-export const reasoningEffortSchema = z.string().trim().min(1).max(64)
+export const reasoningEffortSchema = z.string().trim().min(1).check(utf16MaxLength(64))
 
 export const runtimeSchema = z.object({
-  provider: z.string().min(1).max(64),
-  model: z.string().min(1).max(256),
+  provider: z.string().min(1).check(utf16MaxLength(64)),
+  model: z.string().min(1).check(utf16MaxLength(256)),
   reasoning: reasoningEffortSchema,
   permissionMode: permissionModeSchema,
   auto: z.boolean(),
@@ -150,8 +152,8 @@ export const sessionTransferReconciliationReasonSchema = z.enum([
 export const sessionTransferReconciliationSchema = z.object({
   state: z.literal("ownership-unconfirmed"),
   reason: sessionTransferReconciliationReasonSchema,
-  firstFailedAt: z.string().datetime({ offset: true }),
-  lastFailedAt: z.string().datetime({ offset: true }),
+  firstFailedAt: offsetDateTimeSchema,
+  lastFailedAt: offsetDateTimeSchema,
   attemptCount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   recoveryAction: z.literal("confirm-source-recovery"),
 }).strict().superRefine((failure, context) => {
@@ -180,7 +182,7 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
     targetMachineId: machineIdSchema,
     intentDigest: sha256DigestSchema,
     nextGeneration: ownershipGenerationSchema,
-    startedAt: z.string().datetime({ offset: true }),
+    startedAt: offsetDateTimeSchema,
     resumeState: z.enum(["idle", "done", "failed"]),
     method: z.enum(["git-bundle", "remote-ref"]),
     requestedBy: z.object({
@@ -195,7 +197,7 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
     targetMachineId: machineIdSchema,
     generation: ownershipGenerationSchema,
     manifestDigest: sha256DigestSchema,
-    completedAt: z.string().datetime({ offset: true }),
+    completedAt: offsetDateTimeSchema,
     // Older snapshots predate the distinction, and every such record was a
     // target-acknowledged commit. New conflict releases name themselves.
     completion: z.enum(["committed", "conflict-released"]).default("committed"),
@@ -208,7 +210,7 @@ export const sessionTransferOriginSchema = z.object({
   generation: ownershipGenerationSchema,
   manifestDigest: sha256DigestSchema,
   checkpointCommit: commitShaSchema,
-  completedAt: z.string().datetime({ offset: true }),
+  completedAt: offsetDateTimeSchema,
 }).strict()
 
 export const sessionSourceRecoverySchema = z.object({
@@ -216,7 +218,7 @@ export const sessionSourceRecoverySchema = z.object({
   targetMachineId: machineIdSchema,
   generation: ownershipGenerationSchema,
   manifestDigest: sha256DigestSchema,
-  recoveredAt: z.string().datetime({ offset: true }),
+  recoveredAt: offsetDateTimeSchema,
   decidedBy: z.object({
     client: clientKindSchema,
     clientId: clientIdentityIdSchema.optional(),
@@ -227,7 +229,7 @@ const sessionOwnershipConflictCommon = {
   transferId: transferIdSchema,
   otherMachineId: machineIdSchema,
   otherGeneration: ownershipGenerationSchema,
-  detectedAt: z.string().datetime({ offset: true }),
+  detectedAt: offsetDateTimeSchema,
   // `none` was persisted before the safe one-way release existed. Parsing it
   // upgrades that stranded state without pretending the conflict is gone.
   recoveryAction: z.union([
@@ -258,15 +260,15 @@ export const sessionSummarySchema = z.object({
   changedFiles: z.number().int().nonnegative(),
   testsPassed: z.number().int().nonnegative(),
   testsFailed: z.number().int().nonnegative(),
-  updatedAt: z.string().datetime(),
+  updatedAt: dateTimeSchema,
   workspacePath: z.string().min(1).optional(),
   providerThreadId: z.string().min(1).optional(),
   activeTurnId: z.string().min(1).optional(),
   providerFailure: providerFailureSchema.optional(),
   baseCommit: z.string().min(1).optional(),
-  archiveRequestedAt: z.string().datetime().optional(),
+  archiveRequestedAt: dateTimeSchema.optional(),
   archiveCheckpoint: commitShaSchema.optional(),
-  archivedAt: z.string().datetime().optional(),
+  archivedAt: dateTimeSchema.optional(),
   forkedFrom: sessionForkOriginSchema.optional(),
   ownershipGeneration: ownershipGenerationSchema.optional(),
   transfer: sessionTransferLifecycleSchema.optional(),
@@ -454,7 +456,7 @@ export const approvalRequestSchema = z.object({
   estimatedDuration: z.string().min(1),
   checkpoint: z.string().min(1),
   providerRequestId: z.number().int().nonnegative().optional(),
-  requestedAt: z.string().datetime(),
+  requestedAt: dateTimeSchema,
   execution: executionResolutionSchema,
   reapproval: z.object({
     reason: z.literal("legacy-text-only"),
@@ -473,7 +475,7 @@ const approvalRuleCommonFields = {
   createdBy: clientKindSchema,
   createdByConnectionId: connectionIdSchema.optional(),
   createdByClientId: clientIdentityIdSchema.optional(),
-  createdAt: z.string().datetime(),
+  createdAt: dateTimeSchema,
 } as const
 
 export const approvalRuleSchema = z.discriminatedUnion("status", [
@@ -486,7 +488,7 @@ export const approvalRuleSchema = z.discriminatedUnion("status", [
     ...approvalRuleCommonFields,
     status: z.literal("inactive"),
     inactiveReason: z.enum(["legacy-text-only", "unsupported-record-version"]),
-    inactivatedAt: z.string().datetime(),
+    inactivatedAt: dateTimeSchema,
     replacedByRuleId: z.string().min(1).optional(),
   }).strict(),
 ])
@@ -498,7 +500,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("checkpoint"),
     label: z.string(),
     commit: commitShaSchema.optional(),
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
   z.object({
     id: z.string(),
@@ -506,7 +508,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("user"),
     body: z.string(),
     providerPromptDelivery: providerPromptDeliverySchema.optional(),
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
   z.object({
     id: z.string(),
@@ -514,14 +516,14 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("system"),
     body: z.string(),
     detail: z.string().optional(),
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
   z.object({
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("assistant"),
     body: z.string(),
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
   z.object({
     id: z.string(),
@@ -534,7 +536,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     connectionId: connectionIdSchema.optional(),
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
   z.object({
     id: z.string(),
@@ -547,14 +549,14 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     status: toolStatusSchema,
     title: z.string(),
     output: z.string().optional(),
-    createdAt: z.string().datetime(),
+    createdAt: dateTimeSchema,
   }),
 ])
 
 export const artifactVariantSchema = z.object({
-  id: z.string().min(1).max(128),
-  groupId: z.string().min(1).max(256),
-  label: z.string().min(1).max(120),
+  id: z.string().min(1).check(utf16MaxLength(128)),
+  groupId: z.string().min(1).check(utf16MaxLength(256)),
+  label: z.string().min(1).check(utf16MaxLength(120)),
   order: z.number().int().min(0).max(1_023),
 })
 
@@ -574,12 +576,10 @@ export const maximumWorkingPlanSteps = 128
 export const maximumWorkingPlanStepTextLength = 4_096
 export const maximumWorkingPlanTextLength = 65_536
 
-const workingPlanReferenceSchema = z.string().trim().min(1).max(256)
+const workingPlanReferenceSchema = z.string().trim().min(1).check(utf16MaxLength(256))
 // This is a persistence bound, not a sanitizer. The daemon must durably redact
 // provider and client text before constructing a WorkingPlan.
-const workingPlanStepTextSchema = z.string().trim().min(1).max(
-  maximumWorkingPlanStepTextLength,
-)
+const workingPlanStepTextSchema = z.string().trim().min(1).check(utf16MaxLength(maximumWorkingPlanStepTextLength))
 
 export const workingPlanBlockerSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -662,16 +662,16 @@ export const pendingWorkingPlanEditSchema = z.object({
   baseSteps: workingPlanStructureSchema,
   draftSteps: workingPlanStructureSchema,
   status: z.enum(["queued", "conflicted"]),
-  submittedAt: z.string().datetime(),
+  submittedAt: dateTimeSchema,
   submittedBy: workingPlanClientAttributionSchema,
 }).strict()
 
 export const workingPlanProviderSyncSchema = z.object({
-  provider: z.string().trim().min(1).max(64),
-  model: z.string().trim().min(1).max(256),
+  provider: z.string().trim().min(1).check(utf16MaxLength(64)),
+  model: z.string().trim().min(1).check(utf16MaxLength(256)),
   providerThreadId: workingPlanReferenceSchema,
   structureRevision: z.number().int().nonnegative(),
-  deliveredAt: z.string().datetime(),
+  deliveredAt: dateTimeSchema,
 }).strict()
 
 function sameWorkingPlanStructure(
@@ -691,8 +691,8 @@ export const workingPlanSchema = z.object({
   steps: workingPlanStepsSchema,
   providerSync: workingPlanProviderSyncSchema.optional(),
   pendingEdit: pendingWorkingPlanEditSchema.optional(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
+  createdAt: dateTimeSchema,
+  updatedAt: dateTimeSchema,
 }).strict().superRefine((plan, context) => {
   if (plan.structureRevision === 0 && plan.steps.length > 0) {
     context.addIssue({
@@ -744,8 +744,8 @@ export const workingPlanSchema = z.object({
 })
 
 export const annotationAnchorSchema = z.object({
-  cssSelector: z.string().min(1).max(1_000).optional(),
-  textQuote: z.string().min(1).max(2_000).optional(),
+  cssSelector: z.string().min(1).check(utf16MaxLength(1_000)).optional(),
+  textQuote: z.string().min(1).check(utf16MaxLength(2_000)).optional(),
   bbox: z.object({
     x: z.number().finite().nonnegative(),
     y: z.number().finite().nonnegative(),
@@ -761,7 +761,7 @@ export const annotationReplySchema = z.object({
   id: z.string().min(1),
   body: z.string().min(1),
   origin: clientKindSchema,
-  createdAt: z.string().datetime(),
+  createdAt: dateTimeSchema,
 })
 
 export const annotationVisualContextSchema = z.discriminatedUnion("status", [
@@ -796,12 +796,12 @@ export const annotationSchema = z.object({
   body: z.string().min(1),
   status: annotationStatusSchema,
   statusChangedBy: clientKindSchema.optional(),
-  statusChangedAt: z.string().datetime().optional(),
+  statusChangedAt: dateTimeSchema.optional(),
   origin: clientKindSchema,
   visualContext: annotationVisualContextSchema.optional(),
   thread: z.array(annotationReplySchema),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
+  createdAt: dateTimeSchema,
+  updatedAt: dateTimeSchema,
 })
 
 export const workspaceSnapshotSchema = z.object({

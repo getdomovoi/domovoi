@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
+
 import {
   annotationSchema,
   artifactSchema,
@@ -33,8 +35,8 @@ export const maximumSessionTransferUsageRecords = 100_000
 const safeCounterSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 
 export const sessionTransferRuntimeSchema = z.object({
-  provider: z.string().min(1).max(64),
-  model: z.string().min(1).max(256),
+  provider: z.string().min(1).check(utf16MaxLength(64)),
+  model: z.string().min(1).check(utf16MaxLength(256)),
   reasoning: reasoningEffortSchema,
   permissionMode: permissionModeSchema,
 }).strict()
@@ -44,13 +46,13 @@ export const sessionTransferForkOriginSchema = sessionForkOriginSchema.extend({
 }).strict()
 
 export const sessionTransferSessionSchema = z.object({
-  id: z.string().trim().min(1).max(128),
+  id: z.string().trim().min(1).check(utf16MaxLength(128)),
   title: z.string().min(1),
   runtime: sessionTransferRuntimeSchema,
   changedFiles: safeCounterSchema,
   testsPassed: safeCounterSchema,
   testsFailed: safeCounterSchema,
-  updatedAt: z.string().datetime({ offset: true }),
+  updatedAt: offsetDateTimeSchema,
   baseCommit: commitShaSchema,
   ownershipGeneration: safeCounterSchema,
   forkedFrom: sessionTransferForkOriginSchema.optional(),
@@ -58,9 +60,9 @@ export const sessionTransferSessionSchema = z.object({
 }).strict()
 
 const transferUsageBase = z.object({
-  turnId: z.string().trim().min(1).max(256),
-  provider: z.string().trim().min(1).max(64),
-  model: z.string().trim().min(1).max(256),
+  turnId: z.string().trim().min(1).check(utf16MaxLength(256)),
+  provider: z.string().trim().min(1).check(utf16MaxLength(64)),
+  model: z.string().trim().min(1).check(utf16MaxLength(256)),
   inputTokens: safeCounterSchema,
   cachedInputTokens: safeCounterSchema,
   outputTokens: safeCounterSchema,
@@ -286,7 +288,7 @@ export const sessionTransferPreviewRefusalSchema = z.union([
 
 const previewCommon = {
   contractVersion: sessionTransferContractVersionSchema,
-  sessionId: z.string().trim().min(1).max(128),
+  sessionId: z.string().trim().min(1).check(utf16MaxLength(128)),
   sourceMachineId: machineIdSchema,
   targetMachineId: machineIdSchema,
   coverage: sessionTransferCoverageSchema,
@@ -298,8 +300,8 @@ export const sessionTransferPreviewSchema = z.discriminatedUnion("allowed", [
     allowed: z.literal(true),
     intentDigest: sessionTransferIntentDigestSchema,
     project: z.object({
-      sourceProjectId: z.string().trim().min(1).max(512),
-      targetProjectId: z.string().trim().min(1).max(512),
+      sourceProjectId: z.string().trim().min(1).check(utf16MaxLength(512)),
+      targetProjectId: z.string().trim().min(1).check(utf16MaxLength(512)),
       lineageCommit: commitShaSchema,
       sourceHeadCommit: commitShaSchema,
     }).strict(),
