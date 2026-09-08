@@ -782,6 +782,8 @@ td { color: var(--ink2); }
 <ul>
 <li><code>packages/protocol/experimental/relay</code> checks one candidate codec against the same published Cacophony handshake, transport and transcript fixtures in the daemon Node suite and the phone jest-expo suite. Both runners use Node; this proves one codec, two runners, identical vectors. Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution, native entropy and private-key operations, and selection/review of the production Noise layer remain open. No production suite or key shape is frozen. See <code>docs/relay-crypto-spike.md</code>.
 </li>
+<li>Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK, daemon responder and established-frame costs are recorded for one Intel Linux host in <code>docs/relay-node-benchmarks.md</code>. Phone costs and protected key-service latency remain open; this does not freeze a suite or supply real phone-runtime evidence.
+</li>
 </ul>
 </li>
 <li>[ ] Make relay routes and capabilities a discriminated protocol contract

@@ -559,6 +559,11 @@ Every ledger entry is now merged.
     Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution,
     native entropy and private-key operations, and selection/review of the production Noise layer
     remain open. No production suite or key shape is frozen. See `docs/relay-crypto-spike.md`.
+  - Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM
+    using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK,
+    daemon responder and established-frame costs are recorded for one Intel Linux host in
+    `docs/relay-node-benchmarks.md`. Phone costs and protected key-service latency remain open;
+    this does not freeze a suite or supply real phone-runtime evidence.
 - [ ] Make relay routes and capabilities a discriminated protocol contract
   - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
     encrypted artifact-byte path exists, and clients read that absence from the route rather than
