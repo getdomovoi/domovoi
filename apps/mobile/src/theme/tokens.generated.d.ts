@@ -43,7 +43,7 @@ export declare const colors: {
     readonly success: "#007a43"
     readonly "success-foreground": "#f7fef9"
     readonly warning: "#a15700"
-    readonly "warning-foreground": "#fffaf5"
+    readonly "warning-foreground": "#281606"
     readonly info: "#0068ad"
     readonly "info-foreground": "#f6fdff"
     readonly strong: "#323238"
@@ -51,8 +51,6 @@ export declare const colors: {
     readonly code: "#f1f0ed"
     readonly desk: "#e1dfdc"
     readonly overlay: "#2d2d3361"
-    readonly "warn-fill": "#fec348"
-    readonly "warn-fill-fg": "#4c2904"
     readonly "warn-bg": "#fff6df"
     readonly "warn-border": "#f3cf9f"
     readonly "warn-fg": "#723f00"
@@ -67,6 +65,12 @@ export declare const colors: {
     readonly "info-border": "#bedcf3"
     readonly "info-fg": "#12527a"
     readonly "info-dim": "#006495"
+    readonly "ok-bg": "#e6f9ed"
+    readonly "ok-border": "#a8dcbd"
+    readonly "ok-fg": "#004223"
+    readonly "ok-dim": "#0e653f"
+    readonly skel: "#ececef"
+    readonly "skel-hi": "#f6f6f9"
   }
   readonly dark: {
     readonly background: "#0e0e10"
@@ -96,7 +100,7 @@ export declare const colors: {
     readonly success: "#51c88b"
     readonly "success-foreground": "#04130a"
     readonly warning: "#f6a65d"
-    readonly "warning-foreground": "#231103"
+    readonly "warning-foreground": "#1d1106"
     readonly info: "#67addd"
     readonly "info-foreground": "#03111b"
     readonly strong: "#dadadd"
@@ -104,8 +108,6 @@ export declare const colors: {
     readonly code: "#0a0a0c"
     readonly desk: "#040405"
     readonly overlay: "#040405c7"
-    readonly "warn-fill": "#f6a65d"
-    readonly "warn-fill-fg": "#231103"
     readonly "warn-bg": "#2d1905"
     readonly "warn-border": "#60370b"
     readonly "warn-fg": "#ffe6c8"
@@ -120,6 +122,12 @@ export declare const colors: {
     readonly "info-border": "#18364a"
     readonly "info-fg": "#b4d6ef"
     readonly "info-dim": "#8ec5ec"
+    readonly "ok-bg": "#061f12"
+    readonly "ok-border": "#0a4027"
+    readonly "ok-fg": "#beebcf"
+    readonly "ok-dim": "#7fbb98"
+    readonly skel: "#1f1f22"
+    readonly "skel-hi": "#2b2b2f"
   }
 }
 export declare const radius: {
@@ -143,7 +151,7 @@ export declare const shadows: {
 // Tokens the stylesheet asks for outside sRGB. The phone paints the clipped
 // hex above; a browser on a wide-gamut display paints more chroma.
 export declare const outOfGamut: {
-  readonly light: readonly ["primary-foreground", "destructive-foreground", "success", "warning", "warning-foreground", "info", "info-foreground", "warn-bg", "warn-fg", "danger-bg", "danger-on", "info-bg", "info-dim"]
+  readonly light: readonly ["primary-foreground", "destructive-foreground", "success", "warning", "info", "info-foreground", "warn-bg", "warn-fg", "danger-bg", "danger-on", "info-bg", "info-dim", "ok-fg"]
   readonly dark: readonly ["primary", "destructive-foreground", "ring", "warn-fg", "danger-fg"]
 }
 export declare const alphaSteps: readonly AlphaStep[]
