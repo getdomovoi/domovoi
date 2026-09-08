@@ -19,6 +19,10 @@ the official relay a free self-hosted component.
 Direct private transports remain preferred. The relay is the last transport, used only when a
 configured encrypted route is available.
 
+The [production Noise options](relay-noise-options.md) compare wire bytes, native dependencies,
+pin encodings, and phone requirements. They contain Codex's recommendation for fetzy to decide;
+they do not select a suite or unblock the production schema.
+
 ## Open-core and trust boundaries
 
 The Apache-2.0 protocol defines the route and encryption contract. The Apache-2.0 daemon owns the
