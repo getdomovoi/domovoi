@@ -191,6 +191,8 @@ import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
 import { MachineSheet } from "./machine-sheet"
 import { PlanStrip } from "./plan-strip"
+import { groupThreadActivity } from "./thread-activity-groups"
+import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
 import { submitFromComposer } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
@@ -1840,7 +1842,17 @@ export function Thread({
               </AlertDescription>
             </Alert>
           ) : null}
-          {renderedThreadForActiveSession(snapshot).map((item) => {
+          {groupThreadActivity(renderedThreadForActiveSession(snapshot)).map((row) => {
+            if (row.kind === "activity") {
+              return (
+                <TurnActivity
+                  key={row.id}
+                  items={row.items}
+                  running={Boolean(active.activeTurnId) && row.items.some((call) => call.outcome === "running")}
+                />
+              )
+            }
+            const item = row.item
             if (item.kind === "checkpoint") {
               return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
@@ -1861,9 +1873,8 @@ export function Thread({
             if (item.kind === "receipt") {
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><CheckIcon /><AlertTitle>{item.operation}: {item.decision}</AlertTitle><AlertDescription>Checkpoint {item.checkpoint} · decided from {item.client}{item.connectionId ? ` · connection ${item.connectionId}` : item.clientId ? ` · declared client ${item.clientId}` : ""}{item.explanation ? ` · ${item.explanation}` : ""}</AlertDescription></Alert>
             }
-            if (item.kind === "tool") {
-              return <Alert key={item.id}><TerminalSquareIcon /><AlertTitle>{item.title}</AlertTitle><AlertDescription><Badge variant="outline">{item.status}</Badge>{item.output ? <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-machine text-[10px]">{item.output}</pre> : null}</AlertDescription></Alert>
-            }
+            // Grouping consumed every tool item, so nothing reaches here.
+            if (item.kind === "tool") return null
             return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
           })}
           {transferReceipt ? (
