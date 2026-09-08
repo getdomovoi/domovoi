@@ -44,4 +44,37 @@ describe("DaemonCredentialPrompt interaction", () => {
     expect(onSubmit).toHaveBeenCalledWith("daemon-token-value")
     expect(field().value).toBe("  daemon-token-value  ")
   })
+
+  it("holds the pairing exchange open instead of taking a second credential", async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    render(<DaemonCredentialPrompt onSubmit={onSubmit} pending />)
+
+    const submit = screen.getByRole("button", { name: /pairing this browser/i }) as HTMLButtonElement
+    expect(field().disabled).toBe(true)
+    expect(submit.disabled).toBe(true)
+
+    await user.keyboard("{Enter}")
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it("shows why the daemon refused the credential and keeps the field usable", async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    render(<DaemonCredentialPrompt onSubmit={onSubmit} error="Daemon authentication failed" />)
+
+    expect(screen.getByText("Daemon authentication failed")).toBeTruthy()
+    expect(field().getAttribute("aria-invalid")).toBe("true")
+
+    await user.type(field(), "another-credential")
+    await user.click(connect())
+    expect(onSubmit).toHaveBeenCalledWith("another-credential")
+  })
+
+  it("says the pasted credential is traded for one that names this browser", () => {
+    render(<DaemonCredentialPrompt onSubmit={vi.fn()} />)
+
+    const description = screen.getByText(/Domovoi trades it for a credential/)
+    expect(description.textContent).toContain("never stores the credential you paste")
+  })
 })
