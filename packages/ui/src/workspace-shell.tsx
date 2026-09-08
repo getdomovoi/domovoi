@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -12,17 +12,14 @@ import {
   HistoryIcon,
   DownloadIcon,
   ExternalLinkIcon,
-  LaptopIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MinusIcon,
-  PanelLeftCloseIcon,
   PanelRightCloseIcon,
   PrinterIcon,
   SearchIcon,
   Maximize2Icon,
   SendIcon,
-  SettingsIcon,
   SquareIcon,
   TerminalSquareIcon,
   XIcon,
@@ -149,6 +146,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./comp
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { DaemonRpcError, ProjectSwitchConfirmationError } from "./client"
+import { SessionsDrawer } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
 import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
@@ -195,7 +193,7 @@ import { PlanStrip } from "./plan-strip"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
-import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
+import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, provesNothingRan, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
@@ -485,6 +483,7 @@ export function AppBar({
   commandShortcut,
   usage,
   usageToday,
+  sessionsDrawer,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -497,6 +496,7 @@ export function AppBar({
   onPauseAll: () => void
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
+  sessionsDrawer?: ReactNode | undefined
   usage?: SessionUsage | null | undefined
   usageToday?: UsageWindow | null | undefined
 }) {
@@ -513,6 +513,7 @@ export function AppBar({
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
         <Separator orientation="vertical" className="mx-1 hidden h-5 sm:block" />
+        {sessionsDrawer}
         <Button variant="ghost" size="sm" className="hidden sm:flex" disabled={!snapshot} onClick={onOpenProject}>
           {snapshot?.project?.name ?? "Open project"}
           {snapshot?.project ? (
@@ -767,108 +768,6 @@ export function SessionRow({
   )
 }
 
-function machineInitials(name: string): string {
-  const words = name.split(/[^a-z0-9]+/i).filter((word) => word.length > 0)
-  const first = words[0]?.[0] ?? name[0] ?? ""
-  const last = words.length > 1 ? (words[words.length - 1]?.[0] ?? "") : (words[0]?.[1] ?? "")
-  return `${first}${last}`.toUpperCase()
-}
-
-export function SessionsSidebar({
-  snapshot,
-  fleet,
-  onCollapse,
-  onActivate,
-  onNewSession,
-  onOpenProviderSettings,
-  collapseButtonRef,
-}: {
-  snapshot: WorkspaceSnapshot
-  fleet?: FleetEntry[] | null
-  onCollapse: () => void
-  onActivate: (sessionId: string) => void
-  onNewSession: () => void
-  onOpenProviderSettings: () => void
-  collapseButtonRef?: RefObject<HTMLButtonElement | null>
-}) {
-  const groups = useMemo(
-    () => [
-      { label: "Active", states: ["active"] },
-      { label: "Waiting", states: ["waiting"] },
-      // A conflicted session blocks work on both machines, so it sits above the
-      // quiet ones. Every transfer state stays listed: they are read-only and
-      // some need recovering, and a session missing from here cannot be
-      // selected, which puts its notice and its way out beyond reach.
-      { label: "Conflict", states: ["ownership-conflict"] },
-      { label: "Idle", states: ["idle", "done", "failed"] },
-      { label: "Moving", states: ["transferring"] },
-      { label: "Moved", states: ["transferred"] },
-      { label: "Archived", states: ["archiving", "archived"] },
-    ],
-    [],
-  )
-
-  return (
-    <aside aria-label="Sessions" data-workspace-panel="sessions" className="flex h-full min-w-0 flex-col bg-sidebar">
-      <div className="flex h-11 items-center justify-between px-3">
-        <span className="text-[9px] uppercase tracking-[0.15em] text-faint">Sessions</span>
-        <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse sessions" onClick={onCollapse}>
-          <PanelLeftCloseIcon />
-        </Button>
-      </div>
-      <div className="flex flex-col gap-2 px-3 pb-3">
-        <Button variant="outline" className="w-full justify-start" onClick={onNewSession}>
-          {snapshot.project ? "New session" : "Open project"}
-        </Button>
-        <div className="relative">
-          <SearchIcon className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-faint" />
-          <Input aria-label="Search sessions, files, and skills" className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
-        </div>
-      </div>
-      <Separator />
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-4 p-2">
-          {groups.map((group) => {
-            const sessions = snapshot.sessions.filter((session) =>
-              group.states.includes(session.state),
-            )
-            return (
-              <section key={group.label} className="flex flex-col gap-1">
-                <h2 className="m-0 flex h-7 items-center gap-2 px-2 text-[9px] font-normal uppercase tracking-[0.13em] text-faint">
-                  <ChevronDownIcon className="size-3" />
-                  {group.label}
-                  <span className="font-machine">{sessions.length}</span>
-                </h2>
-                {sessions.map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    active={session.id === snapshot.activeSessionId}
-                    onActivate={onActivate}
-                  />
-                ))}
-              </section>
-            )
-          })}
-        </div>
-      </ScrollArea>
-      <Separator />
-      <div className="flex h-12 items-center gap-2 px-3">
-        <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">{machineInitials(snapshot.machine.name)}</span>
-        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">{snapshot.machine.name}</span><span className="block font-machine text-[9px] text-faint">{outcomeCount(fleet ? fleetMachines(fleet).length : 1, "machine", "machines")} · {snapshot.machine.connection}</span></span>
-        <LaptopIcon className="size-3.5 text-muted-foreground" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}>
-              <SettingsIcon />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent>
-        </Tooltip>
-      </div>
-    </aside>
-  )
-}
 
 function ApprovalCard({
   approval,
@@ -3386,30 +3285,6 @@ export function AnnotationComments({
   )
 }
 
-function SidebarRail({
-  snapshot,
-  onActivate,
-  onExpand,
-  onOpenProviderSettings,
-  expandButtonRef,
-}: {
-  snapshot: WorkspaceSnapshot
-  onActivate: (sessionId: string) => void
-  onExpand: () => void
-  onOpenProviderSettings: () => void
-  expandButtonRef?: RefObject<HTMLButtonElement | null>
-}) {
-  return (
-    <aside aria-label="Collapsed sessions" data-workspace-panel="sessions-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
-      <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
-      <Separator />
-      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={`${session.title}. Status: ${session.state}`} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span aria-hidden="true" data-status-dot="" className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title} · {session.state}</TooltipContent></Tooltip>)}
-      <span className="flex-1" />
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}><SettingsIcon /></Button></TooltipTrigger><TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent></Tooltip>
-    </aside>
-  )
-}
-
 function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
   const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
   return (
@@ -3559,8 +3434,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
 
   const shellRef = useRef<HTMLDivElement>(null)
-  const sidebarCollapseButtonRef = useRef<HTMLButtonElement>(null)
-  const sidebarExpandButtonRef = useRef<HTMLButtonElement>(null)
+  const [sessionsOpen, setSessionsOpen] = useState(false)
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockExpandButtonRef = useRef<HTMLButtonElement>(null)
   const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
@@ -3607,7 +3481,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     externalEditor,
     layouts,
     notifications: notificationPreferences,
-    sidebarCollapsed,
     surface,
     theme,
     windowDecoration,
@@ -3616,15 +3489,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useAppearanceTheme(theme)
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
-  const setSidebarCollapsed = (collapsed: boolean) => {
-    const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
-      ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
-      : null
-    setWorkspaceUi((current) => ({ ...current, sidebarCollapsed: collapsed }))
-    if ((collapsed && activePanel === "sessions") || (!collapsed && activePanel === "sessions-rail")) {
-      restoreFocusAfterUpdate(collapsed ? sidebarExpandButtonRef : sidebarCollapseButtonRef)
-    }
-  }
   const setDockCollapsed = (collapsed: boolean) => {
     const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
       ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
@@ -3823,15 +3687,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           // would be retried by this effect on the very next render, forever.
           // A daemon error means nothing ran. Anything else means the answer
           // was lost, and Domovoi cannot say whether the turn started.
+          // Built before the updater runs. Reading the counter inside it gives
+          // batched refusals the same id, and then dismissing one deletes another.
           nextAttemptId.current += 1
-          setFailures((current) => [...current, failedAttempt(
+          const attempt = failedAttempt(
             `attempt-${nextAttemptId.current}`,
             message,
             {
-              refused: cause instanceof DaemonRpcError,
+              refused: cause instanceof DaemonRpcError && provesNothingRan(cause.code),
+              answered: cause instanceof DaemonRpcError,
               reason: cause instanceof Error ? cause.message : "The message could not be sent",
             },
-          )])
+          )
+          setFailures((current) => [...current, attempt])
         })
         .finally(() => {
           releasing.current.delete(session.id)
@@ -3960,7 +3828,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
   // One dock, rendered either as the pinned panel or inside the floating sheet.
   const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
-  const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
+  const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
   useEffect(() => {
@@ -4197,7 +4065,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     const observer = new ResizeObserver(([entry]) => {
       const width = entry?.contentRect.width ?? shell.clientWidth
       if (width < 1080) setDockCollapsed(true)
-      if (width < 850) setSidebarCollapsed(true)
+      // No sessions panel to collapse any more: the drawer is already out of
+      // the layout, so a narrow window costs it nothing.
     })
     observer.observe(shell)
     return () => observer.disconnect()
@@ -4206,7 +4075,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawer snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
@@ -4327,7 +4196,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : (
           <div className="relative flex min-h-0 flex-1">
-            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} expandButtonRef={sidebarExpandButtonRef} /> : null}
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
@@ -4341,8 +4209,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet?.entries ?? null} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (

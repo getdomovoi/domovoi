@@ -122,20 +122,41 @@ export type FailedAttempt = {
   sessionId: string
   text: string
   delivery: "refused" | "unconfirmed"
+  // Whether the daemon answered at all. An error answer and a dropped socket
+  // are both unconfirmed, but they are not the same thing to read.
+  answered: boolean
   reason: string
   skillIds?: readonly string[]
+}
+
+// Only an error the daemon raises before it starts work proves the turn never
+// ran. An internal error can arrive after startTurn succeeded, so the default
+// is unconfirmed: claiming nothing ran and being wrong makes a person run it
+// twice, while claiming it might have run and being wrong only makes them look.
+const refusalCodes: readonly number[] = [
+  -32001, // authentication refused at the door
+  -32011, // machine credential missing
+  -32012, // protocol version mismatch
+  -32013, // device pairing limit
+  -32015, // turn skill selection refused
+  -32602, // invalid params, rejected before any work
+]
+
+export function provesNothingRan(code: number | undefined): boolean {
+  return code !== undefined && refusalCodes.includes(code)
 }
 
 export function failedAttempt(
   id: string,
   message: QueuedMessage,
-  { refused, reason }: { refused: boolean, reason: string },
+  { refused, answered, reason }: { refused: boolean, answered: boolean, reason: string },
 ): FailedAttempt {
   return {
     id,
     sessionId: message.sessionId,
     text: message.text,
     delivery: refused ? "refused" : "unconfirmed",
+    answered,
     reason,
     ...(message.skillIds ? { skillIds: message.skillIds } : {}),
   }
@@ -144,7 +165,10 @@ export function failedAttempt(
 // What the row says. "Not sent" is only true when the daemon refused it; a
 // lost answer must not claim the work did not happen.
 export function deliveryLabel(attempt: FailedAttempt): string {
-  return attempt.delivery === "refused"
-    ? `not sent: ${attempt.reason}`
+  if (attempt.delivery === "refused") return `not sent: ${attempt.reason}`
+  // An error answer did arrive here, so saying Domovoi never heard back would
+  // be wrong in the other direction. What is unknown is whether work started.
+  return attempt.answered
+    ? `delivery could not be confirmed, an error answer arrived: ${attempt.reason}`
     : `Domovoi never got an answer, so this may have run: ${attempt.reason}`
 }
