@@ -67,8 +67,28 @@ pnpm --filter @getdomovoi/mobile exec expo export:embed --entry-file ../../packa
 
 This succeeded with 23 modules and Hermes bytecode version 98, using the locked
 `hermes-compiler@250829098.0.17`. Compilation proves module resolution and compiler
-acceptance. It does not execute the result. A real Hermes or on-device execution
-remains open. No Hermes engine source or prebuilt VM was downloaded.
+acceptance. It does not execute the result. Executing these twelve full-codec
+cases under Hermes remains open. No Hermes engine source or prebuilt VM was downloaded.
+
+## Subsequent Android hardware evidence
+
+The [phone P-256 probe](https://github.com/getdomovoi/domovoi/commit/ea75620) is separate from this
+X25519 codec. Claude Code reported two successful app-UI runs on a Pixel 10 with GrapheneOS,
+Android API 37: platform entropy, fresh software P-256 peer generation, a 65-byte static public
+point, a native key alias that reopens to the same point, a matching 32-byte ECDH secret, and
+deletion. The static private key remains in AndroidKeyStore; the reported security level was
+`strongbox`. An API 36 emulator passes the same steps and reports `software`.
+
+That proves the observed Android P-256 custody path. It also exposed a real Hermes requirement:
+noble's ambient key generator threw `crypto.getRandomValues must be defined`. The probe now
+obtains scalar bytes from the platform random service. A production phone codec needs explicit
+native entropy; these deterministic fixtures supply keys and cannot detect that missing service.
+
+The [suite recommendation in #338](https://github.com/getdomovoi/domovoi/pull/338) remains P-256
+with AES-GCM, with higher confidence from this hardware result. It does not establish protected
+X25519 operations for this spike's candidate, complete Noise execution on a phone, or an iOS
+Secure Enclave result. Android API 31 remains the proposed floor; StrongBox is not universal and
+the supported-device policy still needs a decision.
 
 ## Dependency evidence and limits
 
@@ -108,22 +128,21 @@ Do not promote this composition or freeze its suite/key fields yet:
    audited standalone IK layer was established in this comparison. Maintaining
    our own handshake composition in production requires an explicit review and
    maintenance decision; this spike does not make that decision.
-2. The phone needs a native entropy source for fresh keys and a proven private-key
-   operation boundary. The experiment intentionally accepts explicit fixture keys
-   and performs no real key generation. Noble can also use an RNG detected at
-   module initialization for multiplication blinding. Removing that RNG later
-   causes refusal; the spike does not install an insecure fallback.
+2. Wire explicit native entropy into the production codec. Android entropy and P-256 static-key
+   operations are proven separately above; this experiment still takes fixture keys and performs
+   no real key generation. Its X25519 candidate has no demonstrated protected-handle path.
+   Noble can also use an RNG detected at module initialization for multiplication blinding.
+   Account for that dependency without an ambient WebCrypto assumption or an insecure fallback.
 3. [Expo SecureStore](https://docs.expo.dev/versions/latest/sdk/securestore/)
    stores and returns strings. The current phone credential adapter provides no
-   key-agreement operation using a non-exportable key handle. Passing a private
-   key string back to this JS codec would not satisfy the existing design's
-   requirement that the phone key be generated and used inside the platform
-   keychain. That native integration must establish supported key types, device
-   binding, backup exclusion, forget, and key-loss behavior before the key shape
-   can be frozen.
-4. Real Hermes execution remains an explicit evidence limit. The two Node
-   runners and bytecode compilation do not establish engine agreement or
-   side-channel properties.
+   key-agreement operation using a non-exportable key handle. The separate native P-256 module
+   supplies that operation on the tested Android device. Passing a private key string into this
+   codec would still violate the static-key custody requirement. iOS proof, app relaunch, backup
+   exclusion, key-loss refusal, and a supported-device policy remain integration gates.
+4. Real Hermes execution of the full Noise codec remains an explicit evidence limit. The P-256
+   hardware probe exercises native agreement and software-peer arithmetic in Hermes, not these
+   twelve handshake/transport cases. The two Node runners and bytecode compilation still do not
+   establish full-codec engine agreement or side-channel properties.
 
 The experiment is outside production exports, runtime dependencies, and published
 protocol files. No production relay schema, daemon manager, or relay server is
