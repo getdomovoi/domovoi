@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
+
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
 import { fleetMachineDescriptorSchema } from "./fleet.js"
 
@@ -7,7 +9,7 @@ export const maximumPairedDeviceLabelLength = 128
 export const maximumListedDevices = 256
 
 export const deviceIdSchema = z.string().regex(/^device-[0-9a-f]{32}$/)
-export const deviceLabelSchema = z.string().trim().min(1).max(maximumPairedDeviceLabelLength)
+export const deviceLabelSchema = z.string().trim().min(1).check(utf16MaxLength(maximumPairedDeviceLabelLength))
 
 export const deviceCredentialBindingSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -39,10 +41,10 @@ export const deviceCredentialSchema = credentialSchema
 export const pairedDeviceSchema = z.object({
   id: deviceIdSchema,
   label: deviceLabelSchema,
-  pairedAt: z.string().datetime({ offset: true }),
+  pairedAt: offsetDateTimeSchema,
   binding: deviceCredentialBindingSchema,
-  lastSeenAt: z.string().datetime({ offset: true }).optional(),
-  revokedAt: z.string().datetime({ offset: true }).optional(),
+  lastSeenAt: offsetDateTimeSchema.optional(),
+  revokedAt: offsetDateTimeSchema.optional(),
   revocationReason: deviceRevocationReasonSchema.optional(),
 }).strict().superRefine((device, context) => {
   if (device.revocationReason !== undefined && device.revokedAt === undefined) {
@@ -117,7 +119,7 @@ export const deviceRotateParamsSchema = deviceRevokeParamsSchema
 export const deviceRenameLabelSchema = z.string()
   .trim()
   .min(1)
-  .max(maximumPairedDeviceLabelLength)
+  .check(utf16MaxLength(maximumPairedDeviceLabelLength))
   .regex(/^\P{Cc}*$/u, "A device label cannot contain control characters")
 
 // The expected label is a precondition: when present, the daemon renames only
@@ -156,7 +158,7 @@ export const pendingDeviceClaimSchema = z.object({
   state: z.literal("pending"),
   deviceId: deviceIdSchema,
   machineId: machineIdSchema,
-  expiresAt: z.string().datetime({ offset: true }),
+  expiresAt: offsetDateTimeSchema,
 }).strict()
 
 export const deviceClaimResultSchema = z.object({
@@ -175,7 +177,7 @@ export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSch
 
 export const deviceIssueCodeResultSchema = z.object({
   code: pairingCodeSchema,
-  expiresAt: z.string().datetime({ offset: true }),
+  expiresAt: offsetDateTimeSchema,
 }).strict()
 
 export const machineCredentialSchema = credentialSchema

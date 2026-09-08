@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { closeSync, constants, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
-import { machineIdSchema } from "@getdomovoi/protocol"
+import { dateTimeSchema, machineIdSchema, utf16MaxLength } from "@getdomovoi/protocol"
 import { z } from "zod"
 
 import { readLocalOwnerRecord, readLocalProfileFile, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
@@ -14,12 +14,12 @@ export const localOwnerRemovalReceiptSchema = z.object({
   instanceId: z.uuid(),
   machineId: machineIdSchema,
   // Audit evidence only. Elapsed time never authorizes ownership recovery.
-  completedAt: z.iso.datetime(),
+  completedAt: dateTimeSchema,
   authorization: z.discriminatedUnion("kind", [
     z.object({
       kind: z.literal("operator"),
       confirmation: z.literal("no-supervisor-will-restart"),
-      username: z.string().min(1).max(256),
+      username: z.string().min(1).check(utf16MaxLength(256)),
     }).strict(),
     z.object({
       kind: z.literal("service-removal"),

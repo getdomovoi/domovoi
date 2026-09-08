@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { utf16MaxLength } from "./validation.js"
+
 import {
   maximumTurnSkillSelections,
   skillContentDigestSchema,
@@ -58,7 +60,7 @@ export const providerPromptWorkingPlanDeliverySchema = z.discriminatedUnion("sta
 
 export const providerPromptAnnotationDeliverySchema = z.object({
   availableCount: nonnegativeCountSchema,
-  deliveredIds: z.array(z.string().trim().min(1).max(256)).max(20).refine(
+  deliveredIds: z.array(z.string().trim().min(1).check(utf16MaxLength(256))).max(20).refine(
     (ids) => new Set(ids).size === ids.length,
     "Delivered annotation IDs must be unique",
   ),

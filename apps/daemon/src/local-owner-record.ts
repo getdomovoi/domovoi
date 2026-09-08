@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto"
 import { chmodSync, closeSync, constants, fstatSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join, posix, win32 } from "node:path"
 
-import { credentialSchema, fleetDirectEndpointSchema } from "@getdomovoi/protocol"
+import { credentialSchema, fleetDirectEndpointSchema, utf16MaxLength } from "@getdomovoi/protocol"
 import { z } from "zod"
 
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { localOwnerIdentitySchema, localOwnerSecretSchema, type LocalOwnerSecret } from "./local-owner-proof.js"
 import type { OperationDeadline } from "./operation-deadline.js"
 
-const absolutePath = z.string().min(1).max(4096)
+const absolutePath = z.string().min(1).check(utf16MaxLength(4096))
   .refine((path) => posix.isAbsolute(path) || win32.isAbsolute(path))
 const ownerFields = {
   ...localOwnerIdentitySchema.shape,

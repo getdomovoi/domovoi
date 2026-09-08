@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto"
 
-import { credentialSchema, machineIdSchema } from "@getdomovoi/protocol"
+import { credentialSchema, machineIdSchema, utf16MaxLength } from "@getdomovoi/protocol"
 import { z } from "zod"
 
 // Loaded from a dedicated owner-only profile secret, never the daemon bearer.
@@ -11,7 +11,7 @@ export type LocalOwnerSecret = z.infer<typeof localOwnerSecretSchema>
 export const localOwnerIdentitySchema = z.object({
   instanceId: z.uuid(),
   machineId: machineIdSchema,
-  protocolVersion: z.string().max(64).regex(/^\d+\.\d+\.\d+$/),
+  protocolVersion: z.string().check(utf16MaxLength(64)).regex(/^\d+\.\d+\.\d+$/),
 }).strict()
 export type LocalOwnerIdentity = z.infer<typeof localOwnerIdentitySchema>
 

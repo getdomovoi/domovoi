@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { utf16MaxLength } from "./validation.js"
+
 import { clientKindSchema, machineIdSchema } from "./identifiers.js"
 import { permissionModeSchema, providerModelSchema, runtimeSchema } from "./schema.js"
 
@@ -17,7 +19,7 @@ export const runtimeDiscoveryRefusals = {
   "no-models": { action: "configure", retryable: false, message: "The provider returned no usable models. Configure model access on the execution machine, then retry discovery." },
 } as const
 
-const providerId = z.string().trim().min(1).max(64)
+const providerId = z.string().trim().min(1).check(utf16MaxLength(64))
 export const runtimeDiscoverParamsSchema = z.object({
   provider: providerId,
   client: clientKindSchema,
@@ -39,7 +41,7 @@ export const runtimeDiscoverResultSchema = z.discriminatedUnion("status", [
     reason: z.enum(["auth-required", "missing", "readiness-unknown", "unsupported", "timeout", "discovery-failed", "no-models"]),
     action: z.enum(["sign-in", "install", "retry", "choose-provider", "configure"]),
     retryable: z.boolean(),
-    message: z.string().trim().min(1).max(512),
+    message: z.string().trim().min(1).check(utf16MaxLength(512)),
   }).strict(),
 ]).superRefine((result, context) => {
   if (result.status === "unavailable") {
