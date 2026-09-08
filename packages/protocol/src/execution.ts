@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { utf16MaxLength } from "./validation.js"
+
 export const maximumExecutionEntries = 64
 export const maximumExecutionParts = 32
 export const maximumExecutionArguments = 128
@@ -7,13 +9,13 @@ export const maximumExecutionTextLength = 8_192
 
 export const executionDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 
-export const projectRelativePathSchema = z.string().min(1).max(4_096).refine((value) => {
+export const projectRelativePathSchema = z.string().min(1).check(utf16MaxLength(4_096)).refine((value) => {
   if (value === ".") return true
   if (value.startsWith("/") || /^[A-Za-z]:/u.test(value) || value.includes("\\")) return false
   return value.split("/").every((part) => part !== "" && part !== "." && part !== "..")
 }, "Path must be a canonical project-relative POSIX path")
 
-const executionArgumentSchema = z.string().max(maximumExecutionTextLength)
+const executionArgumentSchema = z.string().check(utf16MaxLength(maximumExecutionTextLength))
 const executionArgvSchema = z.array(executionArgumentSchema)
   .min(1)
   .max(maximumExecutionArguments)
@@ -31,7 +33,7 @@ const executionPackageScriptSourceSchema = z.object({
     (path) => path === "package.json" || path.endsWith("/package.json"),
     "Package script manifest must name package.json",
   ),
-  name: z.string().regex(/^[a-z0-9](?:[a-z0-9:._-]*[a-z0-9])?$/iu).max(256),
+  name: z.string().regex(/^[a-z0-9](?:[a-z0-9:._-]*[a-z0-9])?$/iu).check(utf16MaxLength(256)),
   phase: z.enum(["pre", "main", "post"]),
   arguments: z.array(executionArgumentSchema).max(maximumExecutionArguments),
   sourceDigest: executionDigestSchema,

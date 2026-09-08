@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { utf16MaxLength } from "./validation.js"
+
 import { canonicalBase64DecodedByteLength } from "./identifiers.js"
 
 export const maximumTransferChunkBytes = 1_048_576
@@ -8,7 +10,7 @@ export const maximumTransferChunkEncodedCharacters = Math.ceil(maximumTransferCh
 
 export const transferChunkSchema = z.object({
   sequence: z.number().int().min(0),
-  bytes: z.string().max(maximumTransferChunkEncodedCharacters).refine(
+  bytes: z.string().check(utf16MaxLength(maximumTransferChunkEncodedCharacters)).refine(
     (encoded) => {
       const decoded = canonicalBase64DecodedByteLength(encoded)
       return decoded !== undefined && decoded <= maximumTransferChunkBytes
