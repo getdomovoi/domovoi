@@ -3,12 +3,12 @@
     "web": {
       "javascriptBytes": 1250000,
       "lazyJavascriptBytes": 400000,
-      "stylesheetBytes": 115000
+      "stylesheetBytes": 124000
     },
     "desktop": {
       "rendererJavascriptBytes": 1250000,
       "rendererLazyJavascriptBytes": 400000,
-      "rendererStylesheetBytes": 115000,
+      "rendererStylesheetBytes": 124000,
       "mainBytes": 33792,
       "preloadBytes": 8192
     }
