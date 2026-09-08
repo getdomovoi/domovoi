@@ -1,6 +1,7 @@
 import { ScrollView, TextInput, View } from "react-native"
 
 import { Button } from "../components/ui/button"
+import { KeyProbeCard } from "../components/key-probe-card"
 import { Card } from "../components/ui/card"
 import { Text } from "../components/ui/text"
 import type { ConnectionFault } from "../lib/connection-fault"
@@ -78,6 +79,8 @@ export function SettingsScreen({
           </View>
         ) : null}
       </Card>
+
+      {__DEV__ ? <KeyProbeCard /> : null}
 
       <Text variant="meta">
         The phone reaches the daemon directly over your tailnet. Nothing is relayed through a
