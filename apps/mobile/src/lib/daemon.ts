@@ -1,7 +1,9 @@
 import {
   applyWorkspaceDelta,
+  fleetSnapshotSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
+  type FleetEntry,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -43,6 +45,9 @@ export class DaemonConnection {
     private readonly handlers: {
       onSnapshot: (snapshot: WorkspaceSnapshot) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
+      // The daemon pushes the whole fleet whenever it changes, so a list on
+      // screen stops being a claim about when the tab was opened.
+      onFleet: (entries: FleetEntry[]) => void
       onStatus: (status: DaemonStatus) => void
       // The cause rather than its sentence, because whether a refusal is worth
       // retrying is decided by the daemon's error code, not its wording.
@@ -118,6 +123,13 @@ export class DaemonConnection {
       if (message.method === "workspace.changed") {
         const parsed = workspaceSnapshotSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onSnapshot(parsed.data)
+        return
+      }
+      // A machine enrolled, forgotten, or gone quiet reaches every client this
+      // way. Without it the Fleet tab shows what was true when it was opened.
+      if (message.method === "fleet.changed") {
+        const parsed = fleetSnapshotSchema.safeParse(message.params)
+        if (parsed.success) this.handlers.onFleet(parsed.data.entries)
       }
     }
 

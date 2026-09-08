@@ -60,6 +60,24 @@ describe("font registration", () => {
     expect(Object.values(tokens.fontFamily).sort()).toEqual(tokens.fonts.map((face) => face.name).sort())
   })
 
+  // A utility naming a registered face is not the same as Tailwind resolving it
+  // to one. The nativewind preset extends sans, serif and mono with platform
+  // fallbacks, and an extend outranks the base theme, so font-sans resolved to
+  // the iOS family "system font", which UIFont cannot load, and every node
+  // wearing it fell back to Times.
+  it("resolves every font utility to the registered face rather than a platform fallback", () => {
+    process.env.NATIVEWIND_OS = "ios"
+    const resolveConfig = require("tailwindcss/resolveConfig") as (
+      config: unknown,
+    ) => { theme: { fontFamily: Record<string, unknown> } }
+    const resolved = resolveConfig(require(join(mobileRoot, "tailwind.config.js"))).theme.fontFamily
+    expect(
+      Object.fromEntries(Object.keys(tokens.fontFamily).map((utility) => [utility, resolved[utility]])),
+    ).toEqual(
+      Object.fromEntries(Object.entries(tokens.fontFamily).map(([utility, face]) => [utility, [face]])),
+    )
+  })
+
   it("ships a font file for every registered face", () => {
     const missing = tokens.fonts
       .map((face) => `${face.package}/${face.file}`)
