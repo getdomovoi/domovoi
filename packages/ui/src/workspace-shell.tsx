@@ -1436,6 +1436,8 @@ export function Thread({
   emergencyStopPending = false,
   queued,
   onQueuedChange,
+  failure,
+  onFailureChange,
   fleet,
   transferFleet,
   admittedMachines,
@@ -1470,6 +1472,10 @@ export function Thread({
   // happens to be open later would send someone's message to the wrong agent.
   queued?: QueuedMessage | undefined
   onQueuedChange: (next: QueuedMessage | undefined) => void
+  // A message the daemon refused. Shown beside the queue rather than in it,
+  // because it is a thing that did not happen, not a thing that will.
+  failure?: QueuedMessage | undefined
+  onFailureChange?: ((next: QueuedMessage | undefined) => void) | undefined
   fleet?: FleetEntry[] | undefined
   transferFleet?: FleetEntry[] | undefined
   admittedMachines?: ReadonlySet<string> | undefined
@@ -1923,6 +1929,29 @@ export function Thread({
           className="mx-auto mb-2 max-w-[var(--shell-thread)]"
         />
         <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
+          {failure?.sessionId === active.id ? (
+            <div className="flex items-center gap-2 rounded-lg border border-danger-border bg-danger-background px-3 py-2">
+              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-danger-foreground" />
+              <span className="min-w-0 flex-1 truncate text-[12px] text-danger-foreground">{failure.text}</span>
+              <span className="font-machine text-[10.5px] whitespace-nowrap text-danger-dim">
+                not sent: {failure.reason}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // Queueing it again replaces whatever is waiting, which the
+                  // person can see beside it before they press.
+                  const { reason: _reason, ...message } = failure
+                  onQueuedChange({ ...message, state: "waiting" })
+                  onFailureChange?.(undefined)
+                }}
+              >
+                Queue again
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => onFailureChange?.(undefined)}>Dismiss</Button>
+            </div>
+          ) : null}
           {queued?.sessionId === active.id ? (
             <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
               <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
@@ -3397,7 +3426,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // queued in A must leave at A's next turn boundary whether or not anyone is
   // looking at A.
   const [queues, setQueues] = useState<SessionQueues>({})
+  // A send that failed is a receipt, not a queue entry. It lives beside the
+  // queue so a newer instruction and a failed one never compete for one slot:
+  // dropping either loses something the person wrote.
+  const [failures, setFailures] = useState<SessionQueues>({})
   const releasing = useRef<Set<string>>(new Set())
+  // Bumped when a dispatch settles. A settlement that changed nothing else
+  // would otherwise leave a session that became eligible mid-flight waiting
+  // for some unrelated render to wake it.
+  const [settled, setSettled] = useState(0)
   const [seenStop, setSeenStop] = useState<SystemEmergencyStopResult | null>(null)
   const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint)
   const homeMachineId = home.snapshot?.machine.id ?? null
@@ -3779,20 +3816,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setQueues((current) => setQueue(current, session.id, undefined))
       void sendMessage(session.id, message.text, selection)
         .catch((cause: unknown) => {
-          // Held, not waiting: a refused message that went back as waiting
+          // Recorded, never re-queued: a refused message put back as waiting
           // would be retried by this effect on the very next render, forever.
-          // And only into an empty slot: the person may have queued something
-          // newer while this one was in flight, and that one is what they mean.
-          setQueues((current) => current[session.id] ? current : setQueue(current, session.id, heldAfter(
+          setFailures((current) => setQueue(current, session.id, heldAfter(
             message,
-            cause instanceof Error
-              ? `Held because sending failed: ${cause.message}`
-              : "Held because sending failed. Send it again when you want to retry.",
+            cause instanceof Error ? cause.message : "The message could not be sent",
           )))
         })
-        .finally(() => releasing.current.delete(session.id))
+        .finally(() => {
+          releasing.current.delete(session.id)
+          setSettled((count) => count + 1)
+        })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -4296,7 +4332,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               }}
             >
               {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet?.entries ?? null} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failure={snapshot.activeSessionId ? failures[snapshot.activeSessionId] : undefined} onFailureChange={(next) => snapshot.activeSessionId ? setFailures((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
