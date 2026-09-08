@@ -21,8 +21,8 @@ export function ConnectionBanner({ notice }: { notice: ConnectionNotice | undefi
   const tone = tones[notice.tone]
   return (
     <Card className={cn("gap-1", tone.box)} accessibilityRole="alert">
-      <Text className={cn("text-[13px] font-sans-semibold", tone.headline)}>{notice.headline}</Text>
-      <Text className={cn("text-[11px] leading-4", tone.detail)}>{notice.detail}</Text>
+      <Text className={cn("font-sans-medium text-[12px]", tone.headline)}>{notice.headline}</Text>
+      <Text className={cn("text-[11px] leading-[17px]", tone.detail)}>{notice.detail}</Text>
     </Card>
   )
 }

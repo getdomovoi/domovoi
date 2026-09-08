@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react"
-import { View } from "react-native"
 import { useFonts } from "expo-font"
 
 import { App } from "./app"
+import { Splash } from "./components/splash"
 import { drawWithFonts, fontWaitLimitMs } from "./theme/font-gate"
 import { fontSources } from "./theme/fonts"
-import { colors } from "./theme/tokens.generated"
 
 // Nothing draws until the faces are registered, otherwise the first frame
 // renders in the platform font and swaps a moment later. The wait is bounded:
@@ -25,7 +24,7 @@ export function Root() {
   }, [error])
 
   if (!drawWithFonts({ loaded, failed: error !== null, waitedOut })) {
-    return <View style={{ flex: 1, backgroundColor: colors.dark.background }} />
+    return <Splash />
   }
   return <App />
 }

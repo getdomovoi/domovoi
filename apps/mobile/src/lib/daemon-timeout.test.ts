@@ -29,6 +29,7 @@ class FakeSocket {
 const handlers = {
   onSnapshot: vi.fn(),
   onDelta: vi.fn(),
+  onFleet: vi.fn(),
   onStatus: vi.fn(),
   onError: vi.fn(),
   onClosed: vi.fn(),

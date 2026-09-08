@@ -2,19 +2,27 @@ import { Pressable, View, type PressableProps, type ViewProps } from "react-nati
 
 import { cn } from "../../lib/cn"
 
-const base = "rounded-2xl border border-border bg-card p-3.5"
+// The handoff sets every card at the shared radius token with 12pt of room top
+// and bottom and 13pt at the sides. A card that holds rows rather than prose
+// carries no padding of its own, because each row brings its own.
+const base = "rounded-xl border border-border bg-card"
+const padding = "px-[13px] py-3"
 
-export function Card({ className, ...props }: ViewProps) {
-  return <View className={cn(base, className)} {...props} />
+export function Card({ flush, className, ...props }: ViewProps & { flush?: boolean }) {
+  return <View className={cn(base, !flush && padding, className)} {...props} />
 }
 
 // A card that does something is a button, and screen readers are told so rather
 // than being handed a view that happens to respond to taps.
-export function PressableCard({ className, ...props }: PressableProps) {
+export function PressableCard({
+  flush,
+  className,
+  ...props
+}: PressableProps & { flush?: boolean }) {
   return (
     <Pressable
       accessibilityRole="button"
-      className={cn(base, "active:opacity-70", className)}
+      className={cn(base, !flush && padding, "active:opacity-70", className)}
       {...props}
     />
   )
