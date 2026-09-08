@@ -569,9 +569,22 @@ Every ledger entry is now merged.
   - `packages/protocol/experimental/relay` checks one candidate codec against the same published
     Cacophony handshake, transport and transcript fixtures in the daemon Node suite and the phone
     jest-expo suite. Both runners use Node; this proves one codec, two runners, identical vectors.
-    Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution,
-    native entropy and private-key operations, and selection/review of the production Noise layer
-    remain open. No production suite or key shape is frozen. See `docs/relay-crypto-spike.md`.
+    Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution of that codec, and
+    selection and review of the production Noise layer, remain open. No production suite or key shape is frozen. See `docs/relay-crypto-spike.md`.
+  - Phone-side key custody is proven for P-256. `apps/mobile/modules/domovoi-device-key` generates
+    the static key inside the platform key service and never returns it, and the probe in
+    `apps/mobile/src/lib/device-key.ts` checks the key by agreeing against a software key and
+    requiring both shared secrets to match. On a Pixel 10 running GrapheneOS the run reported
+    `strongbox` custody, a 65 byte public point, a handle that survived a reopen, and a 32 byte
+    shared secret identical on both sides. An Android emulator on API 36 passes the same steps and
+    reports `software`, which is what an emulator can offer.
+  - Building that probe found the divergence the vector work is for: Hermes has no WebCrypto, so a
+    pure JS codec calling `crypto.getRandomValues` throws on a phone while passing under Node. The
+    probe takes its randomness from the platform key service instead. Vectors run by two Node
+    runners cannot catch this class of defect.
+  - Still unproven: iOS. Secure Enclave needs an Xcode 26 build, Expo SDK 57 is written in Swift
+    6.2, and Xcode 26 requires Apple Silicon, so the Intel Mac available here cannot build the app
+    at all. One Android device is also not a fleet.
   - Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM
     using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK,
     daemon responder and established-frame costs are recorded for one Intel Linux host in
