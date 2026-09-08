@@ -7,6 +7,8 @@ import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
   installFakeWebSocket,
+  pendingRequest,
+  respond,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -38,11 +40,11 @@ it("opens the chosen session's thread, whichever surface the drawer was used fro
   const user = userEvent.setup()
   const snapshot = workspaceSnapshot()
   render(<WorkspaceShell />)
+  const socket = harness.socket(0)
   await act(async () => {
-    completeHandshake(harness.socket(0), snapshot)
+    completeHandshake(socket, snapshot)
   })
   await settle()
-
   expect(screen.queryByPlaceholderText(composer)).toBeTruthy()
 
   await user.click(screen.getByRole("button", { name: "Settings" }))
@@ -54,5 +56,24 @@ it("opens the chosen session's thread, whichever surface the drawer was used fro
   await user.click(screen.getByRole("button", { name: new RegExp(other.title.slice(0, 24)) }))
   await settle()
 
+  // The surface switch alone is not the fix. Without the activation the daemon
+  // never hears which session was picked, and the thread on screen stays the
+  // one that was already open.
+  expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
+  await act(async () => {
+    respond(socket, "session.activate", workspaceSnapshot({
+      activeSessionId: other.id,
+      thread: [{
+        id: "activated-thread-note",
+        sessionId: other.id,
+        kind: "system",
+        body: "The audit thread is open",
+        createdAt: "2026-09-08T12:00:00.000Z",
+      }],
+    }))
+  })
+  await settle()
+
   expect(screen.getByPlaceholderText(composer)).toBeTruthy()
+  expect(screen.getByText("The audit thread is open")).toBeTruthy()
 })
