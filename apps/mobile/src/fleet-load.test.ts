@@ -96,6 +96,36 @@ describe("fleetLoader", () => {
     expect(state).toEqual({ fleet: undefined, loading: true, problem: "" })
   })
 
+  it("takes a pushed fleet and retires the request that was already out", async () => {
+    const { state, requests, loader, call } = harness()
+    const pushed: FleetEntry[] = [{ kind: "unenrolled", machineId: `machine-${"b".repeat(32)}` }]
+
+    const load = loader.load(call)
+    loader.accept(pushed)
+    expect(state).toEqual({ fleet: pushed, loading: false, problem: "" })
+
+    // The request went out before the change, so its answer describes the fleet
+    // as it was and must not land on top of the one that describes it now.
+    requests[0]?.resolve({ entries })
+    await load
+
+    expect(state).toEqual({ fleet: pushed, loading: false, problem: "" })
+  })
+
+  it("settles a refusal recorded before the daemon pushed a list", async () => {
+    const { state, requests, loader, call } = harness()
+    const pushed: FleetEntry[] = [{ kind: "unenrolled", machineId: `machine-${"b".repeat(32)}` }]
+
+    const load = loader.load(call)
+    requests[0]?.reject(new Error("The daemon withheld the fleet list"))
+    await load
+    expect(state.problem).toBe("The daemon withheld the fleet list")
+
+    loader.accept(pushed)
+
+    expect(state).toEqual({ fleet: pushed, loading: false, problem: "" })
+  })
+
   it("answers a request started after an invalidation", async () => {
     const { state, requests, loader, call } = harness()
 

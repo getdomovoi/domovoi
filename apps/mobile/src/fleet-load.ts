@@ -40,6 +40,17 @@ export function fleetLoader(sink: FleetSink) {
         if (current()) sink.setLoading(false)
       }
     },
+    // The daemon pushes the whole fleet whenever it changes, and that push
+    // describes the fleet later than any request already out. Taking it retires
+    // those, so an answer describing the fleet before the change cannot land on
+    // top of the one describing it after. A list the daemon sent unasked also
+    // settles a refusal recorded before it.
+    accept(entries: FleetEntry[]): void {
+      generation += 1
+      sink.setFleet(entries)
+      sink.setLoading(false)
+      sink.setProblem("")
+    },
     invalidate(): void {
       generation += 1
     },

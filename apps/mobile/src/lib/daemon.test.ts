@@ -27,10 +27,13 @@ function withSocket(send: (payload: string) => void): FakeSocket {
   return socket
 }
 
-function connection() {
+function connection(handlers: {
+  onFleet?: (entries: unknown[]) => void
+} = {}) {
   return new DaemonConnection("ws://desk:8787", "token", {
     onSnapshot: () => {},
     onDelta: () => {},
+    onFleet: handlers.onFleet ?? (() => {}),
     onStatus: () => {},
     onError: () => {},
     onClosed: () => {},
@@ -88,5 +91,39 @@ describe("DaemonConnection.call", () => {
 
     await expect(daemon.call("workspace.get", {})).rejects.toThrow("not open")
     expect(daemon.pendingRequests()).toBe(0)
+  })
+})
+
+describe("DaemonConnection notifications", () => {
+  const entries = [{ kind: "unenrolled", machineId: `machine-${"a".repeat(32)}` }]
+
+  it("hands on a fleet the daemon pushed, so an open list stops going stale", () => {
+    const socket = withSocket(() => {})
+    const onFleet = vi.fn()
+    const daemon = connection({ onFleet })
+    daemon.connect()
+    try {
+      socket.onmessage?.({
+        data: JSON.stringify({ jsonrpc: "2.0", method: "fleet.changed", params: { entries } }),
+      })
+      expect(onFleet).toHaveBeenCalledWith(entries)
+    } finally { daemon.close() }
+  })
+
+  it("drops a pushed fleet it cannot read rather than passing on a shape", () => {
+    const socket = withSocket(() => {})
+    const onFleet = vi.fn()
+    const daemon = connection({ onFleet })
+    daemon.connect()
+    try {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          jsonrpc: "2.0",
+          method: "fleet.changed",
+          params: { entries: [{ kind: "unenrolled", machineId: "not-a-machine-id" }] },
+        }),
+      })
+      expect(onFleet).not.toHaveBeenCalled()
+    } finally { daemon.close() }
   })
 })
