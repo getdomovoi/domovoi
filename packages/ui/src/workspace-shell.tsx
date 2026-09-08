@@ -3560,6 +3560,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
     })
   }
+  // Opening a session means showing its thread. Activation alone leaves whatever
+  // surface is open in place, so a pick from Settings would have no composer.
+  const openSessionInWorkspace = (sessionId: string) => {
+    setSurface("workspace")
+    activateVisibleSession(sessionId)
+  }
   const reconnectDaemon = () => {
     setConnectionError("")
     void reconnect().catch((cause: unknown) => {
@@ -3813,10 +3819,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     entries: fleet?.entries,
     admittedMachines,
     skills,
-    activateSession: (sessionId) => {
-      setSurface("workspace")
-      activateVisibleSession(sessionId)
-    },
+    activateSession: openSessionInWorkspace,
     selectMachine: switchMachine,
     openSkill: (skillId) => {
       setRequestedSkillId(skillId)
@@ -4075,7 +4078,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawer snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawer snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} onActivate={openSessionInWorkspace} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
