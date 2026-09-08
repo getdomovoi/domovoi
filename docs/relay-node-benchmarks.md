@@ -7,8 +7,9 @@ protected key custody. Claude Code owns the phone native-module measurements.
 
 C's full IK exchange was about 1.62 times A's cost on this host. Its AES-GCM
 transport path was faster, especially at larger payloads. These observations
-support continuing the C feasibility spike, conditional on the phone results and
-Noise review. They are not evidence that C is universally faster or the right
+support the C recommendation. Subsequent Android hardware evidence below closes
+P-256 custody feasibility on the tested handset; phone performance, iOS and Noise
+review remain separate gates. These timings are not evidence that C is universally faster or the right
 production choice. Fetzy still owns that choice.
 
 ## Measured comparison
@@ -158,6 +159,17 @@ No production schema, export, relay socket or admission behavior changes.
 
 The original twelve noble cases still prove **one codec, two Node runners,
 identical vectors**. Nothing here executes the phone's native bridge or Hermes.
-Real phone entropy, protected private-key operations, native binary size,
-key-service latency, battery cost and the reviewed production Noise integration
-remain open. A suite or route-contract decision must retain those gates.
+
+Separate [phone evidence recorded by Claude Code](https://github.com/getdomovoi/domovoi/commit/ea75620)
+now proves Android P-256 key custody through two app-UI runs on a Pixel 10 running GrapheneOS,
+API 37. AndroidKeyStore reports `strongbox`; the probe gets a 65-byte public point, reopens the
+same key alias, agrees on the same 32-byte secret as a fresh software peer, and deletes the key.
+Static private material stays in the key service. An API 36 emulator passes and reports `software`.
+The hardware probe uses platform entropy explicitly after noble's ambient generator failed
+because Hermes lacked `crypto.getRandomValues`.
+
+This increases confidence in the unchanged option C recommendation. It does not turn the Node
+timings into phone measurements or the twelve shared fixtures into Hermes runs. iOS Secure Enclave,
+complete phone Noise execution, broader device/custody policy, native binary size, key-service
+latency, battery cost and the reviewed production integration remain open. Android API 31 is the
+proposed floor, with no assumption that every supported device provides StrongBox.
