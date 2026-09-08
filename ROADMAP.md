@@ -690,7 +690,7 @@ Every ledger entry is now merged.
     completions, and pending unlink excludes a successor even when the pathname is absent.
     `workspace.test.ts` proves late success and failure for all three phases. Recovery requires
     stopped daemons before removing a confirmed stale claim. See `docs/restore-claims.md`.
-- [ ] Stop transfer chunk directory cleanup failing with `EPERM` on Windows
+- [x] Stop transfer chunk directory cleanup failing with `EPERM` on Windows
   - `transfer-transactions.test.ts` "handles concurrent retries of the same chunk" failed once on
     the Windows job of #245 (run 33938587480) with `EPERM: operation not permitted, rmdir` on the
     chunk directory, under the old 256-retry fixture that #246 later trimmed to 16. #251 merged a
@@ -700,8 +700,9 @@ Every ledger entry is now merged.
     real daemon processes over one journal prove refusal while a chunk descriptor is open and
     recovery after completion or process death, without synthetic filesystem errors. Independent
     receives within the owning process share one permanent lease outside disposable journals; see
-    `docs/transfer-receive-leases.md`. The remaining evidence gate is a passing Windows CI run of
-    this process test.
+    `docs/transfer-receive-leases.md`. Native Windows `pnpm test` passed in
+    [run 34171599299](https://github.com/getdomovoi/domovoi/actions/runs/34171599299/job/101892809299)
+    at `c37da78`, including both process-lifecycle cases without a platform skip.
 - [x] Transfer dialog in the client with preflight, method, and what travels, calling
   `session.transfer`
   - `packages/ui/src/transfer-session-dialog.tsx` is wired into the workspace shell and
