@@ -26,6 +26,17 @@ function encode(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
 }
 
+// Hermes has no WebCrypto, so noble's own generator throws
+// "crypto.getRandomValues must be defined" on a phone. The platform key service
+// is the entropy source here, which is also the one this probe has checked.
+function softwareSecretKey(module: DomovoiDeviceKeyApi): Uint8Array {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const candidate = decode(module.randomBytes(32))
+    if (p256.utils.isValidSecretKey(candidate)) return candidate
+  }
+  throw new Error("The platform random source produced no usable P-256 scalar")
+}
+
 // The platform holds the static key and will never hand it back, so the only
 // way to check its arithmetic is to agree with a key this side does hold: run
 // the same ECDH in software against the platform's public point and require the
@@ -65,7 +76,7 @@ export async function probeDeviceKey(module: DomovoiDeviceKeyApi): Promise<Probe
     detail: reopened ? "Same public point returned" : "The key could not be reopened",
   })
 
-  const softwarePrivateKey = p256.utils.randomSecretKey()
+  const softwarePrivateKey = softwareSecretKey(module)
   const softwarePublicKey = p256.getPublicKey(softwarePrivateKey, false)
   const deviceSecret = decode(await module.agree(probeAlias, encode(softwarePublicKey)))
   // A compressed agreement result is the 32 byte x coordinate behind one prefix

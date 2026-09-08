@@ -84,7 +84,7 @@ describe("device key probe", () => {
   })
 
   it("fails the entropy step when the source repeats one byte", async () => {
-    const report = await probeDeviceKey(fakeModule({ entropy: new Uint8Array(32) }))
+    const report = await probeDeviceKey(fakeModule({ entropy: new Uint8Array(32).fill(1) }))
     const entropy = report.steps.find((step) => step.name === "System entropy")
     expect(entropy?.ok).toBe(false)
     expect(entropy?.detail).toBe("32 bytes, 1 distinct values")

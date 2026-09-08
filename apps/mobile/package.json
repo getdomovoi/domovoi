@@ -5,8 +5,8 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "prebuild": "pnpm --filter @getdomovoi/protocol build",
     "build": "expo export --platform ios --output-dir dist",
     "pretest": "pnpm --filter @getdomovoi/protocol build",
