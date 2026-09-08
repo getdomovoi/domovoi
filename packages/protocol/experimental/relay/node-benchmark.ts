@@ -148,7 +148,6 @@ const output = {
     loadAverageStart: startLoad, loadAverageEnd: loadavg(),
     nodeExecutableBytes: statSync(process.execPath).size,
     nodeSharedOpenSsl: process.config.variables["node_shared_openssl"],
-    additionalNativeAddons: [],
   },
   sources: Object.fromEntries(files.map((file) => [file, Buffer.from(sha256(readFileSync(new URL(file, import.meta.url)))).toString("hex")])),
   methodology: {

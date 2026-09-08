@@ -23,8 +23,7 @@
       1.83
     ],
     "nodeExecutableBytes": 120078896,
-    "nodeSharedOpenSsl": false,
-    "additionalNativeAddons": []
+    "nodeSharedOpenSsl": false
   },
   "sources": {
     "node-benchmark.ts": "1f17beaef3d0c62f8e058dc85d7cee3b856d90b6cddc4d733ef2cb6c5379ede6",
