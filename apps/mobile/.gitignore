@@ -1,3 +1,5 @@
 .expo/
 android/
 ios/
+modules/*/android/build/
+modules/*/android/.gradle/
