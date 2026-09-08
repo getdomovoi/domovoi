@@ -36,13 +36,17 @@ export function MachineSheet({
   children: ReactNode
 }) {
   const opener = useRef<Element | null>(null)
+  // Only closing returns focus. A callback identity change is not a close, and
+  // treating it as one steals focus from an input inside the open sheet.
+  const close = useRef(onClose)
+  close.current = onClose
 
   useEffect(() => {
     if (!open) return
     opener.current = document.activeElement
     if (pinned) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose()
+      if (event.key === "Escape") close.current()
     }
     document.addEventListener("keydown", onKey)
     return () => {
@@ -50,7 +54,7 @@ export function MachineSheet({
       const previous = opener.current
       if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
     }
-  }, [open, pinned, onClose])
+  }, [open, pinned])
 
   if (!open) return null
 

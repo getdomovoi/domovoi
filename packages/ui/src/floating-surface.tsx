@@ -24,6 +24,11 @@ export function FloatingSurface({
 }) {
   const surface = useRef<HTMLDivElement>(null)
   const opener = useRef<Element | null>(null)
+  // Focus goes back to the opener when the surface closes, and only then. If
+  // the effect depended on onClose, an unrelated render would tear it down and
+  // pull focus out of whatever the person was typing in.
+  const close = useRef(onClose)
+  close.current = onClose
 
   useEffect(() => {
     if (!open) return
@@ -31,11 +36,11 @@ export function FloatingSurface({
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.stopPropagation()
-        onClose()
+        close.current()
       }
     }
     const onPointer = (event: MouseEvent) => {
-      if (!surface.current?.contains(event.target as Node)) onClose()
+      if (!surface.current?.contains(event.target as Node)) close.current()
     }
     document.addEventListener("keydown", onKey)
     // Pointer close runs on the next frame so the click that opened this
@@ -48,7 +53,7 @@ export function FloatingSurface({
       const previous = opener.current
       if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
   return (
