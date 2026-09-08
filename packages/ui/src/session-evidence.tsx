@@ -597,7 +597,7 @@ export function SessionEvidencePanel({
   readOnly?: boolean
   sessionId: string | null
   onLoad: (sessionId: string) => Promise<SessionEvidence>
-  onRevertFile?: (sessionId: string, path: string) => Promise<void>
+  onRevertFile?: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
 }) {
   const generation = useRef(0)
   const [state, setState] = useState<EvidenceState>({ loading: false, error: "" })
@@ -666,8 +666,11 @@ export function SessionEvidencePanel({
       onRefresh={refresh}
       {...(onRevertFile && !readOnly
         ? {
-          onRevertFile: async (path: string) => {
-            await onRevertFile(sessionId, path)
+          onRevertFile: async (path: string, expectedBaseCommit?: string) => {
+            // Dropping this here would silently disarm the stale-confirmation
+            // guard: the daemon would accept a revert described against a
+            // commit that has since moved.
+            await onRevertFile(sessionId, path, expectedBaseCommit)
             refresh()
           },
         }
