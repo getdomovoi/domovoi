@@ -3,6 +3,7 @@ import { Platform, TextInput, View } from "react-native"
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
+import { KeyProbeCard } from "../components/key-probe-card"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
 import { clientVersion } from "../lib/protocol-facts"
@@ -174,6 +175,8 @@ export function SettingsScreen({
             </Text>
           </View>
         )}
+
+        {__DEV__ ? <KeyProbeCard /> : null}
       </PageScroller>
     </View>
   )
