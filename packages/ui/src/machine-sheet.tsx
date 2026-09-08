@@ -26,9 +26,11 @@ export function MachineSheet({
 }: {
   open: boolean
   pinned: boolean
-  tabs: readonly SheetTab[]
-  activeTab: string
-  onSelectTab: (id: string) => void
+  // Content that carries its own tab bar passes none, and the sheet renders
+  // only the pin control above it.
+  tabs?: readonly SheetTab[]
+  activeTab?: string
+  onSelectTab?: (id: string) => void
   onClose: () => void
   onTogglePin: () => void
   children: ReactNode
@@ -70,14 +72,14 @@ export function MachineSheet({
         )}
       >
         <div className="flex items-center gap-1 border-b border-border p-2">
-          {tabs.map((tab) => (
+          {(tabs ?? []).map((tab) => (
             <button
               type="button"
               key={tab.id}
               role="tab"
               aria-selected={tab.id === activeTab}
               title={tab.describe}
-              onClick={() => onSelectTab(tab.id)}
+              onClick={() => onSelectTab?.(tab.id)}
               className={cn(
                 "flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px]",
                 tab.id === activeTab ? "bg-accent text-foreground" : "text-muted-foreground",
