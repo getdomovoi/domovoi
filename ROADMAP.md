@@ -553,10 +553,26 @@ Every ledger entry is now merged.
     alpha.
 - [ ] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise
   suite or public-key shape in protocol
+  - `packages/protocol/experimental/relay` checks one candidate codec against the same published
+    Cacophony handshake, transport and transcript fixtures in the daemon Node suite and the phone
+    jest-expo suite. Both runners use Node; this proves one codec, two runners, identical vectors.
+    Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution,
+    native entropy and private-key operations, and selection/review of the production Noise layer
+    remain open. No production suite or key shape is frozen. See `docs/relay-crypto-spike.md`.
 - [ ] Make relay routes and capabilities a discriminated protocol contract
   - Relay v1 carries JSON-RPC and terminal traffic. Preview capability remains absent until an
     encrypted artifact-byte path exists, and clients read that absence from the route rather than
     maintaining their own list.
+  - Capability policy does not depend on the crypto choice, but an accepted relay descriptor must
+    validate its suite and responder pin. The existing kind discriminator keeps relay unavailable
+    with no capabilities. The complete route contract waits for a reviewed production Noise
+    integration and evidence for phone native key operations to settle the suite/key constraints;
+    a capability list or permissive channel placeholder does not close this item. See the exact
+    unblock conditions in `docs/encrypted-relay.md`, Public route descriptor.
+  - The approved September 7 priority moves this relay work ahead under Goal 3 while Goal 2 stays
+    open. The remaining Goal 2 evidence is not solely hardware: its Windows logon task still has
+    no crash restart. That supervision gap is recorded separately from the physical-machine and
+    cross-host TLS proofs.
 - [ ] Ship the generation-fenced outbound manager and separately licensed commercial relay app
   with bounded pre-authentication input, buffers, streams, idle time, and explicit backpressure
 - [x] Install a frozen daemon runtime from a version-pinned release archive, checked against a
