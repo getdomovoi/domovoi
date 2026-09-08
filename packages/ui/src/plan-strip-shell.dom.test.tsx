@@ -9,6 +9,7 @@ afterEach(cleanup)
 function threadFor(snapshot: WorkspaceSnapshot) {
   return (
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       onResolve={vi.fn(async () => {})}

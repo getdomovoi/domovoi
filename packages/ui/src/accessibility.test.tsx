@@ -105,6 +105,7 @@ describe("shared workspace accessibility contract", () => {
     snapshot.project = null
     const markup = renderToStaticMarkup(
       <Workspace.Thread
+        onQueuedChange={vi.fn()}
         snapshot={snapshot}
         connected
         onResolve={vi.fn(async () => {})}

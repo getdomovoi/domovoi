@@ -69,6 +69,7 @@ function renderConflicted(onReleaseSession = vi.fn(async () => ({}))) {
   const snapshot = conflictedSnapshot()
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       fleet={[{ kind: "machine", machine: studio(snapshot) }]}
@@ -109,6 +110,7 @@ it("does not offer a release the daemon cannot be asked for", () => {
   const snapshot = conflictedSnapshot()
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       fleet={[{ kind: "machine", machine: studio(snapshot) }]}

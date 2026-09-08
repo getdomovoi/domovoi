@@ -14,6 +14,7 @@ it("sends the selected approval-card decision", async () => {
   const onResolve = vi.fn(async () => {})
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       onResolve={onResolve}

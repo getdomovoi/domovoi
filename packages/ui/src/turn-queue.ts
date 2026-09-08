@@ -26,3 +26,41 @@ export function submitFromComposer({
     note: queued ? "replaces the queued message" : "sends at the next turn boundary",
   }
 }
+
+// A queued message is either waiting for the turn boundary or held for a
+// person. Nothing moves it from held back to waiting except an explicit act:
+// a refused send that re-queued itself would retry on the next render, and a
+// stop that released the queue would restart the work it was meant to end.
+export type QueuedMessage = {
+  sessionId: string
+  text: string
+  state: "waiting" | "held"
+  reason?: string
+}
+
+export function shouldRelease({
+  queued,
+  sessionId,
+  turnRunning,
+  busy,
+}: {
+  queued: QueuedMessage | undefined
+  sessionId: string
+  turnRunning: boolean
+  busy: boolean
+}): boolean {
+  if (!queued || queued.sessionId !== sessionId) return false
+  if (queued.state !== "waiting") return false
+  return !turnRunning && !busy
+}
+
+export function heldAfter(queued: QueuedMessage, reason: string): QueuedMessage {
+  return { ...queued, state: "held", reason }
+}
+
+// A stop ends the turn. Treating that ending as the ordinary boundary would
+// send the queued message into the silence the stop just made.
+export function heldAfterStop(queued: QueuedMessage | undefined): QueuedMessage | undefined {
+  if (!queued || queued.state === "held") return queued
+  return heldAfter(queued, "Held because work was stopped. Send it when you want it to run.")
+}

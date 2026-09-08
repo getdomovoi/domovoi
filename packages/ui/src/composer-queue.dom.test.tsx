@@ -1,7 +1,10 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
+
+import type { QueuedMessage } from "./turn-queue"
 
 import { Thread } from "./workspace-shell.js"
 
@@ -9,11 +12,15 @@ afterEach(cleanup)
 
 type SendSpy = (sessionId: string, prompt: string) => Promise<void>
 
-function threadWith(snapshot: WorkspaceSnapshot, onSend: SendSpy) {
+// The shell owns the queue above Thread, so the harness does too.
+function ThreadWith({ snapshot, onSend }: { snapshot: WorkspaceSnapshot, onSend: SendSpy }) {
+  const [queued, setQueued] = useState<QueuedMessage>()
   return (
     <Thread
       snapshot={snapshot}
       connected
+      queued={queued}
+      onQueuedChange={setQueued}
       onResolve={vi.fn(async () => {})}
       onSetRuntime={vi.fn(async () => {})}
       onForkSession={vi.fn(async () => {})}
@@ -42,7 +49,7 @@ function withActiveTurn(running: boolean): WorkspaceSnapshot {
 it("queues a message sent while a turn is running rather than sending it", async () => {
   const user = userEvent.setup()
   const onSend = vi.fn<SendSpy>(async () => {})
-  render(threadWith(withActiveTurn(true), onSend))
+  render(<ThreadWith snapshot={withActiveTurn(true)} onSend={onSend} />)
 
   await user.type(screen.getByLabelText("Message"), "also update the changelog")
   await user.click(screen.getByRole("button", { name: "Send message" }))
@@ -55,13 +62,13 @@ it("queues a message sent while a turn is running rather than sending it", async
 it("sends the queued message once the turn ends", async () => {
   const user = userEvent.setup()
   const onSend = vi.fn<SendSpy>(async () => {})
-  const { rerender } = render(threadWith(withActiveTurn(true), onSend))
+  const { rerender } = render(<ThreadWith snapshot={withActiveTurn(true)} onSend={onSend} />)
 
   await user.type(screen.getByLabelText("Message"), "also update the changelog")
   await user.click(screen.getByRole("button", { name: "Send message" }))
   expect(onSend).not.toHaveBeenCalled()
 
-  rerender(threadWith(withActiveTurn(false), onSend))
+  rerender(<ThreadWith snapshot={withActiveTurn(false)} onSend={onSend} />)
 
   await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
   expect(onSend.mock.calls[0]![1]).toBe("also update the changelog")
@@ -70,7 +77,7 @@ it("sends the queued message once the turn ends", async () => {
 it("keeps one queued message rather than stacking them", async () => {
   const user = userEvent.setup()
   const onSend = vi.fn<SendSpy>(async () => {})
-  render(threadWith(withActiveTurn(true), onSend))
+  render(<ThreadWith snapshot={withActiveTurn(true)} onSend={onSend} />)
 
   const box = screen.getByLabelText("Message")
   await user.type(box, "first")
