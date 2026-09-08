@@ -112,10 +112,42 @@ it("closes again when its own trigger is clicked", async () => {
   expect(screen.queryByRole("group", { name: "Sessions" })).toBeNull()
 })
 
-it("says which session is open, without leaving it to the background colour", async () => {
+// Both sessions are idle and identical apart from their id, so nothing but
+// activeSessionId can carry the mark. A fixture with differing states would
+// pass on the difference rather than on the fix.
+function twinSnapshot(activeSessionId: string): WorkspaceSnapshot {
+  const snapshot = structuredClone(demoWorkspace)
+  const base = snapshot.sessions[0]!
+  snapshot.sessions = [
+    { ...base, id: "t1", title: "Rotate the signing keys", state: "idle" },
+    { ...base, id: "t2", title: "Trim the audit retention", state: "idle" },
+  ]
+  for (const session of snapshot.sessions) delete (session as { activeTurnId?: string }).activeTurnId
+  snapshot.activeSessionId = activeSessionId
+  snapshot.approvals = []
+  return snapshot
+}
+
+function Twins({ activeSessionId }: { activeSessionId: string }) {
+  const [open, setOpen] = useState(false)
+  return <SessionsDrawer snapshot={twinSnapshot(activeSessionId)} open={open} onOpenChange={setOpen} onActivate={vi.fn()} />
+}
+
+it("says which session is open, in text and to a reader, never in tint alone", async () => {
   const user = userEvent.setup()
-  render(<Harness onActivate={vi.fn()} />)
+  const view = render(<Twins activeSessionId="t1" />)
   await user.click(screen.getByRole("button", { name: /^Sessions / }))
-  expect(screen.getByRole("button", { name: /Migrate billing webhooks/ }).getAttribute("aria-current")).toBe("true")
-  expect(screen.getByRole("button", { name: /Port the CLI auth flow/ }).getAttribute("aria-current")).toBeNull()
+
+  const open = () => screen.getByRole("button", { name: /Rotate the signing keys/ })
+  const other = () => screen.getByRole("button", { name: /Trim the audit retention/ })
+  expect(open().getAttribute("aria-current")).toBe("true")
+  expect(other().getAttribute("aria-current")).toBeNull()
+  expect(open().textContent).toContain("Current")
+  expect(other().textContent).not.toContain("Current")
+
+  view.rerender(<Twins activeSessionId="t2" />)
+  expect(other().getAttribute("aria-current")).toBe("true")
+  expect(other().textContent).toContain("Current")
+  expect(open().getAttribute("aria-current")).toBeNull()
+  expect(open().textContent).not.toContain("Current")
 })
