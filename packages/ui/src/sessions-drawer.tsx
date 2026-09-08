@@ -50,7 +50,8 @@ export function SessionsDrawer({
         ) : null}
       </button>
 
-      <FloatingSurface open={open} onClose={() => onOpenChange(false)} label="Sessions" className="w-[var(--shell-sidebar)]">
+      <FloatingSurface open={open} onClose={() => onOpenChange(false)} label="Sessions" className="flex w-[var(--shell-sidebar)] flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.length === 0 ? (
           <p className="m-0 px-2 py-3 text-[11.5px] text-faint">
             No sessions on this machine yet.
@@ -78,8 +79,11 @@ export function SessionsDrawer({
             ))}
           </section>
         ))}
+        </div>
         {onNewSession || onOpenProviderSettings ? (
-          <div className="mt-1 flex gap-1 border-t border-border pt-1">
+          // Outside the scroller on purpose: these stay reachable no matter how
+          // many sessions are open.
+          <div className="mt-1 flex shrink-0 gap-1 border-t border-border pt-1">
             {onNewSession ? (
               <button
                 type="button"
