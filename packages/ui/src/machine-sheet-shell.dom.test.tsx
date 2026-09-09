@@ -56,3 +56,31 @@ it("keeps focus on the pinned dock rather than the opener", async () => {
   expect(document.activeElement).not.toBe(opener)
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Unpin" }))
 })
+
+// Pinning replaces the sheet with a panel and unpinning replaces it back, and
+// each swap removes the control that was focused. Without an opener held above
+// those swaps the sheet reopens with document.body as its opener, and closing
+// then returns focus nowhere.
+it("returns focus to the rail after a pin and unpin cycle", async () => {
+  const user = userEvent.setup()
+  render(<WorkspaceShell />)
+  await act(async () => {
+    completeHandshake(harness.socket(0), workspaceSnapshot())
+  })
+  await settle()
+
+  const opener = screen.getByRole("button", { name: "Changes" })
+  await user.click(opener)
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Pin" }))
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Unpin" }))
+  await settle()
+
+  expect(screen.getByRole("region", { name: "Machine surfaces" })).toBeTruthy()
+  await user.keyboard("{Escape}")
+  await settle()
+
+  expect(screen.queryByRole("region", { name: "Machine surfaces" })).toBeNull()
+  expect(document.activeElement).toBe(opener)
+})

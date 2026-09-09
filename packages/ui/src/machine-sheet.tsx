@@ -23,6 +23,7 @@ export function MachineSheet({
   onClose,
   onTogglePin,
   pinButtonRef,
+  openerRef,
   children,
 }: {
   open: boolean
@@ -37,6 +38,10 @@ export function MachineSheet({
   // The shell swaps this sheet for a pinned panel, so it needs a handle on the
   // control that starts the swap to place focus afterwards.
   pinButtonRef?: RefObject<HTMLButtonElement | null> | undefined
+  // What to focus when the sheet closes. The shell owns this because pinning
+  // and unpinning replace the sheet, and each swap removes whatever was focused
+  // at the time, so a capture made here would be document.body.
+  openerRef?: RefObject<Element | null> | undefined
   children: ReactNode
 }) {
   const opener = useRef<Element | null>(null)
@@ -50,11 +55,15 @@ export function MachineSheet({
   useEffect(() => {
     if (!open) return
     opener.current = document.activeElement
+    // Read the shell's opener now rather than in the cleanup. It is set before
+    // this sheet mounts and does not move while it is open, and the cleanup
+    // runs after a swap has already removed whatever was focused.
+    const provided = openerRef?.current ?? null
     return () => {
-      const previous = opener.current
+      const previous = provided ?? opener.current
       if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
     }
-  }, [open])
+  }, [open, openerRef])
 
   // Escape closes a floating sheet only. A pinned one is part of the layout.
   useEffect(() => {

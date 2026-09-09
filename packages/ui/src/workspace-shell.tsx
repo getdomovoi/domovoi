@@ -3605,7 +3605,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
   const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
+  // Held above the pin and unpin swaps, each of which removes the control that
+  // was focused. The sheet cannot capture this for itself.
+  const dockOpenerRef = useRef<Element | null>(null)
   const openDockTab = (next: string) => {
+    dockOpenerRef.current = document.activeElement
     setDockTab(next)
     setDockCollapsed(false)
   }
@@ -4316,6 +4320,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 open
                 pinned={false}
                 pinButtonRef={sheetPinButtonRef}
+                openerRef={dockOpenerRef}
                 onClose={() => setDockCollapsed(true)}
                 onTogglePin={() => setDockPinned(true)}
               >
