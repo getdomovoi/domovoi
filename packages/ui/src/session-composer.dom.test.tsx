@@ -68,7 +68,7 @@ it("offers the auto control only in build", async () => {
   const user = userEvent.setup()
   composer({ runtime: { ...runtime, permissionMode: "ask", auto: false } })
   await user.click(screen.getByRole("button", { name: /Ask/ }))
-  expect(screen.queryByLabelText(/Auto, no gate/)).toBeNull()
+  expect(screen.queryByText(/Auto, no gate/)).toBeNull()
   cleanup()
   composer()
   await user.click(screen.getByRole("button", { name: /Build · auto/ }))
