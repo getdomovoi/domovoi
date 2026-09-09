@@ -2,6 +2,8 @@ import eslint from "@eslint/js"
 import reactHooks from "eslint-plugin-react-hooks"
 import tseslint from "typescript-eslint"
 
+import { typeFloorRules } from "./eslint.type-floor.generated.mjs"
+
 const sourceFiles = ["apps/**/*.{ts,tsx}", "packages/**/*.{ts,tsx}"]
 const reactFiles = [
   "apps/desktop/**/*.tsx",
@@ -42,21 +44,8 @@ export default tseslint.config(
     // utilities. Widening this glob is what makes that pass land.
     files: ["packages/ui/**/*.{ts,tsx}"],
     rules: {
-      // The type floor, enforced rather than remembered. Sans prose stops at
-      // --text-micro; below it only --text-eyebrow and --text-mono-xs exist,
-      // and each has a utility. A raw value under 9.5px has no token behind it
-      // at all, which is how forty of them spread by copy-paste.
-      "no-restricted-syntax": [
-        "error",
-        {
-          selector: "Literal[value=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
-          message: "Text below 9.5px has no token behind it. Use text-eyebrow for an uppercase section label, text-mono-xs for machine output, or text-micro for sans prose.",
-        },
-        {
-          selector: "TemplateElement[value.raw=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
-          message: "Text below 9.5px has no token behind it. Use text-eyebrow for an uppercase section label, text-mono-xs for machine output, or text-micro for sans prose.",
-        },
-      ],
+      // Generated from the design system, never hand-edited. See scripts/design-rule.mjs.
+      "no-restricted-syntax": ["error", ...typeFloorRules],
     },
   },
   {
