@@ -787,10 +787,10 @@ function ApprovalCard({
     cardRef.current?.scrollIntoView({ block: "end" })
   }, [approval.id])
 
+  // Agent and mode ride the header line instead of the grid, the way the design
+  // system draws the gate. Nothing is dropped: a desktop shows every fact.
   const facts = [
     ["Machine", approval.machine],
-    ["Agent", approval.agent],
-    ["Mode", approval.mode],
     ["Directory", approval.directory],
     ["Affects", approval.affects],
     ["Network", approval.network],
@@ -803,11 +803,14 @@ function ApprovalCard({
   }
 
   return (
-    <Alert ref={cardRef} variant="warning" className="mx-auto max-w-3xl gap-3 p-4">
+    <Alert ref={cardRef} variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
       <CircleStopIcon />
       <AlertTitle className="flex items-center gap-2 text-[12.5px]">
         Approval required
         {approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
+        <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">
+          {approval.agent} · {approval.mode}
+        </span>
       </AlertTitle>
       <AlertDescription className="col-span-full flex flex-col gap-3">
         <p className="text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
@@ -858,11 +861,21 @@ function ApprovalCard({
             </div>
           </div>
         ) : null}
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button ref={explainTriggerRef} variant="ghost" size="sm" onClick={() => setExplainOpen(true)}>Deny and explain</Button>
-          <Button variant="ghost" size="sm" onClick={() => onResolve("deny")}>Deny</Button>
-          <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
+        {/* One decision at full weight, two outlined beside it, and the fourth
+            as plain text. Four peer buttons make a person read all four before
+            the gate can move. */}
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
+          <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
+          <Button variant="outline" size="sm" onClick={() => onResolve("deny")}>Deny</Button>
+          <button
+            ref={explainTriggerRef}
+            type="button"
+            onClick={() => setExplainOpen(true)}
+            className="ml-auto rounded-sm text-[11px] text-warn-dim underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
+          >
+            Deny and explain
+          </button>
         </div>
       </AlertDescription>
     </Alert>
