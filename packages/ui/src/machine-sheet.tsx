@@ -41,19 +41,25 @@ export function MachineSheet({
   const close = useRef(onClose)
   close.current = onClose
 
+  // Focus follows the open state alone. Keyed on pinned as well, pinning an
+  // open sheet tore the effect down and threw focus back to whatever opened it.
   useEffect(() => {
     if (!open) return
     opener.current = document.activeElement
-    if (pinned) return
+    return () => {
+      const previous = opener.current
+      if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
+    }
+  }, [open])
+
+  // Escape closes a floating sheet only. A pinned one is part of the layout.
+  useEffect(() => {
+    if (!open || pinned) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") close.current()
     }
     document.addEventListener("keydown", onKey)
-    return () => {
-      document.removeEventListener("keydown", onKey)
-      const previous = opener.current
-      if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
-    }
+    return () => document.removeEventListener("keydown", onKey)
   }, [open, pinned])
 
   if (!open) return null
