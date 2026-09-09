@@ -1,10 +1,11 @@
 import assert from "node:assert/strict"
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 
-const repositoryRoot = new URL("..", import.meta.url).pathname
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 import {
   acceptedAdditions,
