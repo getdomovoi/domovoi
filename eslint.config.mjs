@@ -44,7 +44,15 @@ export default tseslint.config(
     // utilities. Widening this glob is what makes that pass land.
     files: ["packages/ui/**/*.{ts,tsx}"],
     rules: {
-      // Generated from the design system, never hand-edited. See scripts/design-rule.mjs.
+      // Generated from the design system, never hand-edited. scripts/design-rule.mjs
+      // derives the boundary from design/design_system_domovoi/_adherence.oxlintrc.json
+      // and tokens/typography.css, and pnpm design:rule regenerates it.
+      //
+      // That vendored file is an oxlint config, and nothing runs it. This repository
+      // does not install oxlint; it is vendored as data for its x-omelette.tokenKinds
+      // manifest. Its own rules are all warnings, and its raw-pixel selector matches
+      // the 5px inside 9.5px, so enabling them would flag the values the design system
+      // defines.
       "no-restricted-syntax": ["error", ...typeFloorRules],
     },
   },

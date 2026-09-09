@@ -7,8 +7,6 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
 const designDirectory = "design"
 const revisionFile = join(designDirectory, "REVISIONS.json")
-const readmeFile = join(designDirectory, "README.md")
-const authoredHere = new Set([revisionFile, readmeFile].map((path) => path.split(sep).join("/")))
 const regenerateCommand = "pnpm design:revision"
 
 // The handoff under design/ is a signed source this repository does not author.
@@ -23,10 +21,12 @@ export async function designFiles(root = repositoryRoot) {
       const path = join(directory, entry.name)
       const posixPath = path.split(sep).join("/")
       if (entry.isDirectory()) await walk(path)
-      // Neither the record nor this repository's own note about the directory is
-      // part of the handoff being described. Digesting design/README.md would
-      // make every edit to it fail as though a signed file had been altered.
-      else if (entry.isFile() && !authoredHere.has(posixPath)) found.push(posixPath)
+      // The record cannot digest itself, which is the only exception this
+      // directory has. Everything else under design/ is signed source, so a
+      // file authored here does not belong in it at all: an exclusion list
+      // would rot, and the next person adding a note would have no way to know
+      // they had to edit it.
+      else if (entry.isFile() && posixPath !== revisionFile.split(sep).join("/")) found.push(posixPath)
     }
   }
   await walk(designDirectory)

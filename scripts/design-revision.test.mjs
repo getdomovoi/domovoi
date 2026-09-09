@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
+
+const repositoryRoot = new URL("..", import.meta.url).pathname
 
 import {
   checkRevisions,
@@ -91,10 +93,22 @@ test("digests are stable across two reads of the same tree", async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-test("does not digest this repository's own note about the directory", async () => {
-  const files = await designFiles()
-  assert.equal(files.includes("design/README.md"), false, "design/README.md is authored here, not signed")
-  assert.equal(files.includes("design/REVISIONS.json"), false, "the record is not part of what it records")
-  assert.ok(files.includes("design/design_system_domovoi/readme.md"), "the vendored readme is signed and stays digested")
+// Stated as a property rather than a list. An exclusion set is an enumeration,
+// and the next person adding a note to design/ would have no way to know they
+// had to edit it: their file would be digested, the digests regenerated in the
+// same commit, and nothing would object.
+test("digests every file under design/ except the record itself", async () => {
+  const digested = new Set(await designFiles())
+  const present = []
+  async function walk(directory) {
+    for (const entry of await readdir(join(repositoryRoot, directory), { withFileTypes: true })) {
+      const path = `${directory}/${entry.name}`
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isFile()) present.push(path)
+    }
+  }
+  await walk("design")
+  const undigested = present.filter((file) => !digested.has(file))
+  assert.deepEqual(undigested, ["design/REVISIONS.json"], "design/ holds signed sources and its own manifest, nothing authored here")
 })
 
