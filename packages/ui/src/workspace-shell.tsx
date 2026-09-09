@@ -1378,6 +1378,7 @@ export function Thread({
   onSend,
   onCheckpoint,
   onRestoreCheckpoint,
+  restoreBusy = false,
   onPauseSession,
   onArchiveSession,
   onOpenExternal,
@@ -1424,6 +1425,8 @@ export function Thread({
   ) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
+  // Set while a restore started anywhere in the shell is still running.
+  restoreBusy?: boolean
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
@@ -1794,7 +1797,7 @@ export function Thread({
             }
             const item = row.item
             if (item.kind === "checkpoint") {
-              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
+              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || restoreBusy || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
             if (item.kind === "user") {
               return (
@@ -2504,7 +2507,10 @@ export function HistoryPanel({
                   {onRestoreCheckpoint && entry.category === "checkpoints" && entry.commit ? (
                     <div className="mt-2">
                       <CheckpointRestore
-                        checkpointId={entry.id}
+                        // sourceId, not id: the daemon builds history ids as
+                        // thread:<checkpoint-id> and checkpoint.restore searches
+                        // by the checkpoint id it kept in sourceId.
+                        checkpointId={entry.sourceId}
                         label={entry.label}
                         disabled={restoreBlocked}
                         onRestore={onRestoreCheckpoint}
@@ -2547,6 +2553,7 @@ export function ArtifactDock({
   onCreateAnnotation,
   onLoadSessionHistory,
   onRestoreCheckpoint,
+  restoreBusy = false,
   onLoadSessionEvidence,
   onRevertSessionFile,
   captureAnnotation,
@@ -2602,6 +2609,7 @@ export function ArtifactDock({
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
   onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
+  restoreBusy?: boolean
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const workingPlan = snapshot.workingPlans.find(
@@ -3104,11 +3112,13 @@ export function ArtifactDock({
             connected={connected}
             onLoad={onLoadSessionHistory}
             onRestoreCheckpoint={onRestoreCheckpoint}
-            // The pane reaches the same destructive action as the thread, so it
-            // reads the same rule: an archived session and a running turn both
-            // hold it shut.
+            // An archived session and a running turn hold this shut, and so
+            // does a restore already in flight. The in-flight half has to come
+            // from the shell: the dock cannot see the thread's own pending
+            // state, and a snapshot arrives too late to stop a second click.
             restoreBlocked={
-              sessionIsArchiveReadOnly(activeSession(snapshot))
+              restoreBusy
+              || sessionIsArchiveReadOnly(activeSession(snapshot))
               || Boolean(activeSession(snapshot)?.activeTurnId)
             }
           />
@@ -3887,14 +3897,30 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
-  // One dock, rendered either as the pinned panel or inside the floating sheet.
-  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={(checkpointId) => {
-    if (!snapshot.activeSessionId) return
+  // Restore ownership sits here, above both surfaces. The thread guards its own
+  // pending operations and the dock cannot see that state, so a restore started
+  // from either one has to hold the other shut until it answers.
+  const [checkpointRestorePending, setCheckpointRestorePending] = useState(false)
+  // Both surfaces restore through this one function, so an attempt started from
+  // either holds the other shut for as long as it runs.
+  const restoreCheckpointGuarded = async (sessionId: string, checkpointId: string) => {
+    if (checkpointRestorePending) return
+    setCheckpointRestorePending(true)
+    try {
+      await restoreCheckpoint(sessionId, checkpointId)
+    } finally {
+      setCheckpointRestorePending(false)
+    }
+  }
+  const restoreCheckpointOnce = (checkpointId: string) => {
+    if (!snapshot?.activeSessionId || checkpointRestorePending) return
     setWorkspaceError("")
-    void restoreCheckpoint(snapshot.activeSessionId, checkpointId).catch((cause: unknown) => {
+    void restoreCheckpointGuarded(snapshot.activeSessionId, checkpointId).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
     })
-  }} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  }
+  // One dock, rendered either as the pinned panel or inside the floating sheet.
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
@@ -4276,7 +4302,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
