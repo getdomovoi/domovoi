@@ -99,7 +99,7 @@ export function ComposerSkillChip({
         <span
           role="status"
           aria-label="Skill selection refused"
-          className="text-[10px] text-destructive"
+          className="text-micro text-destructive"
         >
           {skillNames[refusal.skillId] ?? refusal.skillId} {refusalCopy[refusal.reason]}
         </span>

@@ -276,7 +276,7 @@ export function CommandPalette({
             ) : null
           })}
         </CommandList>
-        <p className="m-0 border-t px-3 py-2 font-machine text-[9px] text-muted-foreground">
+        <p className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-muted-foreground">
           ↑↓ navigate · Enter run · Escape close · {platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle
         </p>
       </Command>
