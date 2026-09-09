@@ -6,10 +6,6 @@
   },
   "recordedOn": "2026-09-09",
   "files": {
-    "design/README.md": {
-      "bytes": 1559,
-      "sha256": "7702495b99f1232729e068c0386afed6e3f5f4e43b671a6a3b2bfef7fe35f5df"
-    },
     "design/design_handoff_domovoi/HANDOFF-NOTES.md": {
       "bytes": 103,
       "sha256": "5a00d61e3a1b9fb0a4a90ca7555d8a309428ea801fc4d6aafae1775e53d23898"

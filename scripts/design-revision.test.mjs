@@ -90,3 +90,11 @@ test("digests are stable across two reads of the same tree", async () => {
   assert.deepEqual(await designDigests(root), await designDigests(root))
   await rm(root, { recursive: true, force: true })
 })
+
+test("does not digest this repository's own note about the directory", async () => {
+  const files = await designFiles()
+  assert.equal(files.includes("design/README.md"), false, "design/README.md is authored here, not signed")
+  assert.equal(files.includes("design/REVISIONS.json"), false, "the record is not part of what it records")
+  assert.ok(files.includes("design/design_system_domovoi/readme.md"), "the vendored readme is signed and stays digested")
+})
+

@@ -18,12 +18,14 @@ cannot be mistaken for one another.
 not as lint configuration. This repository does not install oxlint, and the file
 is wired to nothing.
 
-It is here for `x-omelette.tokens` and `x-omelette.tokenKinds`, which name every
-token and its kind. `scripts/design-rule.mjs` reads them to generate the lint
-rule that enforces the small-type floor, deriving the boundary from the tokens
-rather than restating it. Vendoring the manifest is also what makes an upstream
-token change visible: it fails `pnpm design:revision --check` like every other
-file here.
+It is here for `x-omelette.tokenKinds`, which names the kind of every token.
+`scripts/design-rule.mjs` reads it, together with `tokens/typography.css`, to
+generate the lint rule that enforces the small-type floor, deriving the boundary
+from the tokens rather than restating it. Its sibling `x-omelette.tokens` lists
+the same names without kinds and nothing reads it today; it is vendored because
+the file is vendored whole. Vendoring the manifest is also what makes an
+upstream token change visible: it fails `pnpm design:revision --check` like
+every other file here.
 
 Its own rules are not used and would not work if they were. Every one is a
 warning rather than an error, and its raw-pixel selector matches the `5px`
