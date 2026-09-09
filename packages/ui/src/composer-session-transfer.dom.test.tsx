@@ -65,6 +65,7 @@ async function openTransferDialog(result: SessionTransferResult) {
   const user = userEvent.setup()
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       fleet={[local, studio].map((machine) => ({ kind: "machine" as const, machine }))}
@@ -187,6 +188,7 @@ it("offers no move where nothing can carry it out", async () => {
   const user = userEvent.setup()
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       fleet={[local, studio].map((machine) => ({ kind: "machine" as const, machine }))}

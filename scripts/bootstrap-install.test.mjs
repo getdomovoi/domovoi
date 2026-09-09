@@ -4,7 +4,7 @@ import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import { syncBuiltinESMExports } from "node:module"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import test from "node:test"
 import { promisify } from "node:util"
 
@@ -254,6 +254,57 @@ test("names the native build when that is the step that runs out the budget", { 
     "an expired build must not start native load verification")
   await assert.rejects(fs.readFile(join(options.destination, `v${version}`, "runtime.json")), { code: "ENOENT" })
 })
+
+for (const layout of ["node_modules", "lib/node_modules", "linked launcher"]) {
+  test(`finds this Node distribution's npm through ${layout}`, { timeout: testTimeout }, async (t) => {
+    const { options, calls, root } = await fixture(t)
+    const prefix = join(root, "Node distribution with spaces")
+    const node = join(prefix, "Cellar/node/26.8.1/bin/node")
+    const base = dirname(node)
+    const entry = layout === "node_modules" ? join(base, "node_modules/npm/bin/npm-cli.js")
+      : layout === "lib/node_modules" ? join(base, "../lib/node_modules/npm/bin/npm-cli.js")
+        : join(prefix, "lib/node_modules/npm/bin/npm-cli.js")
+    await fs.mkdir(base, { recursive: true })
+    await fs.mkdir(dirname(entry), { recursive: true })
+    await fs.writeFile(entry, "// The runner below supplies npm's response.\n")
+    if (layout === "linked launcher") await fs.symlink(entry, join(base, "npm"), "file")
+    const original = Object.getOwnPropertyDescriptor(process, "execPath")
+    Object.defineProperty(process, "execPath", { value: node })
+    t.after(() => Object.defineProperty(process, "execPath", original))
+
+    const installed = await installer(options)
+    assert.ok(installed.runtimePath)
+    const expected = layout === "linked launcher" ? await fs.realpath(entry) : entry
+    const npmCalls = calls.filter(({ args }) => args.includes("--version") || args.includes("ci"))
+    assert.equal(npmCalls.length, 2)
+    for (const call of npmCalls) {
+      assert.equal(call.command, node, "npm must run under the same Node executable")
+      assert.equal(call.args[0], expected, "execute npm-cli.js directly, never its launcher or PATH")
+    }
+  })
+}
+
+for (const launcher of ["missing", "dangling link", "shell wrapper", "linked shell wrapper", "linked directory"]) {
+  test(`does not execute a ${launcher} as npm`, { timeout: testTimeout }, async (t) => {
+    const { options, calls, root } = await fixture(t)
+    const node = join(root, "distribution/bin/node")
+    const npm = join(dirname(node), "npm")
+    const target = join(root, launcher === "linked directory" ? "npm-cli.js" : "npm.cmd")
+    await fs.mkdir(dirname(node), { recursive: true })
+    if (launcher === "shell wrapper") await fs.writeFile(npm, "echo not JavaScript\n")
+    if (launcher === "linked shell wrapper") await fs.writeFile(target, "echo not JavaScript\n")
+    if (launcher === "linked directory") await fs.mkdir(target)
+    if (launcher === "dangling link" || launcher.startsWith("linked")) {
+      await fs.symlink(target, npm, launcher === "linked directory" ? "junction" : "file")
+    }
+    const original = Object.getOwnPropertyDescriptor(process, "execPath")
+    Object.defineProperty(process, "execPath", { value: node })
+    t.after(() => Object.defineProperty(process, "execPath", original))
+
+    await assert.rejects(installer(options), /npm-cli\.js was not found beside/)
+    assert.equal(calls.length, 0, "an unsupported launcher must not run or fall back to PATH")
+  })
+}
 
 test("refuses a missing or old npm with the supported minimum", { timeout: testTimeout }, async (t) => {
   const { options } = await fixture(t)

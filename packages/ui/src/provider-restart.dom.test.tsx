@@ -35,6 +35,7 @@ describe("provider restart interaction", () => {
       .mockResolvedValueOnce(undefined)
     const thread = (current: typeof snapshot) => (
       <Thread
+      onQueuedChange={vi.fn()}
         snapshot={current}
         connected
         onResolve={vi.fn(async () => {})}

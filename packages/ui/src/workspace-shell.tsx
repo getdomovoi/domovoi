@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent as ReactMouseEvent, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -12,17 +12,14 @@ import {
   HistoryIcon,
   DownloadIcon,
   ExternalLinkIcon,
-  LaptopIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MinusIcon,
-  PanelLeftCloseIcon,
   PanelRightCloseIcon,
   PrinterIcon,
   SearchIcon,
   Maximize2Icon,
   SendIcon,
-  SettingsIcon,
   SquareIcon,
   TerminalSquareIcon,
   XIcon,
@@ -148,7 +145,8 @@ import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
-import { ProjectSwitchConfirmationError } from "./client"
+import { DaemonRpcError, ProjectSwitchConfirmationError } from "./client"
+import { SessionsDrawer } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
 import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
@@ -189,6 +187,13 @@ import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
+import { MachineSheet } from "./machine-sheet"
+import { ApprovalReceipt } from "./approval-receipt"
+import { PlanStrip } from "./plan-strip"
+import { groupThreadActivity } from "./thread-activity-groups"
+import { TurnActivity } from "./turn-activity"
+import { withAuto, withPermissionMode } from "./permission-mode"
+import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, provesNothingRan, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import {
@@ -478,6 +483,7 @@ export function AppBar({
   commandShortcut,
   usage,
   usageToday,
+  sessionsDrawer,
 }: {
   snapshot: WorkspaceSnapshot | null
   connected: boolean
@@ -490,6 +496,7 @@ export function AppBar({
   onPauseAll: () => void
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
+  sessionsDrawer?: ReactNode | undefined
   usage?: SessionUsage | null | undefined
   usageToday?: UsageWindow | null | undefined
 }) {
@@ -506,6 +513,7 @@ export function AppBar({
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
         <Separator orientation="vertical" className="mx-1 hidden h-5 sm:block" />
+        {sessionsDrawer}
         <Button variant="ghost" size="sm" className="hidden sm:flex" disabled={!snapshot} onClick={onOpenProject}>
           {snapshot?.project?.name ?? "Open project"}
           {snapshot?.project ? (
@@ -760,108 +768,6 @@ export function SessionRow({
   )
 }
 
-function machineInitials(name: string): string {
-  const words = name.split(/[^a-z0-9]+/i).filter((word) => word.length > 0)
-  const first = words[0]?.[0] ?? name[0] ?? ""
-  const last = words.length > 1 ? (words[words.length - 1]?.[0] ?? "") : (words[0]?.[1] ?? "")
-  return `${first}${last}`.toUpperCase()
-}
-
-export function SessionsSidebar({
-  snapshot,
-  fleet,
-  onCollapse,
-  onActivate,
-  onNewSession,
-  onOpenProviderSettings,
-  collapseButtonRef,
-}: {
-  snapshot: WorkspaceSnapshot
-  fleet?: FleetEntry[] | null
-  onCollapse: () => void
-  onActivate: (sessionId: string) => void
-  onNewSession: () => void
-  onOpenProviderSettings: () => void
-  collapseButtonRef?: RefObject<HTMLButtonElement | null>
-}) {
-  const groups = useMemo(
-    () => [
-      { label: "Active", states: ["active"] },
-      { label: "Waiting", states: ["waiting"] },
-      // A conflicted session blocks work on both machines, so it sits above the
-      // quiet ones. Every transfer state stays listed: they are read-only and
-      // some need recovering, and a session missing from here cannot be
-      // selected, which puts its notice and its way out beyond reach.
-      { label: "Conflict", states: ["ownership-conflict"] },
-      { label: "Idle", states: ["idle", "done", "failed"] },
-      { label: "Moving", states: ["transferring"] },
-      { label: "Moved", states: ["transferred"] },
-      { label: "Archived", states: ["archiving", "archived"] },
-    ],
-    [],
-  )
-
-  return (
-    <aside aria-label="Sessions" data-workspace-panel="sessions" className="flex h-full min-w-0 flex-col bg-sidebar">
-      <div className="flex h-11 items-center justify-between px-3">
-        <span className="text-[9px] uppercase tracking-[0.15em] text-faint">Sessions</span>
-        <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse sessions" onClick={onCollapse}>
-          <PanelLeftCloseIcon />
-        </Button>
-      </div>
-      <div className="flex flex-col gap-2 px-3 pb-3">
-        <Button variant="outline" className="w-full justify-start" onClick={onNewSession}>
-          {snapshot.project ? "New session" : "Open project"}
-        </Button>
-        <div className="relative">
-          <SearchIcon className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-faint" />
-          <Input aria-label="Search sessions, files, and skills" className="pl-8 font-machine text-[10px]" placeholder="Search sessions, files, skills" />
-        </div>
-      </div>
-      <Separator />
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-4 p-2">
-          {groups.map((group) => {
-            const sessions = snapshot.sessions.filter((session) =>
-              group.states.includes(session.state),
-            )
-            return (
-              <section key={group.label} className="flex flex-col gap-1">
-                <h2 className="m-0 flex h-7 items-center gap-2 px-2 text-[9px] font-normal uppercase tracking-[0.13em] text-faint">
-                  <ChevronDownIcon className="size-3" />
-                  {group.label}
-                  <span className="font-machine">{sessions.length}</span>
-                </h2>
-                {sessions.map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    active={session.id === snapshot.activeSessionId}
-                    onActivate={onActivate}
-                  />
-                ))}
-              </section>
-            )
-          })}
-        </div>
-      </ScrollArea>
-      <Separator />
-      <div className="flex h-12 items-center gap-2 px-3">
-        <span className="flex size-6 items-center justify-center rounded-full bg-accent text-[10px] font-medium">{machineInitials(snapshot.machine.name)}</span>
-        <span className="min-w-0 flex-1"><span className="block text-[11px] font-medium">{snapshot.machine.name}</span><span className="block font-machine text-[9px] text-faint">{outcomeCount(fleet ? fleetMachines(fleet).length : 1, "machine", "machines")} · {snapshot.machine.connection}</span></span>
-        <LaptopIcon className="size-3.5 text-muted-foreground" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}>
-              <SettingsIcon />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent>
-        </Tooltip>
-      </div>
-    </aside>
-  )
-}
 
 function ApprovalCard({
   approval,
@@ -881,10 +787,10 @@ function ApprovalCard({
     cardRef.current?.scrollIntoView({ block: "end" })
   }, [approval.id])
 
+  // Agent and mode ride the header line instead of the grid, the way the design
+  // system draws the gate. Nothing is dropped: a desktop shows every fact.
   const facts = [
     ["Machine", approval.machine],
-    ["Agent", approval.agent],
-    ["Mode", approval.mode],
     ["Directory", approval.directory],
     ["Affects", approval.affects],
     ["Network", approval.network],
@@ -897,11 +803,14 @@ function ApprovalCard({
   }
 
   return (
-    <Alert ref={cardRef} variant="warning" className="mx-auto max-w-3xl gap-3 p-4">
+    <Alert ref={cardRef} variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
       <CircleStopIcon />
       <AlertTitle className="flex items-center gap-2 text-[12.5px]">
         Approval required
         {approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
+        <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">
+          {approval.agent} · {approval.mode}
+        </span>
       </AlertTitle>
       <AlertDescription className="col-span-full flex flex-col gap-3">
         <p className="text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
@@ -952,11 +861,21 @@ function ApprovalCard({
             </div>
           </div>
         ) : null}
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button ref={explainTriggerRef} variant="ghost" size="sm" onClick={() => setExplainOpen(true)}>Deny and explain</Button>
-          <Button variant="ghost" size="sm" onClick={() => onResolve("deny")}>Deny</Button>
-          <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
+        {/* One decision at full weight, two outlined beside it, and the fourth
+            as plain text. Four peer buttons make a person read all four before
+            the gate can move. */}
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
+          <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
+          <Button variant="outline" size="sm" onClick={() => onResolve("deny")}>Deny</Button>
+          <button
+            ref={explainTriggerRef}
+            type="button"
+            onClick={() => setExplainOpen(true)}
+            className="ml-auto rounded-sm text-[11px] text-warn-dim underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-warning"
+          >
+            Deny and explain
+          </button>
         </div>
       </AlertDescription>
     </Alert>
@@ -1280,32 +1199,47 @@ export function CheckpointThreadItem({
     <div className="flex items-center gap-1 self-center rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-[9px] text-faint">
       <span>Checkpoint · {item.label}</span>
       {item.commit ? (
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-[9px]">
-              Restore worktree
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Restore this checkpoint?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Domovoi checkpoints the current worktree first, then restores {item.label}. The
-                current state remains available as a recovery checkpoint.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <CheckpointRestoreAction
-                checkpointId={item.id}
-                disabled={disabled}
-                onRestore={onRestore}
-              />
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
       ) : null}
     </div>
+  )
+}
+
+// One control for restoring a checkpoint, wherever it is offered. The thread
+// and the history pane both reach a destructive action, so they share the
+// confirmation copy and the blocked rule rather than drifting apart.
+export function CheckpointRestore({
+  checkpointId,
+  label,
+  disabled,
+  onRestore,
+}: {
+  checkpointId: string
+  label: string
+  disabled: boolean
+  onRestore: (checkpointId: string) => void
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-[9px]">
+          Restore worktree
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Restore this checkpoint?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Domovoi checkpoints the current worktree first, then restores {label}. The
+            current state remains available as a recovery checkpoint.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <CheckpointRestoreAction checkpointId={checkpointId} disabled={disabled} onRestore={onRestore} />
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 
@@ -1427,6 +1361,10 @@ export function Thread({
   snapshot,
   connected,
   emergencyStopPending = false,
+  queued,
+  onQueuedChange,
+  failures,
+  onDismissFailure,
   fleet,
   transferFleet,
   admittedMachines,
@@ -1440,6 +1378,7 @@ export function Thread({
   onSend,
   onCheckpoint,
   onRestoreCheckpoint,
+  restoreBusy = false,
   onPauseSession,
   onArchiveSession,
   onOpenExternal,
@@ -1457,6 +1396,14 @@ export function Thread({
   snapshot: WorkspaceSnapshot
   connected: boolean
   emergencyStopPending?: boolean | undefined
+  // Bound to the session it was typed in: releasing it into whatever session
+  // happens to be open later would send someone's message to the wrong agent.
+  queued?: QueuedMessage | undefined
+  onQueuedChange: (next: QueuedMessage | undefined) => void
+  // Sends that never came back. Shown beside the queue rather than in it,
+  // because they are things that did not complete, not things that will.
+  failures?: readonly FailedAttempt[] | undefined
+  onDismissFailure?: ((id: string) => void) | undefined
   fleet?: FleetEntry[] | undefined
   transferFleet?: FleetEntry[] | undefined
   admittedMachines?: ReadonlySet<string> | undefined
@@ -1478,6 +1425,8 @@ export function Thread({
   ) => Promise<void>
   onCheckpoint: (sessionId: string) => Promise<void>
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
+  // Set while a restore started anywhere in the shell is still running.
+  restoreBusy?: boolean
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
@@ -1520,7 +1469,6 @@ export function Thread({
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
   const [desktopError, setDesktopError] = useState("")
-
   if (!active) {
     const hasProject = snapshot.project !== null
     return (
@@ -1565,9 +1513,7 @@ export function Thread({
   ).at(-1)
   const forkReason = forkSessionBlockedReason(active, forkCheckpoint)
 
-  const submitPrompt = async () => {
-    const nextPrompt = prompt.trim()
-    if (!nextPrompt || pending || providerRestartRequired || emergencyStopPending) return
+  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }) => {
     setPending(true)
     setSendError("")
     setSkillRefusal(undefined)
@@ -1583,19 +1529,50 @@ export function Thread({
           `${missing.length === 1 ? "A skill" : `${missing.length} skills`} you chose for this turn `
           + "is no longer in this project's catalog. Open Skills to review, then choose again.",
         )
+        // A refusal must not swallow the message. Put it back where it was.
+        if (!fromComposer) onQueuedChange({ sessionId: active.id, text: nextPrompt, state: "held", reason: "Held because the skills you chose are gone. Send it again when you have chosen." })
         return
       }
       await onSend(active.id, nextPrompt, selection)
-      setPrompt("")
+      // Only clear the box when the box is what was sent. A queued message
+      // released while someone types would otherwise erase the new draft.
+      if (fromComposer) setPrompt("")
       // The daemon accepted this selection, so it stops being a draft.
       setSkillSelection(undefined)
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
       if (refusal) setSkillRefusal(refusal)
       setSendError(cause instanceof Error ? cause.message : "The message could not be sent")
+      // Held, not waiting: a refused message that re-queued itself would be
+      // retried by the release effect on the very next render, forever.
+      if (!fromComposer) onQueuedChange({ sessionId: active.id, text: nextPrompt, state: "held", reason: "Held because sending failed. Send it again when you want to retry." })
     } finally {
       setPending(false)
     }
+  }
+
+  // A message sent while a turn is running is queued, never sent on top of it
+  // and never a reason to cancel it. One queued message, replaced rather than
+  // stacked, and it leaves at the next turn boundary.
+  const submitPrompt = async () => {
+    if (pending || providerRestartRequired || emergencyStopPending) return
+    const outcome = submitFromComposer({
+      text: prompt,
+      turnRunning: Boolean(active.activeTurnId),
+      queued: queued?.sessionId === active.id ? queued.text : undefined,
+    })
+    if (outcome.action === "ignore") return
+    if (outcome.action === "queue") {
+      onQueuedChange({
+        sessionId: active.id,
+        text: outcome.text,
+        state: "waiting",
+        ...(skillSelection ? { skillIds: [...skillSelection] } : {}),
+      })
+      setPrompt("")
+      return
+    }
+    await sendPrompt(outcome.text, { fromComposer: true })
   }
 
   const restartProvider = async () => {
@@ -1641,6 +1618,9 @@ export function Thread({
     if (pending || !active.activeTurnId) return
     setPending(true)
     setSendError("")
+    // Stopping is a refusal to run more work in this session. Without this the
+    // queue would leave at the boundary the stop itself created.
+    if (queued) onQueuedChange(heldAfter(queued, "Held because this session was stopped. Send it when you want it to run."))
     try {
       await onPauseSession(active.id)
     } catch (cause) {
@@ -1805,9 +1785,19 @@ export function Thread({
               </AlertDescription>
             </Alert>
           ) : null}
-          {renderedThreadForActiveSession(snapshot).map((item) => {
+          {groupThreadActivity(renderedThreadForActiveSession(snapshot)).map((row) => {
+            if (row.kind === "activity") {
+              return (
+                <TurnActivity
+                  key={row.id}
+                  items={row.items}
+                  running={Boolean(active.activeTurnId) && row.items.some((call) => call.outcome === "running")}
+                />
+              )
+            }
+            const item = row.item
             if (item.kind === "checkpoint") {
-              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
+              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || restoreBusy || archiveReadOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
             }
             if (item.kind === "user") {
               return (
@@ -1824,11 +1814,10 @@ export function Thread({
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
-              return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><CheckIcon /><AlertTitle>{item.operation}: {item.decision}</AlertTitle><AlertDescription>Checkpoint {item.checkpoint} · decided from {item.client}{item.connectionId ? ` · connection ${item.connectionId}` : item.clientId ? ` · declared client ${item.clientId}` : ""}{item.explanation ? ` · ${item.explanation}` : ""}</AlertDescription></Alert>
+              return <ApprovalReceipt key={item.id} receipt={item} />
             }
-            if (item.kind === "tool") {
-              return <Alert key={item.id}><TerminalSquareIcon /><AlertTitle>{item.title}</AlertTitle><AlertDescription><Badge variant="outline">{item.status}</Badge>{item.output ? <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-machine text-[10px]">{item.output}</pre> : null}</AlertDescription></Alert>
-            }
+            // Grouping consumed every tool item, so nothing reaches here.
+            if (item.kind === "tool") return null
             return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
           })}
           {transferReceipt ? (
@@ -1865,12 +1854,54 @@ export function Thread({
         {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
+        <PlanStrip
+          plan={snapshot.workingPlans.find((candidate) => candidate.sessionId === active.id)}
+          className="mx-auto mb-2 max-w-[var(--shell-thread)]"
+        />
         <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
+          {(failures ?? []).filter((attempt) => attempt.sessionId === active.id).map((attempt) => (
+            <div key={attempt.id} className="flex items-center gap-2 rounded-lg border border-danger-border bg-danger-background px-3 py-2">
+              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-danger-foreground" />
+              <span className="min-w-0 flex-1 truncate text-[12px] text-danger-foreground">{attempt.text}</span>
+              <span className="text-[10.5px] whitespace-nowrap text-danger-dim">{deliveryLabel(attempt)}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // Queueing it again replaces whatever is waiting, which the
+                  // person can see beside it before they press.
+                  onQueuedChange({
+                    sessionId: attempt.sessionId,
+                    text: attempt.text,
+                    state: "waiting",
+                    ...(attempt.skillIds ? { skillIds: attempt.skillIds } : {}),
+                  })
+                  onDismissFailure?.(attempt.id)
+                }}
+              >
+                {attempt.delivery === "refused" ? "Queue again" : "Send anyway"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => onDismissFailure?.(attempt.id)}>Dismiss</Button>
+            </div>
+          ))}
+          {queued?.sessionId === active.id ? (
+            <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
+              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
+              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{queued.text}</span>
+              <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">
+                {queued.state === "held" ? queued.reason ?? "held" : "sends at the next turn boundary"}
+              </span>
+              {queued.state === "held" ? (
+                <Button variant="ghost" size="sm" disabled={Boolean(active.activeTurnId) || pending || emergencyStopPending || providerRestartRequired} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
+              ) : null}
+              <Button variant="ghost" size="sm" onClick={() => onQueuedChange(undefined)}>Remove</Button>
+            </div>
+          ) : null}
           <Textarea
             aria-label="Message"
             rows={2}
             className="min-h-12 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
-            placeholder="Message the agent"
+            placeholder={active.activeTurnId ? "Send to queue for the next turn" : "Message the agent"}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             onKeyDown={(event) => {
@@ -2033,6 +2064,12 @@ const readOnlySessionStates = new Set<SessionSummary["state"]>([
   "ownership-conflict",
 ])
 
+export function activeSession(
+  snapshot: WorkspaceSnapshot,
+): WorkspaceSnapshot["sessions"][number] | undefined {
+  return snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
+}
+
 export function sessionIsArchiveReadOnly(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): boolean {
@@ -2106,11 +2143,7 @@ export function forkProviderChoice(
 }
 
 export function normalizePermissionMode(runtime: Runtime, permissionMode: PermissionMode): Runtime {
-  return {
-    ...runtime,
-    permissionMode,
-    auto: permissionMode === "build" && runtime.auto,
-  }
+  return withPermissionMode(runtime, permissionMode)
 }
 
 export function RuntimeControls({
@@ -2264,7 +2297,7 @@ export function RuntimeControls({
       <ToggleGroup type="single" value={runtime.permissionMode} disabled={pending} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
-      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange({ ...runtime, auto: runtime.permissionMode === "build" && auto })} />Auto</label>
+      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange(withAuto(runtime, auto))} />Auto</label>
       <AlertDialog
         open={providerChoice !== undefined}
         onOpenChange={(open) => {
@@ -2319,9 +2352,13 @@ export function HistoryPanel({
   sessionId,
   connected,
   onLoad,
+  onRestoreCheckpoint,
+  restoreBlocked = false,
 }: {
   sessionId: string | null
   connected: boolean
+  onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
+  restoreBlocked?: boolean
   onLoad: (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
@@ -2467,6 +2504,19 @@ export function HistoryPanel({
                   </div>
                   <Badge variant="outline" className="mt-1 font-machine text-[8px]">{entry.category}</Badge>
                   {detail ? <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-machine text-[10px] leading-relaxed text-muted-foreground">{detail}</pre> : null}
+                  {onRestoreCheckpoint && entry.category === "checkpoints" && entry.commit ? (
+                    <div className="mt-2">
+                      <CheckpointRestore
+                        // sourceId, not id: the daemon builds history ids as
+                        // thread:<checkpoint-id> and checkpoint.restore searches
+                        // by the checkpoint id it kept in sourceId.
+                        checkpointId={entry.sourceId}
+                        label={entry.label}
+                        disabled={restoreBlocked}
+                        onRestore={onRestoreCheckpoint}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )
@@ -2502,6 +2552,8 @@ export function ArtifactDock({
   onSetAnnotationStatus,
   onCreateAnnotation,
   onLoadSessionHistory,
+  onRestoreCheckpoint,
+  restoreBusy = false,
   onLoadSessionEvidence,
   onRevertSessionFile,
   captureAnnotation,
@@ -2555,7 +2607,9 @@ export function ArtifactDock({
     requestOptions?: { signal?: AbortSignal },
   ) => Promise<SessionHistoryPage>
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
-  onRevertSessionFile: (sessionId: string, path: string) => Promise<void>
+  onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
+  onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
+  restoreBusy?: boolean
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const workingPlan = snapshot.workingPlans.find(
@@ -3057,6 +3111,16 @@ export function ArtifactDock({
             sessionId={snapshot.activeSessionId}
             connected={connected}
             onLoad={onLoadSessionHistory}
+            onRestoreCheckpoint={onRestoreCheckpoint}
+            // An archived session and a running turn hold this shut, and so
+            // does a restore already in flight. The in-flight half has to come
+            // from the shell: the dock cannot see the thread's own pending
+            // state, and a snapshot arrives too late to stop a second click.
+            restoreBlocked={
+              restoreBusy
+              || sessionIsArchiveReadOnly(activeSession(snapshot))
+              || Boolean(activeSession(snapshot)?.activeTurnId)
+            }
           />
         </TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
@@ -3289,30 +3353,6 @@ export function AnnotationComments({
   )
 }
 
-function SidebarRail({
-  snapshot,
-  onActivate,
-  onExpand,
-  onOpenProviderSettings,
-  expandButtonRef,
-}: {
-  snapshot: WorkspaceSnapshot
-  onActivate: (sessionId: string) => void
-  onExpand: () => void
-  onOpenProviderSettings: () => void
-  expandButtonRef?: RefObject<HTMLButtonElement | null>
-}) {
-  return (
-    <aside aria-label="Collapsed sessions" data-workspace-panel="sessions-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-r bg-sidebar py-2">
-      <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand sessions" onClick={onExpand}><PanelLeftCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="right">Expand sessions</TooltipContent></Tooltip>
-      <Separator />
-      {snapshot.sessions.map((session) => <Tooltip key={session.id}><TooltipTrigger asChild><button type="button" aria-label={`${session.title}. Status: ${session.state}`} aria-pressed={session.id === snapshot.activeSessionId} onClick={() => onActivate(session.id)} className={cn("flex size-7 items-center justify-center rounded-md hover:bg-accent", session.id === snapshot.activeSessionId && "bg-accent")}><span aria-hidden="true" data-status-dot="" className={cn("size-2 rounded-full", statusClass[session.state])} /></button></TooltipTrigger><TooltipContent side="right">{session.title} · {session.state}</TooltipContent></Tooltip>)}
-      <span className="flex-1" />
-      <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={providerSettingsNavigationLabel} onClick={onOpenProviderSettings}><SettingsIcon /></Button></TooltipTrigger><TooltipContent side="right">{providerSettingsNavigationLabel}</TooltipContent></Tooltip>
-    </aside>
-  )
-}
-
 function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
   const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
   return (
@@ -3326,6 +3366,22 @@ function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandB
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
+  // The queue outlives the thread view and is not limited to the session on
+  // screen. Thread is keyed by session, so a switch unmounts it; and a message
+  // queued in A must leave at A's next turn boundary whether or not anyone is
+  // looking at A.
+  const [queues, setQueues] = useState<SessionQueues>({})
+  // Every send that did not come back, kept by identity. One slot per session
+  // was still one slot: a second refusal would erase the first receipt and the
+  // reason with it.
+  const [failures, setFailures] = useState<readonly FailedAttempt[]>([])
+  const nextAttemptId = useRef(0)
+  const releasing = useRef<Set<string>>(new Set())
+  // Bumped when a dispatch settles. A settlement that changed nothing else
+  // would otherwise leave a session that became eligible mid-flight waiting
+  // for some unrelated render to wake it.
+  const [settled, setSettled] = useState(0)
+  const [seenStop, setSeenStop] = useState<SystemEmergencyStopResult | null>(null)
   const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint)
   const homeMachineId = home.snapshot?.machine.id ?? null
   const accessScope = JSON.stringify([homeMachineId, clientKind, rpcUrl, rpcToken])
@@ -3446,10 +3502,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
 
   const shellRef = useRef<HTMLDivElement>(null)
-  const sidebarCollapseButtonRef = useRef<HTMLButtonElement>(null)
-  const sidebarExpandButtonRef = useRef<HTMLButtonElement>(null)
+  const [sessionsOpen, setSessionsOpen] = useState(false)
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockExpandButtonRef = useRef<HTMLButtonElement>(null)
+  const dockUnpinButtonRef = useRef<HTMLButtonElement>(null)
+  const sheetPinButtonRef = useRef<HTMLButtonElement>(null)
   const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
@@ -3490,10 +3547,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   })
   const {
     dockCollapsed,
+    dockPinned,
     externalEditor,
     layouts,
     notifications: notificationPreferences,
-    sidebarCollapsed,
     surface,
     theme,
     windowDecoration,
@@ -3502,15 +3559,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   useAppearanceTheme(theme)
   const commandPlatform: CommandPalettePlatform = windowBridge?.platform
     ?? (typeof navigator !== "undefined" && /Mac|iPhone|iPad/u.test(navigator.platform) ? "darwin" : "linux")
-  const setSidebarCollapsed = (collapsed: boolean) => {
-    const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
-      ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
-      : null
-    setWorkspaceUi((current) => ({ ...current, sidebarCollapsed: collapsed }))
-    if ((collapsed && activePanel === "sessions") || (!collapsed && activePanel === "sessions-rail")) {
-      restoreFocusAfterUpdate(collapsed ? sidebarExpandButtonRef : sidebarCollapseButtonRef)
-    }
-  }
   const setDockCollapsed = (collapsed: boolean) => {
     const activePanel = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
       ? document.activeElement.closest("[data-workspace-panel]")?.getAttribute("data-workspace-panel")
@@ -3520,6 +3568,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       restoreFocusAfterUpdate(collapsed ? dockExpandButtonRef : dockCollapseButtonRef)
     }
   }
+  const setDockPinned = (pinned: boolean) => {
+    setWorkspaceUi((current) => ({ ...current, dockPinned: pinned }))
+    // Pinning unmounts the floating sheet rather than updating it, and that
+    // unmount returns focus to whatever opened the sheet. Put focus on the
+    // control that now owns the state instead.
+    restoreFocusAfterUpdate(pinned ? dockUnpinButtonRef : sheetPinButtonRef)
+  }
+
   const changeWindowDecoration = (decoration: WorkspaceWindowDecoration) => {
     setWorkspaceUi((current) => ({ ...current, windowDecoration: decoration }))
     if (!windowBridge) return
@@ -3549,7 +3605,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
   const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
+  // Held above the pin and unpin swaps, each of which removes the control that
+  // was focused. The sheet cannot capture this for itself.
+  const dockOpenerRef = useRef<Element | null>(null)
   const openDockTab = (next: string) => {
+    dockOpenerRef.current = document.activeElement
     setDockTab(next)
     setDockCollapsed(false)
   }
@@ -3577,6 +3637,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     void activateSession(sessionId).catch((cause: unknown) => {
       setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
     })
+  }
+  // Opening a session means showing its thread. Activation alone leaves whatever
+  // surface is open in place, so a pick from Settings would have no composer.
+  const openSessionInWorkspace = (sessionId: string) => {
+    setSurface("workspace")
+    activateVisibleSession(sessionId)
   }
   const reconnectDaemon = () => {
     setConnectionError("")
@@ -3654,6 +3720,77 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const pauseActiveTurns = () => {
     void emergencyStop()
   }
+
+  // Any client's stop, not just this one's. The daemon broadcasts
+  // system.emergencyStopped and use-workspace surfaces it here, so a stop
+  // pressed on a phone holds the queue on the desktop too.
+  //
+  // Adjusted during render rather than in an effect on purpose. A stop arrives
+  // with the idle snapshot in the same render, and two effects on one commit
+  // race: the release effect would read the queues of that render, still
+  // waiting, and send the work the stop just ended. Setting state during
+  // render makes React re-run this component before any effect fires.
+  if (emergencyStopOutcome && emergencyStopOutcome !== seenStop) {
+    setSeenStop(emergencyStopOutcome)
+    setQueues(holdAllAfterStop)
+  }
+  useEffect(() => {
+    if (!emergencyStopPending) return
+    setQueues(holdAllAfterStop)
+  }, [emergencyStopPending])
+
+  // The release lives here rather than in Thread because a turn ending in A is
+  // A's business whether or not A is the session on screen.
+  useEffect(() => {
+    for (const message of releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })) {
+      const session = { id: message.sessionId }
+      if (releasing.current.has(session.id)) continue
+      const chosen = message.skillIds
+      // Waiting, not held: an unloaded catalog says nothing about whether the
+      // chosen skill still exists, and "your skill is gone" is a lie until it
+      // has answered.
+      if (chosen && chosen.length > 0 && localSkillInventory?.state !== "available") continue
+      const { selection, missing } = turnSkillSelectionFor(
+        chosen ? new Set(chosen) : undefined,
+        selectableTurnSkills(skills, snapshot?.skillEnablements ?? [], snapshot?.project?.id),
+      )
+      // Sending without them would quietly become a smaller selection, or an
+      // explicit "no skills" if every chosen skill has gone.
+      if (missing.length > 0) {
+        setQueues((current) => setQueue(current, session.id, heldAfter(
+          message,
+          `Held because ${missing.length === 1 ? "a skill" : `${missing.length} skills`} you chose is no longer in this project's catalog.`,
+        )))
+        continue
+      }
+      releasing.current.add(session.id)
+      setQueues((current) => setQueue(current, session.id, undefined))
+      void sendMessage(session.id, message.text, selection)
+        .catch((cause: unknown) => {
+          // Recorded, never re-queued: a refused message put back as waiting
+          // would be retried by this effect on the very next render, forever.
+          // A daemon error means nothing ran. Anything else means the answer
+          // was lost, and Domovoi cannot say whether the turn started.
+          // Built before the updater runs. Reading the counter inside it gives
+          // batched refusals the same id, and then dismissing one deletes another.
+          nextAttemptId.current += 1
+          const attempt = failedAttempt(
+            `attempt-${nextAttemptId.current}`,
+            message,
+            {
+              refused: cause instanceof DaemonRpcError && provesNothingRan(cause.code),
+              answered: cause instanceof DaemonRpcError,
+              reason: cause instanceof Error ? cause.message : "The message could not be sent",
+            },
+          )
+          setFailures((current) => [...current, attempt])
+        })
+        .finally(() => {
+          releasing.current.delete(session.id)
+          setSettled((count) => count + 1)
+        })
+    }
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -3760,10 +3897,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     entries: fleet?.entries,
     admittedMachines,
     skills,
-    activateSession: (sessionId) => {
-      setSurface("workspace")
-      activateVisibleSession(sessionId)
-    },
+    activateSession: openSessionInWorkspace,
     selectMachine: switchMachine,
     openSkill: (skillId) => {
       setRequestedSkillId(skillId)
@@ -3773,7 +3907,31 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
-  const layoutKey = `${sidebarCollapsed ? "rail" : "sidebar"}.${dockCollapsed ? "rail" : "dock"}`
+  // Restore ownership sits here, above both surfaces. The thread guards its own
+  // pending operations and the dock cannot see that state, so a restore started
+  // from either one has to hold the other shut until it answers.
+  const [checkpointRestorePending, setCheckpointRestorePending] = useState(false)
+  // Both surfaces restore through this one function, so an attempt started from
+  // either holds the other shut for as long as it runs.
+  const restoreCheckpointGuarded = async (sessionId: string, checkpointId: string) => {
+    if (checkpointRestorePending) return
+    setCheckpointRestorePending(true)
+    try {
+      await restoreCheckpoint(sessionId, checkpointId)
+    } finally {
+      setCheckpointRestorePending(false)
+    }
+  }
+  const restoreCheckpointOnce = (checkpointId: string) => {
+    if (!snapshot?.activeSessionId || checkpointRestorePending) return
+    setWorkspaceError("")
+    void restoreCheckpointGuarded(snapshot.activeSessionId, checkpointId).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
+    })
+  }
+  // One dock, rendered either as the pinned panel or inside the floating sheet.
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
   useEffect(() => {
@@ -4010,7 +4168,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     const observer = new ResizeObserver(([entry]) => {
       const width = entry?.contentRect.width ?? shell.clientWidth
       if (width < 1080) setDockCollapsed(true)
-      if (width < 850) setSidebarCollapsed(true)
+      // No sessions panel to collapse any more: the drawer is already out of
+      // the layout, so a narrow window costs it nothing.
     })
     observer.observe(shell)
     return () => observer.disconnect()
@@ -4019,7 +4178,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawer snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} onActivate={openSessionInWorkspace} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
@@ -4139,8 +4298,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onExport={exportAudit}
           />
         ) : (
-          <div className="flex min-h-0 flex-1">
-            {sidebarCollapsed ? <SidebarRail snapshot={snapshot} onActivate={activateVisibleSession} onExpand={() => setSidebarCollapsed(false)} onOpenProviderSettings={() => setSurface("providers")} expandButtonRef={sidebarExpandButtonRef} /> : null}
+          <div className="relative flex min-h-0 flex-1">
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
@@ -4154,10 +4312,26 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              {!sidebarCollapsed ? <><ResizablePanel id="sessions" defaultSize={240} minSize="14" maxSize="28"><SessionsSidebar snapshot={snapshot} fleet={fleet?.entries ?? null} onCollapse={() => setSidebarCollapsed(true)} onActivate={activateVisibleSession} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} collapseButtonRef={sidebarCollapseButtonRef} /></ResizablePanel><ResizableHandle withHandle aria-label="Resize sessions and thread" /></> : null}
-              <ResizablePanel id="thread" defaultSize={sidebarCollapsed && dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpoint} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
-              {!dockCollapsed ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46"><ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /></ResizablePanel></> : null}
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
+            {!dockCollapsed && !dockPinned ? (
+              <MachineSheet
+                open
+                pinned={false}
+                pinButtonRef={sheetPinButtonRef}
+                openerRef={dockOpenerRef}
+                onClose={() => setDockCollapsed(true)}
+                onTogglePin={() => setDockPinned(true)}
+              >
+                {machineSurfaces}
+              </MachineSheet>
+            ) : null}
+            {!dockCollapsed && dockPinned ? (
+              <div className="absolute top-2 right-3 z-10">
+                <Button ref={dockUnpinButtonRef} variant="ghost" size="sm" aria-pressed onClick={() => setDockPinned(false)}>Unpin</Button>
+              </div>
+            ) : null}
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
           </div>
           )}

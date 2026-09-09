@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs"
-import type { ComponentType } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
+import { SessionsDrawer } from "./sessions-drawer"
 import { demoWorkspace } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
@@ -39,36 +39,28 @@ function contrast(left: Oklch, right: Oklch): number {
 }
 
 describe("shared workspace accessibility contract", () => {
-  it("names session navigation, search, and non-color session state", () => {
-    const SessionsSidebar = (Workspace as unknown as {
-      SessionsSidebar?: ComponentType<{
-        snapshot: typeof demoWorkspace
-        onCollapse: () => void
-        onActivate: (sessionId: string) => void
-        onNewSession: () => void
-        onOpenProviderSettings: () => void
-      }>
-    }).SessionsSidebar
-
-    expect(SessionsSidebar).toBeTypeOf("function")
-    const Sidebar = SessionsSidebar as NonNullable<typeof SessionsSidebar>
+  // v2 retired the permanent sessions sidebar for the drawer, so the contract
+  // it carried moves here: the list is named, and every session says its state
+  // in words beside the dot rather than in colour alone.
+  it("names the session list and never states a session in colour alone", () => {
     const markup = renderToStaticMarkup(
       <TooltipProvider>
-        <Sidebar
+        <SessionsDrawer
           snapshot={demoWorkspace}
-          onCollapse={vi.fn()}
+          open
+          onOpenChange={vi.fn()}
           onActivate={vi.fn()}
-          onNewSession={vi.fn()}
-          onOpenProviderSettings={vi.fn()}
         />
       </TooltipProvider>,
     )
 
-    expect(markup).toMatch(/<aside[^>]*aria-label="Sessions"/)
-    expect(markup).toContain('aria-label="Search sessions, files, and skills"')
-    expect(markup).toContain("<h2")
-    expect(markup).toContain("Status: active")
-    expect(markup).toContain("Status: waiting")
+    expect(markup).toMatch(/aria-label="Sessions"/)
+    expect(markup).toMatch(/aria-label="RUNNING"|aria-label="NEEDS YOU"|aria-label="QUIET"/)
+    // Every dot is decorative; the meaning is the text next to it.
+    for (const dot of markup.match(/<span[^>]*data-status-dot[^>]*>/gu) ?? []) {
+      expect(dot).toContain('aria-hidden')
+    }
+    expect(markup).toMatch(/running|waiting on you|idle|failed/u)
   })
 
   it("exposes machine connectivity without relying on its dot", () => {
@@ -105,6 +97,7 @@ describe("shared workspace accessibility contract", () => {
     snapshot.project = null
     const markup = renderToStaticMarkup(
       <Workspace.Thread
+        onQueuedChange={vi.fn()}
         snapshot={snapshot}
         connected
         onResolve={vi.fn(async () => {})}

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
-import { chmod, link, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { dirname, join, posix, win32 } from "node:path"
+import { chmod, link, lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { basename, dirname, join, posix, win32 } from "node:path"
 import { promisify } from "node:util"
 
 import { bootstrapDaemon, defaultBootstrapInactivityTimeoutMs, defaultBootstrapTimeoutMs } from "./bootstrap-download.mjs"
@@ -37,9 +37,21 @@ async function bundledNpm(deadline, run) {
   // Use the npm belonging to this Node, not a .cmd shell wrapper or an unrelated
   // package manager elsewhere on PATH. All arguments remain literal on Windows.
   const base = dirname(process.execPath)
-  for (const entry of [join(base, "node_modules/npm/bin/npm-cli.js"), join(base, "../lib/node_modules/npm/bin/npm-cli.js")]) {
+  const launcher = join(base, "npm")
+  for (let entry of [join(base, "node_modules/npm/bin/npm-cli.js"), join(base, "../lib/node_modules/npm/bin/npm-cli.js"), launcher]) {
     let info
-    try { info = await deadline.run(() => lstat(entry)) } catch (error) {
+    try {
+      info = await deadline.run(() => lstat(entry))
+      if (entry === launcher) {
+        // Homebrew keeps Node in the Cellar and links this sibling launcher to
+        // npm under its shared prefix. Follow that link, never execute a shell
+        // wrapper, and keep the resolved CLI under the original deadline.
+        if (!info.isSymbolicLink()) continue
+        entry = await deadline.run(() => realpath(entry))
+        if (basename(entry) !== "npm-cli.js") continue
+        info = await deadline.run(() => lstat(entry))
+      }
+    } catch (error) {
       if (error.code === "ENOENT") continue
       throw error
     }
@@ -177,7 +189,10 @@ export async function installBootstrapDaemon(options) {
     const staging = await during("private staging creation", () => deadline.run(() => created))
     await during("private staging permissions", () => privateDirectory(staging, deadline, run))
     await during("runtime archive extraction", () => extractRuntime(archive.path, staging, run, deadline))
-    const directory = join(staging, "package")
+    // Node resolves cwd through symlinks. npm must see that same path in its
+    // explicit prefix or it can treat the package as a separate linked root.
+    const directory = await during("the runtime package location",
+      () => deadline.run(() => realpath(join(staging, "package"))))
     await during("private package permissions", () => privateDirectory(directory, deadline, run))
     const { lock, manifest, lockSha256 } = await during("the locked input read",
       () => lockedInput(directory, options.version, deadline))
@@ -188,7 +203,7 @@ export async function installBootstrapDaemon(options) {
       await deadline.run(() => writeFile(join(directory, "package-lock.json"), bytes, { mode: 0o600, flag: "wx", signal: deadline.signal }))
       await deadline.run(() => writeFile(join(directory, "package.json"), `${JSON.stringify(manifest)}\n`, { mode: 0o600, signal: deadline.signal }))
     })
-    const cache = join(staging, ".npm-cache")
+    const cache = join(directory, "../.npm-cache")
     const commandOptions = { cwd: directory, deadline, env: { ...process.env, npm_config_cache: cache } }
     // cwd alone does not override an inherited npm prefix or global setting.
     // CLI options also avoid case-sensitive environment collisions on Windows.
