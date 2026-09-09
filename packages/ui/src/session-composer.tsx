@@ -19,6 +19,7 @@ export function SessionComposer({
   slashCommands,
   onSend,
   onQueue,
+  onRemoveQueued,
   onSetRuntime,
   onOpenModelPicker,
 }: {
@@ -28,6 +29,7 @@ export function SessionComposer({
   slashCommands: readonly SlashCommand[]
   onSend: (text: string) => void
   onQueue: (text: string) => void
+  onRemoveQueued?: (() => void) | undefined
   onSetRuntime: (runtime: Runtime) => void
   onOpenModelPicker: () => void
 }) {
@@ -60,7 +62,9 @@ export function SessionComposer({
           <button
             type="button"
             className="text-[11px] text-muted-foreground"
-            onClick={() => setQueued(undefined)}
+            // Clearing the banner is not removing the turn. Whoever was told
+            // to queue it has to be told it is gone.
+            onClick={() => { onRemoveQueued?.(); setQueued(undefined) }}
           >
             Remove
           </button>
