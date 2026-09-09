@@ -3505,6 +3505,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockExpandButtonRef = useRef<HTMLButtonElement>(null)
+  const dockUnpinButtonRef = useRef<HTMLButtonElement>(null)
+  const sheetPinButtonRef = useRef<HTMLButtonElement>(null)
   const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
@@ -3568,6 +3570,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
   const setDockPinned = (pinned: boolean) => {
     setWorkspaceUi((current) => ({ ...current, dockPinned: pinned }))
+    // Pinning unmounts the floating sheet rather than updating it, and that
+    // unmount returns focus to whatever opened the sheet. Put focus on the
+    // control that now owns the state instead.
+    restoreFocusAfterUpdate(pinned ? dockUnpinButtonRef : sheetPinButtonRef)
   }
 
   const changeWindowDecoration = (decoration: WorkspaceWindowDecoration) => {
@@ -4309,6 +4315,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               <MachineSheet
                 open
                 pinned={false}
+                pinButtonRef={sheetPinButtonRef}
                 onClose={() => setDockCollapsed(true)}
                 onTogglePin={() => setDockPinned(true)}
               >
@@ -4317,7 +4324,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             ) : null}
             {!dockCollapsed && dockPinned ? (
               <div className="absolute top-2 right-3 z-10">
-                <Button variant="ghost" size="sm" aria-pressed onClick={() => setDockPinned(false)}>Unpin</Button>
+                <Button ref={dockUnpinButtonRef} variant="ghost" size="sm" aria-pressed onClick={() => setDockPinned(false)}>Unpin</Button>
               </div>
             ) : null}
             {dockCollapsed ? <DockRail onExpand={() => setDockCollapsed(false)} expandButtonRef={dockExpandButtonRef} /> : null}
