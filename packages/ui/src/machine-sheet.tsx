@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react"
+import { useEffect, useRef, type ReactNode, type RefObject } from "react"
 
 import { cn } from "./lib/utils"
 
@@ -22,6 +22,7 @@ export function MachineSheet({
   onSelectTab,
   onClose,
   onTogglePin,
+  pinButtonRef,
   children,
 }: {
   open: boolean
@@ -33,6 +34,9 @@ export function MachineSheet({
   onSelectTab?: (id: string) => void
   onClose: () => void
   onTogglePin: () => void
+  // The shell swaps this sheet for a pinned panel, so it needs a handle on the
+  // control that starts the swap to place focus afterwards.
+  pinButtonRef?: RefObject<HTMLButtonElement | null> | undefined
   children: ReactNode
 }) {
   const opener = useRef<Element | null>(null)
@@ -100,6 +104,7 @@ export function MachineSheet({
             </button>
           ))}
           <button
+            ref={pinButtonRef}
             type="button"
             onClick={onTogglePin}
             aria-pressed={pinned}

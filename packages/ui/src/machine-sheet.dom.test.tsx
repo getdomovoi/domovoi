@@ -130,3 +130,4 @@ it("takes one position, not two, when pinned", async () => {
   expect(frame.className).toContain("relative")
   expect(frame.className).not.toContain("absolute")
 })
+
