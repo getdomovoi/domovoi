@@ -271,9 +271,17 @@ export function CommandPalette({
   restoreFocusTo: { focus(): void } | null
 }) {
   const [query, setQuery] = useState("")
+  // cmdk reports the highlighted row by its value, and the value is the command
+  // id, so the footer can say what the modified key would do on this row rather
+  // than advertising it everywhere and doing nothing on most rows.
+  const [highlighted, setHighlighted] = useState("")
   const wasOpen = useRef(open)
   const shouldRestoreFocus = useRef(true)
   const ranked = useMemo(() => rankWorkspaceCommands(commands, query), [commands, query])
+  // cmdk highlights the first row on open and only tells us once the selection
+  // moves, so an empty report means the first row.
+  const current = highlighted || ranked[0]?.id
+  const elsewhere = ranked.find((command) => command.id === current && command.openElsewhere && !command.disabled)
   const sections = commandSections
 
   useEffect(() => {
@@ -297,18 +305,20 @@ export function CommandPalette({
       <Command
         shouldFilter={false}
         loop
+        value={current ?? ""}
+        onValueChange={setHighlighted}
         onKeyDown={(event) => {
-          // cmdk reports the highlighted row in the DOM rather than to us, and
-          // its own Enter handler does not carry modifiers, so the modified key
+          // cmdk's own Enter handler carries no modifiers, so the modified key
           // is read here and stopped before it reaches the default.
           if (!opensElsewhere(event, platform)) return
-          const selected = event.currentTarget.querySelector("[cmdk-item][data-selected=true]")
-          const command = ranked.find((candidate) => candidate.id === selected?.getAttribute("data-command-id"))
-          if (!command?.openElsewhere || command.disabled) return
+          // The modified key never falls through to the plain action. Running
+          // Enter's job because this row cannot go elsewhere would be a worse
+          // answer than doing nothing, and the footer already says which it is.
           event.preventDefault()
-          shouldRestoreFocus.current = command.restoreFocus !== false
+          if (!elsewhere) return
+          shouldRestoreFocus.current = elsewhere.restoreFocus !== false
           onOpenChange(false)
-          command.openElsewhere()
+          elsewhere.openElsewhere!()
         }}
       >
         <CommandInput
@@ -329,9 +339,8 @@ export function CommandPalette({
                   return (
                     <CommandItem
                       key={command.id}
-                      data-command-id={command.id}
                       {...(command.disabled === undefined ? {} : { disabled: command.disabled })}
-                      value={`${command.label} ${command.keywords.join(" ")}`}
+                      value={command.id}
                       onSelect={() => {
                         if (command.disabled) return
                         shouldRestoreFocus.current = command.restoreFocus !== false
@@ -367,8 +376,8 @@ export function CommandPalette({
             ) : null
           })}
         </CommandList>
-        <p className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-muted-foreground">
-          ↑↓ navigate · Enter run · {platform === "darwin" ? "⌘" : "Ctrl"}+Enter open elsewhere · Escape close · {platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle
+        <p data-testid="palette-hints" className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-muted-foreground">
+          ↑↓ navigate · Enter run{elsewhere ? ` · ${platform === "darwin" ? "⌘" : "Ctrl"}+Enter open elsewhere` : ""} · Escape close · {platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle
         </p>
       </Command>
     </CommandDialog>
