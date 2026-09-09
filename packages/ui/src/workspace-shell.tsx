@@ -1199,32 +1199,47 @@ export function CheckpointThreadItem({
     <div className="flex items-center gap-1 self-center rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-[9px] text-faint">
       <span>Checkpoint · {item.label}</span>
       {item.commit ? (
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-[9px]">
-              Restore worktree
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Restore this checkpoint?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Domovoi checkpoints the current worktree first, then restores {item.label}. The
-                current state remains available as a recovery checkpoint.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <CheckpointRestoreAction
-                checkpointId={item.id}
-                disabled={disabled}
-                onRestore={onRestore}
-              />
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
       ) : null}
     </div>
+  )
+}
+
+// One control for restoring a checkpoint, wherever it is offered. The thread
+// and the history pane both reach a destructive action, so they share the
+// confirmation copy and the blocked rule rather than drifting apart.
+export function CheckpointRestore({
+  checkpointId,
+  label,
+  disabled,
+  onRestore,
+}: {
+  checkpointId: string
+  label: string
+  disabled: boolean
+  onRestore: (checkpointId: string) => void
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-[9px]">
+          Restore worktree
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Restore this checkpoint?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Domovoi checkpoints the current worktree first, then restores {label}. The
+            current state remains available as a recovery checkpoint.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <CheckpointRestoreAction checkpointId={checkpointId} disabled={disabled} onRestore={onRestore} />
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 
@@ -2046,6 +2061,12 @@ const readOnlySessionStates = new Set<SessionSummary["state"]>([
   "ownership-conflict",
 ])
 
+export function activeSession(
+  snapshot: WorkspaceSnapshot,
+): WorkspaceSnapshot["sessions"][number] | undefined {
+  return snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
+}
+
 export function sessionIsArchiveReadOnly(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): boolean {
@@ -2328,9 +2349,13 @@ export function HistoryPanel({
   sessionId,
   connected,
   onLoad,
+  onRestoreCheckpoint,
+  restoreBlocked = false,
 }: {
   sessionId: string | null
   connected: boolean
+  onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
+  restoreBlocked?: boolean
   onLoad: (
     sessionId: string,
     options?: Omit<RpcParams<"session.history">, "sessionId">,
@@ -2476,6 +2501,16 @@ export function HistoryPanel({
                   </div>
                   <Badge variant="outline" className="mt-1 font-machine text-[8px]">{entry.category}</Badge>
                   {detail ? <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-machine text-[10px] leading-relaxed text-muted-foreground">{detail}</pre> : null}
+                  {onRestoreCheckpoint && entry.category === "checkpoints" && entry.commit ? (
+                    <div className="mt-2">
+                      <CheckpointRestore
+                        checkpointId={entry.id}
+                        label={entry.label}
+                        disabled={restoreBlocked}
+                        onRestore={onRestoreCheckpoint}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               </div>
             )
@@ -2511,6 +2546,7 @@ export function ArtifactDock({
   onSetAnnotationStatus,
   onCreateAnnotation,
   onLoadSessionHistory,
+  onRestoreCheckpoint,
   onLoadSessionEvidence,
   onRevertSessionFile,
   captureAnnotation,
@@ -2565,6 +2601,7 @@ export function ArtifactDock({
   ) => Promise<SessionHistoryPage>
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
   onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
+  onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const workingPlan = snapshot.workingPlans.find(
@@ -3066,6 +3103,14 @@ export function ArtifactDock({
             sessionId={snapshot.activeSessionId}
             connected={connected}
             onLoad={onLoadSessionHistory}
+            onRestoreCheckpoint={onRestoreCheckpoint}
+            // The pane reaches the same destructive action as the thread, so it
+            // reads the same rule: an archived session and a running turn both
+            // hold it shut.
+            restoreBlocked={
+              sessionIsArchiveReadOnly(activeSession(snapshot))
+              || Boolean(activeSession(snapshot)?.activeTurnId)
+            }
           />
         </TabsContent>
         <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
@@ -3843,7 +3888,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageFetchKey = sessionUsageFetchKey(snapshot)
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
   // One dock, rendered either as the pinned panel or inside the floating sheet.
-  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={(checkpointId) => {
+    if (!snapshot.activeSessionId) return
+    setWorkspaceError("")
+    void restoreCheckpoint(snapshot.activeSessionId, checkpointId).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
+    })
+  }} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
