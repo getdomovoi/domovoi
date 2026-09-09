@@ -27,9 +27,11 @@ overrides:
   # declare ranges that include 0.28.
   esbuild: 0.28.2
   # GHSA-2883-xcg3-v3hh, high: js-yaml below 4.3.2 does not bound CPU use for empty
-  # merge sources. It reaches us only through Expo's CLI tooling, which pins an older
-  # range. Remove the override once @expo/xcpretty admits 4.3.2 itself.
-  js-yaml: ^4.3.2
+  # merge sources. Every consumer already declares a range admitting 4.3.2; the old
+  # version came from lockfile resolution, so this forces the floor. Scoped to 4.x
+  # because the advisory also names 3.15.2 as patched, and the 3.x consumer must not
+  # be dragged across a major. Remove once the lockfile resolves 4.3.2 on its own.
+  js-yaml@4: ^4.3.2
 
 catalog:
   "@vitest/coverage-v8": ^4.1.11
