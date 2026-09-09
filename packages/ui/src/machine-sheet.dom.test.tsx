@@ -95,3 +95,38 @@ it("reports its own pinned state", async () => {
   await user.click(pin)
   expect(screen.getByRole("button", { name: "Unpin" }).getAttribute("aria-pressed")).toBe("true")
 })
+
+// Pinning is not closing. The focus return belongs to the close, so keying it
+// on pinned as well pulled focus out of an open sheet the moment it was pinned.
+it("keeps focus in the sheet when it is pinned open", async () => {
+  const user = userEvent.setup()
+  render(<Harness />)
+  const opener = screen.getByRole("button", { name: "Open changes" })
+  await user.click(opener)
+  const pin = screen.getByRole("button", { name: "Pin" })
+  await user.click(pin)
+  expect(screen.getByRole("region", { name: "Machine surfaces" })).toBeTruthy()
+  expect(document.activeElement).not.toBe(opener)
+})
+
+it("returns focus when a pinned sheet closes", async () => {
+  const user = userEvent.setup()
+  render(<Harness startPinned />)
+  const opener = screen.getByRole("button", { name: "Open changes" })
+  await user.click(opener)
+  await user.click(screen.getByRole("button", { name: "Unpin" }))
+  await user.keyboard("{Escape}")
+  expect(screen.queryByRole("region", { name: "Machine surfaces" })).toBeNull()
+  expect(document.activeElement).toBe(opener)
+})
+
+// A pinned sheet sits in the layout. Carrying absolute and relative together
+// left its position to CSS rule order rather than to intent.
+it("takes one position, not two, when pinned", async () => {
+  const user = userEvent.setup()
+  render(<Harness startPinned />)
+  await user.click(screen.getByRole("button", { name: "Open changes" }))
+  const frame = screen.getByRole("region", { name: "Machine surfaces" }).parentElement!
+  expect(frame.className).toContain("relative")
+  expect(frame.className).not.toContain("absolute")
+})
