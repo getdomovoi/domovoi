@@ -88,11 +88,63 @@ it("opens the command list on a slash, and says it acts on this turn", async () 
 it("reports a removed queued turn instead of only clearing its banner", async () => {
   const user = userEvent.setup()
   const props = composer({ turnRunning: true })
-  await user.type(screen.getByRole("textbox"), "also the readme")
+  await user.type(screen.getByLabelText("Message"), "also the readme")
   await user.keyboard("{Enter}")
   expect(props.onQueue).toHaveBeenCalledWith("also the readme")
 
   await user.click(screen.getByRole("button", { name: "Remove" }))
   expect(props.onRemoveQueued).toHaveBeenCalledOnce()
   expect(screen.queryByText("sends at the next turn boundary")).toBeNull()
+})
+
+// The list is reachable by pointer already. A command list you can only click
+// is half a control, and the composer is where hands stay on the keyboard.
+it("walks the command list with the arrow keys", async () => {
+  const user = userEvent.setup()
+  composer()
+  const message = screen.getByLabelText("Message")
+  await user.type(message, "/")
+  expect(message.getAttribute("aria-expanded")).toBe("true")
+  expect(message.getAttribute("aria-activedescendant")).toBeNull()
+
+  await user.keyboard("{ArrowDown}")
+  const run = screen.getByRole("option", { name: /\/run/ })
+  expect(run.getAttribute("aria-selected")).toBe("true")
+  expect(message.getAttribute("aria-activedescendant")).toBe(run.id)
+
+  await user.keyboard("{ArrowDown}")
+  expect(screen.getByRole("option", { name: /\/plan/ }).getAttribute("aria-selected")).toBe("true")
+  expect(run.getAttribute("aria-selected")).toBe("false")
+})
+
+it("takes the highlighted command on Enter instead of sending the text", async () => {
+  const user = userEvent.setup()
+  const props = composer()
+  const message = screen.getByLabelText("Message")
+  await user.type(message, "/")
+  await user.keyboard("{ArrowDown}{Enter}")
+
+  expect(props.onSend).not.toHaveBeenCalled()
+  expect((message as HTMLTextAreaElement).value).toBe("/run ")
+  expect(screen.queryByRole("listbox")).toBeNull()
+})
+
+it("closes the command list on Escape without sending", async () => {
+  const user = userEvent.setup()
+  const props = composer()
+  const message = screen.getByLabelText("Message")
+  await user.type(message, "/")
+  await user.keyboard("{Escape}")
+
+  expect(screen.queryByRole("listbox")).toBeNull()
+  expect(props.onSend).not.toHaveBeenCalled()
+  expect((message as HTMLTextAreaElement).value).toBe("/")
+})
+
+it("still sends a plain message with the list closed", async () => {
+  const user = userEvent.setup()
+  const props = composer()
+  await user.type(screen.getByLabelText("Message"), "ship it")
+  await user.keyboard("{Enter}")
+  expect(props.onSend).toHaveBeenCalledWith("ship it")
 })

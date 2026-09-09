@@ -1,5 +1,5 @@
 import type { PermissionMode, Runtime } from "@getdomovoi/protocol"
-import { useState } from "react"
+import { useId, useState, type KeyboardEvent } from "react"
 
 import { Chip } from "./chip"
 import { FloatingSurface } from "./floating-surface"
@@ -36,11 +36,45 @@ export function SessionComposer({
   const [text, setText] = useState("")
   const [queued, setQueued] = useState<string>()
   const [modeOpen, setModeOpen] = useState(false)
+  // Dismissed survives until the next keystroke, so Escape and a taken command
+  // both close a list the text still qualifies for.
+  const [dismissed, setDismissed] = useState(false)
+  const [active, setActive] = useState(-1)
+  const listId = useId()
 
-  const slashOpen = text.startsWith("/")
-  const matches = slashOpen
+  const matches = text.startsWith("/") && !dismissed
     ? slashCommands.filter((command) => command.name.startsWith(text.split(" ")[0]!))
     : []
+  const slashOpen = matches.length > 0
+  const optionId = (index: number) => `${listId}-${index}`
+
+  const take = (command: SlashCommand) => {
+    setText(`${command.name} `)
+    setDismissed(true)
+    setActive(-1)
+  }
+
+  const onListKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!slashOpen) return false
+    if (event.key === "Escape") {
+      setDismissed(true)
+      setActive(-1)
+      return true
+    }
+    if (event.key === "ArrowDown") {
+      setActive((current) => (current + 1) % matches.length)
+      return true
+    }
+    if (event.key === "ArrowUp") {
+      setActive((current) => (current <= 0 ? matches.length : current) - 1)
+      return true
+    }
+    if (event.key === "Enter" && !event.shiftKey && active >= 0) {
+      take(matches[active]!)
+      return true
+    }
+    return false
+  }
 
   const submit = () => {
     const outcome = submitFromComposer({ text, turnRunning, queued })
@@ -72,15 +106,16 @@ export function SessionComposer({
       ) : null}
 
       {slashOpen ? (
-        <div aria-label="Commands for this turn" role="listbox" className="rounded-lg border border-border bg-popover p-1">
+        <div id={listId} aria-label="Commands for this turn" role="listbox" className="rounded-lg border border-border bg-popover p-1">
           <p className="px-2 py-1 text-[10.5px] tracking-[0.13em] text-faint">THIS TURN</p>
-          {matches.map((command) => (
+          {matches.map((command, index) => (
             <button
               type="button"
               role="option"
-              aria-selected={false}
+              id={optionId(index)}
+              aria-selected={index === active}
               key={command.name}
-              onClick={() => setText(`${command.name} `)}
+              onClick={() => take(command)}
               className="flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent"
             >
               <span className="font-mono text-[11.5px] text-foreground">{command.name}</span>
@@ -95,8 +130,22 @@ export function SessionComposer({
         value={text}
         aria-label="Message"
         rows={2}
-        onChange={(event) => setText(event.target.value)}
+        role="combobox"
+        aria-expanded={slashOpen}
+        aria-controls={listId}
+        {...(slashOpen && active >= 0 ? { "aria-activedescendant": optionId(active) } : {})}
+        onChange={(event) => {
+          setText(event.target.value)
+          setDismissed(false)
+          setActive(-1)
+        }}
         onKeyDown={(event) => {
+          // The list answers first while it is open, so Enter takes the
+          // highlighted command rather than sending the half-typed line.
+          if (onListKey(event)) {
+            event.preventDefault()
+            return
+          }
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault()
             submit()
