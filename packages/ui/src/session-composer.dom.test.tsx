@@ -28,6 +28,7 @@ function composer(overrides: Partial<Parameters<typeof SessionComposer>[0]> = {}
     slashCommands: commands,
     onSend: vi.fn(),
     onQueue: vi.fn(),
+    onRemoveQueued: vi.fn(),
     onSetRuntime: vi.fn(),
     onOpenModelPicker: vi.fn(),
     ...overrides,
@@ -80,4 +81,18 @@ it("opens the command list on a slash, and says it acts on this turn", async () 
   await user.type(screen.getByLabelText("Message"), "/")
   expect(screen.getByText("THIS TURN")).toBeTruthy()
   expect(screen.getByRole("option", { name: /\/run/ })).toBeTruthy()
+})
+
+// Removing a queued turn has to travel. Clearing the banner alone leaves the
+// turn queued wherever the parent put it, with nothing on screen saying so.
+it("reports a removed queued turn instead of only clearing its banner", async () => {
+  const user = userEvent.setup()
+  const props = composer({ turnRunning: true })
+  await user.type(screen.getByRole("textbox"), "also the readme")
+  await user.keyboard("{Enter}")
+  expect(props.onQueue).toHaveBeenCalledWith("also the readme")
+
+  await user.click(screen.getByRole("button", { name: "Remove" }))
+  expect(props.onRemoveQueued).toHaveBeenCalledOnce()
+  expect(screen.queryByText("sends at the next turn boundary")).toBeNull()
 })
