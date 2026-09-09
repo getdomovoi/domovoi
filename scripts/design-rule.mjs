@@ -59,12 +59,20 @@ export function floorFrom(sizes) {
 export function belowPattern(boundary) {
   const whole = Math.floor(boundary)
   const fraction = Math.round((boundary - whole) * 10)
-  if (whole > 9 || Math.abs(boundary * 10 - Math.round(boundary * 10)) > Number.EPSILON) {
+  // Number.EPSILON is the gap at 1, not at 10, so it cannot judge a scaled
+  // comparison. Round-tripping the value is what actually asks whether it has
+  // one decimal place.
+  if (whole > 9 || Math.round(boundary * 10) / 10 !== boundary) {
     throw new Error(`${outputFile}: cannot express "below ${boundary}px" as a single-digit pattern; extend belowPattern before moving the floor`)
   }
   const alternatives = []
   if (whole > 0) alternatives.push(`[0-${whole - 1}](?:\\\\.\\\\d+)?`)
-  alternatives.push(fraction > 0 ? `${whole}(?:\\\\.[0-${fraction - 1}]\\\\d*)?` : `${whole}`)
+  // Only when the boundary has a fractional part is the whole number itself
+  // partly below it. On a whole-pixel boundary the first alternative already
+  // covers everything under it, and the bare digit would match the boundary
+  // the pattern exists to exclude.
+  if (fraction > 0) alternatives.push(`${whole}(?:\\\\.[0-${fraction - 1}]\\\\d*)?`)
+  if (alternatives.length === 0) throw new Error(`${outputFile}: nothing is below ${boundary}px; the rule would ban nothing`)
   return alternatives.join("|")
 }
 

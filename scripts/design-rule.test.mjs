@@ -86,3 +86,24 @@ test("the generated module says where it came from and what it bans", async () =
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("excludes a whole-pixel boundary rather than matching it", () => {
+  // The boundary is the smallest legal value, so it must never match. With no
+  // fractional part the whole number is not partly below itself, and emitting
+  // the bare digit would ban the very value the design system names.
+  const pattern = new RegExp(`text-\\[(?:${belowPattern(9).replaceAll("\\\\", "\\")})px\\]`)
+  assert.equal(pattern.test("text-[9px]"), false, "text-[9px] is the boundary and must not match")
+  assert.equal(pattern.test("text-[8.5px]"), true, "text-[8.5px] is below it and must match")
+})
+
+test("refuses a boundary with nothing beneath it", () => {
+  assert.throws(() => belowPattern(0), /ban nothing/)
+})
+
+test("accepts one decimal place and refuses two", () => {
+  // Number.EPSILON is the gap at 1, not at 10, so the old scaled comparison
+  // could have rejected a representable boundary.
+  assert.doesNotThrow(() => belowPattern(9.3))
+  assert.throws(() => belowPattern(9.25), /cannot express/)
+})
+
