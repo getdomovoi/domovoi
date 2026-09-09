@@ -164,3 +164,18 @@ it("returns focus to the message after a command is clicked", async () => {
   await user.keyboard("build")
   expect((message as HTMLTextAreaElement).value).toBe("/run build")
 })
+
+// Accepting a command that is already the whole text does not change the value,
+// so nothing moves the caret on its own. Home first, then a pick, is the case
+// that catches it.
+it("puts the caret after the command even when the text does not change", async () => {
+  const user = userEvent.setup()
+  composer()
+  const message = screen.getByLabelText("Message") as HTMLTextAreaElement
+  await user.type(message, "/run ")
+  await user.keyboard("{Home}")
+  await user.click(screen.getByRole("option", { name: /\/run/ }))
+  await user.keyboard("argument")
+
+  expect(message.value).toBe("/run argument")
+})
