@@ -17,7 +17,7 @@ function page(): SessionHistoryPage {
     hasMore: false,
     items: [
       {
-        id: "history-1",
+        id: "thread:checkpoint-7f23",
         sourceId: "checkpoint-7f23",
         sessionId: "session-billing",
         createdAt: "2026-09-08T12:51:00.000Z",
@@ -26,7 +26,7 @@ function page(): SessionHistoryPage {
         commit: "a".repeat(40),
       },
       {
-        id: "history-2",
+        id: "thread:checkpoint-7f00",
         sourceId: "checkpoint-7f00",
         sessionId: "session-billing",
         createdAt: "2026-09-08T12:30:00.000Z",
@@ -63,7 +63,10 @@ it("offers restore from the history pane for a checkpoint that has a commit", as
 
   await user.click(restore[0]!)
   await user.click(screen.getByRole("button", { name: "Restore worktree", hidden: false }))
-  expect(onRestoreCheckpoint).toHaveBeenCalledWith("history-1")
+  // The daemon builds history ids as thread:<checkpoint-id> and keeps the real
+  // checkpoint id in sourceId. checkpoint.restore searches by the latter, so
+  // sending the history id is rejected for every checkpoint the daemon made.
+  expect(onRestoreCheckpoint).toHaveBeenCalledWith("checkpoint-7f23")
 })
 
 it("says nothing about restoring a checkpoint that carries no commit", async () => {
