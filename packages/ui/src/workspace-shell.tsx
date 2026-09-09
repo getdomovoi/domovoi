@@ -4064,6 +4064,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     activateSession: openSessionInWorkspace,
     selectMachine: switchMachine,
     openCheckpoints,
+    // Cmd+Enter on a machine starts a session there: attach to that daemon,
+    // then open the launcher on it. Nothing is running yet, so there is nothing
+    // to reconcile.
+    startSessionOn: (machineId: string) => {
+      switchMachine(machineId)
+      setLauncherMode("session")
+    },
     openSkill: (skillId) => {
       setRequestedSkillId(skillId)
       setSurface("skills")
