@@ -135,7 +135,7 @@ const migrationNote =
 
 // The handoff's Fleet idioms: eyebrow labels at 9px and .1em in --faint, values
 // under them in the machine face at 11.5px.
-const eyebrow = "text-[9px] tracking-[.1em] text-faint uppercase"
+const eyebrow = "text-eyebrow text-faint uppercase"
 const panelEyebrow = "text-[9.5px] tracking-[.1em] text-faint uppercase"
 const monoValue = "font-machine text-[11.5px]"
 
@@ -433,7 +433,7 @@ function StatusChip({ tone, children }: { tone: "warning" | "destructive"; child
       : "bg-[color-mix(in_oklab,var(--destructive)_16%,transparent)] text-destructive"
   return (
     <span
-      className={`inline-flex items-center rounded-[4px] px-[7px] py-[2px] text-[9px] tracking-[.06em] uppercase ${skin}`}
+      className={`inline-flex items-center rounded-[4px] px-[7px] py-[2px] text-eyebrow uppercase ${skin}`}
     >
       {children}
     </span>

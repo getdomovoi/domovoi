@@ -124,6 +124,14 @@
   --skel: oklch(0.945 0.004 285);
   --skel-hi: oklch(0.975 0.003 285);
   --radius: 0.65rem;
+  /* The type floor. Sans prose bottoms out at --text-micro; below it there are
+     exactly two named roles, and reaching for a raw pixel value instead of one
+     of these is the drift these tokens exist to stop. Values from the design
+     system's tokens/typography.css. */
+  --text-micro: 10.5px;
+  --text-mono-xs: 10px;
+  --text-eyebrow: 9.5px;
+  --text-eyebrow-ls: 0.12em;
   --shell-rail: 62px;
   --shell-sidebar: 240px;
   --shell-thread: 760px;
@@ -295,6 +303,22 @@
 
 @utility font-machine {
   font-family: var(--font-mono);
+}
+
+/* The three legal small-type roles, named so nobody has to remember which
+   number belongs to which. Eyebrow carries its tracking with it, because the
+   size alone is not the role. */
+@utility text-micro {
+  font-size: var(--text-micro);
+}
+
+@utility text-mono-xs {
+  font-size: var(--text-mono-xs);
+}
+
+@utility text-eyebrow {
+  font-size: var(--text-eyebrow);
+  letter-spacing: var(--text-eyebrow-ls);
 }
 
 @utility electron-drag {

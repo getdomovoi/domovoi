@@ -42,7 +42,10 @@ describe("PreviewVariantThumbnail", () => {
 
   it("renders real cached imagery when available and a truthful fallback otherwise", () => {
     expect(renderToStaticMarkup(<PreviewVariantThumbnail url="blob:domovoi-thumbnail" />)).toContain("<img")
-    expect(renderToStaticMarkup(<PreviewVariantThumbnail />)).toContain("PREVIEW")
+    // The fallback is a tile, not a label. It carries no word, because an
+    // aria-hidden one at 8px was readable by nobody.
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail />)).toContain('aria-hidden="true"')
+    expect(renderToStaticMarkup(<PreviewVariantThumbnail />)).not.toContain("<img")
     expect(renderToStaticMarkup(<PreviewVariantThumbnail url="https://attacker.example/x.png" />)).not.toContain("<img")
   })
 
@@ -543,7 +546,7 @@ describe("Thread", () => {
       /<button(?=[^>]*disabled="")(?=[^>]*title="Stop the active turn before creating a checkpoint")[^>]*>Checkpoint<\/button>/,
     )
     expect(markup).toContain(
-      '<span role="status" class="font-machine text-[9px] text-faint">Stop the active turn before creating a checkpoint</span>',
+      '<span role="status" class="font-machine text-mono-xs text-faint">Stop the active turn before creating a checkpoint</span>',
     )
   })
 })

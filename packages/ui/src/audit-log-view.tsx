@@ -150,7 +150,7 @@ function AuditEntryRow({ entry }: { entry: AuditEntry }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-machine text-[11px] font-medium">{entry.action}</span>
         <Badge variant={outcomeVariant(entry.outcome)}>{entry.outcome}</Badge>
-        <time className="ml-auto font-machine text-[9px] text-faint" dateTime={entry.occurredAt}>
+        <time className="ml-auto font-machine text-mono-xs text-faint" dateTime={entry.occurredAt}>
           {new Date(entry.occurredAt).toLocaleString()}
         </time>
       </div>
@@ -388,7 +388,7 @@ export function AuditLogView({
               </Button>
             ) : null}
             {!loading && page?.entries.length ? (
-              <p className="mt-4 flex items-center justify-center gap-1.5 font-machine text-[9px] text-faint">
+              <p className="mt-4 flex items-center justify-center gap-1.5 font-machine text-mono-xs text-faint">
                 <ShieldCheckIcon /> Stored and exported fields are redacted by the daemon.
               </p>
             ) : null}

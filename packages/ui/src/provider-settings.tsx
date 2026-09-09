@@ -67,7 +67,7 @@ export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSe
                   <span className="truncate font-machine text-[9.5px] text-faint">
                     {provider.command}{provider.version ? ` · ${provider.version}` : ""}
                   </span>
-                  <span id={`provider-account-${provider.id}`} className="text-[10px] text-muted-foreground">
+                  <span id={`provider-account-${provider.id}`} className="text-micro text-muted-foreground">
                     Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal
                   </span>
                 </span>
@@ -325,7 +325,7 @@ function ProviderKeyRow({ status }: { status: ProviderSecretStatus }) {
             {status.state === "stored" ? "Stored" : status.state === "unavailable" ? "Keychain unavailable" : "Not set"}
           </FieldDescription>
         </span>
-        <span className="min-w-0 basis-64 flex-[2] text-[10px] leading-relaxed text-muted-foreground">
+        <span className="min-w-0 basis-64 flex-[2] text-micro leading-relaxed text-muted-foreground">
           Run <code className="font-machine">domovoid secret set {status.provider}</code> locally on the execution machine.
           {status.state === "stored" ? <><br />Delete with <code className="font-machine">domovoid secret delete {status.provider}</code>.</> : null}
         </span>

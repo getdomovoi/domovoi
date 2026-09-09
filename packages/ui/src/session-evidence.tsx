@@ -8,6 +8,10 @@ import {
   XCircleIcon,
 } from "lucide-react"
 
+import {
+  maximumSessionEvidenceCommandLength,
+  maximumSessionEvidenceOutputLength,
+} from "@getdomovoi/protocol"
 import type { ChangedFileEvidence, FileEvidenceAssociation, SessionEvidence } from "@getdomovoi/protocol"
 
 import { coverageLabel, revertPrompt, type RevertPrompt } from "./file-evidence-copy"
@@ -175,22 +179,22 @@ function FileEvidenceRow({
               aria-expanded={open ?? false}
               onClick={onToggle}
             >
-              <span aria-hidden="true" className="font-machine text-[9px]">{open ? "▾" : "▸"}</span>
+              <span aria-hidden="true" className="font-machine text-mono-xs">{open ? "▾" : "▸"}</span>
             </Button>
           ) : null}
           <span className="truncate font-machine text-[10px] text-strong" title={file.path}>
             {file.path}
           </span>
-          <Badge variant="outline" className="h-4 shrink-0 px-1 text-[8px]">{file.status}</Badge>
-          {file.binary ? <Badge variant="outline" className="h-4 shrink-0 px-1 text-[8px]">binary</Badge> : null}
+          <Badge variant="outline" className="shrink-0 px-1 text-mono-xs">{file.status}</Badge>
+          {file.binary ? <Badge variant="outline" className="shrink-0 px-1 text-mono-xs">binary</Badge> : null}
         </div>
         {file.previousPath ? (
-          <p className="mt-1 truncate font-machine text-[9px] text-faint">from {file.previousPath}</p>
+          <p className="mt-1 truncate font-machine text-mono-xs text-faint">from {file.previousPath}</p>
         ) : null}
-        <p className="mt-1 font-machine text-[9px] text-faint">{fileStage(file)}</p>
+        <p className="mt-1 font-machine text-mono-xs text-faint">{fileStage(file)}</p>
         <p className="mt-1 text-[10.5px] text-faint">{coverageLabel(association?.tests)}</p>
       </div>
-      <div className="flex items-start gap-2 font-machine text-[9px]">
+      <div className="flex items-start gap-2 font-machine text-mono-xs">
         <div className="flex items-start gap-1">
           {file.binary || file.additions === null || file.deletions === null ? (
             <span className="text-faint">
@@ -216,7 +220,7 @@ function FileEvidenceRow({
               {prompt.verb} file
             </Button>
           ) : (
-            <span className="max-w-40 text-right text-[9px] text-faint">{prompt.reason}</span>
+            <span className="max-w-40 text-right text-micro text-faint">{prompt.reason}</span>
           )
         ) : null}
       </div>
@@ -230,7 +234,7 @@ function FileEvidenceRow({
           {fileDiff}
         </pre>
       ) : (
-        <p className="m-0 border-t px-3 py-2 font-machine text-[9px] text-warning">
+        <p className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-warning">
           {file.binary
             ? "Binary file, so Git reports no diff."
             : diffTruncated
@@ -375,7 +379,7 @@ export function SessionEvidenceContent({
       <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
         <div>
           <p className="m-0 text-[11px] font-medium">Session evidence</p>
-          <p className="m-0 font-machine text-[9px] text-faint">
+          <p className="m-0 font-machine text-mono-xs text-faint">
             {evidence ? `refreshed ${evidence.refreshedAt}` : "Git and recorded tool state"}
           </p>
         </div>
@@ -416,10 +420,10 @@ export function SessionEvidenceContent({
                 <div className="flex items-center justify-between px-3 py-2">
                   <div>
                     <h3 className="m-0 text-[11px] font-medium">Working tree</h3>
-                    <p className="mt-0.5 font-machine text-[9px] text-faint">
+                    <p className="mt-0.5 font-machine text-mono-xs text-faint">
                       {evidence.workspace.totalChangedFiles} changed files · {evidence.workspace.baseCommit.slice(0, 8)}
                     </p>
-                    <p className="mt-0.5 font-machine text-[9px] text-faint">
+                    <p className="mt-0.5 font-machine text-mono-xs text-faint">
                       {counts.added} added · {counts.modified} modified · {counts.deleted} deleted
                     </p>
                   </div>
@@ -467,7 +471,7 @@ export function SessionEvidenceContent({
                   </Empty>
                 )}
                 {evidence.workspace.filesTruncated ? (
-                  <p className="border-t px-3 py-2 font-machine text-[9px] text-warning">
+                  <p className="border-t px-3 py-2 font-machine text-mono-xs text-warning">
                     Only the first {evidence.workspace.files.length} changed files are shown.
                   </p>
                 ) : null}
@@ -514,7 +518,7 @@ export function SessionEvidenceContent({
                   <p className="m-0 px-3 py-5 text-center text-[11px] text-faint">No diff output.</p>
                 )}
                 {evidence.workspace.diffTruncated ? (
-                  <p className="border-t px-3 py-2 font-machine text-[9px] text-warning">
+                  <p className="border-t px-3 py-2 font-machine text-mono-xs text-warning">
                     Diff output was truncated at the transport bound.
                   </p>
                 ) : null}
@@ -524,7 +528,7 @@ export function SessionEvidenceContent({
                 <div className="flex items-center justify-between px-3 py-2">
                   <div>
                     <h3 className="m-0 text-[11px] font-medium">Observed test runs</h3>
-                    <p className="mt-0.5 font-machine text-[9px] text-faint">
+                    <p className="mt-0.5 font-machine text-mono-xs text-faint">
                       {evidence.tests.passed} passed · {evidence.tests.failed} failed · {evidence.tests.totalRuns} command runs
                     </p>
                   </div>
@@ -540,13 +544,24 @@ export function SessionEvidenceContent({
                       )}
                       <div className="min-w-0 flex-1">
                         <p className="m-0 break-all font-machine text-[10px] text-strong">{run.command}</p>
-                        <div className="mt-1 flex flex-wrap gap-2 font-machine text-[8px] text-faint">
+                        {/* A limit is named beside the thing it cut, not filed
+                            with the metadata. This panel is called Evidence,
+                            and evidence that is partial has to say so. */}
+                        {run.commandTruncated ? (
+                          <p className="m-0 mt-1 text-micro text-warn-foreground">
+                            Command truncated at {maximumSessionEvidenceCommandLength.toLocaleString()} characters. The full command is on the machine.
+                          </p>
+                        ) : null}
+                        <div className="mt-1 flex flex-wrap gap-2 font-machine text-mono-xs text-faint">
                           <span>{run.createdAt}</span>
-                          {run.commandTruncated ? <span className="text-warning">Command truncated</span> : null}
-                          {run.outputTruncated ? <span className="text-warning">Output truncated</span> : null}
                         </div>
+                        {run.outputTruncated ? (
+                          <p className="m-0 mt-2 text-micro text-warn-foreground">
+                            Output truncated at {maximumSessionEvidenceOutputLength.toLocaleString()} characters. The full log is on the machine.
+                          </p>
+                        ) : null}
                         {run.output ? (
-                          <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-md bg-code p-2 font-machine text-[9px] text-muted-foreground">
+                          <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-md bg-code p-2 font-machine text-mono-xs text-muted-foreground">
                             {run.output}
                           </pre>
                         ) : null}
@@ -563,7 +578,7 @@ export function SessionEvidenceContent({
                   </Empty>
                 )}
                 {evidence.tests.runsTruncated ? (
-                  <p className="border-t px-3 py-2 font-machine text-[9px] text-warning">
+                  <p className="border-t px-3 py-2 font-machine text-mono-xs text-warning">
                     Older observed runs are not shown.
                   </p>
                 ) : null}
