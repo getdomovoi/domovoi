@@ -1,5 +1,5 @@
 import type { PermissionMode, Runtime } from "@getdomovoi/protocol"
-import { useId, useState, type KeyboardEvent } from "react"
+import { useId, useRef, useState, type KeyboardEvent } from "react"
 
 import { Chip } from "./chip"
 import { FloatingSurface } from "./floating-surface"
@@ -39,6 +39,7 @@ export function SessionComposer({
   // Dismissed survives until the next keystroke, so Escape and a taken command
   // both close a list the text still qualifies for.
   const [dismissed, setDismissed] = useState(false)
+  const editor = useRef<HTMLTextAreaElement>(null)
   const [active, setActive] = useState(-1)
   const listId = useId()
 
@@ -52,6 +53,10 @@ export function SessionComposer({
     setText(`${command.name} `)
     setDismissed(true)
     setActive(-1)
+    // A pointer pick focuses the option, and dismissing the list unmounts it.
+    // The caret belongs back in the message either way, because the next thing
+    // typed is the command's argument.
+    editor.current?.focus()
   }
 
   const onListKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -127,6 +132,7 @@ export function SessionComposer({
       ) : null}
 
       <textarea
+        ref={editor}
         value={text}
         aria-label="Message"
         rows={2}
