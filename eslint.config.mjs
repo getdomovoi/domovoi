@@ -36,6 +36,30 @@ export default tseslint.config(
     },
   },
   {
+    // Scoped to packages/ui, which is the surface the floor was swept in.
+    // apps/mobile has eight of its own and is a separate pass, because it
+    // renders through nativewind against generated tokens rather than these
+    // utilities. Widening this glob is what makes that pass land.
+    files: ["packages/ui/**/*.{ts,tsx}"],
+    rules: {
+      // The type floor, enforced rather than remembered. Sans prose stops at
+      // --text-micro; below it only --text-eyebrow and --text-mono-xs exist,
+      // and each has a utility. A raw value under 9.5px has no token behind it
+      // at all, which is how forty of them spread by copy-paste.
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "Literal[value=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
+          message: "Text below 9.5px has no token behind it. Use text-eyebrow for an uppercase section label, text-mono-xs for machine output, or text-micro for sans prose.",
+        },
+        {
+          selector: "TemplateElement[value.raw=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
+          message: "Text below 9.5px has no token behind it. Use text-eyebrow for an uppercase section label, text-mono-xs for machine output, or text-micro for sans prose.",
+        },
+      ],
+    },
+  },
+  {
     files: reactFiles,
     plugins: {
       "react-hooks": reactHooks,
