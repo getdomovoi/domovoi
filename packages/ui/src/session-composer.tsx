@@ -50,13 +50,20 @@ export function SessionComposer({
   const optionId = (index: number) => `${listId}-${index}`
 
   const take = (command: SlashCommand) => {
-    setText(`${command.name} `)
+    const accepted = `${command.name} `
+    setText(accepted)
     setDismissed(true)
     setActive(-1)
     // A pointer pick focuses the option, and dismissing the list unmounts it.
     // The caret belongs back in the message either way, because the next thing
-    // typed is the command's argument.
-    editor.current?.focus()
+    // typed is the command's argument. Place it explicitly: accepting text the
+    // box already holds changes nothing, so nothing would move the caret.
+    const message = editor.current
+    if (!message) return
+    queueMicrotask(() => {
+      message.focus()
+      message.setSelectionRange(accepted.length, accepted.length)
+    })
   }
 
   const onListKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
