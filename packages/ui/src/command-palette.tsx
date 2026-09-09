@@ -80,6 +80,10 @@ export type WorkspaceCommand = {
   // to tell which is which without reading the label.
   meta?: string | undefined
   kind?: EntityKind | undefined
+  // What Cmd+Enter does on this row. Plain Enter opens a thing where it already
+  // is; this chooses where it runs instead, so only a row with somewhere else
+  // to go carries it.
+  openElsewhere?: (() => void) | undefined
   tone?: StatusMeaning | undefined
   restoreFocus?: boolean
   disabled?: boolean
@@ -139,6 +143,8 @@ export function buildWorkspaceCommands({
   activateSession,
   selectMachine,
   openSkill,
+  openSessionElsewhere,
+  startSessionOn,
 }: {
   activeWorkspacePath?: string | undefined
   copyWorktreePath?: (() => void) | undefined
@@ -159,6 +165,12 @@ export function buildWorkspaceCommands({
   activateSession?: ((sessionId: string) => void) | undefined
   selectMachine?: ((machineId: string) => void) | undefined
   openSkill?: ((skillId: string) => void) | undefined
+  // Cmd+Enter on a live session is a move, and a move is never performed from
+  // here: this opens the transfer preflight and the existing consent surface
+  // takes the decision.
+  openSessionElsewhere?: ((sessionId: string) => void) | undefined
+  // Cmd+Enter on a machine starts a session there. Nothing to reconcile.
+  startSessionOn?: ((machineId: string) => void) | undefined
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
@@ -188,6 +200,7 @@ export function buildWorkspaceCommands({
       meta: `${session.runtime.provider} · ${session.state}`,
       kind: "SESSION" as const,
       tone: sessionTone(session.state),
+      ...(openSessionElsewhere ? { openElsewhere: () => openSessionElsewhere(session.id) } : {}),
       run: () => activateSession(session.id),
     })) : []),
     // Only a machine entry can be selected. A pending or unenrolled entry has
@@ -204,6 +217,7 @@ export function buildWorkspaceCommands({
         meta: `${machine.platform} · ${machine.self ? "this machine" : machine.connection}`,
         kind: "MACHINE" as const,
         tone: selection.selectable ? "online" : "offline",
+        ...(startSessionOn && selection.selectable && !machine.self ? { openElsewhere: () => startSessionOn(machine.id) } : {}),
         disabled: !selection.selectable,
         run: () => selectMachine(machine.id),
       }
@@ -232,6 +246,11 @@ export function sessionTone(state: WorkspaceSnapshot["sessions"][number]["state"
   if (state === "transferred") return "handoff"
   if (state === "active") return "online"
   return "idle"
+}
+
+// Cmd on darwin, Ctrl elsewhere, matching the palette's own toggle.
+export function opensElsewhere(event: { key: string; metaKey: boolean; ctrlKey: boolean }, platform: string): boolean {
+  return event.key === "Enter" && (platform === "darwin" ? event.metaKey : event.ctrlKey)
 }
 
 export function restoreCommandPaletteFocus(target: { focus(): void } | null): void {
@@ -275,7 +294,23 @@ export function CommandPalette({
       title="Domovoi commands"
       description="Navigate Domovoi and run common session actions."
     >
-      <Command shouldFilter={false} loop>
+      <Command
+        shouldFilter={false}
+        loop
+        onKeyDown={(event) => {
+          // cmdk reports the highlighted row in the DOM rather than to us, and
+          // its own Enter handler does not carry modifiers, so the modified key
+          // is read here and stopped before it reaches the default.
+          if (!opensElsewhere(event, platform)) return
+          const selected = event.currentTarget.querySelector("[cmdk-item][data-selected=true]")
+          const command = ranked.find((candidate) => candidate.id === selected?.getAttribute("data-command-id"))
+          if (!command?.openElsewhere || command.disabled) return
+          event.preventDefault()
+          shouldRestoreFocus.current = command.restoreFocus !== false
+          onOpenChange(false)
+          command.openElsewhere()
+        }}
+      >
         <CommandInput
           autoFocus
           aria-label="Search commands"
@@ -294,6 +329,7 @@ export function CommandPalette({
                   return (
                     <CommandItem
                       key={command.id}
+                      data-command-id={command.id}
                       {...(command.disabled === undefined ? {} : { disabled: command.disabled })}
                       value={`${command.label} ${command.keywords.join(" ")}`}
                       onSelect={() => {
@@ -332,7 +368,7 @@ export function CommandPalette({
           })}
         </CommandList>
         <p className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-muted-foreground">
-          ↑↓ navigate · Enter run · Escape close · {platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle
+          ↑↓ navigate · Enter run · {platform === "darwin" ? "⌘" : "Ctrl"}+Enter open elsewhere · Escape close · {platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle
         </p>
       </Command>
     </CommandDialog>

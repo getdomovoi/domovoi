@@ -1,7 +1,9 @@
+import { demoWorkspace } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
 import {
   buildWorkspaceCommands,
+  opensElsewhere,
   sessionTone,
   commandPaletteShortcut,
   rankWorkspaceCommands,
@@ -202,6 +204,60 @@ describe("launcher entities", () => {
     expect(sessionTone("transferred")).toBe("handoff")
     expect(sessionTone("active")).toBe("online")
     expect(sessionTone("idle")).toBe("idle")
+  })
+})
+
+describe("open elsewhere", () => {
+  it("reads the platform's own modifier, matching the toggle", () => {
+    expect(opensElsewhere({ key: "Enter", metaKey: true, ctrlKey: false }, "darwin")).toBe(true)
+    expect(opensElsewhere({ key: "Enter", metaKey: false, ctrlKey: true }, "darwin")).toBe(false)
+    expect(opensElsewhere({ key: "Enter", metaKey: false, ctrlKey: true }, "linux")).toBe(true)
+    expect(opensElsewhere({ key: "Enter", metaKey: true, ctrlKey: false }, "linux")).toBe(false)
+    expect(opensElsewhere({ key: "Enter", metaKey: false, ctrlKey: false }, "darwin")).toBe(false)
+    expect(opensElsewhere({ key: "k", metaKey: true, ctrlKey: false }, "darwin")).toBe(false)
+  })
+
+  // A move is never performed from the launcher. It opens the preflight and the
+  // existing consent surface takes the decision.
+  it("offers a live session a move and a machine a start, and a verb neither", () => {
+    const session = structuredClone(demoWorkspace).sessions[0]!
+    const openSessionElsewhere = vi.fn()
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+      sessions: [session],
+      activateSession: vi.fn(),
+      openSessionElsewhere,
+    })
+    const found = (id: string) => commands.find((command) => command.id === id)!
+
+    found(`session-${session.id}`).openElsewhere!()
+    expect(openSessionElsewhere).toHaveBeenCalledWith(session.id)
+    expect(found("open-project").openElsewhere).toBeUndefined()
+    expect(found("new-session").openElsewhere).toBeUndefined()
+  })
+
+  it("says nothing about elsewhere when the shell offers no way to get there", () => {
+    const session = structuredClone(demoWorkspace).sessions[0]!
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+      sessions: [session],
+      activateSession: vi.fn(),
+    })
+    expect(commands.find((command) => command.id === `session-${session.id}`)?.openElsewhere).toBeUndefined()
   })
 })
 
