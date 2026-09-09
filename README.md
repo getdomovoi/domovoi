@@ -33,6 +33,8 @@ packages/
 design/
   design_handoff_domovoi/        signed product-design source
   design_handoff_domovoi_brand/  signed brand source
+  design_system_domovoi/         signed design system: tokens, specimens, and the
+                                 adherence manifest scripts/design-rule.mjs reads
 ```
 
 ## Set up a machine
