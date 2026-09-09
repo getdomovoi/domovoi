@@ -7,6 +7,8 @@ import test from "node:test"
 const repositoryRoot = new URL("..", import.meta.url).pathname
 
 import {
+  acceptedAdditions,
+  refusedAdditions,
   checkRevisions,
   compareDigests,
   designDigests,
@@ -110,5 +112,32 @@ test("digests every file under design/ except the record itself", async () => {
   await walk("design")
   const undigested = present.filter((file) => !digested.has(file))
   assert.deepEqual(undigested, ["design/REVISIONS.json"], "design/ holds signed sources and its own manifest, nothing authored here")
+})
+
+test("names the file it accepts, because a bare flag becomes muscle memory", () => {
+  assert.deepEqual([...acceptedAdditions(["--accept-new=design/a.md"])], ["design/a.md"])
+  assert.deepEqual([...acceptedAdditions(["--accept-new=design/a.md", "--accept-new=design/b.md"])].sort(), ["design/a.md", "design/b.md"])
+  assert.throws(() => acceptedAdditions(["--accept-new"]), /names the file it accepts/)
+  assert.throws(() => acceptedAdditions(["--accept-new="]), /needs a path/)
+})
+
+test("refuses only the additions nobody named", () => {
+  assert.deepEqual(refusedAdditions(["design/a.md", "design/b.md"], new Set(["design/a.md"])), ["design/b.md"])
+  assert.deepEqual(refusedAdditions(["design/a.md"], new Set(["design/a.md"])), [])
+})
+
+test("a re-vendor names its upstream files and an authored one has to be typed out", async () => {
+  const root = await scratchRepository()
+  await writeRevisions(root)
+
+  await writeFile(join(root, "design/design_handoff_domovoi/NEW-CARD.md"), "upstream\n")
+  await assert.rejects(writeRevisions(root), /added: design\/design_handoff_domovoi\/NEW-CARD.md/)
+  await assert.doesNotReject(writeRevisions(root, new Set(["design/design_handoff_domovoi/NEW-CARD.md"])))
+
+  // Naming one addition does not wave through another.
+  await writeFile(join(root, "design/AUTHORED.md"), "authored here\n")
+  await assert.rejects(writeRevisions(root, new Set(["design/design_handoff_domovoi/NEW-CARD.md"])), /added: design\/AUTHORED.md/)
+
+  await rm(root, { recursive: true, force: true })
 })
 

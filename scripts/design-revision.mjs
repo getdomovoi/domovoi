@@ -70,8 +70,51 @@ export async function readRevisions(root = repositoryRoot) {
   }
 }
 
-export async function writeRevisions(root = repositoryRoot) {
+// A re-vendor legitimately adds files, so refusing every addition would make
+// the guard noise. Refusing every UNNAMED addition keeps it a decision: an
+// upstream card is named on the command line and reads as deliberate, while a
+// file authored here has to be typed out by the person adding it, which is the
+// moment its provenance is worth noticing. A bare --accept-new would become
+// muscle memory within two re-vendors, so it is an error rather than a
+// shortcut.
+export function acceptedAdditions(argv) {
+  const accepted = new Set()
+  for (const argument of argv) {
+    if (argument === "--accept-new") {
+      throw new Error(`--accept-new names the file it accepts: --accept-new=<path>, repeated once per addition`)
+    }
+    if (argument.startsWith("--accept-new=")) {
+      const path = argument.slice("--accept-new=".length)
+      if (path === "") throw new Error(`--accept-new= needs a path after the equals sign`)
+      accepted.add(path)
+    }
+  }
+  return accepted
+}
+
+export function refusedAdditions(added, accepted) {
+  return added.filter((file) => !accepted.has(file))
+}
+
+export async function writeRevisions(root = repositoryRoot, accepted = new Set()) {
   const existing = await readRevisions(root)
+  const current = await designDigests(root)
+  // Nothing recorded yet means there is no addition to judge; everything is the
+  // first recording rather than a change to one.
+  if (existing?.files) {
+    const { added } = compareDigests(existing.files, current)
+    const refused = refusedAdditions(added, accepted)
+    if (refused.length > 0) {
+      const lines = [
+        "design/ gained files that the recorded revision does not have.",
+        ...refused.map((file) => `  added: ${file}`),
+        "",
+        "Only signed sources belong under design/. If Claude Design published these, name each one:",
+        ...refused.map((file) => `  ${regenerateCommand} --accept-new=${file}`),
+      ]
+      throw new Error(lines.join("\n"))
+    }
+  }
   const record = {
     source: existing?.source ?? {
       tool: "Claude Design",
@@ -79,7 +122,7 @@ export async function writeRevisions(root = repositoryRoot) {
       projectId: "a3b4404e-4d0c-451e-8dd2-203116a76c06",
     },
     recordedOn: new Date().toISOString().slice(0, 10),
-    files: await designDigests(root),
+    files: current,
   }
   await writeFile(join(root, revisionFile), `${JSON.stringify(record, null, 2)}\n`)
   return record
@@ -115,8 +158,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       process.stdout.write(`design/ matches the recorded revision\n`)
     }
   } else {
-    const record = await writeRevisions()
-    const count = Object.keys(record.files).length
-    process.stdout.write(`recorded ${count} design files in ${relative(process.cwd(), join(repositoryRoot, revisionFile))}\n`)
+    // A refusal is an answer, not a crash. Print it the way --check prints its
+    // own, without a stack trace nobody needs.
+    try {
+      const record = await writeRevisions(repositoryRoot, acceptedAdditions(process.argv.slice(2)))
+      const count = Object.keys(record.files).length
+      process.stdout.write(`recorded ${count} design files in ${relative(process.cwd(), join(repositoryRoot, revisionFile))}\n`)
+    } catch (cause) {
+      process.stderr.write(`${cause instanceof Error ? cause.message : String(cause)}\n`)
+      process.exitCode = 1
+    }
   }
 }
