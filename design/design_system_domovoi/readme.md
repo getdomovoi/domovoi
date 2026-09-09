@@ -64,7 +64,19 @@ contract inverted, not a re-skin. One accent: `--primary`. All tints are
 
 **Type.** Instrument Sans for the product, JetBrains Mono for anything a machine produced:
 paths, commands, shas, model ids, durations, byte counts, host names. If a human wrote it, it
-is sans. The app never goes above 20px or below 10.5px.
+is sans.
+
+The app never goes above 20px (`--text-title`). Sans prose bottoms out at 10.5px
+(`--text-micro`); below that there are exactly two named roles, each with its own token,
+and no ad-hoc value is permitted at any size:
+
+- `--text-eyebrow` 9.5px, uppercase section labels only, always with `--text-eyebrow-ls`.
+- `--text-mono-xs` 10px, machine output in dense rows only.
+
+The rule is which token you reached for, not which number came out, so `9px` and `8px` are
+violations even though `9.5px` and `10px` are not. A value below `--text-micro` with no
+token behind it is drift; snap it to one of the two above, or ask whether that text needs
+to exist.
 
 **Spacing.** Not a 4/8 grid. Literal values that repeat. If a value is 5px, it is 5px.
 Fixed chrome is tokenised: `--h-titlebar` 38, `--h-header` 62, `--h-control` 34, `--h-tap` 44,
