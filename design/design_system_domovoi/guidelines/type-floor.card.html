@@ -1,0 +1,51 @@
+<!-- @dsCard group="Type" viewport="700x300" subtitle="Sans prose stops at 10.5px. Below it, two named roles and nothing else" name="The small-type floor" -->
+<!DOCTYPE html>
+<html class="theme-dark"><head><meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 18px 20px; background: var(--background); }
+  .col { display: flex; flex-direction: column; gap: 14px; }
+  .grp { display: flex; flex-direction: column; gap: 7px; }
+  .hd { font-size: var(--text-eyebrow); letter-spacing: var(--text-eyebrow-ls); color: var(--faint); }
+  .row { display: flex; align-items: baseline; gap: 12px; }
+  .tok { font-family: var(--font-mono); font-size: var(--text-mono-xs); color: var(--muted-foreground); width: 132px; flex: 0 0 132px; }
+  .note { font-size: var(--text-micro); color: var(--faint); }
+  .ok { display: flex; align-items: baseline; gap: 12px; padding: 8px 11px; border: 1px solid var(--ok-border); border-radius: calc(var(--radius) - 3px); background: var(--ok-bg); }
+  .no { display: flex; align-items: baseline; gap: 12px; padding: 8px 11px; border: 1px solid var(--danger-border); border-radius: calc(var(--radius) - 3px); background: var(--danger-bg); }
+  .verdict { font-family: var(--font-mono); font-size: var(--text-mono-xs); margin-left: auto; }
+</style></head><body>
+<div class="col">
+  <div class="grp">
+    <div class="hd">LEGAL BELOW THE FLOOR</div>
+    <div class="ok">
+      <span class="tok" style="color: var(--ok-fg);">--text-micro</span>
+      <span style="font-size: var(--text-micro); color: var(--strong);">Sans prose bottoms out here</span>
+      <span class="verdict" style="color: var(--ok-dim);">10.5px</span>
+    </div>
+    <div class="ok">
+      <span class="tok" style="color: var(--ok-fg);">--text-eyebrow</span>
+      <span style="font-size: var(--text-eyebrow); letter-spacing: var(--text-eyebrow-ls); color: var(--strong);">UPPERCASE SECTION LABELS ONLY</span>
+      <span class="verdict" style="color: var(--ok-dim);">9.5px</span>
+    </div>
+    <div class="ok">
+      <span class="tok" style="color: var(--ok-fg);">--text-mono-xs</span>
+      <span style="font-family: var(--font-mono); font-size: var(--text-mono-xs); color: var(--strong);">machine output in dense rows</span>
+      <span class="verdict" style="color: var(--ok-dim);">10px</span>
+    </div>
+  </div>
+  <div class="grp">
+    <div class="hd">DRIFT, NOT A ROLE</div>
+    <div class="no">
+      <span class="tok" style="color: var(--danger-fg);">no token</span>
+      <span style="font-size: 9px; color: var(--danger-fg);">Half a pixel off a token that exists</span>
+      <span class="verdict" style="color: var(--danger-dim);">9px</span>
+    </div>
+    <div class="no">
+      <span class="tok" style="color: var(--danger-fg);">no token</span>
+      <span style="font-size: 8px; color: var(--danger-fg);">At this size, ask whether it should exist</span>
+      <span class="verdict" style="color: var(--danger-dim);">8px</span>
+    </div>
+  </div>
+  <div class="note">The rule is which token you reached for, not which number came out. 9.5 and 10 are named roles; 9 and 8 are eyeballed values that spread by copy-paste.</div>
+</div>
+</body></html>
