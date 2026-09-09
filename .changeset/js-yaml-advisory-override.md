@@ -2,4 +2,4 @@
 "@getdomovoi/mobile": patch
 ---
 
-Pin js-yaml to 4.3.2 or newer across the workspace. GHSA-2883-xcg3-v3hh reaches the tree through Expo's CLI tooling, which still declares a vulnerable range.
+Pin js-yaml 4.x to 4.3.2 or newer. GHSA-2883-xcg3-v3hh names both 4.3.2 and 3.15.2 as patched, so the 3.x consumer keeps its own patched version rather than being forced across a major.
