@@ -28,6 +28,8 @@ import {
 import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { fleetMachines } from "./fleet-entries"
+import { type StatusMeaning } from "./status-dot"
+import { cn } from "./lib/utils"
 import { machineAttachment } from "./machine-selection"
 import type { WorkspaceSurface } from "./workspace-persistence"
 import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
@@ -53,6 +55,18 @@ export const commandSections = [
 
 export type CommandSection = typeof commandSections[number]
 
+// The dot repeats what the meta line says in words, which is the rule here:
+// colour is never the only carrier of a meaning.
+const entityFill: Record<StatusMeaning, string> = {
+  online: "bg-success",
+  waiting: "bg-warning",
+  offline: "bg-destructive",
+  handoff: "bg-info",
+  idle: "bg-faint",
+}
+
+export type EntityKind = "PROJECT" | "SESSION" | "MACHINE" | "SKILL"
+
 export type WorkspaceCommand = {
   id: string
   label: string
@@ -60,7 +74,13 @@ export type WorkspaceCommand = {
   keywords: readonly string[]
   icon?: ComponentType
   shortcut?: string
-  detail?: string
+  detail?: string | undefined
+  // An entity row, rather than a verb. The launcher lists the things the
+  // workspace holds beside the actions it can take, and a person should be able
+  // to tell which is which without reading the label.
+  meta?: string | undefined
+  kind?: EntityKind | undefined
+  tone?: StatusMeaning | undefined
   restoreFocus?: boolean
   disabled?: boolean
   run: () => void
@@ -158,18 +178,21 @@ export function buildWorkspaceCommands({
     ...(connected ? [] : [{ id: "reconnect", label: "Reconnect daemon", section: "Connection" as const, keywords: ["retry", "machine"], icon: RefreshCwIcon, run: reconnect }]),
     // The launcher opens the objects the workspace already holds: a session, a
     // paired machine, a discovered skill. Nothing here fetches anything.
-    ...(activateSession ? (sessions ?? []).map((session) => ({
+    ...(activateSession ? (sessions ?? []).map((session): WorkspaceCommand => ({
       id: `session-${session.id}`,
       label: session.title,
       section: "Sessions" as const,
       keywords: [session.state, session.runtime.provider, session.runtime.model],
       icon: MessagesSquareIcon,
       detail: session.state,
+      meta: `${session.runtime.provider} · ${session.state}`,
+      kind: "SESSION" as const,
+      tone: sessionTone(session.state),
       run: () => activateSession(session.id),
     })) : []),
     // Only a machine entry can be selected. A pending or unenrolled entry has
     // nothing to attach to, so the palette does not list it.
-    ...(selectMachine ? fleetMachines(entries ?? []).map((machine) => {
+    ...(selectMachine ? fleetMachines(entries ?? []).map((machine): WorkspaceCommand => {
       const selection = machineAttachment(machine, admittedMachines?.has(machine.id))
       return {
         id: `machine-${machine.id}`,
@@ -178,20 +201,37 @@ export function buildWorkspaceCommands({
         keywords: [machine.platform, machine.connection, machine.health],
         icon: CpuIcon,
         detail: machine.self ? "this machine" : machine.connection,
+        meta: `${machine.platform} · ${machine.self ? "this machine" : machine.connection}`,
+        kind: "MACHINE" as const,
+        tone: selection.selectable ? "online" : "offline",
         disabled: !selection.selectable,
         run: () => selectMachine(machine.id),
       }
     }) : []),
-    ...(openSkill ? (skills ?? []).map((skill) => ({
+    ...(openSkill ? (skills ?? []).map((skill): WorkspaceCommand => ({
       id: `skill-${skill.id}`,
       label: skill.name,
       section: "Skills" as const,
       keywords: [skill.scope, "skill"],
       icon: SparklesIcon,
       detail: skill.scope,
+      meta: `${skill.scope} skill`,
+      kind: "SKILL" as const,
+      tone: "handoff",
       run: () => openSkill(skill.id),
     })) : []),
   ]
+}
+
+// The launcher shows state without reaching for the grouping logic the drawer
+// uses: it has one session at a time and no approvals in hand, so it reads the
+// state the snapshot already carries.
+export function sessionTone(state: WorkspaceSnapshot["sessions"][number]["state"]): StatusMeaning {
+  if (state === "failed" || state === "ownership-conflict") return "offline"
+  if (state === "waiting") return "waiting"
+  if (state === "transferred") return "handoff"
+  if (state === "active") return "online"
+  return "idle"
 }
 
 export function restoreCommandPaletteFocus(target: { focus(): void } | null): void {
@@ -263,10 +303,25 @@ export function CommandPalette({
                         command.run()
                       }}
                     >
-                      {Icon ? <Icon /> : null}
-                      <span className="min-w-0 flex-1 truncate">{command.label}</span>
-                      {command.detail ? (
+                      {command.kind ? (
+                        <span
+                          aria-hidden
+                          data-testid="entity-dot"
+                          data-status-dot=""
+                          className={cn("size-[7px] shrink-0 rounded-full", entityFill[command.tone ?? "idle"])}
+                        />
+                      ) : Icon ? <Icon /> : null}
+                      <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+                        <span className="truncate">{command.label}</span>
+                        {command.meta ? (
+                          <span className="truncate font-machine text-mono-xs text-muted-foreground">{command.meta}</span>
+                        ) : null}
+                      </span>
+                      {command.detail && !command.kind ? (
                         <span className="shrink-0 font-machine text-[10px] text-faint">{command.detail}</span>
+                      ) : null}
+                      {command.kind ? (
+                        <span className="shrink-0 text-eyebrow text-faint">{command.kind}</span>
                       ) : null}
                       {command.shortcut ? <CommandShortcut>{command.shortcut}</CommandShortcut> : null}
                     </CommandItem>

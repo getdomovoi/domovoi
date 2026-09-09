@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import {
   buildWorkspaceCommands,
+  sessionTone,
   commandPaletteShortcut,
   rankWorkspaceCommands,
   restoreCommandPaletteFocus,
@@ -167,3 +168,40 @@ it("restores focus to the element active before the palette opened", () => {
   expect(focus).toHaveBeenCalledOnce()
   expect(() => restoreCommandPaletteFocus(null)).not.toThrow()
 })
+
+describe("launcher entities", () => {
+  // The design lists things, not only verbs: a dot for state, a machine-readable
+  // line beneath the name, and the kind it is. A verb carries none of those, and
+  // detail stays on the entity because launcher-entries.test.ts pins it.
+  it("gives an entity its kind and meta, and a verb neither", () => {
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+      skills: [{ id: "design-studio", name: "design-studio", scope: "built-in" }],
+      openSkill: vi.fn(),
+    })
+    const found = (id: string) => commands.find((command) => command.id === id)!
+
+    expect(found("skill-design-studio").kind).toBe("SKILL")
+    expect(found("skill-design-studio").meta).toBe("built-in skill")
+    expect(found("skill-design-studio").detail).toBe("built-in")
+
+    expect(found("open-project").kind).toBeUndefined()
+    expect(found("open-project").meta).toBeUndefined()
+  })
+
+  it("reads a session's tone from its state rather than leaving it to colour", () => {
+    expect(sessionTone("failed")).toBe("offline")
+    expect(sessionTone("waiting")).toBe("waiting")
+    expect(sessionTone("transferred")).toBe("handoff")
+    expect(sessionTone("active")).toBe("online")
+    expect(sessionTone("idle")).toBe("idle")
+  })
+})
+
