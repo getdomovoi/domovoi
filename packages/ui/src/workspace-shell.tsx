@@ -333,7 +333,7 @@ export function PreviewVariantThumbnail({ url }: { url?: string | undefined }) {
   const safeUrl = url?.startsWith("blob:") ? url : undefined
   return safeUrl
     ? <img className="aspect-video w-full rounded-sm border object-cover" src={safeUrl} alt="" />
-    : <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted font-machine text-[8px] text-faint">PREVIEW</span>
+    : <span aria-hidden="true" className="flex aspect-video w-full items-center justify-center rounded-sm border bg-muted" />
 }
 
 type ArtifactAuthorizationTarget = Pick<Artifact, "id" | "revision" | "sessionId">
@@ -535,7 +535,7 @@ export function AppBar({
           <Button variant="ghost" size="sm" aria-label="Open command palette" onClick={onOpenCommands}>
             <SearchIcon data-icon="inline-start" />
             <span className="hidden md:inline">Commands</span>
-            {commandShortcut ? <kbd className="hidden font-machine text-[9px] text-muted-foreground lg:inline">{commandShortcut}</kbd> : null}
+            {commandShortcut ? <kbd className="hidden font-machine text-mono-xs text-muted-foreground lg:inline">{commandShortcut}</kbd> : null}
           </Button>
         ) : null}
         <Button
@@ -756,12 +756,12 @@ export function SessionRow({
       </span>
       <span className="ml-3.5 flex flex-wrap items-center gap-1">
         <Badge variant="machine">{session.runtime.provider}/{session.runtime.model}</Badge>
-        <Badge variant="outline" className="font-machine text-[9px] uppercase">
+        <Badge variant="outline" className="font-machine text-mono-xs uppercase">
           {session.runtime.permissionMode}
         </Badge>
         {session.runtime.auto ? <Badge variant="warning">Auto</Badge> : null}
         {session.state === "waiting" ? (
-          <span className="ml-auto text-[9px] uppercase tracking-wider text-warning">Approval</span>
+          <span className="ml-auto text-eyebrow uppercase text-warning">Approval</span>
         ) : null}
       </span>
     </button>
@@ -906,7 +906,7 @@ export function ProviderReadinessList({
           <div key={provider.id} role="listitem" className="flex min-h-10 items-center justify-between gap-3 px-3 py-2">
             <span className="flex min-w-0 flex-col">
               <span className="font-medium text-foreground">{providerDisplayName(provider.id)}</span>
-              <span className="truncate font-machine text-[9px] text-faint">
+              <span className="truncate font-machine text-mono-xs text-faint">
                 {provider.command}{provider.version ? ` · ${provider.version}` : ""}
                 {!provider.sessionCapable && provider.status !== "missing" ? " · adapter unavailable" : ""}
               </span>
@@ -1127,7 +1127,7 @@ export function LauncherDialog({
                             {provider.id === runtime.provider ? <CheckIcon /> : null}
                             <span className="flex min-w-0 flex-1 flex-col">
                               <span>{providerDisplayName(provider.id)}</span>
-                              <span className="truncate font-machine text-[9px] text-faint">
+                              <span className="truncate font-machine text-mono-xs text-faint">
                                 {providerStatusLabel(provider)}{provider.version ? ` · ${provider.version}` : ""}
                                 {!provider.sessionCapable && provider.status !== "missing" ? " · adapter unavailable" : ""}
                               </span>
@@ -1160,7 +1160,7 @@ export function LauncherDialog({
                             {model.id === runtime.model ? <CheckIcon /> : null}
                             <span className="flex min-w-0 flex-col">
                               <span>{model.displayName}</span>
-                              <span className="truncate font-machine text-[9px] text-faint">{model.id}</span>
+                              <span className="truncate font-machine text-mono-xs text-faint">{model.id}</span>
                             </span>
                           </DropdownMenuItem>
                         ))}
@@ -1196,7 +1196,7 @@ export function CheckpointThreadItem({
   onRestore: (checkpointId: string) => void
 }) {
   return (
-    <div className="flex items-center gap-1 self-center rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-[9px] text-faint">
+    <div className="flex items-center gap-1 self-center rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-mono-xs text-faint">
       <span>Checkpoint · {item.label}</span>
       {item.commit ? (
         <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
@@ -1222,7 +1222,7 @@ export function CheckpointRestore({
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-[9px]">
+        <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-micro">
           Restore worktree
         </Button>
       </AlertDialogTrigger>
@@ -1962,11 +1962,11 @@ export function Thread({
                 />
               ) : null}
               <Button variant="ghost" size="sm" disabled={pending || Boolean(checkpointReason)} title={checkpointReason} onClick={() => void createCheckpoint()}>Checkpoint</Button>
-              {checkpointReason ? <span role="status" className="font-machine text-[9px] text-faint">{checkpointReason}</span> : null}
+              {checkpointReason ? <span role="status" className="font-machine text-mono-xs text-faint">{checkpointReason}</span> : null}
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-[9px] text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-mono-xs text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
         <PromptEditorDialog
@@ -2276,7 +2276,7 @@ export function RuntimeControls({
                         {model.id === runtime.model && model.provider === runtime.provider ? <CheckIcon /> : null}
                         <span className="flex min-w-0 flex-col">
                           <span className="truncate">{model.displayName}</span>
-                          <span className="truncate font-machine text-[9px] text-faint">{model.id}</span>
+                          <span className="truncate font-machine text-mono-xs text-faint">{model.id}</span>
                         </span>
                       </DropdownMenuItem>
                     ))}
@@ -2297,7 +2297,7 @@ export function RuntimeControls({
       <ToggleGroup type="single" value={runtime.permissionMode} disabled={pending} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
-      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange(withAuto(runtime, auto))} />Auto</label>
+      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-micro text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange(withAuto(runtime, auto))} />Auto</label>
       <AlertDialog
         open={providerChoice !== undefined}
         onOpenChange={(open) => {
@@ -2500,9 +2500,9 @@ export function HistoryPanel({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
                     <span className="min-w-0 flex-1 break-words text-[12px] font-medium">{sessionHistoryEntryTitle(entry)}</span>
-                    <span className="font-machine text-[9px] text-faint">{entry.createdAt.slice(11, 16)}</span>
+                    <span className="font-machine text-mono-xs text-faint">{entry.createdAt.slice(11, 16)}</span>
                   </div>
-                  <Badge variant="outline" className="mt-1 font-machine text-[8px]">{entry.category}</Badge>
+                  <Badge variant="outline" className="mt-1 font-machine text-mono-xs">{entry.category}</Badge>
                   {detail ? <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-machine text-[10px] leading-relaxed text-muted-foreground">{detail}</pre> : null}
                   {onRestoreCheckpoint && entry.category === "checkpoints" && entry.commit ? (
                     <div className="mt-2">
@@ -2940,7 +2940,7 @@ export function ArtifactDock({
             <TabsTrigger value="preview"><CodeXmlIcon />Preview</TabsTrigger>
             <TabsTrigger value="comments">
               <MessageSquareTextIcon />Comments
-              {openAnnotations.length ? <Badge variant="outline" className="h-4 px-1 text-[8px]">{openAnnotations.length}</Badge> : null}
+              {openAnnotations.length ? <Badge variant="outline" className="px-1 font-machine text-mono-xs">{openAnnotations.length}</Badge> : null}
             </TabsTrigger>
             <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
             <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
@@ -2965,7 +2965,7 @@ export function ArtifactDock({
                         <Button key={artifact.id} variant={artifact.id === preview.id ? "secondary" : "outline"} className="min-h-11 min-w-28 flex-col items-start" aria-current={artifact.id === preview.id ? "true" : undefined} onClick={() => setSelectedPreviewId(artifact.id)}>
                           <PreviewVariantThumbnail url={previewThumbnailUrls.get(`${artifact.id}:${artifact.revision}`)} />
                           <span>{artifact.variant?.label ?? artifact.title}</span>
-                          <span className="text-[9px] text-muted-foreground">{artifact.id === preview.id ? "Selected" : `revision ${artifact.revision}`}</span>
+                          <span className="text-micro text-muted-foreground">{artifact.id === preview.id ? "Selected" : `revision ${artifact.revision}`}</span>
                         </Button>
                       ))}
                     </div>
@@ -2974,7 +2974,7 @@ export function ArtifactDock({
                 </div>
               ) : null}
               <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-3 py-1", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
-                <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-[9px] text-faint">revision {preview.revision} · sandboxed</p></div>
+                <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-mono-xs text-faint">revision {preview.revision} · sandboxed</p></div>
                 <div className={cn("flex min-w-0 items-center justify-end gap-2", previewControlLayout.wrap && "flex-wrap", previewControlLayout.fullWidth && "w-full")}>
                   <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Open sanitized print view" onClick={() => void openDerivedArtifact("print")}><PrinterIcon data-icon="inline-start" />{derivedArtifactPending === "print" ? "Preparing" : "Print view"}</Button>
                   <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Download sanitized offline HTML copy" onClick={() => void openDerivedArtifact("download")}><DownloadIcon data-icon="inline-start" />{derivedArtifactPending === "download" ? "Preparing" : "Download safe copy"}</Button>
@@ -2998,7 +2998,7 @@ export function ArtifactDock({
                   <Badge variant="success">Live</Badge>
                 </div>
               </div>
-              <p className="m-0 border-b px-3 py-1 text-[9px] text-muted-foreground">Safe copies remove scripts, forms, and external assets.</p>
+              <p className="m-0 border-b px-3 py-1 text-micro text-muted-foreground">Safe copies remove scripts, forms, and external assets.</p>
               {derivedArtifactError ? <Alert variant="destructive" className="m-3 w-auto" aria-live="polite"><CircleStopIcon /><AlertTitle>Safe copy unavailable</AlertTitle><AlertDescription>{derivedArtifactError}</AlertDescription></Alert> : null}
               {previewError ? (
                 <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
@@ -3055,7 +3055,7 @@ export function ArtifactDock({
               <article className="p-4">
                 <div className="mb-4 border-b pb-3">
                   <h2 className="m-0 text-[13px] font-semibold">{plan.title}</h2>
-                  <p className="mt-1 font-machine text-[9px] text-faint">revision {plan.revision}</p>
+                  <p className="mt-1 font-machine text-mono-xs text-faint">revision {plan.revision}</p>
                 </div>
                 <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={() => setActiveTab("preview")} />
               </article>
@@ -3251,7 +3251,7 @@ export function AnnotationComments({
               <Card key={annotation.id} size="sm">
                 <CardHeader>
                   <CardTitle className="min-w-0 break-words text-[12px] leading-relaxed">{annotation.body}</CardTitle>
-                  <CardDescription className="font-machine text-[9px]">
+                  <CardDescription className="font-machine text-mono-xs">
                     {annotation.origin} · {annotation.variantId ?? annotation.artifactId}
                     {annotation.statusChangedBy ? ` · ${annotation.status} by ${annotation.statusChangedBy}` : ""}
                   </CardDescription>
@@ -3260,7 +3260,7 @@ export function AnnotationComments({
                   </CardAction>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
-                  <div className="break-words rounded-md border bg-code px-2.5 py-2 font-machine text-[9px] leading-relaxed text-muted-foreground">
+                  <div className="break-words rounded-md border bg-code px-2.5 py-2 font-machine text-mono-xs leading-relaxed text-muted-foreground">
                     {annotation.anchor.textQuote
                       ? `“${annotation.anchor.textQuote}”`
                       : annotation.anchor.cssSelector ?? "Visual selection"}
@@ -3277,7 +3277,7 @@ export function AnnotationComments({
                     ) : null}
                   </div>
                   {annotation.visualContext ? (
-                    <p className="m-0 font-machine text-[9px] text-faint">
+                    <p className="m-0 font-machine text-mono-xs text-faint">
                       {annotation.visualContext.status === "available"
                         ? `visual context · ${annotation.visualContext.width}×${annotation.visualContext.height} · revision ${annotation.visualContext.artifactRevision}`
                         : `visual context unavailable · ${annotation.visualContext.reason}`}
@@ -3285,7 +3285,7 @@ export function AnnotationComments({
                   ) : null}
                   {annotation.thread.map((threadReply) => (
                     <div key={threadReply.id} className="break-words border-l border-border pl-2 text-[11px] leading-relaxed text-muted-foreground">
-                      <span className="font-machine text-[9px] text-faint">{threadReply.origin}</span><br />
+                      <span className="font-machine text-mono-xs text-faint">{threadReply.origin}</span><br />
                       {threadReply.body}
                     </div>
                   ))}
