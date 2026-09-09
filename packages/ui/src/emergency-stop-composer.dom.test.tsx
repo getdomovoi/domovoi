@@ -13,6 +13,7 @@ describe("emergency stop composer", () => {
     const send = vi.fn(async () => {})
     render(
       <Thread
+      onQueuedChange={vi.fn()}
         snapshot={snapshot}
         connected
         emergencyStopPending

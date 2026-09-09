@@ -42,11 +42,17 @@ function panelDefault(id: string): string | undefined {
   return new RegExp(`<ResizablePanel id="${id}"[^>]*?defaultSize=\\{(\\d+)\\}`, "u").exec(shell)?.[1]
 }
 
-it("opens the sidebar and inspector at their design-system widths", () => {
-  const design = designGeometry()
+it("opens the inspector at its design-system width", () => {
+  expect(`${panelDefault("dock")}px`).toBe(designGeometry()["--shell-inspector"])
+})
 
-  expect(`${panelDefault("sessions")}px`).toBe(design["--shell-sidebar"])
-  expect(`${panelDefault("dock")}px`).toBe(design["--shell-inspector"])
+// The sessions list is a drawer in v2, not a resizable panel, so the width it
+// has to honour is the same token read from a different place.
+it("opens the sessions drawer at the design-system sidebar width", () => {
+  const drawer = readFileSync(join(import.meta.dirname, "sessions-drawer.tsx"), "utf8")
+
+  expect(drawer).toContain("w-[var(--shell-sidebar)]")
+  expect(designGeometry()["--shell-sidebar"]).toBe("240px")
 })
 
 it("sizes the default control from the design-system control height", () => {

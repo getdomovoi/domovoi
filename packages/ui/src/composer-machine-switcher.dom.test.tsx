@@ -26,6 +26,7 @@ it("opens the device menu from the composer machine chip", async () => {
   const snapshot = structuredClone(demoWorkspace)
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       fleet={[{ kind: "machine", machine: {
@@ -69,7 +70,7 @@ it("counts only sessions with work in flight", () => {
 
 it("keeps naming the machine when the fleet has not loaded", () => {
   const snapshot = structuredClone(demoWorkspace)
-  render(<Thread snapshot={snapshot} connected {...handlers} />)
+  render(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected {...handlers} />)
 
   expect(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeTruthy()
 })
@@ -85,6 +86,7 @@ it("pairs a machine from the composer device menu", async () => {
   }))
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       currentMachineId={snapshot.machine.id}
@@ -129,6 +131,7 @@ it("refuses another machine from the composer device menu and says why", async (
   }
   render(
     <Thread
+      onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
       fleet={[{

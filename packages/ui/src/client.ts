@@ -628,8 +628,15 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
-  revertSessionFile(sessionId: string, path: string): Promise<WorkspaceSnapshot> {
-    return this.request("session.revertFile", { sessionId, path, client: this.kind })
+  revertSessionFile(sessionId: string, path: string, expectedBaseCommit?: string): Promise<WorkspaceSnapshot> {
+    return this.request("session.revertFile", {
+      sessionId,
+      path,
+      client: this.kind,
+      // Binds the revert to the commit the confirmation described, so a HEAD
+      // that moved underneath it is refused before anything is written.
+      ...(expectedBaseCommit ? { expectedBaseCommit } : {}),
+    })
   }
 
   createCheckpoint(sessionId: string, label?: string): Promise<WorkspaceSnapshot> {
@@ -661,7 +668,9 @@ export class DomovoiClient extends EventTarget {
   }
 
   loadSessionEvidence(sessionId: string): Promise<SessionEvidence> {
-    return this.request("session.evidence", { sessionId })
+    // Ask for the per-file associations. A daemon that predates them ignores
+    // the flag and answers in the old shape, which the client reads as unknown.
+    return this.request("session.evidence", { sessionId, includeFileAssociations: true })
   }
 
   archiveSession(sessionId: string): Promise<WorkspaceSnapshot> {

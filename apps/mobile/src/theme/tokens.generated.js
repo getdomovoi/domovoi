@@ -32,7 +32,7 @@ const colors = {
     success: "#007a43",
     "success-foreground": "#f7fef9",
     warning: "#a15700",
-    "warning-foreground": "#fffaf5",
+    "warning-foreground": "#281606",
     info: "#0068ad",
     "info-foreground": "#f6fdff",
     strong: "#323238",
@@ -40,8 +40,6 @@ const colors = {
     code: "#f1f0ed",
     desk: "#e1dfdc",
     overlay: "#2d2d3361",
-    "warn-fill": "#fec348",
-    "warn-fill-fg": "#4c2904",
     "warn-bg": "#fff6df",
     "warn-border": "#f3cf9f",
     "warn-fg": "#723f00",
@@ -56,6 +54,12 @@ const colors = {
     "info-border": "#bedcf3",
     "info-fg": "#12527a",
     "info-dim": "#006495",
+    "ok-bg": "#e6f9ed",
+    "ok-border": "#a8dcbd",
+    "ok-fg": "#004223",
+    "ok-dim": "#0e653f",
+    skel: "#ececef",
+    "skel-hi": "#f6f6f9",
   },
   dark: {
     background: "#0e0e10",
@@ -85,7 +89,7 @@ const colors = {
     success: "#51c88b",
     "success-foreground": "#04130a",
     warning: "#f6a65d",
-    "warning-foreground": "#231103",
+    "warning-foreground": "#1d1106",
     info: "#67addd",
     "info-foreground": "#03111b",
     strong: "#dadadd",
@@ -93,8 +97,6 @@ const colors = {
     code: "#0a0a0c",
     desk: "#040405",
     overlay: "#040405c7",
-    "warn-fill": "#f6a65d",
-    "warn-fill-fg": "#231103",
     "warn-bg": "#2d1905",
     "warn-border": "#60370b",
     "warn-fg": "#ffe6c8",
@@ -109,6 +111,12 @@ const colors = {
     "info-border": "#18364a",
     "info-fg": "#b4d6ef",
     "info-dim": "#8ec5ec",
+    "ok-bg": "#061f12",
+    "ok-border": "#0a4027",
+    "ok-fg": "#beebcf",
+    "ok-dim": "#7fbb98",
+    skel: "#1f1f22",
+    "skel-hi": "#2b2b2f",
   },
 }
 
@@ -148,7 +156,7 @@ const shadows = {
 }
 
 const outOfGamut = {
-  light: ["primary-foreground", "destructive-foreground", "success", "warning", "warning-foreground", "info", "info-foreground", "warn-bg", "warn-fg", "danger-bg", "danger-on", "info-bg", "info-dim"],
+  light: ["primary-foreground", "destructive-foreground", "success", "warning", "info", "info-foreground", "warn-bg", "warn-fg", "danger-bg", "danger-on", "info-bg", "info-dim", "ok-fg"],
   dark: ["primary", "destructive-foreground", "ring", "warn-fg", "danger-fg"],
 }
 

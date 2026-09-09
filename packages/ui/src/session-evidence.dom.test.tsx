@@ -81,7 +81,9 @@ describe("SessionEvidenceContent revert and diff view", () => {
 
     await user.click(screen.getByRole("button", { name: "Revert src/generated.ts" }))
     await user.click(screen.getByRole("button", { name: "Revert file" }))
-    expect(onRevertFile).toHaveBeenCalledWith("src/generated.ts")
+    // This fixture carries no file associations, so there is no commit to bind
+    // the confirmation to and the legacy revert is what runs.
+    expect(onRevertFile).toHaveBeenCalledWith("src/generated.ts", undefined)
   })
 
   it("offers no revert control when the client cannot revert", () => {

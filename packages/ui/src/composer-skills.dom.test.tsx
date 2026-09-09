@@ -85,6 +85,7 @@ it("appears in the composer of a mounted shell", () => {
   render(
     <TooltipProvider>
       <Thread
+      onQueuedChange={vi.fn()}
         snapshot={snapshot}
         connected
         onResolve={vi.fn()}

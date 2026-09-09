@@ -8,7 +8,9 @@ import {
   XCircleIcon,
 } from "lucide-react"
 
-import type { ChangedFileEvidence, SessionEvidence } from "@getdomovoi/protocol"
+import type { ChangedFileEvidence, FileEvidenceAssociation, SessionEvidence } from "@getdomovoi/protocol"
+
+import { coverageLabel, revertPrompt, type RevertPrompt } from "./file-evidence-copy"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -142,6 +144,7 @@ function fileStage(file: ChangedFileEvidence): string {
 
 function FileEvidenceRow({
   file,
+  association,
   onRevert,
   revertDisabled,
   fileDiff,
@@ -150,6 +153,7 @@ function FileEvidenceRow({
   onToggle,
 }: {
   file: ChangedFileEvidence
+  association?: FileEvidenceAssociation | undefined
   onRevert?: (() => void) | undefined
   revertDisabled?: boolean
   fileDiff?: string | undefined
@@ -157,6 +161,7 @@ function FileEvidenceRow({
   open?: boolean
   onToggle?: (() => void) | undefined
 }) {
+  const prompt = revertPrompt(file.path, association?.revertTarget)
   return (
     <div className="border-b last:border-b-0">
     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 px-3 py-2">
@@ -183,6 +188,7 @@ function FileEvidenceRow({
           <p className="mt-1 truncate font-machine text-[9px] text-faint">from {file.previousPath}</p>
         ) : null}
         <p className="mt-1 font-machine text-[9px] text-faint">{fileStage(file)}</p>
+        <p className="mt-1 text-[10.5px] text-faint">{coverageLabel(association?.tests)}</p>
       </div>
       <div className="flex items-start gap-2 font-machine text-[9px]">
         <div className="flex items-start gap-1">
@@ -198,16 +204,20 @@ function FileEvidenceRow({
           )}
         </div>
         {onRevert ? (
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={revertDisabled}
-            aria-label={`Revert ${file.path}`}
-            onClick={onRevert}
-          >
-            <Undo2Icon />
-            Revert file
-          </Button>
+          prompt.available ? (
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={revertDisabled}
+              aria-label={`${prompt.verb} ${file.path}`}
+              onClick={onRevert}
+            >
+              <Undo2Icon />
+              {prompt.verb} file
+            </Button>
+          ) : (
+            <span className="max-w-40 text-right text-[9px] text-faint">{prompt.reason}</span>
+          )
         ) : null}
       </div>
     </div>
@@ -235,12 +245,14 @@ function FileEvidenceRow({
 
 function RevertFileDialog({
   path,
+  prompt,
   pending,
   error,
   onCancel,
   onConfirm,
 }: {
   path: string
+  prompt: RevertPrompt
   pending: boolean
   error: string
   onCancel: () => void
@@ -250,19 +262,26 @@ function RevertFileDialog({
     <AlertDialog open onOpenChange={(open) => { if (!open && !pending) onCancel() }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Revert this file to the session base commit?</AlertDialogTitle>
+          <AlertDialogTitle>
+            {prompt.available && prompt.verb === "Remove"
+              ? "Remove this file?"
+              : prompt.available && prompt.verb === "Revert"
+                ? "Revert this file to the session base commit?"
+                : "Restore this file?"}
+          </AlertDialogTitle>
           <AlertDialogDescription>
+            {prompt.available ? prompt.confirmation : prompt.reason}
+            {" "}
             Domovoi takes a recovery checkpoint before it changes the worktree, so this stays
-            restorable. Uncommitted work in this file is discarded, and a file the worktree is not
-            tracking is removed.
+            restorable.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <p className="m-0 truncate font-machine text-[10px] text-strong" title={path}>{path}</p>
         {error ? <p role="alert" className="m-0 text-sm text-destructive">{error}</p> : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>Keep the changes</AlertDialogCancel>
-          <Button variant="destructive" disabled={pending} onClick={onConfirm}>
-            {pending ? "Reverting" : "Revert file"}
+          <Button variant="destructive" disabled={pending || !prompt.available} onClick={onConfirm}>
+            {pending ? "Working" : prompt.available ? `${prompt.verb} file` : "Unavailable"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -317,8 +336,13 @@ export function SessionEvidenceContent({
   error: string
   loading: boolean
   onRefresh: () => void
-  onRevertFile?: (path: string) => Promise<void>
+  onRevertFile?: (path: string, expectedBaseCommit?: string) => Promise<void>
 }) {
+  const associations = useMemo(
+    () => new Map((evidence?.fileAssociations ?? []).map((association) => [association.path, association])),
+    [evidence],
+  )
+
   const [diffView, setDiffView] = useState<DiffView>("unified")
   const [revertPath, setRevertPath] = useState<string | null>(null)
   const [revertPending, setRevertPending] = useState(false)
@@ -333,7 +357,9 @@ export function SessionEvidenceContent({
     if (!onRevertFile || revertPath === null) return
     setRevertPending(true)
     setRevertError("")
-    void onRevertFile(revertPath).then(
+    const target = associations.get(revertPath)?.revertTarget
+    const expected = target && target.kind !== "unavailable" ? target.baseCommit : undefined
+    void onRevertFile(revertPath, expected).then(
       () => {
         setRevertPending(false)
         setRevertPath(null)
@@ -343,7 +369,7 @@ export function SessionEvidenceContent({
         setRevertError(cause instanceof Error ? cause.message : "The file could not be reverted")
       },
     )
-  }, [onRevertFile, revertPath])
+  }, [associations, onRevertFile, revertPath])
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center justify-between border-b px-3">
@@ -416,6 +442,7 @@ export function SessionEvidenceContent({
                   <FileEvidenceRow
                     key={file.path}
                     file={file}
+                    {...(associations.get(file.path) ? { association: associations.get(file.path) } : {})}
                     {...(onRevertFile
                       ? { onRevert: () => { setRevertError(""); setRevertPath(file.path) } }
                       : {})}
@@ -548,6 +575,7 @@ export function SessionEvidenceContent({
       {onRevertFile && revertPath !== null ? (
         <RevertFileDialog
           path={revertPath}
+          prompt={revertPrompt(revertPath, associations.get(revertPath)?.revertTarget)}
           pending={revertPending}
           error={revertError}
           onCancel={() => { setRevertPath(null); setRevertError("") }}
@@ -569,7 +597,7 @@ export function SessionEvidencePanel({
   readOnly?: boolean
   sessionId: string | null
   onLoad: (sessionId: string) => Promise<SessionEvidence>
-  onRevertFile?: (sessionId: string, path: string) => Promise<void>
+  onRevertFile?: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
 }) {
   const generation = useRef(0)
   const [state, setState] = useState<EvidenceState>({ loading: false, error: "" })
@@ -638,8 +666,11 @@ export function SessionEvidencePanel({
       onRefresh={refresh}
       {...(onRevertFile && !readOnly
         ? {
-          onRevertFile: async (path: string) => {
-            await onRevertFile(sessionId, path)
+          onRevertFile: async (path: string, expectedBaseCommit?: string) => {
+            // Dropping this here would silently disarm the stale-confirmation
+            // guard: the daemon would accept a revert described against a
+            // commit that has since moved.
+            await onRevertFile(sessionId, path, expectedBaseCommit)
             refresh()
           },
         }

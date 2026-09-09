@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, symlink, writeFile, rm } from "node:fs/promises"
 import { createServer } from "node:http"
 import { createServer as createHttpsServer } from "node:https"
 import { tmpdir } from "node:os"
@@ -142,7 +142,13 @@ test("identical archives install the reviewed transitive bytes after the registr
     version: "1.0.0", destination, baseUrl: "https://release.test", expectedSha256: sha256, timeoutMs: installBudgetMs, run,
     download: async (url) => url.endsWith("SHA256SUMS") ? `${sha256}  getdomovoi-daemon-1.0.0.tgz\n` : app.bytes,
   })
-  const first = await install(join(root, "first"))
+  // A caller can reach the destination through a symlink, including macOS's
+  // /var temporary directory. npm must receive the same physical prefix as cwd.
+  const installParent = join(root, "install-parent")
+  const installLink = join(root, "install-link")
+  await mkdir(installParent)
+  await symlink(installParent, installLink, process.platform === "win32" ? "junction" : "dir")
+  const first = await install(join(installLink, "first"))
   await pack({ name: "domovoi-lock-leaf", version: "1.1.0" })
   const second = await install(join(root, "second"))
   for (const result of [first, second]) {
