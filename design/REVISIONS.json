@@ -6,6 +6,10 @@
   },
   "recordedOn": "2026-09-09",
   "files": {
+    "design/README.md": {
+      "bytes": 1559,
+      "sha256": "7702495b99f1232729e068c0386afed6e3f5f4e43b671a6a3b2bfef7fe35f5df"
+    },
     "design/design_handoff_domovoi/HANDOFF-NOTES.md": {
       "bytes": 103,
       "sha256": "5a00d61e3a1b9fb0a4a90ca7555d8a309428ea801fc4d6aafae1775e53d23898"
@@ -97,6 +101,10 @@
     "design/design_handoff_domovoi_brand/screenshots/01-brand-directions.png": {
       "bytes": 23998,
       "sha256": "9e88ce23aea1cb8b552a7b07de66763a56d3028b0d03a9dde08d1e1a9cdac4ec"
+    },
+    "design/design_system_domovoi/_adherence.oxlintrc.json": {
+      "bytes": 25232,
+      "sha256": "53450b7f2e9e1c16cee18d9962a80045b019ebaec9a71db1bb4bb0e3e4cf8ac4"
     },
     "design/design_system_domovoi/guidelines/type-floor.card.html": {
       "bytes": 3189,
