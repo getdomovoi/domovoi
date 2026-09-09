@@ -148,3 +148,19 @@ it("still sends a plain message with the list closed", async () => {
   await user.keyboard("{Enter}")
   expect(props.onSend).toHaveBeenCalledWith("ship it")
 })
+
+// Pointer selection has to leave the caret where the keyboard would. Clicking
+// an option focuses its button, and dismissing the list then unmounts that
+// button, so without a deliberate return focus lands on the body.
+it("returns focus to the message after a command is clicked", async () => {
+  const user = userEvent.setup()
+  composer()
+  const message = screen.getByLabelText("Message")
+  await user.type(message, "/")
+  await user.click(screen.getByRole("option", { name: /\/run/ }))
+
+  expect(screen.queryByRole("listbox")).toBeNull()
+  expect(document.activeElement).toBe(message)
+  await user.keyboard("build")
+  expect((message as HTMLTextAreaElement).value).toBe("/run build")
+})
