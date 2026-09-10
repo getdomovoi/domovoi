@@ -4,7 +4,7 @@ import type {
   Runtime,
   WorkingPlanStepStatus,
 } from "@getdomovoi/protocol"
-import type { NormalizedUsage } from "./usage.js"
+import type { NormalizedUsage, UsageSource } from "./usage.js"
 
 export type ProviderApprovalDecision = Exclude<ApprovalDecision, "always-project">
 
@@ -33,7 +33,7 @@ export type AgentEvent =
       reason?: string
     }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
-  | { type: "usage"; threadId: string; turnId: string; usage: NormalizedUsage }
+  | { type: "usage"; threadId: string; turnId: string; usage: NormalizedUsage; source?: UsageSource }
   | { type: "turn-completed"; params: Record<string, unknown> }
 
 export type AgentPermissionCapabilities = Readonly<{

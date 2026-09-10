@@ -446,18 +446,43 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const sessionId = eventSessionId(event)
     if (!sessionId) return
     const session = this.#sessions.get(sessionId)
-    if (!session || session.cwd !== cwd || !session.activeTurnId) return
-    const turnId = session.activeTurnId
+    if (!session || session.cwd !== cwd) return
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
       if (info?.role === "assistant" && typeof info.id === "string") {
         session.assistantMessageIds.add(info.id)
-        const usage = normalizeProviderUsage(info)
-        if (usage) this.#emit({ type: "usage", threadId: sessionId, turnId, usage })
+        const turnId = typeof info.parentID === "string" ? info.parentID : undefined
+        if (!turnId) return
+        const tokens = asRecord(info.tokens)
+        const cache = asRecord(tokens?.cache)
+        const hasTokens = [tokens?.input, tokens?.output, tokens?.reasoning, tokens?.total, cache?.read, cache?.write]
+          .some((value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+        const source = {
+          kind: "message" as const,
+          id: info.id,
+          tokens: hasTokens ? "reported" as const : "unavailable" as const,
+          final: typeof asRecord(info.time)?.completed === "number",
+          ...(typeof info.providerID === "string" && typeof info.modelID === "string"
+            ? { model: `${info.providerID}/${info.modelID}` } : {}),
+        }
+        const unavailable = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+          reasoningTokens: 0, totalTokens: 0, costSource: "unavailable" as const }
+        try {
+          const usage = normalizeProviderUsage(info) ?? unavailable
+          this.#emit({ type: "usage", threadId: sessionId, turnId, usage, source })
+        } catch {
+          this.#emit({
+            type: "usage", threadId: sessionId, turnId,
+            usage: unavailable,
+            source: { ...source, tokens: "unavailable", invalid: true },
+          })
+        }
       }
       return
     }
+    const turnId = session.activeTurnId
+    if (!turnId) return
     if (event.type === "message.part.updated") {
       const part = asRecord(properties.part)
       if (

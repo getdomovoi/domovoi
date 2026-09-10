@@ -61,6 +61,7 @@ import {
   rpcWebSocketHighWaterBytes,
 } from "./rpc-outbound.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
+import { UsageLedger, normalizeUsage } from "./usage.js"
 import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
 import { internalRpcErrorMessage } from "./rpc-errors.js"
 import { maximumPairedDevices } from "./device-registry.js"
@@ -1054,6 +1055,121 @@ describe("DomovoiDaemon", () => {
       Date.parse("2026-09-05T06:00:00.000Z"),
     )
     socket.close()
+  })
+
+  it("accounts late and duplicate usage against dispatch after a same-provider model change", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
+    snapshot.workingPlans = []
+    for (const candidate of snapshot.sessions) {
+      delete candidate.activeTurnId
+      candidate.state = "idle"
+    }
+    const session = snapshot.sessions[0]!
+    session.runtime = { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", permissionMode: "build", auto: false }
+    session.providerThreadId = "usage-thread"
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-usage-dispatch-"))
+    scratchDirectories.push(worktree)
+    session.workspacePath = worktree
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}), resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      }), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    agent.startTurn.mockResolvedValueOnce("first-turn").mockResolvedValueOnce("second-turn")
+    agent.listModels.mockResolvedValue(["gpt-5.6-sol", "gpt-5.5"].map((id) => ({
+      provider: "codex", id, displayName: id, supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium",
+      description: "Usage accounting test model", isDefault: id === "gpt-5.6-sol",
+    })))
+    const ledger = new UsageLedger()
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, usageLedger: ledger })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = async (method: string, params: object) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      const result = await response
+      expect(result).not.toHaveProperty("error")
+      return result.result
+    }
+    const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
+    await rpc("session.send", { sessionId: session.id, prompt: "First", client: "desktop" })
+    await rpc("session.setRuntime", { sessionId: session.id,
+      runtime: { ...session.runtime, model: "gpt-5.5" }, client: "desktop" })
+    emit({ type: "turn-completed", params: { threadId: "usage-thread", turnId: "first-turn", status: "failed" } })
+    await rpc("workspace.get", {})
+    await rpc("session.send", { sessionId: session.id, prompt: "Second", client: "desktop" })
+    const usage = { type: "usage" as const, threadId: "usage-thread", turnId: "first-turn",
+      usage: normalizeUsage({ inputTokens: 12, outputTokens: 3 }),
+      source: { kind: "turn" as const, tokens: "reported" as const, model: "provider-selected-model" },
+    }
+    emit(usage)
+    emit(usage)
+    emit({ ...usage, turnId: "never-dispatched" })
+    const result = await rpc("session.usage", { sessionId: session.id })
+    expect(result).toMatchObject({ totalTokens: 15,
+      coverage: { complete: 1, pending: 1 },
+      byRuntime: expect.arrayContaining([
+        expect.objectContaining({ model: "gpt-5.6-sol", totalTokens: 15, turns: 1 }),
+        expect.objectContaining({ model: "gpt-5.5", totalTokens: 0, turns: 1 }),
+      ]),
+    })
+    expect(ledger.transferSession(session.id)[0]?.accounting).toMatchObject({
+      requestedModel: "gpt-5.6-sol", status: "failed",
+      observations: [expect.objectContaining({ model: "provider-selected-model" })],
+    })
+    socket.close()
+  })
+
+  it("recovers pending usage coverage without restamping the dispatch model", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-usage-restart-"))
+    scratchDirectories.push(directory)
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime.provider = "opencode"
+    session.runtime.model = "next/model"
+    session.providerThreadId = "thread-before-restart"
+    session.activeTurnId = "turn-before-restart"
+    session.workspacePath = directory
+    session.state = "active"
+    const identity = { sessionId: session.id, provider: "opencode", model: "requested/model",
+      threadId: session.providerThreadId, turnId: session.activeTurnId }
+    const path = join(directory, "usage.sqlite")
+    const previous = new UsageLedger(path)
+    previous.begin(identity)
+    previous.observe(identity, { usage: normalizeUsage({ inputTokens: 10 }),
+      source: { kind: "message", id: "partial-message", tokens: "reported", final: false } })
+    previous.close()
+    const ledger = new UsageLedger(path)
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const daemon = new DomovoiDaemon({ port: 0, store, usageLedger: ledger, agents: {} })
+    running.push(daemon)
+    await daemon.start()
+    expect(store.load().sessions.find((candidate) => candidate.id === session.id)).not.toHaveProperty("activeTurnId")
+    expect(ledger.session(session.id)).toMatchObject({ totalTokens: 10, coverage: { partial: 1, pending: 0 } })
+    expect(ledger.transferSession(session.id)[0]?.accounting).toMatchObject({
+      status: "interrupted", requestedModel: "requested/model",
+    })
   })
 
   it("reports usage persistence failures without dropping later provider events", async () => {

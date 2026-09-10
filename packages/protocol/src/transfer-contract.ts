@@ -16,6 +16,7 @@ import { commitShaSchema, machineIdSchema, sha256DigestSchema } from "./identifi
 import { sourceRefusalSchema } from "./transfer.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
 import { sessionTransferContractRefusalSchema } from "./transfer-contract-refusals.js"
+import { usageAccountingSchema } from "./usage-accounting.js"
 import {
   sessionTransferCoverageSchema,
   sessionTransferIncludedKindSchema,
@@ -76,6 +77,7 @@ const transferUsageBase = z.object({
   turnId: z.string().trim().min(1).check(utf16MaxLength(256)),
   provider: z.string().trim().min(1).check(utf16MaxLength(64)),
   model: z.string().trim().min(1).check(utf16MaxLength(256)),
+  accounting: usageAccountingSchema.optional(),
   inputTokens: safeCounterSchema,
   cachedInputTokens: safeCounterSchema,
   outputTokens: safeCounterSchema,
@@ -97,6 +99,22 @@ export const sessionTransferUsageRecordSchema = z.discriminatedUnion("costSource
     currency: z.never().optional(),
   }).strict(),
 ]).superRefine((usage, context) => {
+  if (usage.accounting) {
+    const accounting = usage.accounting
+    const valid = accounting.observations.filter((event) => !event.invalid)
+    const tokenReports = valid.filter((event) => event.tokens === "reported")
+    const costReports = valid.flatMap((event) => event.kind !== "session" && event.usage.costSource === "provider-reported"
+      ? [event.usage] : [])
+    const countersMatch = (["inputTokens", "cachedInputTokens", "outputTokens", "reasoningTokens", "totalTokens"] as const)
+      .every((key) => usage[key] === tokenReports.reduce((sum, event) => sum + event.usage[key], 0))
+    const costMatches = costReports.length === 0 ? usage.costSource === "unavailable"
+      : usage.costSource === "provider-reported"
+        && costReports.every((report) => report.currency === usage.currency)
+        && usage.costMicros === costReports.reduce((sum, report) => sum + report.costMicros, 0)
+    if (usage.turnId !== accounting.key || usage.model !== accounting.requestedModel || !countersMatch || !costMatches) {
+      context.addIssue({ code: "custom", path: ["accounting"], message: "Usage must match its accounting evidence" })
+    }
+  }
   if (usage.cachedInputTokens > usage.inputTokens) {
     context.addIssue({
       code: "custom",
