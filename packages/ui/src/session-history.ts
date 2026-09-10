@@ -94,16 +94,21 @@ export type SessionHistoryFocus = {
   requestId: number
 }
 
+// The design draws five of these and names two of them differently, so the five
+// it draws lead and carry its words. A turn is the protocol's own unit, and a
+// handoff is what a transfer feels like rather than what it is. The three it
+// does not draw stay: the daemon stamps them, and dropping the filters would
+// leave those entries recorded and unreachable.
 export const sessionHistoryCategories: ReadonlyArray<{
   value: SessionHistoryCategory
   label: string
 }> = [
-  { value: "messages", label: "Messages" },
-  { value: "tools", label: "Tools" },
+  { value: "messages", label: "Turns" },
   { value: "approvals", label: "Approvals" },
-  { value: "handoffs", label: "Handoffs" },
-  { value: "transfers", label: "Transfers" },
   { value: "checkpoints", label: "Checkpoints" },
+  { value: "transfers", label: "Transfers" },
+  { value: "handoffs", label: "Transfers" },
+  { value: "tools", label: "Tools" },
   { value: "annotations", label: "Annotations" },
   { value: "tests", label: "Tests" },
 ]

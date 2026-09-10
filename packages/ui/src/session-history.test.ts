@@ -30,16 +30,19 @@ const message = (id: string): SessionHistoryEntry => ({
 })
 
 describe("session history view model", () => {
-  it("exposes every semantic filter in roadmap order", () => {
-    expect(sessionHistoryCategories.map(({ value }) => value)).toEqual([
-      "messages",
-      "tools",
-      "approvals",
-      "handoffs",
-      "transfers",
-      "checkpoints",
-      "annotations",
-      "tests",
+  // The design draws five filters and the daemon stamps seven categories. The
+  // five it draws lead, and the two it names differently are named its way: a
+  // turn is the protocol's unit, and a transfer is what a handoff is.
+  it("leads with the five drawn filters and names them as the design does", () => {
+    expect(sessionHistoryCategories).toEqual([
+      { value: "messages", label: "Turns" },
+      { value: "approvals", label: "Approvals" },
+      { value: "checkpoints", label: "Checkpoints" },
+      { value: "transfers", label: "Transfers" },
+      { value: "handoffs", label: "Transfers" },
+      { value: "tools", label: "Tools" },
+      { value: "annotations", label: "Annotations" },
+      { value: "tests", label: "Tests" },
     ])
   })
 
