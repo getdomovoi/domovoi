@@ -27,7 +27,7 @@ import {
 } from "./components/ui/command"
 import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { fleetMachines } from "./fleet-entries"
+import { fleetMachines, transferTargets } from "./fleet-entries"
 import { type StatusMeaning } from "./status-dot"
 import { cn } from "./lib/utils"
 import { machineAttachment } from "./machine-selection"
@@ -84,6 +84,9 @@ export type WorkspaceCommand = {
   // is; this chooses where it runs instead, so only a row with somewhere else
   // to go carries it.
   openElsewhere?: (() => void) | undefined
+  // Where this row can go. A machine acts at once; a live session has to be
+  // told which machine, so it carries the choice instead of an action.
+  elsewhereTargets?: readonly WorkspaceCommand[] | undefined
   tone?: StatusMeaning | undefined
   restoreFocus?: boolean
   disabled?: boolean
@@ -143,8 +146,10 @@ export function buildWorkspaceCommands({
   activateSession,
   selectMachine,
   openSkill,
-  openSessionElsewhere,
   startSessionOn,
+  previewTransferTo,
+  currentMachineId,
+  transferEntries,
 }: {
   activeWorkspacePath?: string | undefined
   copyWorktreePath?: (() => void) | undefined
@@ -166,9 +171,11 @@ export function buildWorkspaceCommands({
   selectMachine?: ((machineId: string) => void) | undefined
   openSkill?: ((skillId: string) => void) | undefined
   // Cmd+Enter on a live session is a move, and a move is never performed from
-  // here: this opens the transfer preflight and the existing consent surface
-  // takes the decision.
-  openSessionElsewhere?: ((sessionId: string) => void) | undefined
+  // here: choosing a machine opens the transfer preflight and the existing
+  // consent surface takes the decision.
+  previewTransferTo?: ((sessionId: string, machineId: string) => void) | undefined
+  currentMachineId?: string | undefined
+  transferEntries?: readonly FleetEntry[] | undefined
   // Cmd+Enter on a machine starts a session there. Nothing to reconcile.
   startSessionOn?: ((machineId: string) => void) | undefined
 }): WorkspaceCommand[] {
@@ -200,7 +207,19 @@ export function buildWorkspaceCommands({
       meta: `${session.runtime.provider} · ${session.state}`,
       kind: "SESSION" as const,
       tone: sessionTone(session.state),
-      ...(openSessionElsewhere ? { openElsewhere: () => openSessionElsewhere(session.id) } : {}),
+      ...(previewTransferTo && currentMachineId ? {
+        elsewhereTargets: transferTargets({ entries: entries ?? [], transferEntries, currentMachineId })
+          .map((target): WorkspaceCommand => ({
+            id: `move-${session.id}-to-${target.id}`,
+            label: target.label,
+            section: "Machines" as const,
+            keywords: [target.platform, target.connection],
+            meta: `${target.platform} · ${target.connection}`,
+            kind: "MACHINE" as const,
+            tone: "online" as const,
+            run: () => previewTransferTo(session.id, target.id),
+          })),
+      } : {}),
       run: () => activateSession(session.id),
     })) : []),
     // Only a machine entry can be selected. A pending or unenrolled entry has
@@ -280,8 +299,13 @@ export function CommandPalette({
   const ranked = useMemo(() => rankWorkspaceCommands(commands, query), [commands, query])
   // cmdk highlights the first row on open and only tells us once the selection
   // moves, so an empty report means the first row.
-  const current = highlighted || ranked[0]?.id
-  const elsewhere = ranked.find((command) => command.id === current && command.openElsewhere && !command.disabled)
+  // While a session is choosing a machine, the list is that session's targets.
+  const [choosing, setChoosing] = useState<WorkspaceCommand | null>(null)
+  const rows = choosing?.elsewhereTargets ?? ranked
+  const current = highlighted || rows[0]?.id
+  const elsewhere = rows.find((command) => command.id === current
+    && (command.openElsewhere || command.elsewhereTargets)
+    && !command.disabled)
   const sections = commandSections
 
   useEffect(() => {
@@ -296,7 +320,14 @@ export function CommandPalette({
     <CommandDialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) setQuery("")
+        // Escape backs out of a half-made choice before it closes the whole
+        // launcher. The dialog owns the key, so the step back happens here.
+        if (!nextOpen && choosing) {
+          setChoosing(null)
+          setHighlighted("")
+          return
+        }
+        if (!nextOpen) { setQuery(""); setChoosing(null); setHighlighted("") }
         onOpenChange(nextOpen)
       }}
       title="Domovoi commands"
@@ -316,6 +347,12 @@ export function CommandPalette({
           // answer than doing nothing, and the footer already says which it is.
           event.preventDefault()
           if (!elsewhere) return
+          if (elsewhere.elsewhereTargets) {
+            // The launcher picks the machine. The preflight takes the decision.
+            setChoosing(elsewhere)
+            setHighlighted("")
+            return
+          }
           shouldRestoreFocus.current = elsewhere.restoreFocus !== false
           onOpenChange(false)
           elsewhere.openElsewhere!()
@@ -330,8 +367,8 @@ export function CommandPalette({
         />
         <CommandList>
           <CommandEmpty>No matching commands.</CommandEmpty>
-          {sections.map((section) => {
-            const items = ranked.filter((command) => command.section === section)
+          {(choosing ? ["Machines" as const] : sections).map((section) => {
+            const items = rows.filter((command) => choosing ? true : command.section === section)
             return items.length ? (
               <CommandGroup key={section} heading={section}>
                 {items.map((command) => {
@@ -377,7 +414,9 @@ export function CommandPalette({
           })}
         </CommandList>
         <p data-testid="palette-hints" className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-muted-foreground">
-          ↑↓ navigate · Enter run{elsewhere ? ` · ${platform === "darwin" ? "⌘" : "Ctrl"}+Enter open elsewhere` : ""} · Escape close · {platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle
+          {choosing
+            ? `↑↓ navigate · Enter move ${choosing.label} here · Escape back`
+            : `↑↓ navigate · Enter run${elsewhere ? ` · ${platform === "darwin" ? "⌘" : "Ctrl"}+Enter open elsewhere` : ""} · Escape close · ${platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle`}
         </p>
       </Command>
     </CommandDialog>

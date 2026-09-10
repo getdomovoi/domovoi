@@ -221,7 +221,7 @@ describe("open elsewhere", () => {
   // existing consent surface takes the decision.
   it("offers a live session a move and a machine a start, and a verb neither", () => {
     const session = structuredClone(demoWorkspace).sessions[0]!
-    const openSessionElsewhere = vi.fn()
+    const previewTransferTo = vi.fn()
     const commands = buildWorkspaceCommands({
       connected: true,
       emergencyStopPending: false,
@@ -233,14 +233,18 @@ describe("open elsewhere", () => {
       setSurface: vi.fn(),
       sessions: [session],
       activateSession: vi.fn(),
-      openSessionElsewhere,
+      previewTransferTo,
+      currentMachineId: "machine-here",
+      entries: [],
     })
     const found = (id: string) => commands.find((command) => command.id === id)!
 
-    found(`session-${session.id}`).openElsewhere!()
-    expect(openSessionElsewhere).toHaveBeenCalledWith(session.id)
-    expect(found("open-project").openElsewhere).toBeUndefined()
-    expect(found("new-session").openElsewhere).toBeUndefined()
+    // A live session carries a choice, not an action: it has to be told which
+    // machine before anything can move.
+    expect(found(`session-${session.id}`).elsewhereTargets).toEqual([])
+    expect(found(`session-${session.id}`).openElsewhere).toBeUndefined()
+    expect(found("open-project").elsewhereTargets).toBeUndefined()
+    expect(found("new-session").elsewhereTargets).toBeUndefined()
   })
 
   it("says nothing about elsewhere when the shell offers no way to get there", () => {
@@ -257,7 +261,7 @@ describe("open elsewhere", () => {
       sessions: [session],
       activateSession: vi.fn(),
     })
-    expect(commands.find((command) => command.id === `session-${session.id}`)?.openElsewhere).toBeUndefined()
+    expect(commands.find((command) => command.id === `session-${session.id}`)?.elsewhereTargets).toBeUndefined()
   })
 })
 

@@ -73,3 +73,57 @@ it("identifies the highlighted row by command id", async () => {
   await user.keyboard("{ArrowDown}")
   expect(screen.getAllByRole("option")[1]?.getAttribute("data-selected")).toBe("true")
 })
+
+// The launcher picks the machine. The preflight takes the decision, so nothing
+// here moves anything on its own.
+it("asks which machine, then hands the choice on", async () => {
+  const user = userEvent.setup()
+  const preview = vi.fn()
+  palette([
+    {
+      id: "session-1",
+      label: "Migrate billing",
+      section: "Sessions",
+      keywords: [],
+      kind: "SESSION",
+      run: vi.fn(),
+      elsewhereTargets: [
+        { id: "move-1-to-b", label: "thinkpad", section: "Machines", keywords: [], kind: "MACHINE", run: preview },
+      ],
+    },
+    { id: "open-project", label: "Open project", section: "Project", keywords: [], run: vi.fn() },
+  ])
+
+  await user.keyboard("{Meta>}{Enter}{/Meta}")
+  expect(screen.getByRole("option", { name: /thinkpad/ })).toBeTruthy()
+  expect(screen.queryByRole("option", { name: /Open project/ })).toBeNull()
+  expect(hints()).toContain("Enter move Migrate billing here")
+  expect(preview).not.toHaveBeenCalled()
+
+  await user.keyboard("{Enter}")
+  expect(preview).toHaveBeenCalledOnce()
+})
+
+it("steps back out of the choice before it closes the launcher", async () => {
+  const user = userEvent.setup()
+  palette([
+    {
+      id: "session-1",
+      label: "Migrate billing",
+      section: "Sessions",
+      keywords: [],
+      kind: "SESSION",
+      run: vi.fn(),
+      elsewhereTargets: [
+        { id: "move-1-to-b", label: "thinkpad", section: "Machines", keywords: [], kind: "MACHINE", run: vi.fn() },
+      ],
+    },
+  ])
+
+  await user.keyboard("{Meta>}{Enter}{/Meta}")
+  expect(screen.getByRole("option", { name: /thinkpad/ })).toBeTruthy()
+
+  await user.keyboard("{Escape}")
+  expect(screen.getByRole("option", { name: /Migrate billing/ })).toBeTruthy()
+  expect(hints()).toContain("Escape close")
+})
