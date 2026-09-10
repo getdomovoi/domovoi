@@ -2,8 +2,14 @@
 
 CX2 gives each newly acknowledged provider dispatch a durable, session-local ordinal.
 Steering adds a user message to the existing dispatch. It does not allocate another
-ordinal. Messages, tool output, approval receipts and system messages can carry a
+ordinal. User messages, assistant messages and tool output carry a
 `turnId` only when the daemon has an exact dispatch identity for them.
+
+Some providers allocate a new prompt ID while steering an existing turn. That user
+message also stores `providerMessageKey`, the digest of provider, thread and prompt
+ID. Its explicit `turnId` routes later provider reports to the original dispatch,
+including after restart or transfer. The key is absent when the adapter does not
+return a separate message identity. It is never inferred from message text or time.
 
 The turn ID is CX1's digest of provider, provider thread and provider turn identity.
 It is not a provider turn ID by itself, a timestamp, a message count or a row position.

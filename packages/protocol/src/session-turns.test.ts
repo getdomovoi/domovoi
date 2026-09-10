@@ -20,7 +20,7 @@ const turn = {
   provider: "opencode", requestedModel: "requested/model", reportedModels: [],
   status: "completed", coverage: "unavailable", usage, recordedToolCount: 2,
 }
-const message = { id: "message", sessionId: "session", kind: "user", body: "Steer the same turn", createdAt: startedAt, turnId: id }
+const message = { id: "message", sessionId: "session", kind: "user", body: "Steer the same turn", createdAt: startedAt, turnId: id, providerMessageKey: "d".repeat(64) }
 const entry = { id: "thread:message", sourceId: "message", sessionId: "session", category: "messages", role: "user", body: message.body, createdAt: startedAt, turnId: id, turn }
 const page = { sessionId: "session", items: [entry], hasMore: false }
 const portable = {
@@ -40,7 +40,7 @@ describe("durable turn links", () => {
 
   it("keeps legacy accounting and messages unnumbered", () => {
     const { turn: _turn, ...legacyAccounting } = accounting
-    const { turnId: _turnId, ...legacyMessage } = message
+    const { turnId: _turnId, providerMessageKey: _providerMessageKey, ...legacyMessage } = message
     expect(usageAccountingSchema.parse(legacyAccounting)).toEqual(legacyAccounting)
     expect(threadItemSchema.parse(legacyMessage)).toEqual(legacyMessage)
   })
@@ -66,6 +66,12 @@ describe("durable turn links", () => {
     const otherId = "d".repeat(64)
     const other = { ...portable.usage[0], turnId: otherId, accounting: { ...accounting, key: otherId, providerTurnId: "other" } }
     expect(sessionTransferStateSchema.safeParse({ ...portable, usage: [...portable.usage, other] }).success).toBe(false)
+  })
+
+  it("requires steering message keys to identify exactly one linked user message", () => {
+    expect(threadItemSchema.safeParse({ ...message, turnId: undefined }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...message, providerMessageKey: "unscoped-provider-id" }).success).toBe(false)
+    expect(sessionTransferStateSchema.safeParse({ ...portable, thread: [message, { ...message, id: "another-message" }] }).success).toBe(false)
   })
 
   it.each(["assistant.append", "tool-output.append"] as const)("preserves turn links in %s deltas", (kind) => {
