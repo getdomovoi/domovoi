@@ -21,8 +21,8 @@ approved command's execution duration.
 
 Records written before CX2 have no ordinal. They stay unnumbered. The first numbered
 dispatch in such a session starts at 1; that is not a claim that the older session had
-no turns. A provider start request that fails or times out without returning a turn
-identity cannot be assigned a durable provider turn. Missing links remain absent.
+no turns. A request that fails or times out before returning its identity cannot
+produce a new durable dispatch or steering association. Missing links remain absent.
 
 ## Client contract
 

@@ -25,6 +25,7 @@ import {
   projectSwitchConfirmationSchema,
   protocolVersion,
   protocolVersionMismatchErrorCode,
+  sessionHistoryPageSchema,
   skillInstallErrorCode,
   workspaceSnapshotSchema,
   type ProviderModel,
@@ -1076,13 +1077,14 @@ describe("DomovoiDaemon", () => {
       connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
       stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
-      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}), resolveApproval: vi.fn(),
+      steerTurn: vi.fn<AgentAdapter["steerTurn"]>(async () => {}), interruptTurn: vi.fn(async () => {}), resolveApproval: vi.fn(),
       onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
         listeners.add(listener)
         return () => { listeners.delete(listener) }
       }), close: vi.fn(async () => {}),
     } satisfies AgentAdapter
     agent.startTurn.mockResolvedValueOnce("first-turn").mockResolvedValueOnce("second-turn")
+    agent.steerTurn.mockResolvedValueOnce({ providerMessageId: "steering-message" })
     agent.listModels.mockResolvedValue(["gpt-5.6-sol", "gpt-5.5"].map((id) => ({
       provider: "codex", id, displayName: id, supportedReasoningEfforts: ["medium"], defaultReasoningEffort: "medium",
       description: "Usage accounting test model", isDefault: id === "gpt-5.6-sol",
@@ -1114,30 +1116,55 @@ describe("DomovoiDaemon", () => {
     }
     const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
     await rpc("session.send", { sessionId: session.id, prompt: "First", client: "desktop" })
+    await rpc("session.send", { sessionId: session.id, prompt: "Steer first", client: "desktop" })
+    emit({ type: "text-delta", threadId: "usage-thread", turnId: "first-turn", delta: "First reply" })
+    emit({ type: "item", phase: "completed", params: { threadId: "usage-thread", turnId: "first-turn", item: { id: "reused-tool", type: "commandExecution", command: "first tool" } } })
     await rpc("session.setRuntime", { sessionId: session.id,
       runtime: { ...session.runtime, model: "gpt-5.5" }, client: "desktop" })
     emit({ type: "turn-completed", params: { threadId: "usage-thread", turnId: "first-turn", status: "failed" } })
     await rpc("workspace.get", {})
     await rpc("session.send", { sessionId: session.id, prompt: "Second", client: "desktop" })
+    emit({ type: "text-delta", threadId: "usage-thread", turnId: "second-turn", delta: "Second reply" })
+    emit({ type: "command-output", threadId: "usage-thread", turnId: "second-turn", itemId: "reused-tool", delta: "Second output" })
+    emit({ type: "item", phase: "completed", params: { threadId: "usage-thread", turnId: "second-turn", item: { id: "reused-tool", type: "commandExecution", command: "second tool" } } })
     const usage = { type: "usage" as const, threadId: "usage-thread", turnId: "first-turn",
       usage: normalizeUsage({ inputTokens: 12, outputTokens: 3 }),
       source: { kind: "turn" as const, tokens: "reported" as const, model: "provider-selected-model" },
     }
     emit(usage)
     emit(usage)
+    emit({ ...usage, turnId: "steering-message", usage: normalizeUsage({ inputTokens: 20 }),
+      source: { ...usage.source, kind: "message", id: "steered-reply" } })
     emit({ ...usage, turnId: "never-dispatched" })
     const result = await rpc("session.usage", { sessionId: session.id })
-    expect(result).toMatchObject({ totalTokens: 15,
+    expect(result).toMatchObject({ totalTokens: 35,
       coverage: { complete: 1, pending: 1 },
       byRuntime: expect.arrayContaining([
-        expect.objectContaining({ model: "gpt-5.6-sol", totalTokens: 15, turns: 1 }),
+        expect.objectContaining({ model: "gpt-5.6-sol", totalTokens: 35, turns: 1 }),
         expect.objectContaining({ model: "gpt-5.5", totalTokens: 0, turns: 1 }),
       ]),
     })
     expect(ledger.transferSession(session.id)[0]?.accounting).toMatchObject({
       requestedModel: "gpt-5.6-sol", status: "failed",
-      observations: [expect.objectContaining({ model: "provider-selected-model" })],
+      observations: [expect.objectContaining({ model: "provider-selected-model" }), expect.objectContaining({ id: "steered-reply" })],
     })
+    const history = sessionHistoryPageSchema.parse(await rpc("session.history", { sessionId: session.id, categories: ["messages"], limit: 100 }))
+    const named = (body: string) => history.items.find((entry) => entry.category === "messages" && entry.body === body)
+    const firstTurnId = ledger.lookup({ provider: "codex", threadId: "usage-thread", turnId: "first-turn" })!.turnId
+    for (const body of ["First", "Steer first", "First reply"]) {
+      expect(named(body)).toMatchObject({ turnId: firstTurnId, turn: { ordinal: 1, requestedModel: "gpt-5.6-sol", status: "failed", recordedToolCount: 1, usage: { totalTokens: 35 } } })
+    }
+    for (const body of ["Second", "Second reply"]) {
+      expect(named(body)?.turn).toMatchObject({ ordinal: 2, requestedModel: "gpt-5.5", status: "pending", recordedToolCount: 1 })
+    }
+    const tools = sessionHistoryPageSchema.parse(await rpc("session.history", { sessionId: session.id, categories: ["tools"], limit: 100 }))
+    const firstTool = tools.items.find((entry) => entry.category === "tools" && entry.title === "first tool")
+    const secondTool = tools.items.find((entry) => entry.category === "tools" && entry.title === "second tool")
+    expect(firstTool?.turn?.ordinal).toBe(1)
+    expect(secondTool).toMatchObject({ output: "Second output", turn: { ordinal: 2 } })
+    expect(firstTool?.id).not.toBe(secondTool?.id)
+    expect(agent.startTurn).toHaveBeenCalledTimes(2)
+    expect(agent.steerTurn).toHaveBeenCalledOnce()
     socket.close()
   })
 

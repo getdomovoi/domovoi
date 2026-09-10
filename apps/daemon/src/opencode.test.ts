@@ -110,6 +110,24 @@ describe("openCodeAgentFor", () => {
 })
 
 describe("OpenCodeSdkAdapter", () => {
+  it("returns the steering message identity and keeps each reply's parent across turns", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `prompt-${++id}`)
+    const event = vi.fn()
+    adapter.onEvent(event)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "First", runtime: runtime("build") })
+    expect(await adapter.steerTurn(threadId, turnId, "Steer")).toEqual({ providerMessageId: "prompt-2" })
+    for (const parentID of ["prompt-1", "prompt-2"]) {
+      stream.emit({ type: "message.updated", properties: { info: { id: `reply-${parentID}`, role: "assistant", sessionID: threadId, parentID } } })
+    }
+    await waitForDaemon(() => expect(event.mock.calls.filter(([value]) => value.type === "usage")).toHaveLength(2))
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    stream.emit({ type: "message.part.updated", properties: { part: { type: "text", sessionID: threadId, messageID: "reply-prompt-2" }, delta: "Steered reply" } })
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({ type: "text-delta", threadId, turnId: "prompt-2", delta: "Steered reply" }))
+    await adapter.close()
+  })
   it("declares read-only Ask and pre-execution Build-auto enforcement", () => {
     const { factory } = harness()
     expect(new OpenCodeSdkAdapter(factory).permissionCapabilities).toEqual({
@@ -340,7 +358,7 @@ describe("OpenCodeSdkAdapter", () => {
     stream.emit({
       type: "message.updated",
       properties: {
-        info: { id: "assistant-message", sessionID: threadId, role: "assistant" },
+        info: { id: "assistant-message", sessionID: threadId, role: "assistant", parentID: "turn-1" },
       },
     })
     stream.emit({
