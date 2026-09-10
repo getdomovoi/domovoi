@@ -219,10 +219,14 @@ carries Codex's sha rather than a second agent's edit.
   check run here.
 
 ### CX2 · Turn records, ordinals, message associations — 2-3 d
-- [ ] Durable per-turn record with an ordinal.
-- [ ] Associate messages with turns. Two dispatch paths: `server.ts:6504` steers an active
-      turn, `server.ts:6595` appends another user message — a message is not a turn.
-- [ ] Expose the history-to-turn link so a history row can name its turn.
+Ticked under rule 7: Codex's work, Claude Code's file, so the citation carries Codex's shas.
+- [x] Durable per-turn record with an ordinal (6af4efe, 3e201c7).
+- [x] Associate messages with turns. Two dispatch paths: `server.ts:6504` steers an active
+      turn, `server.ts:6595` appends another user message — a message is not a turn (3b2f7f1).
+- [x] Expose the history-to-turn link so a history row can name its turn (3e201c7). `CC1`'s
+      meta draws it in 28812d8.
+- Legacy history stays unnumbered rather than defaulted, and `coverage` says how much of a
+  turn the daemon actually saw, so the client can refuse to present a floor as a total.
 
 ### CX3 · Approval execution duration — 1 field
 - [ ] Record how long the approved command ran, distinct from `decided in`.
@@ -230,12 +234,15 @@ carries Codex's sha rather than a second agent's edit.
       "what did the approval cost". The design asks for the second and the UI currently
       shows the first.
 
-### CX5 · Record the session-start checkpoint — requested by Claude Code, not yet agreed
-Raised 2026-09-10 while working `CC1`. Codex accepts, counters, or refuses this; it is a
-request rather than an assignment.
-- [ ] Push a checkpoint thread item when a session worktree is created, carrying the
-      `baseCommit` that `createSessionWorkspace` already returns.
-- [ ] Give the checkpoint thread item a `reason`, and make `session-start` its seventh value.
+### CX5 · Record the session-start checkpoint — accepted and landed
+Raised 2026-09-10 while working `CC1`, accepted by Codex the same day (37e2b45, 25b94f0), and
+`docs/checkpoint-reasons.md` is the contract. Codex caught a second failure in the original
+ask that Claude Code had missed: `baseCommit` is mutable, so comparing against it does not
+just collide, it changes meaning over time.
+- [x] Push a checkpoint thread item when a session worktree is created, carrying the
+      `baseCommit` that `createSessionWorkspace` already returns (25b94f0).
+- [x] Give the checkpoint thread item a `reason`, and make `session-start` its seventh value.
+      Landed with eight reasons and legacy rows left absent rather than defaulted (37e2b45).
       The schema is `{ kind: "checkpoint", label, commit?, createdAt }` (`schema.ts:502-505`);
       the reason exists already but only inside the label prose — `forked checkpoint`,
       a user's own words, `before restore`, `before revert <path>`, `before provider
@@ -260,27 +267,30 @@ request rather than an assignment.
 ## Claude Code
 
 ### CC1 · Finish the history row — blocked on CX2 for the last part
-- [ ] `<pre>` out of the row, meta on one line, body in a collapsed `details`.
-- [ ] Checkpoint title drops the sha; title names the checkpoint, meta names the commit.
-- [ ] Fork wired on checkpoint rows only, with a confirm stating both halves.
-- [ ] The card: `1px --border`, `--radius`, rows separated by a border. Currently a bare div.
-- [ ] Left **42px mono time column**. Time currently sits right of the title with no width.
-- [ ] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
-      `bg-primary` on every row.
-- [ ] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — **after CX2**.
+- [x] `<pre>` out of the row, meta on one line, body in a collapsed `details` (d1f974f).
+- [x] Checkpoint title drops the sha; title names the checkpoint, meta names the commit
+      (d1f974f).
+- [x] Fork wired on checkpoint rows only, with a confirm stating both halves
+      (d1f974f, 6e38abf).
+- [x] The card: `1px --border`, `--radius`, rows separated by a border (d1f974f).
+- [x] Left **42px mono time column**, pinned by `history-row.dom.test.tsx` (d1f974f).
+- [x] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
+      `bg-primary` on every row (d1f974f).
+- [x] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — after CX2
+      (6af4efe, 3b2f7f1, 3e201c7 by Codex; drawn in 28812d8). The row also repeats what the
+      turn says about its own completeness: pending reads `running`, unavailable says so, and
+      partial is marked rather than passing its floor off as a total.
 - [x] Record execution duration as an unfilled design field, not a satisfied one:
       `sessionHistoryEntryDetail`'s field 4 names it and says why only decision latency
       can be measured today (d1f974f).
-- [ ] The session-start checkpoint gets **no** fork. **Blocked on `CX5`.** There is no such
-      row to suppress: `createSessionWorkspace` (`workspace.ts:806`) makes the worktree and
-      returns `baseCommit`, but pushes no thread item, and none of the six checkpoint sites
-      in `server.ts` runs at session creation. The design draws the row at
-      `Domovoi Desktop V2.part2-logic.html:942`, `fork: false`, meta
-      `session start · nothing to revert past this`. Claude Code suppresses fork and renders
-      the meta once the row exists and can be told apart from a manual checkpoint.
-- [ ] Turn-row fork is **blocked on CX2**, not out of scope. `session.fork` takes a checkpoint
-      id, so forking "from turn 9" forks from whichever checkpoint precedes it until a turn has
-      a fork point of its own.
+- [x] The session-start checkpoint gets **no** fork (37e2b45, 25b94f0 by Codex; drawn in
+      28812d8). Fork is absent rather than disabled, because a disabled control still says the
+      decision exists, and the meta reads `session start · nothing to revert past this`.
+      Restore stays: going back to it is exactly what it is for. A legacy checkpoint carries no
+      reason and is never guessed into this branch.
+- [ ] Turn-row fork is still open after `CX2`. A turn now has an identity; it still has no fork
+      point of its own, and `session.fork` takes a checkpoint id, so forking "from turn 9" would
+      fork from whichever checkpoint precedes it. Needs a daemon decision, not a client one.
 
 ### CC2 · StatusDot takes an invisible label
 - [ ] The label stops being visible; it does not stop being required. Meaning derives from
