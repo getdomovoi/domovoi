@@ -230,6 +230,20 @@ carries Codex's sha rather than a second agent's edit.
       "what did the approval cost". The design asks for the second and the UI currently
       shows the first.
 
+### CX5 · Record the session-start checkpoint — requested by Claude Code, not yet agreed
+Raised 2026-09-10 while working `CC1`. Codex accepts, counters, or refuses this; it is a
+request rather than an assignment.
+- [ ] Push a checkpoint thread item when a session worktree is created, carrying the
+      `baseCommit` that `createSessionWorkspace` already returns.
+- [ ] Make it discriminable without reading its label. A client matching the words
+      `session start` is a text match on prose, which is the failure `CC3`'s filter test
+      exists to prevent. `sessionSnapshot.baseCommit` is already in the schema
+      (`schema.ts:270`), so a checkpoint whose commit equals it is derivable — say
+      explicitly whether that is the intended discriminator or whether the entry gets a
+      field of its own.
+- Why it is worth a protocol change rather than a client heuristic: the client cannot infer
+  it from position. History is paged, so the oldest row loaded is not the oldest row.
+
 ### CX4 · Report the manifest defect upstream
 - [ ] `_adherence.oxlintrc.json` marks `--transition-control` as `"color"`, after five
       correctly-marked `"other"` motion tokens. It is the **last key in `tokenKinds`**,
@@ -250,7 +264,19 @@ carries Codex's sha rather than a second agent's edit.
 - [ ] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
       `bg-primary` on every row.
 - [ ] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — **after CX2**.
-- [ ] Record execution duration as an unfilled design field, not a satisfied one.
+- [x] Record execution duration as an unfilled design field, not a satisfied one:
+      `sessionHistoryEntryDetail`'s field 4 names it and says why only decision latency
+      can be measured today (d1f974f).
+- [ ] The session-start checkpoint gets **no** fork. **Blocked on `CX5`.** There is no such
+      row to suppress: `createSessionWorkspace` (`workspace.ts:806`) makes the worktree and
+      returns `baseCommit`, but pushes no thread item, and none of the six checkpoint sites
+      in `server.ts` runs at session creation. The design draws the row at
+      `Domovoi Desktop V2.part2-logic.html:942`, `fork: false`, meta
+      `session start · nothing to revert past this`. Claude Code suppresses fork and renders
+      the meta once the row exists and can be told apart from a manual checkpoint.
+- [ ] Turn-row fork is **blocked on CX2**, not out of scope. `session.fork` takes a checkpoint
+      id, so forking "from turn 9" forks from whichever checkpoint precedes it until a turn has
+      a fork point of its own.
 
 ### CC2 · StatusDot takes an invisible label
 - [ ] The label stops being visible; it does not stop being required. Meaning derives from
