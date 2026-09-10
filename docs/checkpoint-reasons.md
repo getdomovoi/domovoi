@@ -15,7 +15,8 @@ label and commit:
 | `before-provider-recovery` | Recovery state saved before replacing a failed provider thread |
 | `before-archive` | Recovery state saved before archiving the session |
 
-The new session-start row carries `createSessionWorkspace`'s base commit. Clients
+The new session-start row carries `createSessionWorkspace`'s base commit, retained
+under the same durable Git checkpoint refs used by restore and transfer. Clients
 can suppress its fork action with `entry.reason === "session-start"`, including
 when history is paged. A later checkpoint can share its commit without becoming a
 session-start checkpoint. The session's mutable `baseCommit` cannot identify this
