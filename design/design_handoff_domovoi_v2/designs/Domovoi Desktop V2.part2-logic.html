@@ -930,14 +930,17 @@ class Component extends DCLogic {
           (st.historyCat === c.id ? "var(--primary)" : "var(--muted-foreground)") + ";",
         countStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);"
       })),
+      // Fork restores a worktree, and turns do not each have one: most turns write nothing,
+      // so forking from turn 8 and from turn 9 lands on identical filesystem state, and
+      // session.fork does not replay conversation either. Checkpoint-only is the rule.
       historyRows: [
-        { cat: "turns", time: "14:08", title: "Rewrote replay.spec.ts to assert exactly-once delivery", meta: "turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens", k: "success", fork: true },
+        { cat: "turns", time: "14:08", title: "Rewrote replay.spec.ts to assert exactly-once delivery", meta: "turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens", k: "success", fork: false },
         { cat: "checkpoints", time: "14:07", title: "Checkpoint ckpt_7f24 taken before the migration", meta: "commit 8f3c1de · worktree wt-billing-idem", k: "success", fork: true },
         { cat: "approvals", time: "14:07", title: "Allowed once: pnpm prisma migrate deploy", meta: "decided on desktop · device 4b91…e7c · ran 38s", k: "info", fork: false },
-        { cat: "turns", time: "14:06", title: "Stopped at step 3 and asked", meta: "turn 8 · 1 failing spec · gate raised", k: "info", fork: true },
+        { cat: "turns", time: "14:06", title: "Stopped at step 3 and asked", meta: "turn 8 · 1 failing spec · gate raised", k: "info", fork: false },
         { cat: "approvals", time: "14:05", title: "Rule created: pnpm vitest run *", meta: "scope acme-api, any machine · used 82 times since", k: "info", fork: false },
         { cat: "checkpoints", time: "14:04", title: "Checkpoint ckpt_6b0e before handler.ts was rewritten", meta: "commit 4c2a91f", k: "success", fork: true },
-        { cat: "turns", time: "14:03", title: "Wrote the plan, four steps", meta: "turn 3 · revised once at 14:06", k: "success", fork: true },
+        { cat: "turns", time: "14:03", title: "Wrote the plan, four steps", meta: "turn 3 · revised once at 14:06", k: "success", fork: false },
         { cat: "transfers", time: "13:58", title: "Moved here from wsl-ubuntu-24", meta: "preflight passed · 3 unversioned files held back", k: "info", fork: false },
         { cat: "checkpoints", time: "13:52", title: "Worktree created off main at 8f3c1de", meta: "session start · nothing to revert past this", k: "info", fork: false }
       ].filter(r => st.historyCat === "all" || r.cat === st.historyCat)
