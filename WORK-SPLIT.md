@@ -300,10 +300,13 @@ just collide, it changes meaning over time.
       `fork: true`, and the reasoning sits above `historyRows` in the design file itself so the
       drawing carries its own why. Re-vendored, `part2-logic` 133,178 to 133,451 bytes. Nothing
       to raise with Codex: `session.fork` taking a checkpoint id is right as it stands.
-  - Still outstanding upstream: the export `README.md`. Its no-destination-path correction is
-    made, but its byte table still reads `133,178` for `part2-logic`, which the re-export just
-    invalidated. It is the reconstruction contract, so it is not vendored with a number that
-    disagrees with the file beside it.
+  - The export `README.md` is vendored at `design/design_handoff_domovoi_v2/designs/README.md`
+    (18dc495 for the parts, this commit for the README). Its byte table is gone rather than
+    corrected: a restated byte count goes stale on every re-export, which is the same shape as
+    an undated `[x]` or prose restating a token. What replaces it is checkable after any
+    re-export, and was checked here rather than taken on the README's word — part 1 ends
+    `</x-dc>` with zero trailing bytes, part 2 opens `\n<script` and ends `</html>\n`, and the
+    seam is adjacent bytes with no separator. The correction list is closed.
 
 ### CC2 · StatusDot takes an invisible label
 - [ ] The label stops being visible; it does not stop being required. Meaning derives from
