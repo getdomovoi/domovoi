@@ -333,10 +333,17 @@ building them:
   - [ ] Two frames need Codex first and are not yet raised: 04 wants a terminal-claim fact the
         protocol does not carry, and 18 wants annotation coordinates for authoring, where only
         the read side exists.
-  - Method note: `camera|BarCode|qrcode|scanner` and `attachment|Picker|photo|image` each match
-    exactly one line in `apps/mobile/src`, and both matches are comments about work not done.
-    A presence grep answered yes where the code says no, so every row above was read before it
-    was classified.
+  - Method note, both directions. `camera|BarCode|qrcode|scanner` and
+    `attachment|Picker|photo|image` each match exactly one line in `apps/mobile/src`, and both
+    matches are comments about work not done: a presence grep answered yes where the code says
+    no. The reverse cost a wrong row in the same pass — frame 01 was written up from grepping
+    `needs|Needs|group`, which missed `attention`, `approvalLead`, `waitingCount` and
+    `ApprovalLeadCard` because the concept is there under other words. `graft` found them in one
+    call. Use it for "is this concept here"; a keyword search only answers "is this string here".
+  - Found while correcting that: `groupSessions` and `sessionsNeedingYou`
+    (`packages/ui/src/session-groups.ts:24,72`) have no callers outside their own test. The
+    desktop already models the three groups the phone design draws, and nothing renders them.
+    Belongs to `CC7` rather than Phone v2.
 - [ ] **Web v2** — `apps/web/src/` exists with browser platform, client kind, credential,
       daemon pairing. Design adds the six-step flow including Design review.
 - [ ] **Onboarding** — `desktop-first-run-persistence.ts` plus first-run and recovery tests.
