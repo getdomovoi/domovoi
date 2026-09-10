@@ -15,6 +15,7 @@ import {
   sessionTransferResultSchema,
 } from "./transfer-request.js"
 import { sessionTransferPreviewSchema } from "./transfer-contract.js"
+import { providerSessionCostSchema, usageCoverageSchema } from "./usage-accounting.js"
 import {
   transferAbortParamsSchema,
   transferAbortResultSchema,
@@ -1195,6 +1196,8 @@ const usageTotalsSchema = z.object({
 }).strict()
 export const sessionUsageSchema = usageTotalsSchema.extend({
   sessionId: z.string().min(1),
+  coverage: usageCoverageSchema.optional(),
+  sessionCosts: z.array(providerSessionCostSchema).optional(),
   reportedCostTurns: z.number().int().nonnegative(),
   unavailableCostTurns: z.number().int().nonnegative(),
   contextTokens: z.number().int().nonnegative().optional(),
@@ -1235,6 +1238,7 @@ export const usageWindowParamsSchema = z.object({
   })
 })
 export const usageWindowSchema = usageTotalsSchema.extend({
+  coverage: usageCoverageSchema.optional(),
   sessions: z.number().int().nonnegative(),
   turns: z.number().int().nonnegative(),
   reportedCostTurns: z.number().int().nonnegative(),
