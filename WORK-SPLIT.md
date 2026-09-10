@@ -330,9 +330,11 @@ building them:
         three with nothing: 09 pairing by camera, 13 and 14 attachments, 19 pinned plan sheet.
         Estimate for the rest of Phone v2 is 13-15 days, which is what `SHIP-PLAN.md`'s `S3.3`
         line costs. Full table in `~/.agents/plans/2026-09-10-domovoi-cc5-phone-v2-diff.md`.
-  - [ ] Two frames need Codex first and are not yet raised: 04 wants a terminal-claim fact the
-        protocol does not carry, and 18 wants annotation coordinates for authoring, where only
-        the read side exists.
+  - [x] No frame is blocked on Codex (02b6c7d). Checked before raising a request, and the
+        request was not warranted: `terminalOwnershipNotificationSchema` (`rpc.ts:918`) already
+        carries `owner: { client, clientId }` for frame 04, and `annotationAnchorSchema`
+        (`schema.ts:762`) already takes a `bbox` beside the selector and quote for frame 18.
+        Both were called blocked from grepping `apps/mobile/src` without reading the protocol.
   - Method note, both directions. `camera|BarCode|qrcode|scanner` and
     `attachment|Picker|photo|image` each match exactly one line in `apps/mobile/src`, and both
     matches are comments about work not done: a presence grep answered yes where the code says
@@ -344,10 +346,26 @@ building them:
     (`packages/ui/src/session-groups.ts:24,72`) have no callers outside their own test. The
     desktop already models the three groups the phone design draws, and nothing renders them.
     Belongs to `CC7` rather than Phone v2.
-- [ ] **Web v2** — `apps/web/src/` exists with browser platform, client kind, credential,
-      daemon pairing. Design adds the six-step flow including Design review.
-- [ ] **Onboarding** — `desktop-first-run-persistence.ts` plus first-run and recovery tests.
-- [ ] **Skills** — `skill-browser-*.tsx`, and `skills` is a real `WorkspaceSurface`.
+- [x] **Web v2** — diffed 2026-09-10 (02b6c7d). Two of six steps built, one partial, three with
+      nothing: picking a machine, carrying on without the terminal, and Design review. 6-8 days,
+      and machine selection is Phase 2 work wearing a Phase 3 label — a browser cannot reach a
+      second machine without the relay or a tailnet route.
+- [x] **Onboarding** — diffed 2026-09-10 (02b6c7d). Two of five steps built. 4-5 days for the
+      client half. Two gaps: the design offers "Install it for me" where
+      `providerFirstRunRecovery` says "Domovoi will not run an installer for you", which is a
+      decision rather than an estimate; and "Sign in to Domovoi Cloud" needs an account service
+      that does not exist, so it is `S0.1`/`S5.1`, not client work.
+- [x] **Skills** — diffed 2026-09-10 (02b6c7d). Nearly done: install preview, scope, trust,
+      `SKILL.md` view, fleet inventory comparison and per-turn selection all real. 3-4 days,
+      almost all of it the one missing surface — "read the diff and re-review". A changed skill
+      drops to untrusted and nothing shows what changed, so re-approving approves a digest
+      rather than a change.
+
+**All four diffs are done. `CC5`'s estimate half is complete: 26-32 days for four of Phase 3's
+nine `S3.x` items, with Tablet, Cloud, Team, cross-cutting states and accessibility uncounted.
+A whole-phase figure of 45-60 days is the honest shape. Two milestone questions are raised in
+`~/.agents/plans/2026-09-10-domovoi-cc5-remaining-diffs.md` and are fetzy's to answer: whether
+`S3.5` Tablet leaves M3, and whether M2 is phone-gates-only rather than phone-parity.**
 
 ### CC6 · The three that genuinely have no code
 - [ ] **Tablet v2** — nothing in the repo.
