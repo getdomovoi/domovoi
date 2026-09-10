@@ -236,14 +236,18 @@ export function sessionHistoryEntryDetail(
   // worse than no number, and `coverage` is the daemon saying how much of the
   // turn it actually saw.
   //
-  // Two remain, and both are still waiting on the daemon.
+  // The design's three fork-bearing turn rows are a design error rather than a
+  // gap, settled 2026-09-10, and the design is what changes. Fork restores a
+  // worktree, and turns do not each have one: most turns write nothing, so
+  // forking "from turn 8" and "from turn 9" lands on identical filesystem state,
+  // and session.fork does not replay conversation either. The affordance would
+  // promise a precision it cannot deliver. CX2 gave a turn an identity; it did
+  // not give it a state, and only a checkpoint names one. Checkpoint-only is the
+  // rule, not a narrowing of the drawing.
   //
-  // 1. Fork from a turn row. The design marks fork per row, and its three turn
-  //    rows all carry it. session.fork takes a checkpoint id, so forking "from
-  //    turn 9" would silently fork from whichever checkpoint precedes it: a
-  //    different point in time wearing the label of this one. A turn now has an
-  //    identity; it still has no fork point of its own.
-  // 2. Execution duration for an approved operation. `decided in` below is not
+  // One thing here is still unfilled, and it is the daemon's:
+  //
+  // 1. Execution duration for an approved operation. `decided in` below is not
   //    that field. Decision latency says how long the agent sat blocked;
   //    execution duration says what the approval cost. Both belong; only the
   //    first can be measured today. That is CX3.
