@@ -205,7 +205,7 @@ export function sessionHistoryEntryDetail(
   entry: SessionHistoryEntry,
   options: { worktreeName?: string | undefined } = {},
 ): string | undefined {
-  // Three fields the design draws that nothing here can fill yet. None of them
+  // Four things the design draws that nothing here can fill yet. None of them
   // is satisfied by what this function returns; each is waiting on the daemon.
   //
   // 1. `turn 9 · sonnet-4.6` needs a durable turn record. A message is not a
@@ -217,7 +217,13 @@ export function sessionHistoryEntryDetail(
   //    that looks auditable and is not is worse than no number. Then the same
   //    durable turn record as (1), because provider turn identities are enough
   //    to store the accounting but not to attribute it to one history row.
-  // 3. Execution duration for an approved operation. `decided in` below is not
+  // 3. Fork from a turn row. The design marks fork per row, and its three turn
+  //    rows all carry it. session.fork takes a checkpoint id, so forking "from
+  //    turn 9" would silently fork from whichever checkpoint precedes it: a
+  //    different point in time wearing the label of this one. Waits on the same
+  //    durable turn record as (1), which is what would give a turn a fork point
+  //    of its own.
+  // 4. Execution duration for an approved operation. `decided in` below is not
   //    that field. Decision latency says how long the agent sat blocked;
   //    execution duration says what the approval cost. Both belong; only the
   //    first can be measured today.
@@ -226,7 +232,7 @@ export function sessionHistoryEntryDetail(
   if (entry.category === "approvals") {
     // decisionDurationMs measures how long the decision took, not how long the
     // approved operation ran. Those are different quantities, so the copy names
-    // this one. The other is unfilled field 3 above.
+    // this one. The other is unfilled field 4 above.
     const decidedIn = entry.decisionDurationMs === undefined
       ? ""
       : ` · decided in ${Math.round(entry.decisionDurationMs / 1_000)}s`
