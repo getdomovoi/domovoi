@@ -41,10 +41,10 @@ describe("session history view model", () => {
       { value: "approvals", label: "Approvals" },
       { value: "checkpoints", label: "Checkpoints" },
       { value: "transfers", label: "Transfers" },
+      { value: "handoffs", label: "Handoffs" },
       { value: "tools", label: "Tools" },
       { value: "annotations", label: "Annotations" },
       { value: "tests", label: "Tests" },
-      { value: "handoffs", label: "Handoffs" },
     ])
   })
 

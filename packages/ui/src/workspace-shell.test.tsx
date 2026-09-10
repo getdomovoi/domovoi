@@ -433,10 +433,10 @@ describe("HistoryPanel", () => {
       "Approvals",
       "Checkpoints",
       "Transfers",
+      "Handoffs",
       "Tools",
       "Annotations",
       "Tests",
-      "Handoffs",
     ]) expect(markup).toContain(`>${label}</button>`)
   })
 })
