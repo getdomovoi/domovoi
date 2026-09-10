@@ -34,6 +34,17 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    the previous manifest first, and say which state you verified against.
 6. **Read the reviews, not the check row.** `Review rate limited` and `Review completed`
    both render as pass and both carry `state: success`. Only the description differs.
+7. **The agent that owns this file ticks every box in it, including the other agent's.**
+   This file sits in Claude Code's half of the tree but describes both halves, which rule 1
+   did not anticipate. Codex ticking `CX1` here would put two agents in one file to record
+   work that is already recorded in a commit. So the owner ticks, citing the other agent's
+   sha, and ownership and evidence both survive.
+8. **Every `[x]` names the commits that make it checkable.** `pnpm release:invariants` runs
+   `scripts/tick-citations.mjs`, which fails a ticked box with no `(<sha>)` and fails a sha
+   that is not a commit here. Ticks that predate the rule are exempted in
+   `scripts/tick-citations-allowlist.json`; that list only shrinks, through `pnpm ticks:prune`.
+   A plan written outside the repository is a claim with no evidence attached, the same shape
+   as an undated tick: three of this file's boxes were already done on the day it was written.
 
 ---
 
@@ -90,31 +101,50 @@ so the first landing does not read as the unblock.
 ## Claude Code
 
 ### CC1 · Finish the history row — blocked on CX2 for the last part
-- [x] `<pre>` out of the row, meta on one line, body in a collapsed `details`.
-- [x] Checkpoint title drops the sha; title names the checkpoint, meta names the commit.
-- [x] Fork wired on checkpoint rows only, with a confirm stating both halves.
-- [ ] The card: `1px --border`, `--radius`, rows separated by a border. Currently a bare div.
-- [ ] Left **42px mono time column**. Time currently sits right of the title with no width.
-- [ ] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
-      `bg-primary` on every row.
+- [x] `<pre>` out of the row, meta on one line, body in a collapsed `details` (d1f974f).
+- [x] Checkpoint title drops the sha; title names the checkpoint, meta names the commit
+      (d1f974f).
+- [x] Fork wired on checkpoint rows only, with a confirm stating both halves
+      (d1f974f, 6e38abf).
+- [x] The card: `1px --border`, `--radius`, rows separated by a border (d1f974f).
+- [x] Left **42px mono time column**, pinned by `history-row.dom.test.tsx` (d1f974f).
+- [x] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
+      `bg-primary` on every row (d1f974f).
 - [ ] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — **after CX2**.
-- [ ] Record execution duration as an unfilled design field, not a satisfied one.
+- [x] Record execution duration as an unfilled design field, not a satisfied one:
+      `sessionHistoryEntryDetail`'s field 4 names it and says why only decision latency
+      can be measured today (d1f974f).
+- [ ] The session-start checkpoint gets **no** fork. "Nothing to revert past this" is in the
+      design's own meta, and the row currently offers fork to any checkpoint carrying a commit.
+- [ ] Turn-row fork is **blocked on CX2**, not out of scope. `session.fork` takes a checkpoint
+      id, so forking "from turn 9" forks from whichever checkpoint precedes it until a turn has
+      a fork point of its own.
 
 ### CC2 · StatusDot takes an invisible label
-- [ ] The label stops being visible; it does not stop being required. Meaning derives from
-      `status` and `decision`, nothing invented.
-- [ ] Any row whose title does not state its outcome gets the outcome word in the meta —
-      failures especially. Colour is never the sole carrier.
+- [x] The label stops being visible; it does not stop being required. Meaning derives from
+      `status` and `decision`, nothing invented (75a555a, `sessionHistoryEntryOutcome`).
+- [x] Any row whose title does not state its outcome gets the outcome word in the meta —
+      failures especially. Colour is never the sole carrier. A tool or test row's meta is
+      `<tool> · <status>`, pinned as `"command · failed"` in `session-history-meta.test.ts`
+      (d1f974f).
 - Own commit. Touches the atom, so it lands before `CC1`'s dot swap.
+- Landed 2026-09-10, before this file left `design/`. The boxes stayed unticked because a
+  ticked box under `design/` fails `release:invariants`, which is why the file moved.
 
 ### CC3 · Revert the Handoffs label, add the transfers filter
-- [ ] `6f2f875` renamed `handoffs` to Transfers. `handoffs` holds **provider** handoffs —
+- [x] `6f2f875` renamed `handoffs` to Transfers. `handoffs` holds **provider** handoffs —
       `server.ts:461` selects rows starting `Handed off `, written at `server.ts:5812`.
-      Revert the label to Handoffs.
-- [ ] Add the `transfers` filter now that `560eca5` records machine transfers.
-- [ ] Eight filters, drawn five leading:
+      Label reverted to Handoffs (6f8c4f1).
+- [x] Add the `transfers` filter now that `560eca5` records machine transfers (d1f974f).
+- [x] Eight filters, drawn five leading:
       Everything, Turns, Approvals, Checkpoints, Transfers, then Handoffs, Tools,
-      Annotations, Tests.
+      Annotations, Tests (6efa0ca).
+- Verified against the design rather than against this line: the drawn set is `historyCats` in
+  `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.part2-logic.html:920-924`, which
+  is `all`/Everything, `turns`, `approvals`, `checkpoints`, `transfers` and draws no Handoffs.
+  `session-history.test.ts` pins the order, and a second test pins the list against
+  `sessionHistoryCategorySchema.options` so a category the daemon can stamp cannot lose its
+  filter.
 
 ### CC4 · Vendor the v2 designs — do this first
 - [ ] `Domovoi Desktop V2.dc.html` and the eight other v2 files are **not** in the vendored
