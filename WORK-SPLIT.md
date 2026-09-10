@@ -422,11 +422,32 @@ A whole-phase figure of 45-60 days is the honest shape. Two milestone questions 
       failed read renders nothing and states what is still true.
 - [ ] No-results and not-searched are different answers. Never round one into the other.
 
-### CC8 · `apps/mobile`'s eight sub-floor type sites
-- [ ] Four in `screens/session.tsx`, two in `screens/artifact.tsx`, one each in
-      `components/tab-bar.tsx` and `components/ui/badge.tsx`.
-- [ ] Mechanical now: widening the lint rule's files glob is what lands it. The config
-      comment already says so.
+### CC8 · `apps/mobile`'s sub-floor type sites — not mechanical, and needs a design answer
+Checked 2026-09-10 before widening anything, and three of this item's premises are wrong.
+
+- [ ] **Nine sites, not eight.** Four in `screens/session.tsx` (56, 86, 90, 139), two in
+      `screens/artifact.tsx` (32, 42), one each in `components/tab-bar.tsx` (56) and
+      `components/ui/badge.tsx` (48) — and `screens/fleet.tsx:48` at `text-[8.5px]`, which the
+      inventory missed and which is the smallest of them.
+- [ ] **The three role names do not resolve in `apps/mobile`.** The rule's message says to use
+      `text-eyebrow`, `text-mono-xs` or `text-micro`. `apps/mobile/tailwind.config.js` has no
+      `fontSize` at all — it reads only `colors`, `fontFamily` and `radius` from
+      `tokens.generated.js`, and that file carries no type scale. Widening the glob would flag
+      nine sites and offer three utilities that resolve to nothing in nativewind, so every fix
+      it prompted would be wrong.
+- [ ] **The phone's scale is deliberately not the desktop's**, so emitting the desktop floor
+      into mobile is not the fix either. `components/ui/text.tsx:22` says why: "A phone is read
+      at arm's length rather than desk distance, so the scale is tighter than the desktop's."
+      Its nine `Text` variants are the phone's real role system, bottoming out at
+      `machine` 10px and `note`/`label` 10.5px.
+- [ ] **The open question is a design one, not a lint one:** does the phone have a floor, and
+      what is it? Either the nine sites take an existing `Text` variant, or the phone's scale
+      gains a named role below `machine`. Both are decisions about the phone's type system.
+      Until one is answered, widening the glob turns a real question into nine lint errors with
+      no correct fix.
+- Restating the desktop's scale in raw px is the same shape the token pipeline exists to stop.
+  `scripts/mobile-tokens.mjs` derives colours and radii from `packages/ui/src/styles.css`; the
+  type scale is the one part still written out by hand on both sides.
 
 ### CC9 · `--transition-control` is still a colour in the vendored manifest
 - [x] The live `tokens/motion.css` annotates all seven motion tokens `@kind other`. The
