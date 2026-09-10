@@ -3,6 +3,8 @@ import { DatabaseSync } from "node:sqlite"
 
 import {
   sessionTransferUsageRecordSchema,
+  sessionTurnSchema,
+  type SessionTurn,
   usageAccountingSchema,
   type UsageAccounting,
   type UsageCoverage,
@@ -232,6 +234,8 @@ export class UsageLedger {
       ON provider_usage(json_extract(accounting, '$.status'))`)
     this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_identity
       ON provider_usage(turn_id, provider)`)
+    this.#database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS provider_usage_turn_ordinal
+      ON provider_usage(session_id, json_extract(accounting, '$.turn.ordinal'))`)
     this.#restrictFilePermissions()
   }
 
@@ -240,10 +244,24 @@ export class UsageLedger {
   }
 
   begin(dispatch: UsageDispatch): void {
-    if (this.lookup(dispatch)) return
-    const accounting = beginUsageAccounting(dispatch)
-    this.#upsert({ ...dispatch, turnId: accounting.key, accounting,
-      usage: accountedUsage(accounting) }, this.#now())
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      if (!this.lookup(dispatch)) {
+        const row = this.#database.prepare(`SELECT MAX(json_extract(accounting, '$.turn.ordinal')) AS ordinal
+          FROM provider_usage WHERE session_id = ?`).get(dispatch.sessionId)
+        const now = this.#now()
+        const accounting = usageAccountingSchema.parse({
+          ...beginUsageAccounting(dispatch),
+          turn: { ordinal: Number(row?.ordinal ?? 0) + 1, startedAt: dispatch.startedAt ?? new Date(now).toISOString() },
+        })
+        this.#upsert({ ...dispatch, turnId: accounting.key, accounting,
+          usage: accountedUsage(accounting) }, now)
+      }
+      this.#database.exec("COMMIT")
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
   }
 
   lookup(identity: UsageIdentity): TurnUsage | undefined {
@@ -252,6 +270,28 @@ export class UsageLedger {
     ).all(usageIdentity(identity), identity.provider)
     // Ambiguous provider identities are not evidence of a session association.
     return rows.length === 1 ? turnUsageFromRow(rows[0]) : undefined
+  }
+
+  lookupTurn(sessionId: string, turnId: string): TurnUsage | undefined {
+    const row = this.#database.prepare("SELECT * FROM provider_usage WHERE session_id = ? AND turn_id = ?").get(sessionId, turnId)
+    return row ? turnUsageFromRow(row) : undefined
+  }
+
+  turns(sessionId: string, ids: readonly string[]): SessionTurn[] {
+    const statement = this.#database.prepare("SELECT * FROM provider_usage WHERE session_id = ? AND turn_id = ?")
+    return [...new Set(ids)].flatMap((id) => {
+      const value = statement.get(sessionId, id)
+      if (!value) return []
+      const record = turnUsageFromRow(value)
+      const accounting = record.accounting
+      if (!accounting?.turn) return []
+      return [sessionTurnSchema.parse({
+        id, sessionId, ...accounting.turn, provider: record.provider,
+        requestedModel: accounting.requestedModel,
+        reportedModels: [...new Set(accounting.observations.flatMap((event) => event.model ? [event.model] : []))],
+        status: accounting.status, coverage: accounting.coverage, usage: record.usage, recordedToolCount: 0,
+      })]
+    })
   }
 
   observe(identity: UsageIdentity, report: UsageReport): boolean {
@@ -265,7 +305,9 @@ export class UsageLedger {
   finish(identity: UsageIdentity, status: Exclude<UsageAccounting["status"], "pending">): void {
     const row = this.lookup(identity)
     if (!row?.accounting || row.accounting.status !== "pending") return
-    const accounting = updateUsageCoverage({ ...row.accounting, status })
+    const accounting = updateUsageCoverage({ ...row.accounting, status,
+      ...(row.accounting.turn ? { turn: { ...row.accounting.turn, completedAt: new Date(this.#now()).toISOString() } } : {}),
+    })
     this.#upsert({ ...row, accounting }, null)
   }
 
@@ -277,7 +319,9 @@ export class UsageLedger {
     for (const value of rows) {
       const row = turnUsageFromRow(value)
       if (!row.accounting || activeKeys.has(row.accounting.key)) continue
-      const accounting = updateUsageCoverage({ ...row.accounting, status: "interrupted" })
+      const accounting = updateUsageCoverage({ ...row.accounting, status: "interrupted",
+        ...(row.accounting.turn ? { turn: { ...row.accounting.turn, completedAt: new Date(this.#now()).toISOString() } } : {}),
+      })
       this.#upsert({ ...row, accounting }, null)
     }
   }
