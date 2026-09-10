@@ -179,7 +179,14 @@ export const sessionTransferStateSchema = z.object({
   checkSession(state.annotations, "annotations")
 
   const threadIds = new Set<string>()
+  const providerMessageKeys = new Set<string>()
   state.thread.forEach((item, index) => {
+    if (item.kind === "user" && item.providerMessageKey) {
+      if (providerMessageKeys.has(item.providerMessageKey)) {
+        context.addIssue({ code: "custom", path: ["thread", index, "providerMessageKey"], message: "Transferred provider message identities must be unique" })
+      }
+      providerMessageKeys.add(item.providerMessageKey)
+    }
     if (threadIds.has(item.id)) {
       context.addIssue({ code: "custom", path: ["thread", index, "id"], message: "Transferred thread IDs must be unique" })
     }

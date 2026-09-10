@@ -511,9 +511,14 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     sessionId: z.string().min(1),
     kind: z.literal("user"),
     turnId: sessionTurnIdSchema.optional(),
+    providerMessageKey: sessionTurnIdSchema.optional(),
     body: z.string(),
     providerPromptDelivery: providerPromptDeliverySchema.optional(),
     createdAt: dateTimeSchema,
+  }).superRefine((message, context) => {
+    if (message.providerMessageKey && !message.turnId) {
+      context.addIssue({ code: "custom", path: ["providerMessageKey"], message: "Provider message identity requires an exact turn link" })
+    }
   }),
   z.object({
     id: z.string(),
