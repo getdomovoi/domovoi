@@ -288,9 +288,16 @@ just collide, it changes meaning over time.
       decision exists, and the meta reads `session start · nothing to revert past this`.
       Restore stays: going back to it is exactly what it is for. A legacy checkpoint carries no
       reason and is never guessed into this branch.
-- [ ] Turn-row fork is still open after `CX2`. A turn now has an identity; it still has no fork
-      point of its own, and `session.fork` takes a checkpoint id, so forking "from turn 9" would
-      fork from whichever checkpoint precedes it. Needs a daemon decision, not a client one.
+- [x] Turn-row fork is **closed as a design error**, not left open as a daemon request
+      (28812d8 keeps fork checkpoint-only). fetzy's earlier "blocked on `CX2`" ruling was wrong,
+      and so was its reasoning: the obstacle was never turn identity. Fork restores a worktree
+      and turns do not each have one — most turns write nothing, so forking "from turn 8" and
+      "from turn 9" lands on identical filesystem state, and `session.fork` does not replay
+      conversation either. The affordance would promise a precision it cannot deliver, which is
+      the same failure as forking from a turn's nearest preceding checkpoint. `CX2` gave a turn
+      an identity; it did not give it a state. **The design's three `fork: true` turn rows are
+      wrong and the design changes**, not the client. Nothing to raise with Codex:
+      `session.fork` taking a checkpoint id is right as it stands.
 
 ### CC2 · StatusDot takes an invisible label
 - [ ] The label stops being visible; it does not stop being required. Meaning derives from
@@ -369,8 +376,9 @@ building them:
     audit log they have reason to believe. It contradicts the product's central claim at the exact
     moment someone is deciding whether to believe it. `providerFirstRunRecovery` keeps its copy:
     show the command, say what it does, let the person run it. **The live design needs this
-    change**; `design/` is signed and is not edited here. Carry it with the export README
-    correction on the next design touch.
+    change**; `design/` is signed and is not edited here. Three corrections now ride together on
+    the next design touch: the export README naming no destination path, this installer button,
+    and the Desktop V2 turn rows drawn with `fork: true`.
   - [ ] "Sign in to Domovoi Cloud" needs an account service that does not exist. `S0.1`/`S5.1`,
         not client work.
 - [x] **Skills** — diffed 2026-09-10 (02b6c7d). Nearly done: install preview, scope, trust,
