@@ -15,7 +15,7 @@ import {
   sessionTransferResultSchema,
 } from "./transfer-request.js"
 import { sessionTransferPreviewSchema } from "./transfer-contract.js"
-import { providerSessionCostSchema, usageCoverageSchema } from "./usage-accounting.js"
+import { providerSessionCostSchema, sessionTurnIdSchema, sessionTurnSchema, usageCoverageSchema } from "./usage-accounting.js"
 import {
   transferAbortParamsSchema,
   transferAbortResultSchema,
@@ -250,12 +250,14 @@ export const workspaceDeltaOperationSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("assistant.append"),
     id: streamedIdSchema,
+    turnId: sessionTurnIdSchema.optional(),
     delta: streamedChunkSchema,
     createdAt: dateTimeSchema,
   }),
   z.object({
     kind: z.literal("tool-output.append"),
     id: streamedIdSchema,
+    turnId: sessionTurnIdSchema.optional(),
     delta: streamedChunkSchema,
     createdAt: dateTimeSchema,
   }),
@@ -289,6 +291,8 @@ const historyEntryBase = {
   sourceId: streamedIdSchema,
   sessionId: streamedIdSchema,
   createdAt: dateTimeSchema,
+  turnId: sessionTurnIdSchema.optional(),
+  turn: sessionTurnSchema.optional(),
 }
 
 const historyToolFields = {
@@ -382,6 +386,9 @@ export const sessionHistoryPageSchema = z.object({
 }).superRefine((page, context) => {
   const itemIds = new Set<string>()
   page.items.forEach((item, index) => {
+    if (item.turn && (item.turn.id !== item.turnId || item.turn.sessionId !== item.sessionId)) {
+      context.addIssue({ code: "custom", path: ["items", index, "turn"], message: "History turn must match the item's link and session" })
+    }
     if (itemIds.has(item.id)) {
       context.addIssue({
         code: "custom",

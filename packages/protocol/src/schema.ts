@@ -20,6 +20,7 @@ import {
   transferIdSchema,
 } from "./identifiers.js"
 import { skillEnablementReviewsSchema } from "./skills.js"
+import { sessionTurnIdSchema } from "./usage-accounting.js"
 
 export { clientIdentityIdSchema, clientKindSchema }
 
@@ -499,6 +500,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
   z.object({
     id: z.string(),
     sessionId: z.string().min(1),
+    turnId: sessionTurnIdSchema.optional(),
     kind: z.literal("checkpoint"),
     label: z.string(),
     commit: commitShaSchema.optional(),
@@ -508,6 +510,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("user"),
+    turnId: sessionTurnIdSchema.optional(),
     body: z.string(),
     providerPromptDelivery: providerPromptDeliverySchema.optional(),
     createdAt: dateTimeSchema,
@@ -516,6 +519,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("system"),
+    turnId: sessionTurnIdSchema.optional(),
     body: z.string(),
     detail: z.string().optional(),
     transfer: sessionTransferHistorySchema.optional(),
@@ -525,6 +529,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("assistant"),
+    turnId: sessionTurnIdSchema.optional(),
     body: z.string(),
     createdAt: dateTimeSchema,
   }),
@@ -532,6 +537,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("receipt"),
+    turnId: sessionTurnIdSchema.optional(),
     decision: approvalDecisionSchema,
     operation: z.string(),
     checkpoint: z.string(),
@@ -546,6 +552,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("tool"),
+    turnId: sessionTurnIdSchema.optional(),
     // Nothing emits "file-change" any more, but a snapshot written before it was
     // retired still carries it, and narrowing the enum would make that snapshot
     // fail to parse on startup. Accepted on read, never produced.

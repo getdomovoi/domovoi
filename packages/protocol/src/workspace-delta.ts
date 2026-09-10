@@ -22,6 +22,7 @@ export function applyWorkspaceDelta(
             id: operation.id,
             sessionId: delta.sessionId,
             kind: "assistant",
+            ...(operation.turnId ? { turnId: operation.turnId } : {}),
             body: operation.delta,
             createdAt: operation.createdAt,
           }]
@@ -37,6 +38,7 @@ export function applyWorkspaceDelta(
             id: operation.id,
             sessionId: delta.sessionId,
             kind: "tool",
+            ...(operation.turnId ? { turnId: operation.turnId } : {}),
             tool: "command",
             status: "running",
             title: "Command output",
