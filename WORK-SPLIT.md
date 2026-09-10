@@ -235,14 +235,18 @@ Raised 2026-09-10 while working `CC1`. Codex accepts, counters, or refuses this;
 request rather than an assignment.
 - [ ] Push a checkpoint thread item when a session worktree is created, carrying the
       `baseCommit` that `createSessionWorkspace` already returns.
-- [ ] Make it discriminable without reading its label. A client matching the words
-      `session start` is a text match on prose, which is the failure `CC3`'s filter test
-      exists to prevent. `sessionSnapshot.baseCommit` is already in the schema
-      (`schema.ts:270`), so a checkpoint whose commit equals it is derivable — say
-      explicitly whether that is the intended discriminator or whether the entry gets a
-      field of its own.
+- [ ] Give the checkpoint thread item a `reason`, and make `session-start` its seventh value.
+      The schema is `{ kind: "checkpoint", label, commit?, createdAt }` (`schema.ts:502-505`);
+      the reason exists already but only inside the label prose — `forked checkpoint`,
+      a user's own words, `before restore`, `before revert <path>`, `before provider
+      handoff`, `before provider recovery`, and the archive site's. Promoting it to a field
+      names a concept the daemon already has rather than adding one, and every client stops
+      reading prose to learn why a checkpoint exists.
+- Not `commit === baseCommit`. That equality is coincidental, not semantic: a checkpoint
+  taken before a revert that returns the worktree to base carries the same commit, and then
+  two rows both answer to session start.
 - Why it is worth a protocol change rather than a client heuristic: the client cannot infer
-  it from position. History is paged, so the oldest row loaded is not the oldest row.
+  it from position either. History is paged, so the oldest row loaded is not the oldest row.
 
 ### CX4 · Report the manifest defect upstream
 - [ ] `_adherence.oxlintrc.json` marks `--transition-control` as `"color"`, after five
