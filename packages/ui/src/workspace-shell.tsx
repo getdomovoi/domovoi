@@ -1427,6 +1427,8 @@ export function Thread({
   onCheckpoint,
   onRestoreCheckpoint,
   restoreBusy = false,
+  pendingTransferTargetId = null,
+  onPendingTransferTargetChange,
   onPauseSession,
   onArchiveSession,
   onOpenExternal,
@@ -1475,6 +1477,9 @@ export function Thread({
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   // Set while a restore started anywhere in the shell is still running.
   restoreBusy?: boolean
+  // A transfer target named outside the thread, by the launcher.
+  pendingTransferTargetId?: string | null | undefined
+  onPendingTransferTargetChange?: ((machineId: string | null) => void) | undefined
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
@@ -1508,7 +1513,14 @@ export function Thread({
   const [skillRefusal, setSkillRefusal] = useState<TurnSkillSelectionRefusal | undefined>(undefined)
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [pairingMachine, setPairingMachine] = useState(false)
-  const [transferTargetId, setTransferTargetId] = useState<string | null>(null)
+  const [ownTransferTargetId, setOwnTransferTargetId] = useState<string | null>(null)
+  // The composer's machine menu and the launcher both name a target. The shell
+  // owns it when it supplies one, so either route reaches the same dialog.
+  const transferTargetId = pendingTransferTargetId ?? ownTransferTargetId
+  const setTransferTargetId = (machineId: string | null) => {
+    setOwnTransferTargetId(machineId)
+    onPendingTransferTargetChange?.(machineId)
+  }
   const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
@@ -4071,6 +4083,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       switchMachine(machineId)
       setLauncherMode("session")
     },
+    // The launcher names the target. The preflight takes the decision, so this
+    // opens the transfer dialog and never moves anything itself.
+    previewTransferTo: (sessionId: string, machineId: string) => {
+      openSessionInWorkspace(sessionId)
+      setLauncherTransferTargetId(machineId)
+    },
+    currentMachineId: attached?.machineId ?? snapshot?.machine.id,
+    transferEntries: attached ? remote.fleet?.entries ?? [] : fleet?.entries,
     openSkill: (skillId) => {
       setRequestedSkillId(skillId)
       setSurface("skills")
@@ -4083,6 +4103,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // pending operations and the dock cannot see that state, so a restore started
   // from either one has to hold the other shut until it answers.
   const [checkpointRestorePending, setCheckpointRestorePending] = useState(false)
+  // Named by the launcher, consumed by the thread's transfer dialog.
+  const [launcherTransferTargetId, setLauncherTransferTargetId] = useState<string | null>(null)
   // Both surfaces restore through this one function, so an attempt started from
   // either holds the other shut for as long as it runs.
   const restoreCheckpointGuarded = async (sessionId: string, checkpointId: string) => {
@@ -4484,7 +4506,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
