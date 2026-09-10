@@ -4583,6 +4583,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           commands={workspaceCommands}
           onOpenChange={setCommandPaletteOpen}
           restoreFocusTo={commandPaletteFocusRef.current}
+          {...(firstRunEnabled ? {
+            onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
+          } : {})}
         />
         {firstRunEnabled ? (
           <DesktopFirstRunDialog
