@@ -94,11 +94,19 @@ export type SessionHistoryFocus = {
   requestId: number
 }
 
-// The design draws five of these and names two of them differently, so the five
-// it draws lead and carry its words. A turn is the protocol's own unit, and a
-// handoff is what a transfer feels like rather than what it is. The three it
-// does not draw stay: the daemon stamps them, and dropping the filters would
-// leave those entries recorded and unreachable.
+// The design draws five of these and the daemon stamps seven, so the drawn ones
+// lead and carry the design's words. A turn is the protocol's own unit.
+//
+// Transfers is not among them yet, and this category is not it. `handoffs` holds
+// provider handoffs, written at apps/daemon/src/server.ts:5812 as "Handed off
+// codex / gpt-5.3-codex to claude-code / sonnet-4.6." A machine transfer has a
+// preflight, a holdback and a conflict path; a provider handoff happens at a
+// turn boundary. Naming one after the other would make the filter lie in both
+// directions, so Handoffs keeps its own word and Transfers waits for a category
+// the daemon stamps when a session moves.
+//
+// The three the design does not draw stay: dropping the filters would leave
+// those entries recorded and unreachable.
 export const sessionHistoryCategories: ReadonlyArray<{
   value: SessionHistoryCategory
   label: string
@@ -107,10 +115,11 @@ export const sessionHistoryCategories: ReadonlyArray<{
   { value: "approvals", label: "Approvals" },
   { value: "checkpoints", label: "Checkpoints" },
   { value: "transfers", label: "Transfers" },
-  { value: "handoffs", label: "Transfers" },
+  { value: "handoffs", label: "Handoffs" },
   { value: "tools", label: "Tools" },
   { value: "annotations", label: "Annotations" },
   { value: "tests", label: "Tests" },
+  { value: "handoffs", label: "Handoffs" },
 ]
 
 export function mergeOlderHistory(

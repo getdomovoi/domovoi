@@ -30,19 +30,20 @@ const message = (id: string): SessionHistoryEntry => ({
 })
 
 describe("session history view model", () => {
-  // The design draws five filters and the daemon stamps seven categories. The
-  // five it draws lead, and the two it names differently are named its way: a
-  // turn is the protocol's unit, and a transfer is what a handoff is.
-  it("leads with the five drawn filters and names them as the design does", () => {
+  // The drawn filters lead and carry the design's words. Handoffs is not one of
+  // them and is not Transfers either: it holds provider handoffs, so it keeps
+  // its own word and sits at the tail with the other undrawn filters.
+  it("leads with the drawn filters and keeps Handoffs its own word", () => {
     expect(sessionHistoryCategories).toEqual([
       { value: "messages", label: "Turns" },
       { value: "approvals", label: "Approvals" },
       { value: "checkpoints", label: "Checkpoints" },
       { value: "transfers", label: "Transfers" },
-      { value: "handoffs", label: "Transfers" },
+      { value: "handoffs", label: "Handoffs" },
       { value: "tools", label: "Tools" },
       { value: "annotations", label: "Annotations" },
       { value: "tests", label: "Tests" },
+      { value: "handoffs", label: "Handoffs" },
     ])
   })
 
