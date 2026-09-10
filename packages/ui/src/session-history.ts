@@ -201,33 +201,53 @@ export function sessionHistoryEntryOutcome(
   return { meaning: "idle", label: "recorded" }
 }
 
+// 12.4k reads at a glance where 12400 does not, but a rounded 842 would read as
+// nothing at all, so small counts stay exact.
+function tokenLabel(totalTokens: number): string {
+  if (totalTokens >= 1_000_000) return `${(totalTokens / 1_000_000).toFixed(1)}M`
+  if (totalTokens >= 1_000) return `${(totalTokens / 1_000).toFixed(1)}k`
+  return `${totalTokens}`
+}
+
+// The turn says how complete its own accounting is, and the row repeats that
+// rather than drawing a floor as a total. A pending turn has nothing final to
+// report, and an unavailable one has nothing at all: neither gets a zero, which
+// would read as a measurement rather than as an absence.
+function turnMeta(entry: SessionHistoryEntry): string | undefined {
+  const turn = entry.turn
+  if (!turn) return undefined
+  const head = `turn ${turn.ordinal} · ${turn.requestedModel}`
+  if (turn.coverage === "pending") return `${head} · running`
+  if (turn.coverage === "unavailable") return `${head} · usage unavailable`
+  const tools = `${turn.recordedToolCount} tool${turn.recordedToolCount === 1 ? "" : "s"}`
+  const counted = `${head} · ${tools} · ${tokenLabel(turn.usage.totalTokens)} tokens`
+  return turn.coverage === "partial" ? `${counted} · partial` : counted
+}
+
 export function sessionHistoryEntryDetail(
   entry: SessionHistoryEntry,
   options: { worktreeName?: string | undefined } = {},
 ): string | undefined {
-  // Four things the design draws that nothing here can fill yet. None of them
-  // is satisfied by what this function returns; each is waiting on the daemon.
+  // Two of the four things this comment used to list are filled now. CX1 fixed
+  // the accounting and CX2 gave a row a durable link to its turn, so
+  // `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` is drawn from the record
+  // rather than from counting rows. What the turn reports about its own
+  // completeness is drawn with it: a number that looks auditable and is not is
+  // worse than no number, and `coverage` is the daemon saying how much of the
+  // turn it actually saw.
   //
-  // 1. `turn 9 · sonnet-4.6` needs a durable turn record. A message is not a
-  //    turn, so the number cannot come from counting rows.
-  // 2. `3 tools · 12.4k tokens` needs two changes, and the first landing does
-  //    not unblock this row. First the accounting, which is currently wrong
-  //    rather than absent: two adapters forward only selected tool types, and
-  //    acp.ts gives context occupancy and total tokens the same value. A number
-  //    that looks auditable and is not is worse than no number. Then the same
-  //    durable turn record as (1), because provider turn identities are enough
-  //    to store the accounting but not to attribute it to one history row.
-  // 3. Fork from a turn row. The design marks fork per row, and its three turn
+  // Two remain, and both are still waiting on the daemon.
+  //
+  // 1. Fork from a turn row. The design marks fork per row, and its three turn
   //    rows all carry it. session.fork takes a checkpoint id, so forking "from
   //    turn 9" would silently fork from whichever checkpoint precedes it: a
-  //    different point in time wearing the label of this one. Waits on the same
-  //    durable turn record as (1), which is what would give a turn a fork point
-  //    of its own.
-  // 4. Execution duration for an approved operation. `decided in` below is not
+  //    different point in time wearing the label of this one. A turn now has an
+  //    identity; it still has no fork point of its own.
+  // 2. Execution duration for an approved operation. `decided in` below is not
   //    that field. Decision latency says how long the agent sat blocked;
   //    execution duration says what the approval cost. Both belong; only the
-  //    first can be measured today.
-  if (entry.category === "messages") return entry.role
+  //    first can be measured today. That is CX3.
+  if (entry.category === "messages") return turnMeta(entry) ?? entry.role
   if (entry.category === "tools" || entry.category === "tests") return `${entry.tool} · ${entry.status}`
   if (entry.category === "approvals") {
     // decisionDurationMs measures how long the decision took, not how long the
@@ -246,6 +266,12 @@ export function sessionHistoryEntryDetail(
     return `${transfer.sourceMachineId} to ${transfer.targetMachineId} · checkpoint ${transfer.checkpointCommit} · preflight ${transfer.preflight}${heldBack === undefined ? "" : ` · ${heldBack} ignored ${heldBack === 1 ? "file" : "files"} held back`}`
   }
   if (entry.category === "checkpoints") {
+    // CX5 made the reason a field rather than a word inside the label. The
+    // session-start row is the one the design draws without a fork, and its meta
+    // says why instead of naming a commit the row cannot go back past. A legacy
+    // row carries no reason at all, and absent is its own answer: it reads the
+    // way it always did rather than being guessed into this branch.
+    if (entry.reason === "session-start") return "session start · nothing to revert past this"
     if (!entry.commit) return options.worktreeName ? `worktree ${options.worktreeName}` : undefined
     return `commit ${entry.commit.slice(0, 8)}${options.worktreeName ? ` · worktree ${options.worktreeName}` : ""}`
   }
