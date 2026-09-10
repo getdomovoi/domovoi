@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: calc(var(--radius) - 2px); border: 3px solid transparent; background-clip: content-box; }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); } 70% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--warning) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); } }
+  @keyframes dvSweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(460%); } }
+  @keyframes dvBlink { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --chrome: oklch(0.22 0.006 285); --overlay: oklch(0.11 0.004 285 / .72);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+    --ok-bg: oklch(0.215 0.04 158); --ok-border: oklch(0.33 0.07 158); --ok-fg: oklch(0.9 0.06 158); --ok-dim: oklch(0.74 0.08 158);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --chrome: oklch(0.945 0.004 285); --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+    --ok-bg: oklch(0.965 0.025 158); --ok-border: oklch(0.85 0.07 158); --ok-fg: oklch(0.33 0.09 158); --ok-dim: oklch(0.45 0.1 158);
+  }
+</style>
+</helmet>
+
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 26px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="width: 1480px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="5">
+      <div onClick="{{ s.go }}" style="{{ s.style }}">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ s.numColor }};">{{ s.num }}</span>
+        <span style="font-size: 11.5px;">{{ s.label }}</span>
+      </div>
+    </sc-for>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
+  </div>
+
+  <div style="width: 1480px; height: 940px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--chrome); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <div style="flex: 0 0 auto; display: flex; align-items: flex-end; gap: 8px; padding: 9px 12px 0; background: var(--chrome);">
+      <div style="display: flex; gap: 7px; padding: 0 6px 9px 0;">
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: oklch(0.65 0.19 25);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: oklch(0.78 0.14 85);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: oklch(0.72 0.16 145);"></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 9px; padding: 8px 14px; border-radius: 9px 9px 0 0; background: var(--background); max-width: 300px;">
+        <span style="{{ tabMarkStyle }}" role="img" aria-label="Domovoi"></span>
+        <span style="font-size: 12px; color: var(--foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ tabTitle }}</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 9px; padding: 8px 14px; border-radius: 9px 9px 0 0; opacity: .55;">
+        <span style="width: 13px; height: 13px; border-radius: 3px; background: var(--muted); display: block;"></span>
+        <span style="font-size: 12px; color: var(--muted-foreground);">acme-api · pull requests</span>
+      </div>
+    </div>
+
+    <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--background); border-bottom: 1px solid var(--border);">
+      <div style="display: flex; align-items: center; gap: 4px; color: var(--muted-foreground);">
+        <div style="{{ navBtn }}">
+          {{ iNavBack }}
+        </div>
+        <div style="{{ navBtn }}">
+          {{ iNavFwd }}
+        </div>
+        <div style="{{ navBtn }}">
+          {{ iReload }}
+        </div>
+      </div>
+      <div style="flex: 1; display: flex; align-items: center; gap: 9px; padding: 6px 12px; border-radius: 999px; background: var(--accent);">
+        <span style="display: inline-flex; flex: 0 0 auto; color: var(--success);">{{ iLock }}</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ url }}</span>
+      </div>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">no extension, no install</span>
+    </div>
+
+    <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--background);">
+
+      <div style="flex: 0 0 auto; height: 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border);">
+        <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+        <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+        <div style="width: 1px; height: 18px; background: var(--border);"></div>
+        <span style="font-size: 12px; color: var(--muted-foreground);">{{ appLabel }}</span>
+        <span style="flex: 1;"></span>
+        <sc-if value="{{ showRouteChip }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ goRelay }}" style="{{ routeChipStyle }}">
+            <span style="{{ routeDot }}"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ routeText }}</span>
+            <span style="font-size: 10.5px; color: var(--faint);">{{ routeMeta }}</span>
+          </div>
+        </sc-if>
+        <div onClick="{{ toggleTheme }}" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">
+          <sc-if value="{{ isDarkTheme }}" hint-placeholder-val="{{ true }}">{{ iMoon }}</sc-if>
+        <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">{{ iSun }}</sc-if>
+        </div>
+      </div>
+
+      <sc-if value="{{ isAttach }}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px;">
+          <div style="width: 100%; max-width: 720px; margin: auto 0; display: flex; flex-direction: column; gap: 20px; padding: 44px 0;">
+            <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 9px;">
+              <div style="font-size: 22px; font-weight: 600; letter-spacing: -.02em;">Pick a machine to attach to</div>
+              <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">No daemon here: every session runs on one of your machines, reached over Cloud.</div>
+            </div>
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <sc-for list="{{ machines }}" as="m" hint-placeholder-count="3">
+                <div onClick="{{ m.go }}" style="{{ m.rowStyle }}">
+                  <span style="{{ m.dot }}"></span>
+                  <div style="min-width: 0; flex: 1;">
+                    <div style="display: flex; align-items: baseline; gap: 9px;">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--foreground);">{{ m.name }}</span>
+                      <span style="{{ m.pillStyle }}">{{ m.pill }}</span>
+                    </div>
+                    <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 4px;">{{ m.state }}</div>
+                  </div>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ m.meta }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">HOW THIS TAB IS AUTHENTICATED</div>
+              <sc-for list="{{ authFacts }}" as="a" hint-placeholder-count="4">
+                <div style="display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;">
+                  <span style="{{ a.dot }}"></span>
+                  <span style="font-size: 12px; color: var(--strong); line-height: 1.55;">{{ a.text }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isThread }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-height: 0; display: flex;">
+          <div style="width: 244px; flex: 0 0 244px; border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; overflow: hidden;">
+            <div style="padding: 11px 10px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">hetzner-cx42</span>
+              <span style="flex: 1;"></span>
+              <span onClick="{{ goAttach }}" style="font-size: 11px; color: var(--primary); cursor: pointer;">Switch</span>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 9px 8px; display: flex; flex-direction: column; gap: 2px;">
+              <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="4">
+                <div style="{{ s.rowStyle }}">
+                  <span style="{{ s.dot }}"></span>
+                  <div style="min-width: 0; flex: 1;">
+                    <div style="font-size: 12px; line-height: 1.38; color: var(--strong); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ s.title }}</div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 3px;">{{ s.meta }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+            <sc-if value="{{ showDegraded }}" hint-placeholder-val="{{ false }}">
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 10px 16px; background: var(--warn-bg); border-bottom: 1px solid var(--warn-border);">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+                <span style="font-size: 12.5px; color: var(--warn-fg);">Cloud is slow, this view is behind the machine</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">round trip 3.4s · 3 messages queued · the agent is unaffected</span>
+                <span style="flex: 1;"></span>
+                <span style="position: relative; width: 40px; height: 3px; border-radius: 3px; background: var(--warn-border); overflow: hidden; display: block;">
+                  <span style="position: absolute; inset: 0; width: 26%; border-radius: 3px; background: var(--warning); animation: dvSweep 1.9s linear infinite; display: block;"></span>
+                </span>
+              </div>
+            </sc-if>
+
+            <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 30px 24px 0;">
+              <div style="width: 100%; max-width: 720px; margin-top: auto; display: flex; flex-direction: column; gap: 20px; padding-bottom: 8px;">
+                <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; color: var(--faint);">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">acme-api · main · wt-billing-idem · on hetzner-cx42</span>
+                  <span style="flex: 1; height: 1px; background: var(--border);"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ clock }}</span>
+                </div>
+                <div style="flex: 0 0 auto; display: flex; justify-content: flex-end;">
+                  <div style="max-width: 74%; padding: 11px 15px; border-radius: 14px 14px 4px 14px; background: var(--accent); font-size: 13.5px; line-height: 1.6;">Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.</div>
+                </div>
+                <div style="flex: 0 0 auto; font-size: 13.5px; line-height: 1.65; text-wrap: pretty;">Claim-then-commit is in, on a replay table keyed by event id. One spec still asserts the old at-least-once behaviour. Step 3 needs a migration on that machine, so I stopped and asked.</div>
+
+                <div style="flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 7px; align-items: center;">
+                  <sc-for list="{{ chips }}" as="c" hint-placeholder-count="3">
+                    <div style="display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--card);">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ c.path }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--success);">{{ c.add }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--destructive);">{{ c.del }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+
+                <div style="flex: 0 0 auto; border: 1px solid var(--warn-border); border-radius: var(--radius); background: var(--warn-bg); overflow: hidden;">
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px;">
+                    <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+                    <span style="font-size: 12.5px; font-weight: 500; color: var(--warn-fg);">Approval required, hard gate</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">{{ gateMeta }}</span>
+                  </div>
+                  <div style="padding: 0 14px 12px;">
+                    <div style="padding: 11px 13px; border-radius: calc(var(--radius) - 3px); background: var(--warn-bg-deep); font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--warn-fg);">pnpm -w prisma migrate deploy</div>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 0 14px 13px; flex-wrap: wrap;">
+                    <div style="{{ gateBtnStyle }}">Allow once</div>
+                    <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12px; cursor: pointer;">Always here</div>
+                    <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-dim); font-size: 12px; cursor: pointer;">Deny</div>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">{{ gateHolder }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="flex: 0 0 auto; display: flex; justify-content: center; padding: 16px 24px 18px; background: linear-gradient(to bottom, transparent, var(--background) 40%);">
+              <div style="width: 100%; max-width: 720px; border: 1px solid var(--border); border-radius: 15px; background: var(--card); padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 10px;">
+                <sc-if value="{{ webQueued }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--background);">
+                    <span style="{{ queuedDot }}"></span>
+                    <span style="flex: 1; min-width: 0; font-size: 12px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Also cover the claim-expiry case in replay.spec.ts</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); white-space: nowrap;">queued, sends when this turn ends</span>
+                    <span onClick="{{ unqueueWeb }}" style="display: inline-flex; flex: 0 0 auto; color: var(--faint); cursor: pointer;">{{ iX }}</span>
+                  </div>
+                </sc-if>
+                <div style="font-size: 13.5px; color: var(--faint);">Steer it, or queue the next message</div>
+                <div style="display: flex; align-items: center; gap: 7px;">
+                  <div style="{{ webModelChipStyle }}">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">claude-sonnet-4.6</span>
+                  </div>
+                  <div style="{{ webModeChipStyle }}">
+                    <span style="{{ webModeDot }}"></span>
+                    <span style="font-size: 11px; font-weight: 500;">Build</span>
+                  </div>
+                  <div style="{{ terminalBtnStyle }}">
+                    {{ iTerminal }}
+                    <span style="font-size: 11px;">{{ terminalLabel }}</span>
+                  </div>
+                  <span style="flex: 1;"></span>
+                  <span style="font-size: 11px; color: var(--muted-foreground);">42.1k · $0.38</span>
+                  <div onClick="{{ queueWeb }}" style="display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); cursor: pointer;">{{ iSend }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isReview }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-height: 0; display: flex;">
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 12.5px; color: var(--strong);">Replay table, three states</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">design-studio · read-only</span>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 24px 24px 30px; background: var(--sidebar);">
+              <div style="max-width: 620px; margin: 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 16px 16px 14px; border-bottom: 1px solid var(--border);">
+                  <div style="font-size: 16px; font-weight: 600; letter-spacing: -.01em;">webhook_replay</div>
+                  <div style="font-size: 12px; color: var(--muted-foreground); margin-top: 5px; line-height: 1.55;">One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.</div>
+                </div>
+                <sc-for list="{{ reviewRows }}" as="r" hint-placeholder-count="3">
+                  <div style="{{ r.rowStyle }}">
+                    <span style="{{ r.dot }}"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); width: 88px; flex: 0 0 88px;">{{ r.state }}</span>
+                    <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground); line-height: 1.5;">{{ r.detailBefore }}<span style="{{ r.quoteStyle }}">{{ r.quote }}</span>{{ r.detailAfter }}</span>
+                    <span onClick="{{ r.pinClick }}" onMouseEnter="{{ r.pinEnter }}" onMouseLeave="{{ r.pinLeave }}" style="{{ r.pinStyle }}">{{ r.pin }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="max-width: 620px; margin: 12px auto 0; font-size: 11px; color: var(--faint); line-height: 1.5;">{{ webReviewNote }}</div>
+            </div>
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; height: 46px; padding: 0 14px; border-top: 1px solid var(--border);">
+              <div style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--accent);">
+                <sc-for list="{{ variantChips }}" as="v" hint-placeholder-count="3">
+                  <div onClick="{{ v.pick }}" style="{{ v.style }}">{{ v.label }}</div>
+                </sc-for>
+              </div>
+              <span style="font-size: 11px; color: var(--muted-foreground);">{{ variantStateText }}</span>
+              <span style="flex: 1;"></span>
+              <div onClick="{{ chooseVariant }}" style="{{ chooseVariantStyle }}">{{ chooseVariantLabel }}</div>
+            </div>
+          </div>
+          <div style="flex: 0 0 320px; width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 12px 15px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 13px; font-weight: 600;">Comments on variant {{ variant }}</span>
+              <span style="flex: 1;"></span>
+              <div onClick="{{ sendWebComments }}" style="{{ webSendStyle }}">
+                {{ iArrowUpSm }}
+                <span>{{ webSendLabel }}</span>
+              </div>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 13px 15px; display: flex; flex-direction: column; gap: 9px;">
+              <sc-if value="{{ webDraftOpen }}" hint-placeholder-val="{{ false }}">
+                <div style="flex: 0 0 auto; border: 1px solid var(--primary); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                  <div style="padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--strong); line-height: 1.45;">{{ webDraftAnchor }}</div>
+                  <div style="padding: 11px 12px; min-height: 48px; font-size: 12px; color: var(--faint); line-height: 1.55;">Say what is wrong with this element</div>
+                  <div style="display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-top: 1px solid var(--border);">
+                    <div onClick="{{ postWebComment }}" style="padding: 6px 12px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 11.5px; font-weight: 500; cursor: pointer;">Post</div>
+                    <div onClick="{{ cancelWebComment }}" style="padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;">Cancel</div>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-for list="{{ webComments }}" as="c" hint-placeholder-count="2">
+                <div onMouseEnter="{{ c.enter }}" onMouseLeave="{{ c.leave }}" style="{{ c.cardStyle }}">
+                  <div style="display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border);">
+                    <span style="{{ c.pinStyle }}">{{ c.pin }}</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);">open</span>
+                  </div>
+                  <span style="{{ c.quoteStyle }}">{{ c.quote }}</span>
+                  <div style="padding: 10px 12px; font-size: 12px; color: var(--foreground); line-height: 1.55;">{{ c.body }}</div>
+                  <div style="padding: 9px 12px; border-top: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ c.who }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isLimits }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px;">
+          <div style="width: 100%; max-width: 800px; display: flex; flex-direction: column; gap: 18px; padding: 32px 0 40px;">
+            <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+              <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">What a browser tab can and cannot do</div>
+              <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">Each difference follows from one fact: no daemon, no repository, no keychain.</div>
+            </div>
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <sc-for list="{{ limits }}" as="l" hint-placeholder-count="6">
+                <div style="{{ l.rowStyle }}">
+                  <span style="{{ l.dot }}"></span>
+                  <span style="font-size: 12.5px; color: var(--strong); width: 220px; flex: 0 0 220px;">{{ l.what }}</span>
+                  <span style="{{ l.stateStyle }}">{{ l.state }}</span>
+                  <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground); line-height: 1.5;">{{ l.why }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px dashed var(--info-border); border-radius: var(--radius); background: var(--info-bg); font-size: 12px; color: var(--info-fg); line-height: 1.6;">The tier matters here too. Terminal over a relay route is an Enthusiast capability, so a Free account sees the terminal control refused by the daemon rather than hidden by this page.</div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isTierLimited }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px;">
+          <div style="width: 100%; max-width: 760px; margin: auto 0; display: flex; flex-direction: column; gap: 18px; padding: 40px 0;">
+            <div style="flex: 0 0 auto; border: 1px solid var(--warn-border); border-radius: var(--radius); background: var(--warn-bg); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 11px; padding: 13px 15px;">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--warning);"></span>
+                <span style="font-size: 13.5px; font-weight: 500; color: var(--warn-fg);">The terminal is not available on this route</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">refused by the daemon · capability not on the route</span>
+              </div>
+              <div style="padding: 0 15px 14px; font-size: 13px; line-height: 1.62; color: var(--warn-fg); text-wrap: pretty;">Free carries a route with reads only, so the daemon refused the call. The page is not hiding a button.</div>
+            </div>
+            <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">FREE STILL DOES</div>
+                <sc-for list="{{ freeDoes }}" as="f" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: flex-start; gap: 9px; padding: 10px 14px;">
+                    <span style="{{ okDotSm }}"></span>
+                    <span style="font-size: 12px; color: var(--strong); line-height: 1.5;">{{ f.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">ENTHUSIAST ADDS</div>
+                <sc-for list="{{ paidAdds }}" as="f" hint-placeholder-count="3">
+                  <div style="display: flex; align-items: flex-start; gap: 9px; padding: 10px 14px;">
+                    <span style="{{ infoDotSm }}"></span>
+                    <span style="font-size: 12px; color: var(--strong); line-height: 1.5;">{{ f.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+              <div onClick="{{ goThread }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Carry on without the terminal</div>
+              <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--foreground); cursor: pointer;" style-hover="background: var(--accent);">See what Enthusiast adds</div>
+              <span style="flex: 1;"></span>
+              <span style="font-size: 11.5px; color: var(--faint);">At the machine itself, on LAN or tailnet, the terminal was never gated.</span>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1540,&quot;height&quot;:1070},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: "attach", theme: null,
+    variant: "B", chosen: null, webHover: null, webDraft: null, webSent: false, webQueued: false,
+    webComments: [
+      { row: 2, quote: "retried after 15m", body: "Fifteen minutes is too long. Stripe retries at 1, 5 and 30 minutes, so a stuck claim blocks the second retry.", who: "you · this browser · 14:12" },
+      { row: 1, quote: "", body: "Say what commits the claim. An on-call engineer reading this cannot tell whether it is the handler or the queue.", who: "you · iPhone 16 Pro · 14:14" }
+    ]
+  };
+
+  componentDidMount() {
+    if (window.lucide && window.lucide.icons) return;
+    let tries = 0;
+    this._t = setInterval(() => {
+      tries += 1;
+      if (window.lucide && window.lucide.icons) { clearInterval(this._t); this.forceUpdate(); }
+      else if (tries > 60) clearInterval(this._t);
+    }, 100);
+  }
+
+  componentWillUnmount() { if (this._t) clearInterval(this._t); }
+
+  icon(name, size) {
+    const set = window.lucide && window.lucide.icons;
+    const entry = set ? set[name] : null;
+    const nodes = entry && Array.isArray(entry[2]) ? entry[2] : entry;
+    const px = size || 16;
+    if (!nodes || !nodes.length) return React.createElement("span", { style: { display: "inline-block", width: px, height: px, flex: "0 0 auto" } });
+    return React.createElement("svg", {
+      width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+      style: { display: "block", flex: "0 0 auto" }
+    }, nodes.map((n, i) => {
+      const attrs = {};
+      Object.keys(n[1] || {}).forEach(k => { attrs[k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())] = n[1][k]; });
+      attrs.key = i;
+      return React.createElement(n[0], attrs);
+    }));
+  }
+
+  dot(color, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  go(screen) {
+    return () => this.setState({ screen: screen });
+  }
+
+  renderVals() {
+    const st = this.state;
+    const sc = st.screen;
+    const theme = st.theme ?? this.props.theme ?? "dark";
+    const degraded = sc === "degraded";
+    const thread = sc === "thread" || degraded;
+
+    const stepDefs = [
+      { id: "attach", num: "1", label: "Attach to a machine", note: "A tab holds no daemon, so the first question is whose machine this is and how it is reached." },
+      { id: "thread", num: "2", label: "Watching a session", note: "The same thread as the desktop, over Cloud. The route chip says so at all times, not just when it breaks." },
+      { id: "degraded", num: "3", label: "Cloud slow", note: "The view lags, the agent does not. The banner separates the two, because they feel identical otherwise." },
+      { id: "limits", num: "4", label: "Browser limits", note: "Every difference from the desktop follows from having no daemon, no repository and no keychain here." },
+      { id: "tier", num: "5", label: "Capability refused", note: "Free carries JSON-RPC only, so the daemon refuses the terminal. The page does not hide the control." },
+      { id: "review", num: "6", label: "Design review", note: "A design-studio render, reviewed in the browser. Comments anchor to elements and travel as references, not pasted text." }
+    ];
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      markStyle: "display: block; width: 22px; height: 22px; flex: 0 0 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      tabMarkStyle: "display: block; width: 14px; height: 14px; flex: 0 0 14px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+      navBtn: "display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: 0 0 26px; border-radius: 999px; cursor: pointer;",
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label,
+        numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        go: this.go(s.id),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
+          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+
+      tabTitle: sc === "attach" ? "Domovoi · pick a machine" : "Domovoi · migrate billing webhooks",
+      url: sc === "attach" ? "app.domovoi.sh" : "app.domovoi.sh/m/hetzner-cx42/s/s1",
+      appLabel: sc === "review" ? "Design review" : sc === "attach" ? "Browser client" : sc === "limits" ? "What a tab can do" : sc === "tier" ? "Capability" : "Migrate billing webhooks to the new idempotency table",
+
+      showRouteChip: sc !== "attach",
+      routeText: degraded ? "cloud · 3.4s" : "cloud relay",
+      routeMeta: degraded ? "queued 3" : "hetzner-cx42",
+      routeDot: this.dot(degraded ? "var(--warning)" : "var(--info)", 6),
+      routeChipStyle: "display: flex; align-items: center; gap: 8px; padding: 5px 10px 4px 9px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+        (degraded ? "var(--warn-border)" : "var(--border)") + ";" + (degraded ? " background: var(--warn-bg);" : ""),
+      goRelay: this.go("degraded"),
+
+      isReview: sc === "review",
+      webQueued: st.webQueued,
+      queueWeb: () => this.setState({ webQueued: true }),
+      unqueueWeb: () => this.setState({ webQueued: false }),
+      queuedDot: this.dot("var(--info)", 6),
+      webModelChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 9px; border-radius: 999px; cursor: pointer; border: 1px solid transparent; color: var(--strong);",
+      webModeChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; background: color-mix(in oklab, var(--success) 15%, transparent); color: var(--success);",
+      webModeDot: this.dot("var(--success)", 6),
+      iTerminal: this.icon("SquareTerminal", 15),
+      iSend: this.icon("ArrowUp", 16),
+      iX: this.icon("X", 12),
+      iMoon: this.icon("Moon", 16),
+      iSun: this.icon("Sun", 16),
+      iArrowUpSm: this.icon("ArrowUp", 13),
+      iNavBack: this.icon("ChevronLeft", 15),
+      iNavFwd: this.icon("ChevronRight", 15),
+      iReload: this.icon("RotateCw", 15),
+      iLock: this.icon("Lock", 13),
+      variantChips: ["A", "B", "C"].map(v => {
+        const on = st.variant === v;
+        const isChosen = st.chosen === v;
+        return {
+          label: isChosen ? v + " \u2713" : v,
+          pick: () => this.setState({ variant: v }),
+          style: "min-width: 30px; padding: 5px 10px; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; cursor: pointer; background: " +
+            (on ? "var(--background)" : "transparent") + "; color: " +
+            (isChosen ? "var(--success)" : on ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+        };
+      }),
+      variantStateText: st.chosen
+        ? (st.chosen === st.variant ? "the agent builds on this one" : "the agent builds on " + st.chosen)
+        : "none chosen, all three stay alive",
+      chooseVariant: () => this.setState(s => ({ chosen: s.chosen === s.variant ? null : s.variant })),
+      chooseVariantLabel: st.chosen === st.variant ? "Unpick" : "Build on this",
+      chooseVariantStyle: "padding: 6px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; white-space: nowrap; background: " +
+        (st.chosen === st.variant ? "transparent" : "var(--primary)") + "; border: 1px solid " +
+        (st.chosen === st.variant ? "var(--border)" : "transparent") + "; color: " +
+        (st.chosen === st.variant ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+      reviewRows: [
+        { state: "claimed", detail: "event_id claimed 14:06:02, no side effects yet", k: "warning", quote: "" },
+        { state: "committed", detail: "handler finished, claim committed 14:06:03", k: "success", quote: "" },
+        { state: "expired", detail: "claimed 13:41:12, never committed, retried after 15m", k: "info", quote: "retried after 15m" }
+      ].map((r, i) => {
+        const has = st.webComments.some(c => c.row === i);
+        const n = has ? st.webComments.findIndex(c => c.row === i) + 1 : null;
+        const active = n !== null && (st.webHover === n);
+        const qi = r.quote ? r.detail.indexOf(r.quote) : -1;
+        return {
+          state: r.state,
+          detailBefore: qi >= 0 ? r.detail.slice(0, qi) : r.detail,
+          quote: qi >= 0 ? r.quote : "",
+          detailAfter: qi >= 0 ? r.detail.slice(qi + r.quote.length) : "",
+          quoteStyle: qi >= 0
+            ? "border-radius: 3px; padding: 1px 3px; background: color-mix(in oklab, var(--primary) " + (active ? "34" : "20") + "%, transparent); box-shadow: inset 0 -1px 0 var(--primary); color: var(--foreground);"
+            : "display: none;",
+          dot: this.dot("var(--" + r.k + ")", 6),
+          pin: has ? String(n) : "+",
+          pinStyle: "flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; transition: transform .12s var(--ease-out, ease); background: " +
+            (has ? "var(--primary)" : "var(--accent)") + "; color: " + (has ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";" +
+            (active ? " transform: scale(1.18); box-shadow: 0 0 0 4px color-mix(in oklab, var(--primary) 28%, transparent);" : ""),
+          pinEnter: n ? () => this.setState({ webHover: n }) : undefined,
+          pinLeave: n ? () => this.setState({ webHover: null }) : undefined,
+          pinClick: has ? undefined : () => this.setState({ webDraft: i }),
+          rowStyle: "display: flex; align-items: center; gap: 10px; padding: 11px 14px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+            (active ? " background: color-mix(in oklab, var(--primary) 10%, transparent);" : "")
+        };
+      }),
+      webComments: st.webComments.map((c, i) => {
+        const n = i + 1;
+        const active = st.webHover === n;
+        return {
+          body: c.body, who: c.who, quote: c.quote,
+          pin: String(n),
+          pinStyle: "flex: 0 0 auto; width: 20px; height: 20px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: var(--primary); color: var(--primary-foreground);",
+          quoteStyle: c.quote
+            ? "display: block; padding: 7px 11px; border-left: 2px solid var(--primary); background: color-mix(in oklab, var(--primary) 8%, transparent); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);"
+            : "display: none;",
+          enter: () => this.setState({ webHover: n }),
+          leave: () => this.setState({ webHover: null }),
+          cardStyle: "flex: 0 0 auto; border: 1px solid " + (active ? "var(--primary)" : "var(--border)") +
+            "; border-radius: var(--radius); background: var(--card); overflow: hidden; cursor: pointer;"
+        };
+      }),
+      webDraftOpen: st.webDraft !== null,
+      webDraftAnchor: st.webDraft === null ? "" : "Replay table, variant " + st.variant + " · the " +
+        ["claimed", "committed", "expired"][st.webDraft] + " row",
+      postWebComment: () => this.setState(s => ({
+        webDraft: null,
+        webComments: s.webComments.concat([{
+          row: s.webDraft, quote: "",
+          body: "This row needs the retry window spelled out, not just the outcome.",
+          who: "you · this browser · just now"
+        }])
+      })),
+      cancelWebComment: () => this.setState({ webDraft: null }),
+      webSendLabel: st.webSent ? "Attached to your next turn" : "Send " + st.webComments.length + " comments",
+      webSendStyle: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; white-space: nowrap; background: " +
+        (st.webSent ? "var(--ok-bg)" : "var(--primary)") + "; color: " + (st.webSent ? "var(--ok-fg)" : "var(--primary-foreground)") + ";",
+      sendWebComments: () => this.setState(s => ({ webSent: !s.webSent })),
+      webReviewNote: "The render stays on hetzner-cx42. Comments reference an element in it, never a copy.",
+
+      isAttach: sc === "attach",
+      isThread: thread,
+      isLimits: sc === "limits",
+      isTierLimited: sc === "tier",
+      showDegraded: degraded,
+      goAttach: this.go("attach"),
+      goThread: this.go("thread"),
+
+      machines: [
+        { name: "hetzner-cx42", pill: "reachable", pk: "info", state: "2 sessions, 1 waiting on you", meta: "cloud relay · 62ms", k: "success", screen: "thread" },
+        { name: "mac-mini-m4", pill: "not reachable from here", pk: "muted", state: "3 sessions, but this tab is not on your network", meta: "no route from this browser", k: "faint", screen: "attach" },
+        { name: "wsl-ubuntu-24", pill: "unreachable", pk: "destructive", state: "daemon has not answered for 41s", meta: "tailnet route dropped", k: "destructive", screen: "attach" }
+      ].map((m, i) => ({
+        name: m.name, pill: m.pill, state: m.state, meta: m.meta,
+        dot: this.dot("var(--" + m.k + ")", 7),
+        go: this.go(m.screen),
+        pillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: " +
+          (m.pk === "muted" ? "var(--muted)" : "color-mix(in oklab, var(--" + m.pk + ") 16%, transparent)") + "; color: " +
+          (m.pk === "muted" ? "var(--muted-foreground)" : "var(--" + m.pk + ")") + ";",
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 12px 14px; cursor: pointer;" +
+          (i ? " border-top: 1px solid var(--border);" : "") + (m.k === "faint" || m.k === "destructive" ? " opacity: .62;" : "")
+      })),
+      authFacts: [
+        { text: "Signing in proves who you are. It grants no authority over a machine.", k: "info" },
+        { text: "A short-lived token, refreshed while you use it. Nothing long-lived in storage.", k: "success" },
+        { text: "The daemon still checks a device credential Cloud cannot see.", k: "success" },
+        { text: "Closing the tab stops nothing. The session belongs to the machine.", k: "info" }
+      ].map(a => ({ text: a.text, dot: this.dot("var(--" + a.k + ")", 6) + " margin-top: 6px;" })),
+
+      sessions: [
+        { title: "Migrate billing webhooks to the new idempotency table", meta: "waiting on you", k: "warning", active: true },
+        { title: "Backfill org_id on 4.1M audit rows without locking", meta: "running 12m", k: "success" },
+        { title: "Find why the staging queue drains at 40 per second", meta: "failed 1h ago", k: "destructive" },
+        { title: "Document the replay table for the runbook", meta: "idle 2d", k: "faint" }
+      ].map(s => ({
+        title: s.title, meta: s.meta,
+        dot: this.dot("var(--" + s.k + ")", 6) + " margin-top: 5px;",
+        rowStyle: "display: flex; gap: 9px; padding: 8px 9px; border-radius: calc(var(--radius) - 3px); cursor: pointer;" +
+          (s.active ? " background: var(--accent);" : "") + (s.k === "faint" ? " opacity: .55;" : "")
+      })),
+      clock: degraded ? "started 14:02 · view 6s behind" : "started 14:02 · 4m 18s",
+      chips: [
+        { path: "src/webhooks/handler.ts", add: "+62", del: "\u221214" },
+        { path: "src/webhooks/replay.ts", add: "+71", del: "" },
+        { path: "prisma/schema.prisma", add: "+18", del: "\u22122" }
+      ],
+      gateMeta: degraded ? "your answer will take a few seconds to arrive" : "step 3 of 4 · agent claude-code",
+      gateHolder: "this tab holds the gate · the phone is watching",
+      gateBtnStyle: "padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--warning); color: var(--warning-foreground); font-size: 13px; font-weight: 600; cursor: pointer;" +
+        (degraded ? " opacity: .8;" : ""),
+      terminalLabel: "Terminal",
+      terminalBtnStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground); cursor: pointer;",
+
+      limits: [
+        { what: "Watch a session live", state: "same as desktop", k: "success", why: "The daemon streams the thread and the plan over the route." },
+        { what: "Answer a gate", state: "same as desktop", k: "success", why: "The decision is a message, and the daemon records the device that sent it." },
+        { what: "Read diffs", state: "same as desktop", k: "success", why: "Diffs are computed on the machine and sent as text." },
+        { what: "Terminal", state: "tier dependent", k: "warning", why: "Terminal capability rides on the route, and Free routes do not carry it." },
+        { what: "Attach a local file", state: "always a payload", k: "warning", why: "There is no shared filesystem, so a file from your device has to travel to the machine." },
+        { what: "Open the repository", state: "not possible", k: "destructive", why: "Nothing is cloned into the browser. Paths are read on the machine, one directory at a time." },
+        { what: "Store a credential", state: "deliberately not", k: "destructive", why: "No long-lived daemon bearer in browser storage. Short-lived tokens only, refreshed while the tab is open." }
+      ].map((l, i) => ({
+        what: l.what, state: l.state, why: l.why,
+        dot: this.dot("var(--" + l.k + ")", 6),
+        stateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; width: 130px; flex: 0 0 130px; color: var(--" + l.k + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 11px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      okDotSm: this.dot("var(--success)", 6) + " margin-top: 6px;",
+      infoDotSm: this.dot("var(--info)", 6) + " margin-top: 6px;",
+      freeDoes: [
+        { text: "One machine, reached over a relay route, with no tunnel to configure." },
+        { text: "Read the workspace, thread, working plan and artifacts." },
+        { text: "Answer ordinary approvals with allow once or deny." }
+      ],
+      paidAdds: [
+        { text: "Terminal capability on the route, which is what this refusal was about." },
+        { text: "Three machines, and moving a session between them." },
+        { text: "Hard gates and standing rules, which Free refuses by design." }
+      ]
+    };
+  }
+}
+
+</script>
+</body>
+</html>

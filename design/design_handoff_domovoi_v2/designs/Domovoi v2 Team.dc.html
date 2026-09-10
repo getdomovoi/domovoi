@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-border: oklch(0.38 0.08 62); --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+    --ok-bg: oklch(0.215 0.04 158); --ok-border: oklch(0.33 0.07 158); --ok-fg: oklch(0.9 0.06 158); --ok-dim: oklch(0.74 0.08 158);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-border: oklch(0.86 0.09 75); --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+    --ok-bg: oklch(0.965 0.025 158); --ok-border: oklch(0.85 0.07 158); --ok-fg: oklch(0.33 0.09 158); --ok-dim: oklch(0.45 0.1 158);
+  }
+</style>
+</helmet>
+
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 26px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="width: 1560px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="5">
+      <div onClick="{{ s.go }}" style="{{ s.style }}">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ s.numColor }};">{{ s.num }}</span>
+        <span style="font-size: 11.5px;">{{ s.label }}</span>
+      </div>
+    </sc-for>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
+  </div>
+
+  <div style="width: 1560px; height: 980px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border);">
+      <div style="display: flex; gap: 8px; padding-right: 4px;">
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+      </div>
+      <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+      <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+      <div style="width: 1px; height: 18px; background: var(--border);"></div>
+      <span style="font-size: 12.5px; color: var(--muted-foreground);">{{ chromeLabel }}</span>
+      <span style="flex: 1;"></span>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);">acme.dev · Team</span>
+      <div onClick="{{ toggleTheme }}" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">
+        <sc-if value="{{ isDarkTheme }}" hint-placeholder-val="{{ true }}">{{ iMoon }}</sc-if>
+        <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">{{ iSun }}</sc-if>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-height: 0; display: flex;">
+      <div style="width: 236px; flex: 0 0 236px; border-right: 1px solid var(--border); background: var(--sidebar); padding: 12px 9px; display: flex; flex-direction: column; gap: 2px;">
+        <div style="padding: 6px 9px 8px; font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">ORGANISATION</div>
+        <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="5">
+          <div onClick="{{ n.go }}" style="{{ n.style }}">
+            <span style="font-size: 12.5px;">{{ n.label }}</span>
+            <span style="flex: 1;"></span>
+            <span style="{{ n.badgeStyle }}">{{ n.badge }}</span>
+          </div>
+        </sc-for>
+        <span style="flex: 1;"></span>
+        <div style="padding: 11px 10px 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="{{ okDot }}"></span>
+            <span style="font-size: 11.5px; color: var(--muted-foreground);">You are an owner</span>
+          </div>
+          <div style="font-size: 11px; color: var(--faint); line-height: 1.5;">Owners set policy and hold billing. They cannot read a member's session or open a shell on a machine they were not granted.</div>
+        </div>
+      </div>
+
+      <div style="flex: 1; min-width: 0; overflow-y: auto;">
+
+        <sc-if value="{{ isPeople }}" hint-placeholder-val="{{ true }}">
+          <div style="padding: 28px 30px 40px; display: flex; justify-content: center;">
+            <div style="width: 100%; max-width: 880px; display: flex; flex-direction: column; gap: 18px;">
+              <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 14px;">
+                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px;">
+                  <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">People</div>
+                  <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">A seat is a person who may attach to machines this organisation granted them. Seats are not metered by machine, and a seat alone reaches nothing until a grant exists.</div>
+                </div>
+                <div style="{{ primaryBtn }}">Invite by email</div>
+              </div>
+
+              <div style="flex: 0 0 auto; display: flex; gap: 14px;">
+                <sc-for list="{{ seatStats }}" as="s" hint-placeholder-count="3">
+                  <div style="flex: 1; min-width: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card);">
+                    <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">{{ s.k }}</div>
+                    <div style="font-size: 22px; font-weight: 600; letter-spacing: -.02em; margin-top: 6px;">{{ s.v }}</div>
+                    <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 5px; line-height: 1.5;">{{ s.note }}</div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="display: flex; align-items: center; gap: 12px; padding: 11px 15px; border-bottom: 1px solid var(--border);">
+                  <span style="width: 210px; flex: 0 0 210px; font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">PERSON</span>
+                  <span style="width: 96px; flex: 0 0 96px; font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">ROLE</span>
+                  <span style="flex: 1; font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">GRANTED MACHINES</span>
+                  <span style="width: 128px; flex: 0 0 128px; font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">DEVICES</span>
+                  <span style="width: 96px; flex: 0 0 96px;"></span>
+                </div>
+                <sc-for list="{{ people }}" as="p" hint-placeholder-count="5">
+                  <div style="{{ p.rowStyle }}">
+                    <div style="width: 210px; flex: 0 0 210px; min-width: 0; display: flex; align-items: center; gap: 10px;">
+                      <span style="{{ p.avatarStyle }}">{{ p.initials }}</span>
+                      <div style="min-width: 0;">
+                        <div style="font-size: 12.5px; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ p.name }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ p.email }}</div>
+                      </div>
+                    </div>
+                    <span style="{{ p.roleStyle }}">{{ p.role }}</span>
+                    <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ p.machines }}</span>
+                    <span style="width: 128px; flex: 0 0 128px; font-size: 11.5px; color: var(--faint);">{{ p.devices }}</span>
+                    <span style="{{ p.actionStyle }}">{{ p.action }}</span>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="flex: 0 0 auto; padding: 12px 14px; border: 1px dashed var(--info-border); border-radius: var(--radius); background: var(--info-bg); font-size: 12.5px; color: var(--info-fg); line-height: 1.6;">Removing a seat revokes its device credentials and its grants. It does not stop a session already running on a machine, because that machine owns the session. Stop it there.</div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isMachines }}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 28px 30px 40px; display: flex; justify-content: center;">
+            <div style="width: 100%; max-width: 880px; display: flex; flex-direction: column; gap: 18px;">
+              <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px;">
+                <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Machines the organisation owns</div>
+                <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">These are the metered units. A grant gives a seat a route and a credential to one machine, which is not the same as an account login, and never gives the organisation a way to read that machine's code.</div>
+              </div>
+
+              <sc-for list="{{ orgMachines }}" as="m" hint-placeholder-count="3">
+                <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                  <div style="display: flex; align-items: center; gap: 11px; padding: 12px 15px; border-bottom: 1px solid var(--border);">
+                    <span style="{{ m.dot }}"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--foreground);">{{ m.name }}</span>
+                    <span style="{{ m.tierStyle }}">{{ m.tier }}</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ m.meta }}</span>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 10px; padding: 11px 15px; flex-wrap: wrap;">
+                    <span style="font-size: 11.5px; color: var(--muted-foreground);">Granted to</span>
+                    <sc-for list="{{ m.grants }}" as="g" hint-placeholder-count="3">
+                      <span style="{{ g.style }}">{{ g.name }}</span>
+                    </sc-for>
+                    <span style="{{ m.grantBtnStyle }}">Grant to someone</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-size: 11.5px; color: var(--faint);">{{ m.note }}</span>
+                  </div>
+                </div>
+              </sc-for>
+
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600;">What a grant is, and is not</div>
+                <sc-for list="{{ grantFacts }}" as="f" hint-placeholder-count="4">
+                  <div style="{{ f.rowStyle }}">
+                    <span style="{{ f.dot }}"></span>
+                    <span style="font-size: 12.5px; color: var(--strong); line-height: 1.55;">{{ f.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isActivity }}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 28px 30px 40px; display: flex; justify-content: center;">
+            <div style="width: 100%; max-width: 940px; display: flex; flex-direction: column; gap: 18px;">
+              <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px;">
+                <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Who decided what</div>
+                <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">Decisions taken on organisation machines, across everyone. This is a record of choices, not of work: it names the command and the person who allowed it, and it carries no prompt, no diff and no thread.</div>
+              </div>
+
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <sc-for list="{{ activityFilters }}" as="c" hint-placeholder-count="4">
+                  <div onClick="{{ c.pick }}" style="{{ c.style }}">
+                    <span>{{ c.label }}</span>
+                    <span style="{{ c.countStyle }}">{{ c.count }}</span>
+                  </div>
+                </sc-for>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">last 7 days · org machines only</span>
+              </div>
+
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <sc-for list="{{ activityRows }}" as="a" hint-placeholder-count="6">
+                  <div style="{{ a.rowStyle }}">
+                    <span style="{{ a.dot }}"></span>
+                    <span style="width: 58px; flex: 0 0 58px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 1px;">{{ a.when }}</span>
+                    <span style="{{ a.avatarStyle }}">{{ a.initials }}</span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
+                        <span style="font-size: 12.5px; color: var(--foreground);">{{ a.what }}</span>
+                        <span style="{{ a.kindStyle }}">{{ a.kind }}</span>
+                      </div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); margin-top: 4px; line-height: 1.45;">{{ a.detail }}</div>
+                    </div>
+                    <span style="width: 168px; flex: 0 0 168px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); line-height: 1.5;">{{ a.where }}</span>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT AN OWNER CANNOT SEE HERE</div>
+                <sc-for list="{{ privacyLimits }}" as="l" hint-placeholder-count="4">
+                  <div style="{{ l.rowStyle }}">
+                    <span style="{{ l.dot }}"></span>
+                    <span style="font-size: 12.5px; color: var(--strong); line-height: 1.55;">{{ l.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isPolicy }}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 28px 30px 40px; display: flex; justify-content: center;">
+            <div style="width: 100%; max-width: 860px; display: flex; flex-direction: column; gap: 18px;">
+              <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 14px;">
+                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px;">
+                  <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Organisation policy</div>
+                  <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">A policy is a refusal the daemon enforces on every granted machine. Unlike a rule, no approval, mode or client can permit what it forbids, and the refusal is recorded with the daemon as the actor.</div>
+                </div>
+                <div style="{{ primaryBtn }}">Add a policy</div>
+              </div>
+
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <sc-for list="{{ policies }}" as="p" hint-placeholder-count="4">
+                  <div style="{{ p.rowStyle }}">
+                    <span style="{{ p.dot }}"></span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 13px; color: var(--foreground); line-height: 1.45;">{{ p.text }}</div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 4px;">{{ p.meta }}</div>
+                    </div>
+                    <span style="{{ p.hitStyle }}">{{ p.hits }}</span>
+                    <span style="{{ p.trackStyle }}"><span style="{{ p.knobStyle }}"></span></span>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px solid var(--warn-border); border-radius: var(--radius); background: var(--warn-bg);">
+                <div style="font-size: 13px; font-weight: 600; color: var(--warn-fg);">Turning a policy off is not retroactive</div>
+                <div style="font-size: 12.5px; color: var(--warn-fg); margin-top: 6px; line-height: 1.6;">It takes effect at the next turn boundary on each machine, and the refusals it already recorded stay in the audit log. A member's machine that is unreachable keeps enforcing the last policy it received.</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isBilling }}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 28px 30px 40px; display: flex; justify-content: center;">
+            <div style="width: 100%; max-width: 860px; display: flex; flex-direction: column; gap: 18px;">
+              <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px;">
+                <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Plan and machines</div>
+                <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">Machines registered to the organisation are what you pay for, in buckets. People are not metered, because a phone answering a gate is not a cost driver and a daemon holding a route is.</div>
+              </div>
+
+              <div style="flex: 0 0 auto; display: flex; gap: 14px;">
+                <sc-for list="{{ billStats }}" as="b" hint-placeholder-count="3">
+                  <div style="flex: 1; min-width: 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card);">
+                    <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">{{ b.k }}</div>
+                    <div style="font-size: 22px; font-weight: 600; letter-spacing: -.02em; margin-top: 6px;">{{ b.v }}</div>
+                    <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 5px; line-height: 1.5;">{{ b.note }}</div>
+                  </div>
+                </sc-for>
+              </div>
+
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600;">This period</div>
+                <sc-for list="{{ billRows }}" as="r" hint-placeholder-count="4">
+                  <div style="{{ r.rowStyle }}">
+                    <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--strong);">{{ r.label }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground);">{{ r.detail }}</span>
+                    <span style="width: 92px; flex: 0 0 92px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--foreground);">{{ r.amount }}</span>
+                  </div>
+                </sc-for>
+                <div style="display: flex; align-items: center; gap: 12px; padding: 13px 15px; border-top: 1px solid var(--border); background: var(--sidebar);">
+                  <span style="flex: 1; min-width: 0; font-size: 13px; font-weight: 600;">Due 1 October</span>
+                  <span style="width: 92px; flex: 0 0 92px; text-align: right; font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 500;">$186.00</span>
+                </div>
+              </div>
+
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">IF THE CARD FAILS</div>
+                <sc-for list="{{ lapseRules }}" as="l" hint-placeholder-count="4">
+                  <div style="{{ l.rowStyle }}">
+                    <span style="{{ l.dot }}"></span>
+                    <span style="font-size: 12.5px; color: var(--strong); line-height: 1.55;">{{ l.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, screen: "people", activityFilter: "all", policyOff: [] };
+
+  componentDidMount() {
+    if (window.lucide && window.lucide.icons) return;
+    let tries = 0;
+    this._t = setInterval(() => {
+      tries += 1;
+      if (window.lucide && window.lucide.icons) { clearInterval(this._t); this.forceUpdate(); }
+      else if (tries > 60) clearInterval(this._t);
+    }, 100);
+  }
+
+  componentWillUnmount() { if (this._t) clearInterval(this._t); }
+
+  icon(name, size) {
+    const set = window.lucide && window.lucide.icons;
+    const entry = set ? set[name] : null;
+    const nodes = entry && Array.isArray(entry[2]) ? entry[2] : entry;
+    const px = size || 16;
+    if (!nodes || !nodes.length) return React.createElement("span", { style: { display: "inline-block", width: px, height: px, flex: "0 0 auto" } });
+    return React.createElement("svg", {
+      width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+      style: { display: "block", flex: "0 0 auto" }
+    }, nodes.map((n, i) => {
+      const attrs = {};
+      Object.keys(n[1] || {}).forEach(k => { attrs[k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())] = n[1][k]; });
+      attrs.key = i;
+      return React.createElement(n[0], attrs);
+    }));
+  }
+
+  dot(color, size) {
+    const n = size || 6;
+    return "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  avatar(initials, k) {
+    return "flex: 0 0 26px; width: 26px; height: 26px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: color-mix(in oklab, var(--" +
+      k + ") 18%, transparent); color: var(--" + k + ");";
+  }
+
+  go(screen) { return () => this.setState({ screen: screen }); }
+
+  renderVals() {
+    const st = this.state;
+    const sc = st.screen;
+    const theme = st.theme ?? this.props.theme ?? "dark";
+
+    const stepDefs = [
+      { id: "people", num: "1", label: "People and seats", note: "A seat is a person. It reaches nothing until the organisation grants it a machine." },
+      { id: "machines", num: "2", label: "Org machines", note: "Machines are the metered unit. A grant is a route and a credential, not an account login." },
+      { id: "activity", num: "3", label: "Who decided what", note: "Decisions across everyone, on org machines. Choices are recorded; prompts, diffs and threads are not." },
+      { id: "policy", num: "4", label: "Policy", note: "A refusal the daemon enforces everywhere. No approval or mode can permit what it forbids." },
+      { id: "billing", num: "5", label: "Plan and machines", note: "Buckets of machines, people never metered, and a lapse that refuses new connections rather than cutting live ones." }
+    ];
+
+    const navDefs = [
+      { id: "people", label: "People", badge: "6 of 10", k: "muted" },
+      { id: "machines", label: "Machines", badge: "4", k: "muted" },
+      { id: "activity", label: "Who decided what", badge: "128", k: "muted" },
+      { id: "policy", label: "Policy", badge: "3", k: "warning" },
+      { id: "billing", label: "Plan and billing", badge: "", k: "muted" }
+    ];
+
+    const roleStyle = r => "width: 96px; flex: 0 0 96px; font-size: 11.5px; color: var(--" +
+      (r === "owner" ? "primary" : r === "admin" ? "info" : "muted-foreground") + ");";
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      iMoon: this.icon("Moon", 16),
+      iSun: this.icon("Sun", 16),
+      iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+      markStyle: "display: block; width: 22px; height: 22px; flex: 0 0 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      okDot: this.dot("var(--success)", 6),
+      primaryBtn: "flex: 0 0 auto; padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;",
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label,
+        numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        go: this.go(s.id),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
+          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+      chromeLabel: (stepDefs.find(s => s.id === sc) || stepDefs[0]).label,
+
+      navItems: navDefs.map(n => ({
+        label: n.label, badge: n.badge,
+        go: this.go(n.id),
+        badgeStyle: n.badge
+          ? "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: " +
+            (n.k === "warning" ? "color-mix(in oklab, var(--warning) 16%, transparent)" : "var(--muted)") + "; color: var(--" +
+            (n.k === "warning" ? "warning" : "muted-foreground") + ");"
+          : "display: none;",
+        style: "display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--" +
+          (sc === n.id ? "foreground" : "strong") + ");" + (sc === n.id ? " background: var(--accent);" : "")
+      })),
+
+      isPeople: sc === "people",
+      isMachines: sc === "machines",
+      isActivity: sc === "activity",
+      isPolicy: sc === "policy",
+      isBilling: sc === "billing",
+
+      seatStats: [
+        { k: "SEATS USED", v: "6 of 10", note: "Two invitations are still unaccepted." },
+        { k: "GRANTS", v: "11", note: "Seat-to-machine pairs currently valid." },
+        { k: "DEVICES", v: "17", note: "Paired clients across every seat." }
+      ],
+      people: [
+        { name: "Dana Whitfield", email: "dana@acme.dev", role: "owner", machines: "all 4", devices: "3 · desktop, phone, iPad", k: "primary", action: "" },
+        { name: "Marcus Oyelaran", email: "marcus@acme.dev", role: "admin", machines: "hetzner-cx42, gpu-a10", devices: "4", k: "info", action: "Manage" },
+        { name: "Priya Raghunathan", email: "priya@acme.dev", role: "member", machines: "hetzner-cx42", devices: "2", k: "success", action: "Manage" },
+        { name: "Tomas Lindqvist", email: "tomas@acme.dev", role: "member", machines: "build-runner-1", devices: "1", k: "success", action: "Manage" },
+        { name: "Sarah Kwon", email: "sarah@acme.dev", role: "member", machines: "none yet", devices: "0", k: "muted-foreground", action: "Grant one" },
+        { name: "jamie@acme.dev", email: "invited 3 days ago", role: "invited", machines: "pending acceptance", devices: "0", k: "muted-foreground", action: "Resend" }
+      ].map((p, i) => ({
+        name: p.name, email: p.email, role: p.role, machines: p.machines, devices: p.devices, action: p.action,
+        initials: p.name.indexOf("@") >= 0 ? p.name.slice(0, 2).toUpperCase() : p.name.split(" ").map(w => w[0]).join(""),
+        avatarStyle: this.avatar("", p.k === "muted-foreground" ? "muted-foreground" : p.k),
+        roleStyle: roleStyle(p.role),
+        actionStyle: p.action
+          ? "width: 96px; flex: 0 0 96px; text-align: right; font-size: 11.5px; color: var(--primary); cursor: pointer;"
+          : "width: 96px; flex: 0 0 96px;",
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 11px 15px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+          (p.role === "invited" ? " opacity: .62;" : "")
+      })),
+
+      orgMachines: [
+        {
+          name: "hetzner-cx42", tier: "standard", k: "success", meta: "8 vCPU · idle · tailnet",
+          grants: ["Dana", "Marcus", "Priya"], note: "3 of 6 seats"
+        },
+        {
+          name: "gpu-a10", tier: "accelerated", k: "success", meta: "A10 24GB · 1 session · tailnet",
+          grants: ["Dana", "Marcus"], note: "2 of 6 seats"
+        },
+        {
+          name: "build-runner-1", tier: "standard", k: "success", meta: "16 vCPU · 2 sessions · tailnet",
+          grants: ["Dana", "Tomas"], note: "2 of 6 seats"
+        },
+        {
+          name: "legacy-jenkins", tier: "standard", k: "destructive", meta: "unreachable for 6 days",
+          grants: ["Dana"], note: "still billed until removed"
+        }
+      ].map(m => ({
+        name: m.name, tier: m.tier, meta: m.meta, note: m.note,
+        dot: this.dot("var(--" + m.k + ")", 7),
+        tierStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);",
+        grants: m.grants.map(g => ({
+          name: g,
+          style: "font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--muted); color: var(--strong);"
+        })),
+        grantBtnStyle: "font-size: 11.5px; padding: 2px 8px; border-radius: 999px; border: 1px dashed var(--border); color: var(--muted-foreground); cursor: pointer;"
+      })),
+      grantFacts: [
+        { text: "A grant issues that seat a device credential for one machine, over one route. Revoking it closes their sockets at the daemon.", k: "success" },
+        { text: "It does not let the organisation read the machine's code, open a shell on it, or see a session it was not invited to.", k: "success" },
+        { text: "It does not survive the machine leaving the organisation. The daemon stops accepting org credentials the moment it is removed.", k: "info" },
+        { text: "An unreachable machine keeps its grants and keeps being billed, because the record is what you pay for, not the uptime.", k: "warning" }
+      ].map((f, i) => ({
+        text: f.text,
+        dot: this.dot("var(--" + f.k + ")", 6) + " margin-top: 6px;",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      activityFilters: [
+        { id: "all", label: "Everything", count: "128" },
+        { id: "approvals", label: "Approvals", count: "41" },
+        { id: "refusals", label: "Refusals", count: "9" },
+        { id: "grants", label: "Grants", count: "11" },
+        { id: "policy", label: "Policy changes", count: "4" }
+      ].map(c => ({
+        label: c.label, count: c.count,
+        pick: () => this.setState({ activityFilter: c.id }),
+        style: "display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid " +
+          (st.activityFilter === c.id ? "var(--primary)" : "var(--border)") + "; color: " +
+          (st.activityFilter === c.id ? "var(--primary)" : "var(--muted-foreground)") + ";",
+        countStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);"
+      })),
+      activityRows: [
+        { cat: "approvals", when: "14:07", who: "Priya Raghunathan", ini: "PR", what: "Allowed once: pnpm prisma migrate deploy", kind: "approval", detail: "acme-api · against acme_dev · ran 38s", where: "hetzner-cx42", k: "info", ak: "success" },
+        { cat: "refusals", when: "13:52", who: "Marcus Oyelaran", ini: "MO", what: "Refused by policy: no writes to production", kind: "refusal", detail: "daemon refused before the command ran", where: "gpu-a10", k: "destructive", ak: "info" },
+        { cat: "grants", when: "11:20", who: "Dana Whitfield", ini: "DW", what: "Granted Tomas access to build-runner-1", kind: "grant", detail: "credential issued · route tailnet", where: "build-runner-1", k: "info", ak: "primary" },
+        { cat: "approvals", when: "10:44", who: "Tomas Lindqvist", ini: "TL", what: "Created a rule: pnpm vitest run *", kind: "approval", detail: "scope acme-web on this machine only", where: "build-runner-1", k: "info", ak: "success" },
+        { cat: "policy", when: "09:15", who: "Dana Whitfield", ini: "DW", what: "Added a policy: no network writes outside the allowlist", kind: "policy", detail: "applies at the next turn boundary everywhere", where: "all machines", k: "warning", ak: "primary" },
+        { cat: "refusals", when: "Mon 16:31", who: "Priya Raghunathan", ini: "PR", what: "Refused: unsigned skill in an auto mode", kind: "refusal", detail: "sql-explain · turn continued without it", where: "hetzner-cx42", k: "destructive", ak: "success" }
+      ].filter(r => st.activityFilter === "all" || r.cat === st.activityFilter)
+      .map((a, i) => ({
+        when: a.when, what: a.what, detail: a.detail, where: a.where, kind: a.kind,
+        initials: a.ini,
+        avatarStyle: this.avatar("", a.ak) + " margin-top: 1px;",
+        dot: this.dot("var(--" + a.k + ")", 6) + " margin-top: 6px;",
+        kindStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground);",
+        rowStyle: "display: flex; align-items: flex-start; gap: 11px; padding: 12px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      privacyLimits: [
+        { text: "The prompt anyone typed, or the model's reply. A decision is recorded, the conversation is not.", k: "destructive" },
+        { text: "The diff, the files touched, or any code from a member's worktree.", k: "destructive" },
+        { text: "Terminal output, even from a command an owner's policy allowed.", k: "destructive" },
+        { text: "Anything at all from a personal machine that was never granted to the organisation.", k: "destructive" }
+      ].map((l, i) => ({
+        text: l.text,
+        dot: this.dot("var(--" + l.k + ")", 6) + " margin-top: 6px;",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      policies: [
+        { text: "No writes to a production database", meta: "set by dana@acme.dev · 12 Aug · every granted machine", hits: "9 refusals", k: "warning" },
+        { text: "No network writes outside the allowlist", meta: "set by dana@acme.dev · today · every granted machine", hits: "0 refusals", k: "warning" },
+        { text: "No unsigned skill in an auto mode", meta: "daemon default · cannot be turned off", hits: "3 refusals", k: "destructive" },
+        { text: "No force push to a protected branch", meta: "set by marcus@acme.dev · 2 Sep · acme-api only", hits: "1 refusal", k: "warning" }
+      ].map((p, i) => {
+        const locked = p.k === "destructive";
+        const on = locked || st.policyOff.indexOf(i) === -1;
+        return {
+          text: p.text, meta: p.meta, hits: p.hits,
+          dot: this.dot("var(--" + (on ? p.k : "faint") + ")", 6),
+          hitStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);",
+          trackStyle: "position: relative; display: block; width: 34px; height: 20px; flex: 0 0 34px; border-radius: 999px; background: " +
+            (on ? "var(--primary)" : "var(--muted)") + ";" + (locked ? " opacity: .5; cursor: default;" : " cursor: pointer;"),
+          knobStyle: "position: absolute; top: 3px; left: " + (on ? "17px" : "3px") +
+            "; width: 14px; height: 14px; border-radius: 50%; background: var(--card); display: block;",
+          rowStyle: "display: flex; align-items: center; gap: 12px; padding: 12px 15px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+            (on ? "" : " opacity: .6;")
+        };
+      }),
+
+      billStats: [
+        { k: "MACHINES", v: "4", note: "3 standard, 1 accelerated." },
+        { k: "PEOPLE", v: "6", note: "Never metered, at any tier." },
+        { k: "THIS PERIOD", v: "$186", note: "Due 1 October, card on file." }
+      ],
+      billRows: [
+        { label: "Standard machines", detail: "3 × $32 · hetzner-cx42, build-runner-1, legacy-jenkins", amount: "$96.00" },
+        { label: "Accelerated machine", detail: "1 × $78 · gpu-a10", amount: "$78.00" },
+        { label: "Relay egress above the bucket", detail: "1.4 GB over 20 GB", amount: "$12.00" },
+        { label: "People", detail: "6 seats · not metered", amount: "$0.00" }
+      ].map((r, i) => ({
+        label: r.label, detail: r.detail, amount: r.amount,
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 11px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      lapseRules: [
+        { text: "A live connection is never severed for a billing reason. Someone may be mid-approval on a hard gate.", k: "success" },
+        { text: "Existing connections run until their admission token expires.", k: "success" },
+        { text: "Enforcement is one point: new admission tokens stop minting when the grace period ends.", k: "warning" },
+        { text: "Local routes keep working. Loopback, LAN, tailnet and SSH never touch billing.", k: "success" },
+        { text: "Nothing of yours is deleted, because nothing of yours was ever stored here.", k: "info" }
+      ].map((l, i) => ({
+        text: l.text,
+        dot: this.dot("var(--" + l.k + ")", 6) + " margin-top: 6px;",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      }))
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -4,7 +4,7 @@
     "project": "Relay multi-device platform",
     "projectId": "a3b4404e-4d0c-451e-8dd2-203116a76c06"
   },
-  "recordedOn": "2026-09-09",
+  "recordedOn": "2026-09-10",
   "files": {
     "design/design_handoff_domovoi/HANDOFF-NOTES.md": {
       "bytes": 103,
@@ -97,6 +97,46 @@
     "design/design_handoff_domovoi_brand/screenshots/01-brand-directions.png": {
       "bytes": 23998,
       "sha256": "9e88ce23aea1cb8b552a7b07de66763a56d3028b0d03a9dde08d1e1a9cdac4ec"
+    },
+    "design/design_handoff_domovoi_v2/HANDOFF-V2.md": {
+      "bytes": 14645,
+      "sha256": "55527e258b927eee1fb964972d612d650d6ed30d20879be1f58234e71779cdfa"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html": {
+      "bytes": 102048,
+      "sha256": "e99b11d354515946fa33ae0c2c5f7235928a4607d816f41dce0eb9ed8ab14390"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi Tablet v2.dc.html": {
+      "bytes": 49333,
+      "sha256": "405455682467dcc67768835b66652e616cf3deac160472b4dedd60c9254fb4af"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi Web v2.dc.html": {
+      "bytes": 54074,
+      "sha256": "65439229abdd6502a0383f4194500a351e304fa9a0c24e59f84e559901c398fd"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi v2 Cloud.dc.html": {
+      "bytes": 53380,
+      "sha256": "982ec8d7ef7970bd571abc672c0af587a2081c2689ad0973fc8c9e9404185df7"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi v2 Onboarding.dc.html": {
+      "bytes": 64583,
+      "sha256": "a55724831e09e5f9a944db23d648a9b3ecd40b2c26b51a12a9d1af00519a4da1"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html": {
+      "bytes": 47715,
+      "sha256": "581b28f5e054a697581ce3f04f3e2e7df5fd4dd7bb2acae57518521a3e4e5300"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi v2 States.dc.html": {
+      "bytes": 35678,
+      "sha256": "47bfa0bf66ab5b6686c42ba496a8401c33616058f6ef9766fd56bee15e5e6998"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi v2 Team.dc.html": {
+      "bytes": 44099,
+      "sha256": "607565c1db96581a166f551d66d12b48840a00ecc4401d72b5a0f339aa181791"
+    },
+    "design/design_handoff_domovoi_v2/designs/support.js": {
+      "bytes": 69150,
+      "sha256": "8fe7df74405f3c55f49b7249c74ea1397e65d07dea2b1bd3b4a489bec2e28cbe"
     },
     "design/design_system_domovoi/_adherence.oxlintrc.json": {
       "bytes": 25232,

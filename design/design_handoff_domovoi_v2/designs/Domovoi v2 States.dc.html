@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+  @keyframes dvShimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+  @keyframes dvSweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-border: oklch(0.38 0.08 62); --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+    --ok-bg: oklch(0.215 0.04 158); --ok-border: oklch(0.33 0.07 158); --ok-fg: oklch(0.9 0.06 158); --ok-dim: oklch(0.74 0.08 158);
+    --skel: oklch(0.24 0.006 285); --skel-hi: oklch(0.29 0.007 285);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-border: oklch(0.86 0.09 75); --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+    --ok-bg: oklch(0.965 0.025 158); --ok-border: oklch(0.85 0.07 158); --ok-fg: oklch(0.33 0.09 158); --ok-dim: oklch(0.45 0.1 158);
+    --skel: oklch(0.945 0.004 285); --skel-hi: oklch(0.975 0.003 285);
+  }
+</style>
+</helmet>
+
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 26px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="width: 1560px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="6">
+      <div onClick="{{ s.go }}" style="{{ s.style }}">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ s.numColor }};">{{ s.num }}</span>
+        <span style="font-size: 11.5px;">{{ s.label }}</span>
+      </div>
+    </sc-for>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
+  </div>
+
+  <div style="width: 1560px; height: 980px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border);">
+      <div style="display: flex; gap: 8px; padding-right: 4px;">
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+      </div>
+      <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+      <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+      <div style="width: 1px; height: 18px; background: var(--border);"></div>
+      <span style="font-size: 12.5px; color: var(--muted-foreground);">{{ chromeLabel }}</span>
+      <span style="flex: 1;"></span>
+      <span style="{{ chromePillStyle }}">{{ chromePill }}</span>
+      <div onClick="{{ toggleTheme }}" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">
+        <sc-if value="{{ isDarkTheme }}" hint-placeholder-val="{{ true }}">{{ iMoon }}</sc-if>
+        <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">{{ iSun }}</sc-if>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-height: 0; display: flex;">
+
+      <div style="width: 262px; flex: 0 0 262px; border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column;">
+        <div style="flex: 0 0 auto; padding: 11px 12px 9px; display: flex; align-items: center; gap: 9px;">
+          <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">SESSIONS</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ railCount }}</span>
+        </div>
+
+        <sc-if value="{{ railSkeleton }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; padding: 0 10px; display: flex; flex-direction: column; gap: 9px;">
+            <sc-for list="{{ skelRows }}" as="k" hint-placeholder-count="5">
+              <div style="display: flex; gap: 9px; padding: 8px 4px;">
+                <span style="{{ skelDot }}"></span>
+                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+                  <span style="{{ k.line1 }}"></span>
+                  <span style="{{ k.line2 }}"></span>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ railEmpty }}" hint-placeholder-val="{{ true }}">
+          <div style="flex: 1; min-height: 0; padding: 0 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center;">
+            <span style="{{ railEmptyIcon }}">{{ iInbox }}</span>
+            <div style="font-size: 12.5px; color: var(--strong);">{{ railEmptyTitle }}</div>
+            <div style="font-size: 11.5px; color: var(--faint); line-height: 1.55;">{{ railEmptyBody }}</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ railList }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; padding: 0 10px; display: flex; flex-direction: column; gap: 2px;">
+            <sc-for list="{{ railSessions }}" as="s" hint-placeholder-count="3">
+              <div style="{{ s.rowStyle }}">
+                <span style="{{ s.dot }}"></span>
+                <div style="min-width: 0; flex: 1;">
+                  <div style="font-size: 12px; line-height: 1.38; color: var(--strong); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ s.title }}</div>
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 3px;">{{ s.meta }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <div style="flex: 0 0 auto; padding: 9px 10px 11px; display: flex; align-items: center; justify-content: center;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ railFooter }}</span>
+        </div>
+      </div>
+
+      <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+
+        <sc-if value="{{ isFirstRun }}" hint-placeholder-val="{{ true }}">
+          <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 30px;">
+            <div style="width: 100%; max-width: 560px; display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center;">
+              <span style="{{ bigIconStyle }}">{{ iSparkle }}</span>
+              <div style="font-size: 21px; font-weight: 600; letter-spacing: -.02em;">No sessions yet on mac-mini-m4</div>
+              <div style="font-size: 13.5px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">The daemon is answering and two repositories are visible to it. A session is a worktree plus a thread, so starting one never touches your checkout.</div>
+              <div style="display: flex; gap: 9px; padding-top: 4px;">
+                <div style="{{ primaryBtn }}">Start a session</div>
+                <div style="{{ quietBtn }}">Clone a repository</div>
+              </div>
+              <div style="width: 100%; margin-top: 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; text-align: left;">
+                <div style="padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">READY ON THIS MACHINE</div>
+                <sc-for list="{{ readyRows }}" as="r" hint-placeholder-count="3">
+                  <div style="{{ r.rowStyle }}">
+                    <span style="{{ r.dot }}"></span>
+                    <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ r.name }}</span>
+                    <span style="font-size: 11.5px; color: var(--faint);">{{ r.state }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isLoading }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 13px 20px; border-bottom: 1px solid var(--border);">
+              <span style="{{ skelTitle }}"></span>
+              <span style="flex: 1;"></span>
+              <span style="position: relative; width: 44px; height: 3px; border-radius: 3px; background: var(--muted); overflow: hidden; display: block;">
+                <span style="position: absolute; inset: 0; width: 30%; border-radius: 3px; background: var(--primary); animation: dvSweep 1.4s var(--ease-out, ease) infinite; display: block;"></span>
+              </span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">reading the thread from mac-mini-m4</span>
+            </div>
+            <div style="flex: 1; min-height: 0; padding: 22px 0; display: flex; justify-content: center; overflow: hidden;">
+              <div style="width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 20px;">
+                <sc-for list="{{ skelTurns }}" as="t" hint-placeholder-count="4">
+                  <div style="{{ t.wrapStyle }}">
+                    <span style="{{ t.who }}"></span>
+                    <span style="{{ t.bubble }}"></span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="flex: 0 0 auto; padding: 14px 20px 18px; display: flex; justify-content: center;">
+              <div style="width: 100%; max-width: 720px; display: flex; align-items: center; gap: 11px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card);">
+                <span style="{{ skelPill }}"></span>
+                <span style="flex: 1;"></span>
+                <span style="{{ skelSquare }}"></span>
+                <span style="{{ skelSquare }}"></span>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isFailed }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 30px;">
+            <div style="width: 100%; max-width: 620px; display: flex; flex-direction: column; gap: 15px;">
+              <div style="border: 1px solid var(--danger-border); border-radius: var(--radius); background: var(--danger-bg); overflow: hidden;">
+                <div style="display: flex; align-items: center; gap: 11px; padding: 13px 15px;">
+                  <span style="{{ badDot }}"></span>
+                  <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--danger-fg);">Could not read this session</span>
+                  <span style="flex: 1;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim);">3 attempts</span>
+                </div>
+                <div style="padding: 0 15px 13px; font-size: 13px; color: var(--danger-fg); line-height: 1.6;">The daemon accepted the connection and then stopped answering mid-read. Domovoi will not show a partial thread, because a partial thread reads like a finished one.</div>
+              </div>
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+                <div style="padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--card); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT IT TRIED</div>
+                <div style="padding: 13px 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.8; display: flex; flex-direction: column;">
+                  <sc-for list="{{ failLog }}" as="l" hint-placeholder-count="5">
+                    <div style="{{ l.style }}">{{ l.text }}</div>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600;">What is still true</div>
+                <sc-for list="{{ failFacts }}" as="f" hint-placeholder-count="3">
+                  <div style="{{ f.rowStyle }}">
+                    <span style="{{ f.dot }}"></span>
+                    <span style="font-size: 12.5px; color: var(--strong); line-height: 1.55;">{{ f.text }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display: flex; align-items: center; gap: 9px;">
+                <div style="{{ primaryBtn }}">Try again</div>
+                <div style="{{ quietBtn }}">Open the machine</div>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">nothing was written, nothing was lost</span>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isNoResults }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 13px 20px; border-bottom: 1px solid var(--border);">
+              <span style="display: inline-flex; color: var(--faint);">{{ iSearch }}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--foreground);">idempotency</span>
+              <span style="display: inline-block; width: 1.5px; height: 15px; background: var(--primary);"></span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">searched 3 machines</span>
+            </div>
+            <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 30px;">
+              <div style="width: 100%; max-width: 520px; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center;">
+                <span style="{{ bigIconStyle }}">{{ iSearchBig }}</span>
+                <div style="font-size: 17px; font-weight: 600; letter-spacing: -.01em;">Nothing matched on the two machines that answered</div>
+                <div style="font-size: 13px; color: var(--muted-foreground); line-height: 1.6;">wsl-ubuntu-24 did not answer, so its sessions were not searched. This is not the same as having no results, and Domovoi will not round it down to one.</div>
+                <div style="width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; text-align: left;">
+                  <sc-for list="{{ searchScope }}" as="s" hint-placeholder-count="3">
+                    <div style="{{ s.rowStyle }}">
+                      <span style="{{ s.dot }}"></span>
+                      <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ s.name }}</span>
+                      <span style="{{ s.stateStyle }}">{{ s.state }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="{{ quietBtn }}">Search only what answered</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isNewThread }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 13px 20px; border-bottom: 1px solid var(--border);">
+              <span style="{{ okDot }}"></span>
+              <span style="font-size: 13px; color: var(--strong);">Worktree ready</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">wt-search-index off main at 8f3c1de</span>
+            </div>
+            <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 30px;">
+              <div style="width: 100%; max-width: 620px; display: flex; flex-direction: column; gap: 15px;">
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  <div style="font-size: 19px; font-weight: 600; letter-spacing: -.015em;">Nothing has run yet</div>
+                  <div style="font-size: 13.5px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">The session exists, the worktree is cut, and the agent has not been given a turn. Your first message is what starts it.</div>
+                </div>
+                <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                  <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600;">What it will do first</div>
+                  <sc-for list="{{ newThreadRows }}" as="r" hint-placeholder-count="3">
+                    <div style="{{ r.rowStyle }}">
+                      <span style="{{ r.dot }}"></span>
+                      <span style="font-size: 12.5px; color: var(--strong); line-height: 1.55;">{{ r.text }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                  <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">OR START FROM SOMETHING IT ALREADY KNOWS</div>
+                  <sc-for list="{{ starters }}" as="s" hint-placeholder-count="3">
+                    <div style="{{ s.rowStyle }}">
+                      <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--strong);">{{ s.text }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ s.meta }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+            <div style="flex: 0 0 auto; padding: 14px 20px 18px; display: flex; justify-content: center;">
+              <div style="width: 100%; max-width: 720px; display: flex; align-items: center; gap: 11px; padding: 12px 14px; border: 1px solid var(--primary); border-radius: var(--radius); background: var(--card);">
+                <span style="flex: 1; min-width: 0; font-size: 13.5px; color: var(--faint);">Say what you want done in acme-api</span>
+                <span style="display: inline-block; width: 1.5px; height: 16px; background: var(--primary);"></span>
+                <span style="{{ sendStyle }}">{{ iSend }}</span>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, screen: "firstRun" };
+
+  componentDidMount() {
+    if (window.lucide && window.lucide.icons) return;
+    let tries = 0;
+    this._t = setInterval(() => {
+      tries += 1;
+      if (window.lucide && window.lucide.icons) { clearInterval(this._t); this.forceUpdate(); }
+      else if (tries > 60) clearInterval(this._t);
+    }, 100);
+  }
+
+  componentWillUnmount() { if (this._t) clearInterval(this._t); }
+
+  icon(name, size) {
+    const set = window.lucide && window.lucide.icons;
+    const entry = set ? set[name] : null;
+    const nodes = entry && Array.isArray(entry[2]) ? entry[2] : entry;
+    const px = size || 16;
+    if (!nodes || !nodes.length) return React.createElement("span", { style: { display: "inline-block", width: px, height: px, flex: "0 0 auto" } });
+    return React.createElement("svg", {
+      width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+      style: { display: "block", flex: "0 0 auto" }
+    }, nodes.map((n, i) => {
+      const attrs = {};
+      Object.keys(n[1] || {}).forEach(k => { attrs[k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())] = n[1][k]; });
+      attrs.key = i;
+      return React.createElement(n[0], attrs);
+    }));
+  }
+
+  dot(color, size) {
+    const n = size || 6;
+    return "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  skel(w, h, r) {
+    return "display: block; flex: 0 0 auto; width: " + w + "; height: " + h + "px; border-radius: " + (r || 4) +
+      "px; background: linear-gradient(90deg, var(--skel) 25%, var(--skel-hi) 37%, var(--skel) 63%); background-size: 200% 100%; animation: dvShimmer 1.6s linear infinite;";
+  }
+
+  go(screen) { return () => this.setState({ screen: screen }); }
+
+  renderVals() {
+    const st = this.state;
+    const sc = st.screen;
+    const theme = st.theme ?? this.props.theme ?? "dark";
+
+    const stepDefs = [
+      { id: "firstRun", num: "1", label: "No sessions yet", note: "The daemon answers and the list is empty. Empty is a state with a cause, so the screen names the cause." },
+      { id: "loading", num: "2", label: "Reading the thread", note: "Skeletons in the shape of what is coming, and a line saying which machine is being read." },
+      { id: "failed", num: "3", label: "Failed to load", note: "A partial thread reads like a finished one, so Domovoi refuses to show one." },
+      { id: "noResults", num: "4", label: "Nothing matched", note: "Two machines answered and one did not. No results and not searched are different answers." },
+      { id: "newThread", num: "5", label: "Nothing has run yet", note: "The worktree is cut and no turn has been taken. The first message is what starts it." }
+    ];
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      iMoon: this.icon("Moon", 16),
+      iSun: this.icon("Sun", 16),
+      iInbox: this.icon("Inbox", 22),
+      iSparkle: this.icon("SquarePlus", 26),
+      iSearch: this.icon("Search", 15),
+      iSearchBig: this.icon("SearchX", 26),
+      iSend: this.icon("ArrowUp", 16),
+      iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+      markStyle: "display: block; width: 22px; height: 22px; flex: 0 0 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      bigIconStyle: "display: flex; align-items: center; justify-content: center; width: 58px; height: 58px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);",
+      railEmptyIcon: "display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 999px; background: var(--accent); color: var(--faint);",
+      primaryBtn: "flex: 0 0 auto; padding: 9px 17px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;",
+      quietBtn: "flex: 0 0 auto; padding: 9px 17px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); color: var(--strong); font-size: 12.5px; cursor: pointer;",
+      sendStyle: "flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; background: var(--muted); color: var(--faint);",
+      okDot: this.dot("var(--success)", 7),
+      badDot: this.dot("var(--destructive)", 8),
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label,
+        numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        go: this.go(s.id),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
+          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+      chromeLabel: (stepDefs.find(s => s.id === sc) || stepDefs[0]).label,
+      chromePill: sc === "failed" ? "read failed" : sc === "loading" ? "connecting" : "mac-mini-m4 · loopback",
+      chromePillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--" +
+        (sc === "failed" ? "danger-bg" : "accent") + "); color: var(--" + (sc === "failed" ? "danger-fg" : "muted-foreground") + ");",
+
+      isFirstRun: sc === "firstRun",
+      isLoading: sc === "loading",
+      isFailed: sc === "failed",
+      isNoResults: sc === "noResults",
+      isNewThread: sc === "newThread",
+
+      railSkeleton: sc === "loading",
+      railEmpty: sc === "firstRun" || sc === "noResults",
+      railList: sc === "failed" || sc === "newThread",
+      railCount: sc === "loading" ? "" : sc === "firstRun" ? "0" : sc === "noResults" ? "0 matching" : "3",
+      railFooter: sc === "loading" ? "reading 3 machines" : "3 machines · 1 unreachable",
+      railEmptyTitle: sc === "noResults" ? "No session matched" : "Nothing here yet",
+      railEmptyBody: sc === "noResults"
+        ? "Clear the search to see all three."
+        : "Sessions you start on this machine will appear here, newest first.",
+      skelDot: this.skel("8px", 8, 999),
+      skelRows: [
+        { w1: "82%", w2: "48%" }, { w1: "94%", w2: "56%" }, { w1: "70%", w2: "40%" },
+        { w1: "88%", w2: "52%" }, { w1: "76%", w2: "44%" }
+      ].map(r => ({
+        line1: this.skel(r.w1, 9),
+        line2: this.skel(r.w2, 8)
+      })),
+      skelTitle: this.skel("240px", 13),
+      skelPill: this.skel("300px", 13),
+      skelSquare: this.skel("26px", 26, 999),
+      skelTurns: [
+        { align: "right", who: "56px", bubble: "58%", h: 42 },
+        { align: "left", who: "78px", bubble: "82%", h: 66 },
+        { align: "left", who: "78px", bubble: "74%", h: 52 },
+        { align: "right", who: "56px", bubble: "46%", h: 34 }
+      ].map(t => ({
+        wrapStyle: "display: flex; flex-direction: column; gap: 7px; padding: 0 20px;" + (t.align === "right" ? " align-items: flex-end;" : ""),
+        who: this.skel(t.who, 9),
+        bubble: this.skel(t.bubble, t.h, 14)
+      })),
+
+      readyRows: [
+        { name: "acme-api", state: "clean · main at 8f3c1de", k: "success" },
+        { name: "acme-web", state: "3 uncommitted files", k: "warning" },
+        { name: "claude-code, codex", state: "both authenticated", k: "success" }
+      ].map((r, i) => ({
+        name: r.name, state: r.state,
+        dot: this.dot("var(--" + r.k + ")", 6),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      failLog: [
+        { text: "14:12:03 connect mac-mini-m4 via loopback", k: "dim" },
+        { text: "14:12:03 session.read wt-billing-idem", k: "dim" },
+        { text: "14:12:09 no frame for 6s, retrying", k: "warn" },
+        { text: "14:12:16 attempt 2 timed out", k: "warn" },
+        { text: "14:12:24 attempt 3 timed out, giving up", k: "fail" },
+        { text: "14:12:24 nothing rendered, no partial thread shown", k: "pass" }
+      ].map(l => ({
+        text: l.text,
+        style: "color: " + (l.k === "pass" ? "var(--success)" : l.k === "fail" ? "var(--destructive)" : l.k === "warn" ? "var(--warning)" : "var(--muted-foreground)") + ";"
+      })),
+      failFacts: [
+        { text: "The session is still on the machine. A client that cannot read it has not changed it.", k: "success" },
+        { text: "If a turn was running it is still running. The daemon does not need this window.", k: "success" },
+        { text: "Any gate raised while you were away is still waiting, and will be here when the read succeeds.", k: "info" }
+      ].map((f, i) => ({
+        text: f.text,
+        dot: this.dot("var(--" + f.k + ")", 6) + " margin-top: 6px;",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      railSessions: [
+        { title: "Migrate billing webhooks to the new idempotency table", meta: "mac-mini-m4 · 4m", k: "warning", active: true },
+        { title: "Backfill the customer search index", meta: "hetzner-cx42 · step 2 of 5", k: "success" },
+        { title: "Upgrade the Postgres client to 16", meta: "wsl-ubuntu-24 · unreachable", k: "faint" }
+      ].map(s => ({
+        title: s.title, meta: s.meta,
+        dot: this.dot("var(--" + s.k + ")", 6) + " margin-top: 5px;",
+        rowStyle: "display: flex; gap: 9px; padding: 8px 9px; border-radius: calc(var(--radius) - 3px);" +
+          (s.active ? " background: var(--accent);" : "") + (s.k === "faint" ? " opacity: .55;" : "")
+      })),
+
+      searchScope: [
+        { name: "mac-mini-m4", state: "12 sessions searched", k: "success" },
+        { name: "hetzner-cx42", state: "7 sessions searched", k: "success" },
+        { name: "wsl-ubuntu-24", state: "not searched, no answer", k: "destructive" }
+      ].map((s, i) => ({
+        name: s.name, state: s.state,
+        dot: this.dot("var(--" + s.k + ")", 6),
+        stateStyle: "font-size: 11.5px; color: var(--" + (s.k === "destructive" ? "destructive" : "faint") + ");",
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--card);" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      newThreadRows: [
+        { text: "Read the repository. It cannot write until a gate or a rule permits it.", k: "success" },
+        { text: "Write a plan you can read, edit and reject before any step runs.", k: "success" },
+        { text: "Take a checkpoint before the first approved write, so every step is revertible.", k: "info" }
+      ].map((r, i) => ({
+        text: r.text,
+        dot: this.dot("var(--" + r.k + ")", 6) + " margin-top: 6px;",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      starters: [
+        { text: "Continue the search index backfill from its last checkpoint", meta: "hetzner-cx42" },
+        { text: "Review the open pull requests by risk", meta: "pr-triage skill" },
+        { text: "Explain what changed in acme-api this week", meta: "read only" }
+      ].map((s, i) => ({
+        text: s.text, meta: s.meta,
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); cursor: pointer;" +
+          (i ? " margin-top: 7px;" : "")
+      }))
+    };
+  }
+}
+
+</script>
+</body>
+</html>
