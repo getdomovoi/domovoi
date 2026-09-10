@@ -9,6 +9,7 @@ import {
   MessageSquarePlusIcon,
   PanelTopIcon,
   RefreshCwIcon,
+  RotateCcwIcon,
   ServerIcon,
   MessagesSquareIcon,
   SettingsIcon,
@@ -147,6 +148,7 @@ export function buildWorkspaceCommands({
   selectMachine,
   openSkill,
   startSessionOn,
+  openCheckpoints,
   previewTransferTo,
   currentMachineId,
   transferEntries,
@@ -178,6 +180,9 @@ export function buildWorkspaceCommands({
   transferEntries?: readonly FleetEntry[] | undefined
   // Cmd+Enter on a machine starts a session there. Nothing to reconcile.
   startSessionOn?: ((machineId: string) => void) | undefined
+  // Checkpoints is a view of the History pane, not a pane of its own, so the
+  // command opens History already narrowed to that one category.
+  openCheckpoints?: (() => void) | undefined
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
@@ -194,6 +199,9 @@ export function buildWorkspaceCommands({
     { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },
     { id: "surface-fleet", label: "Fleet", section: "Navigate", keywords: ["machines", "devices", "pairing"], icon: ServerIcon, run: () => setSurface("fleet") },
     { id: "surface-audit", label: "Audit log", section: "Navigate", keywords: ["history", "receipts"], icon: HistoryIcon, run: () => setSurface("audit") },
+    ...(openCheckpoints ? [
+      { id: "open-checkpoints", label: "Checkpoints", section: "Navigate" as const, keywords: ["restore", "rewind", "worktree", "history"], icon: RotateCcwIcon, run: openCheckpoints },
+    ] : []),
     ...(connected ? [] : [{ id: "reconnect", label: "Reconnect daemon", section: "Connection" as const, keywords: ["retry", "machine"], icon: RefreshCwIcon, run: reconnect }]),
     // The launcher opens the objects the workspace already holds: a session, a
     // paired machine, a discovered skill. Nothing here fetches anything.

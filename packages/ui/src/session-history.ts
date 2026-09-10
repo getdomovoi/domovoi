@@ -86,6 +86,14 @@ export function resetSessionHistoryWindow(
   }
 }
 
+// A deep link into the pane names one category. It is pressed more than once,
+// and the second press carries the same category as the first, so the category
+// alone cannot say that a new request happened. The id is what separates them.
+export type SessionHistoryFocus = {
+  category: SessionHistoryCategory
+  requestId: number
+}
+
 export const sessionHistoryCategories: ReadonlyArray<{
   value: SessionHistoryCategory
   label: string

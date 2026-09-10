@@ -164,3 +164,24 @@ describe("launcher entries", () => {
     expect(commands.filter((command) => command.section === "Skills")).toHaveLength(1)
   })
 })
+
+// Checkpoints is a view of History rather than a pane beside it, so the only
+// thing that names it is a command that opens History already filtered. Without
+// the command there is no way to reach that view except by hand.
+describe("checkpoints deep link", () => {
+  it("offers no checkpoints command when the shell supplies no opener", () => {
+    expect(buildWorkspaceCommands(base).some((command) => command.id === "open-checkpoints"))
+      .toBe(false)
+  })
+
+  it("opens checkpoints from the Navigate section", () => {
+    const openCheckpoints = vi.fn()
+    const commands = buildWorkspaceCommands({ ...base, openCheckpoints })
+    const command = commands.find((entry) => entry.id === "open-checkpoints")
+
+    expect(command?.label).toBe("Checkpoints")
+    expect(command?.section).toBe("Navigate")
+    command?.run()
+    expect(openCheckpoints).toHaveBeenCalledTimes(1)
+  })
+})
