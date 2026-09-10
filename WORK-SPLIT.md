@@ -347,19 +347,31 @@ building them:
     desktop already models the three groups the phone design draws, and nothing renders them.
     Belongs to `CC7` rather than Phone v2.
 - [x] **Web v2** — diffed 2026-09-10 (02b6c7d). Two of six steps built, one partial, three with
-      nothing: picking a machine, carrying on without the terminal, and Design review. 6-8 days,
-      and machine selection is Phase 2 work wearing a Phase 3 label — a browser cannot reach a
-      second machine without the relay or a tailnet route.
+      nothing: picking a machine, carrying on without the terminal, and Design review. 6-8 days.
+      The machine picker stays in `S3.2` and is **marked blocked on Phase 2** rather than moved:
+      a browser cannot reach a second machine without the relay or a tailnet route, so part of
+      Web v2 cannot land before the relay and Web is not a fully parallel Phase 3 surface.
 - [x] **Onboarding** — diffed 2026-09-10 (02b6c7d). Two of five steps built. 4-5 days for the
-      client half. Two gaps: the design offers "Install it for me" where
-      `providerFirstRunRecovery` says "Domovoi will not run an installer for you", which is a
-      decision rather than an estimate; and "Sign in to Domovoi Cloud" needs an account service
-      that does not exist, so it is `S0.1`/`S5.1`, not client work.
+      client half. One gap and one settled contradiction.
+  - **Settled 2026-09-10 by fetzy: the daemon is right and the design is wrong.** "Install it for
+    me" is Domovoi running arbitrary third-party code on a person's machine at first run — before
+    any trust relationship exists, before the gate machinery that would refuse it, and before an
+    audit log they have reason to believe. It contradicts the product's central claim at the exact
+    moment someone is deciding whether to believe it. `providerFirstRunRecovery` keeps its copy:
+    show the command, say what it does, let the person run it. **The live design needs this
+    change**; `design/` is signed and is not edited here. Carry it with the export README
+    correction on the next design touch.
+  - [ ] "Sign in to Domovoi Cloud" needs an account service that does not exist. `S0.1`/`S5.1`,
+        not client work.
 - [x] **Skills** — diffed 2026-09-10 (02b6c7d). Nearly done: install preview, scope, trust,
       `SKILL.md` view, fleet inventory comparison and per-turn selection all real. 3-4 days,
-      almost all of it the one missing surface — "read the diff and re-review". A changed skill
-      drops to untrusted and nothing shows what changed, so re-approving approves a digest
-      rather than a change.
+      almost all of it the one missing surface — "read the diff and re-review".
+  - [ ] **Blocking, not a gap. Ruled 2026-09-10 by fetzy.** A changed skill drops to untrusted and
+        re-approving shows nothing, so the person approves a digest rather than a change. That is
+        a consent flow that cannot state what it is asking for — the same shape as a check row
+        reading pass when nothing ran. It is load-bearing for the whole skills trust story rather
+        than polish on a 3-4 day surface, and it gates `S3.x` Skills rather than sitting inside
+        it.
 
 **All four diffs are done. `CC5`'s estimate half is complete: 26-32 days for four of Phase 3's
 nine `S3.x` items, with Tablet, Cloud, Team, cross-cutting states and accessibility uncounted.
