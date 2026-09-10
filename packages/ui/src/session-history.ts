@@ -1,3 +1,4 @@
+import type { StatusMeaning } from "./status-dot"
 import type {
   RpcParams,
   SessionHistoryCategory,
@@ -94,16 +95,12 @@ export type SessionHistoryFocus = {
   requestId: number
 }
 
-// The design draws five of these and the daemon stamps seven, so the drawn ones
-// lead and carry the design's words. A turn is the protocol's own unit.
+// The drawn filters lead and carry the design's words. A turn is the protocol's
+// own unit.
 //
-// Transfers is not among them yet, and this category is not it. `handoffs` holds
-// provider handoffs, written at apps/daemon/src/server.ts:5812 as "Handed off
-// codex / gpt-5.3-codex to claude-code / sonnet-4.6." A machine transfer has a
-// preflight, a holdback and a conflict path; a provider handoff happens at a
-// turn boundary. Naming one after the other would make the filter lie in both
-// directions, so Handoffs keeps its own word and Transfers waits for a category
-// the daemon stamps when a session moves.
+// Handoffs holds provider switches at a turn boundary. Machine transfers have
+// their own protocol category, with preflight and holdback facts. Keep the
+// provider filter's name distinct when the Transfers filter is added here.
 //
 // The three the design does not draw stay: dropping the filters would leave
 // those entries recorded and unreachable.
@@ -115,7 +112,6 @@ export const sessionHistoryCategories: ReadonlyArray<{
   { value: "approvals", label: "Approvals" },
   { value: "checkpoints", label: "Checkpoints" },
   { value: "transfers", label: "Transfers" },
-  { value: "handoffs", label: "Handoffs" },
   { value: "tools", label: "Tools" },
   { value: "annotations", label: "Annotations" },
   { value: "tests", label: "Tests" },
@@ -149,36 +145,100 @@ export function historyWindowedAfterMerge(
   return uniqueItemCount > maximumRetainedSessionHistoryItems
 }
 
+// The row's title is the prose of what happened, and its meta is the machine
+// line beneath. A message therefore leads with what it said rather than with
+// which side said it, and a checkpoint leads with the reason it was taken: the
+// daemon writes the short sha into every checkpoint label, and the commit is
+// the meta's job, so the title drops it rather than saying it twice.
 export function sessionHistoryEntryTitle(entry: SessionHistoryEntry): string {
-  if (entry.category === "messages") return entry.role === "system" ? "System note" : entry.role
+  if (entry.category === "messages") {
+    const [first = ""] = entry.body.split("\n")
+    return first.trim() || (entry.role === "system" ? "System note" : entry.role)
+  }
   if (entry.category === "tools" || entry.category === "tests") return entry.title
   if (entry.category === "approvals") return `${entry.operation}: ${entry.decision}`
-  // handoffs holds provider handoffs; transfers holds machine transfers. They
-  // are different events and each names itself, rather than sharing a branch
-  // because both happen to carry a body.
   if (entry.category === "handoffs" || entry.category === "transfers") return entry.body
-  if (entry.category === "checkpoints") return `Checkpoint: ${entry.label}`
-  // Named rather than defaulted. A default here would have absorbed transfers
-  // silently instead of failing to compile, and would absorb the next category
-  // the protocol adds the same way.
-  // No trailing default. With annotations named, the compiler reports every
-  // category as handled, and a category added to the protocol later fails to
-  // compile here rather than rendering its body as a title.
+  if (entry.category === "checkpoints") return `Checkpoint: ${withoutCommitPrefix(entry.label, entry.commit)}`
   return entry.action === "created" ? "Annotation created" : "Annotation reply"
 }
 
-export function sessionHistoryEntryDetail(entry: SessionHistoryEntry): string | undefined {
-  if (entry.category === "messages") return entry.detail ?? entry.body
+function withoutCommitPrefix(label: string, commit: string | undefined): string {
+  if (!commit) return label
+  const prefix = `${commit.slice(0, 8)} · `
+  return label.startsWith(prefix) ? label.slice(prefix.length) : label
+}
+
+// The content a row produced is not the row. A forty-line tool output inside a
+// history row stops the list scanning as a list, so the body lives on the row's
+// expanded state and the row keeps its one line.
+export function sessionHistoryEntryBody(entry: SessionHistoryEntry): string | undefined {
+  if (entry.category === "messages") return entry.body
   if (entry.category === "tools" || entry.category === "tests") return entry.output
+  return undefined
+}
+
+// The row draws a dot, and StatusDot never lets colour carry the meaning alone.
+// Every category already records its own outcome, so nothing here is invented:
+// a tool or a test carries `status`, an approval carries `decision`, and a row
+// that has no outcome of its own says so rather than borrowing one.
+export function sessionHistoryEntryOutcome(
+  entry: SessionHistoryEntry,
+): { meaning: StatusMeaning; label: string } {
+  if (entry.category === "tools" || entry.category === "tests") {
+    const meaning = entry.status === "completed"
+      ? "online"
+      : entry.status === "failed"
+        ? "offline"
+        : entry.status === "declined"
+          ? "waiting"
+          : "idle"
+    return { meaning, label: entry.status }
+  }
   if (entry.category === "approvals") {
-    return `Checkpoint ${entry.checkpoint} · ${entry.client}${entry.connectionId ? ` · connection ${entry.connectionId}` : entry.clientId ? ` · declared client ${entry.clientId}` : ""}${entry.explanation ? ` · ${entry.explanation}` : ""}`
+    const denied = entry.decision === "deny" || entry.decision === "deny-explain"
+    return { meaning: denied ? "offline" : "online", label: entry.decision }
+  }
+  return { meaning: "idle", label: "recorded" }
+}
+
+export function sessionHistoryEntryDetail(
+  entry: SessionHistoryEntry,
+  options: { worktreeName?: string | undefined } = {},
+): string | undefined {
+  // Three fields the design draws that nothing here can fill yet. None of them
+  // is satisfied by what this function returns; each is waiting on the daemon.
+  //
+  // 1. `turn 9 · sonnet-4.6` needs a durable turn record. A message is not a
+  //    turn, so the number cannot come from counting rows.
+  // 2. `3 tools · 12.4k tokens` needs accounting that is currently wrong: two
+  //    adapters forward only selected tool types, and acp.ts gives context
+  //    occupancy and total tokens the same value. A number that looks auditable
+  //    and is not is worse than no number.
+  // 3. Execution duration for an approved operation. `decided in` below is not
+  //    that field. Decision latency says how long the agent sat blocked;
+  //    execution duration says what the approval cost. Both belong; only the
+  //    first can be measured today.
+  if (entry.category === "messages") return entry.role
+  if (entry.category === "tools" || entry.category === "tests") return `${entry.tool} · ${entry.status}`
+  if (entry.category === "approvals") {
+    // decisionDurationMs measures how long the decision took, not how long the
+    // approved operation ran. Those are different quantities, so the copy names
+    // this one. The other is unfilled field 3 above.
+    const decidedIn = entry.decisionDurationMs === undefined
+      ? ""
+      : ` · decided in ${Math.round(entry.decisionDurationMs / 1_000)}s`
+    return `decided on ${entry.client}${entry.clientId ? ` · device ${entry.clientId}` : entry.connectionId ? ` · connection ${entry.connectionId}` : ""}${decidedIn}${entry.explanation ? ` · ${entry.explanation}` : ""}`
   }
   if (entry.category === "handoffs") return entry.detail
   if (entry.category === "transfers") {
     if (entry.detail !== undefined) return entry.detail
-    const { sourceMachineId, targetMachineId, checkpointCommit, preflight } = entry.transfer
-    return `${sourceMachineId} to ${targetMachineId} · checkpoint ${checkpointCommit} · preflight ${preflight}`
+    const transfer = entry.transfer
+    const heldBack = transfer.coverage?.excluded.find(({ kind }) => kind === "ignored-files")?.count
+    return `${transfer.sourceMachineId} to ${transfer.targetMachineId} · checkpoint ${transfer.checkpointCommit} · preflight ${transfer.preflight}${heldBack === undefined ? "" : ` · ${heldBack} ignored ${heldBack === 1 ? "file" : "files"} held back`}`
   }
-  if (entry.category === "checkpoints") return entry.commit
+  if (entry.category === "checkpoints") {
+    if (!entry.commit) return options.worktreeName ? `worktree ${options.worktreeName}` : undefined
+    return `commit ${entry.commit.slice(0, 8)}${options.worktreeName ? ` · worktree ${options.worktreeName}` : ""}`
+  }
   return entry.body
 }

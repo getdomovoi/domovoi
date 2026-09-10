@@ -432,6 +432,7 @@ describe("HistoryPanel", () => {
       "Turns",
       "Approvals",
       "Checkpoints",
+      "Transfers",
       "Tools",
       "Annotations",
       "Tests",
