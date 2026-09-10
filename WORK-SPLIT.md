@@ -326,6 +326,17 @@ building them:
 - [ ] **Phone v2** — `apps/mobile/src/screens/` already has nine: approval, artifact,
       deny-explain, fleet, review, session, sessions, settings, unpaired. Design has 19
       frames. Diff the sets before writing anything.
+  - [x] The diff is done, read-only, 2026-09-10 (89cabfd). Eight frames built, eight partial,
+        three with nothing: 09 pairing by camera, 13 and 14 attachments, 19 pinned plan sheet.
+        Estimate for the rest of Phone v2 is 13-15 days, which is what `SHIP-PLAN.md`'s `S3.3`
+        line costs. Full table in `~/.agents/plans/2026-09-10-domovoi-cc5-phone-v2-diff.md`.
+  - [ ] Two frames need Codex first and are not yet raised: 04 wants a terminal-claim fact the
+        protocol does not carry, and 18 wants annotation coordinates for authoring, where only
+        the read side exists.
+  - Method note: `camera|BarCode|qrcode|scanner` and `attachment|Picker|photo|image` each match
+    exactly one line in `apps/mobile/src`, and both matches are comments about work not done.
+    A presence grep answered yes where the code says no, so every row above was read before it
+    was classified.
 - [ ] **Web v2** — `apps/web/src/` exists with browser platform, client kind, credential,
       daemon pairing. Design adds the six-step flow including Design review.
 - [ ] **Onboarding** — `desktop-first-run-persistence.ts` plus first-run and recovery tests.
