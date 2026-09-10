@@ -150,6 +150,10 @@
       "bytes": 44099,
       "sha256": "607565c1db96581a166f551d66d12b48840a00ecc4401d72b5a0f339aa181791"
     },
+    "design/design_handoff_domovoi_v2/designs/README.md": {
+      "bytes": 1778,
+      "sha256": "f5e7cff920f1c46128d0a06804d4b80a4c387c55278d27e3513f4032621562eb"
+    },
     "design/design_handoff_domovoi_v2/designs/support.js": {
       "bytes": 69150,
       "sha256": "8fe7df74405f3c55f49b7249c74ea1397e65d07dea2b1bd3b4a489bec2e28cbe"
