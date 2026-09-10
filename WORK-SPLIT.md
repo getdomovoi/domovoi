@@ -190,15 +190,33 @@ so the first landing does not read as the unblock.
 ## Codex
 
 ### CX1 · Usage accounting, dedup and coverage — 2-4 d
-- [ ] Normalize adapter token reporting. Two undercount: `claude.ts:487`, `opencode.ts:506`.
-- [ ] `acp.ts:296` gives `totalTokens` and `contextTokens` the same `update.used` value.
-- [ ] Capture the model at dispatch. `server.ts:6903` writes usage against
+Ticked here under rule 7: Codex did the work, this file is Claude Code's, so the citation
+carries Codex's sha rather than a second agent's edit.
+- [x] Normalize adapter token reporting. One of the two was already fixed when this line was
+      written: `claude.ts` by 33b2737 on 2026-09-07. OpenCode's `tokens.cache.read` and
+      `.write` now fold into `inputTokens` in `usage.ts` (1dd6e97).
+- [x] `acp.ts:296` gives `totalTokens` and `contextTokens` the same `update.used` value.
+      Fixed by deleting the total rather than guessing one; the record says
+      `tokens: "unavailable"` (1dd6e97).
+- [x] Capture the model at dispatch. `server.ts:6903` writes usage against
       `session.runtime.model`, and `server.ts:5835` can change it on a same-provider update,
-      so the record must keep requested model distinct from provider-reported.
-- [ ] Persist accounting plus its dedup and coverage state across restart and transfer.
-- [ ] Five hazards, all in scope: duplicate events, late events, failures, restart, transfer.
-- [ ] Never infer a turn link from a timestamp or row position.
+      so the record must keep requested model distinct from provider-reported (1dd6e97).
+- [x] Persist accounting plus its dedup and coverage state across restart and transfer
+      (1dd6e97).
+- [x] Five hazards, all in scope: duplicate events, late events, failures, restart, transfer
+      (1dd6e97).
+- [x] Never infer a turn link from a timestamp or row position. OpenCode's turn id now comes
+      from `info.parentID` rather than the active turn, so a late message lands on the turn
+      that produced it (1dd6e97).
+- [x] Not in the original list, found by Codex reproducing an inference rather than
+      inheriting it: `opencode.ts` called `normalizeProviderUsage` unguarded where
+      `claude.ts` wrapped it, so a cache read above the input count threw out of `#receive`.
+      It now emits a record marked `invalid` instead (1dd6e97).
 - Out of scope: new turn records, ordinals, message associations. Those are `CX2`.
+- What Claude Code verified directly: the four defects are addressed in the diff, and
+  `usage.test.ts`, `acp.test.ts` and `opencode.test.ts` pass, 59 tests. The accounting
+  persistence across restart and transfer rests on Codex's own full-suite run, not on a
+  check run here.
 
 ### CX2 · Turn records, ordinals, message associations — 2-3 d
 - [ ] Durable per-turn record with an ordinal.
