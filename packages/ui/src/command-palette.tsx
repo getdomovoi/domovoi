@@ -281,6 +281,7 @@ export function CommandPalette({
   platform,
   commands,
   onOpenChange,
+  onOpenFirstRun,
   restoreFocusTo,
 }: {
   open: boolean
@@ -288,6 +289,9 @@ export function CommandPalette({
   commands: readonly WorkspaceCommand[]
   onOpenChange: (open: boolean) => void
   restoreFocusTo: { focus(): void } | null
+  // Setting a machine up is not a command: it is the thing you reach for when
+  // no command here can help yet.
+  onOpenFirstRun?: (() => void) | undefined
 }) {
   const [query, setQuery] = useState("")
   // cmdk reports the highlighted row by its value, and the value is the command
@@ -413,11 +417,26 @@ export function CommandPalette({
             ) : null
           })}
         </CommandList>
-        <p data-testid="palette-hints" className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-muted-foreground">
+        <div className="flex items-center gap-3 border-t px-3 py-2">
+        <p data-testid="palette-hints" className="m-0 flex-1 font-machine text-mono-xs text-muted-foreground">
           {choosing
             ? `↑↓ navigate · Enter move ${choosing.label} here · Escape back`
             : `↑↓ navigate · Enter run${elsewhere ? ` · ${platform === "darwin" ? "⌘" : "Ctrl"}+Enter open elsewhere` : ""} · Escape close · ${platform === "darwin" ? "⌘K" : "Ctrl+K"} toggle`}
         </p>
+        {onOpenFirstRun && !choosing ? (
+          <button
+            type="button"
+            className="shrink-0 text-[11px] text-primary"
+            onClick={() => {
+              shouldRestoreFocus.current = false
+              onOpenChange(false)
+              onOpenFirstRun()
+            }}
+          >
+            First-run setup
+          </button>
+        ) : null}
+        </div>
       </Command>
     </CommandDialog>
   )

@@ -127,3 +127,41 @@ it("steps back out of the choice before it closes the launcher", async () => {
   expect(screen.getByRole("option", { name: /Migrate billing/ })).toBeTruthy()
   expect(hints()).toContain("Escape close")
 })
+
+// Setting a machine up is not a command. It sits where you look when no command
+// in the list can help yet.
+it("offers first-run setup, and hides it while a machine is being chosen", async () => {
+  const user = userEvent.setup()
+  const onOpenFirstRun = vi.fn()
+  function Harness() {
+    const [open, setOpen] = useState(true)
+    return (
+      <CommandPalette
+        open={open}
+        platform="darwin"
+        onOpenFirstRun={onOpenFirstRun}
+        commands={[{
+          id: "session-1",
+          label: "Migrate billing",
+          section: "Sessions",
+          keywords: [],
+          kind: "SESSION",
+          run: vi.fn(),
+          elsewhereTargets: [
+            { id: "move-1-to-b", label: "thinkpad", section: "Machines", keywords: [], kind: "MACHINE", run: vi.fn() },
+          ],
+        }]}
+        onOpenChange={setOpen}
+        restoreFocusTo={null}
+      />
+    )
+  }
+  render(<Harness />)
+
+  await user.keyboard("{Meta>}{Enter}{/Meta}")
+  expect(screen.queryByRole("button", { name: "First-run setup" })).toBeNull()
+
+  await user.keyboard("{Escape}")
+  await user.click(screen.getByRole("button", { name: "First-run setup" }))
+  expect(onOpenFirstRun).toHaveBeenCalledOnce()
+})
