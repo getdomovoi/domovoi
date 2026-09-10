@@ -53,7 +53,7 @@ export function TabBar({
               <Icon name={tab.icon} tone={selected ? "primary" : "faint"} />
               {tab.id === "sessions" && waiting > 0 ? (
                 <View className="absolute -right-2 -top-0.5 min-w-[15px] items-center rounded-full bg-warning px-1">
-                  <Text className="font-mono text-[9px] text-warning-foreground">{waiting}</Text>
+                  <Text className="font-mono text-machine text-warning-foreground">{waiting}</Text>
                 </View>
               ) : null}
             </View>

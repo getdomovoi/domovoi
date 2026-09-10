@@ -4,7 +4,7 @@
 // desktop's oklch tokens as the sRGB hex React Native can parse, the radius
 // steps derived from --radius, and one registered font name per weight. Edit
 // the stylesheet and run pnpm mobile:tokens; release:invariants fails on drift.
-const { colors, fontFamily, radius } = require("./src/theme/tokens.generated.js")
+const { colors, fontFamily, fontSize, radius } = require("./src/theme/tokens.generated.js")
 
 // React Native picks a face by its registered name, so each weight is its own
 // family and the weight utilities (font-semibold) are not used.
@@ -19,6 +19,13 @@ module.exports = {
     // The phone follows the desktop's dark theme; it has no light surface yet.
     colors: colors.dark,
     borderRadius: { ...radius, full: "9999px" },
+    // The phone's own ramp, generated from --text-phone-* rather than scaled
+    // from the desktop's. Replacing the default scale rather than extending it
+    // is deliberate: text-xs through text-9xl are Tailwind's web sizes and none
+    // of them is a role this design has, so leaving them reachable is leaving a
+    // second unnamed scale beside the named one. A role whose token carries a
+    // line height arrives as a [size, lineHeight] pair.
+    fontSize,
     fontFamily: faces,
     extend: {
       // The nativewind preset registers sans, serif and mono under

@@ -29,7 +29,7 @@ function Comment({ row }: { row: AnnotationRow }) {
           open ? "bg-primary" : "bg-muted",
         )}>
           <Text className={cn(
-            "font-mono text-[9px]",
+            "font-mono text-machine",
             open ? "text-primary-foreground" : "text-muted-foreground",
           )}>
             {row.pin}
@@ -39,7 +39,7 @@ function Comment({ row }: { row: AnnotationRow }) {
         <Badge label={row.status} tone={open ? "attention" : "neutral"} />
       </View>
       <Text className="mt-[7px] text-[12px] leading-[18px] text-strong">{row.body}</Text>
-      <Text variant="machine" className="mt-2 text-[9px] text-faint">{row.meta}</Text>
+      <Text variant="machine" className="mt-2 text-faint">{row.meta}</Text>
     </Card>
   )
 }
