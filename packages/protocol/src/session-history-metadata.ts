@@ -3,6 +3,18 @@ import { z } from "zod"
 import { commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
+export const checkpointReasonSchema = z.enum([
+  "session-start",
+  "fork",
+  "manual",
+  "before-restore",
+  "before-revert",
+  "before-provider-handoff",
+  "before-provider-recovery",
+  "before-archive",
+])
+export type CheckpointReason = z.infer<typeof checkpointReasonSchema>
+
 // Wall-clock time from the approval request to its resolution. This is consent
 // latency, never the execution duration of the approved operation.
 export const approvalDecisionDurationMsSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)

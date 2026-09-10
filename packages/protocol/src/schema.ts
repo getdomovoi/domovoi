@@ -4,7 +4,7 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validati
 
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
-import { approvalDecisionDurationMsSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
@@ -500,6 +500,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     id: z.string(),
     sessionId: z.string().min(1),
     kind: z.literal("checkpoint"),
+    reason: checkpointReasonSchema.optional(),
     label: z.string(),
     commit: commitShaSchema.optional(),
     createdAt: dateTimeSchema,
