@@ -295,9 +295,15 @@ just collide, it changes meaning over time.
       "from turn 9" lands on identical filesystem state, and `session.fork` does not replay
       conversation either. The affordance would promise a precision it cannot deliver, which is
       the same failure as forking from a turn's nearest preceding checkpoint. `CX2` gave a turn
-      an identity; it did not give it a state. **The design's three `fork: true` turn rows are
-      wrong and the design changes**, not the client. Nothing to raise with Codex:
-      `session.fork` taking a checkpoint id is right as it stands.
+      an identity; it did not give it a state. The design changed rather than the client:
+      Desktop V2's three turn rows are now `fork: false`, the two checkpoint rows keep
+      `fork: true`, and the reasoning sits above `historyRows` in the design file itself so the
+      drawing carries its own why. Re-vendored, `part2-logic` 133,178 to 133,451 bytes. Nothing
+      to raise with Codex: `session.fork` taking a checkpoint id is right as it stands.
+  - Still outstanding upstream: the export `README.md`. Its no-destination-path correction is
+    made, but its byte table still reads `133,178` for `part2-logic`, which the re-export just
+    invalidated. It is the reconstruction contract, so it is not vendored with a number that
+    disagrees with the file beside it.
 
 ### CC2 · StatusDot takes an invisible label
 - [ ] The label stops being visible; it does not stop being required. Meaning derives from
@@ -369,16 +375,17 @@ building them:
       a browser cannot reach a second machine without the relay or a tailnet route, so part of
       Web v2 cannot land before the relay and Web is not a fully parallel Phase 3 surface.
 - [x] **Onboarding** — diffed 2026-09-10 (02b6c7d). Two of five steps built. 4-5 days for the
-      client half. One gap and one settled contradiction.
-  - **Settled 2026-09-10 by fetzy: the daemon is right and the design is wrong.** "Install it for
-    me" is Domovoi running arbitrary third-party code on a person's machine at first run — before
-    any trust relationship exists, before the gate machinery that would refuse it, and before an
-    audit log they have reason to believe. It contradicts the product's central claim at the exact
-    moment someone is deciding whether to believe it. `providerFirstRunRecovery` keeps its copy:
-    show the command, say what it does, let the person run it. **The live design needs this
-    change**; `design/` is signed and is not edited here. Three corrections now ride together on
-    the next design touch: the export README naming no destination path, this installer button,
-    and the Desktop V2 turn rows drawn with `fork: true`.
+      client half. One gap, and one contradiction that turned out not to exist.
+  - **There was never a contradiction here. Do not re-open it.** "Install it for me" is Domovoi
+    installing **its own** daemon — `Download domovoi 0.9.4 → /usr/local/bin/domovoi`, with the
+    manual command and a Copy control beside it. `providerFirstRunRecovery` is about **third-party
+    agents**, and the design says the same thing it does: the aider card at
+    `Domovoi v2 Onboarding.dc.html:645` reads "Not installed here. Domovoi will not install agents
+    for you, it only runs what is already on the machine", its button is `Install guide`, and its
+    detail is `$ pipx install aider-chat` — a command to run yourself, not an action Domovoi
+    takes. Two different installers. The earlier ruling matched on the word "install" and not on
+    the subject, which is the same error as the handoffs/Transfers rename, and it was made from
+    this report rather than from the file.
   - [ ] "Sign in to Domovoi Cloud" needs an account service that does not exist. `S0.1`/`S5.1`,
         not client work.
 - [x] **Skills** — diffed 2026-09-10 (02b6c7d). Nearly done: install preview, scope, trust,
