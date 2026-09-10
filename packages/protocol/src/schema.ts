@@ -4,6 +4,8 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validati
 
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
+import { approvalDecisionDurationMsSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
   annotationStatusSchema,
@@ -21,10 +23,9 @@ import { skillEnablementReviewsSchema } from "./skills.js"
 
 export { clientIdentityIdSchema, clientKindSchema }
 
-// 0.5 claims are pending until the source durably stores and confirms them.
-// Older callers fail before spending a code under immediate-activation rules.
-// Existing active bound credentials remain valid; this needs no new pairing.
-export const protocolVersion = "0.5.0" as const
+// 0.6 adds a transfers history variant that older clients cannot parse. Reject
+// those clients at hello. Existing bound credentials still need no re-pairing.
+export const protocolVersion = "0.6.0" as const
 
 export const connectionIdSchema = z.string().uuid()
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
@@ -190,6 +191,7 @@ export const sessionTransferLifecycleSchema = z.discriminatedUnion("phase", [
       clientId: clientIdentityIdSchema.optional(),
     }).strict(),
     package: sessionTransferPackageSchema,
+    coverage: sessionTransferCoverageSchema.optional(),
   }).strict(),
   z.object({
     phase: z.literal("transferred"),
@@ -516,6 +518,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     kind: z.literal("system"),
     body: z.string(),
     detail: z.string().optional(),
+    transfer: sessionTransferHistorySchema.optional(),
     createdAt: dateTimeSchema,
   }),
   z.object({
@@ -536,6 +539,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     connectionId: connectionIdSchema.optional(),
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
+    decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
     createdAt: dateTimeSchema,
   }),
   z.object({

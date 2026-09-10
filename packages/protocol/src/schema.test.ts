@@ -69,8 +69,8 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
-  it("uses a breaking minor for authenticated fleet enrollment", () => {
-    expect(protocolVersion).toBe("0.5.0")
+  it("uses a breaking minor for the transfers history variant", () => {
+    expect(protocolVersion).toBe("0.6.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
   })
 

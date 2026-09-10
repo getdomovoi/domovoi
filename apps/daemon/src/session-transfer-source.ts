@@ -86,6 +86,7 @@ export function freezeSourceSessionTransfer(
     method: intent.method,
     requestedBy,
     package: { state: "preparing" },
+    coverage: intent.preview.coverage,
   }
   return workspaceSnapshotSchema.parse(candidate)
 }
@@ -119,6 +120,7 @@ export function stageSourceSessionCheckpoint(
     state: "staged",
     manifestDigest: sessionTransferManifestDigest(manifest),
   }
+  staged.transfer.coverage = manifest.coverage
   return workspaceSnapshotSchema.parse(candidate)
 }
 
@@ -172,6 +174,23 @@ export function completeSourceSessionTransfer(
   }
   delete completed.providerThreadId
   delete completed.providerFailure
+  candidate.thread.push({
+    id: `system-transfer-sent-${randomUUID()}`,
+    sessionId: session.id,
+    kind: "system",
+    body: `Transferred to machine ${session.transfer.targetMachineId}.`,
+    detail: `Ownership generation ${committed.ownershipGeneration} moved at checkpoint ${committed.checkpointCommit}. This recovery worktree is read-only.`,
+    transfer: {
+      transferId: committed.transferId,
+      sourceMachineId: snapshot.machine.id,
+      targetMachineId: session.transfer.targetMachineId,
+      checkpointCommit: committed.checkpointCommit,
+      outcome: "succeeded",
+      preflight: "passed",
+      ...(session.transfer.coverage ? { coverage: session.transfer.coverage } : {}),
+    },
+    createdAt: completedAt,
+  })
   return workspaceSnapshotSchema.parse(candidate)
 }
 

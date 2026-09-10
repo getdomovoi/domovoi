@@ -141,6 +141,19 @@ describe("source transfer lifecycle", () => {
       },
     })
     expect(completed.sessions[0]).not.toHaveProperty("providerThreadId")
+    expect(completed.thread.at(-1)).toMatchObject({
+      sessionId: session.id,
+      kind: "system",
+      transfer: {
+        transferId: packaged.manifest.transferId,
+        sourceMachineId: source.machine.id,
+        targetMachineId,
+        checkpointCommit,
+        outcome: "succeeded",
+        preflight: "passed",
+        coverage: intent.preview.coverage,
+      },
+    })
   })
 
   it("restores the exact settled state after an authoritative refusal", async () => {

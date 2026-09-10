@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { isRefusedWithoutPersistence, protocolVersion, rpcMethods } from "./index.js"
+import { isRefusedWithoutPersistence, rpcMethods } from "./index.js"
 
 const model = {
   provider: "codex", id: "discovered-model", displayName: "Discovered model", description: "",
@@ -13,8 +13,7 @@ const ready = {
 }
 
 describe("runtime discovery contract", () => {
-  it("adds a read-only, machine-local phone call without changing the wire version", () => {
-    expect(protocolVersion).toBe("0.5.0")
+  it("exposes a read-only, machine-local phone call", () => {
     expect(isRefusedWithoutPersistence("runtime.discover")).toBe(false)
     const schema = rpcMethods["runtime.discover"].params
     expect(schema.parse({ provider: "codex", client: "phone" })).toEqual({ provider: "codex", client: "phone" })

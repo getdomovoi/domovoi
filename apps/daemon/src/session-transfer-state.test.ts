@@ -149,6 +149,7 @@ describe("portable session transfer state", () => {
       ownershipGeneration: 5,
       checkpointCommit,
       completedAt: "2026-09-03T20:00:00.000Z",
+      coverage: { included: [], excluded: [], warnings: [] },
     })
     const session = imported.sessions.find((candidate) => candidate.id === "session-billing")!
     expect(session).toMatchObject({
