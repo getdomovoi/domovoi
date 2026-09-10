@@ -120,6 +120,27 @@ describe("skill re-review summary", () => {
     expect(summary.headline).toBe("Asks for secrets.read, which it did not have before")
   })
 
+  // An unknown baseline is not a clean one. When nothing was recorded to compare
+  // against, "no capability change" and "capabilities changed" are both claims
+  // the screen cannot support, so it makes neither and says what is actually
+  // true: this is a first review. The fast path stays fast and stays honest.
+  it("calls an unrecorded baseline a first review rather than no change", () => {
+    const summary = skillReReviewSummary(undefined, skill(["network.connect", "secrets.read"]))
+
+    expect(summary.risk).toBe("first-review")
+    expect(summary.gained).toEqual([])
+    expect(summary.lost).toEqual([])
+    expect(summary.headline)
+      .toBe("First review: no previous declaration was recorded, so approve it as new")
+  })
+
+  it("does not report a first review as unchanged when the digests happen to match", () => {
+    const summary = skillReReviewSummary(undefined, skill(["filesystem.read"]))
+
+    expect(summary.risk).not.toBe("unchanged")
+    expect(summary.risk).not.toBe("instructions-only")
+  })
+
   // What this cannot answer, stated by the type rather than left to a reader.
   // The manifest is a flat list of capability ids with no scope inside them, so
   // "network.connect narrowed to one host" is not expressible, and the review

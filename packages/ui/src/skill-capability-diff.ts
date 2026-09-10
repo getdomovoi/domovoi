@@ -5,6 +5,7 @@ import type { SkillCapability, SkillEnablementReview, SkillSummary } from "@getd
 // re-review leads with what changed about what the skill can *do*, and the prose
 // diff is the last thing on the screen rather than the first.
 export type SkillReReviewRisk =
+  | "first-review"
   | "capabilities-gained"
   | "capabilities-narrowed"
   | "instructions-only"
@@ -61,10 +62,26 @@ function named(capabilities: readonly SkillCapability[]): string {
   return `${capabilities.slice(0, -1).join(", ")} and ${capabilities.at(-1)}`
 }
 
+// An unknown baseline is not a clean one. With nothing recorded to compare
+// against, "no capability change" and "capabilities changed" are both claims
+// this cannot support, so it makes neither: it says the previous declaration was
+// never recorded and this is a first review, to be approved as new. The same
+// branch is where an unknown legacy capability scope belongs once scopes exist,
+// for the same reason — a missing baseline must never read as a clean one.
 export function skillReReviewSummary(
-  review: SkillEnablementReview,
+  review: SkillEnablementReview | undefined,
   skill: SkillSummary,
 ): SkillReReviewSummary {
+  if (!review) {
+    return {
+      risk: "first-review",
+      gained: [],
+      lost: [],
+      instructionsChanged: false,
+      headline: "First review: no previous declaration was recorded, so approve it as new",
+      unanswerable: ["capability-scope"],
+    }
+  }
   const gained = missingFrom(skill.manifest.capabilities, review.manifest.capabilities)
   const lost = missingFrom(review.manifest.capabilities, skill.manifest.capabilities)
   const instructionsChanged = review.contentDigest !== skill.contentDigest
