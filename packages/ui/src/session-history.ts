@@ -210,10 +210,13 @@ export function sessionHistoryEntryDetail(
   //
   // 1. `turn 9 · sonnet-4.6` needs a durable turn record. A message is not a
   //    turn, so the number cannot come from counting rows.
-  // 2. `3 tools · 12.4k tokens` needs accounting that is currently wrong: two
-  //    adapters forward only selected tool types, and acp.ts gives context
-  //    occupancy and total tokens the same value. A number that looks auditable
-  //    and is not is worse than no number.
+  // 2. `3 tools · 12.4k tokens` needs two changes, and the first landing does
+  //    not unblock this row. First the accounting, which is currently wrong
+  //    rather than absent: two adapters forward only selected tool types, and
+  //    acp.ts gives context occupancy and total tokens the same value. A number
+  //    that looks auditable and is not is worse than no number. Then the same
+  //    durable turn record as (1), because provider turn identities are enough
+  //    to store the accounting but not to attribute it to one history row.
   // 3. Execution duration for an approved operation. `decided in` below is not
   //    that field. Decision latency says how long the agent sat blocked;
   //    execution duration says what the approval cost. Both belong; only the
