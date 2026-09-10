@@ -110,6 +110,18 @@
       "bytes": 10513,
       "sha256": "8a6a3f3c991631ac7b351d176804f5f49fbf8d234ea18cabd86f006a5e779c6b"
     },
+    "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.README.md": {
+      "bytes": 1343,
+      "sha256": "66e883c481f7c7a1a79feb146eb7b7d8f053594f57bb3cfe9f6d2dbba2c1724a"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.part1-template.html": {
+      "bytes": 159742,
+      "sha256": "de89a3e65e06b2dbfc82d4507d2974f2c82a293aac5e8c82175304393e3ccea5"
+    },
+    "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.part2-logic.html": {
+      "bytes": 133178,
+      "sha256": "61472147946b3d996be7872454392aebfe9cd64f906383ea5c8e7f470363d7da"
+    },
     "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html": {
       "bytes": 102048,
       "sha256": "e99b11d354515946fa33ae0c2c5f7235928a4607d816f41dce0eb9ed8ab14390"
