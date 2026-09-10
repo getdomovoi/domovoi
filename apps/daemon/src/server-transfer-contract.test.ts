@@ -611,6 +611,31 @@ describe("transactional session transfer RPC", () => {
         packaged.manifestDigest,
       )).resolves.toMatchObject({ state: "unknown" })
     })
+    const socket = await openClient(daemon)
+    const history = await rpc(socket)("session.history", {
+      sessionId: packaged.manifest.sessionId,
+      categories: ["transfers"],
+      query: targetMachineId,
+    })
+    const departure = store.load().thread.at(-1)!
+    expect(history).toMatchObject({ result: { items: [{
+      id: `thread:${departure.id}`,
+      sourceId: departure.id,
+      category: "transfers",
+      transfer: {
+        transferId: packaged.manifest.transferId,
+        coverage: packaged.manifest.coverage,
+        outcome: "succeeded",
+        preflight: "passed",
+      },
+    }] } })
+    await expect(rpc(socket)("session.history", {
+      sessionId: packaged.manifest.sessionId,
+      categories: ["messages", "tools", "approvals", "handoffs", "checkpoints", "annotations", "tests"],
+    })).resolves.toMatchObject({ result: {
+      items: expect.not.arrayContaining([expect.objectContaining({ category: "transfers" })]),
+    } })
+    socket.close()
   })
 
   it("thaws a restarted source only when the target authoritatively has no transfer", async () => {
@@ -1616,7 +1641,7 @@ describe("transactional session transfer RPC", () => {
   })
 
   it("removes imported package bytes after canonical ownership commits", async () => {
-    const { call, commitParams, packaged, socket, transactions } =
+    const { call, commitParams, daemon, packaged, socket, store, transactions } =
       await preparedTargetTransfer()
     const remove = vi.spyOn(transactions, "remove")
 
@@ -1643,6 +1668,32 @@ describe("transactional session transfer RPC", () => {
         ownershipGeneration: 2,
       },
     })
+    // History must survive removal of the manifest and a replayed commit. Use
+    // the actual committed transfer, not a history-shaped fixture.
+    await call("transfer.commit", commitParams)
+    const client = await openClient(daemon)
+    const history = await rpc(client)("session.history", {
+      sessionId: packaged.manifest.sessionId,
+      categories: ["transfers"],
+    })
+    const arrival = store.load().thread.at(-1)!
+    expect(history).toMatchObject({ result: {
+      items: [{
+        id: `thread:${arrival.id}`,
+        sourceId: arrival.id,
+        category: "transfers",
+        transfer: {
+          transferId: packaged.manifest.transferId,
+          sourceMachineId,
+          targetMachineId,
+          checkpointCommit,
+          outcome: "succeeded",
+          preflight: "passed",
+          coverage: packaged.manifest.coverage,
+        },
+      }],
+    } })
+    client.close()
     socket.close()
   })
 
@@ -2328,6 +2379,7 @@ describe("transactional session transfer RPC", () => {
             digest: `sha256:${"e".repeat(64)}`,
           }
         },
+        countIgnoredTransferFiles: async () => 3,
         readIgnoredArtifactSource: async () => undefined,
         bundleSession,
       },
@@ -2416,6 +2468,19 @@ describe("transactional session transfer RPC", () => {
     if (transferred.transfer?.phase !== "transferred") {
       throw new Error("Expected transferred source")
     }
+    await expect(call("session.history", {
+      sessionId: session.id,
+      categories: ["transfers"],
+    })).resolves.toMatchObject({ result: { items: [{
+      category: "transfers",
+      transfer: {
+        transferId: transferred.transfer.transferId,
+        sourceMachineId,
+        targetMachineId,
+        preflight: "passed",
+        coverage: { excluded: expect.arrayContaining([{ kind: "ignored-files", count: 3 }]) },
+      },
+    }] } })
     await expect(outgoing.status(
       transferred.transfer.transferId,
       transferred.transfer.manifestDigest,

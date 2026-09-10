@@ -45,6 +45,7 @@ import {
   type ProtocolMismatch,
   rpcMethods,
   rpcRequestSchema,
+  sessionHistoryCategorySchema,
   skillInventoryEntryFromSummary,
   workspaceDeltaSchema,
   type Annotation,
@@ -462,6 +463,12 @@ function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { 
   return item.id.startsWith("handoff-") || item.body.startsWith("Handed off ")
 }
 
+function approvalDecisionDurationMs(requestedAt: string, decidedAt: string): number {
+  // Wall-clock corrections must not make a receipt invalid. This says nothing
+  // about the execution time of the approved operation.
+  return Math.max(0, Date.parse(decidedAt) - Date.parse(requestedAt))
+}
+
 export function sessionHistoryEntries(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
@@ -479,6 +486,14 @@ export function sessionHistoryEntries(
       entries.push({ ...base, category: "checkpoints", label: item.label, ...(item.commit ? { commit: item.commit } : {}) })
     } else if (item.kind === "user" || item.kind === "assistant") {
       entries.push({ ...base, category: "messages", role: item.kind, body: item.body })
+    } else if (item.kind === "system" && item.transfer) {
+      entries.push({
+        ...base,
+        category: "transfers",
+        body: item.body,
+        ...(item.detail ? { detail: item.detail } : {}),
+        transfer: item.transfer,
+      })
     } else if (item.kind === "system") {
       entries.push(isProviderHandoff(item)
         ? { ...base, category: "handoffs", body: item.body, ...(item.detail ? { detail: item.detail } : {}) }
@@ -494,6 +509,7 @@ export function sessionHistoryEntries(
         ...(item.connectionId ? { connectionId: item.connectionId } : {}),
         ...(item.clientId ? { clientId: item.clientId } : {}),
         ...(item.explanation ? { explanation: item.explanation } : {}),
+        ...(item.decisionDurationMs === undefined ? {} : { decisionDurationMs: item.decisionDurationMs }),
       })
     } else {
       entries.push({
@@ -551,6 +567,9 @@ function sessionHistorySearchText(entry: SessionHistoryEntry): string {
     return `${entry.operation}\n${entry.decision}\n${entry.checkpoint}\n${entry.client}\n${entry.explanation ?? ""}`
   }
   if (entry.category === "handoffs") return `${entry.body}\n${entry.detail ?? ""}`
+  if (entry.category === "transfers") {
+    return `${entry.body}\n${entry.detail ?? ""}\n${entry.transfer.sourceMachineId}\n${entry.transfer.targetMachineId}\n${entry.transfer.transferId}\n${entry.transfer.checkpointCommit}`
+  }
   if (entry.category === "checkpoints") return `${entry.label}\n${entry.commit ?? ""}`
   return `${entry.body}\n${entry.origin}\n${entry.artifactId ?? ""}\n${entry.status ?? ""}`
 }
@@ -574,15 +593,7 @@ type FilteredSessionHistory = { indices: number[] }
 
 const maximumCachedSessionHistoryFilters = 32
 export const maximumCachedSessionHistoryFilterEntries = 10_000
-const allSessionHistoryCategories = [
-  "annotations",
-  "approvals",
-  "checkpoints",
-  "handoffs",
-  "messages",
-  "tests",
-  "tools",
-] as const
+const allSessionHistoryCategories = [...sessionHistoryCategorySchema.options].sort()
 
 function indexedSessionHistory(entries: SessionHistoryEntry[]): IndexedSessionHistory {
   return {
@@ -1763,6 +1774,11 @@ export class DomovoiDaemon {
             this.#workspaceService.readIgnoredArtifactSource!(session.workspacePath!, path, signal)
           ),
           readAnnotationCrop: (ref, mimeType) => this.#annotationVisualContext.read(ref, mimeType),
+          ...(this.#workspaceService.countIgnoredTransferFiles ? {
+            countIgnoredFiles: (promotedPaths: readonly string[]) => (
+              this.#workspaceService.countIgnoredTransferFiles!(session.workspacePath!, promotedPaths, signal)
+            ),
+          } : {}),
         }),
         this.#workspaceService.inspect(this.#snapshot.project.path, signal)
           .then((project) => project.head),
@@ -1947,14 +1963,6 @@ export class DomovoiDaemon {
     const providerThread = source.providerThreadId
     const provider = source.runtime.provider
     const completed = completeSourceSessionTransfer(this.#snapshot, committed, completedAt)
-    completed.thread.push({
-      id: `system-transfer-sent-${randomUUID()}`,
-      sessionId: source.id,
-      kind: "system",
-      body: `Transferred to machine ${lifecycle.targetMachineId}.`,
-      detail: `Ownership generation ${committed.ownershipGeneration} moved at checkpoint ${committed.checkpointCommit}. This recovery worktree is read-only.`,
-      createdAt: completedAt,
-    })
     await this.#persistTransferSnapshot(
       workspaceSnapshotSchema.parse(completed),
       source.id,
@@ -5645,6 +5653,7 @@ export class DomovoiDaemon {
             if (inactive?.status === "inactive") inactive.replacedByRuleId = ruleId
           }
         }
+        const decidedAt = new Date().toISOString()
         this.#snapshot.thread.push({
           id: `receipt-${approval.id}-${Date.now()}`,
           sessionId: approval.sessionId,
@@ -5654,14 +5663,15 @@ export class DomovoiDaemon {
           checkpoint: approval.checkpoint,
           client: actor.client,
           connectionId,
+          decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, decidedAt),
           ...(params.explanation
             ? { explanation: redactDurableText(params.explanation).value }
             : {}),
-          createdAt: new Date().toISOString(),
+          createdAt: decidedAt,
         })
         this.#removeApprovals(
           (candidate) => candidate.id === params.approvalId,
-          new Date().toISOString(),
+          decidedAt,
         )
         if (session) {
           session.state = params.decision === "deny" || params.decision === "deny-explain"
@@ -7480,6 +7490,7 @@ export class DomovoiDaemon {
           checkpoint: approval.checkpoint,
           client,
           explanation: "Emergency stop",
+          decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, requestedAt),
           createdAt: requestedAt,
         })
       } catch (error) {
@@ -7882,6 +7893,7 @@ export class DomovoiDaemon {
         checkpoint: approval.checkpoint,
         client: client ?? "cli",
         explanation: "Session archived",
+        decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, deniedAt),
         createdAt: deniedAt,
       })
       this.#removeApprovals((candidate) => candidate.id === approval.id, deniedAt)
@@ -7935,6 +7947,7 @@ export class DomovoiDaemon {
           checkpoint: approval.checkpoint,
           client: client ?? "cli",
           explanation: "Session archived after provider cleanup",
+          decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, deniedAt),
           createdAt: deniedAt,
         })
       }

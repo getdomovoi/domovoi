@@ -2968,12 +2968,12 @@ describe("DomovoiDaemon", () => {
 
     const page = index.page(snapshot, {
       sessionId: session.id,
-      categories: ["messages", "tools", "approvals", "handoffs", "checkpoints", "annotations", "tests"],
+      categories: ["messages", "tools", "approvals", "handoffs", "transfers", "checkpoints", "annotations", "tests"],
       limit: 50,
     })!
     index.page(snapshot, {
       sessionId: session.id,
-      categories: ["messages", "tools", "approvals", "handoffs", "checkpoints", "annotations", "tests"],
+      categories: ["messages", "tools", "approvals", "handoffs", "transfers", "checkpoints", "annotations", "tests"],
       before: page.nextCursor,
       limit: 50,
     })
@@ -6551,6 +6551,7 @@ describe("DomovoiDaemon", () => {
   it("issues immutable connection IDs for approval attribution", async () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.approvals[0]!.risk = "normal"
+    snapshot.approvals[0]!.requestedAt = "2026-09-10T12:00:00.000Z"
     const daemon = new DomovoiDaemon({
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
@@ -6597,11 +6598,18 @@ describe("DomovoiDaemon", () => {
       error: { code: -32602, message: "Connection client identity is already established" },
     })
 
-    const resolved = await first.request(3, "approval.resolve", {
-      approvalId: snapshot.approvals[0]!.id,
-      decision: "always-project",
-      client: "desktop",
-    })
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date("2026-09-10T12:00:38.000Z"))
+    let resolved
+    try {
+      resolved = await first.request(3, "approval.resolve", {
+        approvalId: snapshot.approvals[0]!.id,
+        decision: "always-project",
+        client: "desktop",
+      })
+    } finally {
+      vi.useRealTimers()
+    }
 
     expect(resolved).toMatchObject({
       result: {
@@ -6613,8 +6621,18 @@ describe("DomovoiDaemon", () => {
           kind: "receipt",
           client: "web",
           connectionId: firstConnectionId,
+          decisionDurationMs: 38_000,
         })]),
       },
+    })
+    await expect(first.request(4, "session.history", {
+      sessionId: snapshot.approvals[0]!.sessionId,
+      categories: ["approvals"],
+    })).resolves.toMatchObject({
+      result: { items: expect.arrayContaining([expect.objectContaining({
+        category: "approvals",
+        decisionDurationMs: 38_000,
+      })]) },
     })
     first.socket.close()
     second.socket.close()

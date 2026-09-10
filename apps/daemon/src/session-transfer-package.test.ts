@@ -80,7 +80,8 @@ function intentInput() {
 describe("session transfer package", () => {
   it("binds exact portable state and promoted resources to the preview intent", async () => {
     const input = intentInput()
-    const intent = await prepareSessionTransferIntent(input)
+    const countIgnoredFiles = vi.fn(async () => 3)
+    const intent = await prepareSessionTransferIntent({ ...input, countIgnoredFiles })
 
     expect(intent.preview).toMatchObject({
       allowed: true,
@@ -114,6 +115,10 @@ describe("session transfer package", () => {
       "previews/preview.html",
     )
     expect(input.readAnnotationCrop).toHaveBeenCalledWith(cropRef, "image/png")
+    expect(countIgnoredFiles).toHaveBeenCalledWith(["previews/preview.html"])
+    expect(intent.preview.coverage.excluded).toContainEqual({ kind: "ignored-files", count: 3 })
+    const changedCount = await prepareSessionTransferIntent({ ...input, countIgnoredFiles: async () => 4 })
+    expect(changedCount.preview.intentDigest).not.toBe(intent.preview.intentDigest)
 
     const changed = intentInput()
     changed.worktreeDigest = `sha256:${"0".repeat(64)}`

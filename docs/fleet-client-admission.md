@@ -59,8 +59,9 @@ budgets. Client open, hello, and the receipt share one caller-owned deadline. Id
 refusals stop fallback. Intermediate notifications wait in a queue bounded to 128 messages and
 4,194,304 UTF-16 code units; overflow refuses verification instead of exposing partial state.
 
-The new RPCs and optional field are additive. Protocol wire version remains 0.5.0. The changeset
-is a patch under the pre-1.0 release policy, with no credential migration or re-pair.
+These RPCs and their optional field were additive to protocol 0.5.0. Session history now requires
+protocol 0.6.0 for its Transfers variant. Fleet admission itself needs no credential migration
+or re-pair.
 
 ## Fleet controls and refusals
 

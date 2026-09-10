@@ -278,6 +278,11 @@ export interface WorkspaceService {
     worktreePath: string,
     signal?: AbortSignal,
   ): Promise<{ headCommit: string; digest: string }>
+  countIgnoredTransferFiles?(
+    worktreePath: string,
+    promotedPaths: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<number | undefined>
   projectHasLineage?(
     repositoryPath: string,
     lineageCommit: string,
@@ -974,6 +979,47 @@ export class GitWorkspaceService implements WorkspaceService {
     } catch {
       signal?.throwIfAborted()
       return false
+    }
+  }
+
+  async countIgnoredTransferFiles(
+    worktreePath: string,
+    promotedPaths: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<number | undefined> {
+    try {
+      signal?.throwIfAborted()
+      const root = await realpath(worktreePath)
+      const promoted = new Set<string>()
+      for (const path of promotedPaths) {
+        signal?.throwIfAborted()
+        // Resolve casing as well as a possible symlink in the worktree root.
+        // Files that vanished after their bytes were collected cannot appear
+        // in the inventory, so there is nothing to subtract for them.
+        const canonical = await realpath(resolve(root, path)).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined
+          throw error
+        })
+        if (canonical) promoted.add(Buffer.from(relative(root, canonical).split(sep).join("/")).toString("hex"))
+      }
+      const { stdout } = await execute("git", [
+        "-C", root, "-c", "core.fsmonitor=false", "ls-files", "-z",
+        "--others", "--ignored", "--exclude-standard",
+      ], { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
+      let count = 0
+      let start = 0
+      // NUL framing also counts filenames containing newlines or non-UTF-8
+      // bytes. Decoding those names could confuse them with a promoted path.
+      for (let end = stdout.indexOf(0); end !== -1; end = stdout.indexOf(0, start)) {
+        if (!promoted.has(stdout.subarray(start, end).toString("hex"))) count += 1
+        start = end + 1
+      }
+      return count
+    } catch {
+      signal?.throwIfAborted()
+      // A failed or oversized inventory is unknown, not zero. It must not
+      // prevent a transfer whose required resources passed preflight.
+      return undefined
     }
   }
 
