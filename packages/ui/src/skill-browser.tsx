@@ -52,6 +52,7 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { cn } from "./lib/utils"
+import { skillReReviewSummary } from "./skill-capability-diff"
 import { filterSkills, groupSkills, skillSourceLabel } from "./skill-browser-model"
 import { compareSkillInventories, type SkillFleetCellState } from "./skill-fleet-comparison"
 
@@ -257,6 +258,10 @@ export function SkillBrowser({
     && JSON.stringify(selectedReview.manifest) === JSON.stringify(selected.manifest),
   )
   const selectedEnabled = selectedReviewIsCurrent && selectedReview?.enabled === true
+  // What a re-review is actually asking about. A digest says something changed;
+  // this says whether what the skill can do changed, which is the question a
+  // person is being asked to answer.
+  const reReview = selected ? skillReReviewSummary(selectedReview, selected) : undefined
   const selectedComparison = selected
     ? comparisons.find((row) => (
         row.name === selected.name && row.scope === selected.scope && row.source === selected.source
@@ -471,7 +476,17 @@ export function SkillBrowser({
                 <Badge variant={selectedEnabled ? "default" : "secondary"}>
                   {selectedEnabled ? "Enabled for this project" : "Not enabled for this project"}
                 </Badge>
-                {selectedReview && !selectedReviewIsCurrent ? <Badge variant="outline">Review is stale</Badge> : null}
+                {selectedReview && !selectedReviewIsCurrent ? (
+                  <>
+                    <Badge variant={reReview?.risk === "capabilities-gained" ? "destructive" : "outline"}>
+                      Review is stale
+                    </Badge>
+                    {/* "Stale" names that something changed and never what. The
+                        headline says which of the four it is, so the pane reads
+                        without opening the dialog. */}
+                    <span className="text-[11.5px] text-muted-foreground">{reReview?.headline}</span>
+                  </>
+                ) : null}
               </div>
               <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                 <Card>
@@ -713,6 +728,31 @@ export function SkillBrowser({
               Confirm this exact content digest and capability manifest for {projectId ? "the open project" : "a project"}. This does not grant trust.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* The change leads and the digest is evidence beneath it. Approving a
+              digest is not approving a change, and a dialog showing only the
+              digest cannot state what it is asking for. */}
+          {reReview ? (
+            <div className="flex flex-col gap-2">
+              <p className="m-0 text-[12.5px] font-medium">{reReview.headline}</p>
+              {reReview.gained.length > 0 ? (
+                <ul className="m-0 list-disc pl-5 text-[11.5px] text-destructive">
+                  {reReview.gained.map((capability) => <li key={capability}>{capability}</li>)}
+                </ul>
+              ) : null}
+              {reReview.lost.length > 0 ? (
+                <p className="m-0 text-[11.5px] text-muted-foreground">Gives up {reReview.lost.join(", ")}</p>
+              ) : null}
+              {/* A summary that shows capabilities and stays silent about its
+                  limits implies the answer to both is "no change". */}
+              <p className="m-0 text-[11px] text-faint">
+                This cannot answer {reReview.unanswerable.map((limit) => (
+                  limit === "capability-scope"
+                    ? "whether a capability's scope widened, because a manifest carries no scope"
+                    : "how much of the instructions changed, because the reviewed text was not kept"
+                )).join(", or ")}.
+              </p>
+            </div>
+          ) : null}
           {selected ? <div className="flex flex-col gap-2 font-machine text-[10.5px]"><code className="break-all">{selected.contentDigest}</code><span>{selected.manifest.capabilities.join(", ") || "No declared capabilities"}</span></div> : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={reviewPending}>Cancel</AlertDialogCancel>
