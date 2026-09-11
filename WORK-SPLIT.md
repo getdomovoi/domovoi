@@ -199,6 +199,29 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    each later pull request carries the tick edits for its own commits, citing shas that are
    present in it by construction. This extends rule 7 by one clause: the owner ticks, citing the
    other agent's sha, **in the pull request that lands it**.
+10. **When CodeRabbit is exhausted, the other agent reviews — and it is named as a different
+   reviewer, not as CodeRabbit.** Set 2026-09-10. Codex hit the CLI's rolling three-review
+   limit mid-stack and `#362`, `#363`, `#364` stalled with no review of any kind. The standing
+   arrangement: whichever agent is blocked asks the other to review the diff, and the favour
+   runs both ways.
+
+   **The obvious implementation does not work, and the measurement is why.** Both agents drive
+   the same CLI against the same account. `coderabbit auth status` reports
+   `phetzy (david.j.fetzer@gmail.com)`; `coderabbit usage` reports organisation `getdomovoi`,
+   `Your reviews: 723`, one counter, `Period resets: 2026-09-26`. So Claude Code running
+   `/code-review` during a Codex rate limit spends Codex's own remaining slots. It is one
+   bucket, not two, and a fallback drawing on the bucket that just emptied is not a fallback.
+
+   What the blocked agent gets instead is a review by the other agent's own model — for Claude
+   Code, a reviewer subagent over the diff; for Codex, its own read. That reviewer is genuinely
+   independent of the quota, and genuinely weaker in the places CodeRabbit is strong: it has no
+   repository-wide path instruction set, and the `packages/protocol/**` payload-bounds rule that
+   produced the only major finding in this stack is exactly the sort of thing it will miss.
+
+   So the substitute review is recorded as what it is. Never write "reviewed" unqualified, and
+   never let a substitute close a `CodeRabbit` row. Name the reviewer, name the diff range, and
+   say the CodeRabbit review is still outstanding. Same shape as rule 6: the failure is not an
+   unreviewed diff, it is an unreviewed diff that reads as reviewed.
 
 ---
 
