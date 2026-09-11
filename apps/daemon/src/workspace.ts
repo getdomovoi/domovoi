@@ -815,6 +815,9 @@ export class GitWorkspaceService implements WorkspaceService {
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
     await mkdir(this.worktreeRoot, { recursive: true })
+    // The session-start history row must remain restorable and transferable.
+    // Retain its commit before creating the worktree so a ref failure leaves no worktree behind.
+    await git(repository.root, ["update-ref", `refs/domovoi/checkpoints/${repository.head}`, repository.head], signal)
     await git(repository.root, ["worktree", "add", "-b", branch, path, repository.head], signal)
     return { path, branch, baseCommit: repository.head }
   }

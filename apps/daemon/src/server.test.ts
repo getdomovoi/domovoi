@@ -2804,6 +2804,28 @@ describe("DomovoiDaemon", () => {
     })
   })
 
+  it("preserves checkpoint reasons across history pages without inferring legacy boundaries", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const commit = "a".repeat(40)
+    session.baseCommit = commit
+    snapshot.annotations = []
+    snapshot.thread = [
+      { id: "start", sessionId: session.id, kind: "checkpoint", reason: "session-start", label: "Original workspace", commit, createdAt: "2026-09-10T12:00:00.000Z" },
+      { id: "manual", sessionId: session.id, kind: "checkpoint", reason: "manual", label: "session start", commit, createdAt: "2026-09-10T12:01:00.000Z" },
+      { id: "legacy", sessionId: session.id, kind: "checkpoint", label: "session start", commit, createdAt: "2026-09-10T12:02:00.000Z" },
+    ]
+    const newest = sessionHistoryPage(snapshot, { sessionId: session.id, categories: ["checkpoints"], limit: 2 })!
+    expect(newest.items).toEqual([
+      expect.objectContaining({ sourceId: "manual", reason: "manual", commit }),
+      expect.objectContaining({ sourceId: "legacy", commit }),
+    ])
+    expect(newest.items[1]).not.toHaveProperty("reason")
+    const oldest = sessionHistoryPage(snapshot, { sessionId: session.id, categories: ["checkpoints"], before: newest.nextCursor, limit: 2 })!
+    expect(oldest.items).toEqual([expect.objectContaining({ sourceId: "start", reason: "session-start", commit })])
+    expect(oldest.hasMore).toBe(false)
+  })
+
   it.each([
     "pnpm --filter @getdomovoi/ui test",
     "npm run test:unit",
@@ -8006,6 +8028,7 @@ describe("DomovoiDaemon", () => {
         })],
         thread: expect.arrayContaining([
           expect.objectContaining({ kind: "user", body: "Start the migration" }),
+          expect.objectContaining({ sessionId, kind: "checkpoint", reason: "session-start", commit: "a".repeat(40) }),
           expect.objectContaining({
             kind: "system",
             body: "Switching projects interrupted the active turn.",
@@ -8043,7 +8066,7 @@ describe("DomovoiDaemon", () => {
       listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => `provider-thread-${++threadCount}`),
       resumeThread: vi.fn(async () => {}),
-      stopThread: vi.fn(async () => { throw new Error("provider is wedged") }),
+      stopThread: vi.fn<AgentAdapter["stopThread"]>(async () => { throw new Error("provider is wedged") }),
       startTurn: vi.fn(async () => "provider-turn-1"),
       steerTurn: vi.fn(async () => {}),
       interruptTurn: vi.fn(async () => {}),
@@ -8204,6 +8227,12 @@ describe("DomovoiDaemon", () => {
       error: { message: "Provider thread requires recovery after emergency stop" },
     })
     expect(agent.startTurn).toHaveBeenCalledTimes(1)
+    agent.stopThread.mockImplementationOnce(async () => {})
+    await expect(rpc("session.setRuntime", { sessionId, runtime, client: "desktop" })).resolves.toMatchObject({
+      result: { thread: expect.arrayContaining([
+        expect.objectContaining({ sessionId, kind: "checkpoint", reason: "before-provider-recovery", commit: "b".repeat(40) }),
+      ]) },
+    })
     socket.close()
   })
 
@@ -8369,6 +8398,10 @@ describe("DomovoiDaemon", () => {
     })
     const createdResult = created.result as { activeSessionId: string; sessions: Array<{ id: string }> }
     const sessionId = createdResult.activeSessionId
+    const createdSnapshot = workspaceSnapshotSchema.parse(created.result)
+    expect(createdSnapshot.thread.filter((item) => item.kind === "checkpoint")).toEqual([
+      expect.objectContaining({ sessionId, reason: "session-start", commit: "a".repeat(40) }),
+    ])
     expect(createdResult.sessions).toEqual([
       expect.objectContaining({
         id: sessionId,
@@ -8570,14 +8603,15 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({
             kind: "checkpoint",
             label: expect.stringContaining("after-tests"),
+            reason: "manual",
             commit: "b".repeat(40),
           }),
         ]),
       },
     })
-    const checkpointId = (checkpointed.result as {
-      thread: Array<{ id: string; kind: string }>
-    }).thread.find((item) => item.kind === "checkpoint")!.id
+    const checkpointId = workspaceSnapshotSchema.parse(checkpointed.result).thread.find(
+      (item) => item.kind === "checkpoint" && item.reason === "manual",
+    )!.id
 
     const unknownRestore = await rpc("checkpoint.restore", {
       sessionId,
@@ -8606,6 +8640,7 @@ describe("DomovoiDaemon", () => {
             body: "Worktree restored",
             detail: expect.stringContaining("Recovery checkpoint cccccccc"),
           }),
+          expect.objectContaining({ kind: "checkpoint", reason: "before-restore", commit: "c".repeat(40) }),
         ]),
       },
     })
@@ -9131,7 +9166,7 @@ describe("DomovoiDaemon", () => {
         thread: expect.arrayContaining([expect.objectContaining({
           kind: "system",
           body: "Handed off claude-code / claude-sonnet-4-6 to codex / gpt-5.6-sol.",
-        })]),
+        }), expect.objectContaining({ kind: "checkpoint", reason: "before-provider-handoff", commit: "b".repeat(40) })]),
         workingPlans: [expect.objectContaining({
           sessionId,
           pendingEdit: expect.objectContaining({
@@ -9379,7 +9414,7 @@ describe("DomovoiDaemon", () => {
       },
     })
     expect(createdResult.thread.filter((item) => item.sessionId === fork.id)).toEqual([
-      expect.objectContaining({ kind: "checkpoint", commit: sourceCheckpoint.commit }),
+      expect.objectContaining({ kind: "checkpoint", reason: "fork", commit: sourceCheckpoint.commit }),
       expect.objectContaining({ kind: "system", body: expect.stringContaining("Forked from") }),
     ])
     expect(agent.stopThread).toHaveBeenCalledTimes(1)
@@ -10640,6 +10675,7 @@ describe("DomovoiDaemon", () => {
     expect(workspaceService.archiveSessionWorkspace).toHaveBeenCalledWith(sessionWorkspacePath, expect.any(AbortSignal))
     expect(store.snapshot.thread).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "tool-archive-output", output: "token=[REDACTED]" }),
+      expect.objectContaining({ sessionId: session.id, kind: "checkpoint", reason: "before-archive", commit: "d".repeat(40) }),
     ]))
     expect(JSON.stringify(store.snapshot)).not.toContain("archive-buffer-secret")
     const durable = {
@@ -12676,6 +12712,7 @@ describe("DomovoiDaemon session transfer requests", () => {
           expect.objectContaining({
             kind: "checkpoint",
             label: expect.stringContaining("before revert"),
+            reason: "before-revert",
             commit: "c".repeat(40),
           }),
           expect.objectContaining({
@@ -12715,7 +12752,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     })
     const afterFailure = await rpc("workspace.get", {}) as TestRpcResponse<"workspace.get">
     expect(afterFailure.result.thread).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "checkpoint", commit: "d".repeat(40) }),
+      expect.objectContaining({ kind: "checkpoint", reason: "before-revert", commit: "d".repeat(40) }),
     ]))
     expect(afterFailure.result.thread.filter(
       (item) => item.kind === "receipt" && item.operation === "Revert src/webhooks.ts",
