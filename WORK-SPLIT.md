@@ -213,10 +213,18 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    bucket, not two, and a fallback drawing on the bucket that just emptied is not a fallback.
 
    What the blocked agent gets instead is a review by the other agent's own model — for Claude
-   Code, a reviewer subagent over the diff; for Codex, its own read. That reviewer is genuinely
-   independent of the quota, and genuinely weaker in the places CodeRabbit is strong: it has no
-   repository-wide path instruction set, and the `packages/protocol/**` payload-bounds rule that
-   produced the only major finding in this stack is exactly the sort of thing it will miss.
+   Code, a read of the diff; for Codex, its own read. That reviewer is independent of the quota.
+
+   **It is less weak than first recorded, and Codex was right to challenge that.** The first
+   version of this rule said the substitute "has no repository-wide path instruction set, and the
+   `packages/protocol/**` payload-bounds rule is exactly the sort of thing it will miss". Wrong:
+   `.coderabbit.yaml:111-124` carries those instructions, in the repository, readable. The
+   substitute reviewer applies them. The rule was written from an assumption about where
+   CodeRabbit keeps its configuration, and one `sed` settled it — the same failure as every other
+   entry here, which is why it is corrected in place rather than quietly dropped.
+
+   What remains genuinely different is the reviewer, not the instructions: a different model, one
+   pass, no second opinion. Enough to justify the label below, not enough to justify the excuse.
 
    So the substitute review is recorded as what it is. Never write "reviewed" unqualified, and
    never let a substitute close a `CodeRabbit` row. Name the reviewer, name the diff range, and
