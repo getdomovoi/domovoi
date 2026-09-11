@@ -503,14 +503,29 @@ floor is **higher** than the desktop's rather than lower.
 
 ## Needs a decision before it can be worked
 
-### D1 · `design/` holds a fork, not a vendored copy
+### D1 · three copies of the design system, nothing keeping them in step
 `design/design_system_domovoi/readme.md` is a condensed 127-line summary in a different
 voice against upstream's ~300 lines, missing Sources, Content fundamentals, Iconography,
 Index and Caveats. It cannot be diffed against upstream, so drift in it is invisible by
 construction — which is how the stale type-floor sentence survived, and why `CC4` exists.
 
-Two ways: carry upstream verbatim and keep the summary beside it as a separate authored
-document, or accept the fork and stop calling it vendored. Not a coding task until decided.
+**That framing was too small, and 2026-09-10 showed why.** "The vendored readme is a summary,
+not a copy" describes one file and implies the remedy is to carry upstream verbatim. The actual
+shape is three independent artefacts: the live Claude Design project, the `_ds/` copy bound into
+a working session, and this repository's `design/`. Nothing moves a change from any one of them to
+either other. Carrying upstream verbatim does not fix that, because upstream is itself a snapshot
+someone else's tooling refreshes on its own schedule — vendor from the bound copy and you vendor
+a revision behind the live one, with no signal that you did.
+
+Measured instance: `tokens/motion.css` gained `/* @kind other */` on six motion tokens in the
+live project. The bound `_ds/` copy had none of the six. `design/` had none of the six. The only
+reason any of that surfaced is that a person happened to open the file. No check, on any of the
+three sides, would have said a word. Re-vendored from the live project directly at
+`e4d3d11` — fifteen lines, not the one-line diff the fork framing predicts.
+
+Two ways, both still open: carry upstream verbatim **and** add a mechanism that says when
+upstream moved, or accept the fork and stop calling it vendored. Verbatim alone is not one of
+them. Not a coding task until decided.
 
 **Presence is not adoption, and nothing here records which is which.** A vendored file that
 nothing imports looks identical, by inspection, to one that is fully wired. Same shape as a check
@@ -531,9 +546,10 @@ shape as the tick citations, the type-floor exemptions and `D4`.
 **Second instance, from the other direction, found 2026-09-10.** The phone's type ramp is
 authored in this repository (`--text-phone-*` in `packages/ui/src/styles.css`) because the design
 system carries the desktop scale and knows nothing about the phone's — even though Phone v2 is a
-designed surface and type is the design system's to own. It cannot be fixed from here: the live
-design system was last touched 2026-08-28, twelve days before this, and is not writable from the
-project that would have to change it. So the repo authors it, and `scripts/design-rule.mjs` reads
+designed surface and type is the design system's to own. "Not writable from here" was recorded as
+the reason and it was wrong: DesignSync writes to the live project, and did on 2026-09-10. The
+real reason is that a phone type ramp is a design decision, not a vendoring one, and it has not
+been made upstream. So the repo authors it, and `scripts/design-rule.mjs` reads
 two sources, each authoritative for its own scale. That is two derivations rather than a
 restatement, and neither ramp can drift from the other because they describe different things —
 but the phone ramp living here rather than upstream is the same fork question as `D1`, arriving as
