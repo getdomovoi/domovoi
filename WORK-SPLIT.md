@@ -660,8 +660,13 @@ red that means the code broke, which is the same failure as a green that means n
 
 Not a coding task until decided, because the fix has a shape question in it: cache the binary per
 version, vendor it, or split `test:launch` out of `verify` so a CDN fault cannot fail the gate that
-decides whether code is correct. The third is the only one that also stops a slow download counting
-against the suite's time.
+decides whether code is correct.
+
+**The third option carries a trap, raised by Codex 2026-09-11 and worth stating with it.** Splitting
+tells the two failure kinds apart; it does not remove the network dependency. And if the split job is
+not *required*, an unavailable Electron binary stops failing the merge gate and starts being absent
+from it — a green merge with launch coverage that silently did not run. That is this entry's own
+failure class, reintroduced by its own remedy. Any split has to keep launch coverage required.
 
 **Recorded, not scheduled.** It cost one rerun, and it will do this again.
 
