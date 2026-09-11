@@ -79,6 +79,7 @@ const manifestBudgetMessage = "Capability declarations exceed 64 Ki UTF-16 code 
 
 // Count a lower bound before Zod walks or clones nested arrays. The exact JSON
 // bound below still accounts for escaping and punctuation after shape validation.
+// For wire input, JSON.parse runs first; transport frame limits bound that allocation.
 function withinManifestBudget(value: unknown): boolean {
   let remaining = maximumManifestCodeUnits
   function visit(item: unknown, depth: number): boolean {
@@ -117,7 +118,7 @@ const manifestShapeSchema = z.discriminatedUnion("version", [
 
 export const skillCapabilityManifestSchema = z.preprocess((value, context) => {
   if (withinManifestBudget(value)) return value
-  context.addIssue({ code: "custom", message: manifestBudgetMessage })
+  context.addIssue({ code: "custom", message: "Capability declarations exceed the size or nesting limit" })
   return z.NEVER
 }, manifestShapeSchema).refine((value) => JSON.stringify(value).length <= maximumManifestCodeUnits, manifestBudgetMessage)
 
