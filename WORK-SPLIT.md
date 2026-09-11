@@ -185,6 +185,24 @@ construction — which is how the stale type-floor sentence survived, and why `C
 Two ways: carry upstream verbatim and keep the summary beside it as a separate authored
 document, or accept the fork and stop calling it vendored. Not a coding task until decided.
 
+**A signed error with nowhere to go, found 2026-09-11.** The review of this pull request found a
+contradiction inside the signed v2 handoff: `HANDOFF-V2.md:20` lists `Domovoi Phone v2.dc.html` and
+`:187` describes its nineteen frames, while the known-gaps list at `:245` says "No phone surface in
+v2." Both cannot be true, and the second is the sentence a reader reaches last.
+
+It cannot be fixed here. `scripts/design-revision.mjs` refuses a local edit to a signed file and is
+right to: `--accept-new=<path>` covers additions only, with no accept path for a content change,
+because the digest exists precisely to say this repository does not author these files. And there is
+no upstream to fix instead — DesignSync lists the live project as carrying `design_handoff_domovoi`
+and `design_handoff_domovoi_brand`, and **no** `design_handoff_domovoi_v2` and no `HANDOFF-V2.md`.
+The v2 bundle arrived as a separate export.
+
+So the correction has nowhere to go. The reviewer's committable suggestion could only be applied by
+defeating the gate that exists to stop that edit; attempted and reverted at `ee0ff05`. That is this
+entry's sharpest form: not drift between two copies, but a signed artefact that is wrong, cannot be
+corrected downstream, and has no upstream left to correct. Recorded so the inaccuracy is attributed
+rather than silently carried.
+
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can
 re-read at check time — a downloaded bundle with its own digest, rather than a live project
