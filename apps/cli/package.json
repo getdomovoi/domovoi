@@ -26,7 +26,7 @@
     "build": "tsup",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "tsx src/index.ts",
-    "pretest": "pnpm --filter @getdomovoi/protocol build",
+    "pretest": "pnpm --filter @getdomovoi/protocol build && pnpm build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
