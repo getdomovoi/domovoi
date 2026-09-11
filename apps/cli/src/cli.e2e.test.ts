@@ -3,6 +3,7 @@ import { once } from "node:events"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { protocolVersion } from "@getdomovoi/protocol"
@@ -25,7 +26,8 @@ beforeAll(async () => {
   home = await mkdtemp(join(tmpdir(), "domovoi-cli-e2e-home-"))
   control = await mkdtemp(join(tmpdir(), "domovoi-cli-e2e-keyring-"))
   child = spawn(process.execPath, [
-    "--import", join(daemonFixtures, "blocked-keyring.mjs"),
+    // --import takes a URL: on Windows a bare D:\ path is read as a scheme.
+    "--import", pathToFileURL(join(daemonFixtures, "blocked-keyring.mjs")).href,
     "--import", "tsx",
     join(daemonFixtures, "keyring-daemon.mjs"), home,
   ], {
