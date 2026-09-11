@@ -76,7 +76,7 @@ type Session = {
   cwd: string
   runtime: Runtime
   activeTurnId?: string
-  assistantMessageIds: Set<string>
+  assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
 
@@ -266,12 +266,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     return turnId
   }
 
-  async steerTurn(threadId: string, turnId: string, prompt: string): Promise<void> {
+  async steerTurn(threadId: string, turnId: string, prompt: string): Promise<{ providerMessageId: string }> {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) {
       throw new Error(`${this.#identity.providerName} turn is no longer active`)
     }
-    await this.#sendPrompt(session, this.#id(), prompt, session.runtime)
+    const providerMessageId = this.#id()
+    await this.#sendPrompt(session, providerMessageId, prompt, session.runtime)
+    return { providerMessageId }
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -357,7 +359,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       threadId,
       cwd,
       runtime,
-      assistantMessageIds: new Set(),
+      assistantMessageTurnIds: new Map(),
       toolPhases: new Map(),
     }
     const existing = this.#directories.get(cwd)
@@ -451,9 +453,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
       if (info?.role === "assistant" && typeof info.id === "string") {
-        session.assistantMessageIds.add(info.id)
         const turnId = typeof info.parentID === "string" ? info.parentID : undefined
         if (!turnId) return
+        session.assistantMessageTurnIds.set(info.id, turnId)
         const tokens = asRecord(info.tokens)
         const cache = asRecord(tokens?.cache)
         const hasTokens = [tokens?.input, tokens?.output, tokens?.reasoning, tokens?.total, cache?.read, cache?.write]
@@ -487,12 +489,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const part = asRecord(properties.part)
       if (
         typeof part?.messageID !== "string"
-        || !session.assistantMessageIds.has(part.messageID)
+        || !session.assistantMessageTurnIds.has(part.messageID)
       ) return
+      const parentTurnId = session.assistantMessageTurnIds.get(part.messageID)!
       if (part?.type === "text" && typeof properties.delta === "string") {
-        this.#emit({ type: "text-delta", threadId: sessionId, turnId, delta: properties.delta })
+        this.#emit({ type: "text-delta", threadId: sessionId, turnId: parentTurnId, delta: properties.delta })
       }
-      if (part?.type === "tool") this.#receiveTool(session, turnId, part)
+      if (part?.type === "tool") this.#receiveTool(session, parentTurnId, part)
       return
     }
     if (event.type === "permission.updated") {

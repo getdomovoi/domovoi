@@ -4,6 +4,7 @@ import type { NormalizedUsage, UsageSource } from "./usage.js"
 
 export type UsageDispatch = {
   sessionId: string; provider: string; threadId: string; turnId: string; model: string
+  startedAt?: string
 }
 export type UsageIdentity = Pick<UsageDispatch, "provider" | "threadId" | "turnId">
 export type UsageReport = { usage: NormalizedUsage; source?: UsageSource }

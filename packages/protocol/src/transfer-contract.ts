@@ -181,7 +181,14 @@ export const sessionTransferStateSchema = z.object({
   checkSession(state.annotations, "annotations")
 
   const threadIds = new Set<string>()
+  const providerMessageKeys = new Set<string>()
   state.thread.forEach((item, index) => {
+    if (item.kind === "user" && item.providerMessageKey) {
+      if (providerMessageKeys.has(item.providerMessageKey)) {
+        context.addIssue({ code: "custom", path: ["thread", index, "providerMessageKey"], message: "Transferred provider message identities must be unique" })
+      }
+      providerMessageKeys.add(item.providerMessageKey)
+    }
     if (threadIds.has(item.id)) {
       context.addIssue({ code: "custom", path: ["thread", index, "id"], message: "Transferred thread IDs must be unique" })
     }
@@ -236,13 +243,28 @@ export const sessionTransferStateSchema = z.object({
   }
 
   const usageTurnIds = new Set<string>()
+  const numberedTurnIds = new Set<string>()
+  const turnOrdinals = new Set<number>()
   const currencies = new Set<string>()
   state.usage.forEach((usage, index) => {
+    const ordinal = usage.accounting?.turn?.ordinal
+    if (ordinal !== undefined) {
+      if (turnOrdinals.has(ordinal)) {
+        context.addIssue({ code: "custom", path: ["usage", index, "accounting", "turn", "ordinal"], message: "Transferred turn ordinals must be unique" })
+      }
+      turnOrdinals.add(ordinal)
+      numberedTurnIds.add(usage.turnId)
+    }
     if (usageTurnIds.has(usage.turnId)) {
       context.addIssue({ code: "custom", path: ["usage", index, "turnId"], message: "Transferred usage turn IDs must be unique" })
     }
     usageTurnIds.add(usage.turnId)
     if (usage.costSource === "provider-reported") currencies.add(usage.currency)
+  })
+  state.thread.forEach((item, index) => {
+    if (item.turnId && !numberedTurnIds.has(item.turnId)) {
+      context.addIssue({ code: "custom", path: ["thread", index, "turnId"], message: "Transferred turn links require a durable turn record" })
+    }
   })
   if (currencies.size > 1) {
     context.addIssue({

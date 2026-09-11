@@ -72,7 +72,7 @@ export interface AgentAdapter {
     turnId: string,
     prompt: string,
     visualContexts?: AgentVisualContext[],
-  ): Promise<void>
+  ): Promise<void | { providerMessageId: string }>
   // Domovoi owns project-scoped rules. Provider adapters receive only
   // one-shot grants so provider-native policy cannot outlive daemon state.
   resolveApproval(requestId: number, decision: ProviderApprovalDecision): void

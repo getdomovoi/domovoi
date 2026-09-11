@@ -16,7 +16,7 @@ const observation = (id: string, inputTokens: number, final = true) => ({
 })
 
 describe("durable usage accounting", () => {
-  it("preserves the transfer failure when SQLite has already rolled back", async () => {
+  it.each(["transfer", "begin"])("preserves the %s failure when SQLite has already rolled back", async (operation) => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-rollback-"))
     const path = join(directory, "usage.sqlite")
     const ledger = new UsageLedger(path)
@@ -25,14 +25,18 @@ describe("durable usage accounting", () => {
       const before = ledger.transferSession(dispatch.sessionId)
       const database = new DatabaseSync(path)
       try {
-        database.exec("CREATE TRIGGER rollback_usage_delete BEFORE DELETE ON provider_usage BEGIN SELECT RAISE(ROLLBACK, 'usage transfer failure'); END")
+        const event = operation === "begin" ? "INSERT" : "DELETE"
+        database.exec(`CREATE TRIGGER rollback_usage_write BEFORE ${event} ON provider_usage BEGIN SELECT RAISE(ROLLBACK, 'usage transaction failure'); END`)
       } finally { database.close() }
       let failure: unknown
-      try { ledger.replaceTransferredSession(dispatch.sessionId, []) } catch (error) { failure = error }
+      try {
+        if (operation === "begin") ledger.begin({ ...dispatch, turnId: "new-turn" })
+        else ledger.replaceTransferredSession(dispatch.sessionId, [])
+      } catch (error) { failure = error }
       expect(failure).toBeInstanceOf(AggregateError)
       expect(failure).toMatchObject({
-        cause: expect.objectContaining({ message: "usage transfer failure" }),
-        errors: [expect.objectContaining({ message: "usage transfer failure" }), expect.any(Error)],
+        cause: expect.objectContaining({ message: "usage transaction failure" }),
+        errors: [expect.objectContaining({ message: "usage transaction failure" }), expect.any(Error)],
       })
       expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
     } finally {
@@ -41,7 +45,14 @@ describe("durable usage accounting", () => {
     }
   })
 
-  it.each(["{", JSON.stringify({ version: 1, status: "pending" })])(
+  it.each([
+    "{",
+    JSON.stringify({ version: 1, status: "pending" }),
+    JSON.stringify({ turn: { ordinal: "invalid" } }),
+    JSON.stringify({ turn: { ordinal: Number.MAX_SAFE_INTEGER } }),
+    JSON.stringify({ turn: { ordinal: 3 } }),
+    JSON.stringify({ turn: { ordinal: 2 } }),
+  ])(
     "keeps corrupt accounting from blocking other rows: %s", async (corrupt) => {
       const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-corrupt-"))
       const path = join(directory, "usage.sqlite")
@@ -58,8 +69,8 @@ describe("durable usage accounting", () => {
         ledger = undefined
         const database = new DatabaseSync(path)
         try {
-          // Simulate durable input created before the JSON expression index existed.
-          database.exec("DROP INDEX IF EXISTS provider_usage_accounting_status")
+          // Simulate durable input created before the JSON expression indexes existed.
+          database.exec("DROP INDEX IF EXISTS provider_usage_accounting_status; DROP INDEX IF EXISTS provider_usage_turn_ordinal")
           database.prepare("UPDATE provider_usage SET accounting = ? WHERE turn_id = ?").run(corrupt, badKey)
         } finally { database.close() }
 
@@ -75,12 +86,157 @@ describe("durable usage accounting", () => {
           totalTokens: 34, coverage: { legacy: 1, complete: 1, pending: 0 },
         })
         expect(ledger.transferSession(dispatch.sessionId)).toHaveLength(2)
+        const next = { ...dispatch, turnId: "next-turn" }
+        ledger.begin(next)
+        expect(ledger.lookup(next)?.accounting?.turn?.ordinal).toBe(3)
       } finally {
         ledger?.close()
         await removeScratchDirectory(directory)
       }
     },
   )
+
+  it("reconstructs allocation from valid evidence when the cached ordinal is corrupt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-ordinal-cache-"))
+    const path = join(directory, "usage.sqlite")
+    let ledger: UsageLedger | undefined
+    try {
+      ledger = new UsageLedger(path)
+      ledger.begin(dispatch)
+      const before = ledger.transferSession(dispatch.sessionId)
+      ledger.close()
+      ledger = undefined
+      const database = new DatabaseSync(path)
+      try {
+        database.prepare("UPDATE provider_usage SET turn_ordinal = ?").run(Number.MAX_SAFE_INTEGER)
+      } finally { database.close() }
+
+      ledger = new UsageLedger(path)
+      expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
+      const next = { ...dispatch, turnId: "next-after-repair" }
+      ledger.begin(next)
+      expect(ledger.lookup(next)?.accounting?.turn?.ordinal).toBe(2)
+    } finally {
+      ledger?.close()
+      await removeScratchDirectory(directory)
+    }
+  })
+
+  it("opens and writes an active session without rebuilding dormant sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-lazy-ordinals-"))
+    const path = join(directory, "usage.sqlite")
+    let ledger: UsageLedger | undefined
+    try {
+      ledger = new UsageLedger(path)
+      ledger.begin(dispatch)
+      const dormant = { ...dispatch, sessionId: "dormant-session", turnId: "dormant-turn" }
+      ledger.begin(dormant)
+      ledger.finish(dormant, "completed")
+      const before = ledger.transferSession(dormant.sessionId)
+      ledger.close()
+      ledger = undefined
+      const database = new DatabaseSync(path)
+      try {
+        database.exec(`CREATE TRIGGER reject_dormant_rebuild BEFORE UPDATE OF turn_ordinal ON provider_usage
+          WHEN OLD.session_id = 'dormant-session'
+          BEGIN SELECT RAISE(ABORT, 'dormant ordinal was rebuilt'); END`)
+      } finally { database.close() }
+
+      ledger = new UsageLedger(path)
+      const next = { ...dispatch, turnId: "active-next" }
+      ledger.begin(next)
+      expect(ledger.lookup(next)?.accounting?.turn?.ordinal).toBe(2)
+      expect(ledger.transferSession(dormant.sessionId)).toEqual(before)
+    } finally {
+      ledger?.close()
+      await removeScratchDirectory(directory)
+    }
+  })
+
+  it("revalidates after an outer rollback undoes a completed rebuild", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-ordinal-rollback-"))
+    const path = join(directory, "usage.sqlite")
+    let ledger: UsageLedger | undefined
+    try {
+      ledger = new UsageLedger(path)
+      ledger.begin(dispatch)
+      const before = ledger.transferSession(dispatch.sessionId)
+      ledger.close()
+      ledger = undefined
+      const database = new DatabaseSync(path)
+      try {
+        database.prepare("UPDATE provider_usage SET turn_ordinal = ?").run(Number.MAX_SAFE_INTEGER)
+        database.exec(`CREATE TRIGGER reject_next_turn BEFORE INSERT ON provider_usage
+          BEGIN SELECT RAISE(ABORT, 'next turn refused'); END`)
+        ledger = new UsageLedger(path)
+        const next = { ...dispatch, turnId: "next-after-rollback" }
+        expect(() => ledger!.begin(next)).toThrow("next turn refused")
+        expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
+        expect(database.prepare("SELECT turn_ordinal FROM provider_usage").get()?.turn_ordinal)
+          .toBe(Number.MAX_SAFE_INTEGER)
+        database.exec("DROP TRIGGER reject_next_turn")
+
+        ledger.begin(next)
+        expect(ledger.lookup(next)?.accounting?.turn?.ordinal).toBe(2)
+      } finally { database.close() }
+    } finally {
+      ledger?.close()
+      await removeScratchDirectory(directory)
+    }
+  })
+
+  it.each(["record", "observe", "finish"])("revalidates before %s consults the unique index", async (operation) => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-ordinal-write-"))
+    const path = join(directory, "usage.sqlite")
+    let ledger: UsageLedger | undefined
+    try {
+      ledger = new UsageLedger(path)
+      ledger.begin(dispatch)
+      const first = ledger.lookup(dispatch)!
+      const second = { ...dispatch, turnId: "second-turn" }
+      ledger.begin(second)
+      ledger.close()
+      ledger = undefined
+      const database = new DatabaseSync(path)
+      try {
+        // Swap only the derived values, preserving two valid evidence records.
+        database.exec("UPDATE provider_usage SET turn_ordinal = NULL")
+        database.prepare("UPDATE provider_usage SET turn_ordinal = CASE WHEN turn_id = ? THEN 2 ELSE 1 END")
+          .run(first.turnId)
+      } finally { database.close() }
+
+      ledger = new UsageLedger(path)
+      if (operation === "record") ledger.record(first)
+      else if (operation === "observe") expect(ledger.observe(dispatch, observation("later", 10))).toBe(true)
+      else ledger.finish(dispatch, "completed")
+      expect(ledger.lookup(dispatch)?.accounting?.turn?.ordinal).toBe(1)
+      expect(ledger.lookup(second)?.accounting?.turn?.ordinal).toBe(2)
+    } finally {
+      ledger?.close()
+      await removeScratchDirectory(directory)
+    }
+  })
+
+  it("states when valid history has exhausted turn ordinals without changing it", () => {
+    const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
+    ledger.begin(dispatch)
+    const records = ledger.transferSession(dispatch.sessionId)
+    records[0]!.accounting!.turn!.ordinal = Number.MAX_SAFE_INTEGER - 1
+    ledger.replaceTransferredSession(dispatch.sessionId, records)
+
+    const last = { ...dispatch, turnId: "last-safe-turn" }
+    ledger.begin(last)
+    expect(ledger.lookup(last)?.accounting?.turn?.ordinal).toBe(Number.MAX_SAFE_INTEGER)
+    const before = ledger.transferSession(dispatch.sessionId)
+    expect(() => ledger.begin({ ...dispatch, turnId: "overflow-turn" }))
+      .toThrow("Cannot begin another turn: this session has exhausted its turn ordinals")
+    expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
+
+    const other = { ...dispatch, sessionId: "other-session", turnId: "other-turn" }
+    ledger.begin(other)
+    expect(ledger.lookup(other)?.accounting?.turn?.ordinal).toBe(1)
+  })
 
   it("adds distinct messages once, rejects stale snapshots, and keeps requested models", () => {
     const ledger = new UsageLedger()

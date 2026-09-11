@@ -16,12 +16,13 @@ export function applyWorkspaceDelta(
       const existing = thread.find((item) => item.id === operation.id)
       thread = existing?.kind === "assistant"
         ? thread.map((item) => item.id === operation.id
-            ? { ...existing, body: `${existing.body}${operation.delta}` }
+            ? { ...existing, ...(!existing.turnId && operation.turnId ? { turnId: operation.turnId } : {}), body: `${existing.body}${operation.delta}` }
             : item)
         : [...thread, {
             id: operation.id,
             sessionId: delta.sessionId,
             kind: "assistant",
+            ...(operation.turnId ? { turnId: operation.turnId } : {}),
             body: operation.delta,
             createdAt: operation.createdAt,
           }]
@@ -31,12 +32,13 @@ export function applyWorkspaceDelta(
       const existing = thread.find((item) => item.id === operation.id)
       thread = existing?.kind === "tool"
         ? thread.map((item) => item.id === operation.id
-            ? { ...existing, output: `${existing.output ?? ""}${operation.delta}` }
+            ? { ...existing, ...(!existing.turnId && operation.turnId ? { turnId: operation.turnId } : {}), output: `${existing.output ?? ""}${operation.delta}` }
             : item)
         : [...thread, {
             id: operation.id,
             sessionId: delta.sessionId,
             kind: "tool",
+            ...(operation.turnId ? { turnId: operation.turnId } : {}),
             tool: "command",
             status: "running",
             title: "Command output",

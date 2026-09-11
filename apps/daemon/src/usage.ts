@@ -3,6 +3,8 @@ import { DatabaseSync } from "node:sqlite"
 
 import {
   sessionTransferUsageRecordSchema,
+  sessionTurnSchema,
+  type SessionTurn,
   usageAccountingSchema,
   type UsageAccounting,
   type UsageCoverage,
@@ -192,6 +194,7 @@ export class UsageLedger {
   readonly #database: DatabaseSync
   readonly #path: string
   readonly #now: () => number
+  readonly #indexedSessions = new Set<string>()
 
   constructor(path = ":memory:", options: UsageLedgerOptions = {}) {
     this.#path = path
@@ -225,6 +228,7 @@ export class UsageLedger {
     this.#addColumnIfMissing("context_window_tokens", "INTEGER")
     this.#addColumnIfMissing("recorded_at", "INTEGER")
     this.#addColumnIfMissing("accounting", "TEXT")
+    this.#addColumnIfMissing("turn_ordinal", "INTEGER")
     this.#database.exec(
       "CREATE INDEX IF NOT EXISTS provider_usage_recorded_at ON provider_usage(recorded_at)",
     )
@@ -234,6 +238,10 @@ export class UsageLedger {
       ON provider_usage(CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END)`)
     this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_identity
       ON provider_usage(turn_id, provider)`)
+    this.#database.exec(`DROP INDEX IF EXISTS provider_usage_turn_ordinal;
+      DROP INDEX IF EXISTS provider_usage_valid_turn_ordinal;
+      CREATE UNIQUE INDEX IF NOT EXISTS provider_usage_validated_turn_ordinal
+      ON provider_usage(session_id, turn_ordinal)`)
     this.#restrictFilePermissions()
   }
 
@@ -242,10 +250,28 @@ export class UsageLedger {
   }
 
   begin(dispatch: UsageDispatch): void {
-    if (this.lookup(dispatch)) return
-    const accounting = beginUsageAccounting(dispatch)
-    this.#upsert({ ...dispatch, turnId: accounting.key, accounting,
-      usage: accountedUsage(accounting) }, this.#now())
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      if (!this.lookup(dispatch)) {
+        this.#rebuildTurnOrdinals(dispatch.sessionId)
+        const row = this.#database.prepare(`SELECT MAX(turn_ordinal) AS ordinal
+          FROM provider_usage WHERE session_id = ?`).get(dispatch.sessionId)
+        const previousOrdinal = Number(row?.ordinal ?? 0)
+        if (!Number.isSafeInteger(previousOrdinal) || previousOrdinal >= Number.MAX_SAFE_INTEGER) {
+          throw new Error("Cannot begin another turn: this session has exhausted its turn ordinals")
+        }
+        const now = this.#now()
+        const accounting = usageAccountingSchema.parse({
+          ...beginUsageAccounting(dispatch),
+          turn: { ordinal: previousOrdinal + 1, startedAt: dispatch.startedAt ?? new Date(now).toISOString() },
+        })
+        this.#upsert({ ...dispatch, turnId: accounting.key, accounting,
+          usage: accountedUsage(accounting) }, now)
+      }
+      this.#database.exec("COMMIT")
+    } catch (error) {
+      this.#rollback(error)
+    }
   }
 
   lookup(identity: UsageIdentity): TurnUsage | undefined {
@@ -254,6 +280,28 @@ export class UsageLedger {
     ).all(usageIdentity(identity), identity.provider)
     // Ambiguous provider identities are not evidence of a session association.
     return rows.length === 1 ? turnUsageFromRow(rows[0]) : undefined
+  }
+
+  lookupTurn(sessionId: string, turnId: string): TurnUsage | undefined {
+    const row = this.#database.prepare("SELECT * FROM provider_usage WHERE session_id = ? AND turn_id = ?").get(sessionId, turnId)
+    return row ? turnUsageFromRow(row) : undefined
+  }
+
+  turns(sessionId: string, ids: readonly string[]): SessionTurn[] {
+    const statement = this.#database.prepare("SELECT * FROM provider_usage WHERE session_id = ? AND turn_id = ?")
+    return [...new Set(ids)].flatMap((id) => {
+      const value = statement.get(sessionId, id)
+      if (!value) return []
+      const record = turnUsageFromRow(value)
+      const accounting = record.accounting
+      if (!accounting?.turn) return []
+      return [sessionTurnSchema.parse({
+        id, sessionId, ...accounting.turn, provider: record.provider,
+        requestedModel: accounting.requestedModel,
+        reportedModels: [...new Set(accounting.observations.flatMap((event) => event.model ? [event.model] : []))],
+        status: accounting.status, coverage: accounting.coverage, usage: record.usage, recordedToolCount: 0,
+      })]
+    })
   }
 
   observe(identity: UsageIdentity, report: UsageReport): boolean {
@@ -267,7 +315,9 @@ export class UsageLedger {
   finish(identity: UsageIdentity, status: Exclude<UsageAccounting["status"], "pending">): void {
     const row = this.lookup(identity)
     if (!row?.accounting || row.accounting.status !== "pending") return
-    const accounting = updateUsageCoverage({ ...row.accounting, status })
+    const accounting = updateUsageCoverage({ ...row.accounting, status,
+      ...(row.accounting.turn ? { turn: { ...row.accounting.turn, completedAt: new Date(this.#now()).toISOString() } } : {}),
+    })
     this.#upsert({ ...row, accounting }, null)
   }
 
@@ -280,12 +330,16 @@ export class UsageLedger {
     for (const value of rows) {
       const row = turnUsageFromRow(value)
       if (!row.accounting || activeKeys.has(row.accounting.key)) continue
-      const accounting = updateUsageCoverage({ ...row.accounting, status: "interrupted" })
+      const accounting = updateUsageCoverage({ ...row.accounting, status: "interrupted",
+        ...(row.accounting.turn ? { turn: { ...row.accounting.turn, completedAt: new Date(this.#now()).toISOString() } } : {}),
+      })
       this.#upsert({ ...row, accounting }, null)
     }
   }
 
   #upsert(record: TurnUsage, recordedAt: number | null): void {
+    const accounting = record.accounting ? usageAccountingSchema.parse(record.accounting) : undefined
+    this.#rebuildTurnOrdinals(record.sessionId)
     const currency = record.usage.currency
     const context = reportedContextOccupancy(
       record.usage.contextTokens,
@@ -304,8 +358,8 @@ export class UsageLedger {
         session_id, turn_id, provider_thread_id, provider, model,
         input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
         context_tokens, context_window_tokens,
-        cost_source, cost_micros, currency, recorded_at, accounting
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_source, cost_micros, currency, recorded_at, accounting, turn_ordinal
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, turn_id) DO UPDATE SET
         provider_thread_id = excluded.provider_thread_id,
         provider = excluded.provider,
@@ -324,6 +378,7 @@ export class UsageLedger {
         cost_micros = excluded.cost_micros,
         currency = excluded.currency,
         accounting = excluded.accounting,
+        turn_ordinal = excluded.turn_ordinal,
         recorded_at = COALESCE(provider_usage.recorded_at, excluded.recorded_at)
     `).run(
       record.sessionId,
@@ -342,7 +397,8 @@ export class UsageLedger {
       record.usage.costMicros ?? null,
       record.usage.currency ?? null,
       recordedAt,
-      record.accounting ? JSON.stringify(usageAccountingSchema.parse(record.accounting)) : null,
+      accounting ? JSON.stringify(accounting) : null,
+      accounting?.turn?.ordinal ?? null,
     )
     this.#restrictFilePermissions()
   }
@@ -480,10 +536,42 @@ export class UsageLedger {
     this.#database.close()
   }
 
-  #rollback(error: unknown): never {
+  #rebuildTurnOrdinals(sessionId: string): void {
+    if (this.#indexedSessions.has(sessionId)) return
+    // This column is a derived index of schema-valid evidence, not a second
+    // source of truth. Rebuild before a session's first write, including writes
+    // that only consult it through the unique index. After the initial SQLite
+    // index migration, revalidation visits only this session's evidence.
+    // Keep raw evidence and totals while repairing the cache.
+    // A savepoint also works inside begin/transfer's enclosing transaction.
+    this.#database.exec("SAVEPOINT usage_turn_ordinals")
+    try {
+      this.#database.prepare("UPDATE provider_usage SET turn_ordinal = NULL WHERE session_id = ?").run(sessionId)
+      const update = this.#database.prepare(
+        "UPDATE provider_usage SET turn_ordinal = ? WHERE session_id = ? AND turn_id = ?",
+      )
+      for (const row of this.#database.prepare("SELECT turn_id, accounting FROM provider_usage WHERE session_id = ?").iterate(sessionId)) {
+        update.run(parsedAccounting(row.accounting)?.turn?.ordinal ?? null, sessionId, row.turn_id!)
+      }
+      this.#database.exec("RELEASE usage_turn_ordinals")
+      // A bounded optimization only: eviction makes the next write revalidate.
+      if (this.#indexedSessions.size >= 1_024) {
+        const oldest = this.#indexedSessions.values().next().value
+        if (oldest !== undefined) this.#indexedSessions.delete(oldest)
+      }
+      this.#indexedSessions.add(sessionId)
+    } catch (error) {
+      this.#rollback(error, "ROLLBACK TO usage_turn_ordinals; RELEASE usage_turn_ordinals")
+    }
+  }
+
+  #rollback(error: unknown, statement = "ROLLBACK"): never {
+    // An outer rollback can undo a rebuild whose inner savepoint was released.
+    // Clear before cleanup: a failed rollback also leaves cache validity unknown.
+    this.#indexedSessions.clear()
     let rollbackFailure: { error: unknown } | undefined
     try {
-      this.#database.exec("ROLLBACK")
+      this.#database.exec(statement)
     } catch (rollbackError) {
       rollbackFailure = { error: rollbackError }
     }

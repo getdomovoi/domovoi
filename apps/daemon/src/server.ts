@@ -63,6 +63,7 @@ import {
   type SessionHistoryPage,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
+  type SessionTurn,
   type SessionTransferReconciliationReason,
   type SessionTransferCoverage,
   type SessionTransferPreview,
@@ -182,7 +183,8 @@ import {
 import { permissionDecisionFor } from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
-import { UsageLedger } from "./usage.js"
+import { UsageLedger, type TurnUsage } from "./usage.js"
+import { usageIdentity } from "./usage-accounting.js"
 import type { MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { wslSharePath } from "./wsl-open-target.js"
@@ -484,6 +486,7 @@ export function sessionHistoryEntries(
       sourceId: item.id,
       sessionId,
       createdAt: item.createdAt,
+      ...(item.turnId ? { turnId: item.turnId } : {}),
     }
     if (item.kind === "checkpoint") {
       entries.push({
@@ -596,6 +599,7 @@ export type SessionHistoryIndexMetrics = {
 type IndexedSessionHistory = {
   entries: SessionHistoryEntry[]
   positions: Map<string, number>
+  recordedToolCounts: Map<string, number>
 }
 
 type FilteredSessionHistory = { indices: number[] }
@@ -605,8 +609,15 @@ export const maximumCachedSessionHistoryFilterEntries = 10_000
 const allSessionHistoryCategories = [...sessionHistoryCategorySchema.options].sort()
 
 function indexedSessionHistory(entries: SessionHistoryEntry[]): IndexedSessionHistory {
+  const recordedToolCounts = new Map<string, number>()
+  for (const entry of entries) {
+    if (entry.turnId && (entry.category === "tools" || entry.category === "tests")) {
+      recordedToolCounts.set(entry.turnId, (recordedToolCounts.get(entry.turnId) ?? 0) + 1)
+    }
+  }
   return {
     entries,
+    recordedToolCounts,
     positions: new Map(entries.map((entry, index) => [entry.id, index])),
   }
 }
@@ -656,6 +667,7 @@ export class SessionHistoryIndex {
     snapshot: WorkspaceSnapshot,
     params: RpcParams<"session.history">,
     signal?: AbortSignal,
+    loadTurns?: (ids: string[]) => readonly SessionTurn[],
   ): SessionHistoryPage | undefined {
     throwIfHistoryAborted(signal)
     let indexed = this.#sessions.get(params.sessionId)
@@ -733,9 +745,14 @@ export class SessionHistoryIndex {
       ? filtered.indices.slice(start, end).map((offset) => indexed.entries[offset]!)
       : indexed.entries.slice(start, end)
     const hasMore = start > 0
+    const turns = new Map(loadTurns?.([...new Set(items.flatMap((item) => item.turnId ? [item.turnId] : []))])
+      .filter((turn) => turn.sessionId === params.sessionId).map((turn) => [turn.id, turn]))
     return {
       sessionId: params.sessionId,
-      items,
+      items: items.map((item) => {
+        const turn = item.turnId ? turns.get(item.turnId) : undefined
+        return turn ? { ...item, turn: { ...turn, recordedToolCount: indexed.recordedToolCounts.get(turn.id) ?? 0 } } : item
+      }),
       hasMore,
       ...(hasMore ? { nextCursor: items[0]!.id } : {}),
     }
@@ -755,7 +772,7 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
 >
 
 type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "window" | "close"> & Partial<
-  Pick<UsageLedger, "transferSession" | "replaceTransferredSession" | "begin" | "lookup" | "observe" | "finish" | "interruptPending">
+  Pick<UsageLedger, "transferSession" | "replaceTransferredSession" | "begin" | "lookup" | "lookupTurn" | "observe" | "finish" | "interruptPending" | "turns">
 >
 
 type PreparedTransferPreview = {
@@ -1639,6 +1656,32 @@ export class DomovoiDaemon {
     try { update() } catch (error) {
       this.#reportError("Domovoi could not persist provider usage", error)
     }
+  }
+
+  #turnLink(sessionId: string, provider: string, threadId: string, turnId: string | undefined): { turnId?: string } {
+    let link: { turnId?: string } = {}
+    if (turnId) this.#updateUsageAccounting(() => {
+      const record = this.#usageRecord(provider, threadId, turnId)
+      if (record?.sessionId === sessionId && record.accounting?.turn) link = { turnId: record.turnId }
+    })
+    return link
+  }
+
+  #usageRecord(provider: string, threadId: string, turnId: string): TurnUsage | undefined {
+    let record: TurnUsage | undefined
+    this.#updateUsageAccounting(() => {
+      record = this.#usageLedger.lookup?.({ provider, threadId, turnId })
+      if (record) return
+      const key = usageIdentity({ provider, threadId, turnId })
+      const messages = this.#snapshot.thread.filter((item) => item.kind === "user" && item.providerMessageKey === key)
+      if (messages.length !== 1) return
+      const message = messages[0]!
+      if (!message.turnId) return
+      const linked = this.#usageLedger.lookupTurn?.(message.sessionId, message.turnId)
+      if (linked?.accounting && linked.provider === provider
+        && usageIdentity({ provider, threadId, turnId: linked.accounting.providerTurnId }) === linked.turnId) record = linked
+    })
+    return record
   }
 
   #broadcastNotification(method: string, params: unknown): void {
@@ -2971,7 +3014,7 @@ export class DomovoiDaemon {
     const threadId = threadIdForAgentEvent(event)
     if (event.type === "usage") {
       try {
-        const record = this.#usageLedger.lookup?.({ provider, threadId: event.threadId, turnId: event.turnId })
+        const record = this.#usageRecord(provider, event.threadId, event.turnId)
         if (record) return `session:${record.sessionId}`
       } catch (error) {
         this.#reportError("Domovoi could not resolve provider usage", error)
@@ -5167,7 +5210,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session does not exist")
           return
         }
-        const page = this.#sessionHistory.page(this.#snapshot, params, signal)
+        const page = this.#sessionHistory.page(this.#snapshot, params, signal,
+          (ids) => this.#usageLedger.turns?.(params.sessionId, ids) ?? [])
         if (!page) {
           this.#error(socket, request.id, invalidParams, "History cursor does not exist")
           return
@@ -6563,16 +6607,18 @@ export class DomovoiDaemon {
           this.#loadedAgentThreads.add(loadedThread)
         }
         let turnId = session.activeTurnId
+        let providerMessageId: string | undefined
         try {
           signal?.throwIfAborted()
           if (turnId) {
-            await withTimeout(
+            const steering = await withTimeout(
               preparedTurn.visualContexts.length > 0
                 ? agent.steerTurn(providerThreadId, turnId, prompt, preparedTurn.visualContexts)
                 : agent.steerTurn(providerThreadId, turnId, prompt),
               this.#agentTimeoutMs,
               "Agent steering timed out",
             )
+            providerMessageId = steering?.providerMessageId
           } else {
             turnId = await withTimeout(
               agent.startTurn({
@@ -6591,6 +6637,7 @@ export class DomovoiDaemon {
             this.#updateUsageAccounting(() => this.#usageLedger.begin?.({
               sessionId: session.id, provider: dispatchRuntime.provider, model: dispatchRuntime.model,
               threadId: providerThreadId, turnId: dispatchedTurnId,
+              startedAt: createdAt,
             }))
           }
         } catch (error) {
@@ -6664,11 +6711,16 @@ export class DomovoiDaemon {
             })
           }
         }
+        const turnLink = this.#turnLink(currentSession.id, dispatchRuntime.provider, providerThreadId, turnId)
         this.#snapshot.thread.push({
           id: `user-${randomUUID()}`,
           sessionId: currentSession.id,
           kind: "user",
           body: params.prompt,
+          ...turnLink,
+          ...(turnLink.turnId && providerMessageId ? { providerMessageKey: usageIdentity({
+            provider: dispatchRuntime.provider, threadId: providerThreadId, turnId: providerMessageId,
+          }) } : {}),
           providerPromptDelivery: preparedTurn.providerPromptDelivery,
           createdAt,
         })
@@ -6971,9 +7023,11 @@ export class DomovoiDaemon {
       this.#updateUsageAccounting(() => {
         const identity = { provider, threadId: event.threadId, turnId: event.turnId }
         if (this.#usageLedger.lookup && this.#usageLedger.observe) {
-          const record = this.#usageLedger.lookup(identity)
+          const record = this.#usageRecord(provider, event.threadId, event.turnId)
           const owner = record && this.#snapshot.sessions.find((candidate) => candidate.id === record.sessionId)
-          if (owner && !sessionIsReadOnly(owner)) this.#usageLedger.observe(identity, event)
+          if (owner && record.accounting && !sessionIsReadOnly(owner)) {
+            this.#usageLedger.observe({ ...identity, turnId: record.accounting.providerTurnId }, event)
+          }
           return
         }
         // Compatibility for embedded ledgers that implement the original interface.
@@ -6991,8 +7045,12 @@ export class DomovoiDaemon {
     )
     if (!session) return
     if (sessionIsReadOnly(session)) return
-    const eventTurnId = turnIdForAgentEvent(event)
+    const reportedTurnId = turnIdForAgentEvent(event)
+    const eventRecord = reportedTurnId ? this.#usageRecord(provider, threadId, reportedTurnId) : undefined
+    const eventTurnId = eventRecord?.accounting?.providerTurnId ?? reportedTurnId
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
+    const turnLink = eventRecord?.sessionId === session.id && eventRecord.accounting?.turn
+      ? { turnId: eventRecord.turnId } : {}
     const createdAt = new Date().toISOString()
     const delta: WorkspaceDelta = {
       sessionId: session.id,
@@ -7002,7 +7060,7 @@ export class DomovoiDaemon {
     let requiresFullSnapshot = false
 
     if (event.type === "text-delta") {
-      const itemId = `assistant-message-${event.turnId ?? session.id}`
+      const itemId = `assistant-message-${turnLink.turnId ?? event.turnId ?? session.id}`
       const existing = this.#snapshot.thread.find(
         (item) => item.id === itemId && item.kind === "assistant",
       )
@@ -7012,12 +7070,14 @@ export class DomovoiDaemon {
           id: itemId,
           sessionId: session.id,
           kind: "assistant",
+          ...turnLink,
           body: event.delta,
           createdAt,
         })
       }
       delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
         kind: "assistant.append" as const,
+        ...turnLink,
         id: itemId,
         delta: chunk,
         createdAt,
@@ -7093,7 +7153,7 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "command-output") {
-      const itemId = `tool-${event.itemId ?? event.turnId ?? randomUUID()}`
+      const itemId = providerToolRowId(event.itemId ?? event.turnId ?? randomUUID(), turnLink.turnId)
       const streamKey = `${session.id}\u0000${itemId}`
       const stream = this.#commandOutputRedactors.get(streamKey) ?? {
         itemId,
@@ -7112,6 +7172,7 @@ export class DomovoiDaemon {
           tool: "command",
           status: "running",
           title: "Command output",
+          ...turnLink,
           ...(safeDelta ? { output: safeDelta } : {}),
           createdAt,
         })
@@ -7119,6 +7180,7 @@ export class DomovoiDaemon {
       if (safeDelta) {
         delta.operations.push(...workspaceDeltaChunks(safeDelta).map((chunk) => ({
           kind: "tool-output.append" as const,
+          ...turnLink,
           id: itemId,
           delta: chunk,
           createdAt,
@@ -7279,7 +7341,7 @@ export class DomovoiDaemon {
       })
       if (item && typeof item === "object" && "type" in item && item.type === "commandExecution") {
         const commandItem = item as Record<string, unknown>
-        const id = `tool-${String(commandItem.id ?? randomUUID())}`
+        const id = providerToolRowId(String(commandItem.id ?? randomUUID()), turnLink.turnId)
         const streamKey = `${session.id}\u0000${id}`
         const streamedRemainder = this.#commandOutputRedactors.get(streamKey)?.redactor.flush() ?? ""
         this.#commandOutputRedactors.delete(streamKey)
@@ -7311,6 +7373,7 @@ export class DomovoiDaemon {
             sessionId: session.id,
             kind: "tool",
             tool: "command",
+            ...turnLink,
             status,
             title: commandCopy,
             ...(outputCopy !== undefined || streamedRemainder
@@ -8527,6 +8590,13 @@ function turnIdForAgentEvent(event: AgentEvent): string | undefined {
 
 function providerThreadKey(provider: string, threadId: string): string {
   return `${provider}\u0000${threadId}`
+}
+
+function providerToolRowId(providerItemId: string, turnId: string | undefined): string {
+  const identity = turnId
+    ? createHash("sha256").update(JSON.stringify([turnId, providerItemId])).digest("hex")
+    : providerItemId
+  return `tool-${identity}`
 }
 
 function secureTokenMatch(expected: string, supplied: unknown): boolean {
