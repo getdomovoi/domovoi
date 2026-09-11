@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import { checkCommitTrailers, offendingLines, withoutAttribution } from "./commit-trailers.mjs"
+import { baseRef, checkCommitTrailers, offendingLines, withoutAttribution } from "./commit-trailers.mjs"
 
 test("rejects the trailer that was added 33 times against a standing rule", () => {
   const found = offendingLines("fix: something\n\nClaude-Session: https://claude.ai/code/session_01HX\n")
@@ -94,6 +94,28 @@ test("fails in a shallow clone rather than passing the commits it cannot read", 
   assert.equal(result.ok, false)
   assert.match(result.failures[0], /shallow clone/)
   assert.match(result.failures[0], /fetch-depth: 0/)
+})
+
+// The second version fell back to local main on any origin/main error. With a
+// forbidden commit below the tip and local main already at the tip, that
+// narrowed the range to the clean tip alone and passed. Found by Codex on the
+// peer review of this branch, by injecting the error rather than reading the
+// code.
+test("refuses when origin/main cannot be read instead of narrowing the range to main", async () => {
+  const git = async (args) => {
+    if (args.includes("origin/main")) throw Object.assign(new Error("EIO"), { code: "EIO" })
+    return "0123456789abcdef0123456789abcdef01234567"
+  }
+  await assert.rejects(baseRef(git), { code: "EIO" })
+})
+
+test("moves on from a candidate that does not exist, and only from that", async () => {
+  const absent = Object.assign(new Error("absent"), { code: 1 })
+  const git = async (args) => {
+    if (args.includes("origin/main")) throw absent
+    return args.includes("main") ? "base" : "head"
+  }
+  assert.deepEqual(await baseRef(git), { range: "main..HEAD", named: "main" })
 })
 
 test("fails where git cannot answer at all rather than passing", async (t) => {

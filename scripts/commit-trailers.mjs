@@ -62,14 +62,23 @@ export function offendingLines(message) {
 // for: a gate that cannot see the range says so instead of passing. Found by
 // CodeRabbit on the pull request that introduced it, one week after the same
 // bug was removed from the other checker.
-async function baseRef(git) {
+//
+// The second version fell back from origin/main to main on any error, not only
+// on absence, so a read failure on the remote ref quietly narrowed the range to
+// what local main could see. With --quiet, git exits 1 for a ref that does not
+// exist and something else for a ref it could not read; only the first is a
+// reason to try the next candidate.
+export async function baseRef(git) {
   // On a branch, every commit this branch adds. On main, the tip alone: rewriting
   // what is already published is the thing this check exists to make unnecessary.
   for (const candidate of ["origin/main", "main"]) {
     let base
     try {
-      base = await git(["rev-parse", "--verify", candidate])
-    } catch { continue }
+      base = await git(["rev-parse", "--verify", "--quiet", candidate])
+    } catch (error) {
+      if (error.code === 1) continue
+      throw error
+    }
     const head = await git(["rev-parse", "HEAD"])
     if (head !== base) return { range: `${candidate}..HEAD`, named: candidate }
     return { range: "HEAD~1..HEAD", named: candidate }
