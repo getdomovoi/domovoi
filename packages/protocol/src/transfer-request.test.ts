@@ -41,7 +41,7 @@ describe("session transfer request", () => {
     expect(sessionTransferParamsSchema.safeParse(request).success).toBe(false)
     expect(sessionTransferParamsSchema.safeParse({
       ...request,
-      contractVersion: 1,
+      contractVersion: 2,
       intentDigest: `sha256:${"c".repeat(64)}`,
     }).success).toBe(true)
   })
@@ -56,12 +56,12 @@ describe("session transfer request", () => {
     expect(sessionTransferPreviewParamsSchema.parse(request)).toEqual(request)
     expect(sessionTransferParamsSchema.safeParse({
       ...request,
-      contractVersion: 1,
+      contractVersion: 2,
       intentDigest: `sha256:${"c".repeat(64)}`,
     }).success).toBe(true)
     expect(sessionTransferParamsSchema.safeParse({
       ...request,
-      contractVersion: 1,
+      contractVersion: 2,
     }).success).toBe(false)
   })
 
@@ -78,7 +78,7 @@ describe("session transfer request", () => {
       sessionId: "session-1",
       targetMachineId: `machine-${"b".repeat(32)}`,
       initiatedByClient: "desktop" as const,
-      contractVersion: 1 as const,
+      contractVersion: 2 as const,
       intentDigest: `sha256:${"c".repeat(64)}`,
     }
     expect(sessionTransferParamsSchema.safeParse({
@@ -107,7 +107,7 @@ describe("session transfer request", () => {
       outcome: "succeeded",
       workspacePath: "/worktrees/session-1",
       checkpointCommit: "c".repeat(40),
-      contractVersion: 1,
+      contractVersion: 2,
       transferId: `transfer-${"d".repeat(32)}`,
       ownershipGeneration: 2,
       coverage: { included: [], excluded: [], warnings: [] },
@@ -229,7 +229,7 @@ describe("session transfer refusal messages", () => {
     for (const reason of reasons) {
       expect(sessionTransferPreviewSchema.safeParse({
         allowed: false,
-        contractVersion: 1,
+        contractVersion: 2,
         sessionId: "session-1",
         sourceMachineId: `machine-${"a".repeat(32)}`,
         targetMachineId: `machine-${"b".repeat(32)}`,
