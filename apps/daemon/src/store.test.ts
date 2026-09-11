@@ -167,7 +167,7 @@ describe("SqliteWorkspaceStore", () => {
 
     const store = new SqliteWorkspaceStore(databasePath, imported)
     store.saveTransferredSnapshot(imported, {
-      version: 1,
+      version: 2,
       transferId,
       manifestDigest,
       sessionId: session.id,

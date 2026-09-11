@@ -37,7 +37,8 @@ export {
   type SessionTransferContractRefusal,
 } from "./transfer-contract-refusals.js"
 
-export const sessionTransferContractVersion = 1 as const
+// Version 2 carries portable usage accounting that strict version-1 readers cannot parse.
+export const sessionTransferContractVersion = 2 as const
 export const sessionTransferContractVersionSchema = z.literal(sessionTransferContractVersion)
 export const sessionTransferIntentDigestSchema = sha256DigestSchema
 
@@ -111,7 +112,8 @@ export const sessionTransferUsageRecordSchema = z.discriminatedUnion("costSource
       : usage.costSource === "provider-reported"
         && costReports.every((report) => report.currency === usage.currency)
         && usage.costMicros === costReports.reduce((sum, report) => sum + report.costMicros, 0)
-    if (usage.turnId !== accounting.key || usage.model !== accounting.requestedModel || !countersMatch || !costMatches) {
+    if (usage.turnId !== accounting.key || usage.provider !== accounting.provider
+      || usage.model !== accounting.requestedModel || !countersMatch || !costMatches) {
       context.addIssue({ code: "custom", path: ["accounting"], message: "Usage must match its accounting evidence" })
     }
   }

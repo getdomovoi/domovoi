@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { sessionTransferContractVersion } from "@getdomovoi/protocol"
 import type { FleetMachine, SessionSummary, SessionTransferResult } from "@getdomovoi/protocol"
 
 import { TransferSessionDialog } from "./transfer-session-dialog.js"
@@ -48,7 +49,7 @@ const succeeded: SessionTransferResult = {
   outcome: "succeeded",
   workspacePath: "/worktrees/session-billing",
   checkpointCommit: "c".repeat(40),
-  contractVersion: 1,
+  contractVersion: sessionTransferContractVersion,
   transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   ownershipGeneration: 2,
   coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
@@ -67,7 +68,7 @@ function renderDialog(overrides: {
   const onOutcome = vi.fn(overrides.onOutcome ?? (() => {}))
   const onPreview = vi.fn(async () => ({
     allowed: true as const,
-    contractVersion: 1 as const,
+    contractVersion: sessionTransferContractVersion,
     sessionId: session.id,
     sourceMachineId: source.id,
     targetMachineId: target.id,
@@ -173,7 +174,7 @@ it("moves the session with a git bundle by default", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransfer).toHaveBeenCalledWith({
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: "session-billing",
     targetMachineId: target.id,
@@ -202,7 +203,7 @@ it("moves the session over the named remote", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransfer).toHaveBeenCalledWith({
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: "session-billing",
     targetMachineId: target.id,
@@ -390,7 +391,7 @@ it("waits for the daemon to allow the move before offering it", async () => {
 it("offers no move when the daemon refuses to preview one", async () => {
   const onPreview = vi.fn(async () => ({
     allowed: false as const,
-    contractVersion: 1 as const,
+    contractVersion: sessionTransferContractVersion,
     sessionId: session.id,
     sourceMachineId: source.id,
     targetMachineId: target.id,

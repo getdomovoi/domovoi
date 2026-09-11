@@ -147,7 +147,7 @@ function manifestFor(
 ): SessionTransferManifest {
   const digest = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
   return sessionTransferManifestSchema.parse({
-    version: 1,
+    version: 2,
     transferId: id,
     sessionId: "session-1",
     sourceMachineId,
@@ -189,9 +189,10 @@ describe("file transfer transaction journal", () => {
       ...manifestFor(Buffer.from("state"), Buffer.from("repository")),
       createdAt: "2026-09-03T21:00Z",
     }
-    // Fixed digest of the legacy canonical JSON, computed before the upgrade.
+    // Fixed digest pins contract-v2 canonical JSON with the minute-precision timestamp.
     // Writing raw bytes keeps this regression on the journal's read path.
-    const manifestDigest = "sha256:41400ea0d7ad768e391bed8eef34a39e0208986e49f036c6cad73694f7dca667"
+    const manifestDigest = "sha256:61ae5331496efab2f61d71a06431929b3ab7fccdf505458289f48b29b84ebe7a"
+    expect(sessionTransferManifestDigest(manifest)).toBe(manifestDigest)
     const path = join(root, transferId, "manifest.json")
     const bytes = JSON.stringify({ manifestDigest, manifest })
     await mkdir(dirname(path), { recursive: true })
@@ -200,7 +201,6 @@ describe("file transfer transaction journal", () => {
     const reopened = new FileTransferTransactions(root)
     const loaded = await reopened.manifest(transferId, manifestDigest)
     expect(loaded).toEqual(manifest)
-    expect(sessionTransferManifestDigest(loaded)).toBe(manifestDigest)
     expect(await readFile(path, "utf8")).toBe(bytes)
     expect(sessionTransferManifestDigest({ ...loaded, createdAt: "2026-09-03T21:00:00Z" }))
       .not.toBe(manifestDigest)
