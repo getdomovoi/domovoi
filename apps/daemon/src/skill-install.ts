@@ -205,6 +205,9 @@ export async function previewSkillInstall(
     throw new SkillSourceError(`SKILL.md is larger than ${maxSkillFileBytes} bytes: ${source.path}`)
   }
   const content = await readFile(skillFile.absolutePath, "utf8")
+  if (Buffer.byteLength(content, "utf8") > maxSkillFileBytes) {
+    throw new SkillSourceError(`SKILL.md decoded UTF-8 text is larger than ${maxSkillFileBytes} bytes: ${source.path}`)
+  }
   const contentDigest = skillContentDigest(content)
   const skill = skillFromContent(content, {
     id: skillId(listing.root),
