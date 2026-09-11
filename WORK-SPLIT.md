@@ -367,8 +367,8 @@ checker.
 **The same finding, one layer out.** `REVISIONS.json` names a source nothing verifies is reachable;
 pull request bodies, review comments and scratch records name shas nothing verifies still exist.
 `scripts/tick-citations.mjs` covers `[x]` boxes in `ROADMAP.md` and `WORK-SPLIT.md` and nothing
-else, so a history rewrite silently invalidates every prose reference outside those two files. It
-did exactly that on 2026-09-11: the checker caught three citations in `ROADMAP.md` and two in
+else, so a history rewrite silently invalidates every prose reference to a rewritten sha outside
+those two files. It did exactly that on 2026-09-11: the checker caught three citations in `ROADMAP.md` and two in
 `WORK-SPLIT.md`, and caught none of the shas quoted across a dozen pull request comments. One rule,
 two instances — a reference is only as good as the thing that checks it still resolves, and neither
 of these has one.
