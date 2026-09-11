@@ -70,8 +70,9 @@ invalid. A target continues after the highest imported ordinal; imported usage
 does not become newly metered local usage.
 
 Only schema-valid accounting can reserve an ordinal. Before a session's first write,
-the ledger rebuilds its derived ordinal index from that session's evidence; dormant
-history adds no startup scan. Corrupt accounting keeps its raw metadata and measured
+the ledger rebuilds its derived ordinal index from that session's evidence. The first
+schema upgrade creates the SQLite index across the whole usage table once; subsequent
+accounting revalidation is session-local. Corrupt accounting keeps its raw metadata and measured
 totals without reserving a number. Later writes update the evidence and index together.
 The in-memory validation cache holds at most 1,024 sessions; eviction or rollback
 causes the next write to revalidate. If valid history reaches `Number.MAX_SAFE_INTEGER`, beginning
