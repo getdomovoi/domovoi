@@ -6,6 +6,7 @@ import { join, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import { afterEach, describe, expect, it } from "vitest"
+import { maximumSkillRevisionBytes } from "@getdomovoi/protocol"
 
 import { SqliteSkillReviews } from "./skill-reviews.js"
 import {
@@ -244,6 +245,25 @@ describe("FileSkillCatalog", () => {
     await expect(new FileSkillCatalog([
       { path: root, scope: "user", source: "domovoi" },
     ]).list()).resolves.toEqual([])
+  })
+
+  it("rejects decoded text that exceeds the reviewed UTF-8 limit", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-skills-decoded-size-"))
+    scratchDirectories.push(scratch)
+    const root = join(scratch, "skills")
+    const directory = await skill(root, "alpha", "name: alpha\ndescription: Alpha instructions.")
+    const roots = [{ path: root, scope: "user", source: "domovoi" }] as const
+    const catalog = new FileSkillCatalog([...roots])
+    const [summary] = await catalog.list()
+    const bytes = Buffer.concat([
+      await readFile(join(directory, "SKILL.md")),
+      Buffer.alloc(Math.ceil(maximumSkillRevisionBytes / 2), 0xff),
+    ])
+    expect(bytes.length).toBeLessThan(maximumSkillRevisionBytes)
+    expect(Buffer.byteLength(bytes.toString("utf8"))).toBeGreaterThan(maximumSkillRevisionBytes)
+    await writeFile(join(directory, "SKILL.md"), bytes)
+    await expect(catalog.read(summary!.id)).rejects.toThrow("Skill not found")
+    await expect(new FileSkillCatalog([...roots]).list()).resolves.toEqual([])
   })
 
   it("follows user links but not project links outside their root", async () => {

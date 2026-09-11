@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
+import { maximumSkillRevisionBytes } from "@getdomovoi/protocol"
 
 import { SkillInstallError, SkillSourceError } from "./skill-install.js"
 import {
@@ -70,6 +71,21 @@ function digestOf(content: string): string {
 }
 
 describe("skill install", () => {
+  it.each(["preview", "install"])("refuses decoded UTF-8 expansion during %s", async (operation) => {
+    const { home, source, catalog } = await scratch()
+    const input = { kind: "path" as const, path: source }
+    const preview = await catalog.installPreview(input)
+    const bytes = Buffer.concat([Buffer.from(skillContent), Buffer.alloc(Math.ceil(maximumSkillRevisionBytes / 2), 0x80)])
+    expect(bytes.length).toBeLessThan(maximumSkillRevisionBytes)
+    expect(Buffer.byteLength(bytes.toString("utf8"))).toBeGreaterThan(maximumSkillRevisionBytes)
+    await writeFile(join(source, "SKILL.md"), bytes)
+    const result = operation === "preview"
+      ? catalog.installPreview(input)
+      : catalog.install({ source: input, sourceDigest: preview.sourceDigest, scope: "user" })
+    await expect(result).rejects.toThrow(`SKILL.md decoded UTF-8 text is larger than ${maximumSkillRevisionBytes} bytes`)
+    await expect(stat(join(home, ".domovoi", "skills", "pr-triage"))).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
   it("previews the declared capabilities, trust, digests, files, and targets", async () => {
     const { home, project, source, catalog } = await scratch()
     const { privateKey, publicKey } = generateSkillSigningKey()

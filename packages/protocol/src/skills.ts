@@ -3,28 +3,13 @@ import { z } from "zod"
 import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
 import { clientIdentityIdSchema, clientKindSchema } from "./identifiers.js"
+import { skillCapabilityManifestSchema, skillCapabilitySchema } from "./skill-scopes.js"
+export * from "./skill-scopes.js"
 
 export const skillScopeSchema = z.enum(["user", "project", "system"])
 export const skillSourceSchema = z.enum(["domovoi", "agents", "kilo", "claude", "codex"])
 export const skillIdSchema = z.string().regex(/^skill-[a-f0-9]{12}$/)
 export const maximumTurnSkillSelections = 8
-
-export const skillCapabilitySchema = z.enum([
-  "filesystem.read",
-  "filesystem.write",
-  "process.execute",
-  "network.connect",
-  "secrets.read",
-  "preview.render",
-])
-
-export const skillCapabilityManifestSchema = z.object({
-  version: z.literal(1),
-  capabilities: z.array(skillCapabilitySchema).max(32).refine(
-    (capabilities) => new Set(capabilities).size === capabilities.length,
-    "Capabilities must be unique",
-  ),
-}).strict()
 
 export const skillFrontmatterConfigSchema = z.object({
   manifest: skillCapabilityManifestSchema.optional(),
@@ -37,6 +22,25 @@ const signatureEvidenceSchema = z.object({
 })
 
 export const skillContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
+export const maximumSkillRevisionBytes = 128 * 1_024
+// This synchronous wire schema checks shape and exact UTF-8 size. The daemon
+// verifies contentDigest when retaining a revision and again before serving it.
+export const skillReviewRevisionResultSchema = z.discriminatedUnion("state", [
+  z.object({
+    id: skillIdSchema,
+    contentDigest: skillContentDigestSchema,
+    state: z.literal("available"),
+    content: z.string().check(utf16MaxLength(maximumSkillRevisionBytes)),
+    bytes: z.number().int().nonnegative().max(maximumSkillRevisionBytes),
+  }).strict().refine((value) => new TextEncoder().encode(value.content).byteLength === value.bytes, "Revision byte count must match its exact UTF-8 text"),
+  z.object({
+    id: skillIdSchema,
+    contentDigest: skillContentDigestSchema,
+    state: z.literal("unavailable"),
+    reason: z.enum(["not-retained", "integrity-mismatch"]),
+  }).strict(),
+])
+export type SkillReviewRevisionResult = z.infer<typeof skillReviewRevisionResultSchema>
 
 export const skillDeclaredSignatureSchema = signatureEvidenceSchema.extend({
   version: z.literal(1),

@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite"
 
 import { skillManualReviewSchema, type SkillManualReview } from "@getdomovoi/protocol"
+import { SqliteSkillRevisions, type SkillRevisions, type SkillRevisionLimits } from "./skill-revisions.js"
 
 export const maximumSkillManualReviews = 512
 
@@ -11,6 +12,7 @@ export type SkillManualReviewInput = {
 }
 
 export interface SkillReviews {
+  readonly revisions?: SkillRevisions
   find(skillId: string, contentDigest: string): SkillManualReview | undefined
   record(input: SkillManualReviewInput): SkillManualReview
   revoke(skillId: string): void
@@ -39,9 +41,11 @@ function toManualReview(row: StoredSkillReview): SkillManualReview {
 
 export class SqliteSkillReviews implements SkillReviews {
   #database: DatabaseSync
+  readonly revisions: SqliteSkillRevisions
 
-  constructor(database: DatabaseSync) {
+  constructor(database: DatabaseSync, revisionLimits: SkillRevisionLimits = {}) {
     this.#database = database
+    this.revisions = new SqliteSkillRevisions(database, revisionLimits)
     this.#database.exec(`
       CREATE TABLE IF NOT EXISTS skill_manual_reviews (
         skill_id TEXT NOT NULL,
