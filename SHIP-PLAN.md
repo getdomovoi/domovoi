@@ -106,8 +106,10 @@ Parallel with Phase 0. Touches nothing the gates decide.
       **Reassigned 2026-09-10, not yet agreed by Codex.** The binary is `domovoid`, declared at
       `apps/daemon/package.json:20` against `apps/daemon/dist/index.js`, and every CLI file is
       under `apps/daemon/src/` — Codex's half by `WORK-SPLIT.md`'s ownership table, so `[CC]`
-      contradicts rule 1. `service`, `skill` and `pair` exist today; `install`, `status`, `doctor`,
-      `logs` and `skill push` do not. No binary named `domovoi` without the `d` exists or is
+      contradicts rule 1. Codex accepted it as `CX` and corrected the scope: `domovoid service
+      install` and `domovoid service status` already exist (`index.ts:86`), so what is missing
+      there is top-level aliases rather than the commands. `doctor`, `logs` and `skill push` do
+      not exist and their behaviour is undefined. No binary named `domovoi` without the `d` exists or is
       declared anywhere, so if a separate user-facing CLI is intended that is a product decision
       rather than a client task, and it needs a home before it needs an owner.
 - [ ] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
