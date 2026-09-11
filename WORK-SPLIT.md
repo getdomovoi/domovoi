@@ -498,6 +498,45 @@ re-read at check time — a downloaded bundle with its own digest, rather than a
 reachable only through a tool — the caveat disappears and it becomes strictly better than
 `--accept-new`. Until then it is a trusted file in a derived file's clothes.
 
+### D4 · A disabled control that cannot say why — 56 sites, needs a rule and a pass
+Measured 2026-09-10 after the same failure appeared three times in one session: a terminal
+disconnected, a skills review with no project open, and a blocked skill, each a control that went
+inert and said nothing. fetzy's framing makes it three branches rather than two — does not apply
+here, remove it; cannot act for a reason outside the control's own context, say why; cannot act
+because of the user's adjacent state, say nothing, since "type something to send" is noise.
+
+- A first selector — any `disabled` with no `aria-describedby`, `title` or `aria-label` — fired
+  **102** times out of 124. That number says the selector asks the wrong question, not that the
+  codebase fails 102 times.
+- Scoping it to the third branch, by flagging only a `disabled` expression whose identifiers are
+  not bound by `useState`/`useReducer` in the file, gives **56 external and 56 local-only**.
+  `disabled={!input.trim()}` stops firing; `disabled={!connected}`, `disabled={!projectId}` and
+  `disabled={skill.trust.state === "blocked"}` still do.
+- `disabled={disabled}` is excluded as plumbing: the reason lives at the call site that passed it,
+  and that call site is counted there. That alone took 70 to 56.
+- The measurement script is scratch, not committed. It resolves names per file rather than per
+  component, so a component that shadows a prop name is misfiled; the error is small and in the
+  direction of over-reporting.
+
+**Not yet a task to start.** 56 is real work and each one is a judgement between branch one and
+branch two. The rule wants to be a custom ESLint rule with scope analysis rather than a
+`no-restricted-syntax` selector, since the selector cannot see what is local.
+
+### D5 · `workspace-shell.tsx` needs splitting — fourth flag in one session
+Not a file that keeps coming up any more. The case, with the counts as evidence:
+
+- **4,600 lines**, and it holds `Thread`, `HistoryPanel`, `RuntimeControls`, the session sidebar
+  and the shell itself.
+- `D3` is a standing complaint about `Thread`'s prop surface, raised before this session.
+- **45 of the 102** first-pass disabled sites, and **22 of the 56** scoped ones, are in this file
+  alone — more than a third either way.
+- Every cross-cutting pass this session had to touch it: the history row, the turn meta, the
+  session-start fork, both empty states, the status dot.
+
+The prop surface is the symptom `D3` names; the size is why every unrelated change lands here.
+Splitting it is not a refactor for tidiness, it is what stops the next cross-cutting item being a
+merge conflict with the one before it.
+
 ### D3 · `Thread`'s prop surface
 Three separate flags against it, and `pendingTransferTargetId` /
 `onPendingTransferTargetChange` added two more to avoid a second route to the same consent
