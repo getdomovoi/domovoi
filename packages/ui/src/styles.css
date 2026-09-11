@@ -270,6 +270,15 @@
   [data-slot="scroll-area-viewport"] {
     transition-duration: 80ms;
   }
+
+  /* An entrance can be shortened to 80ms and still read as an entrance. A loop
+     cannot: shortening an infinite shimmer makes it twelve sweeps a second,
+     which is the opposite of what the preference asked for. It stops instead,
+     and the sentence beside the skeleton carries the state alone. */
+  .skeleton-bar {
+    animation: none;
+    background-position: 0 0;
+  }
 }
 
 @media (forced-colors: active) {
@@ -308,6 +317,26 @@
 /* The three legal small-type roles, named so nobody has to remember which
    number belongs to which. Eyebrow carries its tracking with it, because the
    size alone is not the role. */
+/* Work in flight, from the design system's motion contract: motion is
+   functional when it says a value is live or work is in flight, and decorative
+   otherwise. A still grey block is indistinguishable from a real but empty row
+   and from a render that has hung. The shimmer says "not yet"; stillness says
+   nothing, and the sentence beside it is equally still. If a read stalls, this
+   is the only thing on screen still saying the client is trying.
+
+   dv-pulse is the other family and is reserved for something that wants a
+   decision. A skeleton wants nothing. */
+@keyframes dv-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@utility skeleton-bar {
+  background: linear-gradient(90deg, var(--skel) 25%, var(--skel-hi) 37%, var(--skel) 63%);
+  background-size: 200% 100%;
+  animation: dv-shimmer 1.6s linear infinite;
+}
+
 @utility text-micro {
   font-size: var(--text-micro);
 }

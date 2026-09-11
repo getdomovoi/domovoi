@@ -7,10 +7,17 @@ import { cn } from "./lib/utils"
 // else in the product gets one, because a load short enough not to be seen does
 // not need to be drawn.
 //
-// No animation on the bars themselves. A pulse is a spinner in a rectangle's
-// clothes, and the sentence beneath already says something is happening.
+// The bars shimmer, and that is functional rather than decorative by the design
+// system's own test. A still grey block is indistinguishable from a real but
+// empty row and from a render that has hung; the shimmer says "not yet", and the
+// sentence beside it is equally still so it cannot carry that alone. If the read
+// stalls, this is the only thing left on screen saying the client is trying.
+//
+// dv-pulse is the other family, reserved for something that wants a decision,
+// and would be the wrong claim here: a skeleton wants nothing. Reduced motion
+// collapses both to 0.01ms through the tokens rather than through omitting them.
 function Bar({ className }: { className?: string }) {
-  return <span aria-hidden className={cn("block rounded-sm bg-muted", className)} />
+  return <span aria-hidden className={cn("skeleton-bar block rounded-sm", className)} />
 }
 
 export function SessionListSkeleton({ reading }: { reading: string }) {
