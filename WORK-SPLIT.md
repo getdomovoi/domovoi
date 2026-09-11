@@ -127,6 +127,28 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    local `main`, `origin/main` read without a fetch, `cat-file -e` standing in for reachability, a
    checker that exited zero when it could not verify, and now a written, agreed rule read past 33
    times. Where a rule matters, build the thing that refuses.
+10. **A checker that shells out treats a non-zero exit as refusal, never as absence of findings.**
+   The shallow clone is the standard probe: run the checker where `git` cannot answer, and it has
+   to fail rather than pass.
+
+   Two instances a week apart, both written here. `scripts/tick-citations.mjs` returned `ok` when
+   it could not determine reachability — fixed in `b12a784` after CodeRabbit raised it as major.
+   `scripts/commit-trailers.mjs` returned `ok` on every `git` failure, so a shallow clone could not
+   enumerate the branch and the gate passed — fixed in `1a17ff5c` after CodeRabbit raised it as
+   major. The second was written in the commit whose entire argument is that gates beat vigilance,
+   by the agent who had fixed the first.
+
+   **Nothing generalised the first fix, because it lived in a file rather than in a rule.** A gate
+   is code, and subject to every failure the code it gates is subject to — including the failure the
+   gate exists to catch. Writing it does not exempt it.
+
+   So, for every checker under `scripts/` that runs a subprocess: a failed command is a refusal that
+   names what would make it answerable, never an empty result set. `catch { return { ok: true } }`
+   is the shape to grep for. Both checkers now carry a regression that clones a real repository at
+   `--depth 1` and asserts the refusal, and both were verified by restoring the fail-open and
+   watching the tests go red: `11 pass / 3 fail` and `9 pass / 1 fail` respectively.
+
+   Written as a rule rather than a third anecdote, because there are two and a third is likely.
 
 ---
 
@@ -350,6 +372,17 @@ did exactly that on 2026-09-11: the checker caught three citations in `ROADMAP.m
 `WORK-SPLIT.md`, and caught none of the shas quoted across a dozen pull request comments. One rule,
 two instances — a reference is only as good as the thing that checks it still resolves, and neither
 of these has one.
+
+**A third in the same family, and the one that costs work rather than confidence.**
+`scripts/tick-citations.mjs` validates claims of completion: it fails an `[x]` with no citation, and
+an `[x]` citing an unreachable sha. Nothing validates `[ ]`. The opposite error — work finished and
+never claimed — is invisible by construction, and it is worse in kind: a false `[x]` produces
+misplaced confidence, while a stale `[ ]` produces an agent starting work that is already done.
+`CC4` sat unticked while this very branch had vendored the files it asks for, through commits that
+are ancestors of it, and no gate could have said so because the section never claimed to be
+finished. Found by a reviewer reading the prose against the tree, which is the only thing that
+catches it. Not closable by the existing checker either: proving a `[ ]` is genuinely outstanding
+means knowing what the task meant, and that is a reading rather than a rule.
 
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can
