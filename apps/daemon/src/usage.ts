@@ -540,8 +540,9 @@ export class UsageLedger {
     if (this.#indexedSessions.has(sessionId)) return
     // This column is a derived index of schema-valid evidence, not a second
     // source of truth. Rebuild before a session's first write, including writes
-    // that only consult it through the unique index. Dormant history does not
-    // add startup work. Keep raw evidence and totals while repairing the cache.
+    // that only consult it through the unique index. After the initial SQLite
+    // index migration, revalidation visits only this session's evidence.
+    // Keep raw evidence and totals while repairing the cache.
     // A savepoint also works inside begin/transfer's enclosing transaction.
     this.#database.exec("SAVEPOINT usage_turn_ordinals")
     try {
