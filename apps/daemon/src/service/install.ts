@@ -12,7 +12,7 @@ import { createServiceConfiguration, serializeServiceConfiguration, serviceConfi
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
-import { removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { readWindowsTaskState, removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
 
 const serviceName = "domovoid"
 const unitFile = `${serviceName}.service`
@@ -446,28 +446,36 @@ async function statusWithDeadline(
       "print",
       `gui/${assertUid(target.uid)}/${agentLabel}`,
     ], deadline))
-    if (printed.code !== 0 && !isMissingServiceFailure("darwin", printed)) {
+    // print answers 113 for an absent service. Other failures cannot become
+    // absence merely because their diagnostics happen to mention the label.
+    if (printed.code !== 0 && (printed.code !== 113 || !isMissingServiceFailure("darwin", printed))) {
       throw captureFailure("launchctl", printed)
+    }
+    let state: string | undefined
+    if (printed.code === 0) {
+      // launchctl indents job fields with one tab; nested blocks repeat state.
+      // Refuse an unreadable format instead of treating loadedness as liveness.
+      const states = [...printed.stdout.matchAll(/^\tstate = ([^\r\n]+)\r?$/gm)]
+      state = states[0]?.[1]?.trim()
+      if (states.length !== 1 || !state) throw new Error("launchctl did not report one agent runtime state")
     }
     return {
       installed,
-      running: printed.code === 0,
+      running: state === "running",
       detail: installed
-        ? `${path} is ${printed.code === 0 ? "loaded" : "not loaded"}`
+        ? `${path} is ${state === undefined ? "not loaded" : `loaded (${state})`}`
         : `no launch agent at ${path}`,
     }
   }
 
   if (target.platform === "win32") {
-    const query = await withinServiceDeadline(deadline, () => effects.capture("schtasks", ["/query", "/tn", displayName, "/fo", "list"], deadline))
-    if (query.code !== 0 && !isMissingServiceFailure("win32", query)) {
-      throw captureFailure("schtasks", query)
-    }
-    const running = /status:\s*running/i.test(query.stdout)
+    const state = await readWindowsTaskState(displayName, effects, deadline)
+    const installed = state !== "missing"
+    const running = state === "4"
     return {
-      installed: query.code === 0,
+      installed,
       running,
-      detail: query.code === 0
+      detail: installed
         ? `${displayName} is ${running ? "running" : "registered but not running"}`
         : `no logon task named ${displayName}`,
     }

@@ -8,7 +8,7 @@ import { expect, it } from "vitest"
 import { OperationDeadline, OperationDeadlineExceededError } from "../operation-deadline.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
-import { nodeServiceEffects, removeService, type ServiceCommand } from "./install.js"
+import { nodeServiceEffects, removeService, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
 import { windowsPowerShellPath, windowsTaskRemovalPlan } from "./windows-task.js"
 import { removeScratchDirectory } from "../test-scratch.js"
 
@@ -20,7 +20,7 @@ const powershell = (script: string): ServiceCommand => ({
   args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
 })
 
-it.runIf(process.platform === "win32")("stops a real scheduled process before removing its task", async () => {
+it.runIf(process.platform === "win32")("reports and stops a real scheduled process before removing its task", async () => {
   // This is the native boundary, not an interception of Task Scheduler. Never
   // touch the operator's Domovoi task: preflight a UUID name and register with
   // TASK_CREATE (2), not CREATE_OR_UPDATE. No elevation or password is requested.
@@ -84,9 +84,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(Number.isSafeInteger(pid) && pid > 0).toBe(true)
       expect(() => process.kill(pid!, 0)).not.toThrow()
     }))
-    expect(await capture(plan.inspect, deadline)).toMatchObject({ code: 0, stdout: "domovoi-task:4\r\n" })
-
-    // Run the real removal orchestration and real subprocesses. The sole
+    // Run real status/removal orchestration and real subprocesses. The sole
     // substitution is the task name, so a /delete-only regression leaves the
     // test's live process behind and fails the liveness assertion below.
     const redirect = (command: string, args: string[]) => {
@@ -100,8 +98,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(args).toEqual(["/delete", "/tn", "Domovoi daemon", "/f"])
       return { command, args: ["/delete", "/tn", name, "/f"] }
     }
-    phase = "service removal"
-    await withinServiceDeadline(deadline, () => removeService({ platform: "win32", home: directory! }, {
+    const scopedEffects: ServiceEffects = {
       ...effects,
       claimServiceOperation: nodeServiceEffects({ userHomeDirectory: directory! }).claimServiceOperation,
       capture: (command, args, active) => capture(redirect(command, args), active),
@@ -109,14 +106,20 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
         const redirected = redirect(command, args)
         return effects.run(redirected.command, redirected.args, active)
       },
-    }))
+    }
+    phase = "service status"
+    expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "win32" }, scopedEffects)))
+      .toMatchObject({ installed: true, running: true })
+    phase = "service removal"
+    await withinServiceDeadline(deadline, () => removeService({ platform: "win32", home: directory! }, scopedEffects))
     phase = "stopped process observation"
     await withinServiceDeadline(deadline, () => waitForDaemon(() => {
       deadline.throwIfExpired()
       expect(() => process.kill(pid!, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
     }))
     phase = "removed task inspection"
-    expect(await capture(plan.inspect, deadline)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
+    expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "win32" }, scopedEffects)))
+      .toMatchObject({ installed: false, running: false })
     created = false
   } catch (cause) {
     if (!(cause instanceof OperationDeadlineExceededError)) throw cause

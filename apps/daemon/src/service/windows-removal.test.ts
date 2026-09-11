@@ -219,7 +219,7 @@ describe("refusals that never reach Task Scheduler", () => {
     vi.stubEnv("SystemRoot", "")
     const { effects } = taskManager()
     const error = await refusal(effects)
-    expect(error.message).toBe("SystemRoot must name the absolute local Windows directory before removing a service")
+    expect(error.message).toBe("SystemRoot must name the absolute local Windows directory before querying or removing a service")
     expect(error.message).not.toMatch(/Task Scheduler/)
     expect(effects.capture).not.toHaveBeenCalled()
   })

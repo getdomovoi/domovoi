@@ -236,10 +236,16 @@ production-daemon state recovery. The earlier claim that macOS remained unexecut
 what was built and proved, inviting duplicated work. The
 [S1.1 assessment](service-lifecycle-assessment.md) records the platform gaps and WSL options.
 
-macOS status reports loadedness, not liveness. `domovoid service status` runs
-`launchctl print gui/<uid>/<label>` and reads its exit code, so an agent whose process has exited
-and will not be relaunched still reports as running. The lifecycle test asserts that exact wording
-rather than treating it as a liveness check.
+macOS status reads the job's own runtime `state` from
+`launchctl print gui/<uid>/<label>`. Only `running` reports a live job; a loaded agent whose
+process exited or is waiting for a scheduled spawn remains installed but reports not running.
+The crash-supervision test also checks status after a clean exit. A missing or ambiguous runtime
+field is a refusal, as is any command failure other than the missing-service answer (113).
+
+Windows status uses the numeric Task Scheduler `RegisteredTask.State` through the same read-only
+COM inspection as removal. State 4 reports running; 1, 2 and 3 report registered but not running.
+Only an explicit missing-task answer reports no registration. Unknown state 0, malformed output
+and every nonzero PowerShell exit refuse the query. Localized `schtasks` prose is not parsed.
 
 Beyond those native tests these are configuration delivery and focused removal checks, not full
 native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture

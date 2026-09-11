@@ -350,7 +350,7 @@ it.runIf(domainReachable)("installs, reports and removes a real launchd user age
 
     const status = await withinServiceDeadline(deadline, () => serviceStatus({ platform: "darwin", home, uid }, effects))
     expect(status).toMatchObject({ installed: true, running: true })
-    expect(status.detail).toBe(`${agentPath} is loaded`)
+    expect(status.detail).toBe(`${agentPath} is loaded (running)`)
 
     const removal = await withinServiceDeadline(deadline, () => removeService({ platform: "darwin", home, uid }, effects))
     expect(removal).toMatchObject({ kind: "file", path: agentPath })
@@ -453,6 +453,8 @@ it.runIf(domainReachable)("relaunches a crashed agent and leaves a cleanly exite
     // pass this half. Both states have to be excluded.
     expect(exited.get("state")).not.toBe("running")
     expect(exited.get("state")).not.toBe("spawn scheduled")
+    expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "darwin", home, uid }, effects)))
+      .toMatchObject({ installed: true, running: false })
     expect(() => process.kill(relaunched, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
     expect(Number(await readFile(ready, "utf8"))).toBe(relaunched)
   })

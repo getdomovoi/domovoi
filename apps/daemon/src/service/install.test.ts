@@ -3,7 +3,7 @@ import * as filesystem from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
 import { createProductionDaemon } from "../production-daemon.js"
 import { createServiceConfiguration } from "./configuration.js"
@@ -397,6 +397,9 @@ describe("removeService", () => {
 })
 
 describe("serviceStatus", () => {
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+  afterEach(() => { vi.unstubAllEnvs() })
+
   it("reports a loaded systemd unit as installed and running", async () => {
     const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "active\n" })) })
     await expect(serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies)).resolves.toEqual({
@@ -427,15 +430,91 @@ describe("serviceStatus", () => {
     })
   })
 
-  it("reads a Windows logon task's own status line", async () => {
+  it.each(["running", "not running", "spawn scheduled"])("reports the launch agent's runtime state %j", async (state) => {
     const dependencies = effects({
-      capture: vi.fn(async () => ({ code: 0, stdout: "TaskName: Domovoi daemon\r\nStatus: Running\r\n" })),
+      capture: vi.fn(async () => ({ code: 0, stdout: `gui/501/sh.domovoi.domovoid = {\n\tstate = ${state}\n}\n` })),
+    })
+    await expect(serviceStatus(darwin, dependencies)).resolves.toEqual({
+      installed: true,
+      running: state === "running",
+      detail: `/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist is loaded (${state})`,
+    })
+  })
+
+  it("does not borrow a nested launchd state for the agent", async () => {
+    const dependencies = effects({ capture: vi.fn(async () => ({
+      code: 0,
+      stdout: "gui/501/sh.domovoi.domovoid = {\n\tresource coalition = {\n\t\tstate = active\n\t}\n\tstate = not running\n}\n",
+    })) })
+    await expect(serviceStatus(darwin, dependencies)).resolves.toMatchObject({ installed: true, running: false })
+  })
+
+  it.each(["", "\t\tstate = running\n", "\tstate = running\n\tstate = not running\n"])(
+    "refuses a loaded agent without one unambiguous runtime state: %j", async (stdout) => {
+      const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout })) })
+      await expect(serviceStatus(darwin, dependencies)).rejects.toThrow("launchctl did not report one agent runtime state")
+    },
+  )
+
+  it("reports an absent launch agent only on the manager's missing-service answer", async () => {
+    const dependencies = effects({
+      exists: vi.fn(async () => false),
+      capture: vi.fn(async () => ({ code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid"' })),
+    })
+    await expect(serviceStatus(darwin, dependencies)).resolves.toMatchObject({ installed: false, running: false })
+  })
+
+  it.each([1, 5, 114, 127])("refuses launchctl failure %i even if its text mentions a missing service", async (code) => {
+    const dependencies = effects({ capture: vi.fn(async () => ({
+      code, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid"',
+    })) })
+    await expect(serviceStatus(darwin, dependencies)).rejects.toThrow("Could not find service")
+  })
+
+  it.each(["Status: Wird ausgeführt", "Statut : En cours"])("reads numeric Windows state instead of localized schtasks output %j", async (localized) => {
+    const dependencies = effects({
+      capture: vi.fn(async (command, args) => {
+        if (command === "schtasks") return { code: 0, stdout: `${localized}\r\n` }
+        expect(command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+        expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        expect(script).toContain("[int]$task.State")
+        expect(script).not.toMatch(/\$task\.(?:Enabled|Stop)|DeleteTask/)
+        return { code: 0, stdout: "domovoi-task:4\r\n" }
+      }),
     })
     await expect(serviceStatus({ platform: "win32" }, dependencies)).resolves.toEqual({
       installed: true,
       running: true,
       detail: "Domovoi daemon is running",
     })
+    expect(dependencies.capture).toHaveBeenCalledOnce()
+    expect(dependencies.run).not.toHaveBeenCalled()
+    expect(dependencies.remove).not.toHaveBeenCalled()
+  })
+
+  it.each(["1", "2", "3", "missing"])("reports the Windows task answer %j without claiming it is running", async (state) => {
+    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task:${state}\r\n` })) })
+    await expect(serviceStatus(windows, dependencies)).resolves.toMatchObject({ installed: state !== "missing", running: false })
+  })
+
+  it.each(["domovoi-task:0", "domovoi-task:deleted", "domovoi-task:5", "Status: Running", "", "domovoi-task:4\ndomovoi-task:3"])(
+    "refuses an unknown or ambiguous Windows task state %j", async (stdout) => {
+      const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout })) })
+      await expect(serviceStatus(windows, dependencies)).rejects.toThrow("Task Scheduler")
+    },
+  )
+
+  it.each([1, 5, 113, 127])("refuses Task Scheduler failure %i even with a valid state marker", async (code) => {
+    const dependencies = effects({ capture: vi.fn(async () => ({ code, stdout: "domovoi-task:4", stderr: "scheduler unavailable" })) })
+    await expect(serviceStatus(windows, dependencies)).rejects.toThrow("scheduler unavailable")
+  })
+
+  it("preserves a Task Scheduler spawn failure", async () => {
+    const failure = Object.assign(new Error("cannot launch PowerShell"), { code: "EIO" })
+    const dependencies = effects({ capture: vi.fn(async () => { throw failure }) })
+    await expect(serviceStatus(windows, dependencies)).rejects.toBe(failure)
+    expect(dependencies.capture).toHaveBeenCalledOnce()
   })
 
   it("reports an unavailable service manager instead of an inactive service", async () => {

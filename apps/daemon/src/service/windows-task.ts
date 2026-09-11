@@ -5,6 +5,8 @@ import type { OperationDeadline } from "../operation-deadline.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceEffects } from "./install.js"
 
+const taskStateScript = "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.State)"
+
 export type WindowsTaskRemovalPlan = {
   kind: "task"
   name: string
@@ -33,7 +35,7 @@ export function windowsPowerShellPath(): string {
   // Missing or drive-relative SystemRoot must not turn this back into a search.
   const root = process.env.SystemRoot
   if (root === undefined || !/^[A-Za-z]:[\\/]/.test(root) || root.includes("\0")) {
-    throw new Error("SystemRoot must name the absolute local Windows directory before removing a service")
+    throw new Error("SystemRoot must name the absolute local Windows directory before querying or removing a service")
   }
   return win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 }
@@ -76,7 +78,7 @@ try { $task.Stop(0) } catch {
   if ($_.Exception.GetBaseException().HResult -ne -2147216629) { throw }
 }
 [Console]::Out.WriteLine('domovoi-task:' + [int]$task.State)`),
-    inspect: taskCommand(executable, name, "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.State)"),
+    inspect: taskCommand(executable, name, taskStateScript),
     // Re-read at the destructive seam too. TASK_STATE_DISABLED (1) means no
     // queued or running instances, unlike a successful unregister operation.
     // https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state
@@ -93,6 +95,15 @@ async function taskResult(command: ServiceCommand, effects: Pick<ServiceEffects,
   const match = /^domovoi-task:(missing|deleted|[0-4])$/.exec(result.stdout.trim())
   if (!match) throw new Error("Task Scheduler returned an unrecognized state")
   return match[1]!
+}
+
+export async function readWindowsTaskState(name: string, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"missing" | "1" | "2" | "3" | "4"> {
+  const state = await taskResult(taskCommand(windowsPowerShellPath(), name, taskStateScript), effects, deadline)
+  // TASK_STATE_UNKNOWN (0) supplies no liveness answer. Only State, never
+  // localized schtasks text or registration XML, describes current execution.
+  // https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state
+  if (state === "missing" || state === "1" || state === "2" || state === "3" || state === "4") return state
+  throw new Error(`Task Scheduler did not report a known task state (state ${state})`)
 }
 
 export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"removed" | "already-missing"> {
