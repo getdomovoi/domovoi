@@ -20,9 +20,12 @@ export const staleDays = 2
 
 export function driftReport(drift) {
   if (drift.detached) return "branch drift unknown: no main to compare against"
-  const parts = [`${drift.ahead} commit${drift.ahead === 1 ? "" : "s"} ahead of main`]
+  const parts = [`${drift.ahead} commit${drift.ahead === 1 ? "" : "s"} ahead of ${drift.baseline}`]
   if (drift.behind > 0) parts.push(`${drift.behind} behind`)
-  parts.push(`main last moved ${drift.mainAgeDays} day${drift.mainAgeDays === 1 ? "" : "s"} ago`)
+  parts.push(`${drift.baseline} last moved ${drift.mainAgeDays} day${drift.mainAgeDays === 1 ? "" : "s"} ago`)
+  if (drift.staleLocal > 0) {
+    parts.push(`local main is ${drift.staleLocal} behind ${drift.baseline}, so any count against it would be wrong`)
+  }
   const line = `${drift.branch}: ${parts.join(", ")}`
   // Only the crossing is called out. A number with no reading is what the last
   // three days already had.
@@ -32,16 +35,37 @@ export function driftReport(drift) {
   return line
 }
 
+// Prefer the remote, and say which was used. Fetching here would make a local
+// check reach the network on every invariants run, so this reads the ref the
+// last fetch left and reports how stale local main is against it instead.
+async function remoteBaseline(git) {
+  try {
+    await git(["rev-parse", "--verify", "origin/main"])
+    return "origin/main"
+  } catch {
+    return "main"
+  }
+}
+
 export async function branchDrift(root = repositoryRoot) {
   const git = async (args) => (await run("git", args, { cwd: root })).stdout.trim()
   try {
     const branch = await git(["rev-parse", "--abbrev-ref", "HEAD"])
     if (branch === "main" || branch === "HEAD") return { detached: true, branch }
-    const counts = await git(["rev-list", "--left-right", "--count", "main...HEAD"])
+    // Local main is a cache, and a stale one answers every question wrongly
+    // while looking exactly like a fresh one. Measured 2026-09-10: local main
+    // was 60 commits behind the remote, which made a 62-commit branch report as
+    // 121 and put five already-merged commits inside the proposed first pull
+    // request. A number with an unstated baseline is an undated tick.
+    const baseline = await remoteBaseline(git)
+    const counts = await git(["rev-list", "--left-right", "--count", `${baseline}...HEAD`])
     const [behind, ahead] = counts.split(/\s+/u).map(Number)
-    const mainSeconds = Number(await git(["log", "-1", "--format=%ct", "main"]))
+    const mainSeconds = Number(await git(["log", "-1", "--format=%ct", baseline]))
     const mainAgeDays = Math.floor((Date.now() / 1_000 - mainSeconds) / 86_400)
-    return { detached: false, branch, ahead, behind, mainAgeDays }
+    const staleLocal = baseline === "main"
+      ? 0
+      : Number(await git(["rev-list", "--count", `main..${baseline}`]).catch(() => "0"))
+    return { detached: false, branch, baseline, ahead, behind, mainAgeDays, staleLocal }
   } catch {
     // A shallow clone, a worktree with no main, or no git at all. Saying the
     // check did not run beats reporting zero, which reads as "no drift".
