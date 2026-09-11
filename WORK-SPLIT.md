@@ -101,50 +101,31 @@ so the first landing does not read as the unblock.
 ## Claude Code
 
 ### CC1 · Finish the history row — blocked on CX2 for the last part
-- [x] `<pre>` out of the row, meta on one line, body in a collapsed `details` (d1f974f).
-- [x] Checkpoint title drops the sha; title names the checkpoint, meta names the commit
-      (d1f974f).
-- [x] Fork wired on checkpoint rows only, with a confirm stating both halves
-      (d1f974f, 6e38abf).
-- [x] The card: `1px --border`, `--radius`, rows separated by a border (d1f974f).
-- [x] Left **42px mono time column**, pinned by `history-row.dom.test.tsx` (d1f974f).
-- [x] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
-      `bg-primary` on every row (d1f974f).
+- [ ] `<pre>` out of the row, meta on one line, body in a collapsed `details`.
+- [ ] Checkpoint title drops the sha; title names the checkpoint, meta names the commit.
+- [ ] Fork wired on checkpoint rows only, with a confirm stating both halves.
+- [ ] The card: `1px --border`, `--radius`, rows separated by a border. Currently a bare div.
+- [ ] Left **42px mono time column**. Time currently sits right of the title with no width.
+- [ ] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
+      `bg-primary` on every row.
 - [ ] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — **after CX2**.
-- [x] Record execution duration as an unfilled design field, not a satisfied one:
-      `sessionHistoryEntryDetail`'s field 4 names it and says why only decision latency
-      can be measured today (d1f974f).
-- [ ] The session-start checkpoint gets **no** fork. "Nothing to revert past this" is in the
-      design's own meta, and the row currently offers fork to any checkpoint carrying a commit.
-- [ ] Turn-row fork is **blocked on CX2**, not out of scope. `session.fork` takes a checkpoint
-      id, so forking "from turn 9" forks from whichever checkpoint precedes it until a turn has
-      a fork point of its own.
+- [ ] Record execution duration as an unfilled design field, not a satisfied one.
 
 ### CC2 · StatusDot takes an invisible label
-- [x] The label stops being visible; it does not stop being required. Meaning derives from
-      `status` and `decision`, nothing invented (75a555a, `sessionHistoryEntryOutcome`).
-- [x] Any row whose title does not state its outcome gets the outcome word in the meta —
-      failures especially. Colour is never the sole carrier. A tool or test row's meta is
-      `<tool> · <status>`, pinned as `"command · failed"` in `session-history-meta.test.ts`
-      (d1f974f).
+- [ ] The label stops being visible; it does not stop being required. Meaning derives from
+      `status` and `decision`, nothing invented.
+- [ ] Any row whose title does not state its outcome gets the outcome word in the meta —
+      failures especially. Colour is never the sole carrier.
 - Own commit. Touches the atom, so it lands before `CC1`'s dot swap.
-- Landed 2026-09-10, before this file left `design/`. The boxes stayed unticked because a
-  ticked box under `design/` fails `release:invariants`, which is why the file moved.
 
 ### CC3 · Revert the Handoffs label, add the transfers filter
-- [x] `6f2f875` renamed `handoffs` to Transfers. `handoffs` holds **provider** handoffs —
+- [ ] `6f2f875` renamed `handoffs` to Transfers. `handoffs` holds **provider** handoffs —
       `server.ts:461` selects rows starting `Handed off `, written at `server.ts:5812`.
-      Label reverted to Handoffs (6f8c4f1).
-- [x] Add the `transfers` filter now that `560eca5` records machine transfers (d1f974f).
-- [x] Eight filters, drawn five leading:
+      Revert the label to Handoffs.
+- [ ] Add the `transfers` filter now that `560eca5` records machine transfers.
+- [ ] Eight filters, drawn five leading:
       Everything, Turns, Approvals, Checkpoints, Transfers, then Handoffs, Tools,
-      Annotations, Tests (6efa0ca).
-- Verified against the design rather than against this line: the drawn set is `historyCats` in
-  `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.part2-logic.html:920-924`, which
-  is `all`/Everything, `turns`, `approvals`, `checkpoints`, `transfers` and draws no Handoffs.
-  `session-history.test.ts` pins the order, and a second test pins the list against
-  `sessionHistoryCategorySchema.options` so a category the daemon can stamp cannot lose its
-  filter.
+      Annotations, Tests.
 
 ### CC4 · Vendor the v2 designs — do this first
 - [ ] `Domovoi Desktop V2.dc.html` and the eight other v2 files are **not** in the vendored
