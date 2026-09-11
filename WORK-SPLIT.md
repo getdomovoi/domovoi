@@ -32,8 +32,22 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    invalidates the run you read.
 5. **Never regenerate a digest in the same commit as the change it covers.** Verify against
    the previous manifest first, and say which state you verified against.
-6. **Read the reviews, not the check row.** `Review rate limited` and `Review completed`
-   both render as pass and both carry `state: success`. Only the description differs.
+6. **Read the reviews, not the check row.** Three descriptions render as pass and carry
+   `state: success`, and only one of them means anything was read:
+
+   - `Review completed` — the diff was actually reviewed.
+   - `Review rate limited` — capacity was exhausted. Nothing was read. Seen on two heads of
+     #359 and on #360 the same afternoon, because the limit is a budget shared across every
+     pull request opened that day rather than a per-pull-request fluke.
+   - `Review skipped: reviews are disabled for this base branch` — **a stacked pull request
+     gets no automated review at all.** Measured 2026-09-10: #361 through #364 target other
+     feature branches rather than `main`, and all four showed pass with nothing read. Only the
+     two units based on `main`, #359 and #360, were eligible.
+
+   The last one is the trap a stack walks into: splitting one unreviewable branch into six
+   reviewable units bought review by people and silently lost review by the bot for four of
+   them, while every row went green. CI does run on those bases, so the platform matrix is
+   real; the review is not.
 7. **The agent that owns this file ticks every box in it, including the other agent's.**
    This file sits in Claude Code's half of the tree but describes both halves, which rule 1
    did not anticipate. Codex ticking `CX1` here would put two agents in one file to record
