@@ -81,4 +81,21 @@ describe("durable turn links", () => {
     const updated = applyWorkspaceDelta(applyWorkspaceDelta(snapshot, delta), delta)
     expect(updated.thread.find((item) => item.id === "streamed")).toMatchObject({ turnId: id })
   })
+
+  it.each(["assistant.append", "tool-output.append"] as const)("adopts a late turn link once in %s deltas", (kind) => {
+    let snapshot = structuredClone(demoWorkspace)
+    const sessionId = snapshot.sessions[0]!.id
+    const append = (turnId?: string) => {
+      snapshot = applyWorkspaceDelta(snapshot, workspaceDeltaSchema.parse({
+        sessionId, updatedAt: startedAt,
+        operations: [{ kind, id: "streamed", ...(turnId ? { turnId } : {}), delta: "x", createdAt: startedAt }],
+      }))
+      return snapshot.thread.find((item) => item.id === "streamed")
+    }
+    expect(append()).not.toHaveProperty("turnId")
+    expect(append(id)).toMatchObject({ turnId: id })
+    expect(append()).toMatchObject({ turnId: id })
+    // A later conflicting association cannot relabel existing content.
+    expect(append("b".repeat(64))).toMatchObject({ turnId: id, [kind === "assistant.append" ? "body" : "output"]: "xxxx" })
+  })
 })
