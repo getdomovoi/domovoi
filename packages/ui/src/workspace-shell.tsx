@@ -184,6 +184,7 @@ import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
 import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
+import { SessionListSkeleton, ThreadSkeleton } from "./loading-skeleton"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
@@ -4161,6 +4162,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
   }
   // One dock, rendered either as the pinned panel or inside the floating sheet.
+  // Named before the snapshot exists, because the snapshot is what is being
+  // waited for. The endpoint is what this client actually knows it is reading.
+  const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
   const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} historyFocus={historyFocus} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
@@ -4567,14 +4571,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           </div>
           )}
         </div> : (
+          // The design draws this as skeletons in the shape of what is coming
+          // rather than a centred sentence, so the sidebar and thread do not
+          // appear from nothing and shift the layout under a cursor. The line
+          // naming the machine stays: a shape alone would claim rows are
+          // definitely coming, and the daemon has not said so yet.
           <main className="flex min-h-0 flex-1 bg-background">
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><DomovoiMark reduced className="size-5" /></EmptyMedia>
-                <EmptyTitle asChild><h1>Connecting to the daemon</h1></EmptyTitle>
-                <EmptyDescription>Domovoi will show workspace state after the execution machine responds.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <h1 className="sr-only">Connecting to the daemon</h1>
+            <div className="flex w-[var(--shell-sidebar)] shrink-0 flex-col border-r bg-sidebar">
+              <SessionListSkeleton reading={readingLabel} />
+            </div>
+            <ThreadSkeleton reading={readingLabel} />
           </main>
         )}
         {workspaceError ? (
