@@ -87,18 +87,22 @@ Parallel with Phase 0. Touches nothing the gates decide.
       builds ship *with* it, not after.
 - [ ] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart.
-- [ ] **S1.6 [CX, not CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
-      **Reassigned 2026-09-10, and Codex agreed (`257830e`).** The binary is `domovoid`, declared at
-      `apps/daemon/package.json:20` against `apps/daemon/dist/index.js`, and every CLI file is
-      under `apps/daemon/src/` — Codex's half by `WORK-SPLIT.md`'s ownership table, so `[CC]`
-      contradicts rule 1. Codex accepted it as `CX` and corrected the scope: `domovoid service
-      install` and `domovoid service status` already exist (`index.ts:86`), so what is missing
-      there is top-level aliases rather than the commands. `doctor`, `logs` and `skill push` do
-      not exist and their behaviour is undefined. The naming is **settled, not open**: fetzy decided
-      on 2026-09-10 that `domovoi` is the user-facing CLI and `domovoid` is the daemon process,
-      with every human command moving off `domovoid` and the lifecycle noun being `daemon`. It was
-      never a preference to be asked about — the design sources already specified it. Evidence in
-      [`docs/cli-parity-decision.md`](docs/cli-parity-decision.md).
+- [ ] **S1.6 [CC]** CLI to parity: pair, status, doctor, logs, skill install, skill push.
+      **Resolved 2026-09-11: its home is `apps/cli`, a new package owned by Claude Code.** The
+      CLI is a client, the terminal-shaped client for the daemon, so it lives beside the other
+      clients and talks JSON-RPC only, with no daemon internals and no shared file against
+      Codex's `S1.1`. The binary is `domovoi`, without the `d`. `domovoid pair`, `domovoid
+      service install` and `domovoid service status` stay in `apps/daemon` where they already
+      exist (`index.ts:77-92`); `apps/cli` supplies the client half of pairing, which no client
+      in this repository implements today. `skill push` is machine-to-machine as drawn: copy an
+      installed skill to another machine as a signed bundle over the machine channel, with
+      enabling a separate decision on the target, because copying is not consent to run.
+      `skill install <path>` is the local command. The CLI ships over loopback and tailnet now;
+      the relay route is blocked on `S0.2` like every other client, and that is not a reason to
+      hold this.
+      *History: reassigned `[CX]` 2026-09-10 on the ownership-table argument, since every CLI
+      file was under `apps/daemon/src/`. The new package removes that collision instead of
+      arbitrating it.*
 - [ ] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
       lands here — it is daemon bookkeeping and it unblocks UI in Phase 3.
 
