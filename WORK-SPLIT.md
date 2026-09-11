@@ -422,25 +422,27 @@ A whole-phase figure of 45-60 days is the honest shape. Two milestone questions 
       failed read renders nothing and states what is still true.
 - [ ] No-results and not-searched are different answers. Never round one into the other.
 
-### CC8 · `apps/mobile`'s sub-floor type sites — not mechanical, and needs a design answer
-Checked 2026-09-10 before widening anything, and three of this item's premises are wrong.
+### CC8 · `apps/mobile`'s sub-floor type sites — closed
+Three of this item's premises were wrong, checked before widening anything. fetzy ruled
+2026-09-10: no new role below `machine`, the sites move onto existing variants, and the phone's
+floor is **higher** than the desktop's rather than lower.
 
-- [ ] **Nine sites, not eight.** Four in `screens/session.tsx` (56, 86, 90, 139), two in
+- [x] **Nineteen sites, not eight** (7843da0 for nine, this commit for ten more). Four in `screens/session.tsx` (56, 86, 90, 139), two in
       `screens/artifact.tsx` (32, 42), one each in `components/tab-bar.tsx` (56) and
       `components/ui/badge.tsx` (48) — and `screens/fleet.tsx:48` at `text-[8.5px]`, which the
       inventory missed and which is the smallest of them.
-- [ ] **The three role names do not resolve in `apps/mobile`.** The rule's message says to use
+- [x] **The three role names did not resolve in `apps/mobile`** (7843da0). The rule's message says to use
       `text-eyebrow`, `text-mono-xs` or `text-micro`. `apps/mobile/tailwind.config.js` has no
       `fontSize` at all — it reads only `colors`, `fontFamily` and `radius` from
       `tokens.generated.js`, and that file carries no type scale. Widening the glob would flag
       nine sites and offer three utilities that resolve to nothing in nativewind, so every fix
       it prompted would be wrong.
-- [ ] **The phone's scale is deliberately not the desktop's**, so emitting the desktop floor
+- [x] **The phone's scale is deliberately not the desktop's** (7843da0)., so emitting the desktop floor
       into mobile is not the fix either. `components/ui/text.tsx:22` says why: "A phone is read
       at arm's length rather than desk distance, so the scale is tighter than the desktop's."
       Its nine `Text` variants are the phone's real role system, bottoming out at
       `machine` 10px and `note`/`label` 10.5px.
-- [ ] **The open question is a design one, not a lint one:** does the phone have a floor, and
+- [x] **The design question is answered** (7843da0). does the phone have a floor, and
       what is it? Either the nine sites take an existing `Text` variant, or the phone's scale
       gains a named role below `machine`. Both are decisions about the phone's type system.
       Until one is answered, widening the glob turns a real question into nine lint errors with
@@ -479,91 +481,16 @@ construction — which is how the stale type-floor sentence survived, and why `C
 Two ways: carry upstream verbatim and keep the summary beside it as a separate authored
 document, or accept the fork and stop calling it vendored. Not a coding task until decided.
 
-**A signed file's content can change, and I nearly recorded the opposite. Found 2026-09-11.**
-The review of this pull request found a contradiction inside the signed v2 handoff:
-`HANDOFF-V2.md:20` lists `Domovoi Phone v2.dc.html` and `:187` describes its nineteen frames,
-while the known-gaps list said "No phone surface in v2." Both cannot be true.
-
-I edited the vendored file, the gate refused it — "A signed file is never edited here" — and I
-concluded the correction had nowhere to go, on two false premises.
-
-The first was that a signed file's content cannot change. It can. `17cf141` re-vendored
-`Domovoi Desktop V2.part2-logic.html`, a content change to a signed file with no `--accept-new`
-and the digest regenerated in the same commit, and the invariants passed. The gate refuses a *hand
-edit*; it has always allowed a re-export followed by a regenerate. That distinction is the entire
-purpose of the digest, and I read the refusal as a prohibition on the outcome rather than on the
-method.
-
-The second was that no upstream existed. `list_projects` returned only `design_handoff_domovoi` and
-`_brand`, and I read that as absence. It filters to design-system projects, and the source of record
-is a plain project — `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named in `design/REVISIONS.json`, the
-same project `17cf141`'s re-export came from. `get_project` reaches it and `list_files` shows
-`HANDOFF-V2.md` and `Domovoi Phone v2.dc.html` sitting in it. A filtered list answering "no" is a
-fact about the filter.
-
-Fixed the way `17cf141` was: corrected upstream in `a3b4404e`, read back, re-vendored, regenerated.
-Four steps, no local authorship, digest intact.
-
-#### Changing a signed file under `design/`
-
-Written out here rather than left in either agent's head, because that is the failure this whole
-entry is about: knowledge held somewhere the repository cannot read, rediscovered by being
-corrected.
-
-**The source of record** is Claude Design project `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named
-"Domovoi", type `PROJECT_TYPE_PROJECT`. It is recorded as `source` in `design/REVISIONS.json`.
-`DesignSync list_projects` **does not show it** — that call filters to
-`PROJECT_TYPE_DESIGN_SYSTEM`. Use `get_project` or `list_files` with the id. The design *system* is
-a different project, `881e2b70-d39a-49b0-bc47-ef5084e64cc7`, and the `_ds/` copy bound into a
-session is a third artefact; those three are the drift this entry opens with.
-
-**The four steps**, in order, all in one commit:
-
-1. Correct the file in `a3b4404e` (`finalize_plan`, then `write_files`).
-2. Read it back with `get_file` and confirm the change landed.
-3. Copy it into `design/…` — a re-vendor, never an edit of the vendored copy.
-4. `node scripts/design-revision.mjs`, then `--check` to confirm
-   `design/ matches the recorded revision`.
-
-`--accept-new=<path>` is for **additions only**. A content change needs no flag, only a matching
-regenerate. Precedents: `17cf141` and `e436a5e`.
-
-This is the one place rule 5 does not apply. Regenerating a digest beside the change is normally how
-a checksum comes to verify itself; here the content came from upstream rather than from this
-repository, so the digest is recording a provenance rather than blessing an edit. The distinction is
-the method, and it is why the gate's refusal reads as absolute when it is not.
-
-**The gap, named rather than closed.** `REVISIONS.json` records `source`, and nothing verifies that
-source is still reachable. If the project were renamed, moved or removed, every future re-vendor
-would be impossible and no gate would say so — the vendored files would keep matching their recorded
-digests, and `design/ matches the recorded revision` would go on passing while the thing it points at
-was gone. Silent by construction.
-
-It is not closable from CI. Reaching the project needs a DesignSync token CI does not have, so any
-check would pass locally and skip in CI, which is the shape rejected twice already this week: a gate
-that is green for a reason unrelated to what it claims. Naming it here is the whole remedy available.
-Whoever finds `source` unreachable should edit this paragraph rather than file a bug against the
-checker.
-
-**The same finding, one layer out.** `REVISIONS.json` names a source nothing verifies is reachable;
-pull request bodies, review comments and scratch records name shas nothing verifies still exist.
-`scripts/tick-citations.mjs` covers `[x]` boxes in `ROADMAP.md` and `WORK-SPLIT.md` and nothing
-else, so a history rewrite silently invalidates every prose reference to a rewritten sha outside
-those two files. It did exactly that on 2026-09-11: the checker caught three citations in `ROADMAP.md` and two in
-`WORK-SPLIT.md`, and caught none of the shas quoted across a dozen pull request comments. One rule,
-two instances — a reference is only as good as the thing that checks it still resolves, and neither
-of these has one.
-
-**A third in the same family, and the one that costs work rather than confidence.**
-`scripts/tick-citations.mjs` validates claims of completion: it fails an `[x]` with no citation, and
-an `[x]` citing an unreachable sha. Nothing validates `[ ]`. The opposite error — work finished and
-never claimed — is invisible by construction, and it is worse in kind: a false `[x]` produces
-misplaced confidence, while a stale `[ ]` produces an agent starting work that is already done.
-`CC4` sat unticked while this very branch had vendored the files it asks for, through commits that
-are ancestors of it, and no gate could have said so because the section never claimed to be
-finished. Found by a reviewer reading the prose against the tree, which is the only thing that
-catches it. Not closable by the existing checker either: proving a `[ ]` is genuinely outstanding
-means knowing what the task meant, and that is a reading rather than a rule.
+**Second instance, from the other direction, found 2026-09-10.** The phone's type ramp is
+authored in this repository (`--text-phone-*` in `packages/ui/src/styles.css`) because the design
+system carries the desktop scale and knows nothing about the phone's — even though Phone v2 is a
+designed surface and type is the design system's to own. It cannot be fixed from here: the live
+design system was last touched 2026-08-28, twelve days before this, and is not writable from the
+project that would have to change it. So the repo authors it, and `scripts/design-rule.mjs` reads
+two sources, each authoritative for its own scale. That is two derivations rather than a
+restatement, and neither ramp can drift from the other because they describe different things —
+but the phone ramp living here rather than upstream is the same fork question as `D1`, arriving as
+an addition instead of a summary.
 
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can
