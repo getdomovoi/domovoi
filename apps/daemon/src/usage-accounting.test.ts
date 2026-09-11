@@ -1,7 +1,8 @@
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { DatabaseSync } from "node:sqlite"
+import { describe, expect, it, onTestFinished } from "vitest"
 import { UsageLedger, normalizeUsage } from "./usage.js"
 import { removeScratchDirectory } from "./test-scratch.js"
 
@@ -15,8 +16,50 @@ const observation = (id: string, inputTokens: number, final = true) => ({
 })
 
 describe("durable usage accounting", () => {
+  it.each(["{", JSON.stringify({ version: 1, status: "pending" })])(
+    "keeps corrupt accounting from blocking other rows: %s", async (corrupt) => {
+      const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-corrupt-"))
+      const path = join(directory, "usage.sqlite")
+      let ledger: UsageLedger | undefined
+      try {
+        ledger = new UsageLedger(path)
+        ledger.begin(dispatch)
+        ledger.observe(dispatch, observation("bad-row-usage", 10))
+        const badKey = ledger.lookup(dispatch)!.turnId
+        const healthy = { ...dispatch, turnId: "healthy-pending" }
+        ledger.begin(healthy)
+        ledger.observe(healthy, observation("healthy-usage", 20))
+        ledger.close()
+        ledger = undefined
+        const database = new DatabaseSync(path)
+        try {
+          // Simulate durable input created before the JSON expression index existed.
+          database.exec("DROP INDEX IF EXISTS provider_usage_accounting_status")
+          database.prepare("UPDATE provider_usage SET accounting = ? WHERE turn_id = ?").run(corrupt, badKey)
+        } finally { database.close() }
+
+        ledger = new UsageLedger(path)
+        ledger.interruptPending()
+        expect(ledger.lookup(dispatch)?.accounting).toBeUndefined()
+        expect(ledger.lookup(healthy)?.accounting?.status).toBe("interrupted")
+        expect(ledger.observe(dispatch, observation("untrusted-late", 100))).toBe(false)
+        expect(ledger.session(dispatch.sessionId)).toMatchObject({
+          totalTokens: 34, coverage: { legacy: 1, complete: 1, pending: 0 },
+        })
+        expect(ledger.window(0, Date.now() + 1000)).toMatchObject({
+          totalTokens: 34, coverage: { legacy: 1, complete: 1, pending: 0 },
+        })
+        expect(ledger.transferSession(dispatch.sessionId)).toHaveLength(2)
+      } finally {
+        ledger?.close()
+        await removeScratchDirectory(directory)
+      }
+    },
+  )
+
   it("adds distinct messages once, rejects stale snapshots, and keeps requested models", () => {
     const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
     ledger.begin(dispatch)
     ledger.observe(dispatch, observation("message-1", 10, false))
     ledger.observe(dispatch, observation("message-1", 20))
@@ -32,28 +75,31 @@ describe("durable usage accounting", () => {
     })
     expect(ledger.transferSession(dispatch.sessionId)[0]?.accounting).toMatchObject({
       requestedModel: "requested/model", providerTurnId: "provider-turn", status: "completed",
+      provider: "opencode",
       observations: [expect.objectContaining({ model: "actual/model" }), expect.anything()],
     })
-    ledger.close()
   })
 
   it("preserves failures, missing coverage, late events, dedup and identity across restart and transfer", async () => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-"))
+    let ledger: UsageLedger | undefined
+    let target: UsageLedger | undefined
     try {
       const path = join(directory, "usage.sqlite")
-      let ledger = new UsageLedger(path)
+      ledger = new UsageLedger(path)
       ledger.begin(dispatch)
       ledger.observe(dispatch, observation("message-1", 10))
       ledger.finish(dispatch, "failed")
       const missing = { ...dispatch, turnId: "no-usage" }
       ledger.begin(missing)
       ledger.close()
+      ledger = undefined
       ledger = new UsageLedger(path)
       ledger.interruptPending()
       ledger.observe(dispatch, observation("message-2", 30))
       const exported = ledger.transferSession(dispatch.sessionId)
       expect(JSON.stringify(exported)).not.toContain(dispatch.threadId)
-      const target = new UsageLedger()
+      target = new UsageLedger()
       target.replaceTransferredSession(dispatch.sessionId, exported)
       target.observe(dispatch, observation("message-1", 10))
       target.observe(dispatch, observation("message-2", 30))
@@ -64,15 +110,16 @@ describe("durable usage accounting", () => {
       expect(target.transferSession(dispatch.sessionId).map((row) => row.accounting?.status))
         .toEqual(["failed", "interrupted"])
       expect(target.window(0, Date.now() + 1000).totalTokens).toBe(0)
-      target.close()
-      ledger.close()
     } finally {
+      target?.close()
+      ledger?.close()
       await removeScratchDirectory(directory)
     }
   })
 
   it("uses provider/thread/turn identity and refuses events without a dispatch", () => {
     const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
     ledger.begin(dispatch)
     const other = { ...dispatch, threadId: "replacement-thread", model: "next/model" }
     ledger.begin(other)
@@ -81,11 +128,11 @@ describe("durable usage accounting", () => {
     expect(ledger.observe({ ...dispatch, turnId: "unknown" }, observation("unknown", 100))).toBe(false)
     expect(ledger.session(dispatch.sessionId)).toMatchObject({ totalTokens: 34 })
     expect(ledger.transferSession(dispatch.sessionId)).toHaveLength(2)
-    ledger.close()
   })
 
   it("marks invalid and missing reports as partial instead of reporting complete zero usage", () => {
     const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
     ledger.begin(dispatch)
     ledger.observe(dispatch, observation("valid", 10))
     ledger.observe(dispatch, {
@@ -96,11 +143,11 @@ describe("durable usage accounting", () => {
     expect(ledger.session(dispatch.sessionId)).toMatchObject({ totalTokens: 12, coverage: { partial: 1 } })
     ledger.observe(dispatch, observation("bad", 20))
     expect(ledger.session(dispatch.sessionId)).toMatchObject({ totalTokens: 34, coverage: { complete: 1 } })
-    ledger.close()
   })
 
   it("keeps cumulative ACP session costs separate from per-turn consumption", () => {
     const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
     for (const [turnId, cost] of [["first", 0.01], ["second", 0.03]] as const) {
       const current = { ...dispatch, provider: "cursor-agent", turnId }
       ledger.begin(current)
@@ -115,19 +162,18 @@ describe("durable usage accounting", () => {
       totalTokens: 0, costMicros: 0, coverage: { unavailable: 2 },
       sessionCosts: [expect.objectContaining({ costMicros: 30_000, currency: "USD" })],
     })
-    ledger.close()
   })
 
-  it("rejects forged transfer metadata atomically", () => {
+  it.each(["requestedModel", "provider"] as const)("rejects forged transfer %s atomically", (field) => {
     const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
     ledger.begin(dispatch)
     ledger.observe(dispatch, observation("message", 10))
     ledger.finish(dispatch, "completed")
     const rows = ledger.transferSession(dispatch.sessionId)
     const forged = structuredClone(rows)
-    forged[0]!.accounting!.requestedModel = "other-model"
+    forged[0]!.accounting![field] = "other-identity"
     expect(() => ledger.replaceTransferredSession(dispatch.sessionId, forged)).toThrow()
     expect(ledger.transferSession(dispatch.sessionId)).toEqual(rows)
-    ledger.close()
   })
 })
