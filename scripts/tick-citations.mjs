@@ -105,9 +105,10 @@ async function resolvableShas(shas, root) {
   if (shas.length === 0) return { unresolved: [], skipped: false }
   try {
     const { stdout } = await run("git", ["rev-parse", "--is-shallow-repository"], { cwd: root })
-    // A shallow clone is missing objects rather than missing commits. Failing a
-    // citation there would report the clone as a bad citation, so say the check
-    // did not run instead of reporting an answer it cannot have.
+    // A shallow clone cannot answer whether a sha is an ancestor. Saying so and
+    // then exiting zero is the failure this whole check exists to prevent: a
+    // green run that proved nothing. Unverifiable is a failure, and the message
+    // names what would make it verifiable.
     if (stdout.trim() === "true") return { unresolved: [], skipped: true }
   } catch {
     return { unresolved: [], skipped: true }
@@ -168,6 +169,11 @@ export async function checkTickCitations(root = repositoryRoot) {
       }
       const { unresolved, skipped } = await resolvableShas(shas, root)
       shallow ||= skipped
+      if (skipped) {
+        failures.push(
+          `${file}:${tick.line}: cannot check whether ${shas.join(", ")} is an ancestor of this branch. Fetch full history — in CI that is actions/checkout with fetch-depth: 0.`,
+        )
+      }
       for (const sha of unresolved) {
         failures.push(`${file}:${tick.line}: cites ${sha}, which is not an ancestor of this branch. A citation has to land in the same pull request as the commit it names.`)
       }
@@ -258,7 +264,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const { ok, failures, shallow } = await checkTickCitations()
       for (const failure of failures) process.stderr.write(`${failure}\n`)
       if (!ok) process.exitCode = 1
-      else if (shallow) process.stdout.write("every [x] cites a commit; shas unverified on a shallow clone\n")
+
       else process.stdout.write("every [x] cites a commit that exists\n")
     }
   } catch (cause) {
