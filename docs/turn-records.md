@@ -69,10 +69,12 @@ the linked thread items. Duplicate ordinals and dangling transferred links are
 invalid. A target continues after the highest imported ordinal; imported usage
 does not become newly metered local usage.
 
-Only schema-valid accounting can reserve an ordinal. On open, the ledger rebuilds
-its derived ordinal index from that evidence; corrupt accounting keeps its raw
-metadata and measured totals without reserving a number. Writes update the evidence
-and index together. If valid history reaches `Number.MAX_SAFE_INTEGER`, beginning
+Only schema-valid accounting can reserve an ordinal. Before a session's first write,
+the ledger rebuilds its derived ordinal index from that session's evidence; dormant
+history adds no startup scan. Corrupt accounting keeps its raw metadata and measured
+totals without reserving a number. Later writes update the evidence and index together.
+The in-memory validation cache holds at most 1,024 sessions; eviction or rollback
+causes the next write to revalidate. If valid history reaches `Number.MAX_SAFE_INTEGER`, beginning
 another turn refuses with an explicit exhaustion error and leaves the history intact.
 
 CX2 does not turn a turn ID into a checkpoint ID. A client may offer a turn-specific

@@ -194,6 +194,7 @@ export class UsageLedger {
   readonly #database: DatabaseSync
   readonly #path: string
   readonly #now: () => number
+  readonly #indexedSessions = new Set<string>()
 
   constructor(path = ":memory:", options: UsageLedgerOptions = {}) {
     this.#path = path
@@ -237,7 +238,10 @@ export class UsageLedger {
       ON provider_usage(CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END)`)
     this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_identity
       ON provider_usage(turn_id, provider)`)
-    this.#rebuildTurnOrdinals()
+    this.#database.exec(`DROP INDEX IF EXISTS provider_usage_turn_ordinal;
+      DROP INDEX IF EXISTS provider_usage_valid_turn_ordinal;
+      CREATE UNIQUE INDEX IF NOT EXISTS provider_usage_validated_turn_ordinal
+      ON provider_usage(session_id, turn_ordinal)`)
     this.#restrictFilePermissions()
   }
 
@@ -249,6 +253,7 @@ export class UsageLedger {
     this.#database.exec("BEGIN IMMEDIATE")
     try {
       if (!this.lookup(dispatch)) {
+        this.#rebuildTurnOrdinals(dispatch.sessionId)
         const row = this.#database.prepare(`SELECT MAX(turn_ordinal) AS ordinal
           FROM provider_usage WHERE session_id = ?`).get(dispatch.sessionId)
         const previousOrdinal = Number(row?.ordinal ?? 0)
@@ -334,6 +339,7 @@ export class UsageLedger {
 
   #upsert(record: TurnUsage, recordedAt: number | null): void {
     const accounting = record.accounting ? usageAccountingSchema.parse(record.accounting) : undefined
+    this.#rebuildTurnOrdinals(record.sessionId)
     const currency = record.usage.currency
     const context = reportedContextOccupancy(
       record.usage.contextTokens,
@@ -530,33 +536,41 @@ export class UsageLedger {
     this.#database.close()
   }
 
-  #rebuildTurnOrdinals(): void {
+  #rebuildTurnOrdinals(sessionId: string): void {
+    if (this.#indexedSessions.has(sessionId)) return
     // This column is a derived index of schema-valid evidence, not a second
-    // source of truth. Rebuild on open so corrupt durable JSON or an altered
-    // cached ordinal cannot reserve a number. Keep the raw evidence and totals.
-    this.#database.exec("BEGIN IMMEDIATE")
+    // source of truth. Rebuild before a session's first write, including writes
+    // that only consult it through the unique index. Dormant history does not
+    // add startup work. Keep raw evidence and totals while repairing the cache.
+    // A savepoint also works inside begin/transfer's enclosing transaction.
+    this.#database.exec("SAVEPOINT usage_turn_ordinals")
     try {
-      this.#database.exec(`DROP INDEX IF EXISTS provider_usage_turn_ordinal;
-        DROP INDEX IF EXISTS provider_usage_valid_turn_ordinal;
-        DROP INDEX IF EXISTS provider_usage_validated_turn_ordinal`)
+      this.#database.prepare("UPDATE provider_usage SET turn_ordinal = NULL WHERE session_id = ?").run(sessionId)
       const update = this.#database.prepare(
         "UPDATE provider_usage SET turn_ordinal = ? WHERE session_id = ? AND turn_id = ?",
       )
-      for (const row of this.#database.prepare("SELECT session_id, turn_id, accounting FROM provider_usage").iterate()) {
-        update.run(parsedAccounting(row.accounting)?.turn?.ordinal ?? null, row.session_id!, row.turn_id!)
+      for (const row of this.#database.prepare("SELECT turn_id, accounting FROM provider_usage WHERE session_id = ?").iterate(sessionId)) {
+        update.run(parsedAccounting(row.accounting)?.turn?.ordinal ?? null, sessionId, row.turn_id!)
       }
-      this.#database.exec(`CREATE UNIQUE INDEX provider_usage_validated_turn_ordinal
-        ON provider_usage(session_id, turn_ordinal);
-        COMMIT`)
+      this.#database.exec("RELEASE usage_turn_ordinals")
+      // A bounded optimization only: eviction makes the next write revalidate.
+      if (this.#indexedSessions.size >= 1_024) {
+        const oldest = this.#indexedSessions.values().next().value
+        if (oldest !== undefined) this.#indexedSessions.delete(oldest)
+      }
+      this.#indexedSessions.add(sessionId)
     } catch (error) {
-      this.#rollback(error)
+      this.#rollback(error, "ROLLBACK TO usage_turn_ordinals; RELEASE usage_turn_ordinals")
     }
   }
 
-  #rollback(error: unknown): never {
+  #rollback(error: unknown, statement = "ROLLBACK"): never {
+    // An outer rollback can undo a rebuild whose inner savepoint was released.
+    // Clear before cleanup: a failed rollback also leaves cache validity unknown.
+    this.#indexedSessions.clear()
     let rollbackFailure: { error: unknown } | undefined
     try {
-      this.#database.exec("ROLLBACK")
+      this.#database.exec(statement)
     } catch (rollbackError) {
       rollbackFailure = { error: rollbackError }
     }
