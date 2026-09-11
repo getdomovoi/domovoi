@@ -481,6 +481,22 @@ construction — which is how the stale type-floor sentence survived, and why `C
 Two ways: carry upstream verbatim and keep the summary beside it as a separate authored
 document, or accept the fork and stop calling it vendored. Not a coding task until decided.
 
+**Presence is not adoption, and nothing here records which is which.** A vendored file that
+nothing imports looks identical, by inspection, to one that is fully wired. Same shape as a check
+row reading pass when nothing ran, and as a grep hit being a fact about the text rather than the
+system. Under `design/design_system_domovoi/tokens/`, colours and radii are derived through
+`scripts/mobile-tokens.mjs`, typography is partly derived and partly hand-written, and
+`motion.css` reaches nothing at all — `packages/ui/src/styles.css` imports neither it nor any
+`dv-*` keyframe, so the system-wide reduced-motion collapse it declares was never in effect and a
+shimmer added on the assumption that it was would have shipped an infinite animation with no
+preference path.
+
+**Next step, and it is cheap:** audit each file under `design/design_system_domovoi/tokens/` once
+— is it imported or derived anywhere, and if not, why not. Some legitimately will not apply. The
+output is **not** a check that every file must be imported; it is an inventory with a stated reason
+per unadopted file, and then a check that the inventory is complete. Seeded and shrinking, the same
+shape as the tick citations, the type-floor exemptions and `D4`.
+
 **Second instance, from the other direction, found 2026-09-10.** The phone's type ramp is
 authored in this repository (`--text-phone-*` in `packages/ui/src/styles.css`) because the design
 system carries the desktop scale and knows nothing about the phone's — even though Phone v2 is a
