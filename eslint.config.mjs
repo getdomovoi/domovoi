@@ -2,7 +2,7 @@ import eslint from "@eslint/js"
 import reactHooks from "eslint-plugin-react-hooks"
 import tseslint from "typescript-eslint"
 
-import { phoneTypeFloorRules, typeFloorRules } from "./eslint.type-floor.generated.mjs"
+import { phoneTypeFloorRules, statusDotRules, typeFloorRules } from "./eslint.type-floor.generated.mjs"
 
 const sourceFiles = ["apps/**/*.{ts,tsx}", "packages/**/*.{ts,tsx}"]
 const reactFiles = [
@@ -53,7 +53,7 @@ export default tseslint.config(
       // manifest. Its own rules are all warnings, and its raw-pixel selector matches
       // the 5px inside 9.5px, so enabling them would flag the values the design system
       // defines.
-      "no-restricted-syntax": ["error", ...typeFloorRules],
+      "no-restricted-syntax": ["error", ...typeFloorRules, ...statusDotRules],
     },
   },
   {
@@ -64,7 +64,7 @@ export default tseslint.config(
     // scales rather than one restating the other.
     files: ["apps/mobile/**/*.{ts,tsx}"],
     rules: {
-      "no-restricted-syntax": ["error", ...phoneTypeFloorRules],
+      "no-restricted-syntax": ["error", ...phoneTypeFloorRules, ...statusDotRules],
     },
   },
   {

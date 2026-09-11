@@ -223,7 +223,7 @@ import {
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
 import type { SessionHistoryFocus } from "./session-history"
-import { StatusDot } from "./status-dot"
+import { StatusDot, type StatusMeaning } from "./status-dot"
 import {
   latestSessionHistoryRequest,
   historyWindowedAfterMerge,
@@ -382,25 +382,30 @@ export async function capturePreviewThumbnailState({
   }
 }
 
-const statusClass: Record<SessionSummary["state"], string> = {
-  active: "bg-success motion-safe:animate-pulse",
-  waiting: "bg-warning",
-  idle: "bg-faint",
-  done: "bg-faint",
-  failed: "bg-destructive",
-  archiving: "bg-warning",
-  archived: "bg-faint",
+// The states name a meaning rather than a colour now, so the palette lives in
+// StatusDot alone instead of being restated per surface.
+const statusMeaning: Record<SessionSummary["state"], StatusMeaning> = {
+  active: "online",
+  waiting: "waiting",
+  idle: "idle",
+  done: "idle",
+  failed: "offline",
+  archiving: "waiting",
+  archived: "idle",
   // A session mid-move is doing something; one that has moved is a recovery
   // point on this machine and reads as quiet rather than failed.
-  transferring: "bg-warning",
-  transferred: "bg-faint",
+  transferring: "waiting",
+  transferred: "idle",
   // Two machines claim this session. That is not quiet like a moved session,
   // and it is not in flight like a moving one, so it reads as a problem.
-  "ownership-conflict": "bg-destructive",
+  "ownership-conflict": "offline",
 }
 
-export function sessionStatusClass(session: Pick<SessionSummary, "state">): string {
-  return statusClass[session.state]
+// Exported so a test can prove every session state has a meaning. The map is
+// keyed on the union, so a new state fails typecheck rather than rendering no
+// dot, and this proves the table is reachable rather than only well-typed.
+export function sessionStatusMeaning(session: Pick<SessionSummary, "state">): StatusMeaning {
+  return statusMeaning[session.state]
 }
 
 export function restoreFocusAfterUpdate(
@@ -526,10 +531,12 @@ export function AppBar({
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
         <Badge variant="machine">
-          <span aria-hidden="true" data-status-dot="" className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
-          <span className="sr-only">
-            {connected ? "Connected to " : "Disconnected from "}{snapshot?.machine.name ?? "daemon"}.
-          </span>
+          <StatusDot
+            meaning={connected ? "online" : "offline"}
+            label={`${connected ? "Connected to" : "Disconnected from"} ${snapshot?.machine.name ?? "daemon"}.`}
+            size="inline"
+            labelHidden
+          />
           <span className="hidden sm:inline">{snapshot?.machine.name ?? "daemon"}</span>
         </Badge>
       </div>
@@ -754,9 +761,14 @@ export function SessionRow({
       )}
     >
       <span className="flex w-full items-start gap-2">
-        <span aria-hidden="true" data-status-dot="" className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", statusClass[session.state])} />
+        <StatusDot
+          meaning={statusMeaning[session.state]}
+          label={`Status: ${session.state}`}
+          size="inline"
+          labelHidden
+          className={cn("mt-1.5", session.state === "active" && "motion-safe:animate-pulse")}
+        />
         <span className="line-clamp-2 text-[12.5px] font-medium leading-[1.35]">{session.title}</span>
-        <span className="sr-only">Status: {session.state}</span>
       </span>
       <span className="ml-3.5 flex flex-wrap items-center gap-1">
         <Badge variant="machine">{session.runtime.provider}/{session.runtime.model}</Badge>
