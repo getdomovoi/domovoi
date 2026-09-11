@@ -1138,6 +1138,17 @@ describe("DomovoiDaemon", () => {
       requestedModel: "gpt-5.6-sol", status: "failed",
       observations: [expect.objectContaining({ model: "provider-selected-model" })],
     })
+    await rpc("system.emergencyStop", { client: "desktop" })
+    emit({ ...usage, turnId: "second-turn", usage: normalizeUsage({ inputTokens: 7, outputTokens: 2 }) })
+    emit({ type: "text-delta", threadId: "usage-thread", turnId: "second-turn", delta: "after-emergency-text" })
+    expect(await rpc("session.usage", { sessionId: session.id })).toMatchObject({
+      totalTokens: 24, coverage: { complete: 2, pending: 0 },
+    })
+    expect(ledger.lookup({ provider: "codex", threadId: "usage-thread", turnId: "second-turn" })?.accounting?.status)
+      .toBe("interrupted")
+    const stopped = await rpc("workspace.get", {}) as typeof snapshot
+    expect(stopped.sessions.find((candidate) => candidate.id === session.id)).not.toHaveProperty("activeTurnId")
+    expect(stopped.thread.some((item) => "body" in item && item.body.includes("after-emergency-text"))).toBe(false)
     socket.close()
   })
 
@@ -11834,11 +11845,11 @@ describe("DomovoiDaemon session transfer requests", () => {
     expect(preview).toMatchObject({
       result: {
         allowed: true,
-        contractVersion: 1,
+        contractVersion: 2,
         intentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       },
     })
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
     return call("session.transfer", {
       ...params,
       contractVersion: approved.contractVersion,
@@ -12197,7 +12208,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       sessionId: session.id,
       targetMachineId: `machine-${"f".repeat(32)}`,
       initiatedByClient: "desktop",
-      contractVersion: 1,
+      contractVersion: 2,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
 
@@ -12241,7 +12252,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       sessionId: demoWorkspace.sessions.find((candidate) => candidate.state === "active")!.id,
       targetMachineId: targetMachineId,
       initiatedByClient: "desktop",
-      contractVersion: 1,
+      contractVersion: 2,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
 
@@ -12423,7 +12434,7 @@ describe("DomovoiDaemon session transfer requests", () => {
     }
     const preview = await rpc("session.transferPreview", request)
     expect(preview).toMatchObject({ result: { allowed: true } })
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
     const transfer = rpc("session.transfer", {
       ...request,
       contractVersion: approved.contractVersion,
@@ -12624,7 +12635,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       sessionId: demoWorkspace.sessions[0]!.id,
       targetMachineId: `machine-${"b".repeat(32)}`,
       initiatedByClient: "desktop",
-      contractVersion: 1,
+      contractVersion: 2,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
 
@@ -12648,7 +12659,7 @@ describe("DomovoiDaemon session transfer requests", () => {
       sessionId: "session-does-not-exist",
       targetMachineId: `machine-${"b".repeat(32)}`,
       initiatedByClient: "desktop",
-      contractVersion: 1,
+      contractVersion: 2,
       intentDigest: `sha256:${"f".repeat(64)}`,
     })
 

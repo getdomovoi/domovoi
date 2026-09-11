@@ -228,8 +228,10 @@ export class UsageLedger {
     this.#database.exec(
       "CREATE INDEX IF NOT EXISTS provider_usage_recorded_at ON provider_usage(recorded_at)",
     )
-    this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_accounting_status
-      ON provider_usage(json_extract(accounting, '$.status'))`)
+    // Replace the old expression index, which could not open malformed durable JSON.
+    this.#database.exec(`DROP INDEX IF EXISTS provider_usage_accounting_status;
+      CREATE INDEX IF NOT EXISTS provider_usage_valid_accounting_status
+      ON provider_usage(CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END)`)
     this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_identity
       ON provider_usage(turn_id, provider)`)
     this.#restrictFilePermissions()
@@ -272,7 +274,8 @@ export class UsageLedger {
   interruptPending(active: readonly UsageIdentity[] = []): void {
     const activeKeys = new Set(active.map(usageIdentity))
     const rows = this.#database.prepare(
-      "SELECT * FROM provider_usage WHERE json_extract(accounting, '$.status') = 'pending'",
+      `SELECT * FROM provider_usage
+        WHERE CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END = 'pending'`,
     ).all()
     for (const value of rows) {
       const row = turnUsageFromRow(value)
@@ -538,6 +541,7 @@ function safeCostMicros(amount: number): number {
 
 function turnUsageFromRow(value: unknown): TurnUsage {
   const row = value as Record<string, unknown>
+  const accounting = parsedAccounting(row.accounting)
   const usage: NormalizedUsage = {
     inputTokens: Number(row.input_tokens),
     cachedInputTokens: Number(row.cached_input_tokens),
@@ -560,8 +564,18 @@ function turnUsageFromRow(value: unknown): TurnUsage {
     provider: String(row.provider),
     model: String(row.model),
     usage,
-    ...(typeof row.accounting === "string"
-      ? { accounting: usageAccountingSchema.parse(JSON.parse(row.accounting)) } : {}),
+    ...(accounting ? { accounting } : {}),
+  }
+}
+
+function parsedAccounting(value: unknown): UsageAccounting | undefined {
+  if (typeof value !== "string") return undefined
+  try {
+    const parsed = usageAccountingSchema.safeParse(JSON.parse(value))
+    return parsed.success ? parsed.data : undefined
+  } catch {
+    // Preserve the row's measured usage as legacy, without claiming valid accounting evidence.
+    return undefined
   }
 }
 

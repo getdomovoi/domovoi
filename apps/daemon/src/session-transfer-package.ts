@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 
 import {
+  sessionTransferContractVersion,
   sessionTransferManifestDomain,
   sessionTransferManifestSchema,
   sessionTransferPreviewSchema,
@@ -205,7 +206,7 @@ export function finalizeSessionTransferIntent(input: {
   }
   const { state, coverage, artifactSources, annotationCrops } = input.collected
   const intentPayload = {
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     sourceMachineId: input.sourceMachineId,
     targetMachineId: input.targetMachineId,
     sourceProjectId: input.sourceProjectId,
@@ -236,7 +237,7 @@ export function finalizeSessionTransferIntent(input: {
   }
   const intentDigest = sha256(`domovoi.session-transfer-intent.v1\0${canonicalJson(intentPayload)}`)
   const preview = sessionTransferPreviewSchema.parse({
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     sessionId: state.session.id,
     sourceMachineId: input.sourceMachineId,
     targetMachineId: input.targetMachineId,
@@ -342,7 +343,7 @@ export function createSessionTransferPackage(
     }, resource.bytes)),
   ]
   const manifest = sessionTransferManifestSchema.parse({
-    version: 1,
+    version: sessionTransferContractVersion,
     transferId: input.transferId,
     sessionId: intent.state.session.id,
     sourceMachineId: intent.preview.sourceMachineId,
