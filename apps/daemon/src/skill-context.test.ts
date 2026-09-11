@@ -216,7 +216,9 @@ describe("agentPromptWithSkills", () => {
     const forged: SkillEnablementReview = { ...currentReview, manifest: { version: 2, capabilities: ["network.connect"], scopes: [
       { capability: "network.connect", scope: { kind: "all" } },
     ] } }
-    await expect(prepareTurnSkillContext(skillCatalog, snapshot, explicitSelection(forged))).rejects.toThrow()
+    await expect(prepareTurnSkillContext(skillCatalog, snapshot, explicitSelection(forged))).rejects.toMatchObject({
+      refusal: { reason: "review-changed" },
+    })
     expect(skillCatalog.read).not.toHaveBeenCalled()
   })
 

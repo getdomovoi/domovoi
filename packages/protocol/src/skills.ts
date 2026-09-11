@@ -23,6 +23,8 @@ const signatureEvidenceSchema = z.object({
 
 export const skillContentDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 export const maximumSkillRevisionBytes = 128 * 1_024
+// This synchronous wire schema checks shape and exact UTF-8 size. The daemon
+// verifies contentDigest when retaining a revision and again before serving it.
 export const skillReviewRevisionResultSchema = z.discriminatedUnion("state", [
   z.object({
     id: skillIdSchema,
