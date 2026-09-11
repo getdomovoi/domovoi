@@ -242,6 +242,29 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    So the two are not ranked, they are shaped differently, and the substitute is worth running even
    when the CLI is available. Neither closes the other's row.
 
+   **Reviewing a combined branch: four rules, because the record outlives the branch.** Validating a
+   stack often means building one branch that merges every pull request head, so the gates run
+   against the tree that will actually exist. Reviewing *that* branch is useful and its record is a
+   trap, because the branch is deleted and the code lands through each pull request's own commits.
+
+   - Name it `validation/…`. The prefix carries the fact when the description is three scrolls up.
+   - Say in the record that it is validation only and will not be merged, and name the pull request
+     heads it combines. A published branch whose shas appear in a review and never reach `main`
+     reads later as either lost work or a merge that happened. Neither is true, and neither is
+     recoverable from the sha.
+   - Record every finding against the **pull request and file**, never the integration sha. A
+     finding at `abc123:47` is unaddressable the moment the branch is dropped: the review stays
+     valid while its addresses do not, which is the weakest kind of record because it still looks
+     checkable.
+   - Keep integration shas out of every `[x]` citation. `scripts/tick-citations.mjs` runs
+     `git merge-base --is-ancestor <sha> HEAD`, so such a citation passes on the machine holding
+     the branch and fails on a fresh clone — the exact failure rule 8's checker was written for.
+     Cite the per-pull-request heads, which become ancestors when they merge.
+
+   First applied 2026-09-10 to the reference combining `#362` `0b896d7`, `#363` `3167d44`, `#364`
+   `949c487` and the merged history and checkpoint slices. All three heads verified against
+   `gh pr view --json headRefOid` rather than taken from the description.
+
    So the substitute review is recorded as what it is. Never write "reviewed" unqualified, and
    never let a substitute close a `CodeRabbit` row. Name the reviewer, name the diff range, and
    say the CodeRabbit review is still outstanding. Same shape as rule 6: the failure is not an
