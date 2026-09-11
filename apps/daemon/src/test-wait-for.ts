@@ -20,11 +20,16 @@ export function waitForDaemon<T>(assertion: () => T | Promise<T>): Promise<T> {
 // run of 8103 ms, while Ubuntu never passed 3596 ms and macOS 3551 ms, and
 // startup is most of it. The same wait has expired twice, on Ubuntu at 3178 ms
 // while it shared the observation budget above, and on Windows at 10151 ms once
-// it had a fixed ten seconds. Twenty seconds is two and a half times the widest
-// passing Windows run, and each caller keeps its own outer deadline, so a
-// genuine hang is still bounded above this.
+// it had a fixed ten seconds. Twenty seconds then expired twice on one Windows
+// job (run 34616918057 and its rerun, 2026-09-11) on a docs-only commit whose
+// parent had passed, while the four passing Windows runs that day cost 2458,
+// 13013, 2730 and 2647 ms, so the runner's stall, not the code, crossed it.
+// Twenty-five seconds is the most this budget can take without passing the
+// production harness call budget below, which every caller of that harness
+// sizes its own test budget against, and each caller here keeps its own outer
+// deadline, so a genuine hang is still bounded above this.
 export function fixtureStartupTimeoutMs(platform: NodeJS.Platform): number {
-  return platform === "win32" ? 20_000 : 10_000
+  return platform === "win32" ? 25_000 : 10_000
 }
 
 // An expiry here reads as "the fixture has not printed yet", which does not say
