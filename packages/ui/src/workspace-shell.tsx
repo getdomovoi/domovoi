@@ -384,6 +384,15 @@ export async function capturePreviewThumbnailState({
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
+//
+// A status dot shows a state, never an event. A transfer is something that
+// happened to a session, not a condition it is in: after it completes the
+// session is running, idle or waiting on a gate, on the new machine. The test
+// that settles it is a session that moved and then raised a gate — it cannot be
+// both handoff-blue and gate-amber, and the gate is obviously the answer, which
+// means handoff was never a state, just a recent event wearing one's clothes.
+// Same error as calling provider handoffs "Transfers" in the filter list. A move
+// belongs in History, where events live.
 const statusMeaning: Record<SessionSummary["state"], StatusMeaning> = {
   active: "online",
   waiting: "waiting",
