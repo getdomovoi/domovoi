@@ -77,6 +77,19 @@ describe("retained skill revisions", () => {
     expect(revisions.read(id, digest)).toEqual({ id, contentDigest: digest, state: "unavailable", reason: "integrity-mismatch" })
   })
 
+  it("keeps integrity reads read-only and evicts damaged evidence on later retention", () => {
+    const database = databaseAt()
+    const revisions = new SqliteSkillReviews(database, { maximumRevisions: 1 }).revisions
+    const digest = skillContentDigest("reviewed")
+    revisions.retain(digest, "reviewed")
+    database.prepare("UPDATE skill_review_revisions SET content = ?").run("tampered")
+    expect(revisions.read(id, digest)).toMatchObject({ reason: "integrity-mismatch" })
+    expect(database.prepare("SELECT count(*) AS count FROM skill_review_revisions").get()).toEqual({ count: 1 })
+    revisions.retain(skillContentDigest("next"), "next")
+    expect(revisions.read(id, digest)).toMatchObject({ reason: "not-retained" })
+    expect(revisions.read(id, skillContentDigest("next"))).toMatchObject({ state: "available" })
+  })
+
   it("evicts oldest retained text by byte budget, and a renewed review refreshes retention", () => {
     const revisions = new SqliteSkillReviews(databaseAt(), { maximumBytes: 12 }).revisions
     for (const content of ["aaaa", "bbbb", "aaaa", "cccccccc"]) revisions.retain(skillContentDigest(content), content)
@@ -94,6 +107,20 @@ describe("retained skill revisions", () => {
     expect(revisions.read(id, skillContentDigest("b"))).toMatchObject({ state: "available" })
   })
 
+  it("enforces the UTF-8 budget even when a stored byte count is corrupt", () => {
+    const database = databaseAt()
+    const revisions = new SqliteSkillReviews(database, { maximumBytes: 12 }).revisions
+    const oldContent = "🙂🙂"
+    const newContent = "éééé"
+    revisions.retain(skillContentDigest(oldContent), oldContent)
+    database.prepare("UPDATE skill_review_revisions SET bytes = 1").run()
+    expect(revisions.read(id, skillContentDigest(oldContent))).toMatchObject({ reason: "integrity-mismatch" })
+    revisions.retain(skillContentDigest(newContent), newContent)
+    expect(revisions.read(id, skillContentDigest(oldContent))).toMatchObject({ reason: "not-retained" })
+    expect(revisions.read(id, skillContentDigest(newContent))).toMatchObject({ state: "available", bytes: 8 })
+    expect(database.prepare("SELECT count(*) AS count FROM skill_review_revisions").get()).toEqual({ count: 1 })
+  })
+
   it("rolls back insertion when eviction fails, preserving previously retained evidence", () => {
     const database = databaseAt()
     const revisions = new SqliteSkillReviews(database, { maximumRevisions: 1 }).revisions
@@ -105,5 +132,21 @@ describe("retained skill revisions", () => {
     database.exec("DROP TRIGGER refuse_revision_delete")
     revisions.retain(skillContentDigest("b"), "b")
     expect(revisions.read(id, skillContentDigest("b"))).toMatchObject({ state: "available", content: "b" })
+  })
+
+  it("preserves the retention failure when SQLite has already rolled back the savepoint", () => {
+    const database = databaseAt()
+    const revisions = new SqliteSkillReviews(database, { maximumRevisions: 1 }).revisions
+    revisions.retain(skillContentDigest("a"), "a")
+    database.exec("CREATE TRIGGER rollback_revision_delete BEFORE DELETE ON skill_review_revisions BEGIN SELECT RAISE(ROLLBACK, 'retention failure'); END")
+    let failure: unknown
+    try { revisions.retain(skillContentDigest("b"), "b") } catch (error) { failure = error }
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure).toMatchObject({
+      cause: expect.objectContaining({ message: "retention failure" }),
+      errors: [expect.objectContaining({ message: "retention failure" }), expect.any(Error)],
+    })
+    expect(revisions.read(id, skillContentDigest("a"))).toMatchObject({ state: "available", content: "a" })
+    expect(revisions.read(id, skillContentDigest("b"))).toMatchObject({ state: "unavailable" })
   })
 })

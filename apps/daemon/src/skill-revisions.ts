@@ -51,14 +51,22 @@ export class SqliteSkillRevisions implements SkillRevisions {
           SELECT content_digest FROM (
             SELECT content_digest,
               ROW_NUMBER() OVER (ORDER BY retained_order DESC, rowid DESC) AS position,
-              SUM(bytes) OVER (ORDER BY retained_order DESC, rowid DESC) AS retained_bytes
+              SUM(length(CAST(content AS BLOB))) OVER (ORDER BY retained_order DESC, rowid DESC) AS retained_bytes
             FROM skill_review_revisions
           ) WHERE position > ? OR retained_bytes > ?
         )
       `).run(this.#maximumRevisions, this.#maximumBytes)
       this.#database.exec("RELEASE skill_revision_retention")
     } catch (error) {
-      this.#database.exec("ROLLBACK TO skill_revision_retention; RELEASE skill_revision_retention")
+      let rollbackFailure: { error: unknown } | undefined
+      try {
+        this.#database.exec("ROLLBACK TO skill_revision_retention; RELEASE skill_revision_retention")
+      } catch (rollbackError) {
+        rollbackFailure = { error: rollbackError }
+      }
+      if (rollbackFailure) {
+        throw new AggregateError([error, rollbackFailure.error], "Could not retain a skill revision or restore its transaction", { cause: error })
+      }
       throw error
     }
   }
