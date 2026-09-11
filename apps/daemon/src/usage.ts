@@ -190,6 +190,14 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
   })
 }
 
+// Reserve only positive safe-integer ordinals, even when durable evidence is corrupt.
+// Keep the index and allocation query identical, including the malformed-JSON guard.
+const validTurnOrdinalSql = `CASE WHEN json_valid(accounting) THEN
+  CASE WHEN json_type(accounting, '$.turn.ordinal') IN ('integer', 'real')
+    AND json_extract(accounting, '$.turn.ordinal') BETWEEN 1 AND ${Number.MAX_SAFE_INTEGER}
+    AND json_extract(accounting, '$.turn.ordinal') = CAST(json_extract(accounting, '$.turn.ordinal') AS INTEGER)
+  THEN json_extract(accounting, '$.turn.ordinal') END END`
+
 export class UsageLedger {
   readonly #database: DatabaseSync
   readonly #path: string
@@ -236,8 +244,9 @@ export class UsageLedger {
       ON provider_usage(CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END)`)
     this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_identity
       ON provider_usage(turn_id, provider)`)
-    this.#database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS provider_usage_turn_ordinal
-      ON provider_usage(session_id, json_extract(accounting, '$.turn.ordinal'))`)
+    this.#database.exec(`DROP INDEX IF EXISTS provider_usage_turn_ordinal;
+      CREATE UNIQUE INDEX IF NOT EXISTS provider_usage_valid_turn_ordinal
+      ON provider_usage(session_id, ${validTurnOrdinalSql})`)
     this.#restrictFilePermissions()
   }
 
@@ -249,7 +258,7 @@ export class UsageLedger {
     this.#database.exec("BEGIN IMMEDIATE")
     try {
       if (!this.lookup(dispatch)) {
-        const row = this.#database.prepare(`SELECT MAX(json_extract(accounting, '$.turn.ordinal')) AS ordinal
+        const row = this.#database.prepare(`SELECT MAX(${validTurnOrdinalSql}) AS ordinal
           FROM provider_usage WHERE session_id = ?`).get(dispatch.sessionId)
         const now = this.#now()
         const accounting = usageAccountingSchema.parse({
