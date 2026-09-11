@@ -20,7 +20,7 @@ function digest(parts: string[]): string {
 export function beginUsageAccounting(input: UsageDispatch): UsageAccounting {
   return usageAccountingSchema.parse({
     version: 1, key: usageIdentity(input), threadKey: digest([input.provider, input.threadId]),
-    requestedModel: input.model, providerTurnId: input.turnId,
+    provider: input.provider, requestedModel: input.model, providerTurnId: input.turnId,
     status: "pending", coverage: "pending", observations: [],
   })
 }

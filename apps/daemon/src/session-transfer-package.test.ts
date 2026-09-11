@@ -85,7 +85,7 @@ describe("session transfer package", () => {
 
     expect(intent.preview).toMatchObject({
       allowed: true,
-      contractVersion: 1,
+      contractVersion: 2,
       sessionId: "session-billing",
       sourceMachineId,
       targetMachineId,

@@ -50,7 +50,7 @@ function targetWorkspace(): WorkspaceSnapshot {
 
 describe("target transfer preflight", () => {
   const params = {
-    contractVersion: 1 as const,
+    contractVersion: 2 as const,
     sessionId: "session-1",
     sourceMachineId,
     sourceProjectId: "project-source",

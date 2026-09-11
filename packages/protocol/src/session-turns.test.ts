@@ -11,7 +11,7 @@ const startedAt = "2026-09-10T12:00:00.000Z"
 const completedAt = "2026-09-10T12:01:00.000Z"
 const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, costSource: "unavailable" }
 const accounting = {
-  version: 1, key: id, threadKey: "b".repeat(64), providerTurnId: "provider-turn",
+  version: 1, key: id, provider: "opencode", threadKey: "b".repeat(64), providerTurnId: "provider-turn",
   requestedModel: "requested/model", status: "completed", coverage: "unavailable", observations: [],
   turn: { ordinal: 3, startedAt, completedAt },
 }
@@ -24,7 +24,7 @@ const message = { id: "message", sessionId: "session", kind: "user", body: "Stee
 const entry = { id: "thread:message", sourceId: "message", sessionId: "session", category: "messages", role: "user", body: message.body, createdAt: startedAt, turnId: id, turn }
 const page = { sessionId: "session", items: [entry], hasMore: false }
 const portable = {
-  version: 1,
+  version: 2,
   session: { id: "session", title: "Session", runtime: { provider: "opencode", model: "requested/model", reasoning: "high", permissionMode: "build" }, changedFiles: 0, testsPassed: 0, testsFailed: 0, updatedAt: completedAt, baseCommit: "c".repeat(40), ownershipGeneration: 0 },
   thread: [message], artifacts: [], annotations: [],
   usage: [{ turnId: id, provider: "opencode", model: "requested/model", ...usage, accounting }],
