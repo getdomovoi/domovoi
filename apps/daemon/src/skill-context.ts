@@ -8,7 +8,7 @@ import type {
   TurnSkillSelectionRefusal,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { maximumDeliveredPromptSkills } from "@getdomovoi/protocol"
+import { maximumDeliveredPromptSkills, skillCapabilityManifestsEqual } from "@getdomovoi/protocol"
 
 import type { SkillCatalog } from "./skills.js"
 
@@ -27,6 +27,7 @@ export type InjectedSkill = {
   contentDigest: string
   trust: SkillDocument["skill"]["trust"]
   capabilities: SkillCapabilityManifest["capabilities"]
+  declaredScopes?: Extract<SkillCapabilityManifest, { version: 2 }>["scopes"]
   content: string
   contentTruncated: boolean
 }
@@ -64,11 +65,7 @@ function exactManifest(
   current: SkillCapabilityManifest,
   reviewed: SkillCapabilityManifest,
 ): boolean {
-  if (current.version !== reviewed.version) return false
-  const currentCapabilities = new Set(current.capabilities)
-  const reviewedCapabilities = new Set(reviewed.capabilities)
-  return currentCapabilities.size === reviewedCapabilities.size
-    && [...currentCapabilities].every((capability) => reviewedCapabilities.has(capability))
+  return skillCapabilityManifestsEqual(current, reviewed)
 }
 
 function boundedContent(content: string): { content: string; truncated: boolean } {
@@ -108,6 +105,7 @@ async function reviewedSkill(
         contentDigest: skill.contentDigest,
         trust: skill.trust,
         capabilities: skill.manifest.capabilities,
+        ...(skill.manifest.version === 2 ? { declaredScopes: skill.manifest.scopes } : {}),
         content: bounded.content,
         contentTruncated: bounded.truncated,
       },

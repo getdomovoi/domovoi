@@ -204,6 +204,56 @@ describe("agentPromptWithSkills", () => {
     ])
   })
 
+  it("refuses widened declared scopes even when a turn selection reuses the reviewed digest", async () => {
+    const current: SkillSummary = { ...skill("skill-aaaaaaaaaaaa", "alpha"), manifest: {
+      version: 2, capabilities: ["network.connect"], scopes: [
+        { capability: "network.connect", scope: { kind: "hosts", hosts: ["api.test"] } },
+      ],
+    } }
+    const currentReview = review("project-one", current)
+    const snapshot = { project: { id: "project-one" }, skillEnablements: [currentReview] } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+    const skillCatalog = catalog([{ skill: current, content: "Use alpha." }])
+    const forged: SkillEnablementReview = { ...currentReview, manifest: { version: 2, capabilities: ["network.connect"], scopes: [
+      { capability: "network.connect", scope: { kind: "all" } },
+    ] } }
+    await expect(prepareTurnSkillContext(skillCatalog, snapshot, explicitSelection(forged))).rejects.toThrow()
+    expect(skillCatalog.read).not.toHaveBeenCalled()
+  })
+
+  it("carries reviewed scope declarations even when injected instruction text is truncated", async () => {
+    const current: SkillSummary = { ...skill("skill-aaaaaaaaaaaa", "alpha"), manifest: {
+      version: 2, capabilities: ["network.connect"], scopes: [
+        { capability: "network.connect", scope: { kind: "hosts", hosts: ["api.test"] } },
+      ],
+    } }
+    const currentReview = review("project-one", current)
+    const snapshot = { project: { id: "project-one" }, skillEnablements: [currentReview] } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+    const skillCatalog = catalog([{ skill: current, content: "x".repeat(maximumInjectedSkillContentLength + 1) }])
+    const prepared = await prepareTurnSkillContext(skillCatalog, snapshot, explicitSelection(currentReview))
+    expect(prepared.deliverable).toEqual([expect.objectContaining({
+      declaredScopes: [{ capability: "network.connect", scope: { kind: "hosts", hosts: ["api.test"] } }],
+      contentTruncated: true,
+    })])
+  })
+
+  it("refuses a scope changed in the catalog after an otherwise current turn selection", async () => {
+    const baseline: SkillSummary = { ...skill("skill-aaaaaaaaaaaa", "alpha"), manifest: {
+      version: 2, capabilities: ["network.connect"], scopes: [
+        { capability: "network.connect", scope: { kind: "hosts", hosts: ["api.test"] } },
+      ],
+    } }
+    const currentReview = review("project-one", baseline)
+    const snapshot = { project: { id: "project-one" }, skillEnablements: [currentReview] } as Pick<WorkspaceSnapshot, "project" | "skillEnablements">
+    const current: SkillSummary = { ...baseline, manifest: { version: 2, capabilities: ["network.connect"], scopes: [
+      { capability: "network.connect", scope: { kind: "all" } },
+    ] } }
+    const skillCatalog = catalog([{ skill: current, content: "Use alpha." }])
+    await expect(prepareTurnSkillContext(skillCatalog, snapshot, explicitSelection(currentReview))).rejects.toMatchObject({
+      refusal: { reason: "review-changed" },
+    })
+    expect(skillCatalog.read).toHaveBeenCalledWith(current.id)
+  })
+
   it("refuses an explicit skill whose enablement review changed before reading it", async () => {
     const current = skill("skill-aaaaaaaaaaaa", "alpha", digest("b"))
     const skillCatalog = catalog([{ skill: current, content: "Changed instructions." }])
