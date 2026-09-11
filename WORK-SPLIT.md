@@ -534,9 +534,36 @@ because of the user's adjacent state, say nothing, since "type something to send
   component, so a component that shadows a prop name is misfiled; the error is small and in the
   direction of over-reporting.
 
-**Not yet a task to start, and when it is, it is not a sweep.** Ruled by fetzy 2026-09-10: land
-the rule as an error with the 56 seeded as a shrinking allowlist, the same shape as the tick
-citations, and let each come off as its file is touched for other reasons. A bulk pass biases hard
+**It is not a shrinking list everywhere, and calling it one was pattern-matching.** Measured
+2026-09-10 rather than assumed. A seeded list only converges if its files are edited routinely for
+other reasons, which is why the tick citations work — ROADMAP lines are edited constantly. Commits
+per file since 2026-08-01:
+
+| Sites | File | Commits |
+|---|---|---|
+| 22 | `workspace-shell.tsx` | **183** |
+| 8 | `fleet-view.tsx` | 13 |
+| 3 | `skill-browser.tsx` | 18 |
+| 1 | `audit-log-view.tsx` | 12 |
+| 4 | `session-evidence.tsx` | 8 |
+| 2 | `machine-switcher.tsx` | 8 |
+| 5 | `terminal-pane.tsx` | 6 |
+| 4 | `desktop-first-run.tsx` | 3 |
+| 2 | `daemon-credential-prompt.tsx` | 3 |
+| 1 | `notification-settings.tsx` | 2 |
+
+So it converges for the hot two thirds and asymptotes on a cold tail of roughly a dozen sites in
+files touched two or three times in six weeks. The honest shape is a rule that **blocks new
+violations from day one** plus a **named tail scheduled as work**, not one mechanism pretending to
+do both. Seeding without saying which sites are in which half would be a permanent list wearing a
+shrinking list's clothes.
+
+`D5` is the other half of this: 22 of the 56 are in the file that is flagged for splitting, and
+splitting it is what puts a person in every one of those call sites with the context to choose
+between the branches. `D4` after `D5`, not beside it.
+
+**Not a sweep when it is scheduled.** Ruled by fetzy 2026-09-10: land the rule as an error with
+the existing sites seeded, and let each come off as its file is touched. A bulk pass biases hard
 toward the cheap branch — adding `aria-describedby` everywhere — when a good share of these
 controls should not be rendered at all, and that ends in 56 descriptions of controls that should
 not exist. Seeded, the new violations are blocked from day one and each existing one is decided by
@@ -545,8 +572,9 @@ someone already in that file with the context to choose between the branches.
 The rule wants to be a custom ESLint rule with scope analysis rather than a `no-restricted-syntax`
 selector, since the selector cannot see what is local.
 
-### D5 · `workspace-shell.tsx` needs splitting — fourth flag in one session
-Not a file that keeps coming up any more. The case, with the counts as evidence:
+### D5 · Split `workspace-shell.tsx` — scheduled, not recorded
+Recording this a fifth time would be deferral dressed as agreement. It is the next piece of client
+work, ahead of `D4`, and `CC6` waits on the relay anyway. The case, with the counts as evidence:
 
 - **4,600 lines**, and it holds `Thread`, `HistoryPanel`, `RuntimeControls`, the session sidebar
   and the shell itself.
@@ -555,6 +583,9 @@ Not a file that keeps coming up any more. The case, with the counts as evidence:
   alone — more than a third either way.
 - Every cross-cutting pass this session had to touch it: the history row, the turn meta, the
   session-start fork, both empty states, the status dot.
+- **183 commits since 2026-08-01**, the most-touched file in the repository by a wide margin. That
+  is the number that turns the case from a complaint into a schedule: every change goes through it,
+  so every change pays for its size.
 
 The prop surface is the symptom `D3` names; the size is why every unrelated change lands here.
 Splitting it is not a refactor for tidiness, it is what stops the next cross-cutting item being a
