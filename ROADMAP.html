@@ -187,7 +187,11 @@ td { color: var(--ink2); }
 <p>This roadmap turns the signed product handoff, product contract, distribution contract, and the 2026-08-28 and 2026-09-02 repository audits into an ordered delivery plan. It describes outcomes, dependencies, and proof of completion. It does not replace <code>PRODUCT.md</code>, <code>DESIGN.md</code>, or the Claude Design handoffs.</p>
 <h2 id="status-and-priority">Status and priority</h2>
 <ul>
-<li><code>[x]</code> implemented and verified in the repository
+<li><code>[x]</code> implemented and verified in the repository, citing the commits that verified it
+<ul>
+<li>A tick is a claim with a date. <code>[x] … (1b683d6)</code> is checkable by reading what that commit did; <code>[x]</code> alone is checkable only by trusting the prose beside it. New and revised ticks cite; existing ticks are dated with <code>git log -L '/&lt;tick text&gt;/,+1:ROADMAP.md' --oneline --no-patch</code> when one is questioned.
+</li>
+</ul>
 </li>
 <li><code>[ ]</code> not complete
 </li>
@@ -441,7 +445,17 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[x] Token and cost telemetry normalized per turn, session, provider, and model
+<li>[x] Token and cost telemetry normalized for Anthropic, per session and provider (76a9cb2 · session totals 2508149 · cached-token fold 3d92b6f)
+<ul>
+<li>[ ] OpenCode undercounts: <code>tokens.cache.read</code> lands in <code>cachedInputTokens</code> and never reaches <code>inputTokens</code> or <code>totalTokens</code> — the fold is Anthropic-key-only by design (<code>opencode.ts:506</code>)
+</li>
+<li>[ ] <code>acp.ts:295-296</code> assigns <code>totalTokens</code> and <code>contextTokens</code> the same <code>update.used</code>
+</li>
+<li>[ ] Usage is stamped with <code>session.runtime.model</code> at write time, so an arrival after a same-provider switch gets the new model (<code>server.ts:6903</code>, switch at <code>5835</code>)
+</li>
+<li>[ ] Per-turn attribution needs the durable turn link, which does not exist (WORK-SPLIT <code>CX2</code>)
+</li>
+</ul>
 </li>
 <li>[x] Session token totals and provider-reported cost in the client, with a per-runtime breakdown and an explicit count of turns the provider reported no cost for
 </li>

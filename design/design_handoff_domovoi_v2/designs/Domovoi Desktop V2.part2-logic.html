@@ -1,0 +1,1882 @@
+
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;mac&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;,&quot;linux&quot;],&quot;tsType&quot;:&quot;\&quot;mac\&quot; | \&quot;windows\&quot; | \&quot;linux\&quot;&quot;},&quot;access&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;full&quot;,&quot;options&quot;:[&quot;full&quot;,&quot;watching&quot;],&quot;tsType&quot;:&quot;\&quot;full\&quot; | \&quot;watching\&quot;&quot;,&quot;section&quot;:&quot;Client&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: "launcher",
+    theme: null,
+    drawerOpen: false,
+    activityOpen: false,
+    openLogs: [],
+    factsOpen: false,
+    sheetOpen: false,
+    paletteOpen: false,
+    handoffOpen: false,
+    handoffTarget: 1,
+    handoffPhase: "preflight",
+    authorized: true,
+    conflictSide: 1,
+    decision: null,
+    perm: 1,
+    auto: false,
+    modeMenuOpen: false,
+    modelMenuOpen: false,
+    model: 0,
+    modelQuery: "",
+    stopHover: false,
+    historyCat: "all",
+    auditActor: "all",
+    renamingDevice: null,
+    rotatedDevice: null,
+    commentsResolved: [],
+    annotateMode: false,
+    draftRow: null,
+    draftQuote: null,
+    variant: "B",
+    chosen: null,
+    commentsSent: false,
+    hoverComment: null,
+    focusComment: null,
+    comments: [
+      {
+        row: 2, doc: 0, lost: false, quote: "retried after 15m",
+        anchor: "Replay table, three states · the expired row",
+        body: "Fifteen minutes is too long for a claim expiry here. Stripe retries at 1, 5 and 30 minutes, so a stuck claim blocks the second retry entirely.",
+        who: "you · desktop · 14:12", status: "open",
+        replies: [{ who: "claude-code", when: "14:13", text: "Agreed. I will make the expiry configurable and default it to 90 seconds, then cover both retry windows in replay.spec.ts." }]
+      },
+      {
+        row: 0, doc: 0, lost: true, quote: "no side effects yet",
+        anchor: "Replay table, three states · the claimed row",
+        body: "This row said events per minute in the last render. It says per second now, which is right, but check the runbook copy too.",
+        who: "you · desktop · 13:58", status: "resolved",
+        replies: [{ who: "claude-code", when: "14:01", text: "Fixed and re-rendered. This comment no longer points at anything, because that element was replaced." }]
+      },
+      {
+        row: 1, doc: 1, lost: false, quote: "claim committed 14:06:03",
+        anchor: "Duplicate-delivery runbook page · step 2",
+        body: "This tells an on-call engineer to read the replay table directly. Give them a query, not a description.",
+        who: "you · iPhone 16 Pro · 14:14", status: "open", replies: []
+      }
+    ],
+    terminalClaim: "phone",
+    evidenceOpen: "src/webhooks/handler.ts",
+    evidenceDiff: "src/webhooks/handler.ts",
+    revertAsk: null,
+    reverted: [],
+    pasteState: "none",
+    pasteInline: false,
+    pastePeek: false,
+    sessionState: "running",
+    actionsOpen: false,
+    closedGroups: ["QUIET"],
+    topHover: null,
+    queued: false,
+    rowHover: null,
+    rowMenu: null,
+    sessionBtnHover: null,
+    sessionMenuOpen: false,
+    stopOpen: false,
+    usageOpen: false,
+    planEdit: "none",
+    planOpen: false,
+    sheetTab: "changes",
+    hoverTab: null,
+    holdback: true,
+    notifOn: ["done", "fail", "review"],
+    systemDark: true,
+    movedTo: null,
+    pinned: false,
+    sheetWidth: 720,
+    previewDoc: 0,
+    previewWidth: "full",
+    previewFull: false,
+    slashOpen: false,
+    gateFrom: "plan",
+    attachMenuOpen: false,
+    attached: [
+      { kind: "repo", name: "src/webhooks/handler.ts" },
+      { kind: "device", name: "stripe-dashboard-14-08.png", size: "1.4 MB" }
+    ]
+  };
+
+  dot(color, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  k(spec, plat) {
+    const mac = plat === "mac";
+    const parts = spec.split("+").map(p => {
+      if (p === "mod") return mac ? "\u2318" : "Ctrl";
+      if (p === "shift") return mac ? "\u21e7" : "Shift";
+      if (p === "alt") return mac ? "\u2325" : "Alt";
+      if (p === "enter") return mac ? "\u21b5" : "Enter";
+      return p;
+    });
+    return mac ? parts.join("") : parts.join("+");
+  }
+
+  chev(open) {
+    return "display: inline-flex; color: var(--muted-foreground); transition: transform .15s var(--ease-out, ease); transform: rotate(" + (open ? "90deg" : "0deg") + ");";
+  }
+
+  go(screen, extra) {
+    return () => this.setState(Object.assign({
+      screen: screen, paletteOpen: false, sheetOpen: false, handoffOpen: false
+    }, extra || {}));
+  }
+
+  sessionRow(s) {
+    const st = this.state;
+    const key = s.title;
+    const hovered = st.rowHover === key;
+    const menuOpen = st.rowMenu === key;
+    const running = s.k === "success" || s.k === "warning";
+    return {
+      title: s.title,
+      meta: s.meta,
+      dot: this.dot("var(--" + s.k + ")", 6) + " margin-top: 5px; cursor: pointer;" + (s.k === "faint" ? " opacity: .8;" : ""),
+      go: s.screen ? this.go(s.screen) : undefined,
+      enter: () => this.setState({ rowHover: key }),
+      leave: () => this.setState({ rowHover: null }),
+      menuOpen: menuOpen,
+      toggleMenu: () => this.setState(st2 => ({ rowMenu: st2.rowMenu === key ? null : key })),
+      menuBtnStyle: "display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 24px; margin-top: 2px; border-radius: 999px; cursor: pointer; color: var(--" +
+        (menuOpen ? "foreground" : "muted-foreground") + ");" +
+        (menuOpen ? " background: var(--muted);" : "") +
+        (hovered || menuOpen ? "" : " opacity: 0;"),
+      menu: (() => {
+        const defs = [
+          { id: "stop", label: running ? "Stop the agent" : "Resume session", act: () => this.setState({ rowMenu: null, sessionState: running ? "paused" : "running" }) },
+          { id: "fork", label: "Fork from a checkpoint", act: () => this.setState({ rowMenu: null, sheetOpen: true, sheetTab: "checkpoints" }) },
+          { id: "move", label: "Move to another machine", act: () => this.setState({ rowMenu: null, handoffOpen: true }) },
+          { id: "archive", label: "Archive session", act: () => this.setState({ rowMenu: null, sessionState: "archived" }) },
+          { id: "del", label: "Delete the worktree", danger: true, act: () => this.setState({ rowMenu: null }) }
+        ];
+        const out = {};
+        defs.forEach((m, i) => {
+          out[m.id] = {
+            label: m.label,
+            act: m.act,
+            isStop: m.id === "stop" && running,
+            isResume: m.id === "stop" && !running,
+            style: "display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; font-size: 12px; cursor: pointer; color: var(--" +
+              (m.danger ? "danger-fg" : "foreground") + ");" + (i ? " border-top: 1px solid var(--border);" : "")
+          };
+        });
+        return out;
+      })(),
+      rowStyle: "display: flex; gap: 9px; padding: 8px 9px; border-radius: calc(var(--radius) - 3px);" +
+        (s.active ? " background: var(--accent);" : hovered ? " background: color-mix(in oklab, var(--accent) 60%, transparent);" : "") +
+        (s.k === "faint" ? " opacity: .55;" : "")
+    };
+  }
+
+  renderVals() {
+    const st = this.state;
+    const sc = st.screen;
+    const themeSel = st.theme ?? this.props.theme ?? "dark";
+    const theme = themeSel === "system" ? (st.systemDark ? "dark" : "light") : themeSel;
+    const working = sc === "working";
+    const approval = sc === "approval";
+    const policy = sc === "policy";
+    const resolved = sc === "resolved";
+    const offline = sc === "offline";
+    const launcher = sc === "launcher";
+    const fleet = sc === "fleet";
+    const settings = sc === "settings";
+    const audit = sc === "audit";
+    const fleetAlert = !(sc === "fleet") && !(sc === "offline");
+    const watching = (this.props.access ?? "full") === "watching" || st.sessionState === "archived";
+
+    const modes = [
+      { id: "plan", label: "Plan", color: "var(--info)", note: "Reads and proposes. It cannot write or run anything." },
+      { id: "ask", label: "Ask", color: "var(--warning)", note: "Writes and commands ask first, one at a time." },
+      { id: "build", label: "Build", color: "var(--success)", note: "Writes and runs inside the worktree. Gates still apply." }
+    ];
+    const models = [
+      { label: "claude-sonnet-4.6", agent: "claude-code", k: "success", note: "The default here. Reasoning high, 200k context." },
+      { label: "claude-opus-4.2", agent: "claude-code", k: "success", note: "Slower and dearer. Worth it on a plan you cannot check yourself." },
+      { label: "claude-haiku-4.1", agent: "claude-code", k: "warning", note: "Fast and cheap. Fine for triage, weak on multi-file edits." },
+      { label: "gpt-5.3-codex", agent: "codex", k: "success", note: "Authenticated here. Its own permission modes map onto these three." },
+      { label: "gpt-5.3-mini", agent: "codex", k: "warning", note: "Cheap. It loses the thread on plans past about six steps." },
+      { label: "o5-preview", agent: "codex", k: "warning", note: "No auto support reported, so Build without auto only." },
+      { label: "qwen3-coder-72b", agent: "kilo", k: "success", note: "Local weights on this machine. No network call, no provider limit." },
+      { label: "glm-5-air", agent: "kilo", k: "success", note: "Local weights. Handles diffs well, plans poorly." },
+      { label: "grok-code-3", agent: "opencode", k: "success", note: "Reported by opencode on this machine." },
+      { label: "kimi-k3", agent: "opencode", k: "warning", note: "Long context, slow first token over the relay." },
+      { label: "deepseek-v4", agent: "aider", k: "faint", note: "aider is not installed on mac-mini-m4, so this cannot run here." }
+    ];
+    const previewDocTitles = ["Replay table, three states", "Duplicate-delivery runbook page", "Webhook health panel"];
+    const docComments = st.comments.filter(c => c.doc === st.previewDoc);
+    const modelQ = (st.modelQuery || "").toLowerCase();
+    const modelMatches = models
+      .map((m, i) => ({ m: m, i: i }))
+      .filter(e => !modelQ || (e.m.label + " " + e.m.agent).toLowerCase().indexOf(modelQ) >= 0);
+    const modeIdx = st.perm % 3;
+    const perm = modes[modeIdx];
+    const autoOn = perm.id === "build" && st.auto;
+
+    const stepDefs = [
+      { id: "launcher", num: "1", label: "New session", note: "Type the task, pick the machine and the permission mode, start. This is the whole setup." },
+      { id: "working", num: "2", label: "Agent working", note: "One live line of prose, one collapsed activity row, a sweep on the row. Nothing else moves." },
+      { id: "slash", num: "2b", label: "Typed a command", note: "Typing / in the composer opens the command list. It acts on this turn, where the palette navigates." },
+      { id: "approval", num: "3", label: "Hard gate", note: "The gate is the only thing that interrupts. Facts about what it touches are one click away." },
+      { id: "policy", num: "3b", label: "Refused by policy", note: "Not every gate is a question. A policy refusal has no allow button, and the card says who can change it and where." },
+      { id: "resolved", num: "4", label: "Decision made", note: "A receipt says what ran, how long it took, and that a checkpoint exists. Then work continues." },
+      { id: "review", num: "5", label: "Review changes", note: "Diffs live in a sheet over the thread, not in a permanent inspector panel." },
+      { id: "plan", num: "5b", label: "Plan preview", note: "The plan rendered as a document you can read before it runs, with the gate marked and the limits stated." },
+      { id: "checkpoints", num: "6", label: "Checkpoints", note: "Every approved write is revertible. Reverting rewinds the worktree and the thread together." },
+      { id: "rules", num: "7", label: "Rules", note: "What you have already allowed, revocable in one click, with the things a rule can never cover." },
+      { id: "fleet", num: "8", label: "Fleet", note: "Reached from the machine chip. Offline machines stay listed, dimmed, with the reason." },
+      { id: "handoff", num: "9", label: "Handoff", note: "Pre-flight checks the target before the move, and the payload warning is a decision, not a notice." },
+      { id: "audit", num: "9b", label: "Audit log", note: "The machine's own record of decisions. It names verified devices, it is pruned by count, and it never leaves the machine." },
+      { id: "settings", num: "10", label: "Settings and pairing", note: "One scrolling column, no nav. Pairing is a QR plus a code, and it states exactly what the phone may do." },
+      { id: "offline", num: "11", label: "Daemon lost", note: "The banner names the machine and the transport, and says what was not rolled back." }
+    ];
+    const activeStep = st.slashOpen ? "slash"
+      : st.sheetOpen ? ("sheet-" + st.sheetTab).replace("sheet-changes", "review").replace("sheet-", "")
+      : st.handoffOpen ? "handoff" : sc;
+
+    const drawer = [
+      {
+        label: "RUNNING", count: "3", items: [
+          { title: "Migrate billing webhooks to the new idempotency table", meta: "mac-mini-m4 · waiting on you", k: "warning", active: !launcher && !fleet, screen: st.decision ? "resolved" : "approval" },
+          { title: "Backfill org_id on 4.1M audit rows without locking", meta: "hetzner-cx42 · running 12m", k: "success", screen: "working" },
+          { title: "Cut the cold start on the pdf worker below 400ms", meta: "wsl-ubuntu-24 · running 3m", k: "success", screen: "working" }
+        ]
+      },
+      {
+        label: "NEEDS YOU", count: "2", items: [
+          { title: "Port the CLI auth flow off the deprecated device grant", meta: "mac-mini-m4 · review 7 files", k: "info", screen: "resolved" },
+          { title: "Find why the staging queue drains at 40 per second", meta: "hetzner-cx42 · failed 1h ago", k: "destructive", screen: "offline" }
+        ]
+      },
+      {
+        label: "QUIET", count: "2", items: [
+          { title: "Upgrade prisma to 6.4 across the workspace", meta: "wsl-ubuntu-24 · daemon unreachable", k: "faint", screen: "offline" },
+          { title: "Document the replay table for the runbook", meta: "mac-mini-m4 · idle 2d", k: "faint" }
+        ]
+      }
+    ];
+
+    const decisionCopy = {
+      once: {
+        title: "Allowed once, migration applied",
+        body: "Ran in 38s on mac-mini-m4. Checkpoint ckpt_7f24 was taken before it, so this is revertible. The rule was not saved, so the next migration will ask again.",
+        meta: "ckpt_7f24 · 38s", color: "success", tone: "ok"
+      },
+      rule: {
+        title: "Rule saved, migration applied",
+        body: "prisma migrate is now auto-allowed in acme-api on mac-mini-m4. Destructive statements and anything outside the project still ask. Checkpoint ckpt_7f24 was taken first.",
+        meta: "rule scope: repo + machine", color: "success", tone: "ok"
+      },
+      denied: {
+        title: "Denied, step 3 rewritten",
+        body: "The agent was told the migration must run on the WSL box instead. It is rewriting step 3 to generate the SQL and stop, and step 4 is unchanged.",
+        meta: "no database was touched", color: "destructive", tone: "danger"
+      }
+    };
+    const d = offline
+      ? {
+        title: "Step 2 committed, step 3 never started",
+        body: "The schema change is committed in the worktree on wsl-ubuntu-24. The test run has no result, so treat it as unknown rather than failed. Reconnect and the agent resumes from step 3.",
+        meta: "tailnet route dropped", color: "info", tone: "info"
+      }
+      : decisionCopy[st.decision || "once"];
+    const tone = d.tone;
+
+    const machineForScreen = offline
+      ? { name: "wsl-ubuntu-24", transport: "unreachable", color: "var(--destructive)" }
+      : st.movedTo
+      ? { name: st.movedTo, transport: "domovoi cloud", color: "var(--success)" }
+      : { name: "mac-mini-m4", transport: "loopback", color: "var(--success)" };
+    const remote = machineForScreen.transport === "domovoi cloud";
+    const plat = this.props.platform ?? "mac";
+    const K = spec => this.k(spec, plat);
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      markStyle: "display: block; width: 22px; height: 22px; flex: 0 0 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+      iconBtnSm: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 999px; cursor: pointer; color: var(--muted-foreground);",
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label,
+        numColor: activeStep === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        go: s.id === "slash" ? () => this.setState({ screen: "working", slashOpen: true, sheetOpen: false, handoffOpen: false, paletteOpen: false })
+          : s.id === "review" ? () => this.setState({ screen: "resolved", sheetOpen: true, sheetTab: "changes", handoffOpen: false, paletteOpen: false })
+          : s.id === "plan" ? () => this.setState({ screen: "approval", sheetOpen: true, sheetTab: "plan", handoffOpen: false, paletteOpen: false })
+          : s.id === "checkpoints" ? () => this.setState({ screen: "resolved", sheetOpen: true, sheetTab: "checkpoints", handoffOpen: false, paletteOpen: false })
+          : s.id === "rules" ? () => this.setState({ screen: "resolved", sheetOpen: true, sheetTab: "rules", handoffOpen: false, paletteOpen: false })
+          : s.id === "handoff" ? () => this.setState({ screen: "resolved", handoffOpen: true, sheetOpen: false, paletteOpen: false })
+          : this.go(s.id),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (activeStep === s.id ? "var(--primary)" : "var(--border)") + "; background: " +
+          (activeStep === s.id ? "var(--primary)" : "transparent") + "; color: " +
+          (activeStep === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNote: (stepDefs.find(s => s.id === activeStep) || stepDefs[0]).note,
+
+      isFleet: fleet,
+      isSettings: settings,
+      isAudit: audit,
+      isThread: !fleet && !settings && !audit,
+      goAudit: this.go("audit"),
+      auditFilters: [
+        { id: "all", label: "Every actor", count: "1,204" },
+        { id: "client", label: "Clients", count: "412" },
+        { id: "daemon", label: "Daemon", count: "689" },
+        { id: "provider", label: "Providers", count: "97" },
+        { id: "machine", label: "Machines", count: "6" }
+      ].map(c => ({
+        label: c.label, count: c.count,
+        pick: () => this.setState({ auditActor: c.id }),
+        style: "display: flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid " +
+          (st.auditActor === c.id ? "var(--primary)" : "var(--border)") + "; color: " +
+          (st.auditActor === c.id ? "var(--primary)" : "var(--muted-foreground)") + ";",
+        countStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);"
+      })),
+      auditRows: [
+        {
+          actor: "client", when: "14:07:12", what: "approval.resolve · allow once",
+          detail: "pnpm -w prisma migrate deploy", who: "desktop · device 4b91…e7c", outcome: "applied in 38s", k: "info"
+        },
+        {
+          actor: "daemon", when: "14:07:12", what: "checkpoint.create",
+          detail: "ckpt_7f24 before the approved command", who: "daemon 0.9.4", outcome: "commit 8f3c1de", k: "success"
+        },
+        {
+          actor: "daemon", when: "14:06:02", what: "refused · skill_untrusted_in_auto_mode",
+          detail: "sql-explain requested by the agent", who: "daemon 0.9.4", outcome: "turn continued without it", k: "destructive"
+        },
+        {
+          actor: "provider", when: "14:05:41", what: "turn completed",
+          detail: "claude-sonnet-4.6 · 8,410 in · 1,206 out", who: "claude-code", outcome: "3 tool results", k: "info"
+        },
+        {
+          actor: "client", when: "14:05:03", what: "rule created · pnpm vitest run *",
+          detail: "scope acme-api on any machine", who: "desktop · device 4b91…e7c", outcome: "auto-allowed since", k: "info"
+        },
+        {
+          actor: "machine", when: "13:58:20", what: "transfer.commit",
+          detail: "session moved from wsl-ubuntu-24", who: "machine credential 9c41…a7e", outcome: "receipt ckpt_41cd", k: "info"
+        },
+        {
+          actor: "client", when: "13:52:11", what: "session.create",
+          detail: "migrate billing webhooks to the new idempotency table", who: "desktop · device 4b91…e7c", outcome: "worktree wt-billing-idem", k: "success"
+        }
+      ].filter(r => st.auditActor === "all" || r.actor === st.auditActor)
+      .map((r, i) => ({
+        when: r.when, what: r.what, detail: r.detail, who: r.who, outcome: r.outcome, actor: r.actor,
+        dot: this.dot("var(--" + r.k + ")", 6) + " margin-top: 5px;",
+        actorStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground);",
+        rowStyle: "display: flex; align-items: flex-start; gap: 12px; padding: 12px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      auditFacts: [
+        { text: "Rows name verified credentials, so renaming a device does not rewrite history.", k: "success" },
+        { text: "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.", k: "info" },
+        { text: "It lives on this machine and is never uploaded.", k: "info" },
+        { text: "Export writes a file here. Moving it is your decision.", k: "info" }
+      ].map(f => ({ text: f.text, dot: this.dot("var(--" + f.k + ")", 6) + " margin-top: 6px;" })),
+      goSettings: this.go("settings"),
+
+      qrStyle: "display: grid; grid-template-columns: repeat(21, 7px); grid-auto-rows: 7px; padding: 9px; border-radius: calc(var(--radius) - 3px); background: oklch(0.985 0 0);",
+      qrCells: (() => {
+        const n = 21;
+        const on = (x, y) => {
+          const finder = (fx, fy) => {
+            const dx = x - fx, dy = y - fy;
+            if (dx < 0 || dy < 0 || dx > 6 || dy > 6) return null;
+            const ring = Math.max(Math.abs(dx - 3), Math.abs(dy - 3));
+            return ring === 2 ? false : true;
+          };
+          const f = finder(0, 0);
+          if (f !== null) return f;
+          const f2 = finder(n - 7, 0);
+          if (f2 !== null) return f2;
+          const f3 = finder(0, n - 7);
+          if (f3 !== null) return f3;
+          if (x === 6 || y === 6) return (x + y) % 2 === 0;
+          const h = (x * 73856093 ^ y * 19349663 ^ 0x5f3a) % 97;
+          return h % 3 !== 0;
+        };
+        const cells = [];
+        for (let y = 0; y < n; y++) {
+          for (let x = 0; x < n; x++) {
+            cells.push({ style: "display: block; width: 7px; height: 7px; background: " + (on(x, y) ? "oklch(0.16 0.004 285)" : "transparent") + ";" });
+          }
+        }
+        return cells;
+      })(),
+      pairCode: "DVOI-4K7Q-91XZ",
+      pairExpiry: "code expires in 4m 12s",
+      pairGrants: [
+        { text: "Watch every session, including terminal output and diffs", k: "success" },
+        { text: "Answer gates, with the same three decisions", k: "success" },
+        { text: "Start and stop sessions, and steer one mid-run", k: "success" },
+        { text: "It cannot pull the repository down. Files stay here.", k: "info" }
+      ].map(g => ({ text: g.text, dot: this.dot("var(--" + g.k + ")", 6) + " margin-top: 6px;" })),
+      pairedDevices: [
+        { id: "phone", name: "iPhone 16 Pro", meta: "paired 12 Aug · last seen 2h ago · local network", k: "success" },
+        { id: "ipad", name: "iPad Air", meta: "paired 3 Jul · last seen 6d ago · via Domovoi Cloud", k: "faint" },
+        { id: "self", name: "mac-mini-m4 desktop", meta: "this client · credential 4b91…e7c · rotated 28 Aug", k: "success", self: true }
+      ].map(d => ({
+        name: d.name, meta: d.meta, self: !!d.self,
+        renaming: st.renamingDevice === d.id,
+        notRenaming: st.renamingDevice !== d.id,
+        rotated: st.rotatedDevice === d.id,
+        dot: this.dot("var(--" + d.k + ")", 6) + (d.k === "faint" ? " opacity: .8;" : ""),
+        startRename: () => this.setState({ renamingDevice: d.id }),
+        saveRename: () => this.setState({ renamingDevice: null }),
+        rotate: () => this.setState({ rotatedDevice: d.id }),
+        dismissRotate: () => this.setState({ rotatedDevice: null }),
+        revokeLabel: d.self ? "Sign this device out" : "Unpair",
+        revokeNote: d.self
+          ? "Revokes this client and closes its socket."
+          : "Closes its sockets and stops the credential everywhere.",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 11px 15px; border-top: 1px solid var(--border);" +
+          (d.self ? " background: var(--accent);" : ""),
+        nameStyle: st.renamingDevice === d.id
+          ? "flex: 0 0 auto; min-width: 190px; padding: 5px 10px; border-radius: calc(var(--radius) - 3px); border: 1px solid var(--primary); background: var(--background); font-size: 12.5px; color: var(--foreground);"
+          : "flex: 0 0 auto; width: 190px; font-size: 12.5px; color: var(--strong);"
+      })),
+      deviceRotateNote: "Shown once. Domovoi keeps a digest, not the secret.",
+      rotatedSecret: "dv_4f2a91c7e0b3d85f6a1c2e9b7d4f8a3c6e0b9",
+      providers: [
+        { name: "claude-code", machine: "mac-mini-m4", state: "token in keychain", k: "success", action: "" },
+        { name: "codex", machine: "mac-mini-m4", state: "token in keychain", k: "success", action: "" },
+        { name: "claude-code", machine: "hetzner-cx42", state: "token in keychain", k: "success", action: "" },
+        { name: "aider", machine: "hetzner-cx42", state: "no token on that machine", k: "warning", action: "Authenticate there" },
+        { name: "claude-code", machine: "wsl-ubuntu-24", state: "unknown, daemon unreachable", k: "faint", action: "" }
+      ].map((p, i) => ({
+        name: p.name, machine: p.machine, state: p.state, action: p.action,
+        dot: this.dot("var(--" + p.k + ")", 6),
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 15px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+          (p.k === "faint" ? " opacity: .6;" : ""),
+        actionStyle: p.action
+          ? "padding: 5px 10px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info-fg); font-size: 11px; cursor: pointer;"
+          : "display: none;"
+      })),
+      notifs: [
+        { id: "gate", label: "A gate is waiting on you", note: "Always on. This is the one thing that blocks work.", locked: true },
+        { id: "done", label: "A session finished its plan", note: "Includes the file count and whether the suite is green." },
+        { id: "fail", label: "A run failed or a machine went unreachable", note: "Names the machine and the transport." },
+        { id: "review", label: "Changes are waiting for review", note: "Once per session, not once per file." },
+        { id: "chatty", label: "Every tool call", note: "Loud. Off unless you are debugging the daemon." }
+      ].map((nn, i) => {
+        const on = nn.locked || st.notifOn.includes(nn.id);
+        return {
+          label: nn.label, note: nn.note,
+          toggle: nn.locked ? undefined : () => this.setState(s => ({
+            notifOn: s.notifOn.includes(nn.id) ? s.notifOn.filter(x => x !== nn.id) : s.notifOn.concat([nn.id])
+          })),
+          rowStyle: "display: flex; align-items: center; gap: 14px; padding: 11px 15px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+            (nn.locked ? "" : " cursor: pointer;"),
+          trackStyle: "position: relative; display: block; width: 34px; height: 20px; flex: 0 0 34px; border-radius: 999px; transition: background .14s var(--ease-out, ease); background: " +
+            (on ? "var(--primary)" : "var(--muted)") + ";" + (nn.locked ? " opacity: .55;" : ""),
+          knobStyle: "position: absolute; top: 3px; left: " + (on ? "17px" : "3px") +
+            "; width: 14px; height: 14px; border-radius: 50%; background: var(--card); transition: left .14s var(--ease-out, ease); display: block;"
+        };
+      }),
+      settingsLinks: [
+        { label: "Machines and daemons", note: "Transports, agents installed, what each one is running.", kbd: K("mod+shift+M"), screen: "fleet" },
+        { label: "Permissions and rules", note: "What you have already allowed, and what a rule can never cover.", kbd: "", tab: "rules" },
+        { label: "Skills", note: "Install sources, signing, and which skills a machine may run.", kbd: "", screen: "skills" },
+        { label: "Checkpoints", note: "Revert a session's worktree and thread together.", kbd: "", tab: "checkpoints" },
+        { label: "Audit log", note: "Who decided what, on which verified device, and what happened next.", kbd: "", screen: "audit" }
+      ].map((l, i) => ({
+        label: l.label, note: l.note, kbd: l.kbd,
+        go: l.tab ? () => this.setState({ sheetOpen: true, sheetTab: l.tab, screen: "resolved" }) : this.go(l.screen),
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 12px 15px; cursor: pointer;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      themeOptions: [
+        { id: "system", label: "System", note: "Follows your OS appearance, including scheduled switches.", bar: "linear-gradient(90deg, oklch(0.205 0.006 285) 0 50%, oklch(0.975 0.003 285) 50%)" },
+        { id: "dark", label: "Dark", note: "The default. Tuned for long sessions and terminal output.", bar: "oklch(0.205 0.006 285)" },
+        { id: "light", label: "Light", note: "The same tokens inverted. Diffs read on paper-white.", bar: "oklch(0.975 0.003 285)" }
+      ].map(t => {
+        const on = themeSel === t.id;
+        return {
+          label: t.label, note: t.note,
+          pick: () => this.setState({ theme: t.id }),
+          barStyle: "display: block; height: 30px; border-radius: 4px; border: 1px solid var(--border); background: " + t.bar + ";",
+          cardStyle: "display: flex; flex-direction: column; gap: 7px; padding: 13px 14px; cursor: pointer; background: " +
+            (on ? "var(--accent)" : "var(--card)") + ";"
+        };
+      }),
+      isLauncher: launcher,
+      isConversation: !fleet && !launcher && !settings && !audit,
+      isWorking: working,
+      isApproval: approval,
+      isPolicy: policy,
+      policyRuleText: "no writes to a production database",
+      policyChain: [
+        { k: "Set by", v: "dana@acme.dev, as org policy", mono: false },
+        { k: "Applies to", v: "every machine on this account", mono: false },
+        { k: "Target it saw", v: "acme_prod · db.acme.internal:5432", mono: true },
+        { k: "Override", v: "none, not even with approval", mono: false },
+        { k: "Recorded as", v: "refusal, actor daemon", mono: false }
+      ].map((p, i) => ({
+        k: p.k, v: p.v,
+        valueStyle: (p.mono ? "font-family: 'JetBrains Mono', monospace; font-size: 11px;" : "font-size: 12px;") +
+          " color: var(--danger-fg); text-align: right;",
+        rowStyle: "display: flex; align-items: baseline; gap: 12px; padding: 8px 0;" +
+          (i ? " border-top: 1px solid color-mix(in oklab, var(--danger-border) 55%, transparent);" : "")
+      })),
+      policyAlternatives: [
+        { text: "Write the SQL to prisma/migrations and stop.", k: "success" },
+        { text: "Run it against acme_dev, which is a gate you can answer.", k: "success" },
+        { text: "Hand the SQL to whoever owns production.", k: "info" },
+        { text: "Change the policy in Settings, effective next turn.", k: "warning" }
+      ].map(a => ({ text: a.text, dot: this.dot("var(--" + a.k + ")", 6) + " margin-top: 6px;" })),
+      goPolicyRules: () => this.setState({ sheetOpen: true, sheetTab: "rules" }),
+      isResolved: resolved || offline,
+      isOffline: offline,
+      showChips: !working && !offline,
+
+      titleText: launcher ? "New session in acme-api" : fleet ? "Machines" : audit ? "Audit log on mac-mini-m4" : settings ? "Settings" : "Migrate billing webhooks to the new idempotency table",
+      threadClock: working ? "started 14:02 · running 1m 09s" : offline ? "started 13:41 · stalled at 14:06" : "started 14:02 · 4m 18s",
+      machineName: machineForScreen.name,
+      machineTransport: machineForScreen.transport,
+      machineDot: this.dot(machineForScreen.color, 6),
+      machineChipStyle: "display: flex; align-items: center; gap: 8px; padding: 5px 10px 4px 9px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+        (offline ? "var(--danger-border)" : "var(--border)") + ";" + (offline ? " background: var(--danger-bg);" : ""),
+      fleetAlertDotStyle: this.dot("var(--destructive)", 6) + (fleetAlert ? "" : " display: none;"),
+      fleetAlert: fleetAlert,
+      topBtnStyle: "position: relative; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+      topTipStyle: "position: absolute; top: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 9; white-space: nowrap; padding: 6px 10px; border-radius: calc(var(--radius) - 3px); background: var(--card); border: 1px solid var(--border); box-shadow: 0 12px 34px var(--shadow-lg); font-size: 11.5px; color: var(--foreground); pointer-events: none; animation: dvPopIn .1s var(--ease-out, ease);",
+      topTips: (() => {
+        const defs = [
+          { id: "drawer", label: st.drawerOpen ? "Hide sessions" : "Sessions" },
+          { id: "newSession", label: "New session · " + K("mod+N") },
+          { id: "settings", label: "Settings" },
+          { id: "theme", label: theme === "light" ? "Dark appearance" : "Light appearance" },
+          { id: "stop", label: "Stop everything, every machine" }
+        ];
+        const out = {};
+        defs.forEach(d => {
+          out[d.id] = {
+            label: d.label,
+            hover: st.topHover === d.id,
+            enter: () => this.setState({ topHover: d.id }),
+            leave: () => this.setState({ topHover: null })
+          };
+        });
+        return out;
+      })(),
+      drawerBtnStyle: "position: relative; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--" +
+        (st.drawerOpen ? "foreground" : "muted-foreground") + ");" + (st.drawerOpen ? " background: var(--accent);" : ""),
+      drawerBadgeStyle: "position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--destructive); box-shadow: 0 0 0 2px var(--background); display: " +
+        (fleetAlert && !st.drawerOpen ? "block" : "none") + ";",
+      sessionRunning: st.sessionState !== "paused",
+      menuIconStyle: "display: inline-flex; flex: 0 0 auto; color: var(--muted-foreground);",
+      sessionTipStyle: "position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%); z-index: 7; white-space: nowrap; padding: 6px 10px; border-radius: calc(var(--radius) - 3px); background: var(--card); border: 1px solid var(--border); box-shadow: 0 12px 34px var(--shadow-lg); font-size: 11.5px; color: var(--foreground); pointer-events: none; animation: dvPopIn .1s var(--ease-out, ease);",
+      sessionBtns: (() => {
+        const defs = [
+          { id: "pause", label: st.sessionState === "paused" ? "Resume session" : "Pause session", act: () => this.setState(s => ({ sessionState: s.sessionState === "paused" ? "running" : "paused" })) },
+          { id: "fork", label: "Fork from a checkpoint", act: () => this.setState({ sheetOpen: true, sheetTab: "checkpoints" }) },
+          { id: "archive", label: "Archive session", act: () => this.setState({ sessionState: "archived" }) },
+          { id: "restart", label: "Restart provider thread", act: () => this.setState({}) }
+        ];
+        const out = {};
+        defs.forEach(d => {
+          const hov = st.sessionBtnHover === d.id;
+          out[d.id] = {
+            label: d.label,
+            hover: hov,
+            act: d.act,
+            enter: () => this.setState({ sessionBtnHover: d.id }),
+            leave: () => this.setState({ sessionBtnHover: null }),
+            style: "position: relative; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; flex: 0 0 34px; border-radius: calc(var(--radius) - 2px); cursor: pointer; color: var(--" +
+              (hov ? "foreground" : "muted-foreground") + ");" + (hov ? " background: var(--accent);" : "")
+          };
+        });
+        return out;
+      })(),
+      sessionStepReadout: working ? "step 2 of 4" : approval || policy || offline ? "step 3 of 4" : st.decision === "denied" ? "step 3 of 4" : "4 of 4",
+
+      goLauncher: this.go("launcher"),
+      goWorking: this.go("working"),
+      goApproval: this.go("approval"),
+      goFleet: this.go("fleet"),
+
+      drawerOpen: st.drawerOpen,
+      toggleDrawer: () => this.setState(s => ({ drawerOpen: !s.drawerOpen })),
+      drawerGroups: drawer.map(g => {
+        const open = st.closedGroups.indexOf(g.label) === -1;
+        const k = g.label === "RUNNING" ? "success" : g.label === "NEEDS YOU" ? "warning" : "muted";
+        return {
+          label: g.label, count: g.count, open: open,
+          items: g.items.map(s => this.sessionRow(s)),
+          toggle: () => this.setState(s2 => ({
+            closedGroups: s2.closedGroups.indexOf(g.label) === -1
+              ? s2.closedGroups.concat([g.label])
+              : s2.closedGroups.filter(x => x !== g.label)
+          })),
+          chevronStyle: "display: inline-flex; color: var(--faint); transition: transform .15s var(--ease-out, ease); transform: rotate(" +
+            (open ? "90deg" : "0deg") + ");",
+          badgeStyle: "min-width: 18px; padding: 2px 8px; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+            (k === "muted" ? "var(--muted)" : "color-mix(in oklab, var(--" + k + ") 16%, transparent)") + "; color: " +
+            (k === "muted" ? "var(--muted-foreground)" : "var(--" + k + ")") + ";"
+        };
+      }),
+
+      paletteOpen: st.paletteOpen,
+      openPalette: () => this.setState({ paletteOpen: true }),
+      closePalette: () => this.setState({ paletteOpen: false }),
+      paletteGroups: [
+        {
+          label: "SESSIONS", items: [
+            { label: "Migrate billing webhooks to the new idempotency table", meta: "mac-mini-m4", k: "warning", active: true, screen: "approval" },
+            { label: "Upgrade prisma to 6.4 across the workspace", meta: "wsl-ubuntu-24, unreachable", k: "faint", screen: "offline" }
+          ]
+        },
+        {
+          label: "COMMANDS", items: [
+            { label: "Run a migration on this machine", meta: "needs approval", k: "warning", screen: "approval" },
+            { label: "Open the changes sheet", meta: K("mod+shift+D"), k: "info", sheet: true },
+            { label: "Revert to a checkpoint", meta: "5 available", k: "warning", tab: "checkpoints" },
+            { label: "Review what you have allowed", meta: "4 rules", k: "info", tab: "rules" },
+            { label: "Move this session to another machine", meta: "handoff", k: "info", handoff: true },
+            { label: "Show all machines", meta: K("mod+shift+M"), k: "success", screen: "fleet" },
+            { label: "Pair a phone or tablet", meta: "settings", k: "info", screen: "settings" },
+            { label: "Read the audit log", meta: "on this machine", k: "success", screen: "audit" }
+          ]
+        }
+      ].map(g => ({
+        label: g.label,
+        items: g.items.map(i => ({
+          label: i.label, meta: i.meta,
+          dot: this.dot("var(--" + i.k + ")", 6),
+          go: i.tab ? () => this.setState({ paletteOpen: false, sheetOpen: true, sheetTab: i.tab, screen: "resolved" })
+            : i.sheet ? () => this.setState({ paletteOpen: false, sheetOpen: true, sheetTab: "changes", screen: "resolved" })
+            : i.handoff ? () => this.setState({ paletteOpen: false, handoffOpen: true, screen: "resolved" })
+            : this.go(i.screen),
+          rowStyle: "display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: calc(var(--radius) - 3px); cursor: pointer;" +
+            (i.active ? " background: var(--accent);" : "")
+        }))
+      })),
+
+      assistantText: policy
+        ? "Step 3 needs the migration applied. PROD_DATABASE_URL was set in the environment, so I aimed at it and the daemon stopped me. I have not retried and I will not, since the refusal is a policy rather than a question."
+        : working
+        ? "The handler processes the event before it records it, so a retry replays every side effect. I am adding a replay table with a unique claim on the event id and moving each handler to claim-then-commit."
+        : offline
+        ? "I had applied the schema change and was running the suite when the machine stopped answering. Nothing after step 2 is confirmed."
+        : "The handler processes the event before it records it, so a retry replays every side effect. I added a replay table with a unique claim on the event id and moved each handler to claim-then-commit. Suite is green except webhooks/replay.spec.ts, which asserts the old at-least-once behaviour. Step 3 needs a migration on this machine, so I stopped and asked.",
+
+      activityOpen: st.activityOpen,
+      activityLabel: working ? "Working" : st.activityOpen ? "Worked for 4m 18s" : "Worked for 4m 18s, show the steps",
+      activityMeta: working ? "6 tools · 3 files · running vitest" : offline ? "9 tools · 4 files · last tool unconfirmed" : policy ? "14 tools · 7 files · 1 refused by policy" : "14 tools · 7 files · 1 failure",
+      activityChevron: this.chev(st.activityOpen),
+      activityRowStyle: "display: flex; align-items: center; gap: 9px; align-self: flex-start; padding: 5px 12px 5px 8px; border-radius: 999px; border: 1px solid var(--border); cursor: pointer; color: var(--muted-foreground);" +
+        (st.activityOpen ? " background: var(--accent); color: var(--foreground);" : ""),
+      toggleActivity: () => this.setState(s => ({ activityOpen: !s.activityOpen })),
+      activity: (working
+        ? [
+          { name: "read_file", arg: "src/webhooks/handler.ts", meta: "ok · 41ms", color: "var(--success)" },
+          { name: "write_file", arg: "src/webhooks/replay.ts", meta: "ok · +71", color: "var(--success)" },
+          { name: "write_file", arg: "prisma/schema.prisma", meta: "ok · +18 −2", color: "var(--success)" },
+          { name: "bash", arg: "pnpm vitest run webhooks", meta: "running 6s", color: "var(--primary)" }
+        ]
+        : offline
+        ? [
+          { name: "write_file", arg: "prisma/schema.prisma", meta: "ok · +18 −2", color: "var(--success)" },
+          { name: "bash", arg: "pnpm vitest run webhooks", meta: "no result", color: "var(--muted-foreground)" }
+        ]
+        : [
+          { name: "read_file", arg: "src/webhooks/handler.ts", meta: "ok · 41ms", color: "var(--success)" },
+          { name: "write_file", arg: "src/webhooks/replay.ts", meta: "ok · +71", color: "var(--success)" },
+          { name: "write_file", arg: "prisma/schema.prisma", meta: "ok · +18 −2", color: "var(--success)" },
+          { name: "bash", arg: "pnpm vitest run webhooks", meta: "1 failed · 6.42s", color: "var(--destructive)", log: true },
+          { name: "bash", arg: policy ? "pnpm prisma migrate deploy --url $PROD…" : "pnpm prisma migrate deploy", meta: policy ? "refused · policy" : approval ? "blocked · hard gate" : "ok · 38s", color: policy ? "var(--destructive)" : approval ? "var(--warning)" : "var(--success)" }
+        ]
+      ).map((t, i) => ({
+        name: t.name, arg: t.arg, meta: t.meta, metaColor: t.color,
+        hasLog: !!t.log,
+        logOpen: !!t.log && st.openLogs.includes(i),
+        dot: this.dot(t.color, 6),
+        chevron: this.chev(st.openLogs.includes(i)),
+        toggle: t.log ? () => this.setState(s => ({
+          openLogs: s.openLogs.includes(i) ? s.openLogs.filter(x => x !== i) : s.openLogs.concat([i])
+        })) : undefined,
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 9px 14px;" +
+          (i ? " border-top: 1px solid var(--border);" : "") + (t.log ? " cursor: pointer;" : "")
+      })),
+
+      fileChips: [
+        { path: "src/webhooks/handler.ts", add: "+62", del: "\u221214" },
+        { path: "src/webhooks/replay.ts", add: "+71", del: "" },
+        { path: "prisma/schema.prisma", add: "+18", del: "\u22122" }
+      ],
+
+      factsOpen: st.factsOpen,
+      factsLabel: st.factsOpen ? "Hide what this touches" : "What does this touch?",
+      toggleFacts: () => this.setState(s => ({ factsOpen: !s.factsOpen })),
+      facts: [
+        { k: "MACHINE", v: "mac-mini-m4 · loopback" },
+        { k: "WORKING DIR", v: "~/src/acme-api" },
+        { k: "AFFECTS", v: "dev database acme_dev · 1 migration" },
+        { k: "NETWORK", v: "localhost:5432 only" },
+        { k: "ESTIMATED", v: "~40s" },
+        { k: "OUTSIDE PROJECT", v: "no" }
+      ],
+      approveOnce: watching ? undefined : () => this.setState({ screen: "resolved", decision: "once" }),
+      approveRule: watching ? undefined : () => this.setState({ screen: "resolved", decision: "rule" }),
+      deny: watching ? undefined : () => this.setState({ screen: "resolved", decision: "denied" }),
+      gateAllowStyle: "height: 38px; padding: 0 18px; display: flex; align-items: center; border-radius: calc(var(--radius) - 2px); background: var(--warning); color: var(--warning-foreground); font-size: 13px; font-weight: 600;" +
+        (watching ? " opacity: .45; cursor: not-allowed;" : " cursor: pointer;"),
+      gateRuleStyle: "height: 38px; padding: 0 15px; display: flex; align-items: center; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12.5px;" +
+        (watching ? " opacity: .45; cursor: not-allowed;" : " cursor: pointer;"),
+      gateDenyStyle: "height: 38px; padding: 0 15px; display: flex; align-items: center; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-dim); font-size: 12.5px;" +
+        (watching ? " opacity: .45; cursor: not-allowed;" : " cursor: pointer;"),
+      gateLockedNote: watching ? "Locked, this client is watching only." : "",
+      gateLockedStyle: "font-size: 11px; color: var(--warn-dim);" + (watching ? "" : " display: none;"),
+
+      receiptStyle: "border: 1px solid var(--" + tone + "-border); border-radius: var(--radius); background: var(--" + tone + "-bg); overflow: hidden;",
+      receiptDot: this.dot("var(--" + d.color + ")", 7),
+      receiptTitle: d.title,
+      receiptTitleStyle: "font-size: 12.5px; font-weight: 500; color: var(--" + tone + "-fg);",
+      receiptMeta: d.meta,
+      receiptMetaStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" + tone + "-dim);",
+      receiptBody: d.body,
+      showResolvedCtas: !offline,
+      receiptLinkLabel: st.decision === "rule" ? "See the rule you just created \u2192" : "See the 5 checkpoints \u2192",
+      receiptLinkGo: () => this.setState({ sheetOpen: true, sheetTab: st.decision === "rule" ? "rules" : "checkpoints" }),
+      receiptBodyStyle: "padding: 0 14px 13px; font-size: 13px; line-height: 1.6; color: var(--" + tone + "-fg); text-wrap: pretty;",
+      resolvedFollowUp: offline
+        ? "I will not retry the migration on reconnect without asking again, since the approval was scoped to the session that dropped."
+        : st.decision === "denied"
+        ? "Step 3 now writes the SQL to prisma/migrations and stops. You can apply it on the WSL box, or hand this session over and let the agent do it there."
+        : "Step 4 rewrote replay.spec.ts to assert exactly-once delivery. Full suite is green: 31 passed. Seven files changed in the worktree, nothing merged.",
+
+      planOpen: st.planOpen,
+      togglePlan: () => this.setState(s => ({ planOpen: !s.planOpen })),
+      planChevron: this.chev(st.planOpen),
+      stripChevron: "display: inline-flex; color: var(--muted-foreground); transition: transform .15s var(--ease-out, ease); transform: rotate(" + (st.planOpen ? "180deg" : "0deg") + ");",
+      stripStep: working ? "step 2 of 4" : approval || policy || offline ? "step 3 of 4" : st.decision === "denied" ? "step 3 of 4" : "4 of 4",
+      stripTitle: working ? "Make every handler claim-then-commit before side effects"
+        : policy ? "Blocked by policy, the plan cannot proceed as written"
+        : approval || offline ? "Apply the migration on this machine's dev database"
+        : st.decision === "denied" ? "Write the migration SQL and stop"
+        : "Plan complete, 7 files waiting for review",
+      stripState: working ? "running 1m 09s" : policy ? "refused" : approval ? "waiting on you 4m" : offline ? "unconfirmed" : st.decision === "denied" ? "rewritten" : "done",
+      stripDot: this.dot(working ? "var(--primary)" : policy ? "var(--destructive)" : approval ? "var(--warning)" : offline ? "var(--info)" : st.decision === "denied" ? "var(--warning)" : "var(--success)", 7) +
+        (approval ? " animation: dvPulse 2.4s infinite;" : ""),
+      stripStateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: " +
+        (working ? "var(--primary)" : policy ? "var(--destructive)" : approval ? "var(--warning)" : offline ? "var(--info-dim)" : st.decision === "denied" ? "var(--warning)" : "var(--success)") + ";",
+      planMeta: working ? "step 2 of 4 running · 7 files · 1 migration"
+        : policy ? "2 of 4 done · step 3 refused by policy"
+        : approval ? "2 of 4 done · blocked at step 3 · 1 migration"
+        : offline ? "2 of 4 done · step 3 unconfirmed"
+        : st.decision === "denied" ? "2 of 4 done · step 3 rewritten"
+        : "4 of 4 done · 7 files · 1 migration",
+      openPlanPreview: () => this.setState({ sheetOpen: true, sheetTab: "plan" }),
+      plan: [
+        { title: "Add a replay table with a unique event-id claim", files: "prisma/schema.prisma · src/webhooks/replay.ts", i: 1 },
+        { title: "Make every handler claim-then-commit before side effects", files: "src/webhooks/handler.ts · src/lib/stripe.ts", i: 2 },
+        { title: "Apply the migration on this machine's dev database", files: "prisma/migrations/20260825_replay/migration.sql", i: 3 },
+        { title: "Rewrite replay.spec.ts to assert exactly-once delivery", files: "src/webhooks/replay.spec.ts", i: 4 }
+      ].map(p => {
+        let k = "queued", state = "queued";
+        if (working) {
+          if (p.i === 1) { k = "done"; state = "done · 41s"; }
+          else if (p.i === 2) { k = "run"; state = "running"; }
+        } else if (approval) {
+          if (p.i <= 2) { k = "done"; state = "done"; }
+          else if (p.i === 3) { k = "block"; state = "waiting 4m"; }
+        } else if (offline) {
+          if (p.i <= 2) { k = "done"; state = "done"; }
+          else if (p.i === 3) { k = "unknown"; state = "unconfirmed"; }
+        } else if (policy) {
+          if (p.i <= 2) { k = "done"; state = "done"; }
+          else if (p.i === 3) { k = "refused"; state = "refused by policy"; }
+        } else if (st.decision === "denied") {
+          if (p.i <= 2) { k = "done"; state = "done"; }
+          else if (p.i === 3) { k = "block"; state = "rewritten, writes SQL only"; }
+        } else {
+          k = "done"; state = p.i === 3 ? "done · 38s" : "done";
+        }
+        const color = k === "done" ? "var(--success)" : k === "run" ? "var(--primary)" : k === "block" ? "var(--warning)" : k === "unknown" ? "var(--info)" : k === "refused" ? "var(--destructive)" : "var(--faint)";
+        return {
+          title: p.title, files: p.files, state: state,
+          mark: k === "done" ? "\u2713" : String(p.i),
+          markStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; margin-top: 2px; background: " +
+            (k === "queued" ? "var(--muted)" : "color-mix(in oklab, " + color + " 18%, transparent)") + "; color: " +
+            (k === "queued" ? "var(--muted-foreground)" : color) + ";",
+          stateStyle: "align-self: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: " + color + ";"
+        };
+      }),
+
+      sheetOpen: st.sheetOpen,
+      openSheet: () => this.setState({ sheetOpen: true, sheetTab: "changes" }),
+      closeSheet: () => this.setState({ sheetOpen: false }),
+      showScrim: !st.pinned,
+      sheetOuterStyle: st.pinned
+        ? "flex: 0 0 auto; display: flex;"
+        : "position: absolute; inset: 0; background: var(--overlay); display: flex; justify-content: flex-end; z-index: 4;",
+      sheetPanelStyle: "position: relative; width: " + st.sheetWidth + "px; flex: 0 0 " + st.sheetWidth +
+        "px; background: var(--background); border-left: 1px solid var(--border); display: flex; flex-direction: column;" +
+        (st.pinned ? "" : " box-shadow: -30px 0 80px var(--shadow-lg); animation: dvPopIn .14s var(--ease-out, ease);"),
+      resizeHitStyle: "position: absolute; left: -13px; top: 0; bottom: 0; width: 31px; cursor: col-resize; display: flex; align-items: center; justify-content: center; z-index: 5;",
+      resizeHandleStyle: "width: 3px; height: 42px; border-radius: 3px; background: var(--border);",
+      startResize: e => {
+        const startX = e.clientX;
+        const startW = this.state.sheetWidth;
+        const drawerW = this.state.drawerOpen ? 268 : 0;
+        const max = this.state.pinned ? 1560 - drawerW - 560 : 1040;
+        const move = ev => {
+          const w = Math.max(360, Math.min(max, startW + (startX - ev.clientX)));
+          this.setState({ sheetWidth: w });
+        };
+        const up = () => {
+          window.removeEventListener("mousemove", move);
+          window.removeEventListener("mouseup", up);
+        };
+        window.addEventListener("mousemove", move);
+        window.addEventListener("mouseup", up);
+      },
+      togglePin: () => this.setState(s => ({
+        pinned: !s.pinned,
+        sheetWidth: !s.pinned ? Math.min(s.sheetWidth, 1560 - (s.drawerOpen ? 268 : 0) - 560) : s.sheetWidth
+      })),
+      pinBtnStyle: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 999px; cursor: pointer; color: " +
+        (st.pinned ? "var(--primary)" : "var(--muted-foreground)") + ";" + (st.pinned ? " background: var(--accent);" : ""),
+      sheetMetaStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);" +
+        (st.sheetWidth < 560 ? " display: none;" : ""),
+      tabChanges: st.sheetTab === "changes",
+      tabCheckpoints: st.sheetTab === "checkpoints",
+      tabRules: st.sheetTab === "rules",
+      tabPlan: st.sheetTab === "plan",
+      tabHistory: st.sheetTab === "history",
+      tabComments: st.sheetTab === "comments",
+      goComments: () => this.setState({ sheetTab: "comments" }),
+      commentCount: docComments.length + " on this document",
+      commentRows: docComments.map((c, i) => {
+        const resolvedFlip = st.commentsResolved.indexOf(c.anchor) >= 0;
+        const open = resolvedFlip ? c.status !== "open" : c.status === "open";
+        const lost = c.lost;
+        const n = i + 1;
+        const active = st.hoverComment === n || st.focusComment === n;
+        return {
+          anchor: c.anchor, body: c.body, who: c.who,
+          quote: c.quote || "",
+          quoteStyle: c.quote
+            ? "display: block; padding: 7px 11px; border-left: 2px solid var(--primary); background: color-mix(in oklab, var(--primary) 8%, transparent); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); line-height: 1.5;"
+            : "display: none;",
+          enter: () => this.setState({ hoverComment: n }),
+          leave: () => this.setState({ hoverComment: null }),
+          focus: () => this.setState(s => ({ focusComment: s.focusComment === n ? null : n })),
+          anchorState: lost ? "anchor unavailable" : "anchor holds",
+          pin: String(i + 1),
+          pinStyle: "flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+            (lost ? "var(--muted)" : "var(--primary)") + "; color: " + (lost ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+          status: open ? "open" : "resolved",
+          statusStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--" +
+            (open ? "warning" : "success") + ") 16%, transparent); color: var(--" + (open ? "warning" : "success") + ");",
+          anchorStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: " +
+            (lost ? "var(--danger-bg)" : "var(--muted)") + "; color: " + (lost ? "var(--danger-fg)" : "var(--muted-foreground)") + ";",
+          dot: this.dot(open ? "var(--warning)" : "var(--success)", 6) + " margin-top: 5px;",
+          replies: c.replies.map(r => ({
+            who: r.who, when: r.when, text: r.text,
+            style: "padding: 10px 13px 10px 26px; border-top: 1px solid var(--border); background: var(--sidebar);"
+          })),
+          hasReplies: c.replies.length > 0,
+          actionLabel: open ? "Mark resolved" : "Reopen",
+          toggleStatus: () => this.setState(s => ({
+            commentsResolved: s.commentsResolved.indexOf(c.anchor) === -1
+              ? s.commentsResolved.concat([c.anchor])
+              : s.commentsResolved.filter(x => x !== c.anchor)
+          })),
+          cardStyle: "flex: 0 0 auto; border: 1px solid " +
+            (active ? "var(--primary)" : lost ? "var(--danger-border)" : "var(--border)") +
+            "; border-radius: var(--radius); background: var(--card); overflow: hidden; cursor: pointer; transition: border-color .12s var(--ease-out, ease);" +
+            (open ? "" : " opacity: .82;") +
+            (active ? " box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 16%, transparent);" : "")
+        };
+      }),
+      commentDraftNote: "Comments belong to design-studio previews, anchored to an element in the render.",
+
+      terminalClaimedByMe: st.terminalClaim === "me",
+      terminalClaimText: st.terminalClaim === "me"
+        ? "You hold this shell"
+        : "Claimed by iPhone 16 Pro since 14:04",
+      terminalClaimNote: st.terminalClaim === "me"
+        ? "One claimant at a time. The phone can watch."
+        : "Reading is free, typing needs the claim.",
+      terminalClaimStyle: "display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--" +
+        (st.terminalClaim === "me" ? "ok-bg" : "info-bg") + ");",
+      terminalClaimDot: this.dot(st.terminalClaim === "me" ? "var(--success)" : "var(--info)", 6),
+      terminalClaimTextStyle: "font-size: 12px; color: var(--" + (st.terminalClaim === "me" ? "ok-fg" : "info-fg") + ");",
+      terminalClaimNoteStyle: "font-size: 11px; color: var(--" + (st.terminalClaim === "me" ? "ok-dim" : "info-dim") + "); line-height: 1.45;",
+      terminalClaimBtn: st.terminalClaim === "me" ? "Release the shell" : "Take the shell",
+      terminalClaimBtnStyle: (watching ? "opacity: .45; cursor: not-allowed; " : "cursor: pointer; ") + "flex: 0 0 auto; padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--" +
+        (st.terminalClaim === "me" ? "ok-border" : "info-border") + "); font-size: 11.5px; color: var(--" +
+        (st.terminalClaim === "me" ? "ok-fg" : "info-fg") + "); white-space: nowrap;",
+      toggleTerminalClaim: watching ? undefined : () => this.setState(s => ({ terminalClaim: s.terminalClaim === "me" ? "phone" : "me" })),
+      historyCats: [
+        { id: "all", label: "Everything", count: "38" },
+        { id: "turns", label: "Turns", count: "9" },
+        { id: "approvals", label: "Approvals", count: "4" },
+        { id: "checkpoints", label: "Checkpoints", count: "5" },
+        { id: "transfers", label: "Transfers", count: "1" }
+      ].map(c => ({
+        label: c.label, count: c.count,
+        pick: () => this.setState({ historyCat: c.id }),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid " +
+          (st.historyCat === c.id ? "var(--primary)" : "var(--border)") + "; color: " +
+          (st.historyCat === c.id ? "var(--primary)" : "var(--muted-foreground)") + ";",
+        countStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);"
+      })),
+      // Fork restores a worktree, and turns do not each have one: most turns write nothing,
+      // so forking from turn 8 and from turn 9 lands on identical filesystem state, and
+      // session.fork does not replay conversation either. Checkpoint-only is the rule.
+      historyRows: [
+        { cat: "turns", time: "14:08", title: "Rewrote replay.spec.ts to assert exactly-once delivery", meta: "turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens", k: "success", fork: false },
+        { cat: "checkpoints", time: "14:07", title: "Checkpoint ckpt_7f24 taken before the migration", meta: "commit 8f3c1de · worktree wt-billing-idem", k: "success", fork: true },
+        { cat: "approvals", time: "14:07", title: "Allowed once: pnpm prisma migrate deploy", meta: "decided on desktop · device 4b91…e7c · ran 38s", k: "info", fork: false },
+        { cat: "turns", time: "14:06", title: "Stopped at step 3 and asked", meta: "turn 8 · 1 failing spec · gate raised", k: "info", fork: false },
+        { cat: "approvals", time: "14:05", title: "Rule created: pnpm vitest run *", meta: "scope acme-api, any machine · used 82 times since", k: "info", fork: false },
+        { cat: "checkpoints", time: "14:04", title: "Checkpoint ckpt_6b0e before handler.ts was rewritten", meta: "commit 4c2a91f", k: "success", fork: true },
+        { cat: "turns", time: "14:03", title: "Wrote the plan, four steps", meta: "turn 3 · revised once at 14:06", k: "success", fork: false },
+        { cat: "transfers", time: "13:58", title: "Moved here from wsl-ubuntu-24", meta: "preflight passed · 3 unversioned files held back", k: "info", fork: false },
+        { cat: "checkpoints", time: "13:52", title: "Worktree created off main at 8f3c1de", meta: "session start · nothing to revert past this", k: "info", fork: false }
+      ].filter(r => st.historyCat === "all" || r.cat === st.historyCat)
+      .map((r, i) => ({
+        time: r.time, title: r.title, meta: r.meta,
+        dot: this.dot("var(--" + r.k + ")", 6) + " margin-top: 5px;",
+        cat: r.cat,
+        catStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground);",
+        forkStyle: r.fork
+          ? "flex: 0 0 auto; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); cursor: pointer; white-space: nowrap;"
+          : "display: none;",
+        fork: () => this.setState({ sheetTab: "checkpoints" }),
+        rowStyle: "display: flex; align-items: flex-start; gap: 11px; padding: 11px 13px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      historyMore: "38 entries, 9 shown · older pages load as you scroll",
+      sheetMeta: st.sheetTab === "changes" ? "7 files · +214 \u221238 · wt-billing-idem"
+        : st.sheetTab === "checkpoints" ? "5 checkpoints · mac-mini-m4"
+        : st.sheetTab === "plan" ? "rendered by the plan-preview skill"
+        : st.sheetTab === "preview" ? "rendered by design-studio · read-only"
+        : st.sheetTab === "terminal" ? "read-only stream from " + machineForScreen.name
+        : "4 rules · acme-api",
+      planDoc: {
+        title: "Make Stripe webhook delivery exactly-once",
+        meta: "acme-api · wt-billing-idem off main at 8f3c1de · written 14:03, revised 14:06",
+        problem: "handleWebhook runs its side effects before the event is recorded, so any Stripe retry replays them. Two duplicate invoice emails and one double charge in the last 30 days trace to this.",
+        approach: "Claim the event id in its own transaction, then do the work, then commit the claim. A retry that arrives before the first attempt finishes loses the claim race and returns early instead of running twice.",
+        steps: [
+          { n: "1", title: "Add a replay table with a unique event-id claim", detail: "New table webhook_replay with event_id as the primary key, a claimed_at column and a committed_at column. The unique constraint is what makes the claim atomic, not application code.", files: ["prisma/schema.prisma", "src/webhooks/replay.ts"] },
+          { n: "2", title: "Make every handler claim-then-commit before side effects", detail: "handleWebhook takes the claim first and returns { status: 'duplicate' } when it loses. Every existing handler is moved behind the same call, including the three that currently write to Stripe.", files: ["src/webhooks/handler.ts", "src/lib/stripe.ts"] },
+          { n: "3", title: "Apply the migration on this machine's dev database", detail: "prisma migrate deploy against acme_dev on localhost:5432. This is the only step that touches state outside the worktree, so it stops for approval.", files: ["prisma/migrations/20260825_replay/migration.sql"], gate: true },
+          { n: "4", title: "Rewrite replay.spec.ts to assert exactly-once delivery", detail: "The current spec asserts two invocations on a retry, which is the bug written down as a test. It is replaced with a concurrent-retry case and a claim-expiry case.", files: ["src/webhooks/replay.spec.ts"] }
+        ],
+        risks: [
+          "A crash between claim and commit leaves a claim with no committed_at. Step 1 adds a 15 minute expiry so those events are retried rather than lost forever, and step 4 covers it with a test.",
+          "Handlers that are not idempotent internally are still not idempotent. This makes delivery exactly-once, it does not make a half-finished handler safe to resume.",
+          "The migration is additive and takes no locks on existing tables, so it is safe to run on production later. This plan does not run it there."
+        ],
+        open: "Whether to backfill webhook_replay from the last 30 days of Stripe events. Not in this plan. It needs a decision about what to do with events that were already double-processed."
+      },
+      planDocSteps: [
+        { n: "1", title: "Add a replay table with a unique event-id claim", detail: "New table webhook_replay with event_id as the primary key, a claimed_at column and a committed_at column. The unique constraint is what makes the claim atomic, not application code.", files: ["prisma/schema.prisma", "src/webhooks/replay.ts"] },
+        { n: "2", title: "Make every handler claim-then-commit before side effects", detail: "handleWebhook takes the claim first and returns a duplicate status when it loses. Every existing handler moves behind the same call, including the three that write to Stripe.", files: ["src/webhooks/handler.ts", "src/lib/stripe.ts"] },
+        { n: "3", title: "Apply the migration on this machine's dev database", detail: "prisma migrate deploy against acme_dev on localhost:5432. This is the only step that touches state outside the worktree, so it stops for approval.", files: ["prisma/migrations/20260825_replay/migration.sql"], gate: true },
+        { n: "4", title: "Rewrite replay.spec.ts to assert exactly-once delivery", detail: "The current spec asserts two invocations on a retry, which is the bug written down as a test. It is replaced with a concurrent-retry case and a claim-expiry case.", files: ["src/webhooks/replay.spec.ts"] }
+      ].map(s => ({
+        n: s.n, title: s.title, detail: s.detail, gate: !!s.gate,
+        files: s.files.map(p => ({ path: p })),
+        numStyle: "width: 26px; height: 26px; flex: 0 0 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 2px; background: " +
+          (s.gate ? "var(--warn-bg)" : "var(--accent)") + "; color: " + (s.gate ? "var(--warn-fg)" : "var(--strong)") + "; border: 1px solid " +
+          (s.gate ? "var(--warn-border)" : "var(--border)") + ";"
+      })),
+      planDocRisks: [
+        { text: "A crash between claim and commit leaves a claim with no committed_at. Step 1 adds a 15 minute expiry so those events are retried rather than lost forever, and step 4 covers it with a test." },
+        { text: "Handlers that are not idempotent internally are still not idempotent. This makes delivery exactly-once, it does not make a half-finished handler safe to resume." },
+        { text: "The migration is additive and takes no locks on existing tables, so it is safe to run on production later. This plan does not run it there." }
+      ],
+      tipStyle: "position: absolute; top: calc(100% + 7px); left: 0; z-index: 6; width: 210px; padding: 9px 11px; border-radius: calc(var(--radius) - 2px); background: var(--card); border: 1px solid var(--border); box-shadow: 0 14px 40px var(--shadow-lg); animation: dvPopIn .1s var(--ease-out, ease); pointer-events: none;",
+      sheetTabList: (() => {
+        const defs = [
+          { id: "plan", label: "Plan preview", count: "4 steps", tip: "The working plan rendered as a document, with the gate marked and the limits stated." },
+          { id: "preview", label: "Preview", count: "3", tip: "HTML a skill produced, at a chosen width. Written to .domovoi/previews, never to the repo." },
+          { id: "changes", label: "Changes", count: "7", tip: "Diffs from the worktree on the machine. Nothing is merged until you open a pull request." },
+          { id: "terminal", label: "Terminal", count: "", tip: "The raw stream from the machine, read-only. The agent owns this shell." },
+          { id: "history", label: "History", count: "38", tip: "Everything that happened in this session, by category, oldest at the bottom. Fork from any turn." },
+          { id: "checkpoints", label: "Checkpoints", count: "5", tip: "Every approved write is revertible. Reverting rewinds the worktree and the thread together." },
+          { id: "rules", label: "Rules", count: "4", tip: "What you have already allowed, revocable, plus the things no rule can ever cover." }
+        ];
+        const out = {};
+        const tipBase = "position: absolute; top: calc(100% + 7px); z-index: 6; width: 210px; padding: 9px 11px; border-radius: calc(var(--radius) - 2px); background: var(--card); border: 1px solid var(--border); box-shadow: 0 14px 40px var(--shadow-lg); animation: dvPopIn .1s var(--ease-out, ease); pointer-events: none;";
+        defs.forEach((t, i) => {
+          const on = st.sheetTab === t.id;
+          const flip = i >= defs.length - 3;
+          out[t.id] = {
+            tipStyle: tipBase + (flip ? " right: 0; left: auto;" : " left: 0;"),
+            label: t.label,
+            count: t.count,
+            tip: t.tip,
+            hover: st.hoverTab === t.id,
+            enter: () => this.setState({ hoverTab: t.id }),
+            leave: () => this.setState({ hoverTab: null }),
+            pick: () => this.setState({ sheetTab: t.id }),
+            style: "position: relative; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: " +
+              (on ? "var(--foreground)" : "var(--muted-foreground)") + ";" + (on ? " background: var(--accent);" : ""),
+            labelStyle: "display: none;",
+            countStyle: "display: none;"
+          };
+        });
+        return out;
+      })(),
+      previewFull: st.previewFull,
+      openPreviewFull: () => this.setState({ previewFull: true }),
+      closePreviewFull: () => this.setState({ previewFull: false }),
+      tabPreview: st.sheetTab === "preview",
+      tabTerminal: st.sheetTab === "terminal",
+      previewDocs: [
+        { id: 0, label: "Replay table, three states", meta: "design-studio · 14:09" },
+        { id: 1, label: "Duplicate-delivery runbook page", meta: "design-studio · 14:11" },
+        { id: 2, label: "Webhook health panel", meta: "design-studio · 14:12" }
+      ].map(p => ({
+        label: p.label, meta: p.meta,
+        pick: () => this.setState({ previewDoc: p.id }),
+        rowStyle: "display: flex; flex-direction: column; gap: 3px; padding: 9px 11px; border-radius: calc(var(--radius) - 3px); cursor: pointer;" +
+          (st.previewDoc === p.id ? " background: var(--accent);" : ""),
+        labelStyle: "font-size: 12px; color: " + (st.previewDoc === p.id ? "var(--foreground)" : "var(--strong)") + ";",
+        metaStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);"
+      })),
+      previewTitle: previewDocTitles[st.previewDoc],
+      previewWidths: [
+        { id: "phone", label: "sm" },
+        { id: "tablet", label: "md" },
+        { id: "full", label: "lg" }
+      ].map(w => ({
+        label: w.label,
+        pick: () => this.setState({ previewWidth: w.id }),
+        style: "padding: 5px 10px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; cursor: pointer; color: " +
+          (st.previewWidth === w.id ? "var(--foreground)" : "var(--muted-foreground)") + ";" +
+          (st.previewWidth === w.id ? " background: var(--accent);" : "")
+      })),
+      authorizeLabel: st.authorized ? "authorized · 9m left" : "authorize to view",
+      authorizeChipStyle: "display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; font-size: 10.5px; cursor: pointer; white-space: nowrap; border: 1px solid " +
+        (st.authorized ? "var(--ok-border)" : "var(--warn-border)") + "; background: var(--" +
+        (st.authorized ? "ok-bg" : "warn-bg") + "); color: var(--" + (st.authorized ? "ok-fg" : "warn-fg") + ");",
+      toggleAuthorize: () => this.setState(s => ({ authorized: !s.authorized })),
+      authorizeNote: st.authorized
+        ? "Signed for this document only, expiring in nine minutes."
+        : "Each render needs its own signed capability.",
+      previewFrameStyle: "margin: 0 auto; width: " + (st.previewWidth === "phone" ? "390px" : st.previewWidth === "tablet" ? "834px" : "100%") +
+        "; max-width: 100%; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; display: flex; flex-direction: column;",
+      previewRows: [
+        { state: "claimed", detail: "event_id claimed 14:06:02, no side effects yet", k: "warning" },
+        { state: "committed", detail: "handler finished, claim committed 14:06:03", k: "success" },
+        { state: "expired", detail: "claimed 13:41:12, never committed, retried after 15m", k: "info" }
+      ].map((r, i) => {
+        const pinnedAt = docComments.map((c, ci) => ({ c: c, n: ci + 1 })).filter(e => e.c.row === i);
+        const active = pinnedAt.some(e => st.hoverComment === e.n || st.focusComment === e.n);
+        const quote = pinnedAt.length ? pinnedAt[0].c.quote : null;
+        const before = quote && r.detail.indexOf(quote) >= 0 ? r.detail.slice(0, r.detail.indexOf(quote)) : r.detail;
+        const after = quote && r.detail.indexOf(quote) >= 0 ? r.detail.slice(r.detail.indexOf(quote) + quote.length) : "";
+        const n = pinnedAt.length ? pinnedAt[0].n : null;
+        return {
+          state: r.state,
+          detailBefore: before,
+          quote: quote && r.detail.indexOf(quote) >= 0 ? quote : "",
+          detailAfter: after,
+          quoteStyle: quote && r.detail.indexOf(quote) >= 0
+            ? "border-radius: 3px; padding: 1px 3px; background: color-mix(in oklab, var(--primary) " + (active ? "34" : "20") + "%, transparent); color: var(--foreground); box-shadow: inset 0 -1px 0 var(--primary);"
+            : "display: none;",
+          dot: this.dot("var(--" + r.k + ")", 6),
+          pin: pinnedAt.length ? pinnedAt.map(e => e.n).join(",") : "+",
+          pinStyle: "flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 999px; cursor: pointer; transition: transform .12s var(--ease-out, ease), box-shadow .12s var(--ease-out, ease); display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+            (pinnedAt.length ? "var(--primary)" : "var(--accent)") + "; color: " +
+            (pinnedAt.length ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";" +
+            (active ? " transform: scale(1.18); box-shadow: 0 0 0 4px color-mix(in oklab, var(--primary) 28%, transparent);" : ""),
+          pinEnter: n ? () => this.setState({ hoverComment: n }) : undefined,
+          pinLeave: n ? () => this.setState({ hoverComment: null }) : undefined,
+          pinClick: n
+            ? () => this.setState(s => ({ focusComment: s.focusComment === n ? null : n }))
+            : () => this.setState({ draftRow: i, draftQuote: null, annotateMode: false }),
+          annotate: st.annotateMode
+            ? () => this.setState({ draftRow: i, draftQuote: null, annotateMode: false })
+            : undefined,
+          quoteClick: () => this.setState({ draftRow: i, draftQuote: quote || r.detail.split(",")[0], annotateMode: false }),
+          rowStyle: "display: flex; align-items: center; gap: 10px; padding: 11px 13px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+            (st.annotateMode ? " cursor: crosshair; background: color-mix(in oklab, var(--primary) 6%, transparent);" : "") +
+            (active ? " background: color-mix(in oklab, var(--primary) 10%, transparent);" : "")
+        };
+      }),
+      variantChips: ["A", "B", "C"].map(v => {
+        const on = st.variant === v;
+        const isChosen = st.chosen === v;
+        return {
+          label: isChosen ? v + " \u2713" : v,
+          pick: () => this.setState({ variant: v, focusComment: null }),
+          style: "min-width: 30px; padding: 5px 10px; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; cursor: pointer; background: " +
+            (on ? "var(--background)" : "transparent") + "; color: " +
+            (isChosen ? "var(--success)" : on ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+        };
+      }),
+      variantStateText: st.chosen
+        ? (st.chosen === st.variant ? "the agent builds on this one" : "the agent builds on " + st.chosen)
+        : "none chosen, all three stay alive",
+      variantStateStyle: "font-size: 11px; color: var(--" + (st.chosen ? "muted-foreground" : "faint") + ");",
+      variantNote: st.chosen
+        ? "The others stay renderable for comparison."
+        : "Nothing chosen, so the agent builds on none of them.",
+      chooseVariant: () => this.setState(s => ({ chosen: s.chosen === s.variant ? null : s.variant })),
+      chooseVariantLabel: st.chosen === st.variant ? "Unpick" : "Build on this",
+      chooseVariantStyle: "padding: 6px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; white-space: nowrap; background: " +
+        (st.chosen === st.variant ? "transparent" : "var(--primary)") + "; border: 1px solid " +
+        (st.chosen === st.variant ? "var(--border)" : "transparent") + "; color: " +
+        (st.chosen === st.variant ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+
+      sendCommentsLabel: st.commentsSent
+        ? "2 comments and variant " + st.variant + " are attached to your next turn"
+        : "Send 2 open comments to the agent",
+      sendCommentsStyle: "display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; white-space: nowrap; background: " +
+        (st.commentsSent ? "var(--ok-bg)" : "var(--primary)") + "; color: " +
+        (st.commentsSent ? "var(--ok-fg)" : "var(--primary-foreground)") + ";",
+      sendComments: () => this.setState(s => ({ commentsSent: !s.commentsSent })),
+      sendCommentsNote: st.commentsSent
+        ? "Sent as references: document, variant, element, render digest."
+        : "Comments reach the agent only when you send them.",
+      commentsSent: st.commentsSent,
+
+      annotateMode: st.annotateMode,
+      annotateHint: st.annotateMode
+        ? "Click a phrase to anchor to it, or the row for the whole element."
+        : "Plus adds a comment, a number opens one.",
+      toggleAnnotate: () => this.setState(s => ({ annotateMode: !s.annotateMode, draftRow: null })),
+      annotateLabel: st.annotateMode ? "Click an element" : "Add a comment",
+      annotateBtnStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; white-space: nowrap; font-size: 11px; border: 1px solid " +
+        (st.annotateMode ? "var(--primary)" : "var(--border)") + "; color: " +
+        (st.annotateMode ? "var(--primary)" : "var(--muted-foreground)") + ";",
+      draftOpen: st.draftRow !== null,
+      draftAnchor: st.draftRow === null ? "" : previewDocTitles[st.previewDoc] + " · the " +
+        ["claimed", "committed", "expired"][st.draftRow] + " row" + (st.draftQuote ? ", on \u201c" + st.draftQuote + "\u201d" : ""),
+      draftText: "Say what is wrong with this element",
+      draftTextStyle: "padding: 12px 13px; min-height: 56px; font-size: 12.5px; color: var(--faint); line-height: 1.55;",
+      postDraft: () => this.setState(s => ({
+        draftRow: null,
+        comments: s.comments.concat([{
+          row: s.draftRow, doc: s.previewDoc, own: true,
+          anchor: previewDocTitles[s.previewDoc] + " · the " + ["claimed", "committed", "expired"][s.draftRow] + " row",
+          body: "The expiry should be 90 seconds, not 15 minutes, so the second Stripe retry is not blocked.",
+          who: "you · desktop · just now", status: "open", lost: false, replies: []
+        }])
+      })),
+      cancelDraft: () => this.setState({ draftRow: null }),
+      terminalLines: [
+        { text: "dl@mac-mini-m4 ~/src/acme-api/.domovoi/wt-billing-idem", k: "dim" },
+        { text: "$ pnpm vitest run webhooks", k: "cmd" },
+        { text: "", k: "gap" },
+        { text: "RUN  v2.1.4 /Users/dl/src/acme-api/.domovoi/wt-billing-idem", k: "dim" },
+        { text: "\u2713 src/webhooks/handler.spec.ts (14 tests) 412ms", k: "pass" },
+        { text: "\u2713 src/webhooks/idempotency.spec.ts (9 tests) 208ms", k: "pass" },
+        { text: "\u00d7 src/webhooks/replay.spec.ts (7 tests | 1 failed) 1.2s", k: "fail" },
+        { text: "  \u2192 retries the same event twice", k: "dim" },
+        { text: "    AssertionError: expected 2 handler invocations, received 1", k: "fail" },
+        { text: "    at src/webhooks/replay.spec.ts:38:24", k: "dim" },
+        { text: "", k: "gap" },
+        { text: " Test Files  2 passed | 1 failed (3)", k: "dim" },
+        { text: "      Tests  30 passed | 1 failed (31)", k: "dim" },
+        { text: "   Duration  6.42s", k: "dim" },
+        { text: "", k: "gap" },
+        { text: "$ git -C .domovoi/wt-billing-idem status --short", k: "cmd" },
+        { text: " M src/webhooks/handler.ts", k: "dim" },
+        { text: "?? src/webhooks/replay.ts", k: "dim" }
+      ].map(l => ({
+        text: l.text,
+        style: "min-height: 19px; color: " + (l.k === "cmd" ? "var(--foreground)" : l.k === "pass" ? "var(--success)" : l.k === "fail" ? "var(--destructive)" : "var(--muted-foreground)") + ";" +
+          (l.k === "cmd" ? " font-weight: 500;" : ""),
+      })),
+      attachTerminal: () => this.setState(s => ({
+        attached: s.attached.concat([{ kind: "term", name: "vitest-webhooks-1406.txt", size: "8 kB" }]),
+        sheetOpen: s.pinned, sheetTab: s.sheetTab
+      })),
+      checkpoints: [
+        { id: "ckpt_7f24", label: "Before the migration ran", meta: "14:06 · approved gate", k: "success", action: "Revert to here" },
+        { id: "ckpt_6b0e", label: "Before handler.ts was rewritten", meta: "14:04 · write", k: "success", action: "Revert to here" },
+        { id: "ckpt_5a91", label: "Before replay.ts was created", meta: "14:03 · write", k: "success", action: "Revert to here" },
+        { id: "ckpt_41cd", label: "Before the schema change", meta: "14:02 · write", k: "success", action: "Revert to here" },
+        { id: "ckpt_0000", label: "Worktree created off main at 8f3c1de", meta: "14:02 · session start", k: "info", action: "Reset the session" }
+      ].map((c, i) => ({
+        id: c.id, label: c.label, meta: c.meta,
+        dot: this.dot("var(--" + c.k + ")", 6),
+        cardStyle: "flex: 0 0 auto; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--card); overflow: hidden;",
+        action: c.action === "Reset the session" ? "Reset" : "Revert",
+        actionStyle: "flex: 0 0 auto; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); cursor: pointer; white-space: nowrap;",
+        fork: () => this.setState({ sheetOpen: false, actionsOpen: false }),
+        forkStyle: "flex: 0 0 auto; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--primary); font-size: 11px; color: var(--primary); cursor: pointer; white-space: nowrap;"
+      })),
+      rules: [
+        { pattern: "pnpm -w prisma migrate *", scope: "acme-api on mac-mini-m4 · created just now from a gate", used: "used 1\u00d7" },
+        { pattern: "pnpm vitest run *", scope: "acme-api on any machine · created 3 Sep", used: "used 82\u00d7" },
+        { pattern: "git commit · git switch · git worktree", scope: "any repo on mac-mini-m4 · created 28 Aug", used: "used 210\u00d7" },
+        { pattern: "gh pr create", scope: "acme-api on mac-mini-m4 · created 28 Aug", used: "used 6\u00d7" }
+      ].map((r, i) => ({
+        pattern: r.pattern, scope: r.scope, used: r.used,
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 11px 13px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      neverRules: [
+        { label: "drop, truncate or force-push" },
+        { label: "writes outside the project directory" },
+        { label: "anything on a production database" },
+        { label: "network calls to a new host" },
+        { label: "installing an unsigned skill" }
+      ],
+      diffLines: [
+        { n: "41", text: "export async function handleWebhook(evt: StripeEvent) {", k: "ctx" },
+        { n: "42", text: "-  await processEvent(evt)", k: "del" },
+        { n: "42", text: "+  const claimed = await claimEvent(evt.id)", k: "add" },
+        { n: "43", text: "+  if (!claimed) return { status: 'duplicate' }", k: "add" },
+        { n: "44", text: "+", k: "add" },
+        { n: "45", text: "+  await processEvent(evt)", k: "add" },
+        { n: "46", text: "+  await commitClaim(evt.id)", k: "add" },
+        { n: "47", text: "}", k: "ctx" }
+      ].map(l => ({
+        n: l.n, text: l.text,
+        style: "display: flex; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.75; color: " +
+          (l.k === "add" ? "var(--success)" : l.k === "del" ? "var(--destructive)" : "var(--muted-foreground)") + "; background: " +
+          (l.k === "add" ? "color-mix(in oklab, var(--success) 10%, transparent)" : l.k === "del" ? "color-mix(in oklab, var(--destructive) 10%, transparent)" : "transparent") + ";"
+      })),
+      evidenceFiles: [
+        {
+          badge: "M", path: "src/webhooks/handler.ts", add: "+62", del: "\u221214", written: "14:04",
+          cover: "2 runs · 1 failing", ck: "warning", checkpoint: "ckpt_6b0e",
+          runs: [
+            { cmd: "pnpm vitest run webhooks/handler.spec.ts", result: "14 passed", k: "success", when: "14:05" },
+            { cmd: "pnpm vitest run webhooks/replay.spec.ts", result: "1 failed", k: "destructive", when: "14:06" }
+          ]
+        },
+        {
+          badge: "A", path: "src/webhooks/replay.ts", add: "+71", del: "", written: "14:03",
+          cover: "1 run · passing", ck: "success", checkpoint: "ckpt_5a91",
+          runs: [
+            { cmd: "pnpm vitest run webhooks/idempotency.spec.ts", result: "9 passed", k: "success", when: "14:05" }
+          ]
+        },
+        {
+          badge: "M", path: "prisma/schema.prisma", add: "+18", del: "\u22122", written: "14:02",
+          cover: "no test touched it", ck: "faint", checkpoint: "ckpt_41cd",
+          runs: [
+            { cmd: "prisma validate", result: "schema ok", k: "success", when: "14:02" }
+          ]
+        },
+        {
+          badge: "A", path: "prisma/migrations/20260825_replay/migration.sql", add: "+24", del: "", written: "14:06",
+          cover: "applied, not tested", ck: "warning", checkpoint: "ckpt_7f24",
+          runs: [
+            { cmd: "pnpm prisma migrate deploy", result: "1 migration applied", k: "success", when: "14:07" }
+          ]
+        },
+        {
+          badge: "M", path: "src/lib/stripe.ts", add: "+9", del: "\u22127", written: "14:04",
+          cover: "2 runs · passing", ck: "success", checkpoint: "ckpt_6b0e",
+          runs: [
+            { cmd: "pnpm vitest run webhooks/handler.spec.ts", result: "14 passed", k: "success", when: "14:05" },
+            { cmd: "pnpm tsc --noEmit", result: "no errors", k: "success", when: "14:05" }
+          ]
+        },
+        {
+          badge: "M", path: "src/webhooks/replay.spec.ts", add: "+30", del: "\u221215", written: "14:08",
+          cover: "1 run · passing", ck: "success", checkpoint: "ckpt_7f24",
+          runs: [
+            { cmd: "pnpm vitest run webhooks/replay.spec.ts", result: "7 passed", k: "success", when: "14:08" }
+          ]
+        }
+      ].map(f => {
+        const open = st.evidenceOpen === f.path;
+        const asking = st.revertAsk === f.path;
+        const done = st.reverted.indexOf(f.path) >= 0;
+        return {
+          badge: f.badge, path: f.path, add: f.add, del: f.del, written: f.written,
+          cover: f.cover, checkpoint: f.checkpoint,
+          open: open,
+          runs: f.runs.map(r => ({
+            cmd: r.cmd, result: r.result, when: r.when,
+            dot: this.dot("var(--" + r.k + ")", 6),
+            resultStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" + r.k + ");"
+          })),
+          coverStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--" +
+            f.ck + ") 15%, transparent); color: var(--" + (f.ck === "faint" ? "muted-foreground" : f.ck) + ");",
+          badgeStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+            (f.badge === "A" ? "color-mix(in oklab, var(--success) 18%, transparent)" : "var(--muted)") + "; color: " +
+            (f.badge === "A" ? "var(--success)" : "var(--muted-foreground)") + ";",
+          chevron: "display: inline-flex; color: var(--muted-foreground); transition: transform .15s var(--ease-out, ease); transform: rotate(" +
+            (open ? "90deg" : "0deg") + ");",
+          cardStyle: "flex: 0 0 auto; border: 1px solid " + (open ? "var(--primary)" : "var(--border)") +
+            "; border-radius: var(--radius); background: var(--card); overflow: hidden;" + (done ? " opacity: .8;" : ""),
+          toggle: () => this.setState(s => ({ evidenceOpen: s.evidenceOpen === f.path ? null : f.path, revertAsk: null })),
+          showDiff: open && st.evidenceDiff === f.path,
+          diffLabel: st.evidenceDiff === f.path ? "Hide the diff" : "Show the diff",
+          toggleDiff: () => this.setState(s => ({ evidenceDiff: s.evidenceDiff === f.path ? null : f.path })),
+          revertAsk: asking,
+          revertPrompt: "Revert " + f.path.split("/").pop() + " to the version in " + f.checkpoint +
+            "? Only this file changes, and the agent is told so it does not rewrite it blindly.",
+          askRevert: () => this.setState({ revertAsk: f.path }),
+          cancelRevert: () => this.setState({ revertAsk: null }),
+          confirmRevert: () => this.setState(s => ({ revertAsk: null, reverted: s.reverted.concat([f.path]) })),
+          reverted: done,
+          okDot: this.dot("var(--success)", 6),
+          actionable: !asking && !done
+        };
+      }),
+      sheetFiles: [
+        { badge: "A", path: "src/webhooks/replay.ts", add: "+71", del: "" },
+        { badge: "M", path: "prisma/schema.prisma", add: "+18", del: "\u22122" },
+        { badge: "A", path: "prisma/migrations/20260825_replay/migration.sql", add: "+24", del: "" },
+        { badge: "M", path: "src/lib/stripe.ts", add: "+9", del: "\u22127" },
+        { badge: "M", path: "src/webhooks/replay.spec.ts", add: "+30", del: "\u221215" },
+        { badge: "M", path: "src/webhooks/idempotency.spec.ts", add: "+4", del: "\u22121" }
+      ].map(f => ({
+        badge: f.badge, path: f.path, add: f.add, del: f.del,
+        badgeStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+          (f.badge === "A" ? "color-mix(in oklab, var(--success) 18%, transparent)" : "var(--muted)") + "; color: " +
+          (f.badge === "A" ? "var(--success)" : "var(--muted-foreground)") + ";"
+      })),
+
+      handoffOpen: st.handoffOpen,
+      openHandoff: () => this.setState({ handoffOpen: true }),
+      closeHandoff: () => this.setState({ handoffOpen: false }),
+      handoffTargets: [
+        { name: "mac-mini-m4", note: "this machine, the session is already here", k: "success", disabled: true },
+        { name: "hetzner-cx42", note: "reachable over Domovoi Cloud · claude-code and codex installed", k: "success" },
+        { name: "wsl-ubuntu-24", note: "daemon unreachable, cannot accept a session yet", k: "destructive", disabled: true }
+      ].map((t, i) => ({
+        name: t.name, note: t.note,
+        dot: this.dot("var(--" + t.k + ")", 7),
+        pick: t.disabled ? undefined : () => this.setState({ handoffTarget: i }),
+        tickStyle: "display: inline-flex; color: " + (st.handoffTarget === i ? "var(--primary)" : "transparent") + ";",
+        style: "display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid " +
+          (st.handoffTarget === i ? "var(--primary)" : "var(--border)") + ";" +
+          (t.disabled ? " opacity: .5; cursor: default;" : " cursor: pointer;")
+      })),
+      preflight: [
+        { label: "Repository present on target", value: "acme-api @ 8f3c1de", k: "success" },
+        { label: "Common base commit", value: "8f3c1de, shared", k: "success" },
+        { label: "Provider authenticated there", value: "claude-code ready · aider needs auth", k: "warning" },
+        { label: "Toolchain match", value: "node 22.6 · pnpm 9.7", k: "success" },
+        { label: "Target checkout clean", value: "no local changes", k: "success" },
+        { label: "Payload to send", value: "1.2 MB bundle · 7 files", k: "success" },
+        { label: "Unversioned files (.env, dumps)", value: st.holdback ? "3 held back" : "3 will be sent", k: st.holdback ? "success" : "warning" }
+      ].map((c, i) => ({
+        label: c.label, value: c.value,
+        valueColor: c.k === "warning" ? "var(--warning)" : "var(--muted-foreground)",
+        dot: this.dot("var(--" + c.k + ")", 6),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--background);" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      preflightSummary: st.holdback ? "6 pass · 1 warning" : "5 pass · 2 warnings",
+      preflightSummaryStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);",
+      holdback: st.holdback,
+      toggleHoldback: () => this.setState(s => ({ holdback: !s.holdback })),
+      holdbackLabel: st.holdback
+        ? "Hold back the 3 unversioned files. The agent will find .env missing on the target and ask for it."
+        : "Send the 3 unversioned files with the bundle, including .env and two SQL dumps.",
+      holdbackBoxStyle: "display: flex; align-items: center; justify-content: center; width: 17px; height: 17px; flex: 0 0 17px; margin-top: 1px; border-radius: 4px; cursor: pointer; border: 1px solid var(--info-border); background: " +
+        (st.holdback ? "var(--info)" : "transparent") + "; color: " + (st.holdback ? "var(--info-bg)" : "transparent") + ";",
+      handoffPhases: [
+        { id: "preflight", label: "Pre-flight" },
+        { id: "recover", label: "Half-failed move" },
+        { id: "conflict", label: "Both sides changed" }
+      ].map(p => ({
+        label: p.label,
+        pick: () => this.setState({ handoffPhase: p.id }),
+        style: "padding: 5px 10px; border-radius: 999px; font-size: 11px; cursor: pointer; border: 1px solid " +
+          (st.handoffPhase === p.id ? "var(--primary)" : "var(--border)") + "; color: " +
+          (st.handoffPhase === p.id ? "var(--primary)" : "var(--muted-foreground)") + ";"
+      })),
+      handoffPreflightPhase: st.handoffPhase === "preflight",
+      handoffRecoverPhase: st.handoffPhase === "recover",
+      handoffConflictPhase: st.handoffPhase === "conflict",
+      recoverSides: [
+        {
+          label: "mac-mini-m4", role: "source, still authoritative", k: "success",
+          lines: ["session open, thread intact", "worktree wt-billing-idem at 8f3c1de", "nothing was handed over"]
+        },
+        {
+          label: "hetzner-cx42", role: "target, never committed", k: "warning",
+          lines: ["worktree created, 7 files written", "commit step never returned", "lease expires 14:22, then it is dropped"]
+        }
+      ].map(s => ({
+        label: s.label, role: s.role,
+        dot: this.dot("var(--" + s.k + ")", 6),
+        lines: s.lines.map(t => ({ text: t })),
+        style: "flex: 1; min-width: 0; padding: 12px 14px; background: var(--card);"
+      })),
+      recoverRisk: "If both resumed, two sessions would hold one branch. That is why neither side advances on its own.",
+      recoverBody: "The commit never returned, so neither side finished. The source is still authoritative and the target lease expires on its own.",
+      conflictBody: "Both worktrees changed replay.spec.ts. Sessions are not merged, so pick one; the other is kept as a branch.",
+      conflictSides: [
+        {
+          label: "Keep this machine's version", meta: "mac-mini-m4 · edited 14:09 by you",
+          detail: "Your local edit to replay.spec.ts survives. The target's rewrite is kept as branch wt-billing-idem-hetzner, unmerged.", k: "info"
+        },
+        {
+          label: "Keep the target's version", meta: "hetzner-cx42 · written 14:11 by claude-code",
+          detail: "The agent's rewrite survives and the session continues there. Your edit is kept as branch wt-billing-idem-local, unmerged.", k: "success"
+        }
+      ].map((s, i) => ({
+        label: s.label, meta: s.meta, detail: s.detail,
+        dot: this.dot("var(--" + s.k + ")", 7),
+        pick: () => this.setState({ conflictSide: i }),
+        tickStyle: "display: inline-flex; color: " + (st.conflictSide === i ? "var(--primary)" : "transparent") + ";",
+        style: "display: flex; align-items: flex-start; gap: 11px; padding: 11px 13px; border-radius: calc(var(--radius) - 2px); cursor: pointer; border: 1px solid " +
+          (st.conflictSide === i ? "var(--primary)" : "var(--border)") + ";"
+      })),
+      handoffConfirmLabel: st.handoffTarget === 1 ? "Move to hetzner-cx42" : "Pick a reachable machine",
+      handoffConfirmStyle: "padding: 8px 15px; border-radius: calc(var(--radius) - 2px); font-size: 13px; font-weight: 600; background: " +
+        (st.handoffTarget === 1 ? "var(--primary)" : "var(--muted)") + "; color: " +
+        (st.handoffTarget === 1 ? "var(--primary-foreground)" : "var(--faint)") + ";" +
+        (st.handoffTarget === 1 ? " cursor: pointer;" : " cursor: default;"),
+      confirmHandoff: st.handoffTarget === 1 ? this.go("working", { movedTo: "hetzner-cx42" }) : undefined,
+      handoffEstimate: "clone and worktree setup, about 20s",
+
+      launchChips: [
+        { label: "mac-mini-m4", k: "success", mono: true },
+        { label: models[st.model % models.length].agent, k: "info", mono: true },
+        { label: autoOn ? perm.label + " · auto" : perm.label, k: null, color: perm.color },
+        { label: "fresh worktree off main", k: "faint" }
+      ].map(c => ({
+        label: c.label,
+        dot: this.dot(c.color || "var(--" + (c.k || "muted-foreground") + ")", 6),
+        labelStyle: (c.mono ? "font-family: 'JetBrains Mono', monospace; font-size: 10.5px;" : "font-size: 11px;") + " color: var(--strong);"
+      })),
+      recent: [
+        { title: "Port the CLI auth flow off the deprecated device grant", meta: "7 files to review", k: "info", screen: "resolved" },
+        { title: "Find why the staging queue drains at 40 per second", meta: "failed 1h ago", k: "destructive", screen: "offline" },
+        { title: "Backfill org_id on 4.1M audit rows without locking", meta: "running on hetzner-cx42", k: "success", screen: "working" }
+      ].map(r => ({
+        title: r.title, meta: r.meta,
+        dot: this.dot("var(--" + r.k + ")", 6),
+        go: this.go(r.screen)
+      })),
+
+      composerStyle: "position: relative; width: 100%; max-width: 760px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); padding: 13px 15px 11px; display: flex; flex-direction: column; gap: 11px;" +
+        (offline ? " opacity: .5;" : ""),
+
+      isMac: plat === "mac",
+      notMac: plat !== "mac",
+      kPalette: K("mod+K"),
+      kSend: K("enter") + " to send · " + K("shift+enter") + " for a new line",
+      kSendShort: K("enter"),
+      winControlsStyle: "display: flex; align-items: center; gap: 2px; margin-left: 4px; color: var(--muted-foreground);",
+
+      slashOpen: st.slashOpen && !offline,
+      toggleSlash: watching ? undefined : () => this.setState(s => ({ slashOpen: !s.slashOpen, attachMenuOpen: false, modeMenuOpen: false, modelMenuOpen: false })),
+      slashBtnStyle: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 13px;" + (watching ? " opacity: .45; cursor: not-allowed;" : " cursor: pointer;") + " color: " +
+        (st.slashOpen ? "var(--foreground)" : "var(--muted-foreground)") + ";" + (st.slashOpen ? " background: var(--accent);" : ""),
+      anyMenuOpen: st.modeMenuOpen || st.modelMenuOpen || st.attachMenuOpen || st.slashOpen || st.usageOpen || st.stopOpen || st.actionsOpen || st.rowMenu !== null,
+      closeMenus: () => this.setState({
+        modeMenuOpen: false, modelMenuOpen: false, attachMenuOpen: false,
+        slashOpen: false, usageOpen: false, stopOpen: false, actionsOpen: false, rowMenu: null
+      }),
+      slashClosed: !(st.slashOpen && !offline),
+      openSlashDemo: () => this.setState({ slashOpen: true, attachMenuOpen: false }),
+      slashQueryText: "/r",
+      slashCommands: [
+        {
+          name: "/run", arg: "pnpm prisma migrate deploy", kbd: "",
+          note: "Runs it now, in the worktree. Still gated if no rule covers it, and the gate says the request came from you.",
+          act: () => this.setState({ slashOpen: false, screen: "approval", gateFrom: "you" })
+        },
+        {
+          name: "/revert", arg: "ckpt_7f24", kbd: "",
+          note: "Rewinds the worktree and the thread together to that checkpoint. Nothing merged is touched.",
+          act: () => this.setState({ slashOpen: false, sheetOpen: true, sheetTab: "checkpoints", screen: "resolved" })
+        },
+        {
+          name: "/replan", arg: "from step 3", kbd: "",
+          note: "Keeps the finished steps and asks for a new plan for the rest. The old plan stays readable in the thread.",
+          act: () => this.setState({ slashOpen: false, screen: "working", planOpen: true })
+        },
+        {
+          name: "/mode", arg: "plan · ask · build", kbd: "",
+          note: "Applies from the next turn. A turn already in flight keeps the mode it started with, and auto is only legal with build.",
+          act: () => this.setState({ slashOpen: false, perm: 0, auto: false })
+        },
+        {
+          name: "/skill", arg: "pr-triage", kbd: "",
+          note: "Loads a skill for this turn only. Unsigned skills stay blocked in auto modes.",
+          act: () => this.setState(s => ({ slashOpen: false, attached: s.attached.concat([{ kind: "skill", name: "pr-triage" }]) }))
+        },
+        {
+          name: "/handoff", arg: "hetzner-cx42", kbd: "",
+          note: "Opens the pre-flight checks first. Nothing moves until they pass and you confirm.",
+          act: () => this.setState({ slashOpen: false, handoffOpen: true })
+        }
+      ].filter(c => c.name.indexOf("/r") === 0 || c.name === "/mode" || c.name === "/skill" || c.name === "/handoff")
+      .map((c, i) => ({
+        name: c.name, arg: c.arg,
+        note: c.note,
+        match: c.name.indexOf("/r") === 0,
+        pick: c.act,
+        rowStyle: "display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 12px; cursor: pointer;" + (i ? " border-top: 1px solid var(--border);" : "") +
+          (c.name.indexOf("/r") === 0 ? "" : " opacity: .5;"),
+        nameStyle: "font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: " +
+          (c.name.indexOf("/r") === 0 ? "var(--primary)" : "var(--muted-foreground)") + "; width: 70px; flex: 0 0 70px;",
+        argStyle: "flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+      })),
+
+      gateFromYou: st.gateFrom === "you",
+      gateMeta: st.gateFrom === "you" ? "requested by you · not in the plan" : "step 3 of 4 · claude-code · " + perm.label.toLowerCase() + (autoOn ? " · auto" : ""),
+
+      variant: st.variant,
+      hasAttachments: (st.attached.length > 0 || st.commentsSent) && !offline,
+      moreAttachments: (() => {
+        const total = st.attached.length + (st.commentsSent ? 1 : 0);
+        return total > 3 ? "+" + (total - 3) + " more" : "";
+      })(),
+      moreAttachmentsStyle: "flex: 0 0 auto; padding: 5px 10px; border-radius: 999px; border: 1px dashed var(--border); font-size: 10.5px; color: var(--muted-foreground); cursor: pointer; white-space: nowrap; display: " +
+        (st.attached.length + (st.commentsSent ? 1 : 0) > 3 ? "flex" : "none") + ";",
+      attachments: (st.commentsSent
+        ? [{ kind: "comments", name: "2 comments · variant " + st.variant, size: "" }]
+        : []).concat(st.attached).slice(0, 3).map((a, i) => {
+        const onMachine = a.kind === "repo" || a.kind === "path";
+        return {
+          name: a.name,
+          mark: a.kind === "repo" ? "TS" : a.kind === "path" ? "DIR" : a.kind === "term" ? "LOG" : a.kind === "skill" ? "SKILL" : a.kind === "comments" ? "NOTES" : "PNG",
+          meta: a.kind === "comments"
+            ? "design-studio · anchored to elements, not pasted"
+            : a.kind === "skill"
+            ? "for this turn only · signed by acme-eng"
+            : onMachine
+            ? "on " + machineForScreen.name
+            : a.size + (remote ? " · leaves this computer, sent to " + machineForScreen.name + " over Domovoi Cloud" : " · sent to " + machineForScreen.name),
+          remove: a.kind === "comments"
+            ? () => this.setState({ commentsSent: false })
+            : () => this.setState(s => ({ attached: s.attached.filter((_, j) => j !== (st.commentsSent ? i - 1 : i)) })),
+          chipStyle: "display: flex; align-items: center; gap: 7px; min-width: 0; max-width: 300px; flex: 0 1 auto; padding: 5px 10px; border-radius: 999px; border: 1px solid " +
+            (!onMachine && remote ? "var(--info-border)" : "var(--border)") + "; background: " +
+            (!onMachine && remote ? "var(--info-bg)" : "var(--background)") + ";",
+          markStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: .04em; padding: 2px 5px; border-radius: 4px; background: var(--muted); color: var(--muted-foreground);",
+          metaStyle: "flex: 0 1 auto; min-width: 0; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: " + (!onMachine && remote ? "var(--info-dim)" : "var(--faint)") + ";"
+        };
+      }),
+      attachMenuOpen: st.attachMenuOpen && !offline,
+      toggleAttachMenu: watching ? undefined : () => this.setState(s => ({ attachMenuOpen: !s.attachMenuOpen, modeMenuOpen: false, modelMenuOpen: false })),
+      attachBtnStyle: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 999px;" + (watching ? " opacity: .45; cursor: not-allowed;" : " cursor: pointer;") + " color: " +
+        (st.attachMenuOpen ? "var(--foreground)" : "var(--muted-foreground)") + ";" + (st.attachMenuOpen ? " background: var(--accent);" : ""),
+      attachOptions: [
+        {
+          kind: "repo", mark: "TS", label: "File in this repo", kbd: "@",
+          note: "A path in the worktree. Nothing is copied, the agent reads it where it is.",
+          name: "src/webhooks/replay.spec.ts"
+        },
+        {
+          kind: "path", mark: "DIR", label: "Path on " + machineForScreen.name, kbd: "",
+          note: "Anything else on that machine, including files outside the project. Reading outside the project asks first.",
+          name: "~/logs/stripe-webhooks-0904.log"
+        },
+        {
+          kind: "device", mark: "PNG", label: "Image or file from this device", kbd: "drag or paste",
+          size: "820 kB",
+          note: remote
+            ? "This one has to travel. It leaves this computer and lands on " + machineForScreen.name + " through Domovoi Cloud, which carries it encrypted and cannot read it."
+            : "It is copied to " + machineForScreen.name + ". That is this computer, so nothing leaves it.",
+          name: "queue-graph-14-11.png", size: "820 kB"
+        },
+        {
+          kind: "paste-big", mark: "TXT", label: "Paste 640 lines of log", kbd: "\u2318V",
+          note: "Past the inline limit, so it becomes a file in this session. The prompt carries the first 40 lines and the agent reads the rest on request.",
+          big: true
+        },
+        {
+          kind: "paste-small", mark: "TXT", label: "Paste 12 lines of log", kbd: "\u2318V",
+          note: "Small enough to stay in the message. The input grows to about eight lines, then scrolls rather than pushing the thread away.",
+          inline: true
+        },
+        {
+          kind: "term", mark: "LOG", label: "Paste terminal output", kbd: K("mod+shift+V"),
+          note: "Pasted text, kept as a file in the session rather than inline in the message.",
+          name: "pasted-output-3.txt", size: "12 kB"
+        }
+      ].map((o, i) => ({
+        label: o.label, note: o.note, mark: o.mark, kbd: o.kbd,
+        pick: o.big
+          ? () => this.setState({ attachMenuOpen: false, pasteState: "converted", pasteInline: false })
+          : o.inline
+          ? () => this.setState({ attachMenuOpen: false, pasteInline: true, pasteState: "none" })
+          : () => this.setState(s => ({
+            attachMenuOpen: false,
+            attached: s.attached.concat([{ kind: o.kind, name: o.name, size: o.size }])
+          })),
+        rowStyle: "display: flex; align-items: flex-start; gap: 11px; padding: 11px 13px; cursor: pointer;" + (i ? " border-top: 1px solid var(--border);" : ""),
+        markStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: .04em; padding: 3px 5px; border-radius: 4px; margin-top: 1px; background: var(--muted); color: var(--muted-foreground);"
+      })),
+      composerPlaceholder: offline ? "Cannot send, the daemon is not answering" : working ? "Steer it while it works" : "Reply, or steer the plan",
+      caretStyle: "display: inline-block; width: 1.5px; height: 15px; margin-left: 2px; vertical-align: -2px; background: var(--primary); animation: dvBlink 1.1s steps(1) infinite;" +
+        (offline || watching || st.pasteInline ? " display: none;" : ""),
+      slashHintStyle: "float: right; padding: 2px 8px; border-radius: 999px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;" +
+        (offline || watching ? " display: none;" : ""),
+      hasQueued: st.queued && !offline,
+      queuedDot: this.dot("var(--info)", 6),
+      queuedText: "Also cover the claim-expiry case in replay.spec.ts",
+      queuedNote: working ? "queued, sends when this turn ends" : "queued",
+      queueMessage: offline || watching ? undefined : () => this.setState({ queued: true }),
+      unqueueMessage: () => this.setState({ queued: false }),
+      composerText: st.pasteInline
+        ? "The staging queue drains at 40 per second and I cannot see why. Here is the worker log from the last hour:\n\n[14:02:11] worker.start pid=4192 concurrency=8\n[14:02:11] queue.connect redis://localhost:6379 ok\n[14:02:12] job.claim id=8814 attempt=1\n[14:02:12] job.claim id=8815 attempt=1\n[14:02:13] job.done id=8814 in 812ms\n[14:02:13] job.retry id=8815 reason=lock_timeout\n[14:02:14] job.claim id=8816 attempt=1\n[14:02:15] job.retry id=8815 attempt=2\n[14:02:15] pool.exhausted waited=1204ms\n[14:02:16] job.done id=8816 in 1902ms"
+        : (offline ? "Cannot send, the daemon is not answering" : working ? "Steer it while it works" : "Reply, or steer the plan"),
+      inputStyle: "font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; color: var(--" +
+        (st.pasteInline ? "foreground" : "faint") + ");" +
+        (st.pasteInline ? " max-height: 172px; overflow-y: auto;" : ""),
+      pasteConverted: st.pasteState === "converted",
+      pastePeek: st.pastePeek,
+      pastePeekLabel: st.pastePeek ? "Hide" : "Peek",
+      togglePastePeek: () => this.setState(s => ({ pastePeek: !s.pastePeek })),
+      dropPaste: () => this.setState({ pasteState: "none", pastePeek: false }),
+      pasteSample: "[14:02:11] worker.start pid=4192 concurrency=8\n[14:02:11] queue.connect redis://localhost:6379 ok\n[14:02:12] job.claim id=8814 attempt=1\n[14:02:13] job.retry id=8815 reason=lock_timeout\n[14:02:15] pool.exhausted waited=1204ms\n[14:02:16] job.done id=8816 in 1902ms\n[14:02:17] job.retry id=8815 attempt=3\n[14:02:18] pool.exhausted waited=2410ms\n… 632 more lines",
+      togglePasteDemo: () => this.setState(s => ({
+        pasteState: s.pasteState === "converted" ? "none" : "converted",
+        pasteInline: false,
+        attachMenuOpen: false
+      })),
+      togglePasteInline: () => this.setState(s => ({ pasteInline: !s.pasteInline, attachMenuOpen: false })),
+      sendStyle: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 999px; background: " +
+        (offline || watching ? "var(--muted)" : "var(--primary)") + "; color: " + (offline || watching ? "var(--faint)" : "var(--primary-foreground)") + ";" +
+        (offline || watching ? " cursor: not-allowed;" : " cursor: pointer;"),
+
+      permLabel: autoOn ? perm.label + " · auto" : perm.label,
+      permDot: this.dot(perm.color, 6),
+      permChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; background: color-mix(in oklab, " +
+        perm.color + " " + (st.modeMenuOpen ? "24" : "15") + "%, transparent); color: " + perm.color + ";",
+      permChevron: "display: inline-flex; color: var(--faint); transition: transform .15s var(--ease-out, ease); transform: rotate(" +
+        (st.modeMenuOpen ? "180deg" : "0deg") + ");",
+      modeMenuOpen: st.modeMenuOpen,
+      toggleModeMenu: () => this.setState(s => ({ modeMenuOpen: !s.modeMenuOpen, attachMenuOpen: false, slashOpen: false, modelMenuOpen: false })),
+
+      watching: watching,
+      watchingChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); cursor: pointer;",
+      watchingDot: this.dot("var(--info)", 6),
+      watchingLabel: "watching only",
+      watchingNote: "No sends, approvals, terminal or writes. Reads stream as normal.",
+      watchingReason: st.sessionState === "archived"
+        ? "Archived, so the daemon accepts reads only."
+        : "Free plan: this route carries reads only.",
+      lockedStyle: "opacity: .45; cursor: not-allowed;",
+
+      stopHover: st.stopHover,
+      stopSquareStyle: "display: block; width: 9px; height: 9px; border-radius: 3px; transition: background .12s var(--ease-out, ease); background: " +
+        (st.stopHover ? "var(--destructive)" : "var(--muted-foreground)") + ";",
+      stopHoverOn: () => this.setState({ stopHover: true }),
+      stopHoverOff: () => this.setState({ stopHover: false }),
+
+      sessionPaused: st.sessionState === "paused",
+      sessionArchived: st.sessionState === "archived",
+      sessionNoticeStyle: "flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 11px 16px; border-bottom: 1px solid var(--" +
+        (st.sessionState === "archived" ? "border" : "info-border") + "); background: var(--" +
+        (st.sessionState === "archived" ? "accent" : "info-bg") + ");",
+      sessionNoticeDot: this.dot(st.sessionState === "archived" ? "var(--muted-foreground)" : "var(--info)", 7),
+      sessionNoticeText: st.sessionState === "paused"
+        ? "Paused. The daemon is holding the session, the worktree and the plan, and the agent will not take another turn until you resume."
+        : "Archived. Read-only from here. The worktree is kept until you delete it, and forking is still allowed.",
+      sessionNoticeMeta: st.sessionState === "paused" ? "paused 14:07 · from this client" : "archived 14:09 · 7 files never merged",
+      sessionNoticeAction: st.sessionState === "paused" ? "Resume" : "Unarchive",
+      resumeSession: () => this.setState({ sessionState: "running" }),
+
+      actionsOpen: st.actionsOpen,
+      toggleActions: () => this.setState(s => ({ actionsOpen: !s.actionsOpen, stopOpen: false, usageOpen: false })),
+      sessionActions: [
+        {
+          label: st.sessionState === "paused" ? "Resume this session" : "Pause this session",
+          note: "The daemon keeps the thread, plan and worktree.",
+          k: "info",
+          act: () => this.setState(s => ({ actionsOpen: false, sessionState: s.sessionState === "paused" ? "running" : "paused" }))
+        },
+        {
+          label: "Fork from a checkpoint",
+          note: "Branches from a checkpoint, leaving this session intact.",
+          k: "primary",
+          act: () => this.setState({ actionsOpen: false, sheetOpen: true, sheetTab: "checkpoints" })
+        },
+        {
+          label: "Archive this session",
+          note: "Read-only afterwards, worktree kept.",
+          k: "muted",
+          act: () => this.setState({ actionsOpen: false, sessionState: "archived" })
+        },
+        {
+          label: "Restart the provider thread",
+          note: "Same worktree, fresh context with the model.",
+          k: "info",
+          act: () => this.setState({ actionsOpen: false })
+        }
+      ].map((a, i) => ({
+        label: a.label, note: a.note,
+        dot: this.dot(a.k === "muted" ? "var(--muted-foreground)" : "var(--" + a.k + ")", 5),
+        act: a.act,
+        labelStyle: "font-size: 12px; color: var(--strong);",
+        rowStyle: "display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 9px; border-radius: calc(var(--radius) - 3px); cursor: pointer;"
+      })),
+
+      stopOpen: st.stopOpen,
+      toggleStop: () => this.setState(s => ({ stopOpen: !s.stopOpen, actionsOpen: false, usageOpen: false })),
+      stopBtnStyle: "position: relative; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: " +
+        (st.stopOpen ? "var(--danger-fg)" : "var(--muted-foreground)") + ";" + (st.stopOpen ? " background: var(--danger-bg);" : ""),
+      stopOptions: [
+        {
+          label: "Pause everything",
+          note: "Stops at the next turn boundary, nothing is killed.",
+          k: "info"
+        },
+        {
+          label: "Emergency stop",
+          note: "Kills processes now. Half-written files stay half-written.",
+          k: "destructive"
+        }
+      ].map((o, i) => ({
+        label: o.label, note: o.note,
+        dot: this.dot("var(--" + o.k + ")", 7) + " margin-top: 4px;",
+        act: () => this.setState({ stopOpen: false, sessionState: "paused" }),
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 11px 13px; cursor: pointer;" + (i ? " border-top: 1px solid var(--border);" : ""),
+        labelStyle: "font-size: 12.5px; color: var(--" + (o.k === "destructive" ? "danger-fg" : "foreground") + ");"
+      })),
+
+      usageOpen: st.usageOpen,
+      toggleUsage: () => this.setState(s => ({ usageOpen: !s.usageOpen, actionsOpen: false, stopOpen: false })),
+      usageChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; color: var(--muted-foreground);" +
+        (st.usageOpen ? " background: var(--accent);" : ""),
+      usageChipText: "42.1k · $0.38",
+      usageRows: [
+        { k: "THIS TURN", v: "8,410 in · 1,206 out", note: "sonnet-4.6 · 3 tool results", pct: 0 },
+        { k: "THIS SESSION", v: "42,118 tokens · $0.38", note: "14 tool calls over 4m 18s", pct: 0 },
+        { k: "CONTEXT", v: "42.1k of 200k", note: "resnapshot at 90 percent, or restart the provider thread", pct: 21 },
+        { k: "PROVIDER WINDOW", v: "68 percent of 5h limit", note: "resets 17:40 · shared across every session on this machine", pct: 68 }
+      ].map((u, i) => ({
+        k: u.k, v: u.v, note: u.note,
+        barWrapStyle: "display: " + (u.pct ? "block" : "none") + "; height: 5px; border-radius: 3px; background: var(--muted); overflow: hidden; margin-top: 7px;",
+        barStyle: "display: block; height: 5px; width: " + u.pct + "%; border-radius: 3px; background: var(--primary);",
+        rowStyle: "padding: 11px 13px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      planEditQueued: st.planEdit === "queued",
+      startPlanEdit: watching ? undefined : () => this.setState({ planEdit: "queued", planOpen: true }),
+      planEditStyle: "font-size: 11px; color: var(--muted-foreground);" + (watching ? " opacity: .45; cursor: not-allowed;" : " cursor: pointer;"),
+      discardPlanEdit: () => this.setState({ planEdit: "none" }),
+
+      modelLabel: models[st.model % models.length].label,
+      modelMenuOpen: st.modelMenuOpen,
+      toggleModelMenu: () => this.setState(s => ({ modelMenuOpen: !s.modelMenuOpen, modeMenuOpen: false, attachMenuOpen: false, slashOpen: false })),
+      modelChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+        (st.modelMenuOpen ? "var(--border)" : "transparent") + "; background: " +
+        (st.modelMenuOpen ? "var(--accent)" : "transparent") + ";",
+      modelChevron: "display: inline-flex; color: var(--faint); transition: transform .15s var(--ease-out, ease); transform: rotate(" +
+        (st.modelMenuOpen ? "180deg" : "0deg") + ");",
+      modelQueryText: st.modelQuery || "Search models on this machine",
+      modelQueryStyle: "font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--" + (st.modelQuery ? "foreground" : "faint") + ");",
+      modelClearStyle: "font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;" + (st.modelQuery ? "" : " display: none;"),
+      clearModelQuery: () => this.setState({ modelQuery: "" }),
+      modelCount: modelMatches.length + " of " + models.length + " · 5 harnesses",
+      modelFilters: ["claude", "codex", "kilo", "opencode", "aider"].map(q => ({
+        label: q,
+        pick: () => this.setState(s => ({ modelQuery: s.modelQuery === q ? "" : q })),
+        style: "padding: 2px 8px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; cursor: pointer; border: 1px solid " +
+          (st.modelQuery === q ? "var(--primary)" : "var(--border)") + "; color: " +
+          (st.modelQuery === q ? "var(--primary)" : "var(--muted-foreground)") + ";"
+      })),
+      modelNoMatch: modelMatches.length === 0,
+      rediscoverModels: () => this.setState({ modelQuery: "" }),
+      modelOptions: modelMatches.map(entry => ({
+        label: entry.m.label, agent: entry.m.agent, note: entry.m.note,
+        dot: this.dot("var(--" + entry.m.k + ")", 7) + " margin-top: 4px;",
+        pick: entry.m.k === "faint" ? undefined : () => this.setState({ model: entry.i, modelMenuOpen: false }),
+        tickStyle: "display: inline-flex; align-self: center; color: " + (st.model === entry.i ? "var(--primary)" : "transparent") + ";",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border);" +
+          (st.model === entry.i ? " background: var(--accent);" : "") +
+          (entry.m.k === "faint" ? " opacity: .5; cursor: default;" : " cursor: pointer;")
+      })),
+      unusedModelOptions: models.map((m, i) => ({
+        label: m.label, agent: m.agent, note: m.note,
+        dot: this.dot("var(--" + m.k + ")", 7) + " margin-top: 4px;",
+        pick: m.k === "faint" ? undefined : () => this.setState({ model: i, modelMenuOpen: false }),
+        tickStyle: "display: inline-flex; align-self: center; color: " + (st.model === i ? "var(--primary)" : "transparent") + ";",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border);" +
+          (st.model === i ? " background: var(--accent);" : "") +
+          (m.k === "faint" ? " opacity: .5; cursor: default;" : " cursor: pointer;")
+      })),
+      modeOptions: modes.map((m, i) => ({
+        label: m.label, note: m.note,
+        dot: this.dot(m.color, 7) + " margin-top: 4px;",
+        pick: () => this.setState(s => ({ perm: i, auto: i === 2 ? s.auto : false })),
+        tickStyle: "display: inline-flex; align-self: center; color: " + (modeIdx === i ? "var(--primary)" : "transparent") + ";",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-top: 1px solid var(--border); cursor: pointer;" +
+          (modeIdx === i ? " background: var(--accent);" : "")
+      })),
+      autoLabel: autoOn ? "Auto, on" : "Auto",
+      autoNote: perm.id === "build"
+        ? "Runs step after step without stopping between them. Hard gates and policy refusals still stop it."
+        : "Only legal with Build, because Plan and Ask stop on every step by definition.",
+      autoLabelStyle: "font-size: 12.5px; color: " + (perm.id === "build" ? "var(--foreground)" : "var(--faint)") + ";",
+      autoRowStyle: "display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-top: 1px solid var(--border);" +
+        (perm.id === "build" ? " cursor: pointer;" : " opacity: .6; cursor: default;"),
+      autoTrackStyle: "position: relative; display: block; width: 34px; height: 20px; flex: 0 0 34px; border-radius: 999px; transition: background .14s var(--ease-out, ease); background: " +
+        (autoOn ? "var(--success)" : "var(--muted)") + ";",
+      autoKnobStyle: "position: absolute; top: 3px; left: " + (autoOn ? "17px" : "3px") +
+        "; width: 14px; height: 14px; border-radius: 50%; background: var(--card); transition: left .14s var(--ease-out, ease); display: block;",
+      toggleAuto: perm.id === "build" ? () => this.setState(s => ({ auto: !s.auto })) : undefined,
+
+      machines: [
+        {
+          name: "mac-mini-m4", status: "connected", k: "success", primary: "Open its 2 sessions", screen: "approval",
+          facts: [
+            { k: "TRANSPORT", v: "loopback" },
+            { k: "AGENTS", v: "claude-code · codex" },
+            { k: "SESSIONS", v: "2 running · 1 waiting on you" },
+            { k: "LAST HEARD", v: "just now" }
+          ]
+        },
+        {
+          name: "hetzner-cx42", status: "connected", k: "success", primary: "Open its 2 sessions", screen: "working",
+          facts: [
+            { k: "TRANSPORT", v: "domovoi cloud · encrypted payloads" },
+            { k: "AGENTS", v: "claude-code · codex · aider" },
+            { k: "SESSIONS", v: "1 running · 1 failed" },
+            { k: "LAST HEARD", v: "2s ago" }
+          ]
+        },
+        {
+          name: "wsl-ubuntu-24", status: "unreachable", k: "destructive", primary: "See what stalled", screen: "offline",
+          facts: [
+            { k: "TRANSPORT", v: "tailnet · route dropped" },
+            { k: "AGENTS", v: "claude-code" },
+            { k: "SESSIONS", v: "1 stalled mid-run" },
+            { k: "LAST HEARD", v: "41s ago" }
+          ]
+        }
+      ].map(m => ({
+        name: m.name, status: m.status, facts: m.facts, primary: m.primary,
+        dot: this.dot("var(--" + m.k + ")", 7),
+        primaryGo: this.go(m.screen),
+        cardStyle: "border: 1px solid " + (m.k === "destructive" ? "var(--danger-border)" : "var(--border)") +
+          "; border-radius: var(--radius); background: var(--card); overflow: hidden; display: flex; flex-direction: column;" +
+          (m.k === "destructive" ? " opacity: .72;" : ""),
+        pillStyle: "padding: 2px 8px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: color-mix(in oklab, var(--" +
+          m.k + ") 16%, transparent); color: var(--" + m.k + ");",
+        primaryStyle: "padding: 6px 12px; border-radius: calc(var(--radius) - 2px); background: var(--accent); font-size: 11.5px; color: var(--foreground); cursor: pointer;"
+      })),
+      agents: [
+        { name: "claude-code", machine: "mac-mini-m4", state: "ready, token in keychain", k: "success", action: "" },
+        { name: "codex", machine: "mac-mini-m4", state: "ready, token in keychain", k: "success", action: "" },
+        { name: "claude-code", machine: "hetzner-cx42", state: "ready, token in keychain", k: "success", action: "" },
+        { name: "aider", machine: "hetzner-cx42", state: "needs auth, no token on that machine", k: "warning", action: "Authenticate there" },
+        { name: "claude-code", machine: "wsl-ubuntu-24", state: "unknown, daemon unreachable", k: "faint", action: "" }
+      ].map((a, i) => ({
+        name: a.name, machine: a.machine, state: a.state, action: a.action,
+        dot: this.dot("var(--" + a.k + ")", 6),
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 15px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+          (a.k === "faint" ? " opacity: .6;" : ""),
+        actionStyle: a.action
+          ? "padding: 5px 10px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info-fg); font-size: 11px; cursor: pointer;"
+          : "display: none;"
+      }))
+    };
+  }
+}
+
+</script>
+</body>
+</html>

@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); } 70% { box-shadow: 0 0 0 9px color-mix(in oklab, var(--warning) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); } }
+  @keyframes dvSweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(460%); } }
+  @keyframes dvUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .72);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+    --ok-bg: oklch(0.215 0.04 158); --ok-border: oklch(0.33 0.07 158); --ok-fg: oklch(0.9 0.06 158); --ok-dim: oklch(0.74 0.08 158);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+    --ok-bg: oklch(0.965 0.025 158); --ok-border: oklch(0.85 0.07 158); --ok-fg: oklch(0.33 0.09 158); --ok-dim: oklch(0.45 0.1 158);
+  }
+</style>
+</helmet>
+
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 26px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="width: 1366px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="4">
+      <div onClick="{{ s.go }}" style="{{ s.style }}">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ s.numColor }};">{{ s.num }}</span>
+        <span style="font-size: 11.5px;">{{ s.label }}</span>
+      </div>
+    </sc-for>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
+  </div>
+
+  <div style="width: 1366px; height: 1024px; flex: 0 0 auto; position: relative; display: flex; flex-direction: column; background: var(--background); border: 12px solid oklch(0.22 0.004 285); border-radius: 34px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <div style="flex: 0 0 auto; height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 22px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground);">
+      <span>14:06</span>
+      <span style="flex: 1;"></span>
+      <span>{{ statusNet }}</span>
+      <span style="display: block; width: 15px; height: 8px; border-radius: 3px; border: 1px solid var(--muted-foreground); position: relative;">
+        <span style="position: absolute; left: 1px; top: 1px; bottom: 1px; width: 62%; border-radius: 1px; background: var(--muted-foreground); display: block;"></span>
+      </span>
+      <span>62%</span>
+    </div>
+
+    <div style="flex: 1; min-height: 0; display: flex; position: relative;">
+
+      <div style="width: 340px; flex: 0 0 340px; border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; overflow: hidden;">
+        <div style="flex: 0 0 auto; padding: 14px 16px 12px; display: flex; align-items: center; gap: 11px; border-bottom: 1px solid var(--border);">
+          <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+          <span style="font-size: 16px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+          <span style="flex: 1;"></span>
+          <div onClick="{{ goMachines }}" style="{{ machineChipStyle }}">
+            <span style="{{ machineDot }}"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ machineName }}</span>
+          </div>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 12px 14px; display: flex; gap: 9px;">
+          <div style="flex: 1; height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 14px; background: var(--primary); color: var(--primary-foreground); font-size: 14px; font-weight: 500; cursor: pointer;">
+            {{ iPlus }}
+            <span>New session</span>
+          </div>
+          <div style="width: 44px; height: 44px; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: var(--accent); color: var(--muted-foreground); cursor: pointer;">
+            {{ iSearch }}
+          </div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 4px 10px 16px; display: flex; flex-direction: column; gap: 4px;">
+          <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+            <div style="display: flex; flex-direction: column; gap: 4px; padding-bottom: 10px;">
+              <div style="display: flex; align-items: center; gap: 8px; padding: 10px 8px 6px;">
+                <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ g.label }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ g.count }}</span>
+              </div>
+              <sc-for list="{{ g.items }}" as="s" hint-placeholder-count="3">
+                <div onClick="{{ s.pick }}" style="{{ s.rowStyle }}">
+                  <span style="{{ s.dot }}"></span>
+                  <div style="min-width: 0; flex: 1;">
+                    <div style="font-size: 14px; line-height: 1.4; color: var(--strong); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ s.title }}</div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 4px;">{{ s.meta }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+
+        <div style="flex: 0 0 auto; min-height: 60px; display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border);">
+          <div style="min-width: 0; flex: 1;">
+            <div style="font-size: 15px; font-weight: 500; line-height: 1.35; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks to the new idempotency table</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 4px;">acme-api · main · wt-billing-idem · {{ headerClock }}</div>
+          </div>
+          <div onClick="{{ toggleSheet }}" style="{{ sheetBtnStyle }}">
+            {{ iDiff }}
+            <span style="font-size: 13px;">7 files</span>
+          </div>
+          <div onClick="{{ toggleTheme }}" style="width: 44px; height: 44px; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: var(--accent); color: var(--muted-foreground); cursor: pointer;">
+            <sc-if value="{{ isDarkTheme }}" hint-placeholder-val="{{ true }}">
+          {{ iMoon }}
+        </sc-if>
+        <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">
+          {{ iSun }}
+        </sc-if>
+          </div>
+        </div>
+
+        <sc-if value="{{ showQueued }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--warn-bg); border-bottom: 1px solid var(--warn-border);">
+            <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+            <span style="font-size: 13.5px; color: var(--warn-fg);">On cellular over Domovoi Cloud, so this view is a few seconds behind</span>
+            <span style="flex: 1;"></span>
+            <span style="position: relative; width: 44px; height: 3px; border-radius: 3px; background: var(--warn-border); overflow: hidden; display: block;">
+              <span style="position: absolute; inset: 0; width: 26%; border-radius: 3px; background: var(--warning); animation: dvSweep 1.9s linear infinite; display: block;"></span>
+            </span>
+          </div>
+        </sc-if>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 26px 24px 0;">
+          <div style="width: 100%; max-width: 720px; margin-top: auto; display: flex; flex-direction: column; gap: 20px; padding-bottom: 12px;">
+            <div style="flex: 0 0 auto; display: flex; justify-content: flex-end;">
+              <div style="max-width: 78%; padding: 13px 17px; border-radius: 16px 16px 5px 16px; background: var(--accent); font-size: 15px; line-height: 1.55;">Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.</div>
+            </div>
+            <div style="flex: 0 0 auto; font-size: 15px; line-height: 1.6; text-wrap: pretty;">Claim-then-commit is in, on a replay table keyed by event id. One spec still asserts the old at-least-once behaviour. Step 3 needs a migration on this machine, so I stopped and asked.</div>
+
+            <div onClick="{{ toggleActivity }}" style="{{ activityRowStyle }}">
+              <span style="{{ activityChevron }}">
+                {{ iChevRight }}
+              </span>
+              <span style="font-size: 13.5px;">Worked for 4m 18s</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">14 tools · 7 files</span>
+            </div>
+
+            <sc-if value="{{ activityOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; background: var(--card); overflow: hidden;">
+                <sc-for list="{{ activity }}" as="a" hint-placeholder-count="4">
+                  <div style="{{ a.rowStyle }}">
+                    <span style="{{ a.dot }}"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--strong);">{{ a.name }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ a.arg }}</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ a.metaColor }};">{{ a.meta }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isGate }}" hint-placeholder-val="{{ true }}">
+              <div style="flex: 0 0 auto; border: 1px solid var(--warn-border); border-radius: 16px; background: var(--warn-bg); overflow: hidden;">
+                <div style="display: flex; align-items: center; gap: 11px; padding: 15px 17px;">
+                  <span style="width: 9px; height: 9px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+                  <span style="font-size: 15px; font-weight: 500; color: var(--warn-fg);">Approval required, hard gate</span>
+                  <span style="flex: 1;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--warn-dim);">step 3 of 4</span>
+                </div>
+                <div style="padding: 0 17px 14px;">
+                  <div style="padding: 14px 15px; border-radius: 14px; background: var(--warn-bg-deep); font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--warn-fg);">pnpm -w prisma migrate deploy</div>
+                </div>
+                <div style="padding: 0 17px 14px; display: flex; flex-direction: column; gap: 9px;">
+                  <div onClick="{{ decideOnce }}" style="height: 52px; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: var(--warning); color: var(--warning-foreground); font-size: 15px; font-weight: 500; cursor: pointer;">Allow once</div>
+                  <div style="display: flex; gap: 9px;">
+                    <div onClick="{{ decideRule }}" style="flex: 1; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 14px; cursor: pointer;">Always here</div>
+                    <div onClick="{{ decideDeny }}" style="flex: 1; height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid var(--warn-border); color: var(--warn-dim); font-size: 14px; cursor: pointer;">Deny</div>
+                  </div>
+                </div>
+                <div onClick="{{ toggleFacts }}" style="padding: 13px 17px; border-top: 1px solid var(--warn-border); display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                  <span style="font-size: 13px; color: var(--warn-dim);">{{ factsLabel }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="{{ factsChevron }}">
+                    {{ iChevDown }}
+                  </span>
+                </div>
+                <sc-if value="{{ factsOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--warn-border);">
+                    <sc-for list="{{ facts }}" as="f" hint-placeholder-count="6">
+                      <div style="padding: 12px 16px; background: var(--warn-bg);">
+                        <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--warn-dim);">{{ f.k }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--warn-fg); margin-top: 5px; line-height: 1.4;">{{ f.v }}</div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isDecided }}" hint-placeholder-val="{{ false }}">
+              <div style="flex: 0 0 auto; border: 1px solid var(--ok-border); border-radius: 16px; background: var(--ok-bg); overflow: hidden;">
+                <div style="display: flex; align-items: center; gap: 11px; padding: 14px 17px;">
+                  <span style="{{ okDot }}"></span>
+                  <span style="font-size: 14.5px; font-weight: 500; color: var(--ok-fg);">{{ decidedTitle }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ok-dim);">{{ decidedMeta }}</span>
+                </div>
+                <div style="padding: 0 17px 15px; font-size: 13.5px; line-height: 1.6; color: var(--ok-fg); text-wrap: pretty;">{{ decidedBody }}</div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 14px 24px 18px; display: flex; justify-content: center;">
+          <div style="width: 100%; max-width: 720px; display: flex; align-items: center; gap: 11px;">
+            <div style="flex: 1; min-width: 0; height: 52px; display: flex; align-items: center; gap: 11px; padding: 0 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
+              <span style="flex: 1; font-size: 15px; color: var(--faint);">Reply, or steer the plan</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">claude-sonnet-4.6</span>
+            </div>
+            <div style="width: 52px; height: 52px; flex: 0 0 52px; display: flex; align-items: center; justify-content: center; border-radius: 16px; background: var(--accent); color: var(--muted-foreground); cursor: pointer;">
+              {{ iPaperclip }}
+            </div>
+            <div style="width: 52px; height: 52px; flex: 0 0 52px; display: flex; align-items: center; justify-content: center; border-radius: 16px; background: var(--primary); color: var(--primary-foreground); cursor: pointer;">
+              {{ iSend }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <sc-if value="{{ sheetOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="position: absolute; inset: 0; background: var(--overlay); display: flex; align-items: flex-end;">
+          <div onClick="{{ toggleSheet }}" style="position: absolute; inset: 0;"></div>
+          <div style="position: relative; width: 100%; height: 74%; background: var(--background); border-top: 1px solid var(--border); border-radius: 22px 22px 0 0; display: flex; flex-direction: column; animation: dvUp .18s var(--ease-out, ease); box-shadow: 0 -30px 80px var(--shadow-lg);">
+            <div style="flex: 0 0 auto; display: flex; justify-content: center; padding: 10px 0 4px;">
+              <span style="display: block; width: 44px; height: 5px; border-radius: 3px; background: var(--muted);"></span>
+            </div>
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 8px 20px 12px; border-bottom: 1px solid var(--border);">
+              <sc-for list="{{ sheetTabs }}" as="t" hint-placeholder-count="3">
+                <div onClick="{{ t.pick }}" style="{{ t.style }}">{{ t.label }}</div>
+              </sc-for>
+              <span style="flex: 1;"></span>
+              <div onClick="{{ toggleSheet }}" style="width: 44px; height: 44px; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: var(--accent); color: var(--muted-foreground); cursor: pointer;">
+                {{ iClose }}
+              </div>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px 24px; display: flex; flex-direction: column; gap: 12px;">
+              <sc-if value="{{ tabFiles }}" hint-placeholder-val="{{ true }}">
+                <sc-for list="{{ files }}" as="f" hint-placeholder-count="5">
+                  <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--card);">
+                    <span style="{{ f.badgeStyle }}">{{ f.badge }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--strong); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ f.path }}</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--success);">{{ f.add }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--destructive);">{{ f.del }}</span>
+                  </div>
+                </sc-for>
+              </sc-if>
+              <sc-if value="{{ tabDiff }}" hint-placeholder-val="{{ false }}">
+                <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+                  <div style="display: flex; align-items: center; gap: 11px; padding: 13px 16px; border-bottom: 1px solid var(--border); background: var(--card);">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--strong);">src/webhooks/handler.ts</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">@@ -41,3 +41,9 @@</span>
+                  </div>
+                  <div style="background: var(--code); padding: 12px 0;">
+                    <sc-for list="{{ diffLines }}" as="d" hint-placeholder-count="8">
+                      <div style="{{ d.style }}">
+                        <span style="width: 52px; flex: 0 0 52px; text-align: right; padding-right: 14px; color: var(--faint);">{{ d.n }}</span>
+                        <span style="white-space: pre;">{{ d.text }}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ tabReview }}" hint-placeholder-val="{{ false }}">
+                <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 0 0 4px;">
+                  <span style="font-size: 15px; font-weight: 500;">Replay table, three states</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">design-studio</span>
+                </div>
+                <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 16px; background: var(--card); overflow: hidden;">
+                  <div style="padding: 16px 16px 14px; border-bottom: 1px solid var(--border);">
+                    <div style="font-size: 17px; font-weight: 600; letter-spacing: -.01em;">webhook_replay</div>
+                    <div style="font-size: 13px; color: var(--muted-foreground); margin-top: 6px; line-height: 1.55;">One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.</div>
+                  </div>
+                  <sc-for list="{{ reviewRows }}" as="r" hint-placeholder-count="3">
+                    <div onClick="{{ r.tap }}" style="{{ r.rowStyle }}">
+                      <span style="{{ r.dot }}"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--strong); width: 104px; flex: 0 0 104px;">{{ r.state }}</span>
+                      <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); line-height: 1.5;">{{ r.detail }}</span>
+                      <span style="{{ r.pinStyle }}">{{ r.pin }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="flex: 0 0 auto; font-size: 12.5px; color: var(--faint); line-height: 1.55;">{{ tabReviewNote }}</div>
+
+                <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 4px 0; flex-wrap: wrap;">
+                  <div style="display: flex; align-items: center; gap: 3px; padding: 4px; border-radius: 999px; background: var(--accent);">
+                    <sc-for list="{{ variantChips }}" as="v" hint-placeholder-count="3">
+                      <div onClick="{{ v.pick }}" style="{{ v.style }}">{{ v.label }}</div>
+                    </sc-for>
+                  </div>
+                  <span style="font-size: 13px; color: var(--muted-foreground);">{{ variantStateText }}</span>
+                  <span style="flex: 1;"></span>
+                  <div onClick="{{ chooseVariant }}" style="{{ chooseVariantStyle }}">{{ chooseVariantLabel }}</div>
+                </div>
+
+                <sc-if value="{{ tabDraftOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="flex: 0 0 auto; border: 1px solid var(--primary); border-radius: 16px; background: var(--card); overflow: hidden;">
+                    <div style="padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--strong);">{{ tabDraftAnchor }}</div>
+                    <div style="padding: 14px 16px; min-height: 66px; font-size: 14px; color: var(--faint); line-height: 1.55;">Say what is wrong with this element</div>
+                    <div style="display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border);">
+                      <div onClick="{{ postTabComment }}" style="height: 44px; padding: 0 18px; display: flex; align-items: center; border-radius: 14px; background: var(--primary); color: var(--primary-foreground); font-size: 14px; font-weight: 500; cursor: pointer;">Post</div>
+                      <div onClick="{{ cancelTabComment }}" style="height: 44px; padding: 0 18px; display: flex; align-items: center; border-radius: 14px; border: 1px solid var(--border); font-size: 14px; color: var(--muted-foreground); cursor: pointer;">Cancel</div>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <sc-for list="{{ tabComments }}" as="c" hint-placeholder-count="1">
+                  <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 16px; background: var(--card); overflow: hidden;">
+                    <div style="display: flex; align-items: center; gap: 11px; padding: 12px 16px; border-bottom: 1px solid var(--border);">
+                      <span style="{{ c.pinStyle }}">{{ c.pin }}</span>
+                      <span style="flex: 1;"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);">open</span>
+                    </div>
+                    <div style="padding: 13px 16px; font-size: 13.5px; color: var(--foreground); line-height: 1.55;">{{ c.body }}</div>
+                    <div style="padding: 11px 16px; border-top: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">{{ c.who }}</div>
+                  </div>
+                </sc-for>
+
+                <div onClick="{{ sendTabComments }}" style="{{ tabSendStyle }}">
+                  {{ iSend }}
+                  <span>{{ tabSendLabel }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ tabPlan }}" hint-placeholder-val="{{ false }}">
+                <sc-for list="{{ plan }}" as="p" hint-placeholder-count="4">
+                  <div style="flex: 0 0 auto; display: flex; gap: 13px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--card);">
+                    <span style="{{ p.markStyle }}">{{ p.mark }}</span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 14px; line-height: 1.45;">{{ p.title }}</div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint); margin-top: 5px;">{{ p.files }}</div>
+                    </div>
+                    <span style="{{ p.stateStyle }}">{{ p.state }}</span>
+                  </div>
+                </sc-for>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="flex: 0 0 auto; height: 22px; display: flex; align-items: center; justify-content: center;">
+      <span style="display: block; width: 148px; height: 5px; border-radius: 3px; background: var(--muted);"></span>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1430,&quot;height&quot;:1170},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: "gate",
+    theme: null,
+    activityOpen: false,
+    factsOpen: false,
+    sheetOpen: false,
+    sheetTab: "files",
+    variant: "B",
+    chosen: null,
+    tabDraft: null,
+    tabSent: false,
+    tabComments: [
+      { row: 2, body: "Fifteen minutes is too long. Stripe retries at 1, 5 and 30 minutes, so a stuck claim blocks the second retry.", who: "you · iPad Air · 14:12" }
+    ],
+    decision: null
+  };
+
+  componentDidMount() {
+    if (window.lucide && window.lucide.icons) return;
+    let tries = 0;
+    this._t = setInterval(() => {
+      tries += 1;
+      if (window.lucide && window.lucide.icons) { clearInterval(this._t); this.forceUpdate(); }
+      else if (tries > 60) clearInterval(this._t);
+    }, 100);
+  }
+
+  componentWillUnmount() { if (this._t) clearInterval(this._t); }
+
+  icon(name, size) {
+    const set = window.lucide && window.lucide.icons;
+    const entry = set ? set[name] : null;
+    const nodes = entry && Array.isArray(entry[2]) ? entry[2] : entry;
+    const px = size || 16;
+    if (!nodes || !nodes.length) return React.createElement("span", { style: { display: "inline-block", width: px, height: px, flex: "0 0 auto" } });
+    return React.createElement("svg", {
+      width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+      style: { display: "block", flex: "0 0 auto" }
+    }, nodes.map((n, i) => {
+      const attrs = {};
+      Object.keys(n[1] || {}).forEach(k => { attrs[k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())] = n[1][k]; });
+      attrs.key = i;
+      return React.createElement(n[0], attrs);
+    }));
+  }
+
+  dot(color, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  go(screen, extra) {
+    return () => this.setState(Object.assign({ screen: screen }, extra || {}));
+  }
+
+  renderVals() {
+    const st = this.state;
+    const sc = st.screen;
+    const theme = st.theme ?? this.props.theme ?? "dark";
+    const cellular = sc === "cellular";
+    const decided = sc === "decided";
+
+    const stepDefs = [
+      { id: "gate", num: "1", label: "Two pane, gate waiting", note: "Sessions and thread side by side. The gate's three decisions are 52 and 48px targets, not desktop buttons scaled up." },
+      { id: "decided", num: "2", label: "Decision made", note: "The receipt says what ran, how long it took and that a checkpoint exists, in one card you can read at arm's length." },
+      { id: "sheet", num: "3", label: "Review sheet", note: "Changes, the diff and the plan arrive as a bottom sheet with a grab handle, because a right panel has nowhere to go here." },
+      { id: "cellular", num: "4", label: "On cellular", note: "Off your network the route is Cloud, and the banner says the view lags rather than pretending it is live." }
+    ];
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      markStyle: "display: block; width: 26px; height: 26px; flex: 0 0 26px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label,
+        numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        go: s.id === "sheet" ? () => this.setState({ screen: "sheet", sheetOpen: true }) : this.go(s.id, { sheetOpen: false }),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
+          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+
+      statusNet: cellular ? "5G · cloud relay" : "wi-fi · tailnet",
+      machineName: "hetzner-cx42",
+      machineDot: this.dot(cellular ? "var(--info)" : "var(--success)", 7),
+      machineChipStyle: "display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 12px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+        (cellular ? "var(--info-border)" : "var(--border)") + ";" + (cellular ? " background: var(--info-bg);" : ""),
+      goMachines: this.go("cellular"),
+      headerClock: cellular ? "view 6s behind" : "4m 18s",
+      showQueued: cellular,
+
+      groups: [
+        {
+          label: "RUNNING", count: "2", items: [
+            { title: "Migrate billing webhooks to the new idempotency table", meta: "waiting on you", k: "warning", active: true },
+            { title: "Backfill org_id on 4.1M audit rows without locking", meta: "running 12m", k: "success" }
+          ]
+        },
+        {
+          label: "NEEDS YOU", count: "2", items: [
+            { title: "Port the CLI auth flow off the deprecated device grant", meta: "review 7 files", k: "info" },
+            { title: "Find why the staging queue drains at 40 per second", meta: "failed 1h ago", k: "destructive" }
+          ]
+        },
+        {
+          label: "QUIET", count: "1", items: [
+            { title: "Document the replay table for the runbook", meta: "idle 2d", k: "faint" }
+          ]
+        }
+      ].map(g => ({
+        label: g.label, count: g.count,
+        items: g.items.map(s => ({
+          title: s.title, meta: s.meta,
+          dot: this.dot("var(--" + s.k + ")", 7) + " margin-top: 6px;",
+          pick: this.go(sc === "cellular" ? "cellular" : "gate"),
+          rowStyle: "display: flex; gap: 11px; min-height: 60px; align-items: center; padding: 11px 12px; border-radius: 14px; cursor: pointer;" +
+            (s.active ? " background: var(--accent);" : "") + (s.k === "faint" ? " opacity: .55;" : "")
+        }))
+      })),
+
+      activityOpen: st.activityOpen,
+      toggleActivity: () => this.setState(s => ({ activityOpen: !s.activityOpen })),
+      activityChevron: "display: inline-flex; color: var(--muted-foreground); transition: transform .15s var(--ease-out, ease); transform: rotate(" +
+        (st.activityOpen ? "90deg" : "0deg") + ");",
+      activityRowStyle: "flex: 0 0 auto; display: flex; align-items: center; gap: 10px; align-self: flex-start; min-height: 44px; padding: 8px 16px 8px 12px; border-radius: 999px; border: 1px solid var(--border); cursor: pointer; color: var(--muted-foreground);" +
+        (st.activityOpen ? " background: var(--accent); color: var(--foreground);" : ""),
+      activity: [
+        { name: "read_file", arg: "src/webhooks/handler.ts", meta: "ok · 41ms", color: "var(--success)" },
+        { name: "write_file", arg: "src/webhooks/replay.ts", meta: "ok · +71", color: "var(--success)" },
+        { name: "bash", arg: "pnpm vitest run webhooks", meta: "1 failed", color: "var(--destructive)" },
+        { name: "bash", arg: "pnpm prisma migrate deploy", meta: decided ? "ok · 38s" : "blocked", color: decided ? "var(--success)" : "var(--warning)" }
+      ].map((t, i) => ({
+        name: t.name, arg: t.arg, meta: t.meta, metaColor: t.color,
+        dot: this.dot(t.color, 7),
+        rowStyle: "display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 12px 16px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      isGate: !decided,
+      isDecided: decided,
+      factsOpen: st.factsOpen,
+      factsLabel: st.factsOpen ? "Hide what this touches" : "What does this touch?",
+      toggleFacts: () => this.setState(s => ({ factsOpen: !s.factsOpen })),
+      factsChevron: "display: inline-flex; color: var(--warn-dim); transition: transform .15s var(--ease-out, ease); transform: rotate(" +
+        (st.factsOpen ? "180deg" : "0deg") + ");",
+      facts: [
+        { k: "MACHINE", v: "hetzner-cx42 · tailnet" },
+        { k: "AFFECTS", v: "acme_dev · 1 migration" },
+        { k: "NETWORK", v: "localhost:5432 only" },
+        { k: "ESTIMATED", v: "~40s" },
+        { k: "OUTSIDE PROJECT", v: "no" },
+        { k: "CHECKPOINT", v: "taken before it runs" }
+      ],
+      decideOnce: this.go("decided", { decision: "once" }),
+      decideRule: this.go("decided", { decision: "rule" }),
+      decideDeny: this.go("decided", { decision: "denied" }),
+      okDot: this.dot(st.decision === "denied" ? "var(--destructive)" : "var(--success)", 9),
+      decidedTitle: st.decision === "rule" ? "Rule saved, migration applied"
+        : st.decision === "denied" ? "Denied, step 3 rewritten"
+        : "Allowed once, migration applied",
+      decidedMeta: st.decision === "denied" ? "no database was touched" : "ckpt_7f24 · 38s",
+      decidedBody: st.decision === "rule"
+        ? "Auto-allowed in acme-api here. Destructive statements still ask."
+        : st.decision === "denied"
+        ? "Step 3 now writes the SQL and stops."
+        : "Ran in 38s. A checkpoint was taken first, so it is revertible.",
+
+      sheetOpen: st.sheetOpen,
+      toggleSheet: () => this.setState(s => ({ sheetOpen: !s.sheetOpen, screen: !s.sheetOpen ? "sheet" : s.screen })),
+      sheetBtnStyle: "display: flex; align-items: center; gap: 9px; min-height: 44px; padding: 10px 16px; border-radius: 14px; cursor: pointer; background: " +
+        (st.sheetOpen ? "var(--primary)" : "var(--accent)") + "; color: " + (st.sheetOpen ? "var(--primary-foreground)" : "var(--foreground)") + ";",
+      sheetTabs: [
+        { id: "files", label: "Changes" },
+        { id: "diff", label: "Diff" },
+        { id: "plan", label: "Plan" },
+        { id: "review", label: "Review" }
+      ].map(t => ({
+        label: t.label,
+        pick: () => this.setState({ sheetTab: t.id }),
+        style: "min-height: 44px; display: flex; align-items: center; padding: 10px 18px; border-radius: 14px; font-size: 14px; cursor: pointer; background: " +
+          (st.sheetTab === t.id ? "var(--accent)" : "transparent") + "; color: " +
+          (st.sheetTab === t.id ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      iPlus: this.icon("Plus", 17),
+      iSearch: this.icon("Search", 18),
+      iDiff: this.icon("GitCompare", 18),
+      iMoon: this.icon("Moon", 18),
+      iSun: this.icon("Sun", 18),
+      iChevRight: this.icon("ChevronRight", 15),
+      iChevDown: this.icon("ChevronDown", 15),
+      iPaperclip: this.icon("Paperclip", 20),
+      iClose: this.icon("X", 18),
+      iSend: this.icon("ArrowUp", 20),
+      tabReview: st.sheetTab === "review",
+      variantChips: ["A", "B", "C"].map(v => {
+        const on = st.variant === v;
+        const isChosen = st.chosen === v;
+        return {
+          label: isChosen ? v + " \u2713" : v,
+          pick: () => this.setState({ variant: v }),
+          style: "min-width: 44px; height: 38px; padding: 0 14px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 13px; cursor: pointer; background: " +
+            (on ? "var(--background)" : "transparent") + "; color: " +
+            (isChosen ? "var(--success)" : on ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+        };
+      }),
+      variantStateText: st.chosen
+        ? (st.chosen === st.variant ? "the agent builds on this one" : "the agent builds on " + st.chosen)
+        : "none chosen, all three stay alive",
+      chooseVariant: () => this.setState(s => ({ chosen: s.chosen === s.variant ? null : s.variant })),
+      chooseVariantLabel: st.chosen === st.variant ? "Unpick" : "Build on this",
+      chooseVariantStyle: "height: 44px; padding: 0 18px; display: flex; align-items: center; border-radius: 999px; font-size: 14px; cursor: pointer; white-space: nowrap; background: " +
+        (st.chosen === st.variant ? "transparent" : "var(--primary)") + "; border: 1px solid " +
+        (st.chosen === st.variant ? "var(--border)" : "transparent") + "; color: " +
+        (st.chosen === st.variant ? "var(--muted-foreground)" : "var(--primary-foreground)") + ";",
+      reviewRows: [
+        { state: "claimed", detail: "event_id claimed 14:06:02, no side effects yet", k: "warning" },
+        { state: "committed", detail: "handler finished, claim committed 14:06:03", k: "success" },
+        { state: "expired", detail: "claimed 13:41:12, never committed, retried after 15m", k: "info" }
+      ].map((r, i) => {
+        const idx = st.tabComments.findIndex(c => c.row === i);
+        const has = idx >= 0;
+        return {
+          state: r.state, detail: r.detail,
+          dot: this.dot("var(--" + r.k + ")", 7),
+          pin: has ? String(idx + 1) : "+",
+          pinStyle: "flex: 0 0 auto; width: 34px; height: 34px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 12px; cursor: pointer; background: " +
+            (has ? "var(--primary)" : "var(--accent)") + "; color: " + (has ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";",
+          tap: has ? undefined : () => this.setState({ tabDraft: i }),
+          rowStyle: "display: flex; align-items: center; gap: 12px; min-height: 60px; padding: 12px 16px;" + (i ? " border-top: 1px solid var(--border);" : "")
+        };
+      }),
+      tabComments: st.tabComments.map((c, i) => ({
+        body: c.body, who: c.who,
+        pin: String(i + 1),
+        pinStyle: "flex: 0 0 auto; width: 26px; height: 26px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; background: var(--primary); color: var(--primary-foreground);"
+      })),
+      tabDraftOpen: st.tabDraft !== null,
+      tabDraftAnchor: st.tabDraft === null ? "" : "Variant " + st.variant + " · the " +
+        ["claimed", "committed", "expired"][st.tabDraft] + " row",
+      postTabComment: () => this.setState(s => ({
+        tabDraft: null,
+        tabComments: s.tabComments.concat([{
+          row: s.tabDraft,
+          body: "Spell out the retry window here, not just the outcome.",
+          who: "you · iPad Air · just now"
+        }])
+      })),
+      cancelTabComment: () => this.setState({ tabDraft: null }),
+      tabSendLabel: st.tabSent ? "Attached to your next turn" : "Send " + st.tabComments.length + " comments",
+      tabSendStyle: "display: flex; align-items: center; justify-content: center; gap: 9px; height: 48px; padding: 0 18px; border-radius: 14px; font-size: 14px; font-weight: 500; cursor: pointer; background: " +
+        (st.tabSent ? "var(--ok-bg)" : "var(--primary)") + "; color: " + (st.tabSent ? "var(--ok-fg)" : "var(--primary-foreground)") + ";",
+      sendTabComments: () => this.setState(s => ({ tabSent: !s.tabSent })),
+      tabReviewNote: "Tap a bubble to comment. Comments reference that element in this render.",
+
+      tabFiles: st.sheetTab === "files",
+      tabDiff: st.sheetTab === "diff",
+      tabPlan: st.sheetTab === "plan",
+      files: [
+        { badge: "M", path: "src/webhooks/handler.ts", add: "+62", del: "\u221214" },
+        { badge: "A", path: "src/webhooks/replay.ts", add: "+71", del: "" },
+        { badge: "M", path: "prisma/schema.prisma", add: "+18", del: "\u22122" },
+        { badge: "A", path: "prisma/migrations/20260825_replay/migration.sql", add: "+24", del: "" },
+        { badge: "M", path: "src/lib/stripe.ts", add: "+9", del: "\u22127" },
+        { badge: "M", path: "src/webhooks/replay.spec.ts", add: "+30", del: "\u221215" }
+      ].map(f => ({
+        badge: f.badge, path: f.path, add: f.add, del: f.del,
+        badgeStyle: "width: 22px; height: 22px; flex: 0 0 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; background: " +
+          (f.badge === "A" ? "color-mix(in oklab, var(--success) 18%, transparent)" : "var(--muted)") + "; color: " +
+          (f.badge === "A" ? "var(--success)" : "var(--muted-foreground)") + ";"
+      })),
+      diffLines: [
+        { n: "41", text: "export async function handleWebhook(evt: StripeEvent) {", k: "ctx" },
+        { n: "42", text: "-  await processEvent(evt)", k: "del" },
+        { n: "42", text: "+  const claimed = await claimEvent(evt.id)", k: "add" },
+        { n: "43", text: "+  if (!claimed) return { status: 'duplicate' }", k: "add" },
+        { n: "44", text: "+", k: "add" },
+        { n: "45", text: "+  await processEvent(evt)", k: "add" },
+        { n: "46", text: "+  await commitClaim(evt.id)", k: "add" },
+        { n: "47", text: "}", k: "ctx" }
+      ].map(l => ({
+        n: l.n, text: l.text,
+        style: "display: flex; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.8; color: " +
+          (l.k === "add" ? "var(--success)" : l.k === "del" ? "var(--destructive)" : "var(--muted-foreground)") + "; background: " +
+          (l.k === "add" ? "color-mix(in oklab, var(--success) 10%, transparent)" : l.k === "del" ? "color-mix(in oklab, var(--destructive) 10%, transparent)" : "transparent") + ";"
+      })),
+      plan: [
+        { title: "Add a replay table with a unique event-id claim", files: "prisma/schema.prisma", state: "done", k: "done" },
+        { title: "Make every handler claim-then-commit before side effects", files: "src/webhooks/handler.ts", state: "done", k: "done" },
+        { title: "Apply the migration on this machine's dev database", files: "prisma/migrations/20260825_replay", state: decided ? "done · 38s" : "waiting 4m", k: decided ? "done" : "block" },
+        { title: "Rewrite replay.spec.ts to assert exactly-once delivery", files: "src/webhooks/replay.spec.ts", state: "queued", k: "queued" }
+      ].map((p, i) => {
+        const color = p.k === "done" ? "var(--success)" : p.k === "block" ? "var(--warning)" : "var(--faint)";
+        return {
+          title: p.title, files: p.files, state: p.state,
+          mark: p.k === "done" ? "\u2713" : String(i + 1),
+          markStyle: "width: 24px; height: 24px; flex: 0 0 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 2px; background: " +
+            (p.k === "queued" ? "var(--muted)" : "color-mix(in oklab, " + color + " 18%, transparent)") + "; color: " +
+            (p.k === "queued" ? "var(--muted-foreground)" : color) + ";",
+          stateStyle: "align-self: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: " + color + ";"
+        };
+      })
+    };
+  }
+}
+
+</script>
+</body>
+</html>

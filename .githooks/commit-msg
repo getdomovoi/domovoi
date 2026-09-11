@@ -1,0 +1,12 @@
+#!/bin/sh
+# Strips assistant attribution before the commit exists, rather than rejecting
+# it. The harness appends the trailer on its own, so a hook that only refused
+# would turn every commit into an amend: a treadmill, not a fix. It prints what
+# it removed, so nothing is silent.
+#
+# scripts/commit-trailers.mjs still refuses on the range in release:invariants.
+# That is the gate, because a hook can be uninstalled and a required check
+# cannot; this is the thing that stops the gate ever firing.
+#
+# Install: git config core.hooksPath .githooks
+exec node "$(dirname "$0")/../scripts/commit-msg-hook.mjs" "$1"

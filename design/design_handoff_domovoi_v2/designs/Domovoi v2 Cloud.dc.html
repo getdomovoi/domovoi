@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: calc(var(--radius) - 2px); border: 3px solid transparent; background-clip: content-box; }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); } 70% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--warning) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); } }
+  @keyframes dvSweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(460%); } }
+  @keyframes dvBlink { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .72);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+    --ok-bg: oklch(0.215 0.04 158); --ok-border: oklch(0.33 0.07 158); --ok-fg: oklch(0.9 0.06 158); --ok-dim: oklch(0.74 0.08 158);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+    --ok-bg: oklch(0.965 0.025 158); --ok-border: oklch(0.85 0.07 158); --ok-fg: oklch(0.33 0.09 158); --ok-dim: oklch(0.45 0.1 158);
+  }
+</style>
+</helmet>
+
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 26px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="width: 1560px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="8">
+      <div onClick="{{ s.go }}" style="{{ s.style }}">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ s.numColor }};">{{ s.num }}</span>
+        <span style="font-size: 11.5px;">{{ s.label }}</span>
+      </div>
+    </sc-for>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
+  </div>
+
+  <div style="width: 1560px; height: 980px; flex: 0 0 auto; position: relative; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border);">
+      <div style="display: flex; gap: 8px; padding-right: 4px;">
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+      </div>
+      <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+      <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+      <div style="width: 1px; height: 18px; background: var(--border);"></div>
+      <span style="font-size: 12px; color: var(--muted-foreground);">{{ chromeLabel }}</span>
+      <span style="flex: 1;"></span>
+      <span style="{{ chromePillStyle }}">{{ chromePill }}</span>
+      <div onClick="{{ toggleTheme }}" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">
+        <sc-if value="{{ isDarkTheme }}" hint-placeholder-val="{{ true }}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"></path></svg>
+        </sc-if>
+        <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.9 4.9 1.4 1.4"></path><path d="m17.7 17.7 1.4 1.4"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.3 17.7-1.4 1.4"></path><path d="m19.1 4.9-1.4 1.4"></path></svg>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px;">
+
+      <sc-if value="{{ isStatus }}" hint-placeholder-val="{{ true }}">
+        <div style="width: 100%; max-width: 860px; display: flex; flex-direction: column; gap: 22px; padding: 34px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 14px;">
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px;">
+              <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Domovoi Cloud</div>
+              <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">Cloud holds identity, route ownership and entitlement. It is the last transport tried, and authority over a daemon stays with that daemon.</div>
+            </div>
+            <div onClick="{{ goBilling }}" style="flex: 0 0 auto; padding: 7px 13px; border-radius: 999px; border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">{{ planPill }}</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <sc-for list="{{ statusStats }}" as="s" hint-placeholder-count="4">
+              <div style="padding: 13px 14px; background: var(--card); display: flex; flex-direction: column; gap: 5px;">
+                <div style="font-size: 10.5px; letter-spacing: .12em; color: var(--faint);">{{ s.k }}</div>
+                <div style="{{ s.valueStyle }}">{{ s.v }}</div>
+                <div style="font-size: 10.5px; color: var(--muted-foreground); line-height: 1.4;">{{ s.note }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 12px 15px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 12.5px; font-weight: 500;">How each machine is reached right now</span>
+            </div>
+            <sc-for list="{{ routes }}" as="r" hint-placeholder-count="3">
+              <div style="{{ r.rowStyle }}">
+                <span style="{{ r.dot }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); width: 168px; flex: 0 0 168px;">{{ r.name }}</span>
+                <span style="{{ r.pathStyle }}">{{ r.path }}</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ r.latency }}</span>
+                <span style="{{ r.pillStyle }}">{{ r.pill }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
+            <div style="border: 1px solid var(--ok-border); border-radius: var(--radius); background: var(--ok-bg); padding: 14px 15px; display: flex; flex-direction: column; gap: 9px;">
+              <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--ok-dim);">WHAT CLOUD CARRIES</div>
+              <sc-for list="{{ carries }}" as="c" hint-placeholder-count="3">
+                <div style="font-size: 12px; color: var(--ok-fg); line-height: 1.55;">{{ c.text }}</div>
+              </sc-for>
+            </div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 14px 15px; display: flex; flex-direction: column; gap: 9px;">
+              <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT IT NEVER HOLDS</div>
+              <sc-for list="{{ neverHolds }}" as="c" hint-placeholder-count="4">
+                <div style="font-size: 12px; color: var(--strong); line-height: 1.55;">{{ c.text }}</div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isIncident }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 820px; display: flex; flex-direction: column; gap: 20px; padding: 34px 0 40px;">
+          <div style="{{ incidentBannerStyle }}">
+            <div style="display: flex; align-items: center; gap: 11px; padding: 13px 15px;">
+              <span style="{{ incidentDot }}"></span>
+              <span style="{{ incidentTitleStyle }}">{{ incident.title }}</span>
+              <span style="flex: 1;"></span>
+              <span style="{{ incidentMetaStyle }}">{{ incident.meta }}</span>
+            </div>
+            <div style="{{ incidentBodyStyle }}">{{ incident.body }}</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <sc-for list="{{ incidentFacts }}" as="f" hint-placeholder-count="6">
+              <div style="padding: 11px 14px; background: var(--card);">
+                <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">{{ f.k }}</div>
+                <div style="{{ f.valueStyle }}">{{ f.v }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">STILL WORKS</div>
+              <sc-for list="{{ incidentWorks }}" as="w" hint-placeholder-count="3">
+                <div style="display: flex; align-items: flex-start; gap: 9px; padding: 9px 14px;">
+                  <span style="{{ okDotSm }}"></span>
+                  <span style="font-size: 12px; color: var(--strong); line-height: 1.5;">{{ w.text }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">DOES NOT WORK</div>
+              <sc-for list="{{ incidentBroken }}" as="w" hint-placeholder-count="3">
+                <div style="display: flex; align-items: flex-start; gap: 9px; padding: 9px 14px;">
+                  <span style="{{ badDotSm }}"></span>
+                  <span style="font-size: 12px; color: var(--strong); line-height: 1.5;">{{ w.text }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <sc-if value="{{ hasQueue }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border);">
+                <span style="font-size: 13px; font-weight: 600;">{{ queueTitle }}</span>
+                <span style="flex: 1;"></span>
+                <span style="position: relative; width: 40px; height: 3px; border-radius: 3px; background: var(--muted); overflow: hidden; display: block;">
+                  <span style="position: absolute; inset: 0; width: 26%; border-radius: 3px; background: var(--warning); animation: dvSweep 1.9s linear infinite; display: block;"></span>
+                </span>
+              </div>
+              <sc-for list="{{ queueItems }}" as="q" hint-placeholder-count="4">
+                <div style="{{ q.rowStyle }}">
+                  <span style="{{ q.dot }}"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); width: 150px; flex: 0 0 150px;">{{ q.what }}</span>
+                  <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ q.detail }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="{{ q.stateStyle }}">{{ q.state }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+            <div onClick="{{ incidentPrimaryGo }}" style="{{ incidentPrimaryStyle }}">{{ incident.primary }}</div>
+            <div onClick="{{ incidentSecondaryGo }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">{{ incident.secondary }}</div>
+            <span style="flex: 1;"></span>
+            <span onClick="{{ toggleIncidentLog }}" style="font-size: 11.5px; color: var(--primary); cursor: pointer;">{{ incidentLogLabel }}</span>
+          </div>
+
+          <sc-if value="{{ incidentExtraOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--card);">
+                <span style="font-size: 12px; color: var(--strong); line-height: 1.5;">{{ incidentExtra.title }}</span>
+                <span style="flex: 1;"></span>
+                <span style="padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Copy</span>
+              </div>
+              <div style="padding: 12px 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground); line-height: 1.7; white-space: pre-wrap;">{{ incidentExtra.code }}</div>
+              <div style="padding: 11px 14px; border-top: 1px solid var(--border); background: var(--card); font-size: 11.5px; color: var(--muted-foreground); line-height: 1.55;">{{ incidentExtra.note }}</div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ incidentLogOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--code); padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.75; display: flex; flex-direction: column;">
+              <sc-for list="{{ incidentLog }}" as="l" hint-placeholder-count="6">
+                <div style="{{ l.style }}">{{ l.text }}</div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isBilling }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 860px; display: flex; flex-direction: column; gap: 22px; padding: 34px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px;">
+            <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Plan and billing</div>
+            <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">The daemon, protocol, clients and local transports are Apache 2.0. What is metered is machines, in buckets. Clients never are.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;">
+            <sc-for list="{{ plans }}" as="p" hint-placeholder-count="4">
+              <div style="{{ p.cardStyle }}">
+                <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="font-size: 13px; font-weight: 600;">{{ p.name }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="{{ p.badgeStyle }}">{{ p.badge }}</span>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 2px;">
+                  <span style="font-size: 20px; font-weight: 600; letter-spacing: -.02em;">{{ p.price }}</span>
+                  <span style="font-size: 10.5px; color: var(--muted-foreground); line-height: 1.4;">{{ p.per }}</span>
+                </div>
+                <div style="height: 1px; background: var(--border);"></div>
+                <sc-for list="{{ p.lines }}" as="l" hint-placeholder-count="4">
+                  <div style="display: flex; align-items: flex-start; gap: 8px;">
+                    <span style="{{ l.dot }}"></span>
+                    <span style="font-size: 11.5px; color: var(--strong); line-height: 1.5;">{{ l.text }}</span>
+                  </div>
+                </sc-for>
+                <span style="flex: 1;"></span>
+                <div onClick="{{ p.pick }}" style="{{ p.btnStyle }}">{{ p.btn }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 12px 15px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 12.5px; font-weight: 500;">What counts against the plan</span>
+              <span style="font-size: 11.5px; color: var(--muted-foreground);">Machines, in buckets. An extra machine is free inside a tier and costs only at a boundary.</span>
+            </div>
+            <sc-for list="{{ usage }}" as="u" hint-placeholder-count="4">
+              <div style="{{ u.rowStyle }}">
+                <span style="font-size: 12px; color: var(--strong); width: 210px; flex: 0 0 210px;">{{ u.label }}</span>
+                <span style="flex: 1; min-width: 0; display: block; height: 6px; border-radius: 3px; background: var(--muted); overflow: hidden;">
+                  <span style="{{ u.barStyle }}"></span>
+                </span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); width: 130px; flex: 0 0 130px; text-align: right;">{{ u.value }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 12px 15px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 12.5px; font-weight: 500;">If a payment fails</span>
+              <span style="font-size: 11.5px; color: var(--muted-foreground);">Four retries, then a grace period you choose. Enforcement is one soft point.</span>
+            </div>
+            <sc-for list="{{ lapseRules }}" as="l" hint-placeholder-count="5">
+              <div style="{{ l.rowStyle }}">
+                <span style="{{ l.dot }}"></span>
+                <span style="font-size: 12px; color: var(--strong); line-height: 1.55;">{{ l.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 12px; color: var(--muted-foreground); line-height: 1.6;">A fourteen day Enthusiast trial, no card, once per account. Loopback, WSL, LAN, tailnet and SSH were never gated and do not become gated by a billing state, so a lapse while you are at your desk changes nothing.</div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = { screen: "status", theme: null, logOpen: false, plan: 1, fixed: {}, holder: "phone", extraOpen: false };
+
+  dot(color, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  go(screen) {
+    return () => this.setState({ screen: screen, logOpen: false, extraOpen: false });
+  }
+
+  resolve(screen) {
+    return () => this.setState(s => ({ fixed: Object.assign({}, s.fixed, { [screen]: true }) }));
+  }
+
+  renderVals() {
+    const st = this.state;
+    const sc = st.screen;
+    const theme = st.theme ?? this.props.theme ?? "dark";
+
+    const incidents = {
+      degraded: {
+        tone: "warn", dotColor: "var(--warning)",
+        title: "Cloud is slow, messages are queueing",
+        meta: "since 14:02 · eu-central relay",
+        body: "Round trip is 3.4s, up from 40ms. The agent is unaffected, your view of it lags.",
+        primary: "Switch that machine to the tailnet route", secondary: "Back to status",
+        facts: [
+          { k: "ROUTE", v: "relay eu-central" },
+          { k: "ROUND TRIP", v: "3,412ms · was 40ms" },
+          { k: "QUEUED", v: "4 messages · 1 approval" },
+          { k: "AGENT", v: "still running on the machine" },
+          { k: "ALTERNATIVE", v: "tailnet route available" },
+          { k: "SINCE", v: "14:02, 6m ago" }
+        ],
+        works: [
+          { text: "The agent keeps working, because the daemon holds the session, not this window." },
+          { text: "Machines on your network and tailnet are unaffected." },
+          { text: "Queued approvals stay valid and are delivered in order." }
+        ],
+        broken: [
+          { text: "Live output arrives in bursts, several seconds late." },
+          { text: "A gate you answer now may take seconds to register." },
+          { text: "Attaching a file from this device is slow enough to feel broken." }
+        ],
+        queue: true,
+        log: [
+          { text: "14:02:11 relay rtt 512ms", k: "dim" },
+          { text: "14:03:40 relay rtt 1,208ms", k: "warn" },
+          { text: "14:04:02 queueing outbound messages", k: "warn" },
+          { text: "14:06:31 relay rtt 3,412ms", k: "warn" },
+          { text: "14:06:31 tailnet route to hetzner-cx42 available, 14ms", k: "pass" }
+        ]
+      },
+      refused: {
+        tone: "danger", dotColor: "var(--destructive)",
+        title: "The relay refused this route",
+        meta: "route_not_claimed · no daemon credential was touched",
+        body: "The route record was removed, so Cloud will not admit new attachments. No credential was revoked, and direct routes still work.",
+        primary: "Claim the route again", secondary: "Back to status",
+        facts: [
+          { k: "REFUSAL", v: "route_not_claimed" },
+          { k: "ROUTE", v: "r_9c41…a7e · 32 random bytes" },
+          { k: "REMOVED", v: "14:04, by dana@acme.dev" },
+          { k: "TOKEN", v: "valid · signature verified offline" },
+          { k: "DAEMON CREDENTIALS", v: "untouched, still active" },
+          { k: "DIRECT ROUTES", v: "unaffected" }
+        ],
+        works: [
+          { text: "Every device paired to that machine still authenticates, because the daemon issues and revokes, not Cloud." },
+          { text: "LAN and tailnet connections to it, if you are on one of those networks." },
+          { text: "Its sessions, worktrees and checkpoints, all of which live on the machine." }
+        ],
+        broken: [
+          { text: "New relay attachments for that route, until it is claimed again." },
+          { text: "The phone reaching it while off that machine's network." },
+          { text: "Anything that assumed removing a hosted record revokes access. It does not, and the interface must not say it does." }
+        ],
+        queue: false,
+        log: [
+          { text: "14:04:52 upgrade accepted, token kid=k2 exp=14:19", k: "dim" },
+          { text: "14:04:52 admission refused: route_not_claimed", k: "fail" },
+          { text: "14:04:52 uniform response, route existence not revealed", k: "dim" },
+          { text: "14:04:53 client falling back: loopback ok, tailnet ok", k: "pass" }
+        ]
+      },
+      reconnect: {
+        tone: "info", dotColor: "var(--info)",
+        title: "Reconnected, two tool calls have no result",
+        meta: "gap of 3m 41s · hetzner-cx42",
+        body: "Two calls were in flight when it dropped, so their outcome is unknown rather than failed. The agent is holding at step 3.",
+        primary: "Re-run both and compare", secondary: "Back to status",
+        facts: [
+          { k: "GAP", v: "3m 41s" },
+          { k: "LAST CONFIRMED", v: "step 2 · write_file" },
+          { k: "UNCONFIRMED", v: "2 calls · 1 wrote files" },
+          { k: "CHECKPOINT", v: "ckpt_7f24 before the gap" },
+          { k: "WORKTREE", v: "intact on the machine" },
+          { k: "AGENT", v: "paused, waiting on you" }
+        ],
+        works: [
+          { text: "Everything up to ckpt_7f24 is confirmed and revertible." },
+          { text: "The worktree on the machine was never rolled back." },
+          { text: "The plan and the thread survived the gap in full." }
+        ],
+        broken: [
+          { text: "Two calls have no recorded result, and one of them writes." },
+          { text: "Treating them as failed would be a guess, so Domovoi will not." },
+          { text: "The suite result from during the gap is not trustworthy." }
+        ],
+        queue: true,
+        log: [
+          { text: "14:02:44 connection lost, transport relay", k: "warn" },
+          { text: "14:02:44 last acked frame 8814 (write_file schema.prisma)", k: "dim" },
+          { text: "14:06:25 reconnected, resuming session s1", k: "pass" },
+          { text: "14:06:25 daemon reports 2 calls without client ack", k: "warn" },
+          { text: "14:06:25 pausing agent at step 3", k: "dim" }
+        ]
+      },
+      twoclients: {
+        tone: "info", dotColor: "var(--info)",
+        title: "This session is open on another client",
+        meta: "iPhone 16 Pro · since 14:05",
+        body: "Both clients see the same thread, because the daemon is the single source. One of them holds the gate.",
+        primary: "Take over answering here", secondary: "Back to status",
+        facts: [
+          { k: "CLIENTS", v: "2 attached" },
+          { k: "HOLDING GATES", v: "iPhone 16 Pro" },
+          { k: "THIS CLIENT", v: "watching, can steer" },
+          { k: "SESSION", v: "s1 · migrate billing webhooks" },
+          { k: "CONFLICTS", v: "none, the daemon serialises" },
+          { k: "SINCE", v: "14:05" }
+        ],
+        works: [
+          { text: "Both clients see the same thread, plan and output live." },
+          { text: "Either client can send a message, and they arrive in order." },
+          { text: "Checkpoints and rules are shared, because they live on the machine." }
+        ],
+        broken: [
+          { text: "Only the holder can answer the waiting gate." },
+          { text: "Taking over tells the phone it no longer holds it." },
+          { text: "Two answers to one gate is not possible, by design." }
+        ],
+        queue: false,
+        log: [
+          { text: "14:05:02 client attach: iphone-16-pro (relay)", k: "dim" },
+          { text: "14:05:02 gate holder set: iphone-16-pro", k: "dim" },
+          { text: "14:06:44 client attach: mac-mini-m4 (loopback)", k: "dim" },
+          { text: "14:06:44 gate holder unchanged", k: "dim" }
+        ]
+      },
+      nodekey: {
+        tone: "warn", dotColor: "var(--warning)",
+        title: "Tailscale node key expired on wsl-ubuntu-24",
+        meta: "expired 2d ago · not a Domovoi problem",
+        body: "It looks offline but is not: the Tailscale key expired, so the tailnet stopped routing. Domovoi cannot renew it.",
+        primary: "Show what to run there", secondary: "Back to status",
+        facts: [
+          { k: "NODE", v: "wsl-ubuntu-24.tail9c2f.ts.net" },
+          { k: "KEY EXPIRED", v: "2d 4h ago" },
+          { k: "DAEMON", v: "running, unreachable" },
+          { k: "SESSION THERE", v: "1 stalled mid-run" },
+          { k: "FIX", v: "tailscale up, in Tailscale" },
+          { k: "CLOUD FALLBACK", v: "not paired to Cloud" }
+        ],
+        works: [
+          { text: "The daemon is alive and holding its session and worktree." },
+          { text: "Nothing was rolled back, and no work was lost." },
+          { text: "Your other two machines are unaffected." }
+        ],
+        broken: [
+          { text: "No route to that machine at all, tailnet or otherwise." },
+          { text: "It reads as offline everywhere until the key is renewed." },
+          { text: "Pairing it to Cloud now would need a route it does not have." }
+        ],
+        queue: false,
+        log: [
+          { text: "$ tailscale status", k: "cmd" },
+          { text: "wsl-ubuntu-24  offline  key expired 2025-09-05", k: "warn" },
+          { text: "$ domovoi machine check wsl-ubuntu-24", k: "cmd" },
+          { text: "no route: tailnet peer unreachable, no cloud pairing", k: "fail" }
+        ]
+      },
+      acl: {
+        tone: "danger", dotColor: "var(--destructive)",
+        title: "The tailnet is up, port 7717 is denied",
+        meta: "ACL refuses this client",
+        body: "It answers pings and the daemon is listening, but your ACL blocks port 7717. Your policy, working.",
+        primary: "Show the ACL I need", secondary: "Back to status",
+        facts: [
+          { k: "NODE", v: "hetzner-cx42.tail9c2f.ts.net" },
+          { k: "PING", v: "14ms, reachable" },
+          { k: "PORT 7717", v: "connection refused by ACL" },
+          { k: "NEEDED", v: "tag:domovoi:7717" },
+          { k: "THIS DEVICE", v: "autogroup:member" },
+          { k: "DOMOVOI WILL", v: "not edit your ACLs" }
+        ],
+        works: [
+          { text: "The daemon and its sessions are running on that machine." },
+          { text: "Other tailnet services on the node are reachable as usual." },
+          { text: "The machine could be paired to Cloud as a second route." }
+        ],
+        broken: [
+          { text: "This client cannot attach to any session there." },
+          { text: "Nor can the phone, since the ACL applies to the tailnet." },
+          { text: "Retrying will keep failing until the ACL changes." }
+        ],
+        queue: false,
+        log: [
+          { text: "$ tailscale ping hetzner-cx42", k: "cmd" },
+          { text: "pong from hetzner-cx42 in 14ms", k: "pass" },
+          { text: "$ domovoi machine check hetzner-cx42", k: "cmd" },
+          { text: "dial tcp 100.84.2.19:7717: connection refused (acl)", k: "fail" }
+        ]
+      }
+    };
+
+    const stepDefs = [
+      { id: "status", num: "1", label: "Cloud status", note: "Cloud states which route each machine is using, and that it is out of the path when a direct route exists." },
+      { id: "degraded", num: "2", label: "Slow and queueing", note: "The agent is unaffected, because the daemon holds the session. Only your view of it lags." },
+      { id: "refused", num: "3", label: "Route refused", note: "A hosted record stops the relay route and nothing else. It never revokes a credential, and the copy has to say so." },
+      { id: "reconnect", num: "4", label: "Unconfirmed work", note: "Unknown is not failed. Two calls have no result, so the agent stops rather than guessing." },
+      { id: "twoclients", num: "5", label: "Two clients", note: "One holder answers gates. The daemon serialises, so two answers cannot race." },
+      { id: "nodekey", num: "6", label: "Node key expired", note: "Reads as offline but is not. Domovoi cannot renew a Tailscale key and should not be able to." },
+      { id: "acl", num: "7", label: "ACL denies 7717", note: "Reachable and refusing. Your network policy working correctly, shown as a policy problem." },
+      { id: "billing", num: "8", label: "Plan and billing", note: "Metered on relayed bytes only. Stopping payment costs you the route, not your work." }
+    ];
+
+    const inc = incidents[sc];
+    const fixedNow = !!st.fixed[sc];
+
+    if (inc && sc === "twoclients") {
+      const mine = st.holder === "this";
+      inc.facts[1].v = mine ? "this client, mac-mini-m4" : "iPhone 16 Pro";
+      inc.facts[2].v = mine ? "holding, answers gates" : "watching, can steer";
+      inc.primary = mine ? "Hand it back to the phone" : "Take over answering here";
+      inc.broken = mine
+        ? [
+          { text: "The phone can watch and steer, but cannot answer the gate." },
+          { text: "It was told the moment you took over, not silently." },
+          { text: "Two answers to one gate is not possible, by design." }
+        ]
+        : [
+          { text: "Only the holder can answer the waiting gate." },
+          { text: "Taking over tells the phone it no longer holds it." },
+          { text: "Two answers to one gate is not possible, by design." }
+        ];
+      if (mine) inc.meta = "you hold the gate · since just now";
+    }
+
+    const resolutions = {
+      degraded: {
+        tone: "ok", dotColor: "var(--success)",
+        title: "Moved to the tailnet route, queue flushed",
+        meta: "14ms · Cloud no longer in the path",
+        body: "The four queued messages and the approval were delivered in order the moment the route changed. Cloud stays signed in for the phone, but this machine pair now talks directly and is not metered.",
+        primary: "Back to status", secondary: "Undo, use Cloud again", queue: false
+      },
+      refused: {
+        tone: "ok", dotColor: "var(--success)",
+        title: "Route claimed again, relay admitting",
+        meta: "r_9c41…a7e · next token carries it",
+        body: "The account owns that route id again, so the relay will admit new attachments once the client refreshes its admission token, within fifteen minutes at the outside. Nothing on the machine changed, because nothing on the machine was ever involved.",
+        primary: "Back to status", secondary: "Remove the route again", queue: false
+      },
+      reconnect: {
+        tone: "ok", dotColor: "var(--success)",
+        title: "Both calls re-run, results agree",
+        meta: "12s · no divergence",
+        body: "The test run reproduced the same single failure, and the write produced a file identical to the one already on disk, so nothing was duplicated. Step 3 is unblocked and the agent is waiting on the migration gate as before.",
+        primary: "Back to status", secondary: "Revert to ckpt_7f24 instead", queue: false
+      }
+    };
+
+    const res = fixedNow ? resolutions[sc] : null;
+    if (res) Object.keys(res).forEach(key => { inc[key] = res[key]; });
+
+    const extras = {
+      acl: {
+        title: "Add this to your tailnet ACL, then tag the daemon machines tag:domovoi",
+        code: "{\n  \"acls\": [{\n    \"action\": \"accept\",\n    \"src\": [\"autogroup:member\"],\n    \"dst\": [\"tag:domovoi:7717\"]\n  }]\n}",
+        note: "Domovoi will not edit your ACLs. Paste it in the Tailscale admin console, or hand it to whoever owns your tailnet."
+      },
+      nodekey: {
+        title: "Run this on wsl-ubuntu-24, in a shell on that machine",
+        code: "$ sudo tailscale up\n\nopens a browser URL to re-authenticate the node\nthe Domovoi daemon needs no restart afterwards",
+        note: "This is a Tailscale credential, not a Domovoi one. Domovoi has no way to renew it and no business holding one that could."
+      }
+    };
+    const extra = extras[sc];
+    if (inc && sc === "acl") inc.primary = st.extraOpen ? "Hide the suggested ACL" : "Show the ACL I need";
+    if (inc && sc === "nodekey") inc.primary = st.extraOpen ? "Hide the command" : "Show what to run there";
+    const tone = inc ? inc.tone : "info";
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      markStyle: "display: block; width: 22px; height: 22px; flex: 0 0 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label,
+        numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        go: this.go(s.id),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
+          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+
+      chromeLabel: sc === "billing" ? "Plan and billing" : "Domovoi Cloud",
+      chromePill: sc === "status" ? "all routes healthy" : sc === "billing" ? "Team plan" : inc ? inc.meta : "",
+      chromePillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--" +
+        (sc === "status" ? "ok-bg" : sc === "billing" ? "accent" : tone === "danger" ? "danger-bg" : tone === "warn" ? "warn-bg" : "info-bg") + "); color: var(--" +
+        (sc === "status" ? "ok-fg" : sc === "billing" ? "muted-foreground" : tone === "danger" ? "danger-fg" : tone === "warn" ? "warn-fg" : "info-fg") + ");",
+
+      isStatus: sc === "status",
+      isBilling: sc === "billing",
+      isIncident: !!inc,
+      goStatus: this.go("status"),
+      goBilling: this.go("billing"),
+
+      planPill: "Team · 2 seats · 3 machines registered",
+      statusStats: [
+        { k: "ACCOUNT", v: "dana@acme.dev", note: "identity and entitlement only", mono: false },
+        { k: "MACHINES REGISTERED", v: "3 of 3", note: "the meter is machines, not bytes", mono: true },
+        { k: "ROUTES IN USE", v: "1 of 3", note: "relay is the last transport tried", mono: true },
+        { k: "REGION", v: "us-east-1", note: "one region for now, named on purpose", mono: true }
+      ].map(s => ({
+        k: s.k, v: s.v, note: s.note,
+        valueStyle: (s.mono ? "font-family: 'JetBrains Mono', monospace; font-size: 15px;" : "font-size: 14px;") + " color: var(--foreground); font-weight: 500;"
+      })),
+      routes: [
+        { name: "mac-mini-m4", path: "loopback · 127.0.0.1:7717", latency: "0ms", pill: "direct", k: "success", pk: "success" },
+        { name: "hetzner-cx42", path: "tailnet · tail9c2f.ts.net", latency: "14ms", pill: "direct", k: "success", pk: "success" },
+        { name: "wsl-ubuntu-24", path: "cloud relay · us-east-1 · last resort", latency: "62ms", pill: "via cloud", k: "info", pk: "info" }
+      ].map((r, i) => ({
+        name: r.name, path: r.path, latency: r.latency, pill: r.pill,
+        dot: this.dot("var(--" + r.k + ")", 6),
+        pathStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);",
+        pillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--" +
+          r.pk + ") 16%, transparent); color: var(--" + r.pk + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      carries: [
+        { text: "Sealed frames between your own endpoints, forwarded unchanged." },
+        { text: "Envelope facts only: address, TLS, route id, times, byte counts, refusal reason." },
+        { text: "A byte pipe with route fencing. The daemon owns the replay buffer." }
+      ],
+      neverHolds: [
+        { text: "Any frame body, in part or hashed. A hash is a confirmation oracle." },
+        { text: "Method names, session ids, paths or error strings." },
+        { text: "Credentials of any kind. One in a log line is a page, not a warning." },
+        { text: "Your audit log. Cloud cannot reconstruct a session from its own logs." }
+      ],
+
+      incident: inc || { title: "", meta: "", body: "", primary: "", secondary: "" },
+      incidentDot: this.dot(inc ? inc.dotColor : "var(--info)", 7) + (tone === "warn" ? " animation: dvPulse 2.4s infinite;" : ""),
+      incidentBannerStyle: "flex: 0 0 auto; border: 1px solid var(--" + tone + "-border); border-radius: var(--radius); background: var(--" + tone + "-bg); overflow: hidden;",
+      incidentTitleStyle: "font-size: 13.5px; font-weight: 500; color: var(--" + tone + "-fg);",
+      incidentMetaStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" + tone + "-dim);",
+      incidentBodyStyle: "padding: 0 15px 14px; font-size: 13px; line-height: 1.62; color: var(--" + tone + "-fg); text-wrap: pretty;",
+      incidentFacts: (inc ? inc.facts : []).map(f => ({
+        k: f.k, v: f.v,
+        valueStyle: "font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); margin-top: 4px; line-height: 1.45;"
+      })),
+      incidentWorks: inc ? inc.works : [],
+      incidentBroken: inc ? inc.broken : [],
+      okDotSm: this.dot("var(--success)", 6) + " margin-top: 6px;",
+      badDotSm: this.dot("var(--destructive)", 6) + " margin-top: 6px;",
+      hasQueue: !!(inc && inc.queue),
+      queueTitle: sc === "reconnect" ? "Calls with no recorded result" : "Waiting to reach hetzner-cx42",
+      queueItems: (sc === "reconnect"
+        ? [
+          { what: "bash", detail: "pnpm vitest run webhooks", state: "no result", k: "info" },
+          { what: "write_file", detail: "src/webhooks/replay.spec.ts", state: "may have written", k: "warning" }
+        ]
+        : [
+          { what: "message", detail: "also cover the expiry case", state: "queued 4m", k: "warning" },
+          { what: "approval", detail: "allow once, prisma migrate deploy", state: "queued 3m", k: "warning" },
+          { what: "attachment", detail: "queue-graph-14-11.png · 820 kB", state: "queued 2m", k: "warning" },
+          { what: "message", detail: "stop after step 3", state: "queued 40s", k: "warning" }
+        ]
+      ).map((q, i) => ({
+        what: q.what, detail: q.detail, state: q.state,
+        dot: this.dot("var(--" + q.k + ")", 6),
+        stateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" + q.k + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      incidentPrimaryStyle: "padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;",
+      incidentPrimaryGo: fixedNow
+        ? this.go("status")
+        : sc === "twoclients"
+        ? () => this.setState(s => ({ holder: s.holder === "this" ? "phone" : "this" }))
+        : sc === "acl" || sc === "nodekey"
+        ? () => this.setState(s => ({ extraOpen: !s.extraOpen }))
+        : this.resolve(sc),
+      incidentSecondaryGo: fixedNow && sc !== "twoclients"
+        ? () => this.setState(s => {
+          const f = Object.assign({}, s.fixed);
+          delete f[sc];
+          return { fixed: f };
+        })
+        : this.go("status"),
+      incidentExtra: extra || { title: "", code: "", note: "" },
+      incidentExtraOpen: !!extra && st.extraOpen,
+      incidentLogOpen: st.logOpen,
+      toggleIncidentLog: () => this.setState(s => ({ logOpen: !s.logOpen })),
+      incidentLogLabel: st.logOpen ? "Hide the transport log" : "Show the transport log",
+      incidentLog: (inc ? inc.log : []).map(l => ({
+        text: l.text,
+        style: "color: " + (l.k === "cmd" ? "var(--foreground)" : l.k === "pass" ? "var(--success)" : l.k === "fail" ? "var(--destructive)" : l.k === "warn" ? "var(--warning)" : "var(--muted-foreground)") + ";" +
+          (l.k === "cmd" ? " font-weight: 500;" : "")
+      })),
+
+      plans: [
+        {
+          name: "Free", price: "$0", per: "one machine", badge: "relay included", bk: "muted",
+          lines: [
+            { text: "Relay route included, so no tunnel to configure", k: "success" },
+            { text: "Read the workspace, thread, plan and artifacts", k: "success" },
+            { text: "Ordinary approvals, allow once or deny", k: "success" },
+            { text: "No terminal, no new sessions, no hard gates", k: "faint" }
+          ],
+          btn: "Downgrade to Free", cur: false
+        },
+        {
+          name: "Enthusiast", price: "$10", per: "a month, or $100 a year", badge: "3 machines", bk: "info",
+          lines: [
+            { text: "Terminal over the relay route", k: "success" },
+            { text: "The browser client at a URL", k: "success" },
+            { text: "Move a session between machines", k: "success" },
+            { text: "Hard gates and standing rules", k: "success" }
+          ],
+          btn: "Switch to Enthusiast", cur: false
+        },
+        {
+          name: "Team", price: "$12", per: "per seat, two seats minimum", badge: "current", bk: "primary",
+          lines: [
+            { text: "Enthusiast capability on each seat's own machines", k: "success" },
+            { text: "Org device list and a security event history", k: "success" },
+            { text: "Org machines granted to seats explicitly", k: "success" },
+            { text: "No seat can control another seat's machine", k: "info" }
+          ],
+          btn: "Current plan", cur: true
+        },
+        {
+          name: "Enterprise", price: "Quote", per: "floor $250 a month", badge: "dedicated", bk: "muted",
+          lines: [
+            { text: "Separately built infrastructure, not shared capacity", k: "success" },
+            { text: "Per user and per machine", k: "success" },
+            { text: "Cross-person machine control is not sold at any price", k: "info" },
+            { text: "The floor exists so it cannot undercut Team", k: "faint" }
+          ],
+          btn: "Talk to us", cur: false
+        }
+      ].map((p, i) => ({
+        name: p.name, price: p.price, per: p.per, badge: p.badge, btn: p.btn,
+        lines: p.lines.map(l => ({ text: l.text, dot: this.dot("var(--" + l.k + ")", 5) + " margin-top: 6px;" })),
+        pick: () => this.setState({ plan: i }),
+        badgeStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: " +
+          (p.cur ? "var(--primary)" : "var(--muted)") + "; color: " + (p.cur ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";",
+        cardStyle: "display: flex; flex-direction: column; gap: 10px; padding: 14px 14px; border-radius: var(--radius); background: var(--card); border: 1px solid " +
+          (p.cur ? "var(--primary)" : "var(--border)") + "; min-height: 300px;",
+        btnStyle: "padding: 8px 14px; border-radius: calc(var(--radius) - 2px); text-align: center; font-size: 11.5px; cursor: pointer; background: " +
+          (p.cur ? "var(--accent)" : "transparent") + "; border: 1px solid " + (p.cur ? "transparent" : "var(--border)") +
+          "; color: " + (p.cur ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      lapseRules: [
+        { text: "A live connection is never severed for a billing reason.", k: "success" },
+        { text: "Existing connections run until their token expires.", k: "success" },
+        { text: "Enforcement is one point: new tokens stop minting.", k: "warning" },
+        { text: "The client shows the exact date, read from the entitlement claim.", k: "info" },
+        { text: "Nothing is deleted, because nothing was stored here.", k: "info" }
+      ].map((l, i) => ({
+        text: l.text,
+        dot: this.dot("var(--" + l.k + ")", 6) + " margin-top: 5px;",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      usage: [
+        { label: "Machines registered, this seat", value: "3 of 3 in Team", pct: 100 },
+        { label: "Machines registered, org total", value: "5 across 2 seats", pct: 62 },
+        { label: "Clients attached", value: "never metered", pct: 0 },
+        { label: "Relayed bytes", value: "not metered, fair use only", pct: 0 }
+      ].map((u, i) => ({
+        label: u.label, value: u.value,
+        barStyle: "display: block; height: 6px; width: " + (u.pct || 0) + "%; border-radius: 3px; background: " +
+          (u.pct ? "var(--primary)" : "transparent") + ";",
+        rowStyle: "display: flex; align-items: center; gap: 13px; padding: 11px 15px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      }))
+    };
+  }
+}
+
+</script>
+</body>
+</html>

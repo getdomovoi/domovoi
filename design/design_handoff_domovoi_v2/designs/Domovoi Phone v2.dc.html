@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); } 70% { box-shadow: 0 0 0 8px color-mix(in oklab, var(--warning) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); } }
+  @keyframes dvSweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+    --ok-bg: oklch(0.215 0.04 158); --ok-border: oklch(0.33 0.07 158); --ok-fg: oklch(0.9 0.06 158); --ok-dim: oklch(0.74 0.08 158);
+    --kb-bg: oklch(0.23 0.006 285); --kb-key: oklch(0.34 0.006 285); --kb-mod: oklch(0.28 0.006 285); --kb-ink: oklch(0.98 0 0);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+    --ok-bg: oklch(0.965 0.025 158); --ok-border: oklch(0.85 0.07 158); --ok-fg: oklch(0.33 0.09 158); --ok-dim: oklch(0.45 0.1 158);
+    --kb-bg: oklch(0.855 0.006 285); --kb-key: oklch(1 0 0); --kb-mod: oklch(0.79 0.008 285); --kb-ink: oklch(0.2 0.01 285);
+  }
+</style>
+</helmet>
+
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; gap: 22px; padding: 28px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 18px;">
+    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px;">
+      <div style="font-size: 19px; font-weight: 600; letter-spacing: -.015em;">Domovoi on a phone, v2</div>
+      <div style="font-size: 13px; line-height: 1.6; color: var(--muted-foreground); max-width: 760px; text-wrap: pretty;">The phone runs no daemon and holds no code. It exists to answer the one question a machine cannot answer for you, which is whether a command may run. Every screen here is built around that.</div>
+    </div>
+    <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--accent);">
+      <div onClick="{{ setIos }}" style="{{ iosTabStyle }}">iOS</div>
+      <div onClick="{{ setAndroid }}" style="{{ androidTabStyle }}">Android</div>
+    </div>
+    <div onClick="{{ toggleTheme }}" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">
+      <sc-if value="{{ isDarkTheme }}" hint-placeholder-val="{{ true }}">{{ iMoonSm }}</sc-if>
+      <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">{{ iSunSm }}</sc-if>
+    </div>
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px;">
+    <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">THE DECISION PATH</span>
+    <span style="font-size: 12px; color: var(--faint);">The five screens the product exists for</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+
+    <div style="{{ colStyle }}">
+      <div style="display: flex; align-items: baseline; gap: 9px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">01</span>
+        <span style="font-size: 13px; font-weight: 600;">Sessions, needs-you first</span>
+      </div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 8px 18px 12px;">
+          <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+          <span style="font-size: 26px; font-weight: 600; letter-spacing: -.02em;">Sessions</span>
+          <span style="flex: 1;"></span>
+          <span style="{{ needsBadge }}">2 need you</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 14px 92px; display: flex; flex-direction: column; gap: 14px;">
+          <sc-for list="{{ phoneGroups }}" as="g" hint-placeholder-count="3">
+            <div style="display: flex; flex-direction: column; gap: 7px;">
+              <div style="display: flex; align-items: center; gap: 9px; padding: 0 4px;">
+                <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ g.label }}</span>
+                <span style="flex: 1;"></span>
+                <span style="{{ g.badgeStyle }}">{{ g.count }}</span>
+              </div>
+              <sc-for list="{{ g.items }}" as="s" hint-placeholder-count="2">
+                <div style="{{ s.cardStyle }}">
+                  <div style="display: flex; align-items: flex-start; gap: 10px;">
+                    <span style="{{ s.dot }}"></span>
+                    <div style="flex: 1; min-width: 0;">
+                      <div style="font-size: 14px; line-height: 1.4; color: var(--foreground);">{{ s.title }}</div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint); margin-top: 5px;">{{ s.meta }}</div>
+                    </div>
+                    <span style="{{ s.pillStyle }}">{{ s.pill }}</span>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+        </div>
+        <div style="{{ tabBarStyle }}">
+          <div style="{{ tabs.sessions }}">
+            {{ iSessions }}
+            <span style="font-size: 10.5px;">Sessions</span>
+          </div>
+          <div style="{{ tabs.machines }}">
+            {{ iMachines }}
+            <span style="font-size: 10.5px;">Machines</span>
+          </div>
+          <div style="{{ tabs.settings }}">
+            {{ iSettings }}
+            <span style="font-size: 10.5px;">Settings</span>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Needs you is the first group and it is never collapsed. Everything else on this screen is secondary to it.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="display: flex; align-items: baseline; gap: 9px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">02</span>
+        <span style="font-size: 13px; font-weight: 600;">The gate, full screen</span>
+      </div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px;">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 13px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px;">
+            <span style="{{ gatePulseDot }}"></span>
+            <span style="font-size: 24px; font-weight: 600; letter-spacing: -.02em; color: var(--warn-fg);">Waiting on you</span>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 14px; line-height: 1.55; color: var(--strong);">The agent wants to run a command that writes to a database. Nothing has run yet.</div>
+          <div style="flex: 0 0 auto; padding: 14px 15px; border-radius: 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--warn-fg); line-height: 1.5; word-break: break-all;">pnpm -w prisma migrate deploy</div>
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+            <sc-for list="{{ gateFacts }}" as="f" hint-placeholder-count="4">
+              <div style="{{ f.rowStyle }}">
+                <span style="flex: 0 0 auto; font-size: 12.5px; color: var(--muted-foreground);">{{ f.k }}</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong); text-align: right;">{{ f.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.5;">{{ gateNote }}</div>
+        </div>
+        <div style="{{ decisionSpacerStyle }}"></div>
+        <div style="{{ decisionStyle }}">
+          <div style="{{ allowOnceStyle }}">Allow once</div>
+          <div style="display: flex; gap: 8px;">
+            <div style="{{ ruleStyle }}">Always allow this</div>
+            <div style="{{ denyStyle }}">Deny</div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">The gate owns the screen rather than sitting in a thread. One primary decision at full width, the two alternatives beneath it.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="display: flex; align-items: baseline; gap: 9px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">03</span>
+        <span style="font-size: 13px; font-weight: 600;">Decided, and who decided</span>
+      </div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px;">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px 26px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="flex: 0 0 auto; padding: 15px 16px; border: 1px solid var(--ok-border); border-radius: 16px; background: var(--ok-bg);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="{{ okDot }}"></span>
+              <span style="font-size: 19px; font-weight: 600; letter-spacing: -.015em; color: var(--ok-fg);">Allowed once</span>
+            </div>
+            <div style="font-size: 13px; color: var(--ok-dim); margin-top: 7px; line-height: 1.55;">Finished in 38 seconds. A checkpoint was taken before it, so this is revertible.</div>
+          </div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+            <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">RECORDED AS</div>
+            <sc-for list="{{ receiptRows }}" as="r" hint-placeholder-count="4">
+              <div style="{{ r.rowStyle }}">
+                <span style="flex: 0 0 auto; font-size: 12.5px; color: var(--muted-foreground);">{{ r.k }}</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong); text-align: right;">{{ r.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.</div>
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="{{ secondaryBtn }}">Revert to the checkpoint</div>
+            <div style="{{ secondaryBtn }}">Watch the rest of the turn</div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">A decision is worth nothing if you cannot see what it did. The receipt names the outcome, the checkpoint and the credential.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="display: flex; align-items: baseline; gap: 9px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">04</span>
+        <span style="font-size: 13px; font-weight: 600;">Watching, and the shell is elsewhere</span>
+      </div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px;">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+          <span style="flex: 1;"></span>
+          <span style="{{ watchPill }}">watching</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px 26px; display: flex; flex-direction: column; gap: 11px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 14px;">
+            <span style="{{ workingDot }}"></span>
+            <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--strong);">Running the test suite</span>
+            <span style="position: relative; width: 34px; height: 3px; border-radius: 3px; background: var(--muted); overflow: hidden; display: block;">
+              <span style="position: absolute; inset: 0; width: 30%; border-radius: 3px; background: var(--primary); animation: dvSweep 1.5s var(--ease-out, ease) infinite; display: block;"></span>
+            </span>
+          </div>
+          <div style="flex: 0 0 auto; border-radius: 14px; background: var(--code); padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.75; display: flex; flex-direction: column; overflow: hidden;">
+            <sc-for list="{{ streamLines }}" as="l" hint-placeholder-count="6">
+              <div style="{{ l.style }}">{{ l.text }}</div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; padding: 12px 14px; border: 1px solid var(--info-border); border-radius: 14px; background: var(--info-bg);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="{{ infoDot }}"></span>
+              <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--info-fg);">The shell is held on desktop</span>
+            </div>
+            <div style="font-size: 12px; color: var(--info-dim); margin-top: 6px; line-height: 1.55;">Reading is free. Typing needs the claim, and taking it tells the desktop rather than stealing it.</div>
+            <div style="{{ claimBtn }}">Take the shell</div>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">This phone cannot pull the repository down. Diffs and output stream from the machine and are never stored here.</div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">One claimant at a time is a real rule, so the phone states who holds the shell instead of failing when you type.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="display: flex; align-items: baseline; gap: 9px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">05</span>
+        <span style="font-size: 13px; font-weight: 600;">Nothing to approve</span>
+      </div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px;">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px 26px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="flex: 0 0 auto; padding: 15px 16px; border: 1px solid var(--danger-border); border-radius: 16px; background: var(--danger-bg);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="{{ badDot }}"></span>
+              <span style="font-size: 19px; font-weight: 600; letter-spacing: -.015em; color: var(--danger-fg);">Refused by policy</span>
+            </div>
+            <div style="font-size: 13px; color: var(--danger-fg); margin-top: 7px; line-height: 1.55;">There is no approve button here, because no decision of yours can permit it. The daemon refused before the command ran.</div>
+            <div style="margin-top: 11px; padding: 11px 13px; border-radius: 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--danger-fg); line-height: 1.5; word-break: break-all;">prisma migrate deploy --url $PROD_DATABASE_URL</div>
+          </div>
+          <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px solid var(--danger-border); border-radius: 14px;">
+            <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--danger-dim);">THE RULE IT BROKE</div>
+            <div style="font-size: 14px; font-weight: 500; color: var(--danger-fg); margin-top: 6px; line-height: 1.45;">no writes to a production database</div>
+            <div style="font-size: 12px; color: var(--danger-dim); margin-top: 7px; line-height: 1.55;">Set by dana@acme.dev as org policy, on every machine on this account.</div>
+          </div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+            <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT YOU CAN DO</div>
+            <sc-for list="{{ phoneAlternatives }}" as="a" hint-placeholder-count="3">
+              <div style="{{ a.rowStyle }}">
+                <span style="{{ a.dot }}"></span>
+                <span style="font-size: 13px; color: var(--strong); line-height: 1.5;">{{ a.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex: 0 0 auto; padding: 10px 16px 26px;">
+          <div style="{{ secondaryBtn }}">Tell the agent to write the SQL instead</div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">A refusal on a phone is the strongest version of the promise: the buttons are absent because the answer is not yours to give.</div>
+    </div>
+
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">FIRST RUN AND UNPAIRED</span>
+    <span style="{{ sectionNote }}">The app opens with no machine behind it, and says why</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">06</span><span style="{{ frameName }}">Launch</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 0 32px;">
+          <span style="{{ splashMarkStyle }}" role="img" aria-label="Domovoi"></span>
+          <div style="font-size: 22px; font-weight: 600; letter-spacing: -.02em;">Domovoi</div>
+          <div style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+            <sc-for list="{{ splashPhases }}" as="p" hint-placeholder-count="3">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="{{ p.dot }}"></span>
+                <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ p.name }}</span>
+                <span style="{{ p.stateStyle }}">{{ p.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size: 12.5px; color: var(--faint); line-height: 1.55; text-align: center;">Reaching your machines over the routes you configured. No spinner, because the phase is knowable.</div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Launch names what is happening rather than spinning, and the mark carries its working variant while daemons answer.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">07</span><span style="{{ frameName }}">Sessions, unpaired</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ headerRow }}">
+          <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+          <span style="{{ screenTitle }}">Sessions</span>
+        </div>
+        <div style="{{ emptyBody }}">
+          <span style="{{ emptyIconStyle }}">
+            {{ iEmptyChat }}
+          </span>
+          <div style="{{ emptyTitle }}">No machine is paired</div>
+          <div style="{{ emptyBodyText }}">Sessions live on the machine that runs them. Until this phone is paired with one there is nothing to list, and nothing is being hidden from you.</div>
+          <div style="{{ primaryBtn }}">Pair with a machine</div>
+        </div>
+        <div style="{{ tabBarStyle }}">
+          <div style="{{ tabs.sessions }}">
+            {{ iSessions }}
+            <span style="font-size: 10.5px;">Sessions</span>
+          </div>
+          <div style="{{ tabs.machines }}">
+            {{ iMachines }}
+            <span style="font-size: 10.5px;">Machines</span>
+          </div>
+          <div style="{{ tabs.settings }}">
+            {{ iSettings }}
+            <span style="font-size: 10.5px;">Settings</span>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">The reason the list is empty is the architecture, so the copy says that rather than apologising.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">08</span><span style="{{ frameName }}">Machines, unpaired</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ headerRow }}">
+          <span style="{{ screenTitle }}">Machines</span>
+        </div>
+        <div style="{{ bodyPad }}">
+          <div style="flex: 0 0 auto; padding: 15px 16px; border: 1px solid var(--info-border); border-radius: 16px; background: var(--info-bg);">
+            <div style="font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--info-fg);">Pair this phone</div>
+            <div style="font-size: 13px; color: var(--info-dim); margin-top: 7px; line-height: 1.55;">Pairing exchanges keys with one machine directly. Domovoi Cloud never sees them, and the phone stores no code.</div>
+            <div style="display: flex; gap: 8px; margin-top: 12px;">
+              <div style="flex: 1; padding: 13px; border-radius: 999px; background: var(--info-fg); color: var(--info-bg); font-size: 13px; font-weight: 500; text-align: center; cursor: pointer;">Scan a code</div>
+              <div style="flex: 1; padding: 13px; border: 1px solid var(--info-border); border-radius: 999px; color: var(--info-fg); font-size: 13px; text-align: center; cursor: pointer;">Type it</div>
+            </div>
+          </div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+            <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT STAYS UNAVAILABLE</div>
+            <sc-for list="{{ unpairedRows }}" as="u" hint-placeholder-count="3">
+              <div style="display: flex; align-items: baseline; gap: 12px; padding: 12px 15px; border-top: 1px solid var(--border);">
+                <span style="flex: 0 0 74px; font-size: 12.5px; color: var(--strong);">{{ u.label }}</span>
+                <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted-foreground); line-height: 1.5;">{{ u.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">Device settings still work while unpaired. Machine-scoped settings stay visible and marked unavailable rather than disappearing.</div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">One screen owns pairing. The others say plainly what they cannot show and why, instead of going blank.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">09</span><span style="{{ frameName }}">Pairing by camera</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iClose }}</span>
+          <span style="font-size: 13px; color: var(--muted-foreground);">Pair with a machine</span>
+        </div>
+        <div style="flex: 1; min-height: 0; padding: 0 16px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="flex: 1; min-height: 0; border-radius: 20px; background: var(--code); position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+            <div style="width: 208px; height: 208px; border-radius: 20px; position: relative;">
+              <span style="position: absolute; top: 0; left: 0; width: 46px; height: 46px; border-top: 3px solid var(--primary); border-left: 3px solid var(--primary); border-radius: 20px 0 0 0; display: block;"></span>
+              <span style="position: absolute; top: 0; right: 0; width: 46px; height: 46px; border-top: 3px solid var(--primary); border-right: 3px solid var(--primary); border-radius: 0 20px 0 0; display: block;"></span>
+              <span style="position: absolute; bottom: 0; left: 0; width: 46px; height: 46px; border-bottom: 3px solid var(--primary); border-left: 3px solid var(--primary); border-radius: 0 0 0 20px; display: block;"></span>
+              <span style="position: absolute; bottom: 0; right: 0; width: 46px; height: 46px; border-bottom: 3px solid var(--primary); border-right: 3px solid var(--primary); border-radius: 0 0 20px 0; display: block;"></span>
+            </div>
+            <div style="position: absolute; left: 18px; right: 18px; bottom: 18px; font-size: 12.5px; color: var(--muted-foreground); text-align: center; line-height: 1.5;">Point at the pairing code shown in Settings on the machine.</div>
+          </div>
+          <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px solid var(--border); border-radius: 16px;">
+            <div style="font-size: 12.5px; color: var(--strong);">Or type the code</div>
+            <div style="display: flex; align-items: center; gap: 9px; margin-top: 9px;">
+              <span style="flex: 1; min-width: 0; padding: 12px 14px; border-radius: 14px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 15px; letter-spacing: .16em; color: var(--faint);">••••••</span>
+              <span style="flex: 0 0 auto; padding: 12px 16px; border-radius: 14px; border: 1px solid var(--border); font-size: 13px; color: var(--muted-foreground);">Paste</span>
+            </div>
+          </div>
+        </div>
+        <div style="flex: 0 0 auto; height: 26px;"></div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">The viewfinder states what it is looking for, and the typed path stays available rather than being buried.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">10</span><span style="{{ frameName }}">Nothing running</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ headerRow }}">
+          <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+          <span style="{{ screenTitle }}">Sessions</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px 96px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="flex: 0 0 auto; padding: 15px 16px; border: 1px solid var(--ok-border); border-radius: 16px; background: var(--ok-bg);">
+            <div style="font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--ok-fg);">Everything is idle</div>
+            <div style="font-size: 13px; color: var(--ok-dim); margin-top: 7px; line-height: 1.55;">Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.</div>
+          </div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+            <sc-for list="{{ idleFleet }}" as="m" hint-placeholder-count="3">
+              <div style="{{ m.rowStyle }}">
+                <span style="{{ m.dot }}"></span>
+                <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--strong);">{{ m.name }}</span>
+                <span style="font-size: 11.5px; color: var(--faint);">{{ m.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="{{ primaryBtn }}">Start a session</div>
+            <div style="{{ quietBtn }}">Clone a repository onto a machine</div>
+          </div>
+        </div>
+        <div style="{{ tabBarStyle }}">
+          <div style="{{ tabs.sessions }}">
+            {{ iSessions }}
+            <span style="font-size: 10.5px;">Sessions</span>
+          </div>
+          <div style="{{ tabs.machines }}">
+            {{ iMachines }}
+            <span style="font-size: 10.5px;">Machines</span>
+          </div>
+          <div style="{{ tabs.settings }}">
+            {{ iSettings }}
+            <span style="font-size: 10.5px;">Settings</span>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Empty is not failure. The fleet is healthy and idle, so the screen says so and offers the two ways to start.</div>
+    </div>
+
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">CARRYING ON FROM THE PHONE</span>
+    <span style="{{ sectionNote }}">Reading the thread, typing into it, and attaching what the agent needs</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">11</span><span style="{{ frameName }}">The thread</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">mac-mini-m4</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px 168px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 14px;">
+            <span style="{{ workingDot }}"></span>
+            <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--strong);">Step 3 of 4 · writing the migration</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">4m</span>
+          </div>
+          <sc-for list="{{ threadTurns }}" as="t" hint-placeholder-count="4">
+            <div style="{{ t.rowStyle }}">
+              <span style="{{ t.whoStyle }}">{{ t.who }}</span>
+              <div style="{{ t.bubbleStyle }}">{{ t.text }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="{{ composerRestStyle }}">
+          <span style="flex: 1; min-width: 0; font-size: 13.5px; color: var(--faint);">Steer it, or queue a message</span>
+          <div style="{{ planBtnStyle }}">{{ iPlanList }}</div>
+          <div style="{{ attachBtnStyle }}">{{ iPlus }}</div>
+          <div style="{{ sendDimStyle }}">{{ iSend }}</div>
+        </div>
+        <div style="{{ tabBarStyle }}">
+          <div style="{{ tabs.sessions }}">{{ iSessions }}
+            <span style="font-size: 10.5px;">Sessions</span>
+          </div>
+          <div style="{{ tabs.machines }}">{{ iMachines }}
+            <span style="font-size: 10.5px;">Machines</span>
+          </div>
+          <div style="{{ tabs.settings }}">{{ iSettings }}
+            <span style="font-size: 10.5px;">Settings</span>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">The composer carries one plan button, tinted while a step needs you. Tapping it opens the rendered plan.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">12</span><span style="{{ frameName }}">Typing, keyboard up</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">claude-code</span>
+            <div style="max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: 18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border);">Steps 1 and 2 are done. replay.spec.ts asserts exactly-once delivery and passes.</div>
+          </div>
+        </div>
+        <div style="{{ composerFocusStyle }}">
+          <div style="display: flex; align-items: flex-end; gap: 10px;">
+            <div style="flex: 1; min-width: 0; padding: 10px 14px; border-radius: 20px; border: 1px solid var(--primary); background: var(--card); font-size: 13.5px; line-height: 1.5; color: var(--foreground);">Also cover the claim-expiry case in replay.spec.ts<span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 2px; vertical-align: -2px; background: var(--primary);"></span></div>
+            <div style="{{ attachBtnStyle }}">{{ iPlus }}</div>
+            <div style="{{ sendBtnStyle }}">{{ iSend }}</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="{{ infoDot }}"></span>
+            <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">A turn is running, so this will queue and send at the boundary.</span>
+          </div>
+        </div>
+        <div style="{{ keyboardStyle }}">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; padding: 0 4px 3px;">
+            <sc-for list="{{ kbSuggestions }}" as="s" hint-placeholder-count="3">
+              <span style="{{ s.style }}">{{ s.text }}</span>
+            </sc-for>
+          </div>
+          <sc-for list="{{ kbRows }}" as="r" hint-placeholder-count="3">
+            <div style="{{ r.rowStyle }}">
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div onClick="{{ toggleShift }}" style="{{ kbModStyle }}">{{ iShift }}</div>
+              </sc-if>
+              <sc-for list="{{ r.keys }}" as="k" hint-placeholder-count="10">
+                <div style="{{ k.style }}">{{ k.label }}</div>
+              </sc-for>
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ kbModStyle }}">{{ iBackspace }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <div style="display: flex; gap: 6px; padding: 0 2px; justify-content: center;">
+            <div style="{{ kbKeyWideStyle }}">123</div>
+            <div style="{{ kbModStyle }}">{{ iGlobe }}</div>
+            <div style="{{ kbSpaceStyle }}">space</div>
+            <div style="{{ kbReturnStyle }}">return</div>
+          </div>
+        </div>
+      </div>
+      <div style="{{ captionStyle }}">The keyboard takes the bottom half, the composer rides just above it, and the tab bar is gone while the field has focus.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">13</span><span style="{{ frameName }}">What you can attach</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px; opacity: .45;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;">
+            <div style="max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: 18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border);">Steps 1 and 2 are done.</div>
+          </div>
+        </div>
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; border-radius: 26px 26px 0 0; border-top: 1px solid var(--border); background: var(--card); box-shadow: 0 -18px 50px var(--shadow-lg); padding: 10px 0 30px;">
+          <div style="display: flex; justify-content: center; padding-bottom: 8px;">
+            <span style="width: 38px; height: 4px; border-radius: 999px; background: var(--muted); display: block;"></span>
+          </div>
+          <div onClick="{{ noop }}" style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px;">
+            <span style="color: var(--muted-foreground);">{{ iImage }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--foreground);">Photo or screenshot</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">uploads to the machine, not stored here</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground);">{{ iCamera }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--foreground);">Take a photo</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">one shot, sent with the turn</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground);">{{ iFile }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--foreground);">File from the worktree</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">scoped to what this session changed</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground);">{{ iTerminal }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--foreground);">Terminal output</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">select a range, byte count shown</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground);">{{ iGlobe }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--foreground);">A URL to fetch</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">the machine fetches it, not the phone</div>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Every source names where the bytes go. Nothing you attach is stored on the phone, because the phone holds no repository.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">14</span><span style="{{ frameName }}">Two photos, queued</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 14px;">
+            <span style="{{ workingDot }}"></span>
+            <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--strong);">Running the test suite</span>
+          </div>
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;">
+            <div style="max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: 18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border);">The claim expiry is still 15 minutes. Do you want it configurable?</div>
+          </div>
+        </div>
+        <div style="{{ composerFocusStyle }}">
+          <div style="display: flex; gap: 8px;">
+            <sc-for list="{{ draftThumbs }}" as="d" hint-placeholder-count="2">
+              <div style="position: relative; width: 64px; height: 64px; border-radius: 14px; background: repeating-linear-gradient(135deg, var(--accent) 0 8px, var(--card) 8px 16px); border: 1px solid var(--border); display: flex; align-items: flex-end; padding: 5px;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ d.size }}</span>
+                <span style="position: absolute; top: -5px; right: -5px; width: 20px; height: 20px; border-radius: 999px; background: var(--muted); color: var(--foreground); display: flex; align-items: center; justify-content: center;">{{ iX }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display: flex; align-items: flex-end; gap: 10px;">
+            <div style="flex: 1; min-width: 0; padding: 10px 14px; border-radius: 20px; border: 1px solid var(--primary); background: var(--card); font-size: 13.5px; line-height: 1.5;">Yes, and here is what it looks like before and after<span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 2px; vertical-align: -2px; background: var(--primary);"></span></div>
+            <div style="{{ sendBtnStyle }}">{{ iSend }}</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="{{ infoDot }}"></span>
+            <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">3.0 MB uploads to mac-mini-m4 when you send. It is not kept on this phone.</span>
+          </div>
+        </div>
+        <div style="{{ keyboardStyle }}">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; padding: 0 4px 3px;">
+            <sc-for list="{{ kbSuggestions }}" as="s" hint-placeholder-count="3">
+              <span style="{{ s.style }}">{{ s.text }}</span>
+            </sc-for>
+          </div>
+          <sc-for list="{{ kbRows }}" as="r" hint-placeholder-count="3">
+            <div style="{{ r.rowStyle }}">
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div onClick="{{ toggleShift }}" style="{{ kbModStyle }}">{{ iShift }}</div>
+              </sc-if>
+              <sc-for list="{{ r.keys }}" as="k" hint-placeholder-count="10">
+                <div style="{{ k.style }}">{{ k.label }}</div>
+              </sc-for>
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ kbModStyle }}">{{ iBackspace }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <div style="display: flex; gap: 6px; padding: 0 2px; justify-content: center;">
+            <div style="{{ kbKeyWideStyle }}">123</div>
+            <div style="{{ kbModStyle }}">{{ iGlobe }}</div>
+            <div style="{{ kbSpaceStyle }}">space</div>
+            <div style="{{ kbReturnStyle }}">return</div>
+          </div>
+        </div>
+      </div>
+      <div style="{{ captionStyle }}">Attachments grow the composer into a card, each thumb removable, and the size line says where the bytes go before you send.</div>
+    </div>
+
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">READING WHAT IT MADE</span>
+    <span style="{{ sectionNote }}">The plan, a design-studio render, and commenting on it from a phone</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">15</span><span style="{{ frameName }}">The plan</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground);">Plan</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">revised 14:06</span>
+        </div>
+        <div style="{{ bodyPad }}">
+          <div style="flex: 0 0 auto;">
+            <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em; line-height: 1.3;">Move billing webhooks onto a claim table</div>
+            <div style="font-size: 13px; color: var(--muted-foreground); margin-top: 8px; line-height: 1.6;">Stripe can deliver the same event twice. The fix is to claim an event id before any side effect, so a second delivery cannot insert.</div>
+          </div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+            <sc-for list="{{ planSteps }}" as="p" hint-placeholder-count="4">
+              <div style="{{ p.rowStyle }}">
+                <span style="{{ p.numStyle }}">{{ p.n }}</span>
+                <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--strong); line-height: 1.5;">{{ p.text }}</span>
+                <span style="{{ p.stateStyle }}">{{ p.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">Editing a step here applies at the next turn boundary, not to the turn in flight.</div>
+        </div>
+        <div style="flex: 0 0 auto; padding: 10px 16px 30px; display: flex; gap: 8px;">
+          <div style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; border-radius: 999px; border: 1px solid var(--border); font-size: 13px; color: var(--strong); cursor: pointer;">{{ iEdit }}<span>Edit a step</span></div>
+          <div style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 14px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 500; cursor: pointer;">Looks right</div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">The plan is a document, not a status line. Each step carries its own state, and an edit says when it takes effect.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">16</span><span style="{{ frameName }}">Plan preview, rendered</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground);">PLAN.md</span>
+          <span style="{{ mdMeta }}">2.4 kB</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 4px 18px 30px; display: flex; flex-direction: column; gap: 11px;">
+          <div style="{{ mdH1 }}">Idempotent billing webhooks</div>
+          <div style="{{ mdP }}">Stripe can deliver the same event twice. The handler currently writes first and checks afterwards, so a duplicate delivery double-charges.</div>
+          <span style="{{ mdRule }}"></span>
+          <div style="{{ mdH2 }}">Constraints</div>
+          <div style="display: flex; flex-direction: column; gap: 7px;">
+            <sc-for list="{{ mdBullets }}" as="b" hint-placeholder-count="3">
+              <div style="display: flex; align-items: flex-start; gap: 9px;">
+                <span style="flex: 0 0 auto; margin-top: 7px; width: 4px; height: 4px; border-radius: 50%; background: var(--faint); display: block;"></span>
+                <span style="flex: 1; min-width: 0; font-size: 13px; line-height: 1.55; color: var(--strong);">{{ b.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="{{ mdH2 }}">The claim</div>
+          <div style="{{ mdP }}">Insert into <span style="{{ mdCode }}">webhook_replay</span> before any side effect. The unique index does the work, so a second delivery fails to insert and returns early.</div>
+          <div style="{{ mdFence }}">create unique index webhook_replay_event
+  on webhook_replay (event_id);</div>
+          <div style="{{ mdH2 }}">Acceptance</div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <sc-for list="{{ mdChecks }}" as="c" hint-placeholder-count="3">
+              <div style="display: flex; align-items: flex-start; gap: 10px;">
+                <span style="{{ c.boxStyle }}">{{ c.mark }}</span>
+                <span style="{{ c.textStyle }}">{{ c.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">The same PLAN.md the desktop renders, read as a document. Headings, lists, code and checkboxes. The phone renders it and does not offer a raw view.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">17</span><span style="{{ frameName }}">A design-studio render</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground);">Replay table, three states</span>
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iMaximize }}</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+            <div style="padding: 14px 15px; border-bottom: 1px solid var(--border);">
+              <div style="font-size: 15px; font-weight: 600; letter-spacing: -.01em;">webhook_replay</div>
+              <div style="font-size: 12.5px; color: var(--muted-foreground); margin-top: 5px; line-height: 1.55;">One row per Stripe event id. The unique key is the claim.</div>
+            </div>
+            <sc-for list="{{ previewRows }}" as="r" hint-placeholder-count="3">
+              <div style="{{ r.rowStyle }}">
+                <span style="{{ r.dot }}"></span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--strong);">{{ r.state }}</div>
+                  <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">{{ r.detail }}</div>
+                </div>
+                <span style="{{ r.pinStyle }}">{{ r.pin }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">The render stays on mac-mini-m4. This phone displays it and never downloads the repository.</div>
+        </div>
+        <div style="position: absolute; left: 14px; right: 14px; bottom: 22px; z-index: 4; display: flex; flex-direction: column; gap: 9px; padding: 10px; border-radius: 26px; border: 1px solid var(--border); background: color-mix(in oklab, var(--sidebar) 72%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 10px 32px var(--shadow-lg);">
+          <div style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--accent);">
+            <sc-for list="{{ variantTabs }}" as="v" hint-placeholder-count="3">
+              <div style="{{ v.style }}">{{ v.label }}</div>
+            </sc-for>
+          </div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); text-align: center;">B is the one the agent builds on</div>
+          <div style="display: flex; gap: 8px;">
+            <div style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--strong); cursor: pointer;">Comment</div>
+            <div style="flex: 1; padding: 13px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 500; text-align: center; cursor: pointer;">Build on B</div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Full fidelity, not a status readout. Variants and the build-on choice ride in the same floating card the gate uses.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">18</span><span style="{{ frameName }}">Comment on an element</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iClose }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground);">Comment</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">variant B</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 11px;">
+          <div style="flex: 0 0 auto; padding: 11px 13px; border-radius: 14px; border-left: 0; background: color-mix(in oklab, var(--primary) 8%, transparent); border: 1px solid var(--primary);">
+            <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">ANCHORED TO</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--foreground); margin-top: 5px; line-height: 1.5;">the expired row, on "retried after 15m"</div>
+          </div>
+          <div style="flex: 0 0 auto; padding: 12px 14px; border-radius: 16px; border: 1px solid var(--primary); background: var(--card); font-size: 13.5px; line-height: 1.55; color: var(--foreground);">Fifteen minutes is too long. Stripe retries at 1, 5 and 30 minutes<span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 2px; vertical-align: -2px; background: var(--primary);"></span></div>
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px;">
+            <span style="{{ infoDot }}"></span>
+            <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground); line-height: 1.5;">Sent as a reference to that element, so a re-render tells you if it no longer points anywhere.</span>
+          </div>
+          <div style="flex: 0 0 auto; display: flex; gap: 8px;">
+            <div style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;">Save for later</div>
+            <div style="flex: 1; padding: 13px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 500; text-align: center; cursor: pointer;">Send to the agent</div>
+          </div>
+        </div>
+        <div style="{{ keyboardStyle }}">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; padding: 0 4px 3px;">
+            <sc-for list="{{ kbSuggestions }}" as="s" hint-placeholder-count="3">
+              <span style="{{ s.style }}">{{ s.text }}</span>
+            </sc-for>
+          </div>
+          <sc-for list="{{ kbRows }}" as="r" hint-placeholder-count="3">
+            <div style="{{ r.rowStyle }}">
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div onClick="{{ toggleShift }}" style="{{ kbModStyle }}">{{ iShift }}</div>
+              </sc-if>
+              <sc-for list="{{ r.keys }}" as="k" hint-placeholder-count="10">
+                <div style="{{ k.style }}">{{ k.label }}</div>
+              </sc-for>
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ kbModStyle }}">{{ iBackspace }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <div style="display: flex; gap: 6px; padding: 0 2px; justify-content: center;">
+            <div style="{{ kbKeyWideStyle }}">123</div>
+            <div style="{{ kbModStyle }}">{{ iGlobe }}</div>
+            <div style="{{ kbSpaceStyle }}">space</div>
+            <div style="{{ kbReturnStyle }}">return</div>
+          </div>
+        </div>
+      </div>
+      <div style="{{ captionStyle }}">Tap the bubble on an element, then write. The comment travels as coordinates plus text, never as a flattened screenshot.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">19</span><span style="{{ frameName }}">Pinned plan, expanded</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px; opacity: .4;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;">
+            <div style="max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: 18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border);">Steps 1 and 2 are done.</div>
+          </div>
+        </div>
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; border-radius: 26px 26px 0 0; border-top: 1px solid var(--border); background: var(--background); box-shadow: 0 -18px 50px var(--shadow-lg); padding: 10px 0 30px; display: flex; flex-direction: column; gap: 11px;">
+          <div style="display: flex; justify-content: center;">
+            <span style="width: 38px; height: 4px; border-radius: 999px; background: var(--muted); display: block;"></span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; padding: 0 18px;">
+            <span style="display: inline-flex; color: var(--warn-dim);">{{ iPin }}</span>
+            <span style="flex: 1; min-width: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em;">The plan</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">revised 14:06</span>
+          </div>
+          <div style="padding: 0 14px;">
+            <div style="border: 1px solid var(--border); border-radius: 16px; overflow: hidden;">
+              <sc-for list="{{ planSteps }}" as="p" hint-placeholder-count="4">
+                <div style="{{ p.rowStyle }}">
+                  <span style="{{ p.numStyle }}">{{ p.n }}</span>
+                  <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--strong); line-height: 1.5;">{{ p.text }}</span>
+                  <span style="{{ p.stateStyle }}">{{ p.state }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="padding: 0 18px; font-size: 11.5px; color: var(--faint); line-height: 1.55;">Pinned stays pinned across screens. Unpin and it collapses back into the thread.</div>
+          <div style="display: flex; gap: 8px; padding: 0 14px;">
+            <div style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;">Unpin</div>
+            <div style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 13px; border-radius: 999px; border: 1px solid var(--border); font-size: 13px; color: var(--strong); cursor: pointer;">{{ iEdit }}<span>Edit a step</span></div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Tapping the strip lifts the whole plan as a sheet. The thread stays behind it, so you have not left the conversation.</div>
+    </div>
+
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2260,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;ios&quot;,&quot;options&quot;:[&quot;ios&quot;,&quot;android&quot;],&quot;tsType&quot;:&quot;\&quot;ios\&quot; | \&quot;android\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = { theme: null, plat: "ios", kbShift: false };
+
+  componentDidMount() {
+    if (window.lucide && window.lucide.icons) return;
+    let tries = 0;
+    this._iconTimer = setInterval(() => {
+      tries += 1;
+      if (window.lucide && window.lucide.icons) { clearInterval(this._iconTimer); this.forceUpdate(); }
+      else if (tries > 60) clearInterval(this._iconTimer);
+    }, 100);
+  }
+
+  componentWillUnmount() {
+    if (this._iconTimer) clearInterval(this._iconTimer);
+  }
+
+  icon(name, size) {
+    const set = window.lucide && window.lucide.icons;
+    const entry = set ? set[name] : null;
+    const nodes = entry && Array.isArray(entry[2]) ? entry[2] : entry;
+    const px = size || 20;
+    if (!nodes || !nodes.length) return React.createElement("span", { style: { display: "inline-block", width: px, height: px, flex: "0 0 auto" } });
+    return React.createElement("svg", {
+      width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+      style: { display: "block", flex: "0 0 auto" }
+    }, nodes.map((n, i) => {
+      const attrs = {};
+      Object.keys(n[1] || {}).forEach(k => {
+        attrs[k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())] = n[1][k];
+      });
+      attrs.key = i;
+      return React.createElement(n[0], attrs);
+    }));
+  }
+
+  dot(color, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  renderVals() {
+    const st = this.state;
+    const theme = st.theme ?? this.props.theme ?? "dark";
+    const plat = st.plat ?? this.props.platform ?? "ios";
+    const ios = plat === "ios";
+    const R = ios ? 44 : 30;
+    const W = ios ? 390 : 412;
+
+    const kv = (rows, tint) => rows.map((r, i) => ({
+      k: r.k, v: r.v,
+      rowStyle: "display: flex; align-items: baseline; gap: 12px; padding: 11px 15px; background: var(--card);" +
+        (i ? " border-top: 1px solid var(--border);" : "")
+    }));
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+      markStyle: "display: block; width: 24px; height: 24px; flex: 0 0 24px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+
+      platIsIos: ios,
+      platIsAndroid: !ios,
+      setIos: () => this.setState({ plat: "ios" }),
+      setAndroid: () => this.setState({ plat: "android" }),
+      iosTabStyle: "padding: 5px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; background: " +
+        (ios ? "var(--background)" : "transparent") + "; color: var(--" + (ios ? "foreground" : "muted-foreground") + ");",
+      androidTabStyle: "padding: 5px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; background: " +
+        (!ios ? "var(--background)" : "transparent") + "; color: var(--" + (!ios ? "foreground" : "muted-foreground") + ");",
+      colStyle: "flex: 0 0 auto; display: flex; flex-direction: column; gap: 11px; width: " + W + "px;",
+      statusIcons: ios ? "▮▮▮ ⌁ 82%" : "◔ ▲ ▮ 82%",
+      phoneStyle: "width: " + W + "px; height: " + (ios ? 844 : 892) + "px; flex: 0 0 auto; display: flex; flex-direction: column; position: relative; background: var(--background); border: " +
+        (ios ? "9px solid oklch(0.28 0.008 285)" : "8px solid oklch(0.26 0.008 285)") +
+        "; border-radius: " + R + "px; overflow: hidden; box-shadow: 0 30px 80px var(--shadow-lg); font-family: " +
+        (ios ? "'Instrument Sans', system-ui, sans-serif" : "'Instrument Sans', Roboto, system-ui, sans-serif") + ";",
+      statusBarStyle: "flex: 0 0 " + (ios ? 42 : 30) + "px; height: " + (ios ? 42 : 30) + "px; display: flex; align-items: center; gap: 6px; padding: " +
+        (ios ? "6px 24px 0" : "0 16px") + "; color: var(--foreground);",
+      homeIndicatorStyle: ios
+        ? "position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); width: 134px; height: 5px; border-radius: 999px; background: var(--muted); z-index: 5;"
+        : "position: absolute; left: 50%; bottom: 5px; transform: translateX(-50%); width: 108px; height: 3px; border-radius: 999px; background: var(--muted); z-index: 5;",
+      captionStyle: "width: " + W + "px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-align: center;",
+      noop: () => {},
+      iSessions: this.icon("MessageSquare", 20),
+      iMachines: this.icon("Server", 20),
+      iSettings: this.icon("Settings", 20),
+      iBack: this.icon("ChevronLeft", 20),
+      iClose: this.icon("X", 20),
+      iSunSm: this.icon("Sun", 16),
+      iMoonSm: this.icon("Moon", 16),
+      iEmptyChat: this.icon("MessageSquareDashed", 24),
+      sectionEyebrow: "font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);",
+      sectionNote: "font-size: 12px; color: var(--faint);",
+      frameLabel: "display: flex; align-items: baseline; gap: 9px;",
+      frameNum: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);",
+      frameName: "font-size: 13px; font-weight: 600;",
+      screenTitle: "font-size: 26px; font-weight: 600; letter-spacing: -.02em;",
+      headerRow: "flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 8px 18px 12px;",
+      navRow: "flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px;",
+      bodyPad: "flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px;",
+      emptyBody: "flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 13px; padding: 0 30px 96px; text-align: center;",
+      emptyIconStyle: "display: flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);",
+      emptyTitle: "font-size: 17px; font-weight: 600; letter-spacing: -.01em;",
+      emptyBodyText: "font-size: 13px; color: var(--muted-foreground); line-height: 1.6;",
+      primaryBtn: "margin-top: 4px; padding: 14px 22px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13.5px; font-weight: 500; cursor: pointer;",
+      quietBtn: "padding: 13px 20px; border-radius: 999px; border: 1px solid var(--border); color: var(--strong); font-size: 13px; cursor: pointer;",
+      splashMarkStyle: "display: block; width: 62px; height: 62px; flex: 0 0 62px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-working.svg) center/contain no-repeat; mask: url(assets/mark-working.svg) center/contain no-repeat;",
+      splashPhases: [
+        { name: "mac-mini-m4", state: "loopback, 12ms", k: "success" },
+        { name: "hetzner-cx42", state: "tailnet, 41ms", k: "success" },
+        { name: "wsl-ubuntu-24", state: "trying 3 routes", k: "warning" }
+      ].map(p => ({
+        name: p.name, state: p.state,
+        dot: this.dot("var(--" + p.k + ")", 6),
+        stateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" +
+          (p.k === "warning" ? "warning" : "faint") + ");"
+      })),
+      planSteps: [
+        { n: "1", text: "Add the replay table with a unique claim on event_id", state: "done", k: "success" },
+        { n: "2", text: "Rewrite the handler to claim before any side effect", state: "done", k: "success" },
+        { n: "3", text: "Generate the migration and run it on acme_dev", state: "needs you", k: "warning" },
+        { n: "4", text: "Cover expiry and duplicate delivery in replay.spec.ts", state: "queued", k: "faint" }
+      ].map((s, i) => ({
+        n: s.n, text: s.text, state: s.state,
+        numStyle: "flex: 0 0 24px; width: 24px; height: 24px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; background: " +
+          (s.k === "faint" ? "var(--muted)" : "color-mix(in oklab, var(--" + s.k + ") 18%, transparent)") + "; color: " +
+          (s.k === "faint" ? "var(--muted-foreground)" : "var(--" + s.k + ")") + ";",
+        stateStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" +
+          (s.k === "faint" ? "faint" : s.k) + ");",
+        rowStyle: "display: flex; align-items: flex-start; gap: 11px; padding: 13px 15px; background: var(--card);" +
+          (i ? " border-top: 1px solid var(--border);" : "") + (s.k === "faint" ? " opacity: .6;" : "")
+      })),
+      planBtnStyle: "position: relative; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 999px; background: color-mix(in oklab, var(--warning) 16%, transparent); color: var(--warning); cursor: pointer;",
+      iPlanList: this.icon("ListChecks", 19),
+      iChevronUp: this.icon("ChevronUp", 16),
+      iPin: this.icon("Pin", 15),
+      mdH1: "font-size: 20px; font-weight: 600; letter-spacing: -.015em; line-height: 1.3;",
+      mdH2: "font-size: 14px; font-weight: 600; letter-spacing: -.005em; margin-top: 4px;",
+      mdP: "font-size: 13.5px; line-height: 1.65; color: var(--strong);",
+      mdMeta: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);",
+      mdCode: "font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 2px 6px; border-radius: 4px; background: var(--accent); color: var(--foreground);",
+      mdFence: "padding: 12px 14px; border-radius: 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.7; color: var(--strong); white-space: pre-wrap;",
+      mdRule: "height: 1px; background: var(--border); display: block;",
+      mdBullets: [
+        { text: "A second delivery of the same event id must not insert." },
+        { text: "A crash between claim and commit must not wedge the id forever." },
+        { text: "Nothing runs against a production database at any point." }
+      ].map(b => ({ text: b.text })),
+      mdChecks: [
+        { text: "claims an unseen event id", done: true },
+        { text: "refuses a second delivery", done: true },
+        { text: "releases an expired claim", done: false }
+      ].map(c => ({
+        text: c.text,
+        boxStyle: "flex: 0 0 16px; width: 16px; height: 16px; margin-top: 2px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+          (c.done ? "color-mix(in oklab, var(--success) 20%, transparent)" : "transparent") + "; border: 1px solid var(--" +
+          (c.done ? "success" : "border") + "); color: var(--success);",
+        mark: c.done ? "\u2713" : "",
+        textStyle: "flex: 1; min-width: 0; font-size: 13px; line-height: 1.55; color: var(--" + (c.done ? "muted-foreground" : "strong") + ");"
+      })),
+      iEdit: this.icon("Pencil", 18),
+      iMaximize: this.icon("Maximize2", 18),
+      iMsgPlus: this.icon("MessagePlus", 18),
+      variantTabs: ["A", "B", "C"].map(v => ({
+        label: v === "B" ? v + " \u2713" : v,
+        style: "flex: 1; padding: 8px 0; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 13px; cursor: pointer; background: " +
+          (v === "B" ? "var(--background)" : "transparent") + "; color: var(--" + (v === "B" ? "success" : "muted-foreground") + ");"
+      })),
+      previewRows: [
+        { state: "claimed", detail: "no side effects yet", k: "warning", pin: "" },
+        { state: "committed", detail: "claim committed 14:06:03", k: "success", pin: "" },
+        { state: "expired", detail: "retried after 15m", k: "info", pin: "1" }
+      ].map((r, i) => ({
+        state: r.state, detail: r.detail, pin: r.pin || "+",
+        dot: this.dot("var(--" + r.k + ")", 7),
+        pinStyle: "flex: 0 0 auto; width: 26px; height: 26px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; background: " +
+          (r.pin ? "var(--primary)" : "var(--accent)") + "; color: var(--" + (r.pin ? "primary-foreground" : "muted-foreground") + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; min-height: 56px; padding: 12px 14px; background: var(--card);" +
+          (i ? " border-top: 1px solid var(--border);" : "") +
+          (r.pin ? " background: color-mix(in oklab, var(--primary) 8%, var(--card));" : "")
+      })),
+      threadTurns: [
+        { who: "you", text: "Migrate billing webhooks to the new idempotency table", k: "user" },
+        { who: "claude-code", text: "Wrote a 4 step plan. Step 3 needs a migration on the dev database, so it will ask before running it.", k: "agent" },
+        { who: "claude-code", text: "Steps 1 and 2 are done. replay.spec.ts now asserts exactly-once delivery and passes.", k: "agent" },
+        { who: "you", text: "Cover the claim-expiry case too", k: "user" }
+      ].map(t => ({
+        who: t.who, text: t.text,
+        rowStyle: "display: flex; flex-direction: column; gap: 5px;" + (t.k === "user" ? " align-items: flex-end;" : ""),
+        whoStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);",
+        bubbleStyle: "max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: " +
+          (t.k === "user" ? "18px 18px 4px 18px; background: var(--primary); color: var(--primary-foreground);"
+            : "18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border); color: var(--foreground);")
+      })),
+      composerRestStyle: "position: absolute; left: " + (ios ? 14 : 12) + "px; right: " + (ios ? 14 : 12) + "px; bottom: " +
+        (ios ? 90 : 78) + "px; z-index: 4; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-radius: 999px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 72%, transparent)" : "color-mix(in oklab, var(--card) 72%, transparent)") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 10px 32px var(--shadow-lg);",
+      composerFocusStyle: "position: absolute; left: 0; right: 0; bottom: " + (ios ? 258 : 244) +
+        "px; z-index: 4; display: flex; flex-direction: column; gap: 9px; padding: 11px 14px; border-top: 1px solid var(--border); background: var(--background);",
+      sendBtnStyle: "flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); cursor: pointer;",
+      sendDimStyle: "flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 999px; background: var(--muted); color: var(--faint);",
+      attachBtnStyle: "flex: 0 0 auto; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 999px; color: var(--muted-foreground);",
+      iPlus: this.icon("Plus", 20),
+      iSend: this.icon("ArrowUp", 18),
+      iMic: this.icon("Mic", 20),
+      iImage: this.icon("Image", 20),
+      iCamera: this.icon("Camera", 20),
+      iFile: this.icon("FileCode", 20),
+      iTerminal: this.icon("SquareTerminal", 20),
+      iGlobe: this.icon("Globe", 20),
+      iShift: this.icon("ChevronUp", 18),
+      iBackspace: this.icon("Delete", 18),
+      iX: this.icon("X", 14),
+      iClock: this.icon("Clock", 16),
+      keyboardStyle: "position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; height: " + (ios ? 258 : 244) +
+        "px; display: flex; flex-direction: column; gap: " + (ios ? 9 : 7) + "px; padding: " + (ios ? "9px 4px 30px" : "8px 4px 18px") +
+        "; background: var(--kb-bg);",
+      kbRows: [
+        { keys: "qwertyuiop".split(""), pad: 0 },
+        { keys: "asdfghjkl".split(""), pad: 20 },
+        { keys: "zxcvbnm".split(""), pad: 0, edges: true }
+      ].map(r => ({
+        pad: r.pad,
+        rowStyle: "display: flex; gap: " + (ios ? 6 : 5) + "px; padding: 0 " + (r.pad ? r.pad + "px" : "0") + "; justify-content: center;",
+        showEdges: !!r.edges,
+        keys: r.keys.map(k => ({
+          label: st.kbShift ? k.toUpperCase() : k,
+          style: "flex: 1; min-width: 0; height: " + (ios ? 42 : 40) + "px; display: flex; align-items: center; justify-content: center; border-radius: " +
+            (ios ? "6px" : "4px") + "; background: var(--kb-key); color: var(--kb-ink); font-size: " + (ios ? "18px" : "17px") + "; cursor: pointer;"
+        }))
+      })),
+      kbModStyle: "flex: 0 0 " + (ios ? "42px" : "44px") + "; height: " + (ios ? 42 : 40) +
+        "px; display: flex; align-items: center; justify-content: center; border-radius: " + (ios ? "6px" : "4px") +
+        "; background: var(--kb-mod); color: var(--kb-ink); cursor: pointer;",
+      kbSpaceStyle: "flex: 1; height: " + (ios ? 42 : 40) + "px; display: flex; align-items: center; justify-content: center; border-radius: " +
+        (ios ? "6px" : "4px") + "; background: var(--kb-key); color: var(--kb-ink); font-size: 13.5px; cursor: pointer;",
+      kbKeyWideStyle: "flex: 0 0 " + (ios ? "58px" : "62px") + "; height: " + (ios ? 42 : 40) +
+        "px; display: flex; align-items: center; justify-content: center; border-radius: " + (ios ? "6px" : "4px") +
+        "; background: var(--kb-mod); color: var(--kb-ink); font-size: 13px; cursor: pointer;",
+      kbReturnStyle: "flex: 0 0 " + (ios ? "78px" : "72px") + "; height: " + (ios ? 42 : 40) +
+        "px; display: flex; align-items: center; justify-content: center; border-radius: " + (ios ? "6px" : "4px") +
+        "; background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 500; cursor: pointer;",
+      kbSuggestions: [
+        { text: "expiry", k: "plain" },
+        { text: "claim-expiry", k: "bold" },
+        { text: "expiring", k: "plain" }
+      ].map((s, i) => ({
+        text: s.text,
+        style: "flex: 1; min-width: 0; text-align: center; font-size: 13.5px; color: var(--kb-ink); font-weight: " +
+          (s.k === "bold" ? "500" : "400") + "; padding: 3px 0;" + (i ? " border-left: 1px solid var(--kb-mod);" : ""),
+        wrapStyle: "flex: 1; display: flex; justify-content: center;"
+      })),
+      kbShiftOn: st.kbShift,
+      toggleShift: () => this.setState(s => ({ kbShift: !s.kbShift })),
+      attachSheetRows: [
+        { id: "photo", label: "Photo or screenshot", note: "uploads to the machine, not stored here" },
+        { id: "camera", label: "Take a photo", note: "one shot, sent with the turn" },
+        { id: "file", label: "File from the worktree", note: "scoped to what this session changed" },
+        { id: "term", label: "Terminal output", note: "select a range, byte count shown" },
+        { id: "url", label: "A URL for the agent to fetch", note: "the machine fetches it, not the phone" }
+      ],
+      draftThumbs: [
+        { n: "1", label: "before.png", size: "1.4 MB" },
+        { n: "2", label: "after.png", size: "1.6 MB" }
+      ],
+      unpairedRows: [
+        { label: "Sessions", text: "Nothing to list, and nothing hidden from you." },
+        { label: "Review", text: "No approvals are sitting somewhere unseen." },
+        { label: "Machines", text: "This is the screen that owns pairing." }
+      ],
+      idleFleet: [
+        { name: "mac-mini-m4", state: "idle · loopback", k: "success" },
+        { name: "hetzner-cx42", state: "idle · tailnet", k: "success" },
+        { name: "wsl-ubuntu-24", state: "last seen 2d ago", k: "faint" }
+      ].map((m, i) => ({
+        name: m.name, state: m.state,
+        dot: this.dot("var(--" + m.k + ")", 7),
+        rowStyle: "display: flex; align-items: center; gap: 11px; min-height: 52px; padding: 12px 15px; background: var(--card);" +
+          (i ? " border-top: 1px solid var(--border);" : "") + (m.k === "faint" ? " opacity: .55;" : "")
+      })),
+      tabBarStyle: "position: absolute; left: " + (ios ? 14 : 12) + "px; right: " + (ios ? 14 : 12) + "px; bottom: " +
+        (ios ? 22 : 14) + "px; z-index: 4; display: flex; align-items: stretch; padding: " + (ios ? "7px 6px" : "8px 6px") +
+        "; border-radius: 999px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 14px 38px var(--shadow-lg);",
+      tabs: {
+        sessions: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--primary);",
+        machines: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--muted-foreground);",
+        settings: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--muted-foreground);"
+      },
+
+      needsBadge: "padding: 4px 10px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-fg); font-size: 11.5px; font-weight: 500;",
+      phoneGroups: [
+        {
+          label: "NEEDS YOU", count: "2", k: "warning",
+          items: [
+            { title: "Migrate billing webhooks to the new idempotency table", meta: "mac-mini-m4 · acme-api · 4m", k: "warning", pill: "gate", pk: "warning" },
+            { title: "Rotate the Stripe webhook secret across environments", meta: "hetzner-cx42 · acme-api · 12m", k: "warning", pill: "gate", pk: "warning" }
+          ]
+        },
+        {
+          label: "RUNNING", count: "2", k: "success",
+          items: [
+            { title: "Backfill the customer search index", meta: "hetzner-cx42 · acme-api · step 2 of 5", k: "success", pill: "", pk: "" },
+            { title: "Write the on-call runbook for duplicate deliveries", meta: "mac-mini-m4 · acme-docs · step 1 of 3", k: "success", pill: "", pk: "" }
+          ]
+        },
+        {
+          label: "UNREACHABLE", count: "1", k: "muted",
+          items: [
+            { title: "Upgrade the Postgres client to 16", meta: "wsl-ubuntu-24 · daemon not answering", k: "faint", pill: "offline", pk: "destructive" }
+          ]
+        }
+      ].map(g => ({
+        label: g.label, count: g.count,
+        badgeStyle: "min-width: 20px; padding: 2px 8px; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+          (g.k === "muted" ? "var(--muted)" : "color-mix(in oklab, var(--" + g.k + ") 16%, transparent)") + "; color: " +
+          (g.k === "muted" ? "var(--muted-foreground)" : "var(--" + g.k + ")") + ";",
+        items: g.items.map(s => ({
+          title: s.title, meta: s.meta, pill: s.pill,
+          dot: this.dot("var(--" + s.k + ")", 7) + " margin-top: 6px;",
+          pillStyle: s.pill
+            ? "flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: color-mix(in oklab, var(--" +
+              s.pk + ") 16%, transparent); color: var(--" + s.pk + ");"
+            : "display: none;",
+          cardStyle: "padding: 13px 14px; border: 1px solid " + (s.k === "warning" ? "var(--warn-border)" : "var(--border)") +
+            "; border-radius: 16px; background: " + (s.k === "warning" ? "var(--warn-bg)" : "var(--card)") + ";" +
+            (s.k === "faint" ? " opacity: .55;" : "")
+        }))
+      })),
+
+      gatePulseDot: this.dot("var(--warning)", 11) + " animation: dvPulse 2.4s infinite;",
+      gateFacts: kv([
+        { k: "Machine", v: "mac-mini-m4" },
+        { k: "Worktree", v: "wt-billing-idem" },
+        { k: "Database", v: "acme_dev, not prod" },
+        { k: "Checkpoint", v: "taken first, revertible" }
+      ]),
+      gateNote: "Deciding here is the same call the desktop would make. Whichever client answers first wins, and the other is told who answered.",
+      decisionStyle: "position: absolute; left: " + (ios ? 14 : 12) + "px; right: " + (ios ? 14 : 12) + "px; bottom: " +
+        (ios ? 22 : 14) + "px; z-index: 4; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 30px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 0 22px var(--shadow-lg), 0 10px 32px var(--shadow-lg);",
+      decisionSpacerStyle: "flex: 0 0 " + (ios ? 130 : 122) + "px; height: " + (ios ? 130 : 122) + "px;",
+      allowOnceStyle: "padding: 15px; border-radius: 999px; background: var(--warning); color: var(--warning-foreground); font-size: 13.5px; font-weight: 500; text-align: center; cursor: pointer;",
+      ruleStyle: "flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 500; text-align: center; color: var(--strong); cursor: pointer;",
+      denyStyle: "flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;",
+
+      okDot: this.dot("var(--success)", 9),
+      badDot: this.dot("var(--destructive)", 9),
+      infoDot: this.dot("var(--info)", 7),
+      workingDot: this.dot("var(--primary)", 7),
+      receiptRows: kv([
+        { k: "Decision", v: "allow once" },
+        { k: "Decided on", v: "iPhone 16 Pro" },
+        { k: "Credential", v: "device 9c41…a7e" },
+        { k: "Checkpoint", v: "ckpt_7f24 · 8f3c1de" }
+      ]),
+      secondaryBtn: "height: 48px; display: flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid var(--border); color: var(--strong); font-size: 13.5px; cursor: pointer;",
+
+      watchPill: "flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10.5px;",
+      streamLines: [
+        { text: "$ pnpm vitest run replay.spec.ts", k: "cmd" },
+        { text: "✓ claims an unseen event id", k: "pass" },
+        { text: "✓ refuses a second delivery", k: "pass" },
+        { text: "✓ releases an expired claim", k: "pass" },
+        { text: "× commits after a partial write", k: "fail" },
+        { text: "4 passed, 1 failed in 2.4s", k: "dim" }
+      ].map(l => ({
+        text: l.text,
+        style: "color: " + (l.k === "pass" ? "var(--success)" : l.k === "fail" ? "var(--destructive)" : l.k === "cmd" ? "var(--foreground)" : "var(--muted-foreground)") +
+          "; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+      })),
+      claimBtn: "margin-top: 11px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid var(--info-border); color: var(--info-fg); font-size: 13.5px; cursor: pointer;",
+
+      phoneAlternatives: [
+        { text: "Write the SQL to prisma/migrations and stop.", k: "success" },
+        { text: "Run it against acme_dev, which is a gate you can answer.", k: "success" },
+        { text: "Change the policy in Settings, if you own it.", k: "warning" }
+      ].map((a, i) => ({
+        text: a.text,
+        dot: this.dot("var(--" + a.k + ")", 6) + " margin-top: 7px;",
+        rowStyle: "display: flex; align-items: flex-start; gap: 11px; padding: 12px 15px; background: var(--card);" +
+          (i ? " border-top: 1px solid var(--border);" : "")
+      }))
+    };
+  }
+}
+
+</script>
+</body>
+</html>

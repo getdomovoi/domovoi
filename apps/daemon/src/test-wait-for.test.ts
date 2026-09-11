@@ -37,7 +37,7 @@ describe("daemon assertion waits", () => {
   })
 
   it.each([
-    ["win32", 20_000],
+    ["win32", 25_000],
     ["linux", 10_000],
     ["darwin", 10_000],
   ] as const)("gives a spawned %s fixture longer to start than an observation", (platform, timeout) => {
@@ -47,6 +47,10 @@ describe("daemon assertion waits", () => {
 
   it("clears the worst passing Windows run measured in CI by more than twice", () => {
     expect(fixtureStartupTimeoutMs("win32")).toBeGreaterThan(2 * 8_103)
+  })
+
+  it("exceeds the twenty second Windows budget that expired twice on one job", () => {
+    expect(fixtureStartupTimeoutMs("win32")).toBeGreaterThan(20_000)
   })
 
   it.each([

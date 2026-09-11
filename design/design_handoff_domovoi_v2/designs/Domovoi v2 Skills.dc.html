@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: calc(var(--radius) - 2px); border: 3px solid transparent; background-clip: content-box; }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); } 70% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--warning) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .72);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+    --ok-bg: oklch(0.215 0.04 158); --ok-border: oklch(0.33 0.07 158); --ok-fg: oklch(0.9 0.06 158); --ok-dim: oklch(0.74 0.08 158);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+    --ok-bg: oklch(0.965 0.025 158); --ok-border: oklch(0.85 0.07 158); --ok-fg: oklch(0.33 0.09 158); --ok-dim: oklch(0.45 0.1 158);
+  }
+</style>
+</helmet>
+
+<div class="{{ themeClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 20px; padding: 26px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="width: 1560px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <sc-for list="{{ steps }}" as="s" hint-placeholder-count="5">
+      <div onClick="{{ s.go }}" style="{{ s.style }}">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ s.numColor }};">{{ s.num }}</span>
+        <span style="font-size: 11.5px;">{{ s.label }}</span>
+      </div>
+    </sc-for>
+    <span style="flex: 1;"></span>
+    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
+  </div>
+
+  <div style="width: 1560px; height: 980px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border);">
+      <div style="display: flex; gap: 8px; padding-right: 4px;">
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+      </div>
+      <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+      <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
+      <div style="width: 1px; height: 18px; background: var(--border);"></div>
+      <span style="font-size: 12px; color: var(--muted-foreground);">{{ chromeLabel }}</span>
+      <span style="flex: 1;"></span>
+      <span style="{{ chromePillStyle }}">{{ chromePill }}</span>
+      <div onClick="{{ toggleTheme }}" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">
+        <sc-if value="{{ isDarkTheme }}" hint-placeholder-val="{{ true }}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9"></path></svg>
+        </sc-if>
+        <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.9 4.9 1.4 1.4"></path><path d="m17.7 17.7 1.4 1.4"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.3 17.7-1.4 1.4"></path><path d="m19.1 4.9-1.4 1.4"></path></svg>
+        </sc-if>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px;">
+
+      <sc-if value="{{ isInventory }}" hint-placeholder-val="{{ true }}">
+        <div style="width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 20px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Skills on mac-mini-m4</div>
+            <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">A skill is a folder with a SKILL.md and a manifest. Installing is not enabling: enabling is a review, per project.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+            <div onClick="{{ goInstall }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Install from a path</div>
+            <div onClick="{{ goReviewChanged }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); background: var(--warn-bg); font-size: 12px; color: var(--warn-fg); cursor: pointer;">1 review no longer matches its skill</div>
+            <div onClick="{{ goTurn }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">This turn's selection</div>
+          </div>
+
+          <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+            <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ g.label }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ g.meta }}</span>
+              </div>
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <sc-for list="{{ g.items }}" as="s" hint-placeholder-count="3">
+                  <div style="{{ s.rowStyle }}">
+                    <span style="{{ s.dot }}"></span>
+                    <div onClick="{{ s.open }}" style="min-width: 0; flex: 1; cursor: pointer;">
+                      <div style="display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ s.name }}</span>
+                        <span style="{{ s.trustStyle }}">{{ s.trust }}</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ s.source }}</span>
+                      </div>
+                      <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 4px;">{{ s.desc }}</div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 4px;">{{ s.caps }}</div>
+                    </div>
+                    <span style="{{ s.enableStyle }}">{{ s.enableLabel }}</span>
+                    <span onClick="{{ s.toggle }}" style="{{ s.trackStyle }}">
+                      <span style="{{ s.knobStyle }}"></span>
+                    </span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13px; font-weight: 600;">Inventories from your other machines</span>
+              <span style="font-size: 11px; color: var(--muted-foreground);">Usable only where installed.</span>
+            </div>
+            <sc-for list="{{ inventories }}" as="m" hint-placeholder-count="3">
+              <div style="{{ m.rowStyle }}">
+                <span style="{{ m.dot }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); width: 160px; flex: 0 0 160px;">{{ m.name }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); width: 190px; flex: 0 0 190px;">{{ m.platform }}</span>
+                <span style="{{ m.stateStyle }}">{{ m.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isInstall }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 18px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Install from a path on mac-mini-m4</div>
+            <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">A path is the only source. No bundle, no registry, no installer, so nothing runs code to install.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <div style="padding: 10px 13px; border-bottom: 1px solid var(--border); background: var(--card); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">SOURCE PATH</div>
+            <div style="padding: 13px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--foreground); line-height: 1.7;">/Users/dana/work/skills/pr-triage</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <sc-for list="{{ previewFacts }}" as="f" hint-placeholder-count="6">
+              <div style="padding: 11px 14px; background: var(--card);">
+                <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">{{ f.k }}</div>
+                <div style="{{ f.valueStyle }}">{{ f.v }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13px; font-weight: 600;">Manifest</span>
+              <span style="font-size: 11px; color: var(--muted-foreground);">Declared needs. Each is still gated when used.</span>
+            </div>
+            <sc-for list="{{ manifest }}" as="c" hint-placeholder-count="4">
+              <div style="{{ c.rowStyle }}">
+                <span style="{{ c.dot }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); width: 170px; flex: 0 0 170px;">{{ c.name }}</span>
+                <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ c.detail }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">FILES, 4 OF A 256 LIMIT</div>
+              <sc-for list="{{ files }}" as="f" hint-placeholder-count="4">
+                <div style="{{ f.rowStyle }}">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ f.path }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ f.bytes }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHERE IT CAN GO</div>
+              <sc-for list="{{ targets }}" as="t" hint-placeholder-count="2">
+                <div onClick="{{ t.pick }}" style="{{ t.rowStyle }}">
+                  <span style="{{ t.dot }}"></span>
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 12px; color: var(--foreground);">{{ t.scope }}</div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 3px;">{{ t.path }}</div>
+                  </div>
+                  <span style="{{ t.stateStyle }}">{{ t.state }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <sc-if value="{{ hasRefusals }}" hint-placeholder-val="{{ true }}">
+            <div style="flex: 0 0 auto; border: 1px solid var(--warn-border); border-radius: var(--radius); background: var(--warn-bg); overflow: hidden;">
+              <div style="padding: 11px 14px; border-bottom: 1px solid var(--warn-border); display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 13px; font-weight: 600; color: var(--warn-fg);">Two files will not be copied</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">typed refusals, not warnings</span>
+              </div>
+              <sc-for list="{{ refusals }}" as="r" hint-placeholder-count="2">
+                <div style="display: flex; align-items: center; gap: 11px; padding: 10px 14px;">
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-fg); width: 210px; flex: 0 0 210px;">{{ r.reason }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">{{ r.path }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+            <div onClick="{{ goInventory }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Install, leave it untrusted</div>
+            <div onClick="{{ goDetail }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--foreground); cursor: pointer;" style-hover="background: var(--accent);">Read it, then decide</div>
+            <span style="flex: 1;"></span>
+            <span style="font-size: 11.5px; color: var(--faint);">Installing does not enable it in any project.</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 820px; display: flex; flex-direction: column; gap: 18px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 500; letter-spacing: -.01em;">pr-triage</span>
+              <span style="{{ detailTrustStyle }}">{{ detailTrust }}</span>
+              <span style="{{ detailSigStyle }}">{{ detailSig }}</span>
+            </div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground); line-height: 1.6;">{{ detailIdentity }}</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <sc-for list="{{ detailFacts }}" as="f" hint-placeholder-count="6">
+              <div style="padding: 11px 14px; background: var(--card);">
+                <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--faint);">{{ f.k }}</div>
+                <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); margin-top: 4px; line-height: 1.45;">{{ f.v }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--info-border); border-radius: var(--radius); background: var(--info-bg); overflow: hidden;">
+            <div style="padding: 12px 15px; display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 12.5px; font-weight: 500; color: var(--info-fg);">Enablement is a review, and it is per project</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--info-dim);">acme-api · reviewed 12 Aug 14:02 by desktop</span>
+            </div>
+            <div style="padding: 0 15px 13px; font-size: 13px; line-height: 1.6; color: var(--info-fg); text-wrap: pretty;">Pinned to the digest and manifest you read. Change either and it is refused with <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">review-changed</span>. Manual review also grants trust.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--card);">
+              <span style="font-size: 13px; font-weight: 600;">SKILL.md</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">2.1 kB of a 128 kB limit · read-only here</span>
+            </div>
+            <div style="padding: 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground); line-height: 1.8; white-space: pre-wrap;">{{ skillMd }}</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+            <div onClick="{{ goInventory }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Trust it for acme-api</div>
+            <div onClick="{{ goInventory }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-fg);">Revoke</div>
+            <span style="flex: 1;"></span>
+            <span style="font-size: 11.5px; color: var(--faint);">Trust and revoke are the only two decisions.</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isReviewChanged }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 780px; display: flex; flex-direction: column; gap: 18px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; border: 1px solid var(--warn-border); border-radius: var(--radius); background: var(--warn-bg); overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 11px; padding: 13px 15px;">
+              <span style="{{ warnDot }}"></span>
+              <span style="font-size: 13.5px; font-weight: 500; color: var(--warn-fg);">sql-explain changed since you reviewed it</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">refused · review-changed</span>
+            </div>
+            <div style="padding: 0 15px 14px; font-size: 13px; line-height: 1.62; color: var(--warn-fg); text-wrap: pretty;">The digest moved and the manifest gained a capability, so your old review does not carry. The daemon refused this turn with a reason.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT CHANGED</div>
+            <sc-for list="{{ changeRows }}" as="c" hint-placeholder-count="3">
+              <div style="{{ c.rowStyle }}">
+                <span style="font-size: 11.5px; color: var(--muted-foreground); width: 130px; flex: 0 0 130px;">{{ c.k }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim); flex: 1; min-width: 0;">{{ c.was }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--success); flex: 1; min-width: 0;">{{ c.now }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px dashed var(--danger-border); border-radius: var(--radius); background: var(--danger-bg); font-size: 12.5px; color: var(--danger-fg); line-height: 1.6;">The new capability is <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">secrets.read</span>, and it runs processes. Read that part.</div>
+
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+            <div onClick="{{ goDetail }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Read the diff and re-review</div>
+            <div onClick="{{ goInventory }}" style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Leave it disabled</div>
+            <span style="flex: 1;"></span>
+            <span style="font-size: 11.5px; color: var(--faint);">The agent carried on this turn without it.</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isTurn }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 800px; display: flex; flex-direction: column; gap: 18px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">Skills for this turn</div>
+            <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">Eight at most, chosen explicitly. Omissions are reported with a reason.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13px; font-weight: 600;">Selected</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ selectedCount }}</span>
+            </div>
+            <sc-if value="{{ turnEmpty }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; align-items: center; gap: 12px; padding: 16px 14px;">
+                <span style="font-size: 12.5px; color: var(--muted-foreground); line-height: 1.55;">No skills this turn. The agent works from the thread and the plan alone, which is the normal case for most turns.</span>
+                <span style="flex: 1;"></span>
+                <span onClick="{{ restoreTurn }}" style="font-size: 11.5px; color: var(--primary); cursor: pointer; white-space: nowrap;">Select three again</span>
+              </div>
+            </sc-if>
+            <sc-for list="{{ turnSelected }}" as="t" hint-placeholder-count="3">
+              <div style="{{ t.rowStyle }}">
+                <span style="{{ t.dot }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); width: 150px; flex: 0 0 150px;">{{ t.name }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); flex: 1; min-width: 0;">{{ t.digest }}</span>
+                <span onClick="{{ t.remove }}" style="font-size: 11px; color: var(--muted-foreground); cursor: pointer;">Remove</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13px; font-weight: 600;">Omitted, with the reason</span>
+              <span style="font-size: 11px; color: var(--muted-foreground);">These four reasons are the whole vocabulary.</span>
+            </div>
+            <sc-for list="{{ turnOmitted }}" as="o" hint-placeholder-count="4">
+              <div style="{{ o.rowStyle }}">
+                <span style="{{ o.dot }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); width: 150px; flex: 0 0 150px;">{{ o.name }}</span>
+                <span style="{{ o.reasonStyle }}">{{ o.reason }}</span>
+                <span style="font-size: 11.5px; color: var(--muted-foreground); flex: 1; min-width: 0;">{{ o.detail }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 12px; color: var(--muted-foreground); line-height: 1.6;">The delivery record keeps this partition, so an odd turn is explainable.</div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+class Component extends DCLogic {
+  state = {
+    screen: "inventory",
+    theme: null,
+    disabled: ["sql-explain", "pdf-forms", "acme-seed"],
+    target: 1,
+    turnOff: []
+  };
+
+  dot(color, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
+  }
+
+  go(screen) {
+    return () => this.setState({ screen: screen });
+  }
+
+  renderVals() {
+    const st = this.state;
+    const sc = st.screen;
+    const theme = st.theme ?? this.props.theme ?? "dark";
+
+    const stepDefs = [
+      { id: "inventory", num: "1", label: "Installed", note: "Grouped by scope and source, with the real trust states: untrusted, trusted, blocked." },
+      { id: "install", num: "2", label: "Install from a path", note: "A path is the only source in the protocol. No bundle, no registry, no installer command, so nothing executes to install." },
+      { id: "detail", num: "3", label: "Skill and review", note: "Signature and trust are separate. Enablement is a per-project review pinned to a digest and a manifest." },
+      { id: "changed", num: "4", label: "Review changed", note: "Editing a skill invalidates the review. The turn refusal reason is review-changed, and it comes from the daemon." },
+      { id: "turn", num: "5", label: "This turn's skills", note: "Eight at most, and every omission carries one of four reasons: not-enabled, unavailable, review-changed, policy." }
+    ];
+
+    const turnList = [
+      { name: "pr-triage", digest: "sha256:4b91…e7c · manifest v1" },
+      { name: "plan-preview", digest: "sha256:0aa2…31d · manifest v1" },
+      { name: "acme-deploy", digest: "sha256:77c8…9f2 · manifest v1" }
+    ].filter(t => st.turnOff.indexOf(t.name) === -1);
+
+    const trustChip = t => ({
+      "untrusted-unsigned": { label: "untrusted · unsigned", k: "warning" },
+      "untrusted-unverified": { label: "untrusted · signature unverified", k: "warning" },
+      "trusted-signature": { label: "trusted · verified signature", k: "success" },
+      "trusted-manual": { label: "trusted · your review", k: "success" },
+      "blocked-invalid": { label: "blocked · invalid signature", k: "destructive" },
+      "blocked-revoked": { label: "blocked · revoked signer", k: "destructive" }
+    }[t]);
+
+    const capLabels = {
+      "filesystem.read": "Read files in the worktree",
+      "filesystem.write": "Write files in the worktree",
+      "process.execute": "Run commands",
+      "network.connect": "Reach the network",
+      "secrets.read": "Read secrets",
+      "preview.render": "Render a preview"
+    };
+
+    const mk = s => {
+      const on = st.disabled.indexOf(s.name) === -1;
+      const tr = trustChip(s.trust);
+      const blocked = s.trust.indexOf("blocked") === 0;
+      return {
+        name: s.name, desc: s.desc, source: s.source,
+        caps: s.caps.join(" · "),
+        trust: tr.label,
+        trustStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--" +
+          tr.k + ") 16%, transparent); color: var(--" + tr.k + ");",
+        dot: this.dot(blocked ? "var(--destructive)" : on ? "var(--success)" : "var(--faint)", 6),
+        open: s.name === "sql-explain" ? this.go("changed") : this.go("detail"),
+        enableLabel: blocked ? "cannot be enabled" : on ? "enabled for acme-api" : "not reviewed",
+        enableStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" +
+          (blocked ? "destructive" : on ? "success" : "faint") + ");",
+        toggle: blocked ? undefined : () => this.setState(s2 => ({
+          disabled: s2.disabled.indexOf(s.name) === -1 ? s2.disabled.concat([s.name]) : s2.disabled.filter(x => x !== s.name)
+        })),
+        trackStyle: "position: relative; display: block; width: 34px; height: 20px; flex: 0 0 34px; border-radius: 999px; transition: background .14s var(--ease-out, ease); background: " +
+          (on && !blocked ? "var(--primary)" : "var(--muted)") + ";" + (blocked ? " opacity: .4; cursor: default;" : " cursor: pointer;"),
+        knobStyle: "position: absolute; top: 3px; left: " + (on && !blocked ? "17px" : "3px") +
+          "; width: 14px; height: 14px; border-radius: 50%; background: var(--card); transition: left .14s var(--ease-out, ease); display: block;",
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 12px 14px;" + (s.i ? " border-top: 1px solid var(--border);" : "") +
+          (blocked ? " opacity: .72;" : on ? "" : " opacity: .68;")
+      };
+    };
+
+    return {
+      themeClass: theme === "light" ? "dv-light" : "dv-dark",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      isDarkTheme: theme !== "light",
+      isLightTheme: theme === "light",
+      markStyle: "display: block; width: 22px; height: 22px; flex: 0 0 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label,
+        numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        go: this.go(s.id),
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
+          "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+
+      chromeLabel: sc === "install" ? "Install a skill" : sc === "detail" ? "pr-triage" : sc === "changed" ? "sql-explain" : sc === "turn" ? "Turn selection" : "Skills",
+      chromePill: sc === "changed" ? "review-changed" : "mac-mini-m4 · 9 skills",
+      chromePillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--" +
+        (sc === "changed" ? "warn-bg" : "accent") + "); color: var(--" + (sc === "changed" ? "warn-fg" : "muted-foreground") + ");",
+
+      isInventory: sc === "inventory",
+      isInstall: sc === "install",
+      isDetail: sc === "detail",
+      isReviewChanged: sc === "changed",
+      isTurn: sc === "turn",
+      goInventory: this.go("inventory"),
+      goInstall: this.go("install"),
+      goDetail: this.go("detail"),
+      goReviewChanged: this.go("changed"),
+      goTurn: this.go("turn"),
+
+      groups: [
+        {
+          label: "SYSTEM SCOPE", meta: "3 · source domovoi",
+          items: [
+            { name: "plan-preview", desc: "Renders a working plan as a reviewable document", source: "domovoi", trust: "trusted-signature", caps: ["preview.render", "filesystem.read"] },
+            { name: "design-studio", desc: "Turns a brief into HTML variants you can open", source: "domovoi", trust: "trusted-signature", caps: ["preview.render", "filesystem.write"], i: 1 },
+            { name: "repo-audit", desc: "Dependency, licence and risk sweep", source: "domovoi", trust: "trusted-signature", caps: ["filesystem.read", "process.execute"], i: 1 }
+          ]
+        },
+        {
+          label: "USER SCOPE", meta: "3 · sources domovoi, claude, codex",
+          items: [
+            { name: "pr-triage", desc: "Groups open pull requests by risk and staleness", source: "domovoi", trust: "trusted-signature", caps: ["filesystem.read", "process.execute", "network.connect"] },
+            { name: "sql-explain", desc: "Annotates a query plan in plain language", source: "claude", trust: "untrusted-unsigned", caps: ["filesystem.read", "process.execute", "secrets.read"], i: 1 },
+            { name: "k8s-triage", desc: "Reads pod and event state for a namespace", source: "codex", trust: "blocked-revoked", caps: ["process.execute", "network.connect"], i: 1 }
+          ]
+        },
+        {
+          label: "PROJECT SCOPE", meta: "3 · sources agents, kilo · committed to acme-api",
+          items: [
+            { name: "acme-deploy", desc: "The staging deploy runbook, step by step", source: "agents", trust: "trusted-manual", caps: ["process.execute", "filesystem.read"] },
+            { name: "acme-seed", desc: "Seeds a dev database from a fixture set", source: "agents", trust: "untrusted-unsigned", caps: ["process.execute", "secrets.read"], i: 1 },
+            { name: "pdf-forms", desc: "Fills and flattens PDF forms", source: "kilo", trust: "untrusted-unverified", caps: ["filesystem.read", "filesystem.write"], i: 1 }
+          ]
+        }
+      ].map(g => ({ label: g.label, meta: g.meta, items: g.items.map(s => mk(s)) })),
+
+      inventories: [
+        { name: "hetzner-cx42", platform: "linux · x64 · 0.9.4", state: "inventory available, 6 skills", k: "success" },
+        { name: "wsl-ubuntu-24", platform: "linux · x64 · 0.9.4", state: "unreachable, last inventory 2d old", k: "destructive" },
+        { name: "iPhone 16 Pro", platform: "not a daemon", state: "unknown, phones do not hold skills", k: "faint" }
+      ].map((m, i) => ({
+        name: m.name, platform: m.platform, state: m.state,
+        dot: this.dot("var(--" + m.k + ")", 6),
+        stateStyle: "font-size: 11.5px; color: var(--" + (m.k === "success" ? "muted-foreground" : m.k) + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+          (m.k === "faint" ? " opacity: .6;" : "")
+      })),
+
+      previewFacts: [
+        { k: "NAME", v: "pr-triage", mono: true },
+        { k: "CONTENT DIGEST", v: "sha256:4b91…e7c", mono: true },
+        { k: "SOURCE DIGEST", v: "sha256:4b91…e7c · matches", mono: true, ok: true },
+        { k: "SIGNATURE", v: "unsigned", mono: true, warn: true },
+        { k: "TRUST ON INSTALL", v: "untrusted · unsigned", mono: true, warn: true },
+        { k: "SCOPE OPTIONS", v: "project or user", mono: true }
+      ].map(f => ({
+        k: f.k, v: f.v,
+        valueStyle: "font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 4px; line-height: 1.45; color: var(--" +
+          (f.warn ? "warning" : f.ok ? "success" : "strong") + ");"
+      })),
+      manifest: [
+        { name: "filesystem.read", detail: capLabels["filesystem.read"], k: "success" },
+        { name: "process.execute", detail: capLabels["process.execute"] + ", each one still gated", k: "warning" },
+        { name: "network.connect", detail: capLabels["network.connect"] + ", asks per host", k: "warning" },
+        { name: "filesystem.write", detail: capLabels["filesystem.write"], k: "warning" }
+      ].map((c, i) => ({
+        name: c.name, detail: c.detail,
+        dot: this.dot("var(--" + c.k + ")", 6),
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      files: [
+        { path: "SKILL.md", bytes: "2.1 kB" },
+        { path: "scripts/triage.ts", bytes: "6.4 kB" },
+        { path: "scripts/score.ts", bytes: "3.2 kB" },
+        { path: "README.md", bytes: "1.1 kB" }
+      ].map((f, i) => ({
+        path: f.path, bytes: f.bytes,
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 9px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      targets: [
+        { scope: "Project · acme-api", path: ".agents/skills/pr-triage", state: "conflict, a skill of that name exists", k: "warning" },
+        { scope: "User · this machine", path: "~/.domovoi/skills/pr-triage", state: "available", k: "success" }
+      ].map((t, i) => ({
+        scope: t.scope, path: t.path, state: t.state,
+        dot: this.dot("var(--" + t.k + ")", 6),
+        pick: () => this.setState({ target: i }),
+        stateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" + t.k + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 14px; cursor: pointer;" +
+          (i ? " border-top: 1px solid var(--border);" : "") + (st.target === i ? " background: var(--accent);" : "")
+      })),
+      hasRefusals: true,
+      refusals: [
+        { reason: "symlink-escapes-source", path: "scripts/node_modules → /usr/lib/node" },
+        { reason: "source-too-large", path: "fixtures/sample-dump.sql · 41 MB" }
+      ],
+
+      detailTrust: "trusted · verified signature",
+      detailTrustStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--ok-bg); color: var(--ok-fg);",
+      detailSig: "ed25519 · key acme-eng-2026",
+      detailSigStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground);",
+      detailIdentity: "skill-4b91a7e0c2f1 · user scope · source domovoi · digest sha256:4b91…e7c · verified by acme-eng at 12 Aug 09:14",
+      detailFacts: [
+        { k: "SIGNATURE STATE", v: "verified" },
+        { k: "TRUST STATE", v: "trusted · verified-signature" },
+        { k: "AUTHORITY", v: "acme-eng" },
+        { k: "MANIFEST", v: "4 capabilities, version 1" },
+        { k: "ENABLED IN", v: "acme-api only" },
+        { k: "SELECTED THIS TURN", v: "yes, 1 of 8" }
+      ],
+      skillMd: "---\nname: pr-triage\ndescription: Groups open pull requests by risk and staleness\nmanifest:\n  version: 1\n  capabilities:\n    - filesystem.read\n    - process.execute\n    - network.connect\n    - filesystem.write\n---\n\n# Triage open pull requests\n\nRead every open PR with `gh pr list --json`. Score each one on changed\nlines, files touched outside its own area, days since the last review,\nand whether CI is red.\n\nWrite the grouped result to .github/TRIAGE.md. Do not comment on pull\nrequests and do not request reviewers. Reporting is the job, not acting\non it.",
+
+      warnDot: this.dot("var(--warning)", 7) + " animation: dvPulse 2.4s infinite;",
+      changeRows: [
+        { k: "Content digest", was: "sha256:9c41…a7e", now: "sha256:2d77…b04" },
+        { k: "Capabilities", was: "filesystem.read · process.execute", now: "+ secrets.read" },
+        { k: "Reviewed", was: "4 Sep 11:20 by desktop", now: "no review for this digest" }
+      ].map((c, i) => ({
+        k: c.k, was: c.was, now: c.now,
+        rowStyle: "display: flex; align-items: center; gap: 12px; padding: 11px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+
+      selectedCount: turnList.length + " of 8",
+      turnEmpty: turnList.length === 0,
+      turnSelected: turnList.map((t, i) => ({
+        name: t.name, digest: t.digest,
+        dot: this.dot("var(--success)", 6),
+        remove: () => this.setState(s => ({
+          turnOff: s.turnOff.indexOf(t.name) === -1 ? s.turnOff.concat([t.name]) : s.turnOff
+        })),
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      })),
+      restoreTurn: () => this.setState({ turnOff: [] }),
+      turnOmitted: [
+        { name: "acme-seed", reason: "not-enabled", detail: "Installed, never reviewed for this project.", k: "faint" },
+        { name: "sql-explain", reason: "review-changed", detail: "Edited since your review, and it gained secrets.read.", k: "warning" },
+        { name: "k8s-triage", reason: "unavailable", detail: "Blocked here: the signer was revoked.", k: "destructive" },
+        { name: "repo-audit", reason: "policy", detail: "An org policy forbids it in this repository.", k: "destructive" }
+      ].map((o, i) => ({
+        name: o.name, reason: o.reason, detail: o.detail,
+        dot: this.dot("var(--" + o.k + ")", 6),
+        reasonStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; width: 130px; flex: 0 0 130px; color: var(--" +
+          (o.k === "faint" ? "faint" : o.k) + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      }))
+    };
+  }
+}
+
+</script>
+</body>
+</html>

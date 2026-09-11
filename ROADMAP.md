@@ -7,7 +7,11 @@ Claude Design handoffs.
 
 ## Status and priority
 
-- `[x]` implemented and verified in the repository
+- `[x]` implemented and verified in the repository, citing the commits that verified it
+  - A tick is a claim with a date. `[x] … (1b683d6)` is checkable by reading what that commit
+    did; `[x]` alone is checkable only by trusting the prose beside it. New and revised ticks
+    cite; existing ticks are dated with
+    `git log -L '/<tick text>/,+1:ROADMAP.md' --oneline --no-patch` when one is questioned.
 - `[ ]` not complete
 - `P0` required before untrusted or remote use
 - `P1` required for the first useful public alpha
@@ -187,7 +191,18 @@ Every ledger entry is now merged.
   - Only OS-keychain key storage ships; `docs/provider-capabilities.md` lists no direct adapter.
   - Deferred past the alpha on 2026-09-03. `PRODUCT.md` line 41 commits to subscription-backed
     provider CLIs first, so this is not alpha scope.
-- [x] Token and cost telemetry normalized per turn, session, provider, and model
+- [x] Token and cost telemetry normalized for Anthropic, per session and provider
+      (76a9cb2 · session totals 2508149 · cached-token fold 3d92b6f)
+  - [ ] OpenCode undercounts: `tokens.cache.read` lands in `cachedInputTokens`
+        and never reaches `inputTokens` or `totalTokens` — the fold is
+        Anthropic-key-only by design (`opencode.ts:506`)
+  - [ ] `acp.ts:295-296` assigns `totalTokens` and `contextTokens` the same
+        `update.used`
+  - [ ] Usage is stamped with `session.runtime.model` at write time, so an arrival
+        after a same-provider switch gets the new model (`server.ts:6903`,
+        switch at `5835`)
+  - [ ] Per-turn attribution needs the durable turn link, which does not exist
+        (WORK-SPLIT `CX2`)
 - [x] Session token totals and provider-reported cost in the client, with a per-runtime breakdown
   and an explicit count of turns the provider reported no cost for
 - [x] Usage totals across sessions over a time window, such as a today total in the app bar
