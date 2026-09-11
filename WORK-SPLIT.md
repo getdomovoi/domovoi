@@ -518,9 +518,16 @@ because of the user's adjacent state, say nothing, since "type something to send
   component, so a component that shadows a prop name is misfiled; the error is small and in the
   direction of over-reporting.
 
-**Not yet a task to start.** 56 is real work and each one is a judgement between branch one and
-branch two. The rule wants to be a custom ESLint rule with scope analysis rather than a
-`no-restricted-syntax` selector, since the selector cannot see what is local.
+**Not yet a task to start, and when it is, it is not a sweep.** Ruled by fetzy 2026-09-10: land
+the rule as an error with the 56 seeded as a shrinking allowlist, the same shape as the tick
+citations, and let each come off as its file is touched for other reasons. A bulk pass biases hard
+toward the cheap branch — adding `aria-describedby` everywhere — when a good share of these
+controls should not be rendered at all, and that ends in 56 descriptions of controls that should
+not exist. Seeded, the new violations are blocked from day one and each existing one is decided by
+someone already in that file with the context to choose between the branches.
+
+The rule wants to be a custom ESLint rule with scope analysis rather than a `no-restricted-syntax`
+selector, since the selector cannot see what is local.
 
 ### D5 · `workspace-shell.tsx` needs splitting — fourth flag in one session
 Not a file that keeps coming up any more. The case, with the counts as evidence:
