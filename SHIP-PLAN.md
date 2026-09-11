@@ -14,7 +14,7 @@ Task ids are stable and phase-prefixed (`S2.3`) so they cannot collide with
 
 ## How the two agents work this file
 
-The same shared rules as `WORK-SPLIT.md` — one agent per file per session, protocol before the UI
+Same six rules as `WORK-SPLIT.md` — one agent per file per session, protocol before the UI
 that reads it, `graft callers` before editing an enum, mutation probes only against a
 shippable tree, never regenerate a digest in the commit it covers, read the reviews not the
 check row. Three more that this file needs:
@@ -36,8 +36,8 @@ check row. Three more that this file needs:
 | | Ships when | Excludes |
 |---|---|---|
 | **M1 · local alpha** | daemon installs as a service, loopback only | relay, billing, mobile |
-| **M2 · connected beta** | tailnet and relay transports work, invite-only | billing, teams |
-| **M3 · launch** | paid, metered, signed, audited | teams |
+| **M2 · connected beta** | tailnet and relay transports work, invite-only, phone answers gates | billing, teams, phone parity |
+| **M3 · launch** | paid, metered, signed, audited | teams, tablet |
 | **M4 · teams** | seats, org machines, org policy | — |
 
 If a task does not serve the next milestone, it waits.
@@ -87,7 +87,16 @@ Parallel with Phase 0. Touches nothing the gates decide.
       builds ship *with* it, not after.
 - [ ] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart.
-- [ ] **S1.6 [CC]** `domovoi` CLI to parity: install, status, pair, doctor, skill push, logs.
+- [ ] **S1.6 [CX, not CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
+      **Reassigned 2026-09-10, and Codex agreed (`257830e`).** The binary is `domovoid`, declared at
+      `apps/daemon/package.json:20` against `apps/daemon/dist/index.js`, and every CLI file is
+      under `apps/daemon/src/` — Codex's half by `WORK-SPLIT.md`'s ownership table, so `[CC]`
+      contradicts rule 1. Codex accepted it as `CX` and corrected the scope: `domovoid service
+      install` and `domovoid service status` already exist (`index.ts:86`), so what is missing
+      there is top-level aliases rather than the commands. `doctor`, `logs` and `skill push` do
+      not exist and their behaviour is undefined. No binary named `domovoi` without the `d` exists or is
+      declared anywhere, so if a separate user-facing CLI is intended that is a product decision
+      rather than a client task, and it needs a home before it needs an owner.
 - [ ] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
       lands here — it is daemon bookkeeping and it unblocks UI in Phase 3.
 
@@ -118,20 +127,35 @@ Starts when the protocol is stable, and after `WORK-SPLIT.md` is done or parked.
 
 - [ ] **S3.1 [CC]** Desktop: `WORK-SPLIT.md`'s `CC1`–`CC3`, then the remaining surfaces.
 - [ ] **S3.2 [CC]** Web: the six-step flow, always over the relay, with capability-refused
-      real rather than drawn.
-- [ ] **S3.3 [CC]** Mobile: 19 designed frames against nine existing screens.
+      real rather than drawn. **Partly blocked on Phase 2**, so this is not a fully parallel
+      Phase 3 surface: "pick a machine to attach to" cannot land before the relay or a tailnet
+      route, because a browser has no way to reach a second machine without one. Two of six
+      steps are built; 6-8 days, and that step is inside the estimate rather than beside it.
+- [ ] **S3.3 [CC]** Mobile: 19 designed frames against nine existing screens. 13-15 days for
+      all of it. **On M2 this is the gate path only** — frames 02-05, the gate and its outcomes,
+      which are already built. 3-4 days rather than 13-15 on the critical path. The rest follows
+      after M2. Decided by fetzy 2026-09-10: the phone exists to answer gates, so shipping it
+      that way is the phone doing its job rather than a cut-down version of it.
 - [ ] **S3.4 [CC]** Push notifications for gates. This is the phone's whole reason to exist.
       Needs APNs and FCM, and a payload carrying no session content — which means the
       notification says a gate is waiting and never what it is asking for.
-- [ ] **S3.5 [CC]** Tablet: nothing exists yet.
+- [ ] **S3.5 [CC]** Tablet: nothing exists yet. **Cut from M3, decided by fetzy 2026-09-10.**
+      It is the only one of the nine that is pure new build with no reconciliation to reuse, and
+      the only surface with no unique job: the phone owns gates away from the desk, the desktop
+      owns the work, and the tablet is a larger phone or a smaller desktop depending on the
+      frame. Neither is a reason to ship it before people are paying.
 - [ ] **S3.6 [CC]** Cloud and Team surfaces; the cross-cutting states (`CC7`).
 - [ ] **S3.7 [CC]** Accessibility: focus order, screen-reader labels, and the StatusDot rule
       — colour is never the sole carrier — enforced everywhere.
 - [ ] **S3.8 [CC]** Offline and reconnect on every client, including unconfirmed work on
       return.
-- [ ] **S3.9 [CX]** Any new `WorkspaceSurface` member. The union is
-      `"workspace" | "providers" | "skills" | "fleet" | "audit"`, so a new desktop surface is
-      a protocol-adjacent change even though the file is Claude Code's.
+- [ ] **S3.9 [CC]** Any new `WorkspaceSurface` member. **Corrected 2026-09-10: this said
+      `[CX]` on a false premise.** The union is `"workspace" | "providers" | "skills" | "fleet"
+      | "audit"`, and it was called protocol-adjacent — but it is declared at
+      `packages/ui/src/workspace-persistence.ts:23`, and `graft grep` finds its fourteen uses
+      across five `packages/ui` files and none in `packages/protocol`. It is a UI persistence
+      type. Being a union does not move a file out of its owner's half; if a surface ever has
+      to cross the wire, that is a separate `CX` protocol commit, and this one stays `[CC]`.
 
 ## Phase 4 — distribution and signing — M1 onward
 
