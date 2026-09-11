@@ -770,6 +770,20 @@ describe("GitWorkspaceService transfer resources", () => {
     expect(after.digest).not.toBe(before.digest)
   })
 
+  it("counts ignored transfer holdbacks without counting promoted artifacts or ordinary untracked files", async () => {
+    const { service, workspace } = await repositoryWithIgnoredPreview()
+    await writeFile(join(workspace.path, "draft.txt"), "this travels in the checkpoint\n")
+    await writeFile(join(workspace.path, "previews", "held.txt"), "ignored\n")
+    await writeFile(join(workspace.path, "previews", process.platform === "win32" ? "two-lines.txt" : "two\nlines.txt"), "ignored too\n")
+    await expect(service.countIgnoredTransferFiles(workspace.path, [
+      "previews/preview.html", "previews/preview.html",
+    ])).resolves.toBe(2)
+    await expect(service.countIgnoredTransferFiles(workspace.path, [])).resolves.toBe(3)
+    await service.checkpoint(workspace.path, "transfer")
+    await expect(service.countIgnoredTransferFiles(workspace.path, ["previews/preview.html"]))
+      .resolves.toBe(2)
+  })
+
   it("binds untracked contents and stays stable when those contents are checkpointed", async () => {
     const { service, workspace } = await repositoryWithIgnoredPreview()
     const draftPath = join(workspace.path, "draft.txt")

@@ -3,6 +3,7 @@ import { z } from "zod"
 import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
+import { approvalDecisionDurationMsSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 
 import {
   sessionTransferParamsSchema,
@@ -276,6 +277,7 @@ export const sessionHistoryCategorySchema = z.enum([
   "tools",
   "approvals",
   "handoffs",
+  "transfers",
   "checkpoints",
   "annotations",
   "tests",
@@ -320,12 +322,20 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     connectionId: connectionIdSchema.optional(),
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
+    decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
   }),
   z.object({
     ...historyEntryBase,
     category: z.literal("handoffs"),
     body: z.string(),
     detail: z.string().optional(),
+  }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("transfers"),
+    body: z.string(),
+    detail: z.string().optional(),
+    transfer: sessionTransferHistorySchema,
   }),
   z.object({
     ...historyEntryBase,

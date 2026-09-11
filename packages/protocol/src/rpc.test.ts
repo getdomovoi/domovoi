@@ -867,6 +867,7 @@ describe("session history filters", () => {
       "tools",
       "approvals",
       "handoffs",
+      "transfers",
       "checkpoints",
       "annotations",
       "tests",

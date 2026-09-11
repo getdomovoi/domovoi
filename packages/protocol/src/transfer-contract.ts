@@ -16,6 +16,19 @@ import { commitShaSchema, machineIdSchema, sha256DigestSchema } from "./identifi
 import { sourceRefusalSchema } from "./transfer.js"
 import { transferRefusalSchema } from "./transfer-preflight.js"
 import { sessionTransferContractRefusalSchema } from "./transfer-contract-refusals.js"
+import {
+  sessionTransferCoverageSchema,
+  sessionTransferIncludedKindSchema,
+  sessionTransferExcludedKindSchema,
+  sessionTransferWarningKindSchema,
+} from "./transfer-coverage.js"
+
+export {
+  sessionTransferCoverageSchema,
+  sessionTransferIncludedKindSchema,
+  sessionTransferExcludedKindSchema,
+  sessionTransferWarningKindSchema,
+} from "./transfer-coverage.js"
 
 export {
   sessionTransferContractRefusalMessage,
@@ -218,66 +231,6 @@ export const sessionTransferStateSchema = z.object({
       message: "Transferred usage cannot mix currencies within one session",
     })
   }
-})
-
-export const sessionTransferIncludedKindSchema = z.enum([
-  "repository",
-  "thread",
-  "checkpoints",
-  "artifacts",
-  "artifact-sources",
-  "annotations",
-  "annotation-crops",
-  "working-plan",
-  "usage",
-  "runtime-settings",
-])
-
-export const sessionTransferExcludedKindSchema = z.enum([
-  "provider-credentials",
-  "provider-state",
-  "terminals",
-  "approval-rules",
-  "skill-authority",
-  "audit-log",
-  "ignored-files",
-  "external-databases",
-  "auto",
-])
-
-export const sessionTransferWarningKindSchema = z.enum([
-  "tracked-sensitive-files-may-travel",
-  "promoted-ignored-artifacts",
-  "provider-restart-required",
-  "target-reapproval-required",
-])
-
-const coverageEntry = <Schema extends z.ZodType>(kind: Schema) => z.object({
-  kind,
-  count: safeCounterSchema.optional(),
-}).strict()
-
-function uniqueCoverage(
-  entries: ReadonlyArray<{ kind: string }>,
-  context: z.RefinementCtx,
-): void {
-  const kinds = new Set<string>()
-  entries.forEach((entry, index) => {
-    if (kinds.has(entry.kind)) {
-      context.addIssue({ code: "custom", path: [index, "kind"], message: "Transfer coverage keys must be unique" })
-    }
-    kinds.add(entry.kind)
-  })
-}
-
-export const sessionTransferCoverageSchema = z.object({
-  included: z.array(coverageEntry(sessionTransferIncludedKindSchema)),
-  excluded: z.array(coverageEntry(sessionTransferExcludedKindSchema)),
-  warnings: z.array(coverageEntry(sessionTransferWarningKindSchema)),
-}).strict().superRefine((coverage, context) => {
-  uniqueCoverage(coverage.included, context)
-  uniqueCoverage(coverage.excluded, context)
-  uniqueCoverage(coverage.warnings, context)
 })
 
 export const sessionTransferPreviewRefusalSchema = z.union([

@@ -83,6 +83,7 @@ function coverageFor(
   state: SessionTransferState,
   artifactSourceCount: number,
   cropCount: number,
+  ignoredFileCount: number | undefined,
 ): SessionTransferCoverage {
   const sourceAuthorityCount = snapshot.approvalRules.filter(
     (rule) => rule.projectId === snapshot.project?.id && rule.status === "active",
@@ -112,7 +113,7 @@ function coverageFor(
       { kind: "approval-rules" },
       { kind: "skill-authority" },
       { kind: "audit-log" },
-      { kind: "ignored-files" },
+      { kind: "ignored-files", ...(ignoredFileCount === undefined ? {} : { count: ignoredFileCount }) },
       { kind: "external-databases" },
       { kind: "auto" },
     ],
@@ -134,6 +135,7 @@ export async function collectSessionTransferState(input: {
   sessionId: string
   usage: readonly SessionTransferUsageRecord[]
   readIgnoredArtifactSource: (artifactId: string, path: string) => Promise<Buffer | undefined>
+  countIgnoredFiles?: (promotedPaths: readonly string[]) => Promise<number | undefined>
   readAnnotationCrop: (
     ref: string,
     mimeType: "image/png" | "image/jpeg" | "image/webp",
@@ -176,6 +178,7 @@ export async function collectSessionTransferState(input: {
     state,
     artifactSources.length,
     annotationCrops.length,
+    await input.countIgnoredFiles?.(artifactSources.map((source) => source.path)),
   )
   return { state, coverage, artifactSources, annotationCrops }
 }
@@ -272,6 +275,7 @@ export async function prepareSessionTransferIntent(input: {
   method: "git-bundle" | "remote-ref"
   remote?: string
   readIgnoredArtifactSource: (artifactId: string, path: string) => Promise<Buffer | undefined>
+  countIgnoredFiles?: (promotedPaths: readonly string[]) => Promise<number | undefined>
   readAnnotationCrop: (
     ref: string,
     mimeType: "image/png" | "image/jpeg" | "image/webp",

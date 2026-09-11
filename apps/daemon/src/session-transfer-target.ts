@@ -430,6 +430,7 @@ export async function commitPreparedSessionTransfer(input: {
       ownershipGeneration: manifest.ownership.toGeneration,
       checkpointCommit: manifest.project.checkpointCommit,
       completedAt,
+      coverage: manifest.coverage,
     })
 
     stage = "persistence"

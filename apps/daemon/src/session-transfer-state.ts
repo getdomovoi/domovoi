@@ -4,6 +4,7 @@ import {
   sessionTransferStateSchema,
   workspaceSnapshotSchema,
   type SessionTransferContractRefusal,
+  type SessionTransferCoverage,
   type SessionTransferState,
   type SessionTransferUsageRecord,
   type WorkspaceSnapshot,
@@ -34,6 +35,8 @@ export function sessionTransferCheckpointCommits(
 
 function transferArrivalThreadItem(
   session: WorkspaceSnapshot["sessions"][number],
+  targetMachineId: string,
+  coverage: SessionTransferCoverage,
 ): WorkspaceSnapshot["thread"][number] {
   const origin = session.transferredFrom
   if (!origin) throw new SessionTransferStateError("session-state-invalid")
@@ -43,6 +46,15 @@ function transferArrivalThreadItem(
     kind: "system",
     body: `Transferred from machine ${origin.sourceMachineId}.`,
     detail: `Ownership generation ${origin.generation} arrived at checkpoint ${origin.checkpointCommit}. Native provider state, machine authority, and automatic execution did not transfer.`,
+    transfer: {
+      transferId: origin.transferId,
+      sourceMachineId: origin.sourceMachineId,
+      targetMachineId,
+      checkpointCommit: origin.checkpointCommit,
+      outcome: "succeeded",
+      preflight: "passed",
+      coverage,
+    },
     createdAt: origin.completedAt,
   }
 }
@@ -123,6 +135,7 @@ export function importSessionTransferState(
     ownershipGeneration: number
     checkpointCommit: string
     completedAt: string
+    coverage: SessionTransferCoverage
   },
 ): WorkspaceSnapshot {
   const state = sessionTransferStateSchema.parse(transferred)
@@ -163,7 +176,7 @@ export function importSessionTransferState(
     ...(state.session.forkedFrom ? { forkedFrom: state.session.forkedFrom } : {}),
   }
   candidate.sessions.push(importedSession)
-  candidate.thread.push(...state.thread, transferArrivalThreadItem(importedSession))
+  candidate.thread.push(...state.thread, transferArrivalThreadItem(importedSession, snapshot.machine.id, input.coverage))
   candidate.artifacts.push(...state.artifacts)
   if (state.workingPlan) candidate.workingPlans.push(state.workingPlan)
   candidate.annotations.push(...state.annotations)
