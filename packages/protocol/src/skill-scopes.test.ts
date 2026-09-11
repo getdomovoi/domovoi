@@ -73,6 +73,24 @@ describe("declared capability scopes", () => {
     ] }).success).toBe(false)
   })
 
+  it("stops reading argument entries once the declaration budget is exhausted", () => {
+    const args = Array.from({ length: 9 }, () => "x".repeat(8_192))
+    let trailingReads = 0
+    Object.defineProperty(args, 8, { get: () => { trailingReads += 1; return "unused" } })
+    const value = { version: 2, capabilities: ["process.execute"], scopes: [
+      { capability: "process.execute", scope: { kind: "commands", commands: [{ executable: "cmd", args }] } },
+    ] }
+    expect(skillCapabilityManifestSchema.safeParse(value).success).toBe(false)
+    expect(trailingReads).toBe(0)
+  })
+
+  it("retains a long argument when the complete declaration fits its budget", () => {
+    const value = { version: 2, capabilities: ["process.execute"], scopes: [
+      { capability: "process.execute", scope: { kind: "commands", commands: [{ executable: "cmd", args: ["x".repeat(8_192)] }] } },
+    ] }
+    expect(skillCapabilityManifestSchema.parse(value)).toEqual(value)
+  })
+
   it.each([
     { capability: "network.connect", scope: { kind: "hosts", hosts: ["example.test", "example.test"] } },
     { capability: "secrets.read", scope: { kind: "names", names: ["TOKEN", "TOKEN"] } },

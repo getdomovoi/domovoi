@@ -74,7 +74,34 @@ export const skillCapabilityScopeDeclarationSchema = z.discriminatedUnion("capab
   z.object({ capability: z.literal("preview.render"), scope: allScopeSchema }).strict(),
 ])
 
-export const skillCapabilityManifestSchema = z.discriminatedUnion("version", [
+const maximumManifestCodeUnits = 64 * 1_024
+const manifestBudgetMessage = "Capability declarations exceed 64 Ki UTF-16 code units"
+
+// Count a lower bound before Zod walks or clones nested arrays. The exact JSON
+// bound below still accounts for escaping and punctuation after shape validation.
+// For wire input, JSON.parse runs first; transport frame limits bound that allocation.
+function withinManifestBudget(value: unknown): boolean {
+  let remaining = maximumManifestCodeUnits
+  function visit(item: unknown, depth: number): boolean {
+    // Every supported declaration is shallower than this; also stop cyclic input.
+    if (depth > 16 || remaining < 0) return false
+    if (typeof item === "string") remaining -= item.length
+    else if (Array.isArray(item)) {
+      remaining -= item.length
+      if (remaining < 0) return false
+      for (const child of item) if (!visit(child, depth + 1)) return false
+    } else if (item !== null && typeof item === "object") {
+      for (const key of Object.keys(item)) {
+        remaining -= key.length + 1
+        if (remaining < 0 || !visit((item as Record<string, unknown>)[key], depth + 1)) return false
+      }
+    } else remaining -= 1
+    return remaining >= 0
+  }
+  return visit(value, 0)
+}
+
+const manifestShapeSchema = z.discriminatedUnion("version", [
   z.object({ version: z.literal(1), capabilities: capabilitiesSchema }).strict(),
   z.object({
     version: z.literal(2),
@@ -87,7 +114,13 @@ export const skillCapabilityManifestSchema = z.discriminatedUnion("version", [
       context.addIssue({ code: "custom", path: ["scopes"], message: "Each capability must have exactly one scope declaration" })
     }
   }),
-]).refine((value) => JSON.stringify(value).length <= 64 * 1_024, "Capability declarations exceed 64 Ki UTF-16 code units")
+])
+
+export const skillCapabilityManifestSchema = z.preprocess((value, context) => {
+  if (withinManifestBudget(value)) return value
+  context.addIssue({ code: "custom", message: "Capability declarations exceed the size or nesting limit" })
+  return z.NEVER
+}, manifestShapeSchema).refine((value) => JSON.stringify(value).length <= maximumManifestCodeUnits, manifestBudgetMessage)
 
 type Manifest = z.infer<typeof skillCapabilityManifestSchema>
 export type SkillCapabilityScopeDeclaration = z.infer<typeof skillCapabilityScopeDeclarationSchema>
@@ -105,6 +138,8 @@ export type SkillDeclaredScopeComparison =
   | { state: "known"; changes: SkillDeclaredScopeChange[] }
 
 function pathCovers(cover: z.infer<typeof pathTargetSchema>, target: z.infer<typeof pathTargetSchema>): boolean {
+  // Compare declarations lexically. A path alone cannot establish the volume's
+  // case sensitivity, including Windows directories with case sensitivity enabled.
   if (cover.root !== target.root) return false
   if (cover.path === target.path) return cover.recursive || !target.recursive
   if (!cover.recursive) return false
@@ -127,9 +162,11 @@ export function compareSkillDeclaredScopes(baseline: Manifest | undefined, curre
   if (!baseline || baseline.version === 1) return { state: "unknown", reason: "baseline" }
   if (current.version === 1) return { state: "unknown", reason: "current" }
   const changes: SkillDeclaredScopeChange[] = []
+  // Compare scopes only for shared capabilities. Capability additions and removals
+  // are separate from scope changes; manifest equality checks both sets first.
   for (const after of current.scopes) {
     const before = baseline.scopes.find((entry) => entry.capability === after.capability)
-    if (!before) continue // Capability gains are a separate, higher-priority tier.
+    if (!before) continue
     const containsBefore = scopeCovers(after.scope, before.scope)
     const containsAfter = scopeCovers(before.scope, after.scope)
     if (containsBefore && containsAfter) continue

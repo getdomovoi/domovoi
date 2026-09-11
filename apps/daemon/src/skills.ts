@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { parse } from "yaml"
 
 import {
+  maximumSkillRevisionBytes,
   skillCapabilityManifestSchema,
   skillDeclaredSignatureSchema,
   skillFrontmatterConfigSchema,
@@ -36,7 +37,7 @@ import {
   type TrustedSkillKeys,
 } from "./skill-signing.js"
 
-export const maxSkillFileBytes = 128 * 1_024
+export const maxSkillFileBytes = maximumSkillRevisionBytes
 const maxSignatureFileBytes = 4 * 1_024
 const maxSkillDepth = 4
 const maxSkills = 512
@@ -143,6 +144,7 @@ export class FileSkillCatalog implements SkillCatalog {
       const file = await handle.stat()
       if (!file.isFile() || file.size > maxSkillFileBytes) throw new SkillNotFoundError()
       const content = await handle.readFile("utf8")
+      if (Buffer.byteLength(content, "utf8") > maxSkillFileBytes) throw new SkillNotFoundError()
       const contentDigest = skillContentDigest(content)
       const currentSkill = skillFromContent(content, {
         id,
@@ -349,6 +351,7 @@ async function readSkill(
     const file = await stat(path)
     if (!file.isFile() || file.size > maxSkillFileBytes) return undefined
     const content = await readFile(path, "utf8")
+    if (Buffer.byteLength(content, "utf8") > maxSkillFileBytes) return undefined
     const contentDigest = skillContentDigest(content)
     const canonicalPath = await realpath(path)
     const canonicalRoot = await realpath(root.path)
