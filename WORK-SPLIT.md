@@ -134,7 +134,11 @@ so the first landing does not read as the unblock.
       its real cost.
 - [ ] Vendor them as data under `design/`, digested, using
       `pnpm design:revision --accept-new=<path>` per file.
-- [ ] Then a grep of `design/` answers presence **and** absence, instead of only presence.
+- [ ] Then a grep of `design/` answers presence **and** absence *within the recorded
+      revision* — which is the only absence it can ever answer. It says nothing about the
+      live project, and it cannot prove the export was complete. State that scope wherever
+      the claim is repeated; see `D1`, where the same snapshot is one of three copies that
+      nothing keeps in step.
 
 ### CC5 · The four screens that are already partly built
 Not eight unstarted screens. Reconcile these four against their designs rather than
