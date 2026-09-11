@@ -70,7 +70,17 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
 
    So there is a gate rather than an intention. `scripts/commit-trailers.mjs` runs inside
    `pnpm release:invariants`, over `origin/main..HEAD` rather than the tip, and fails naming the
-   commit and the line. That is the gate: a hook can be uninstalled and a required check cannot.
+   commit and the line.
+
+   **It is not a required check, and calling it a gate overstated it.** Checked 2026-09-11 rather
+   than assumed: `gh api repos/getdomovoi/domovoi/branches/main/protection` returns
+   `Branch not protected`, `rulesets` is empty and so is `rules/branches/main`. `release:invariants`
+   runs at `.github/workflows/ci.yml:76` and its result blocks nothing — a pull request with it red
+   can still be merged by anyone with write access. So it is a red light, not a locked door, and
+   the difference is the same existence-versus-enforcement gap as a linter installed where nothing
+   runs it. Every merge tonight was green on every check, which is a fact about this week's
+   discipline rather than about the repository's rules. **Making it required is a decision for
+   fetzy**, because it changes how both agents merge; recorded here rather than quietly assumed.
 
    **The hook strips rather than refuses, and the difference is the whole point.** The harness
    appends the trailer by itself, so a hook that only rejected would turn every single commit into
@@ -297,6 +307,15 @@ check would pass locally and skip in CI, which is the shape rejected twice alrea
 that is green for a reason unrelated to what it claims. Naming it here is the whole remedy available.
 Whoever finds `source` unreachable should edit this paragraph rather than file a bug against the
 checker.
+
+**The same finding, one layer out.** `REVISIONS.json` names a source nothing verifies is reachable;
+pull request bodies, review comments and scratch records name shas nothing verifies still exist.
+`scripts/tick-citations.mjs` covers `[x]` boxes in `ROADMAP.md` and `WORK-SPLIT.md` and nothing
+else, so a history rewrite silently invalidates every prose reference outside those two files. It
+did exactly that on 2026-09-11: the checker caught three citations in `ROADMAP.md` and two in
+`WORK-SPLIT.md`, and caught none of the shas quoted across a dozen pull request comments. One rule,
+two instances — a reference is only as good as the thing that checks it still resolves, and neither
+of these has one.
 
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can
