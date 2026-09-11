@@ -29,6 +29,24 @@ export const forbiddenTrailers = [
   { name: "an assistant session link", pattern: /^\s*(https?:\/\/)?(claude\.ai\/code\/session_|chat\.openai\.com\/)/i },
 ]
 
+// The harness appends the trailer on its own, so a hook that only rejects turns
+// every commit into an amend — a treadmill rather than a fix. The local hook
+// strips instead, and says what it removed; the CI gate still refuses, because
+// it is the thing that cannot be uninstalled. Removing a line nobody asked for
+// is not hiding anything, and the notice is there so it stays visible.
+export function withoutAttribution(message) {
+  const removed = []
+  const kept = []
+  for (const line of message.split("\n")) {
+    const hit = forbiddenTrailers.find(({ pattern }) => pattern.test(line))
+    if (hit) removed.push({ name: hit.name, text: line.trim() })
+    else kept.push(line)
+  }
+  // Dropping a trailer leaves the blank line that separated it from the body.
+  while (kept.length > 1 && kept.at(-1) === "" && kept.at(-2) === "") kept.pop()
+  return { message: `${kept.join("\n").replace(/\n+$/, "")}\n`, removed }
+}
+
 export function offendingLines(message) {
   const found = []
   for (const [index, line] of message.split("\n").entries()) {

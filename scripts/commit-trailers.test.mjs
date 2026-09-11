@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import { checkCommitTrailers, offendingLines } from "./commit-trailers.mjs"
+import { checkCommitTrailers, offendingLines, withoutAttribution } from "./commit-trailers.mjs"
 
 test("rejects the trailer that was added 33 times against a standing rule", () => {
   const found = offendingLines("fix: something\n\nClaude-Session: https://claude.ai/code/session_01HX\n")
@@ -30,6 +30,31 @@ test("rejects the other shapes assistant attribution arrives in", () => {
 test("leaves a human co-author and prose about the rule alone", () => {
   assert.deepEqual(offendingLines("feat: x\n\nCo-Authored-By: A Person <p@example.invalid>\n"), [])
   assert.deepEqual(offendingLines("docs: explain why Claude-Session trailers are banned\n"), [])
+})
+
+// The harness appends the trailer itself, so rejecting at commit time would mean
+// amending every commit. The hook strips; these pin that it removes the line, the
+// blank line it leaves behind, and nothing else.
+test("strips the attribution and the separator it leaves behind", () => {
+  const { message, removed } = withoutAttribution(
+    "fix: something\n\nA body paragraph.\n\nClaude-Session: https://claude.ai/code/session_01HX\n",
+  )
+  assert.equal(message, "fix: something\n\nA body paragraph.\n")
+  assert.equal(removed.length, 1)
+  assert.equal(removed[0].name, "Claude-Session")
+})
+
+test("leaves a message with no attribution byte-identical", () => {
+  const original = "fix: something\n\nA body paragraph.\n"
+  const { message, removed } = withoutAttribution(original)
+  assert.equal(message, original)
+  assert.deepEqual(removed, [])
+})
+
+test("strips a human co-author never, and an assistant one always", () => {
+  const human = "feat: x\n\nCo-Authored-By: A Person <p@example.invalid>\n"
+  assert.equal(withoutAttribution(human).message, human)
+  assert.equal(withoutAttribution("feat: x\n\nCo-Authored-By: Claude <n@anthropic.com>\n").removed.length, 1)
 })
 
 // Check the check: a clean range has to pass before a failing one means anything.

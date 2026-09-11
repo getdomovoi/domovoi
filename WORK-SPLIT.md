@@ -70,9 +70,19 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
 
    So there is a gate rather than an intention. `scripts/commit-trailers.mjs` runs inside
    `pnpm release:invariants`, over `origin/main..HEAD` rather than the tip, and fails naming the
-   commit and the line. `.githooks/commit-msg` applies the same rule a second earlier — install it
-   with `git config core.hooksPath .githooks`. The hook is the convenience; CI is the gate, because
-   a hook can be uninstalled and a required check cannot.
+   commit and the line. That is the gate: a hook can be uninstalled and a required check cannot.
+
+   **The hook strips rather than refuses, and the difference is the whole point.** The harness
+   appends the trailer by itself, so a hook that only rejected would turn every single commit into
+   an amend — a treadmill dressed as a fix, and the kind of friction that gets a hook uninstalled
+   within a day. `.githooks/commit-msg` removes the line and prints what it removed, so the gate
+   downstream never has anything to fire on. Install it with
+   `git config core.hooksPath .githooks`.
+
+   `~/.claude/settings.json` already carries `includeCoAuthoredBy: false`, and it did not prevent
+   this: the session trailer arrives through a different mechanism, injected into the session
+   rather than read from a setting, with no local switch found for it. That is exactly why the
+   remedy is a thing the repository owns rather than a preference somewhere else.
 
    It covers the trailer that caused this, `Co-Authored-By` naming an assistant, `Generated-By`,
    `Authored-With`, and a bare session link. A human co-author is untouched, and prose *about* the
