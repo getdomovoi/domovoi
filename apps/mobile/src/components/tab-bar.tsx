@@ -58,7 +58,7 @@ export function TabBar({
               ) : null}
             </View>
             <Text className={cn(
-              "text-[9.5px] tracking-[0.02em]",
+              "text-note tracking-[0.02em]",
               selected ? "text-primary" : "text-faint",
             )}>
               {tab.label}

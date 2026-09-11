@@ -41,7 +41,7 @@ function Entry({ entry }: { entry: ThreadEntry }) {
     return (
       <View className="flex-row gap-2.5">
         <View className="h-[22px] w-[22px] items-center justify-center rounded-md border border-border">
-          <Text className="font-mono text-[9.5px] text-primary">◆</Text>
+          <Text className="font-mono text-machine text-primary">◆</Text>
         </View>
         <Text variant="body" className="flex-1 leading-[20px]">{entry.body}</Text>
       </View>

@@ -35,7 +35,7 @@ function Comment({ row }: { row: AnnotationRow }) {
             {row.pin}
           </Text>
         </View>
-        <Text variant="machine" className="flex-1 text-[9.5px]" numberOfLines={1}>{row.anchor}</Text>
+        <Text variant="machine" className="flex-1" numberOfLines={1}>{row.anchor}</Text>
         <Badge label={row.status} tone={open ? "attention" : "neutral"} />
       </View>
       <Text className="mt-[7px] text-[12px] leading-[18px] text-strong">{row.body}</Text>
@@ -122,9 +122,9 @@ export function ArtifactScreen({
 
         {comments.length > 0 ? (
           <View className="mt-1 flex-row items-center gap-2">
-            <Text variant="label" className="text-[9.5px] tracking-[0.12em]">Comments</Text>
+            <Text variant="label" className="tracking-[0.12em]">Comments</Text>
             <View className="h-px flex-1 bg-border" />
-            <Text variant="machine" className="text-[9.5px] text-faint">{open} open</Text>
+            <Text variant="machine" className="text-faint">{open} open</Text>
           </View>
         ) : null}
 
