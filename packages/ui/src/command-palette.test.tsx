@@ -201,7 +201,7 @@ describe("launcher entities", () => {
   it("reads a session's tone from its state rather than leaving it to colour", () => {
     expect(sessionTone("failed")).toBe("offline")
     expect(sessionTone("waiting")).toBe("waiting")
-    expect(sessionTone("transferred")).toBe("handoff")
+    expect(sessionTone("transferred")).toBe("idle")
     expect(sessionTone("active")).toBe("online")
     expect(sessionTone("idle")).toBe("idle")
   })

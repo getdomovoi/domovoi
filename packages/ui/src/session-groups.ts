@@ -54,9 +54,10 @@ export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
     quiet.push({
       id: session.id,
       title: session.title,
-      meaning: session.state === "transferred" ? "handoff" : "idle",
-      // A transferred session lives on another machine now. Calling that idle
-      // would hide where the work actually is.
+      // The dot shows a state and the note shows the event. A moved session is
+      // quiet here; where the work went is what the note is for, and colour is
+      // not asked to carry a thing that happened.
+      meaning: "idle",
       note: session.state === "transferred" ? "moved to another machine" : "idle",
     })
   }
