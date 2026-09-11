@@ -46,7 +46,9 @@ import {
   rpcMethods,
   rpcRequestSchema,
   sessionHistoryCategorySchema,
+  skillCapabilityManifestsEqual,
   skillInventoryEntryFromSummary,
+  type SkillDocument,
   workspaceDeltaSchema,
   type Annotation,
   type Artifact,
@@ -300,6 +302,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "skill.list",
   "skill.inventory",
   "skill.read",
+  "skill.reviewRevision",
   "skill.installPreview",
   "session.history",
   "session.evidence",
@@ -2969,6 +2972,7 @@ export class DomovoiDaemon {
         || request.method === "skill.list"
         || request.method === "skill.inventory"
         || request.method === "skill.read"
+        || request.method === "skill.reviewRevision"
         || request.method === "skill.installPreview"
         || request.method === "audit.query"
         || request.method === "audit.export"
@@ -4942,6 +4946,27 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "skill.reviewRevision") {
+        const params = paramsResult.data as RpcParams<"skill.reviewRevision">
+        const projectId = this.#snapshot.project?.id
+        const reviewed = this.#snapshot.skillEnablements.some((review) =>
+          review.projectId === projectId
+          && review.skillId === params.id
+          && review.contentDigest === params.contentDigest,
+        ) || this.#skillReviews?.find(params.id, params.contentDigest) !== undefined
+        const revision = reviewed ? this.#skillReviews?.revisions?.read(params.id, params.contentDigest) : undefined
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(revision ?? {
+            ...params,
+            state: "unavailable",
+            reason: "not-retained",
+          }),
+        })
+        return
+      }
+
       if (method === "skill.setEnabled") {
         const params = paramsResult.data as RpcParams<"skill.setEnabled">
         const project = this.#snapshot.project
@@ -4955,14 +4980,15 @@ export class DomovoiDaemon {
           return
         }
         const catalog = this.#skillCatalogFor(project.path)
-        let current
+        let document: SkillDocument
         try {
-          current = (await catalog.read(params.id)).skill
+          document = await catalog.read(params.id)
         } catch (error) {
           if (!(error instanceof SkillNotFoundError)) throw error
           this.#error(socket, request.id, invalidParams, error.message)
           return
         }
+        const current = document.skill
         if (params.enabled && current.trust.state === "blocked") {
           this.#error(socket, request.id, invalidParams, "Blocked skills cannot be enabled")
           return
@@ -4971,10 +4997,11 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Skill content changed; review it again")
           return
         }
-        if (JSON.stringify(current.manifest) !== JSON.stringify(params.manifest)) {
+        if (!skillCapabilityManifestsEqual(current.manifest, params.manifest)) {
           this.#error(socket, request.id, invalidParams, "Skill capabilities changed; review them again")
           return
         }
+        this.#skillReviews?.revisions?.retain(current.contentDigest, document.content)
         const review = {
           projectId: project.id,
           skillId: current.id,
@@ -5008,14 +5035,15 @@ export class DomovoiDaemon {
           return
         }
         const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
-        let current
+        let document: SkillDocument
         try {
-          current = (await catalog.read(params.id)).skill
+          document = await catalog.read(params.id)
         } catch (error) {
           if (!(error instanceof SkillNotFoundError)) throw error
           this.#error(socket, request.id, invalidParams, error.message)
           return
         }
+        const current = document.skill
         if (current.contentDigest !== params.contentDigest) {
           this.#error(socket, request.id, invalidParams, "Skill content changed; review it again")
           return
@@ -5025,6 +5053,7 @@ export class DomovoiDaemon {
           return
         }
         if (params.decision === "trust") {
+          reviews.revisions?.retain(current.contentDigest, document.content)
           reviews.record({
             skillId: current.id,
             contentDigest: current.contentDigest,
