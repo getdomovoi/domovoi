@@ -94,6 +94,7 @@ export const sessionHistoryCategories: ReadonlyArray<{
   { value: "tools", label: "Tools" },
   { value: "approvals", label: "Approvals" },
   { value: "handoffs", label: "Handoffs" },
+  { value: "transfers", label: "Transfers" },
   { value: "checkpoints", label: "Checkpoints" },
   { value: "annotations", label: "Annotations" },
   { value: "tests", label: "Tests" },
@@ -130,8 +131,17 @@ export function sessionHistoryEntryTitle(entry: SessionHistoryEntry): string {
   if (entry.category === "messages") return entry.role === "system" ? "System note" : entry.role
   if (entry.category === "tools" || entry.category === "tests") return entry.title
   if (entry.category === "approvals") return `${entry.operation}: ${entry.decision}`
-  if (entry.category === "handoffs") return entry.body
+  // handoffs holds provider handoffs; transfers holds machine transfers. They
+  // are different events and each names itself, rather than sharing a branch
+  // because both happen to carry a body.
+  if (entry.category === "handoffs" || entry.category === "transfers") return entry.body
   if (entry.category === "checkpoints") return `Checkpoint: ${entry.label}`
+  // Named rather than defaulted. A default here would have absorbed transfers
+  // silently instead of failing to compile, and would absorb the next category
+  // the protocol adds the same way.
+  // No trailing default. With annotations named, the compiler reports every
+  // category as handled, and a category added to the protocol later fails to
+  // compile here rather than rendering its body as a title.
   return entry.action === "created" ? "Annotation created" : "Annotation reply"
 }
 
@@ -142,6 +152,11 @@ export function sessionHistoryEntryDetail(entry: SessionHistoryEntry): string | 
     return `Checkpoint ${entry.checkpoint} · ${entry.client}${entry.connectionId ? ` · connection ${entry.connectionId}` : entry.clientId ? ` · declared client ${entry.clientId}` : ""}${entry.explanation ? ` · ${entry.explanation}` : ""}`
   }
   if (entry.category === "handoffs") return entry.detail
+  if (entry.category === "transfers") {
+    if (entry.detail !== undefined) return entry.detail
+    const { sourceMachineId, targetMachineId, checkpointCommit, preflight } = entry.transfer
+    return `${sourceMachineId} to ${targetMachineId} · checkpoint ${checkpointCommit} · preflight ${preflight}`
+  }
   if (entry.category === "checkpoints") return entry.commit
   return entry.body
 }

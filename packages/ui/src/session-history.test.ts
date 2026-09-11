@@ -36,6 +36,7 @@ describe("session history view model", () => {
       "tools",
       "approvals",
       "handoffs",
+      "transfers",
       "checkpoints",
       "annotations",
       "tests",
