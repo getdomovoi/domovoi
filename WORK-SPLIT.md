@@ -185,23 +185,36 @@ construction — which is how the stale type-floor sentence survived, and why `C
 Two ways: carry upstream verbatim and keep the summary beside it as a separate authored
 document, or accept the fork and stop calling it vendored. Not a coding task until decided.
 
-**A signed error with nowhere to go, found 2026-09-11.** The review of this pull request found a
-contradiction inside the signed v2 handoff: `HANDOFF-V2.md:20` lists `Domovoi Phone v2.dc.html` and
-`:187` describes its nineteen frames, while the known-gaps list at `:245` says "No phone surface in
-v2." Both cannot be true, and the second is the sentence a reader reaches last.
+**A signed file's content can change, and I nearly recorded the opposite. Found 2026-09-11.**
+The review of this pull request found a contradiction inside the signed v2 handoff:
+`HANDOFF-V2.md:20` lists `Domovoi Phone v2.dc.html` and `:187` describes its nineteen frames,
+while the known-gaps list said "No phone surface in v2." Both cannot be true.
 
-It cannot be fixed here. `scripts/design-revision.mjs` refuses a local edit to a signed file and is
-right to: `--accept-new=<path>` covers additions only, with no accept path for a content change,
-because the digest exists precisely to say this repository does not author these files. And there is
-no upstream to fix instead — DesignSync lists the live project as carrying `design_handoff_domovoi`
-and `design_handoff_domovoi_brand`, and **no** `design_handoff_domovoi_v2` and no `HANDOFF-V2.md`.
-The v2 bundle arrived as a separate export.
+I edited the vendored file, the gate refused it — "A signed file is never edited here" — and I
+concluded the correction had nowhere to go, on two false premises.
 
-So the correction has nowhere to go. The reviewer's committable suggestion could only be applied by
-defeating the gate that exists to stop that edit; attempted and reverted at `ee0ff05`. That is this
-entry's sharpest form: not drift between two copies, but a signed artefact that is wrong, cannot be
-corrected downstream, and has no upstream left to correct. Recorded so the inaccuracy is attributed
-rather than silently carried.
+The first was that a signed file's content cannot change. It can. `18dc495` re-vendored
+`Domovoi Desktop V2.part2-logic.html`, a content change to a signed file with no `--accept-new`
+and the digest regenerated in the same commit, and the invariants passed. The gate refuses a *hand
+edit*; it has always allowed a re-export followed by a regenerate. That distinction is the entire
+purpose of the digest, and I read the refusal as a prohibition on the outcome rather than on the
+method.
+
+The second was that no upstream existed. `list_projects` returned only `design_handoff_domovoi` and
+`_brand`, and I read that as absence. It filters to design-system projects, and the source of record
+is a plain project — `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named in `design/REVISIONS.json`, the
+same project `18dc495`'s re-export came from. `get_project` reaches it and `list_files` shows
+`HANDOFF-V2.md` and `Domovoi Phone v2.dc.html` sitting in it. A filtered list answering "no" is a
+fact about the filter.
+
+Fixed the way `18dc495` was: corrected upstream in `a3b4404e`, read back, re-vendored, regenerated.
+Four steps, no local authorship, digest intact.
+
+**What the entry is really about, then.** Not that signed content is immutable — it is not — but
+that the path to change it runs through a project this repository cannot see from its own tooling,
+named only inside a generated file, reachable only by an id nobody would guess. `REVISIONS.json`
+records `source`; nothing checks it is still reachable, and nothing would notice if it stopped
+being.
 
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can

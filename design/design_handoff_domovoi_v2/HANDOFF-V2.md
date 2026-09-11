@@ -242,7 +242,7 @@ No-results and not-searched are shown as different answers.
 ## Known gaps
 
 
-- No phone surface in v2. `Domovoi Mobile.dc.html` is still v1.
+- The shipped phone app is still v1; `Domovoi Phone v2.dc.html` is design-only.
 - Push notifications and the offline read cache are not designed. The notification body
   is an unresolved payload boundary question.
 - The blur behind the composer and plan strip is a third use of a technique the
