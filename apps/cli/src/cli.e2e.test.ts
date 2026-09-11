@@ -18,13 +18,18 @@ const cli = resolve(import.meta.dirname, "../dist/index.js")
 const startupBudgetMs = process.platform === "win32" ? 25_000 : 20_000
 
 let child: ReturnType<typeof spawn> | undefined
-let home: string
-let control: string
+let home: string | undefined
+let control: string | undefined
 let url: string
+// Setup awaits twice before it spawns. If teardown runs first (a hook
+// timeout, an aborted run), the spawn must not happen at all, and teardown
+// must clean only what setup had acquired by then.
+let abandoned = false
 
 beforeAll(async () => {
   home = await mkdtemp(join(tmpdir(), "domovoi-cli-e2e-home-"))
   control = await mkdtemp(join(tmpdir(), "domovoi-cli-e2e-keyring-"))
+  if (abandoned) throw new Error("teardown ran before setup finished; not spawning a daemon")
   child = spawn(process.execPath, [
     // --import takes a URL: on Windows a bare D:\ path is read as a scheme.
     "--import", pathToFileURL(join(daemonFixtures, "blocked-keyring.mjs")).href,
@@ -41,6 +46,7 @@ beforeAll(async () => {
   child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
   const started = Date.now()
   while (!stdout.includes("\n")) {
+    if (abandoned) throw new Error("teardown ran while the daemon was starting")
     if (child.exitCode !== null) throw new Error(`daemon fixture exited ${child.exitCode}: ${stderr}`)
     if (Date.now() - started > startupBudgetMs) throw new Error(`daemon fixture did not print its address in ${startupBudgetMs} ms: ${stderr}`)
     await new Promise((settle) => setTimeout(settle, 50))
@@ -49,6 +55,7 @@ beforeAll(async () => {
 }, startupBudgetMs + 5_000)
 
 afterAll(async () => {
+  abandoned = true
   if (child && child.exitCode === null) {
     // The fixture stops its daemon on SIGTERM. Nothing here waits on the
     // daemon's own stop budget: a scratch home is deleted either way.
@@ -57,8 +64,7 @@ afterAll(async () => {
     await once(child, "exit")
     clearTimeout(grace)
   }
-  await rm(home, { recursive: true, force: true })
-  await rm(control, { recursive: true, force: true })
+  for (const path of [home, control]) if (path !== undefined) await rm(path, { recursive: true, force: true })
 })
 
 // What `domovoid pair --client cli` does on the daemon host: device.pair with
@@ -95,7 +101,7 @@ function runCli(args: string[], stdinText?: string): Promise<{ code: number; std
 
 describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
   it("pairs from a pasted credential, stores it in the named file, and reads status back", async () => {
-    const credentialFile = join(home, "cli-credentials.json")
+    const credentialFile = join(home!, "cli-credentials.json")
     const credential = await mintClientCredential()
     const paired = await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `Client credential: ${credential}\n`)
     expect(paired.stderr).toMatch(/not in an OS keychain/)
@@ -111,7 +117,7 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
   })
 
   it("refuses status without a pairing, and refuses a wrong credential without keeping it", async () => {
-    const credentialFile = join(home, "empty-credentials.json")
+    const credentialFile = join(home!, "empty-credentials.json")
     expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 2 })
     const wrong = await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `${"x".repeat(43)}\n`)
     expect(wrong).toMatchObject({ code: 1 })
@@ -120,7 +126,7 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
   })
 
   it("refuses a credential passed as an argument", async () => {
-    const result = await runCli(["pair", "x".repeat(43), "--daemon", url, "--credential-file", join(home, "unused.json")])
+    const result = await runCli(["pair", "x".repeat(43), "--daemon", url, "--credential-file", join(home!, "unused.json")])
     expect(result.code).toBe(2)
     expect(result.stderr).toMatch(/stdin, not as an argument/)
   })
