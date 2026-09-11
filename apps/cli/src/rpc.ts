@@ -38,8 +38,12 @@ export async function connectToDaemon(input: {
     pending.clear()
   }
   socket.on("message", (data: { toString(): string }) => {
-    let message: { id?: unknown; result?: unknown; error?: { message?: string } }
-    try { message = JSON.parse(data.toString()) as typeof message } catch { return }
+    let parsed: unknown
+    try { parsed = JSON.parse(data.toString()) } catch { return }
+    // Valid JSON is not yet an envelope: null, a number, an array. Anything
+    // that is not an object with a numeric id is not a reply to anything here.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return
+    const message = parsed as { id?: unknown; result?: unknown; error?: { message?: string } }
     if (typeof message.id !== "number") return
     const waiter = pending.get(message.id)
     if (!waiter) return
@@ -81,11 +85,20 @@ export async function connectToDaemon(input: {
     })
   })
 
+  // Until the caller holds the connection, nobody else can close it. A hello
+  // that is refused or never answered must not leave the socket open behind
+  // the error, or the process outlives its own refusal.
   if (input.hello !== false) {
-    await call("system.hello", {
-      client: "cli", clientVersion: buildVersion, protocolVersion,
-      ...(input.authToken === undefined ? {} : { authToken: input.authToken }),
-    })
+    try {
+      await call("system.hello", {
+        client: "cli", clientVersion: buildVersion, protocolVersion,
+        ...(input.authToken === undefined ? {} : { authToken: input.authToken }),
+      })
+    } catch (error) {
+      socket.terminate()
+      failAll(error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
   }
 
   return { call, close: () => socket.terminate() }
