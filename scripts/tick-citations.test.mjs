@@ -96,6 +96,61 @@ test("reads a file path in parentheses as prose rather than a citation", () => {
 })
 
 // Check the check: an uncited tick has to fail before a pass means anything.
+// The branch b12a784 added in answer to the major review finding, and nothing
+// exercised it. A fix for the most serious finding on a pull request, left
+// untested, is the same defect one level up: the check and the thing checked
+// moving together. Both tests below use a citation that *would* resolve, so a
+// failure can only come from the skip path and never from a bad sha.
+test("fails in a shallow clone rather than passing a citation it cannot check", async (t) => {
+  const origin = await mkdtemp(join(tmpdir(), "domovoi-ticks-origin-"))
+  t.after(() => rm(origin, { recursive: true, force: true }))
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "ignore" })
+  git(origin, "init", "--quiet", "--initial-branch", "main")
+  git(origin, "config", "user.email", "test@example.invalid")
+  git(origin, "config", "user.name", "test")
+  git(origin, "commit", "--quiet", "--allow-empty", "-m", "first")
+  git(origin, "commit", "--quiet", "--allow-empty", "-m", "second")
+
+  const root = await mkdtemp(join(tmpdir(), "domovoi-ticks-shallow-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  execFileSync("git", ["clone", "--quiet", "--depth", "1", `file://${origin}`, root], { stdio: "ignore" })
+  assert.equal(
+    execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: root, encoding: "utf8" }).trim(),
+    "true",
+    "the fixture has to be genuinely shallow or this test proves nothing",
+  )
+
+  // Reachable from HEAD in this very clone, so the only thing that can fail is
+  // the shallow check itself.
+  const head = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
+  await mkdir(join(root, "scripts"), { recursive: true })
+  await writeFile(join(root, "scripts", "tick-citations-allowlist.json"), `${JSON.stringify({ exempt: {} })}\n`)
+  await writeFile(join(root, "ROADMAP.md"), `# roadmap\n\n- [x] Cited work (${head})\n`)
+  await writeFile(join(root, "WORK-SPLIT.md"), "")
+
+  const result = await checkTickCitations(root)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.shallow, true)
+  assert.match(result.failures[0], /cannot check whether .* is an ancestor of this branch/)
+  assert.match(result.failures[0], /fetch-depth: 0/)
+})
+
+test("fails when git cannot answer at all rather than passing", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-ticks-nogit-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, "scripts"), { recursive: true })
+  await writeFile(join(root, "scripts", "tick-citations-allowlist.json"), `${JSON.stringify({ exempt: {} })}\n`)
+  await writeFile(join(root, "ROADMAP.md"), "# roadmap\n\n- [x] Cited work (1b683d6)\n")
+  await writeFile(join(root, "WORK-SPLIT.md"), "")
+
+  const result = await checkTickCitations(root)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.shallow, true)
+  assert.match(result.failures[0], /cannot check whether 1b683d6 is an ancestor/)
+})
+
 test("fails an uncited tick and names where it is", async (t) => {
   const { root, cited } = await scratchRepository(t, [
     "# roadmap",
