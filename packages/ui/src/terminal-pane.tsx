@@ -14,6 +14,7 @@ import type {
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
+import { StatusDot, type StatusMeaning } from "./status-dot"
 import { terminalIdForSession } from "./terminal-id"
 import { settleTerminalWrite } from "./terminal-input"
 import { terminalQuickKeyData, terminalQuickKeys } from "./terminal-keys"
@@ -37,6 +38,16 @@ export type TerminalControls = {
       ownership: (event: TerminalOwnershipNotification) => void
     },
   ): () => void
+}
+
+// Four states the pane can be in, each with the atom's meaning for it. Keyed on
+// the union the status is computed from, so a fifth state fails typecheck rather
+// than rendering no dot.
+const terminalStatusMeaning: Record<"closed" | "connected" | "connecting" | "disconnected", StatusMeaning> = {
+  closed: "idle",
+  connected: "online",
+  connecting: "waiting",
+  disconnected: "offline",
 }
 
 export function TerminalPane({
@@ -202,10 +213,23 @@ export function TerminalPane({
   return (
     <div className="flex h-full min-h-0 flex-col bg-code">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-sidebar px-3">
-        <span aria-hidden="true" data-status-dot="" className={`size-1.5 rounded-full ${closed ? "bg-faint" : connected ? "bg-success" : "bg-warning"}`} />
+        {/* The dot used to be a raw span, aria-hidden, beside a line only a
+            screen reader read. So a sighted reader told connected from
+            disconnected by colour alone, which is the one thing StatusDot
+            exists to prevent. The status is a word now, and the atom carries
+            it. */}
+        <StatusDot
+          meaning={terminalStatusMeaning[terminalStatus]}
+          label={terminalStatus}
+          size="inline"
+          className="shrink-0"
+        />
         <span role="status" className="sr-only">Terminal status: {terminalStatus}. </span>
         <span className="min-w-0 truncate font-machine text-[10px] text-muted-foreground">
-          pty · {machineName} · {metadata?.shell ?? "connecting"} · {metadata?.cwd ?? "session worktree"}
+          {/* "connecting" was the fallback for an unknown shell, which said the
+              wrong thing while disconnected: a pane that is not connected is not
+              on its way to being. */}
+          pty · {machineName} · {metadata?.shell ?? (connected ? "connecting" : "shell unknown")} · {metadata?.cwd ?? "session worktree"}
         </span>
         <div className="ml-auto flex items-center gap-1">
           {metadata && !writable && !closed ? (
@@ -231,6 +255,14 @@ export function TerminalPane({
           </Button>
         </div>
       </div>
+      {/* Three controls above go inert on disconnect. A disabled control with no
+          reason reads as broken rather than unavailable, so the reason is on
+          screen beside them. */}
+      {!connected && !closed ? (
+        <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
+          Reconnect to the execution machine to take over, interrupt or close this terminal.
+        </p>
+      ) : null}
       {error ? (
         <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
           <CircleStopIcon />
