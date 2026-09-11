@@ -45,7 +45,14 @@ describe("durable usage accounting", () => {
     }
   })
 
-  it.each(["{", JSON.stringify({ version: 1, status: "pending" }), JSON.stringify({ turn: { ordinal: "invalid" } })])(
+  it.each([
+    "{",
+    JSON.stringify({ version: 1, status: "pending" }),
+    JSON.stringify({ turn: { ordinal: "invalid" } }),
+    JSON.stringify({ turn: { ordinal: Number.MAX_SAFE_INTEGER } }),
+    JSON.stringify({ turn: { ordinal: 3 } }),
+    JSON.stringify({ turn: { ordinal: 2 } }),
+  ])(
     "keeps corrupt accounting from blocking other rows: %s", async (corrupt) => {
       const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-corrupt-"))
       const path = join(directory, "usage.sqlite")
@@ -88,6 +95,53 @@ describe("durable usage accounting", () => {
       }
     },
   )
+
+  it("reconstructs allocation from valid evidence when the cached ordinal is corrupt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-ordinal-cache-"))
+    const path = join(directory, "usage.sqlite")
+    let ledger: UsageLedger | undefined
+    try {
+      ledger = new UsageLedger(path)
+      ledger.begin(dispatch)
+      const before = ledger.transferSession(dispatch.sessionId)
+      ledger.close()
+      ledger = undefined
+      const database = new DatabaseSync(path)
+      try {
+        database.prepare("UPDATE provider_usage SET turn_ordinal = ?").run(Number.MAX_SAFE_INTEGER)
+      } finally { database.close() }
+
+      ledger = new UsageLedger(path)
+      expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
+      const next = { ...dispatch, turnId: "next-after-repair" }
+      ledger.begin(next)
+      expect(ledger.lookup(next)?.accounting?.turn?.ordinal).toBe(2)
+    } finally {
+      ledger?.close()
+      await removeScratchDirectory(directory)
+    }
+  })
+
+  it("states when valid history has exhausted turn ordinals without changing it", () => {
+    const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
+    ledger.begin(dispatch)
+    const records = ledger.transferSession(dispatch.sessionId)
+    records[0]!.accounting!.turn!.ordinal = Number.MAX_SAFE_INTEGER - 1
+    ledger.replaceTransferredSession(dispatch.sessionId, records)
+
+    const last = { ...dispatch, turnId: "last-safe-turn" }
+    ledger.begin(last)
+    expect(ledger.lookup(last)?.accounting?.turn?.ordinal).toBe(Number.MAX_SAFE_INTEGER)
+    const before = ledger.transferSession(dispatch.sessionId)
+    expect(() => ledger.begin({ ...dispatch, turnId: "overflow-turn" }))
+      .toThrow("Cannot begin another turn: this session has exhausted its turn ordinals")
+    expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
+
+    const other = { ...dispatch, sessionId: "other-session", turnId: "other-turn" }
+    ledger.begin(other)
+    expect(ledger.lookup(other)?.accounting?.turn?.ordinal).toBe(1)
+  })
 
   it("adds distinct messages once, rejects stale snapshots, and keeps requested models", () => {
     const ledger = new UsageLedger()
