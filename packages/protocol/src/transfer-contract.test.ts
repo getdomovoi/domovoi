@@ -145,7 +145,7 @@ describe("session transfer state", () => {
         costSource: "unavailable",
         accounting: {
           version: 1, key: "a".repeat(64), threadKey: "b".repeat(64),
-          requestedModel: "opus-5", providerTurnId: "turn-1",
+          provider: "claude-code", requestedModel: "opus-5", providerTurnId: "turn-1",
           status: "pending", coverage: "pending", observations: [],
         },
       }],
