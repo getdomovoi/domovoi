@@ -190,14 +190,6 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
   })
 }
 
-// Reserve only positive safe-integer ordinals, even when durable evidence is corrupt.
-// Keep the index and allocation query identical, including the malformed-JSON guard.
-const validTurnOrdinalSql = `CASE WHEN json_valid(accounting) THEN
-  CASE WHEN json_type(accounting, '$.turn.ordinal') IN ('integer', 'real')
-    AND json_extract(accounting, '$.turn.ordinal') BETWEEN 1 AND ${Number.MAX_SAFE_INTEGER}
-    AND json_extract(accounting, '$.turn.ordinal') = CAST(json_extract(accounting, '$.turn.ordinal') AS INTEGER)
-  THEN json_extract(accounting, '$.turn.ordinal') END END`
-
 export class UsageLedger {
   readonly #database: DatabaseSync
   readonly #path: string
@@ -235,6 +227,7 @@ export class UsageLedger {
     this.#addColumnIfMissing("context_window_tokens", "INTEGER")
     this.#addColumnIfMissing("recorded_at", "INTEGER")
     this.#addColumnIfMissing("accounting", "TEXT")
+    this.#addColumnIfMissing("turn_ordinal", "INTEGER")
     this.#database.exec(
       "CREATE INDEX IF NOT EXISTS provider_usage_recorded_at ON provider_usage(recorded_at)",
     )
@@ -244,9 +237,7 @@ export class UsageLedger {
       ON provider_usage(CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END)`)
     this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_identity
       ON provider_usage(turn_id, provider)`)
-    this.#database.exec(`DROP INDEX IF EXISTS provider_usage_turn_ordinal;
-      CREATE UNIQUE INDEX IF NOT EXISTS provider_usage_valid_turn_ordinal
-      ON provider_usage(session_id, ${validTurnOrdinalSql})`)
+    this.#rebuildTurnOrdinals()
     this.#restrictFilePermissions()
   }
 
@@ -258,12 +249,16 @@ export class UsageLedger {
     this.#database.exec("BEGIN IMMEDIATE")
     try {
       if (!this.lookup(dispatch)) {
-        const row = this.#database.prepare(`SELECT MAX(${validTurnOrdinalSql}) AS ordinal
+        const row = this.#database.prepare(`SELECT MAX(turn_ordinal) AS ordinal
           FROM provider_usage WHERE session_id = ?`).get(dispatch.sessionId)
+        const previousOrdinal = Number(row?.ordinal ?? 0)
+        if (!Number.isSafeInteger(previousOrdinal) || previousOrdinal >= Number.MAX_SAFE_INTEGER) {
+          throw new Error("Cannot begin another turn: this session has exhausted its turn ordinals")
+        }
         const now = this.#now()
         const accounting = usageAccountingSchema.parse({
           ...beginUsageAccounting(dispatch),
-          turn: { ordinal: Number(row?.ordinal ?? 0) + 1, startedAt: dispatch.startedAt ?? new Date(now).toISOString() },
+          turn: { ordinal: previousOrdinal + 1, startedAt: dispatch.startedAt ?? new Date(now).toISOString() },
         })
         this.#upsert({ ...dispatch, turnId: accounting.key, accounting,
           usage: accountedUsage(accounting) }, now)
@@ -338,6 +333,7 @@ export class UsageLedger {
   }
 
   #upsert(record: TurnUsage, recordedAt: number | null): void {
+    const accounting = record.accounting ? usageAccountingSchema.parse(record.accounting) : undefined
     const currency = record.usage.currency
     const context = reportedContextOccupancy(
       record.usage.contextTokens,
@@ -356,8 +352,8 @@ export class UsageLedger {
         session_id, turn_id, provider_thread_id, provider, model,
         input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
         context_tokens, context_window_tokens,
-        cost_source, cost_micros, currency, recorded_at, accounting
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_source, cost_micros, currency, recorded_at, accounting, turn_ordinal
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, turn_id) DO UPDATE SET
         provider_thread_id = excluded.provider_thread_id,
         provider = excluded.provider,
@@ -376,6 +372,7 @@ export class UsageLedger {
         cost_micros = excluded.cost_micros,
         currency = excluded.currency,
         accounting = excluded.accounting,
+        turn_ordinal = excluded.turn_ordinal,
         recorded_at = COALESCE(provider_usage.recorded_at, excluded.recorded_at)
     `).run(
       record.sessionId,
@@ -394,7 +391,8 @@ export class UsageLedger {
       record.usage.costMicros ?? null,
       record.usage.currency ?? null,
       recordedAt,
-      record.accounting ? JSON.stringify(usageAccountingSchema.parse(record.accounting)) : null,
+      accounting ? JSON.stringify(accounting) : null,
+      accounting?.turn?.ordinal ?? null,
     )
     this.#restrictFilePermissions()
   }
@@ -530,6 +528,29 @@ export class UsageLedger {
 
   close(): void {
     this.#database.close()
+  }
+
+  #rebuildTurnOrdinals(): void {
+    // This column is a derived index of schema-valid evidence, not a second
+    // source of truth. Rebuild on open so corrupt durable JSON or an altered
+    // cached ordinal cannot reserve a number. Keep the raw evidence and totals.
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#database.exec(`DROP INDEX IF EXISTS provider_usage_turn_ordinal;
+        DROP INDEX IF EXISTS provider_usage_valid_turn_ordinal;
+        DROP INDEX IF EXISTS provider_usage_validated_turn_ordinal`)
+      const update = this.#database.prepare(
+        "UPDATE provider_usage SET turn_ordinal = ? WHERE session_id = ? AND turn_id = ?",
+      )
+      for (const row of this.#database.prepare("SELECT session_id, turn_id, accounting FROM provider_usage").iterate()) {
+        update.run(parsedAccounting(row.accounting)?.turn?.ordinal ?? null, row.session_id!, row.turn_id!)
+      }
+      this.#database.exec(`CREATE UNIQUE INDEX provider_usage_validated_turn_ordinal
+        ON provider_usage(session_id, turn_ordinal);
+        COMMIT`)
+    } catch (error) {
+      this.#rollback(error)
+    }
   }
 
   #rollback(error: unknown): never {

@@ -69,6 +69,12 @@ the linked thread items. Duplicate ordinals and dangling transferred links are
 invalid. A target continues after the highest imported ordinal; imported usage
 does not become newly metered local usage.
 
+Only schema-valid accounting can reserve an ordinal. On open, the ledger rebuilds
+its derived ordinal index from that evidence; corrupt accounting keeps its raw
+metadata and measured totals without reserving a number. Writes update the evidence
+and index together. If valid history reaches `Number.MAX_SAFE_INTEGER`, beginning
+another turn refuses with an explicit exhaustion error and leaves the history intact.
+
 CX2 does not turn a turn ID into a checkpoint ID. A client may offer a turn-specific
 fork only when an actual checkpoint for that exact boundary exists. Substituting the
 nearest checkpoint would name a different filesystem state. CX5 separately adds
