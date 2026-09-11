@@ -486,7 +486,13 @@ export function sessionHistoryEntries(
       ...(item.turnId ? { turnId: item.turnId } : {}),
     }
     if (item.kind === "checkpoint") {
-      entries.push({ ...base, category: "checkpoints", label: item.label, ...(item.commit ? { commit: item.commit } : {}) })
+      entries.push({
+        ...base,
+        category: "checkpoints",
+        label: item.label,
+        ...(item.reason ? { reason: item.reason } : {}),
+        ...(item.commit ? { commit: item.commit } : {}),
+      })
     } else if (item.kind === "user" || item.kind === "assistant") {
       entries.push({ ...base, category: "messages", role: item.kind, body: item.body })
     } else if (item.kind === "system" && item.transfer) {
@@ -5876,6 +5882,7 @@ export class DomovoiDaemon {
             id: `checkpoint-${randomUUID()}`,
             sessionId: currentSession.id,
             kind: "checkpoint",
+            reason: recoveringFailedThread ? "before-provider-recovery" : "before-provider-handoff",
             label: `${checkpoint.commit.slice(0, 8)} · before provider ${recoveringFailedThread ? "recovery" : "handoff"}`,
             commit: checkpoint.commit,
             createdAt,
@@ -6202,6 +6209,15 @@ export class DomovoiDaemon {
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#snapshot.activeSessionId = sessionId
         this.#snapshot.thread.push({
+          id: `checkpoint-${randomUUID()}`,
+          sessionId,
+          kind: "checkpoint",
+          reason: "session-start",
+          label: `Worktree created off ${project.branch}`,
+          commit: workspace.baseCommit,
+          createdAt,
+        })
+        this.#snapshot.thread.push({
           id: `system-${randomUUID()}`,
           sessionId,
           kind: "system",
@@ -6389,6 +6405,7 @@ export class DomovoiDaemon {
           id: `checkpoint-${randomUUID()}`,
           sessionId,
           kind: "checkpoint",
+          reason: "fork",
           label: `${checkpoint.commit.slice(0, 8)} · forked checkpoint`,
           commit: checkpoint.commit,
           createdAt,
@@ -6725,6 +6742,7 @@ export class DomovoiDaemon {
           id: `checkpoint-${randomUUID()}`,
           sessionId: currentSession.id,
           kind: "checkpoint",
+          reason: "manual",
           label: `${checkpoint.commit.slice(0, 8)} · ${label}`,
           commit: checkpoint.commit,
           createdAt: currentSession.updatedAt,
@@ -6783,6 +6801,7 @@ export class DomovoiDaemon {
           id: `checkpoint-${randomUUID()}`,
           sessionId: currentSession.id,
           kind: "checkpoint",
+          reason: "before-restore",
           label: `${restored.recoveryCommit.slice(0, 8)} · before restore`,
           commit: restored.recoveryCommit,
           createdAt,
@@ -6863,6 +6882,7 @@ export class DomovoiDaemon {
               id: `checkpoint-${randomUUID()}`,
               sessionId: session.id,
               kind: "checkpoint",
+              reason: "before-revert",
               label: `${error.recoveryCommit.slice(0, 8)} · before revert ${params.path}`,
               commit: error.recoveryCommit,
               createdAt: new Date().toISOString(),
@@ -6889,6 +6909,7 @@ export class DomovoiDaemon {
           id: `checkpoint-${randomUUID()}`,
           sessionId: currentSession.id,
           kind: "checkpoint",
+          reason: "before-revert",
           label: `${reverted.recoveryCommit.slice(0, 8)} · before revert ${reverted.path}`,
           commit: reverted.recoveryCommit,
           createdAt,
@@ -8068,6 +8089,7 @@ export class DomovoiDaemon {
           id: `checkpoint-${randomUUID()}`,
           sessionId,
           kind: "checkpoint",
+          reason: "before-archive",
           label: `${checkpoint.commit.slice(0, 8)} · before session archive`,
           commit: checkpoint.commit,
           createdAt: session.updatedAt,

@@ -108,6 +108,10 @@ describe("GitWorkspaceService", () => {
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
     expect(workspace).toMatchObject({ branch: "domovoi/session-1" })
     expect(relative(worktreeRoot, workspace.path)).toBe("session-1")
+    const sessionStart = await execute("git", [
+      "-C", workspace.path, "rev-parse", `refs/domovoi/checkpoints/${workspace.baseCommit}^{commit}`,
+    ])
+    expect(sessionStart.stdout.trim()).toBe(repository.head)
     await writeFile(join(workspace.path, "README.md"), "after\n")
 
     const checkpoint = await service.checkpoint(workspace.path, "before-agent-turn")
@@ -277,7 +281,12 @@ describe("GitWorkspaceService", () => {
     const service = new GitWorkspaceService(join(scratch, "worktrees"))
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-1")
 
-    await expect(service.restore(workspace.path, workspace.baseCommit)).rejects.toThrow(
+    await execute("git", [
+      "-C", workspace.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "--allow-empty", "-m", "unmanaged commit",
+    ])
+    const unmanaged = await execute("git", ["-C", workspace.path, "rev-parse", "HEAD"])
+    await expect(service.restore(workspace.path, unmanaged.stdout.trim())).rejects.toThrow(
       "Commit is not a Domovoi checkpoint",
     )
     await expect(service.restore(workspace.path, "not-a-commit")).rejects.toThrow(

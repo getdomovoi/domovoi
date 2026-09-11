@@ -3,7 +3,7 @@ import { z } from "zod"
 import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
-import { approvalDecisionDurationMsSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 
 import {
   sessionTransferParamsSchema,
@@ -345,6 +345,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
   z.object({
     ...historyEntryBase,
     category: z.literal("checkpoints"),
+    reason: checkpointReasonSchema.optional(),
     label: z.string(),
     commit: commitShaSchema.optional(),
   }),
