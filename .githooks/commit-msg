@@ -1,0 +1,7 @@
+#!/bin/sh
+# Rejects assistant attribution before the commit exists. The same rule is
+# enforced on the range by scripts/commit-trailers.mjs in release:invariants;
+# this is the copy that saves you an amend rather than the one that saves main.
+#
+# Install: git config core.hooksPath .githooks
+exec node "$(dirname "$0")/../scripts/commit-msg-hook.mjs" "$1"

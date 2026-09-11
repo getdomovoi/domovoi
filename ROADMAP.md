@@ -192,7 +192,7 @@ Every ledger entry is now merged.
   - Deferred past the alpha on 2026-09-03. `PRODUCT.md` line 41 commits to subscription-backed
     provider CLIs first, so this is not alpha scope.
 - [x] Token and cost telemetry normalized for Anthropic, per session and provider
-      (1b683d6 · session totals 76d11c2 · cached-token fold 33b2737)
+      (76a9cb2 · session totals 2508149 · cached-token fold 3d92b6f)
   - [ ] OpenCode undercounts: `tokens.cache.read` lands in `cachedInputTokens`
         and never reaches `inputTokens` or `totalTokens` — the fold is
         Anthropic-key-only by design (`opencode.ts:506`)

@@ -45,6 +45,43 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    `scripts/tick-citations-allowlist.json`; that list only shrinks, through `pnpm ticks:prune`.
    A plan written outside the repository is a claim with no evidence attached, the same shape
    as an undated tick: three of this file's boxes were already done on the day it was written.
+9. **No assistant attribution in a commit message, and the check runs before the commit rather
+   than after the merge.** Set 2026-09-11, after breaking it 33 times in one session.
+
+   `CLAUDE.md` says never add AI or session attribution to commits or pull requests. A harness
+   instruction asked for a `Claude-Session:` trailer on every commit, and it went onto 33 of them
+   across two branches and `main`, because each message was written to the instruction in front of
+   it rather than checked against the rule. The rule was not ambiguous and not forgotten; it was
+   simply never the thing being read at the moment of writing.
+
+   **What made it expensive was where it was caught.** Fourteen of the 33 had already merged, so
+   removing them meant rewriting published history, and `git filter-branch` cannot carry a
+   signature across a rewritten commit. **314 commit signatures were destroyed** — measured on both
+   sides, `314 E / 846 N` became `1160 N`. They cannot be restored: most were GitHub's own merge
+   signatures, and re-signing them as anyone else would be worse than leaving them off. 1,050
+   commit ids changed and 110 did not, with every tree, parent edge and subject verified identical
+   by both agents from separate scripts.
+
+   **Those signatures are the cost of the violation, not of the fix.** The same trailer rejected at
+   `git commit` costs one amended message. Rejected in CI before a merge, it costs a force-push to
+   a branch nobody else holds. After a merge there is no cheap option left: carry attribution
+   against an explicit instruction, or destroy history to remove it. That asymmetry is the entire
+   argument for where the check belongs.
+
+   So there is a gate rather than an intention. `scripts/commit-trailers.mjs` runs inside
+   `pnpm release:invariants`, over `origin/main..HEAD` rather than the tip, and fails naming the
+   commit and the line. `.githooks/commit-msg` applies the same rule a second earlier — install it
+   with `git config core.hooksPath .githooks`. The hook is the convenience; CI is the gate, because
+   a hook can be uninstalled and a required check cannot.
+
+   It covers the trailer that caused this, `Co-Authored-By` naming an assistant, `Generated-By`,
+   `Authored-With`, and a bare session link. A human co-author is untouched, and prose *about* the
+   rule is not a violation of it — both pinned in `scripts/commit-trailers.test.mjs`.
+
+   **The fifth instance of one pattern.** Vigilance failed and a gate worked, every time: a stale
+   local `main`, `origin/main` read without a fetch, `cat-file -e` standing in for reachability, a
+   checker that exited zero when it could not verify, and now a written, agreed rule read past 33
+   times. Where a rule matters, build the thing that refuses.
 
 ---
 
@@ -193,7 +230,7 @@ while the known-gaps list said "No phone surface in v2." Both cannot be true.
 I edited the vendored file, the gate refused it — "A signed file is never edited here" — and I
 concluded the correction had nowhere to go, on two false premises.
 
-The first was that a signed file's content cannot change. It can. `18dc495` re-vendored
+The first was that a signed file's content cannot change. It can. `17cf141` re-vendored
 `Domovoi Desktop V2.part2-logic.html`, a content change to a signed file with no `--accept-new`
 and the digest regenerated in the same commit, and the invariants passed. The gate refuses a *hand
 edit*; it has always allowed a re-export followed by a regenerate. That distinction is the entire
@@ -203,11 +240,11 @@ method.
 The second was that no upstream existed. `list_projects` returned only `design_handoff_domovoi` and
 `_brand`, and I read that as absence. It filters to design-system projects, and the source of record
 is a plain project — `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named in `design/REVISIONS.json`, the
-same project `18dc495`'s re-export came from. `get_project` reaches it and `list_files` shows
+same project `17cf141`'s re-export came from. `get_project` reaches it and `list_files` shows
 `HANDOFF-V2.md` and `Domovoi Phone v2.dc.html` sitting in it. A filtered list answering "no" is a
 fact about the filter.
 
-Fixed the way `18dc495` was: corrected upstream in `a3b4404e`, read back, re-vendored, regenerated.
+Fixed the way `17cf141` was: corrected upstream in `a3b4404e`, read back, re-vendored, regenerated.
 Four steps, no local authorship, digest intact.
 
 #### Changing a signed file under `design/`
@@ -232,7 +269,7 @@ session is a third artefact; those three are the drift this entry opens with.
    `design/ matches the recorded revision`.
 
 `--accept-new=<path>` is for **additions only**. A content change needs no flag, only a matching
-regenerate. Precedents: `18dc495` and `c08ee12`.
+regenerate. Precedents: `17cf141` and `e436a5e`.
 
 This is the one place rule 5 does not apply. Regenerating a digest beside the change is normally how
 a checksum comes to verify itself; here the content came from upstream rather than from this
