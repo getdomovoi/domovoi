@@ -239,8 +239,21 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    Asking "where else is this constant used" is a different question from "is this diff correct",
    and only the second one is what a diff review answers.
 
+   **The same day, the same rule ran the other way, and that half belongs here too.** CodeRabbit's
+   review of `validation/backend-stack` returned one major finding in `validTurnOrdinalSql`, a SQL
+   expression the substitute review had read closely and listed under "checked and correct". A
+   stored ordinal of exactly `Number.MAX_SAFE_INTEGER` passes every clause of the guard, and
+   `begin()` then computes `MAX + 1`, which `counter.max(Number.MAX_SAFE_INTEGER)` rejects, so that
+   session can never begin another turn.
+
+   The miss was scope. The substitute verified that the guard rejects every invalid *stored* value
+   and stopped, because the guard is about stored values. The defect lives one step later, in the
+   successor: the bound that matters for allocation is one lower than the bound that matters for
+   storage. Reading a diff closely is not the same as following the value out of the expression.
+
    So the two are not ranked, they are shaped differently, and the substitute is worth running even
-   when the CLI is available. Neither closes the other's row.
+   when the CLI is available. Neither closes the other's row, and this entry is written with both
+   directions in it so it cannot be quoted as a ranking.
 
    **Reviewing a combined branch: four rules, because the record outlives the branch.** Validating a
    stack often means building one branch that merges every pull request head, so the gates run
