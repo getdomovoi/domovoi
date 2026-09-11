@@ -210,11 +210,46 @@ fact about the filter.
 Fixed the way `18dc495` was: corrected upstream in `a3b4404e`, read back, re-vendored, regenerated.
 Four steps, no local authorship, digest intact.
 
-**What the entry is really about, then.** Not that signed content is immutable — it is not — but
-that the path to change it runs through a project this repository cannot see from its own tooling,
-named only inside a generated file, reachable only by an id nobody would guess. `REVISIONS.json`
-records `source`; nothing checks it is still reachable, and nothing would notice if it stopped
-being.
+#### Changing a signed file under `design/`
+
+Written out here rather than left in either agent's head, because that is the failure this whole
+entry is about: knowledge held somewhere the repository cannot read, rediscovered by being
+corrected.
+
+**The source of record** is Claude Design project `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named
+"Domovoi", type `PROJECT_TYPE_PROJECT`. It is recorded as `source` in `design/REVISIONS.json`.
+`DesignSync list_projects` **does not show it** — that call filters to
+`PROJECT_TYPE_DESIGN_SYSTEM`. Use `get_project` or `list_files` with the id. The design *system* is
+a different project, `881e2b70-d39a-49b0-bc47-ef5084e64cc7`, and the `_ds/` copy bound into a
+session is a third artefact; those three are the drift this entry opens with.
+
+**The four steps**, in order, all in one commit:
+
+1. Correct the file in `a3b4404e` (`finalize_plan`, then `write_files`).
+2. Read it back with `get_file` and confirm the change landed.
+3. Copy it into `design/…` — a re-vendor, never an edit of the vendored copy.
+4. `node scripts/design-revision.mjs`, then `--check` to confirm
+   `design/ matches the recorded revision`.
+
+`--accept-new=<path>` is for **additions only**. A content change needs no flag, only a matching
+regenerate. Precedents: `18dc495` and `c08ee12`.
+
+This is the one place rule 5 does not apply. Regenerating a digest beside the change is normally how
+a checksum comes to verify itself; here the content came from upstream rather than from this
+repository, so the digest is recording a provenance rather than blessing an edit. The distinction is
+the method, and it is why the gate's refusal reads as absolute when it is not.
+
+**The gap, named rather than closed.** `REVISIONS.json` records `source`, and nothing verifies that
+source is still reachable. If the project were renamed, moved or removed, every future re-vendor
+would be impossible and no gate would say so — the vendored files would keep matching their recorded
+digests, and `design/ matches the recorded revision` would go on passing while the thing it points at
+was gone. Silent by construction.
+
+It is not closable from CI. Reaching the project needs a DesignSync token CI does not have, so any
+check would pass locally and skip in CI, which is the shape rejected twice already this week: a gate
+that is green for a reason unrelated to what it claims. Naming it here is the whole remedy available.
+Whoever finds `source` unreachable should edit this paragraph rather than file a bug against the
+checker.
 
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can
