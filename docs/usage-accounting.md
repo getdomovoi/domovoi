@@ -24,6 +24,11 @@ Malformed or schema-incompatible accounting in a durable row is treated as missi
 evidence. Its measured totals remain available with legacy coverage, while healthy
 pending rows still recover normally. Invalid evidence cannot accept further reports.
 
+An accounting record accepts at most 10,000 observations, with bounded identity
+strings and nonnegative safe-integer counters. It has no separate serialized-record
+byte cap. WebSocket frames and transfer payloads impose their own byte limits on
+the complete transport payload.
+
 Provider normalization:
 
 - Claude's existing Anthropic cache fold is preserved. Cache reads and cache creation
