@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import { homedir } from "node:os"
-import { stdin } from "node:process"
-import { createInterface } from "node:readline/promises"
 
 import { CredentialStoreError, nativeKeyring, openCredentialStore } from "./credentials.js"
 import { pairWithDaemon, PairingError, readCredential } from "./pair.js"
+import { readSecretLine } from "./secret-input.js"
 import { connectToDaemon, DaemonUnreachableError, defaultEndpoint } from "./rpc.js"
 import { collectStatus, renderStatus } from "./status.js"
 
@@ -43,26 +42,6 @@ function parse(argv: string[]): Options {
 
 class UsageError extends Error {}
 
-// A terminal gets a prompt with echo off; a pipe is read as is. Either way
-// one line, and nothing of it is written back.
-async function readSecretLine(): Promise<string> {
-  if (!stdin.isTTY) {
-    let text = ""
-    for await (const chunk of stdin) text += chunk.toString()
-    return text
-  }
-  const reader = createInterface({ input: stdin, output: process.stderr, terminal: true })
-  const mute = (reader as unknown as { _writeToOutput: (text: string) => void })
-  const original = mute._writeToOutput
-  mute._writeToOutput = (text: string) => { if (text.includes("credential")) original.call(reader, text) }
-  try {
-    return await reader.question("Paste the client credential: ")
-  } finally {
-    process.stderr.write("\n")
-    reader.close()
-  }
-}
-
 async function main(argv: string[]): Promise<number> {
   const options = parse(argv)
   const [command] = options.positional
@@ -87,7 +66,7 @@ async function main(argv: string[]): Promise<number> {
     const credentials = await store()
     const paired = await credentials.load(options.daemon)
     if (!paired) {
-      process.stderr.write(`Not paired with ${options.daemon}. Run 'domovoi pair <code>' first.\n`)
+      process.stderr.write(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli' where the daemon runs, then paste its credential into 'domovoi pair --daemon ${options.daemon}${options.credentialFile === undefined ? "" : ` --credential-file ${options.credentialFile}`}'.\n`)
       return 2
     }
     const connection = await connectToDaemon({ endpoint: options.daemon, authToken: paired.token })
