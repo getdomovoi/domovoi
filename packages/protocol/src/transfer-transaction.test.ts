@@ -75,7 +75,7 @@ const members = [
 ]
 
 const manifest = {
-  version: 1 as const,
+  version: 2 as const,
   transferId,
   sessionId: "session-1",
   sourceMachineId,
@@ -156,7 +156,7 @@ describe("transactional transfer rpc", () => {
       sourceProjectId: "project-source",
       lineageCommit: "6".repeat(40),
       ownershipGeneration: 2,
-      contractVersion: 1,
+      contractVersion: 2,
       method: "git-bundle" as const,
       coverage: { included: [], excluded: [], warnings: [] },
       initiatedByClient: "desktop" as const,
@@ -204,7 +204,7 @@ describe("transactional transfer rpc", () => {
       sourceProjectId: "project-source",
       lineageCommit: "6".repeat(40),
       ownershipGeneration: 2,
-      contractVersion: 1,
+      contractVersion: 2,
       method: "git-bundle",
       coverage: { included: [], excluded: [], warnings: [] },
       initiatedByClient: "desktop",

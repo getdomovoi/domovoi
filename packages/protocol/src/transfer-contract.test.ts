@@ -12,7 +12,7 @@ const sourceMachineId = `machine-${"a".repeat(32)}`
 const targetMachineId = `machine-${"b".repeat(32)}`
 
 const state = {
-  version: 1 as const,
+  version: 2 as const,
   session: {
     id: sessionId,
     title: demoWorkspace.sessions[0]!.title,
@@ -135,6 +135,25 @@ const coverage = {
 }
 
 describe("session transfer state", () => {
+  it("requires contract v2 for portable usage accounting", () => {
+    const accountingState = {
+      ...state,
+      version: 2,
+      usage: [{
+        turnId: "a".repeat(64), provider: "claude-code", model: "opus-5",
+        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0,
+        costSource: "unavailable",
+        accounting: {
+          version: 1, key: "a".repeat(64), threadKey: "b".repeat(64),
+          requestedModel: "opus-5", providerTurnId: "turn-1",
+          status: "pending", coverage: "pending", observations: [],
+        },
+      }],
+    }
+    expect(sessionTransferStateSchema.safeParse(accountingState)).toMatchObject({ success: true })
+    expect(sessionTransferStateSchema.safeParse({ ...accountingState, version: 1 }).success).toBe(false)
+  })
+
   it("carries one self-contained portable session aggregate", () => {
     expect(sessionTransferStateSchema.parse(state)).toEqual(state)
   })
@@ -239,7 +258,7 @@ describe("session transfer coverage", () => {
   it("describes the exact preview the client approved", () => {
     const preview = {
       allowed: true as const,
-      contractVersion: 1 as const,
+      contractVersion: 2 as const,
       sessionId,
       sourceMachineId,
       targetMachineId,
@@ -258,7 +277,7 @@ describe("session transfer coverage", () => {
   it("keeps a refused preview structured", () => {
     const preview = sessionTransferPreviewSchema.parse({
       allowed: false,
-      contractVersion: 1,
+      contractVersion: 2,
       sessionId,
       sourceMachineId,
       targetMachineId,

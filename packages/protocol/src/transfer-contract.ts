@@ -37,7 +37,8 @@ export {
   type SessionTransferContractRefusal,
 } from "./transfer-contract-refusals.js"
 
-export const sessionTransferContractVersion = 1 as const
+// Version 2 carries portable usage accounting that strict version-1 readers cannot parse.
+export const sessionTransferContractVersion = 2 as const
 export const sessionTransferContractVersionSchema = z.literal(sessionTransferContractVersion)
 export const sessionTransferIntentDigestSchema = sha256DigestSchema
 
