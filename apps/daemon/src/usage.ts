@@ -270,8 +270,7 @@ export class UsageLedger {
       }
       this.#database.exec("COMMIT")
     } catch (error) {
-      this.#database.exec("ROLLBACK")
-      throw error
+      this.#rollback(error)
     }
   }
 

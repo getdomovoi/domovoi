@@ -16,7 +16,7 @@ const observation = (id: string, inputTokens: number, final = true) => ({
 })
 
 describe("durable usage accounting", () => {
-  it("preserves the transfer failure when SQLite has already rolled back", async () => {
+  it.each(["transfer", "begin"])("preserves the %s failure when SQLite has already rolled back", async (operation) => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-rollback-"))
     const path = join(directory, "usage.sqlite")
     const ledger = new UsageLedger(path)
@@ -25,14 +25,18 @@ describe("durable usage accounting", () => {
       const before = ledger.transferSession(dispatch.sessionId)
       const database = new DatabaseSync(path)
       try {
-        database.exec("CREATE TRIGGER rollback_usage_delete BEFORE DELETE ON provider_usage BEGIN SELECT RAISE(ROLLBACK, 'usage transfer failure'); END")
+        const event = operation === "begin" ? "INSERT" : "DELETE"
+        database.exec(`CREATE TRIGGER rollback_usage_write BEFORE ${event} ON provider_usage BEGIN SELECT RAISE(ROLLBACK, 'usage transaction failure'); END`)
       } finally { database.close() }
       let failure: unknown
-      try { ledger.replaceTransferredSession(dispatch.sessionId, []) } catch (error) { failure = error }
+      try {
+        if (operation === "begin") ledger.begin({ ...dispatch, turnId: "new-turn" })
+        else ledger.replaceTransferredSession(dispatch.sessionId, [])
+      } catch (error) { failure = error }
       expect(failure).toBeInstanceOf(AggregateError)
       expect(failure).toMatchObject({
-        cause: expect.objectContaining({ message: "usage transfer failure" }),
-        errors: [expect.objectContaining({ message: "usage transfer failure" }), expect.any(Error)],
+        cause: expect.objectContaining({ message: "usage transaction failure" }),
+        errors: [expect.objectContaining({ message: "usage transaction failure" }), expect.any(Error)],
       })
       expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
     } finally {
