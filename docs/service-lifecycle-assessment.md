@@ -1,6 +1,7 @@
 # S1.1 service lifecycle assessment
 
-Status: measured baseline and options for fetzy. No WSL supervisor selected.
+Status: fetzy selected option A for Windows user logon on 2026-09-11, with
+option D's explicit lack of Windows boot supervision. Implementation pending.
 Measured on 2026-09-11 after fetching `origin/main` at
 `98c412c540bad49b9cbf2459a47bc3309cda62b8`. S1.1 remains open; this document
 does not claim implementation.
@@ -10,6 +11,39 @@ and WSL lifecycle decisions. Existing Unix adapters already install, supervise
 and remove services. Calling those adapters missing would duplicate work.
 The separate `apps/cli` work belongs to S1.6; this assessment covers the daemon's
 existing lifecycle handlers and supervisor entry point.
+
+## WSL decision
+
+Domovoi will own a Windows task that starts the selected WSL distribution and
+foreground daemon at that distribution owner's Windows logon. Windows boot
+supervision is unavailable. Starting the distro by other means is a separate
+event and does not trigger the Windows task.
+
+Fetzy's governing principle is that a supervisor may own its own artefacts and
+may not own the host's. Options B and C edit configuration belonging to the
+distro. A creates Domovoi's own task, the only proposed supervisor registration
+that can be removed wholly as Domovoi's artefact. Its removal is therefore a
+proof obligation the implementation can own; the guest-stop proof is still due.
+A systemd unit's five-second crash policy does not solve the lifetime of the
+distro containing it. The policy can be real while WSL terminates its supervisor.
+
+Windows boot is a category error for the supported per-user contract: the
+daemon needs the distribution owner's keychain and repositories, and SYSTEM
+does not acquire that user's distribution by running a task. Fetzy rejected
+storing account credentials to establish that context before logon. There is
+no boot trigger in this design and no attempt to change the distro's init or
+boot configuration to supply one. Task Scheduler also offers passwordless
+[S4U logon](https://learn.microsoft.com/en-us/windows/win32/taskschd/principal-logontype),
+with network/encrypted-file restrictions; it has no acceptance proof for this
+WSL/keychain/repository contract and remains outside support.
+
+The first acceptance test must show that failure of the guest daemon reaches
+the Windows action as failure. If `wsl.exe` exits zero when the guest daemon
+dies, the task's restart policy cannot fire and A has not met acceptance.
+The test belongs in `apps/daemon/src/service/**`; its implementation must wait
+until the WSL workflow path-filter change has merged. Removal must independently
+prove the exact guest daemon stopped, as described below. Native Windows
+supervision remains a separate decision.
 
 ## Measured platform gaps
 
@@ -40,8 +74,9 @@ that reconciliation limit. Turn/worktree/transfer recovery belongs to S1.3.
 
 ## WSL options
 
-These are alternatives for a decision, not a selected design. “Boot” has three
-separate meanings here: **Windows boot**, **Windows user logon**, and **WSL
+These are the assessed alternatives; the decision above selects A for logon
+and rejects boot supervision. The assessment distinguished **Windows boot**,
+**Windows user logon**, and **WSL
 distribution startup**. A process supervisor and an event that launches that
 supervisor are separate mechanisms; some requirements would need a combination.
 
@@ -150,8 +185,7 @@ expired deadline. Also prove that deliberate removal cannot trigger a retry,
 that an unrelated distro/task/hook is untouched, and that guest profile data is
 preserved. These are required follow-up proofs, not tests already run.
 
-Fetzy's choice must name the supported Windows/WSL versions and user identity,
-which startup event is promised, whether idle availability is promised, which
-process owns retries and their limit, and whether changing distro-wide init is
-acceptable. No option above has been chosen, installed or exercised by this
-assessment.
+The selected contract is Windows user logon, with a Domovoi-owned task and no
+distro-wide init changes. Supported versions, retry limits, idle lifetime and
+the exact Windows/Linux identity binding still need implementation evidence.
+No managed WSL option has been installed or exercised by this assessment.
