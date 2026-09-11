@@ -36,9 +36,9 @@ function uniqueCoverage(
 // Kept independent of thread state: both manifests and durable history carry
 // this coverage, and portable thread state itself appears in a manifest.
 export const sessionTransferCoverageSchema = z.object({
-  included: z.array(coverageEntry(sessionTransferIncludedKindSchema)),
-  excluded: z.array(coverageEntry(sessionTransferExcludedKindSchema)),
-  warnings: z.array(coverageEntry(sessionTransferWarningKindSchema)),
+  included: z.array(coverageEntry(sessionTransferIncludedKindSchema)).max(sessionTransferIncludedKindSchema.options.length),
+  excluded: z.array(coverageEntry(sessionTransferExcludedKindSchema)).max(sessionTransferExcludedKindSchema.options.length),
+  warnings: z.array(coverageEntry(sessionTransferWarningKindSchema)).max(sessionTransferWarningKindSchema.options.length),
 }).strict().superRefine((coverage, context) => {
   uniqueCoverage(coverage.included, context)
   uniqueCoverage(coverage.excluded, context)
