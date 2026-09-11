@@ -23,11 +23,12 @@ export function waitForDaemon<T>(assertion: () => T | Promise<T>): Promise<T> {
 // it had a fixed ten seconds. Twenty seconds then expired twice on one Windows
 // job (run 34616918057 and its rerun, 2026-09-11) on a docs-only commit whose
 // parent had passed, while the four passing Windows runs that day cost 2458,
-// 13013, 2730 and 2647 ms, so the runner's stall, not the code, crossed it.
-// Twenty-five seconds is the most this budget can take without passing the
-// production harness call budget below, which every caller of that harness
-// sizes its own test budget against, and each caller here keeps its own outer
-// deadline, so a genuine hang is still bounded above this.
+// 13013, 2730 and 2647 ms. Those observations do not say what crossed it;
+// an intermittent fault in the fixture is still possible, so this budget is
+// provisional. Twenty-five seconds is the most it can take without passing
+// the production harness call budget below, which every Windows caller of
+// that harness sizes its own test budget against, and the one caller of this
+// wait keeps a wider outer deadline, so a genuine hang is still bounded.
 export function fixtureStartupTimeoutMs(platform: NodeJS.Platform): number {
   return platform === "win32" ? 25_000 : 10_000
 }
