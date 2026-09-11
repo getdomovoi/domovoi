@@ -72,15 +72,40 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    `pnpm release:invariants`, over `origin/main..HEAD` rather than the tip, and fails naming the
    commit and the line.
 
-   **It is not a required check, and calling it a gate overstated it.** Checked 2026-09-11 rather
-   than assumed: `gh api repos/getdomovoi/domovoi/branches/main/protection` returns
-   `Branch not protected`, `rulesets` is empty and so is `rules/branches/main`. `release:invariants`
-   runs at `.github/workflows/ci.yml:76` and its result blocks nothing — a pull request with it red
-   can still be merged by anyone with write access. So it is a red light, not a locked door, and
-   the difference is the same existence-versus-enforcement gap as a linter installed where nothing
-   runs it. Every merge tonight was green on every check, which is a fact about this week's
-   discipline rather than about the repository's rules. **Making it required is a decision for
-   fetzy**, because it changes how both agents merge; recorded here rather than quietly assumed.
+   **It was not a required check when this was first written, and calling it a gate overstated it.**
+   `branches/main/protection` returned `Branch not protected`, `rulesets` was empty and so was
+   `rules/branches/main`. `release:invariants` ran at `.github/workflows/ci.yml:76` and blocked
+   nothing: a pull request with it red could be merged by anyone with write access. Every merge
+   that night was green on every check, which was a fact about the week's discipline rather than
+   about the repository's rules.
+
+   **Protection is now on, and tonight is the argument for it.** 314 signatures were destroyed by a
+   force-push that no rule prevented, and the only thing standing between the repository and a
+   second one was that both agents agreed not to. Set 2026-09-11 on `main`:
+
+   - required: `verify (ubuntu-latest)`, `verify (macos-latest)`, `verify (windows-latest)`,
+     `native`, `audit`. `release:invariants` lives inside the `verify` job, so requiring those
+     three requires it on every platform.
+   - `enforce_admins: true`, so it is a rule rather than a convention.
+   - `allow_force_pushes: false` and `allow_deletions: false`. A rewrite of `main` is now refused
+     rather than merely regretted.
+   - `required_linear_history: false`, deliberately. This repository merges rather than squashes,
+     and every tick citation depends on the cited sha surviving the merge.
+   - No required reviews and `strict: false`, so neither agent is blocked waiting on the other or
+     forced to rebase before every merge.
+
+   `CodeRabbit` is deliberately **not** required: it returns `Review rate limited` under load, and
+   requiring it would make a quota outage a merge outage. Rule 6 covers reading it; a required
+   check is the wrong instrument for a reviewer that can legitimately decline.
+
+   Feature branches stay unprotected. Force-push-with-lease is the normal way to revise a branch
+   under review and that is where the iteration belongs.
+
+   **One trap worth naming.** `git push --dry-run --force` reports what git *would* send and does
+   not consult the server's protection, so it prints a cheerful `(forced update)` against a branch
+   that would refuse it. It looks exactly like a successful test of the rule and tests nothing. The
+   configuration above was read back from the API; the refusal itself is asserted by GitHub rather
+   than demonstrated here, because demonstrating it means actually rewinding `main`.
 
    **The hook strips rather than refuses, and the difference is the whole point.** The harness
    appends the trailer by itself, so a hook that only rejected would turn every single commit into
