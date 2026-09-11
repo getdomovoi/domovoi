@@ -12,6 +12,18 @@ adds distinct messages. Older, smaller snapshots cannot erase larger observation
 provisional reports cannot replace final reports. Unknown dispatches are not attributed
 to whichever turn happens to be active. OpenCode message usage requires `parentID`.
 
+Stopped or quarantined threads can still report usage for a known dispatch. Those
+reports account for work already consumed; they cannot resume execution or append
+thread content. The dispatch keeps its interrupted or failed status.
+
+Portable evidence names its provider, and transfer validation requires that identity
+to match the usage row. Versioned transfers use contract v2 because strict v1 readers
+cannot accept the additional accounting field.
+
+Malformed or schema-incompatible accounting in a durable row is treated as missing
+evidence. Its measured totals remain available with legacy coverage, while healthy
+pending rows still recover normally. Invalid evidence cannot accept further reports.
+
 Provider normalization:
 
 - Claude's existing Anthropic cache fold is preserved. Cache reads and cache creation

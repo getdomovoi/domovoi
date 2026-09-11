@@ -468,7 +468,7 @@ describe("transactional session transfer RPC", () => {
 
     const desktopSocket = await openClient(daemon)
     const preview = await rpc(desktopSocket)("session.transferPreview", request)
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
     expect(connectToMachine).toHaveBeenCalledOnce()
     connectToMachine.mockClear()
     const transfer = {
@@ -1437,7 +1437,7 @@ describe("transactional session transfer RPC", () => {
       targetMachineId,
       initiatedByClient: "desktop",
     })
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: session.id,
@@ -1620,7 +1620,7 @@ describe("transactional session transfer RPC", () => {
       targetMachineId,
       initiatedByClient: "desktop",
     })
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: source.sessions[0]!.id,
@@ -1938,7 +1938,7 @@ describe("transactional session transfer RPC", () => {
       },
     })
     const preview = previewResponse.result as {
-      contractVersion: 1
+      contractVersion: 2
       coverage: SessionTransferCoverage
     }
     expect(remoteCalls).toEqual([{
@@ -2177,7 +2177,7 @@ describe("transactional session transfer RPC", () => {
       targetMachineId,
       initiatedByClient: "desktop",
     })
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: session.id,
@@ -2281,7 +2281,7 @@ describe("transactional session transfer RPC", () => {
       targetMachineId,
       initiatedByClient: "desktop",
     })
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
 
     await expect(call("session.transfer", {
       sessionId: session.id,
@@ -2431,7 +2431,7 @@ describe("transactional session transfer RPC", () => {
       targetMachineId,
       initiatedByClient: "desktop",
     })
-    const approved = preview.result as { contractVersion: 1, intentDigest: string }
+    const approved = preview.result as { contractVersion: 2, intentDigest: string }
 
     const moved = await call("session.transfer", {
       sessionId: session.id,
@@ -2442,7 +2442,7 @@ describe("transactional session transfer RPC", () => {
     })
     expect(moved.result).toMatchObject({
       outcome: "succeeded",
-      contractVersion: 1,
+      contractVersion: 2,
       ownershipGeneration: 4,
     })
     expect(bundleSession).toHaveBeenCalledWith(
@@ -2600,7 +2600,7 @@ describe("transactional session transfer RPC", () => {
       targetMachineId,
       initiatedByClient: "desktop",
     })
-    const approved = preview.result as { contractVersion: 1; intentDigest: string }
+    const approved = preview.result as { contractVersion: 2; intentDigest: string }
 
     const conflict = await call("session.transfer", {
       sessionId: session.id,
@@ -2782,7 +2782,7 @@ describe("transactional session transfer RPC", () => {
     await daemon.start()
     const socket = await openClient(daemon)
     const call = rpc(socket)
-    const approved = new Map<string, { contractVersion: 1; intentDigest: string }>()
+    const approved = new Map<string, { contractVersion: 2; intentDigest: string }>()
     for (const session of sessions) {
       const response = await call("session.transferPreview", {
         sessionId: session.id,
@@ -2791,10 +2791,10 @@ describe("transactional session transfer RPC", () => {
       })
       expect(response.result).toMatchObject({
         allowed: true,
-        contractVersion: 1,
+        contractVersion: 2,
         intentDigest: expect.any(String),
       })
-      approved.set(session.id, response.result as { contractVersion: 1; intentDigest: string })
+      approved.set(session.id, response.result as { contractVersion: 2; intentDigest: string })
     }
 
     const moves = sessions.map((session) => call("session.transfer", {

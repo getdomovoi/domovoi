@@ -1763,7 +1763,7 @@ export class DomovoiDaemon {
     return {
       preview: rpcMethods["session.transferPreview"].result.parse({
         allowed: false,
-        contractVersion: 1,
+        contractVersion: sessionTransferContractVersion,
         sessionId: params.sessionId,
         sourceMachineId: this.#snapshot.machine.id,
         targetMachineId: params.targetMachineId,
@@ -2679,7 +2679,7 @@ export class DomovoiDaemon {
   }
 
   async #sendVersionedSessionTransfer(
-    params: RpcParams<"session.transfer"> & { contractVersion: 1; intentDigest: string },
+    params: RpcParams<"session.transfer"> & { contractVersion: typeof sessionTransferContractVersion; intentDigest: string },
     prepared: PreparedTransferPreview & {
       target: FleetMachine
       intent: PreparedSessionTransferIntent
@@ -2809,7 +2809,7 @@ export class DomovoiDaemon {
           outcome: "succeeded",
           workspacePath: remote.workspacePath,
           checkpointCommit: remote.checkpointCommit,
-          contractVersion: 1,
+          contractVersion: sessionTransferContractVersion,
           transferId,
           ownershipGeneration: remote.ownershipGeneration,
           coverage: packaged.manifest.coverage,
@@ -4830,7 +4830,7 @@ export class DomovoiDaemon {
         try {
           const outcome = await this.#sendVersionedSessionTransfer(
             params as RpcParams<"session.transfer"> & {
-              contractVersion: 1
+              contractVersion: typeof sessionTransferContractVersion
               intentDigest: string
             },
             { ...prepared, target: prepared.target, intent: prepared.intent },
@@ -7019,6 +7019,7 @@ export class DomovoiDaemon {
     const threadId = threadIdForAgentEvent(event)
     if (!threadId) return
     if (event.type === "usage") {
+      // Stops block execution/content events; already-incurred usage still belongs to its known dispatch.
       this.#updateUsageAccounting(() => {
         const identity = { provider, threadId: event.threadId, turnId: event.turnId }
         if (this.#usageLedger.lookup && this.#usageLedger.observe) {
@@ -8472,7 +8473,7 @@ export class DomovoiDaemon {
       sessionId: session.id,
       kind: "system",
       body: `Provider thread quarantined after ${redactDurableText(reason).value}.`,
-      detail: "The detached provider thread can no longer publish events into this session.",
+      detail: "The detached provider thread can no longer change session content. Usage already incurred can still be recorded.",
       createdAt: session.updatedAt,
     })
     try {

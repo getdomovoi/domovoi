@@ -1,4 +1,5 @@
 import {
+  sessionTransferContractVersion,
   sessionTransferStateSchema,
   transferCommitResultSchema,
   transferTargetPreflightParamsSchema,
@@ -436,7 +437,7 @@ export async function commitPreparedSessionTransfer(input: {
     stage = "persistence"
     await input.transactions.markRecovering(input.transferId, input.manifestDigest, stage)
     await input.save(candidate, {
-      version: 1,
+      version: sessionTransferContractVersion,
       transferId: manifest.transferId,
       manifestDigest: input.manifestDigest,
       sessionId: manifest.sessionId,

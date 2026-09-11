@@ -6,7 +6,7 @@ const usage = { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3,
   reasoningTokens: 1, totalTokens: 14, costSource: "unavailable" as const }
 const accounting = {
   version: 1, key: "a".repeat(64), threadKey: "b".repeat(64),
-  requestedModel: "requested", providerTurnId: "provider-turn", status: "completed",
+  provider: "opencode", requestedModel: "requested", providerTurnId: "provider-turn", status: "completed",
   coverage: "complete",
   observations: [{ kind: "message", id: "message", model: "reported", tokens: "reported",
     final: true, invalid: false, usage }],
@@ -23,6 +23,7 @@ describe("usage accounting contracts", () => {
 
   it.each([
     { key: "raw-thread-id" }, { version: 2 }, { status: "guessed" }, { coverage: "guessed" },
+    { provider: "" }, { provider: "a".repeat(65) }, { provider: undefined },
     { requestedModel: "" }, { providerTurnId: "" }, { observations: [accounting.observations[0], accounting.observations[0]] },
     { observations: [] }, { coverage: "unavailable" }, { status: "pending" },
     { observations: [{ ...accounting.observations[0], usage: { ...usage, cachedInputTokens: 11 } }] },
@@ -35,7 +36,7 @@ describe("usage accounting contracts", () => {
 
   it("rejects transfers that disagree with their accounting evidence", () => {
     const record = { turnId: accounting.key, provider: "opencode", model: "requested", ...usage, accounting }
-    for (const change of [{ turnId: "unrelated" }, { model: "other" }, { totalTokens: 100 }]) {
+    for (const change of [{ turnId: "unrelated" }, { provider: "claude-code" }, { model: "other" }, { totalTokens: 100 }]) {
       expect(sessionTransferUsageRecordSchema.safeParse({ ...record, ...change }).success).toBe(false)
     }
   })

@@ -11,7 +11,7 @@ const startedAt = "2026-09-10T12:00:00.000Z"
 const completedAt = "2026-09-10T12:01:00.000Z"
 const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, costSource: "unavailable" }
 const accounting = {
-  version: 1, key: id, threadKey: "b".repeat(64), providerTurnId: "provider-turn",
+  version: 1, key: id, provider: "opencode", threadKey: "b".repeat(64), providerTurnId: "provider-turn",
   requestedModel: "requested/model", status: "completed", coverage: "unavailable", observations: [],
   turn: { ordinal: 3, startedAt, completedAt },
 }
@@ -24,7 +24,7 @@ const message = { id: "message", sessionId: "session", kind: "user", body: "Stee
 const entry = { id: "thread:message", sourceId: "message", sessionId: "session", category: "messages", role: "user", body: message.body, createdAt: startedAt, turnId: id, turn }
 const page = { sessionId: "session", items: [entry], hasMore: false }
 const portable = {
-  version: 1,
+  version: 2,
   session: { id: "session", title: "Session", runtime: { provider: "opencode", model: "requested/model", reasoning: "high", permissionMode: "build" }, changedFiles: 0, testsPassed: 0, testsFailed: 0, updatedAt: completedAt, baseCommit: "c".repeat(40), ownershipGeneration: 0 },
   thread: [message], artifacts: [], annotations: [],
   usage: [{ turnId: id, provider: "opencode", model: "requested/model", ...usage, accounting }],
@@ -80,5 +80,22 @@ describe("durable turn links", () => {
     const delta = workspaceDeltaSchema.parse({ sessionId, updatedAt: startedAt, operations: [{ kind, id: "streamed", turnId: id, delta: "First", createdAt: startedAt }] })
     const updated = applyWorkspaceDelta(applyWorkspaceDelta(snapshot, delta), delta)
     expect(updated.thread.find((item) => item.id === "streamed")).toMatchObject({ turnId: id })
+  })
+
+  it.each(["assistant.append", "tool-output.append"] as const)("adopts a late turn link once in %s deltas", (kind) => {
+    let snapshot = structuredClone(demoWorkspace)
+    const sessionId = snapshot.sessions[0]!.id
+    const append = (turnId?: string) => {
+      snapshot = applyWorkspaceDelta(snapshot, workspaceDeltaSchema.parse({
+        sessionId, updatedAt: startedAt,
+        operations: [{ kind, id: "streamed", ...(turnId ? { turnId } : {}), delta: "x", createdAt: startedAt }],
+      }))
+      return snapshot.thread.find((item) => item.id === "streamed")
+    }
+    expect(append()).not.toHaveProperty("turnId")
+    expect(append(id)).toMatchObject({ turnId: id })
+    expect(append()).toMatchObject({ turnId: id })
+    // A later conflicting association cannot relabel existing content.
+    expect(append("b".repeat(64))).toMatchObject({ turnId: id, [kind === "assistant.append" ? "body" : "output"]: "xxxx" })
   })
 })

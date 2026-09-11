@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { demoWorkspace, type FleetMachine, type SessionTransferResult, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, sessionTransferContractVersion, type FleetMachine, type SessionTransferResult, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { Thread } from "./workspace-shell.js"
@@ -74,7 +74,7 @@ async function openTransferDialog(result: SessionTransferResult) {
       onTransferSession={onTransferSession}
       onPreviewTransfer={(async () => ({
         allowed: true,
-        contractVersion: 1,
+        contractVersion: sessionTransferContractVersion,
         sessionId: "session-billing",
         sourceMachineId: "machine-local",
         targetMachineId: "machine-studio",
@@ -98,7 +98,7 @@ async function openTransferDialog(result: SessionTransferResult) {
 it("opens the transfer dialog from the composer device menu", async () => {
   await openTransferDialog({
     outcome: "succeeded",
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     ownershipGeneration: 2,
     coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
@@ -112,7 +112,7 @@ it("opens the transfer dialog from the composer device menu", async () => {
 it("moves the session and switches to the target machine", async () => {
   const { user, snapshot, studio, onTransferSession, onSelectMachine } = await openTransferDialog({
     outcome: "succeeded",
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     ownershipGeneration: 2,
     coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
@@ -123,7 +123,7 @@ it("moves the session and switches to the target machine", async () => {
   await user.click(screen.getByRole("button", { name: "Move session" }))
 
   expect(onTransferSession).toHaveBeenCalledWith({
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     intentDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     sessionId: snapshot.activeSessionId,
     targetMachineId: studio.id,
@@ -135,7 +135,7 @@ it("moves the session and switches to the target machine", async () => {
 it("records the move in the thread as a receipt", async () => {
   const { user } = await openTransferDialog({
     outcome: "succeeded",
-    contractVersion: 1,
+    contractVersion: sessionTransferContractVersion,
     transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     ownershipGeneration: 2,
     coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },

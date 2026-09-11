@@ -53,6 +53,7 @@ export const usageAccountingSchema = z.object({
   version: z.literal(1),
   key: digest,
   threadKey: digest,
+  provider: z.string().min(1).max(64),
   requestedModel: identity,
   providerTurnId: identity,
   status: sessionTurnStatusSchema,
