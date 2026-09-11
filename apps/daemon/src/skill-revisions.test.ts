@@ -71,7 +71,8 @@ describe("retained skill revisions", () => {
     const revisions = new SqliteSkillReviews(database).revisions
     const digest = skillContentDigest("reviewed")
     revisions.retain(digest, "reviewed")
-    if (column === "content") database.prepare("UPDATE skill_review_revisions SET content = ?").run("changed")
+    // Equal UTF-8 lengths isolate digest validation from the byte-count check.
+    if (column === "content") database.prepare("UPDATE skill_review_revisions SET content = ?").run("tampered")
     else database.prepare("UPDATE skill_review_revisions SET bytes = ?").run(1)
     expect(revisions.read(id, digest)).toEqual({ id, contentDigest: digest, state: "unavailable", reason: "integrity-mismatch" })
   })
