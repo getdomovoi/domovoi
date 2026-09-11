@@ -169,6 +169,23 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    standard probe for this class from here: for each shell-out, make it fail in every way it can
    and assert that the checker refuses; the shallow clone is one such failure, not the whole set.
 
+   **Citations are durable because this repository merges rather than squashes.** #354 through
+   #358 landed as merge commits and their shas survived onto `main`. A squash policy would break
+   every citation silently: the sha a tick names would exist on nobody's branch after merge, the
+   checker would keep passing on feature branches that still hold the original commit, and it
+   would be wrong about `main` — the exact shape of a check that looks green while proving
+   nothing. If the merge policy ever changes, this convention has to change with it.
+
+9. **A tick ships in the pull request that lands the commit it cites.** Found 2026-09-10 while
+   building the first stack: a plan-only branch passed every gate locally and would have failed
+   in CI, because fourteen cited shas do not exist on a fresh clone of it. The task list is
+   useful *before* the work lands — that is what it is for, and two agents coordinating for days
+   off an uncommitted plan is how one branch reached 62 commits. The ticks are only meaningful
+   *after*. So a plan-first pull request carries the tasks with no ticks it cannot satisfy, and
+   each later pull request carries the tick edits for its own commits, citing shas that are
+   present in it by construction. This extends rule 7 by one clause: the owner ticks, citing the
+   other agent's sha, **in the pull request that lands it**.
+
 ---
 
 ## The blocked chain
