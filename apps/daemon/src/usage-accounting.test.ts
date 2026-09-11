@@ -16,7 +16,7 @@ const observation = (id: string, inputTokens: number, final = true) => ({
 })
 
 describe("durable usage accounting", () => {
-  it.each(["{", JSON.stringify({ version: 1, status: "pending" })])(
+  it.each(["{", JSON.stringify({ version: 1, status: "pending" }), JSON.stringify({ turn: { ordinal: "invalid" } })])(
     "keeps corrupt accounting from blocking other rows: %s", async (corrupt) => {
       const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-corrupt-"))
       const path = join(directory, "usage.sqlite")
@@ -33,8 +33,8 @@ describe("durable usage accounting", () => {
         ledger = undefined
         const database = new DatabaseSync(path)
         try {
-          // Simulate durable input created before the JSON expression index existed.
-          database.exec("DROP INDEX IF EXISTS provider_usage_accounting_status")
+          // Simulate durable input created before the JSON expression indexes existed.
+          database.exec("DROP INDEX IF EXISTS provider_usage_accounting_status; DROP INDEX IF EXISTS provider_usage_turn_ordinal")
           database.prepare("UPDATE provider_usage SET accounting = ? WHERE turn_id = ?").run(corrupt, badKey)
         } finally { database.close() }
 
@@ -50,6 +50,9 @@ describe("durable usage accounting", () => {
           totalTokens: 34, coverage: { legacy: 1, complete: 1, pending: 0 },
         })
         expect(ledger.transferSession(dispatch.sessionId)).toHaveLength(2)
+        const next = { ...dispatch, turnId: "next-turn" }
+        ledger.begin(next)
+        expect(ledger.lookup(next)?.accounting?.turn?.ordinal).toBe(3)
       } finally {
         ledger?.close()
         await removeScratchDirectory(directory)
