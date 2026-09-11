@@ -115,7 +115,12 @@ async function resolvableShas(shas, root) {
   const unresolved = []
   for (const sha of shas) {
     try {
-      await run("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: root })
+      // Reachable from HEAD, not merely present in this object store. A clone of
+      // one pull request has only that branch, so a citation naming a commit
+      // from another one exists here and nowhere in CI — which is how a branch
+      // passed every gate locally and would have gone red on push. Existence is
+      // a fact about this machine; reachability is a fact about the branch.
+      await run("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: root })
     } catch {
       unresolved.push(sha)
     }
@@ -164,7 +169,7 @@ export async function checkTickCitations(root = repositoryRoot) {
       const { unresolved, skipped } = await resolvableShas(shas, root)
       shallow ||= skipped
       for (const sha of unresolved) {
-        failures.push(`${file}:${tick.line}: cites ${sha}, which is not a commit in this repository.`)
+        failures.push(`${file}:${tick.line}: cites ${sha}, which is not an ancestor of this branch. A citation has to land in the same pull request as the commit it names.`)
       }
     }
     for (const text of exempt) {
