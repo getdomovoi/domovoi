@@ -209,18 +209,27 @@ so the first landing does not read as the unblock.
       Everything, Turns, Approvals, Checkpoints, Transfers, then Handoffs, Tools,
       Annotations, Tests.
 
-### CC4 · Vendor the v2 designs — do this first
-- [ ] `Domovoi Desktop V2.dc.html` and the eight other v2 files are **not** in the vendored
-      handoff, so the repo cannot read them and every design fact in the last week arrived
-      through chat. That is the bottleneck, and it is the fork-not-a-copy deferral showing
-      its real cost.
-- [ ] Vendor them as data under `design/`, digested, using
-      `pnpm design:revision --accept-new=<path>` per file.
-- [ ] Then a grep of `design/` answers presence **and** absence *within the recorded
+### CC4 · Vendor the v2 designs — done
+**Written while the files were absent, and left saying so after they landed.** The first two
+boxes describe work that this branch itself did; the section went on claiming the v2 files were
+missing and scheduling the vendoring as future work. `scripts/tick-citations.mjs` checks only
+`[x]` items, so an unticked box that is actually done bypasses the citation rule completely —
+the checker cannot fail what never claims to be finished. Found by CodeRabbit reviewing this
+pull request, and corrected here rather than left as a task nobody would start.
+
+- [x] `Domovoi Desktop V2.dc.html` and the eight other v2 files were **not** in the vendored
+      handoff, so the repo could not read them and every design fact that week arrived through
+      chat. That was the bottleneck, and it was the fork-not-a-copy deferral showing its real
+      cost. (`42cd0af`)
+- [x] Vendor them as data under `design/`, digested, using
+      `pnpm design:revision --accept-new=<path>` per file. Nine `.dc.html` files plus the two
+      exported Desktop V2 parts, fourteen entries in `design/REVISIONS.json`.
+      (`42cd0af` · Desktop V2 as its two parts `02459d6`)
+- [x] Then a grep of `design/` answers presence **and** absence *within the recorded
       revision* — which is the only absence it can ever answer. It says nothing about the
       live project, and it cannot prove the export was complete. State that scope wherever
       the claim is repeated; see `D1`, where the same snapshot is one of three copies that
-      nothing keeps in step.
+      nothing keeps in step. (`42cd0af`)
 
 ### CC5 · The four screens that are already partly built
 Not eight unstarted screens. Reconcile these four against their designs rather than

@@ -57,33 +57,55 @@ export function offendingLines(message) {
   return found
 }
 
+// Fail closed. The first version of this returned ok on every git failure, which
+// is the exact defect scripts/tick-citations.mjs had and had already been fixed
+// for: a gate that cannot see the range says so instead of passing. Found by
+// CodeRabbit on the pull request that introduced it, one week after the same
+// bug was removed from the other checker.
 async function baseRef(git) {
   // On a branch, every commit this branch adds. On main, the tip alone: rewriting
   // what is already published is the thing this check exists to make unnecessary.
   for (const candidate of ["origin/main", "main"]) {
+    let base
     try {
-      await git(["rev-parse", "--verify", candidate])
-      const head = await git(["rev-parse", "HEAD"])
-      const base = await git(["rev-parse", candidate])
-      if (head !== base) return `${candidate}..HEAD`
+      base = await git(["rev-parse", "--verify", candidate])
     } catch { continue }
+    const head = await git(["rev-parse", "HEAD"])
+    if (head !== base) return { range: `${candidate}..HEAD`, named: candidate }
+    return { range: "HEAD~1..HEAD", named: candidate }
   }
-  return "HEAD~1..HEAD"
+  return undefined
 }
+
+const unverifiable = (reason) => ({
+  ok: false,
+  checked: 0,
+  failures: [`cannot check commit messages: ${reason}. Fetch full history — in CI that is actions/checkout with fetch-depth: 0.`],
+})
 
 export async function checkCommitTrailers(root = repositoryRoot) {
   const git = async (args) => (await run("git", args, { cwd: root })).stdout.trim()
-  let range
+  // A shallow clone cannot enumerate the branch, so every commit before the
+  // graft point is unchecked while the run still goes green.
   try {
-    range = await baseRef(git)
-  } catch {
-    return { ok: true, failures: [], checked: 0 }
+    if ((await git(["rev-parse", "--is-shallow-repository"])) === "true") {
+      return unverifiable("this is a shallow clone")
+    }
+  } catch (error) {
+    return unverifiable(`git could not answer whether this is a shallow clone (${error.code ?? "failed"})`)
   }
-  let shas = []
+  let base
   try {
-    shas = (await git(["rev-list", range])).split("\n").filter(Boolean)
-  } catch {
-    return { ok: true, failures: [], checked: 0 }
+    base = await baseRef(git)
+  } catch (error) {
+    return unverifiable(`git could not resolve a base to compare against (${error.code ?? "failed"})`)
+  }
+  if (!base) return unverifiable("neither origin/main nor main exists to compare against")
+  let shas
+  try {
+    shas = (await git(["rev-list", base.range])).split("\n").filter(Boolean)
+  } catch (error) {
+    return unverifiable(`git could not list ${base.range} (${error.code ?? "failed"})`)
   }
   const failures = []
   for (const sha of shas) {

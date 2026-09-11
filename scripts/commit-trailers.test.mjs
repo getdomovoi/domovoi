@@ -73,6 +73,39 @@ test("fails the branch and names the commit and the line", async (t) => {
   assert.match(result.failures[0], /message line 3: Claude-Session is not allowed/)
 })
 
+// The first version returned ok on every git failure, which is the defect
+// tick-citations.mjs had already been fixed for. A gate that cannot see the
+// range has to say so; these are the cases where it cannot see it.
+test("fails in a shallow clone rather than passing the commits it cannot read", async (t) => {
+  const origin = await mkdtemp(join(tmpdir(), "domovoi-trailers-origin-"))
+  t.after(() => rm(origin, { recursive: true, force: true }))
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "ignore" })
+  git(origin, "init", "--quiet", "--initial-branch", "main")
+  git(origin, "config", "user.email", "test@example.invalid")
+  git(origin, "config", "user.name", "test")
+  git(origin, "commit", "--quiet", "--allow-empty", "-m", "first")
+  git(origin, "commit", "--quiet", "--allow-empty", "-m", "second")
+
+  const root = await mkdtemp(join(tmpdir(), "domovoi-trailers-shallow-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  execFileSync("git", ["clone", "--quiet", "--depth", "1", `file://${origin}`, root], { stdio: "ignore" })
+
+  const result = await checkCommitTrailers(root)
+  assert.equal(result.ok, false)
+  assert.match(result.failures[0], /shallow clone/)
+  assert.match(result.failures[0], /fetch-depth: 0/)
+})
+
+test("fails where git cannot answer at all rather than passing", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-trailers-nogit-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+
+  const result = await checkCommitTrailers(root)
+  assert.equal(result.ok, false)
+  assert.equal(result.checked, 0)
+  assert.match(result.failures[0], /cannot check commit messages/)
+})
+
 async function scratchBranch(t, messages) {
   const root = await mkdtemp(join(tmpdir(), "domovoi-trailers-"))
   t.after(() => rm(root, { recursive: true, force: true }))
