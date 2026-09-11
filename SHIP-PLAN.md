@@ -94,9 +94,11 @@ Parallel with Phase 0. Touches nothing the gates decide.
       contradicts rule 1. Codex accepted it as `CX` and corrected the scope: `domovoid service
       install` and `domovoid service status` already exist (`index.ts:86`), so what is missing
       there is top-level aliases rather than the commands. `doctor`, `logs` and `skill push` do
-      not exist and their behaviour is undefined. No binary named `domovoi` without the `d` exists or is
-      declared anywhere, so if a separate user-facing CLI is intended that is a product decision
-      rather than a client task, and it needs a home before it needs an owner.
+      not exist and their behaviour is undefined. The naming is **settled, not open**: fetzy decided
+      on 2026-09-10 that `domovoi` is the user-facing CLI and `domovoid` is the daemon process,
+      with every human command moving off `domovoid` and the lifecycle noun being `daemon`. It was
+      never a preference to be asked about — the design sources already specified it. Evidence in
+      [`docs/cli-parity-decision.md`](docs/cli-parity-decision.md).
 - [ ] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
       lands here — it is daemon bookkeeping and it unblocks UI in Phase 3.
 
@@ -228,7 +230,9 @@ since `WORK-SPLIT.md`'s UI is already waiting on it. In parallel it drafts S0.2'
 designs without choosing one.
 
 **Claude Code** finishes `WORK-SPLIT.md` — `CC2`, `CC3`, then `CC5`'s read-only diff work,
-which produces the estimates for all of Phase 3. Then `S1.6`, the CLI, which needs no gate.
+which produces the estimates for all of Phase 3. Then Phase 3's surfaces. `S1.6` used to sit here
+and does not: it is `[CX]`, and leaving it in this paragraph is how a reassignment survives at the
+top of a file and dies at the bottom.
 
 **Neither** scaffolds the relay until S0.6 is answered. Its directory is a statement about
 what ships open, and moving it later moves its whole history.
