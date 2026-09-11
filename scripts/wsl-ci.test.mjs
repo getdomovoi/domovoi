@@ -58,7 +58,11 @@ test("WSL job is separate, path-filtered, nightly and bounded", async () => {
   const paths = workflow.on.pull_request.paths
   for (const path of ["apps/daemon/src/wsl-list.ts", "apps/daemon/src/wsl-windows.test.ts",
     "apps/daemon/src/open-command.ts", "packages/protocol/src/fleet.ts", "packages/protocol/src/transport.ts",
-    "scripts/wsl-ci.mjs", ".github/workflows/wsl.yml", "pnpm-lock.yaml"]) {
+    "scripts/wsl-ci.mjs", ".github/workflows/wsl.yml", "pnpm-lock.yaml",
+    // A managed WSL supervisor is a service artefact, and its acceptance test
+    // (guest failure reaching the Windows action) lives beside the other
+    // service tests. Before this, nothing under service/ started the WSL job.
+    "apps/daemon/src/service/install.ts", "apps/daemon/src/service/wsl-task.native.test.ts"]) {
     assert.ok(paths.some((pattern) => matchesGlob(path, pattern)), `WSL job must cover ${path}`)
   }
   for (const path of ["apps/mobile/src/app.tsx", "packages/ui/src/styles.css", "README.md"]) {

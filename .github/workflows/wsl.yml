@@ -11,6 +11,7 @@ on:
       - 'scripts/runtime-*.mjs'
       - 'scripts/prepare-daemon-runtime.mjs'
       - 'apps/daemon/src/wsl-*.ts'
+      - 'apps/daemon/src/service/**'
       - 'apps/daemon/src/open-*.ts'
       - 'apps/daemon/src/index.ts'
       - 'apps/daemon/src/production-daemon.ts'
