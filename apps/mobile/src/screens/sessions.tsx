@@ -19,7 +19,9 @@ const dotColour: Record<SessionRow["dot"], string> = {
   quiet: "bg-faint",
 }
 
-const attentionColour: Record<"approval" | "preview", string> = {
+// Derived from the row's own type rather than restating its two values, so a
+// third kind of attention fails typecheck here instead of rendering no colour.
+const attentionColour: Record<NonNullable<SessionRow["attention"]>, string> = {
   approval: "text-warning",
   preview: "text-primary",
 }
