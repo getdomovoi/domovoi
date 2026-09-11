@@ -112,7 +112,8 @@ export const sessionTransferUsageRecordSchema = z.discriminatedUnion("costSource
       : usage.costSource === "provider-reported"
         && costReports.every((report) => report.currency === usage.currency)
         && usage.costMicros === costReports.reduce((sum, report) => sum + report.costMicros, 0)
-    if (usage.turnId !== accounting.key || usage.model !== accounting.requestedModel || !countersMatch || !costMatches) {
+    if (usage.turnId !== accounting.key || usage.provider !== accounting.provider
+      || usage.model !== accounting.requestedModel || !countersMatch || !costMatches) {
       context.addIssue({ code: "custom", path: ["accounting"], message: "Usage must match its accounting evidence" })
     }
   }
