@@ -19,6 +19,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # release:invariants runs scripts/tick-citations.mjs, which proves a
+          # cited sha is an ancestor of this branch. A shallow clone cannot
+          # answer that: the checker says so rather than failing, so removing
+          # this would turn the citation check green without checking anything.
           fetch-depth: 0
       - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:

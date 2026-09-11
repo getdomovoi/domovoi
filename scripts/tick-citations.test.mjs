@@ -12,8 +12,11 @@ import {
   seedAllowlist,
 } from "./tick-citations.mjs"
 
-async function scratchRepository(roadmap, workSplit = "") {
+// Registered where the directory is made, not after the assertions: a failing
+// expectation skips everything below it, and the directory outlives the run.
+async function scratchRepository(t, roadmap, workSplit = "") {
   const root = await mkdtemp(join(tmpdir(), "domovoi-ticks-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, "scripts"), { recursive: true })
   await writeFile(join(root, "ROADMAP.md"), roadmap)
   await writeFile(join(root, "WORK-SPLIT.md"), workSplit)
@@ -50,8 +53,8 @@ test("reads a file path in parentheses as prose rather than a citation", () => {
 })
 
 // Check the check: an uncited tick has to fail before a pass means anything.
-test("fails an uncited tick and names where it is", async () => {
-  const root = await scratchRepository([
+test("fails an uncited tick and names where it is", async (t) => {
+  const root = await scratchRepository(t, [
     "# roadmap",
     "",
     "- [x] Cited work (1b683d6)",
@@ -64,11 +67,10 @@ test("fails an uncited tick and names where it is", async () => {
   assert.equal(result.ok, false)
   assert.equal(result.failures.length, 1)
   assert.match(result.failures[0], /^ROADMAP\.md:4: \[x\] with no commit citation/)
-  await rm(root, { recursive: true, force: true })
 })
 
-test("passes when every tick cites, in both files", async () => {
-  const root = await scratchRepository(
+test("passes when every tick cites, in both files", async (t) => {
+  const root = await scratchRepository(t, 
     "- [x] Roadmap work (1b683d6)\n",
     "- [x] Plan work (6efa0ca)\n",
   )
@@ -78,11 +80,10 @@ test("passes when every tick cites, in both files", async () => {
 
   assert.deepEqual(result.failures, [])
   assert.equal(result.ok, true)
-  await rm(root, { recursive: true, force: true })
 })
 
-test("exempts a seeded tick and stops exempting it once it cites", async () => {
-  const root = await scratchRepository("- [x] Older work with no citation\n")
+test("exempts a seeded tick and stops exempting it once it cites", async (t) => {
+  const root = await scratchRepository(t, "- [x] Older work with no citation\n")
   const seeded = await seedAllowlist(root)
   assert.equal(seeded, 1)
   assert.equal((await checkTickCitations(root)).ok, true)
@@ -92,13 +93,12 @@ test("exempts a seeded tick and stops exempting it once it cites", async () => {
 
   assert.equal(cited.ok, false)
   assert.match(cited.failures[0], /cited now, still listed in/)
-  await rm(root, { recursive: true, force: true })
 })
 
 // The list shrinking is the whole mechanism. An exemption that outlives its
 // tick is an exemption nobody can see the shape of.
-test("pruning drops an exemption that has been cited and keeps one that has not", async () => {
-  const root = await scratchRepository([
+test("pruning drops an exemption that has been cited and keeps one that has not", async (t) => {
+  const root = await scratchRepository(t, [
     "- [x] Cited since seeding",
     "- [x] Still waiting",
   ].join("\n"))
@@ -115,22 +115,19 @@ test("pruning drops an exemption that has been cited and keeps one that has not"
   assert.equal((await checkTickCitations(root)).ok, true)
   const stored = JSON.parse(await readFile(join(root, "scripts", "tick-citations-allowlist.json"), "utf8"))
   assert.deepEqual(stored.exempt["ROADMAP.md"], ["Still waiting"])
-  await rm(root, { recursive: true, force: true })
 })
 
 // Seeding twice would re-exempt everything the list had shed, which is the same
 // failure as regenerating a digest in the commit it covers.
-test("refuses to seed over an existing allowlist", async () => {
-  const root = await scratchRepository("- [x] Older work\n")
+test("refuses to seed over an existing allowlist", async (t) => {
+  const root = await scratchRepository(t, "- [x] Older work\n")
   await seedAllowlist(root)
   await assert.rejects(seedAllowlist(root), /already exists/)
-  await rm(root, { recursive: true, force: true })
 })
 
-test("fails a missing allowlist rather than passing with nothing to check against", async () => {
-  const root = await scratchRepository("- [x] Cited work (1b683d6)\n")
+test("fails a missing allowlist rather than passing with nothing to check against", async (t) => {
+  const root = await scratchRepository(t, "- [x] Cited work (1b683d6)\n")
   const result = await checkTickCitations(root)
   assert.equal(result.ok, false)
   assert.match(result.failures[0], /is missing/)
-  await rm(root, { recursive: true, force: true })
 })

@@ -14,7 +14,7 @@ Task ids are stable and phase-prefixed (`S2.3`) so they cannot collide with
 
 ## How the two agents work this file
 
-Same six rules as `WORK-SPLIT.md` — one agent per file per session, protocol before the UI
+The same shared rules as `WORK-SPLIT.md` — one agent per file per session, protocol before the UI
 that reads it, `graft callers` before editing an enum, mutation probes only against a
 shippable tree, never regenerate a digest in the commit it covers, read the reviews not the
 check row. Three more that this file needs:

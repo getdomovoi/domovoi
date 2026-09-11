@@ -41,7 +41,7 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    sha, and ownership and evidence both survive.
 8. **Every `[x]` names the commits that make it checkable.** `pnpm release:invariants` runs
    `scripts/tick-citations.mjs`, which fails a ticked box with no `(<sha>)` and fails a sha
-   that is not a commit here. Ticks that predate the rule are exempted in
+   that is not an ancestor of this branch — a sha can exist in another ref and still fail. Ticks that predate the rule are exempted in
    `scripts/tick-citations-allowlist.json`; that list only shrinks, through `pnpm ticks:prune`.
    A plan written outside the repository is a claim with no evidence attached, the same shape
    as an undated tick: three of this file's boxes were already done on the day it was written.
