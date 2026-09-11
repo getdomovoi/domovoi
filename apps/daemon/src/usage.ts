@@ -524,14 +524,26 @@ export class UsageLedger {
       }
       this.#database.exec("COMMIT")
     } catch (error) {
-      this.#database.exec("ROLLBACK")
-      throw error
+      this.#rollback(error)
     }
     this.#restrictFilePermissions()
   }
 
   close(): void {
     this.#database.close()
+  }
+
+  #rollback(error: unknown): never {
+    let rollbackFailure: { error: unknown } | undefined
+    try {
+      this.#database.exec("ROLLBACK")
+    } catch (rollbackError) {
+      rollbackFailure = { error: rollbackError }
+    }
+    if (rollbackFailure) {
+      throw new AggregateError([error, rollbackFailure.error], "Usage transaction and rollback failed", { cause: error })
+    }
+    throw error
   }
 
   #restrictFilePermissions(): void {
