@@ -15,6 +15,7 @@ import {
   type SkillInventorySource,
   type SkillReviewDecision,
   type SkillSummary,
+  type SkillTrust,
 } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
@@ -54,6 +55,15 @@ import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { cn } from "./lib/utils"
 import { filterSkills, groupSkills, skillSourceLabel } from "./skill-browser-model"
 import { compareSkillInventories, type SkillFleetCellState } from "./skill-fleet-comparison"
+
+// Why a blocked skill refuses review. A disabled control with no reason reads as
+// a bug rather than a refusal. Keyed on the schema's own union rather than on
+// strings, so a reason added upstream fails typecheck here instead of rendering
+// undefined next to a dead control.
+const skillBlockedReason: Record<Extract<SkillTrust, { state: "blocked" }>["reason"], string> = {
+  "invalid-signature": "This skill's signature does not match its content, so it cannot be enabled for a project. Re-install it from a source you trust.",
+  "revoked-signer": "The key that signed this skill has been revoked, so it cannot be enabled.",
+}
 
 const comparisonLabel: Record<SkillFleetCellState, string> = {
   same: "Same",
@@ -564,13 +574,32 @@ export function SkillBrowser({
                   <FileTextIcon data-icon="inline-start" />
                   View SKILL.md
                 </Button>
-                <Button
-                  disabled={!projectId || (selected.trust.state === "blocked" && !selectedEnabled)}
-                  onClick={() => setReviewEnabled(!selectedEnabled)}
-                >
-                  {selectedEnabled ? "Review & disable" : "Review & enable"}
-                </Button>
+                {/* A dead control cannot be told apart from a broken one, so
+                    the two reasons this used to collapse are now separate.
+                    Enablement is per project: with none open the decision does
+                    not exist here, and the control is absent rather than inert.
+                    A blocked skill is the other case — the decision exists and
+                    is refused, so the control stays visible and the refusal is
+                    named beside it. */}
+                {projectId ? (
+                  <Button
+                    disabled={selected.trust.state === "blocked" && !selectedEnabled}
+                    onClick={() => setReviewEnabled(!selectedEnabled)}
+                  >
+                    {selectedEnabled ? "Review & disable" : "Review & enable"}
+                  </Button>
+                ) : null}
               </div>
+              {projectId ? null : (
+                <p className="mt-2 text-[11.5px] text-muted-foreground">
+                  Enablement is per project. Open a project to review this skill for it.
+                </p>
+              )}
+              {projectId && selected.trust.state === "blocked" && !selectedEnabled ? (
+                <p className="mt-2 text-[11.5px] text-muted-foreground">
+                  {skillBlockedReason[selected.trust.reason]}
+                </p>
+              ) : null}
             </section>
           ) : null}
         </main>

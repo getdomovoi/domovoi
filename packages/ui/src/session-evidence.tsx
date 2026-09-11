@@ -572,8 +572,8 @@ export function SessionEvidenceContent({
                   <Empty className="min-h-28 border-0">
                     <EmptyHeader>
                       <EmptyMedia variant="icon"><CheckCircle2Icon /></EmptyMedia>
-                      <EmptyTitle>No observed test runs</EmptyTitle>
-                      <EmptyDescription>Completed test commands recorded by this session appear here.</EmptyDescription>
+                      <EmptyTitle>No test runs observed since this session started</EmptyTitle>
+                      <EmptyDescription>Domovoi reports what it witnessed, not what was run. A run started outside this session leaves nothing here.</EmptyDescription>
                     </EmptyHeader>
                   </Empty>
                 )}
