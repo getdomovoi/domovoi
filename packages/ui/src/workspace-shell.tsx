@@ -2664,8 +2664,24 @@ export function HistoryPanel({
           })}
           </div>
           ) : null}
+          {/* Same pair as the audit log, and the same fix. A session before its
+              first turn has nothing narrowing its history: every category is
+              selected and the search is empty, so "change filters" names a
+              control that is already showing everything. */}
           {!loading && !error && page?.items.length === 0 ? (
-            <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia><EmptyTitle>No matching history</EmptyTitle><EmptyDescription>Change filters or search terms.</EmptyDescription></EmptyHeader></Empty>
+            <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia>
+              {categories.length === sessionHistoryCategories.length && query.trim() === "" ? (
+                <>
+                  <EmptyTitle>Nothing has happened in this session yet</EmptyTitle>
+                  <EmptyDescription>Turns, approvals and checkpoints appear here as they happen.</EmptyDescription>
+                </>
+              ) : (
+                <>
+                  <EmptyTitle>No matching history</EmptyTitle>
+                  <EmptyDescription>Change filters or search terms.</EmptyDescription>
+                </>
+              )}
+            </EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-3"><CircleStopIcon /><AlertTitle>History unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
           {historyWindowed ? <Button className="my-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={backToLatest}>Back to latest</Button> : null}
