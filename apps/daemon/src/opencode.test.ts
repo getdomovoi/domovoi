@@ -216,6 +216,81 @@ describe("OpenCodeSdkAdapter", () => {
     expect(factory).toHaveBeenCalledOnce()
   })
 
+  it("continues the stream after invalid accounting and retains message identity", async () => {
+    const { factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Run tests", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: {
+      id: "bad", parentID: "turn-1", sessionID: threadId, role: "assistant",
+      tokens: { input: 1, output: 2, total: 1 },
+    } } })
+    stream.emit({ type: "message.updated", properties: { info: {
+      id: "good", parentID: "turn-1", sessionID: threadId, role: "assistant",
+      providerID: "anthropic", modelID: "sonnet",
+      tokens: { input: 4, output: 2, cache: { read: 100, write: 10 } },
+      time: { created: 1, completed: 2 },
+    } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed", params: expect.objectContaining({ turnId: "turn-1" }),
+    })))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "usage", turnId: "turn-1",
+      source: expect.objectContaining({ id: "good", model: "anthropic/sonnet", kind: "message" }),
+      usage: expect.objectContaining({ inputTokens: 114, totalTokens: 116 }),
+    }))
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "provider-disconnected" }))
+    await adapter.close()
+  })
+
+  it("routes late accounting by parent ID and refuses unassociated message usage", async () => {
+    const { factory, stream } = harness()
+    let turn = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++turn}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "First", runtime: runtime("build") })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Second", runtime: runtime("build") })
+    for (const info of [
+      { id: "late", parentID: "turn-1" }, { id: "unassociated" },
+    ]) stream.emit({ type: "message.updated", properties: { info: {
+      ...info, sessionID: threadId, role: "assistant", tokens: { input: 10, output: 1 },
+    } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2))
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      expect.objectContaining({ turnId: "turn-1", source: expect.objectContaining({ id: "late" }) }),
+    ])
+    await adapter.close()
+  })
+
+  it("reports missing token telemetry without inventing zero consumption", async () => {
+    const { factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Run", runtime: runtime("build") })
+    for (const info of [{ id: "missing" }, { id: "cost-only", tokens: {}, cost: 0.01 }]) {
+      stream.emit({ type: "message.updated", properties: { info: {
+        ...info, parentID: "turn-1", sessionID: threadId, role: "assistant", time: { completed: 2 },
+      } } })
+    }
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
+    expect(events.filter((event) => event.type === "usage").map((event) => event.source)).toEqual([
+      expect.objectContaining({ id: "missing", tokens: "unavailable" }),
+      expect.objectContaining({ id: "cost-only", tokens: "unavailable" }),
+    ])
+    await adapter.close()
+  })
+
   it("streams turns, tools, permissions, and completion", async () => {
     const { client, factory, stream } = harness()
     const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")

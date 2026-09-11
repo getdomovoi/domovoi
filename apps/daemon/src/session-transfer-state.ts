@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 import {
+  sessionTransferContractVersion,
   sessionTransferStateSchema,
   workspaceSnapshotSchema,
   type SessionTransferContractRefusal,
@@ -86,7 +87,7 @@ export function portableSessionTransferState(
     ? undefined
     : (({ providerSync: _providerSync, ...plan }) => plan)(workingPlan)
   const state = {
-    version: 1 as const,
+    version: sessionTransferContractVersion,
     session: {
       id: durableSession.id,
       title: durableSession.title,

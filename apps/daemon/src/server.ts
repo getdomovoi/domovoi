@@ -752,7 +752,7 @@ type AnnotationVisualContextStore = AnnotationVisualContextReader & Pick<
 >
 
 type DaemonUsageLedger = Pick<UsageLedger, "record" | "session" | "window" | "close"> & Partial<
-  Pick<UsageLedger, "transferSession" | "replaceTransferredSession">
+  Pick<UsageLedger, "transferSession" | "replaceTransferredSession" | "begin" | "lookup" | "observe" | "finish" | "interruptPending">
 >
 
 type PreparedTransferPreview = {
@@ -1259,6 +1259,7 @@ export class DomovoiDaemon {
     signal?.throwIfAborted()
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
+    this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
     this.#recoverInterruptedTurns()
     this.#syncArtifactWatchers()
 
@@ -1623,7 +1624,18 @@ export class DomovoiDaemon {
   }
 
   #broadcastSnapshot(): void {
+    this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
+      this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
+        ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }]
+        : []),
+    ))
     this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+  }
+
+  #updateUsageAccounting(update: () => void): void {
+    try { update() } catch (error) {
+      this.#reportError("Domovoi could not persist provider usage", error)
+    }
   }
 
   #broadcastNotification(method: string, params: unknown): void {
@@ -1705,7 +1717,7 @@ export class DomovoiDaemon {
     return {
       preview: rpcMethods["session.transferPreview"].result.parse({
         allowed: false,
-        contractVersion: 1,
+        contractVersion: sessionTransferContractVersion,
         sessionId: params.sessionId,
         sourceMachineId: this.#snapshot.machine.id,
         targetMachineId: params.targetMachineId,
@@ -2621,7 +2633,7 @@ export class DomovoiDaemon {
   }
 
   async #sendVersionedSessionTransfer(
-    params: RpcParams<"session.transfer"> & { contractVersion: 1; intentDigest: string },
+    params: RpcParams<"session.transfer"> & { contractVersion: typeof sessionTransferContractVersion; intentDigest: string },
     prepared: PreparedTransferPreview & {
       target: FleetMachine
       intent: PreparedSessionTransferIntent
@@ -2751,7 +2763,7 @@ export class DomovoiDaemon {
           outcome: "succeeded",
           workspacePath: remote.workspacePath,
           checkpointCommit: remote.checkpointCommit,
-          contractVersion: 1,
+          contractVersion: sessionTransferContractVersion,
           transferId,
           ownershipGeneration: remote.ownershipGeneration,
           coverage: packaged.manifest.coverage,
@@ -2954,6 +2966,14 @@ export class DomovoiDaemon {
 
   #resourceForAgentEvent(provider: string, event: AgentEvent): string {
     const threadId = threadIdForAgentEvent(event)
+    if (event.type === "usage") {
+      try {
+        const record = this.#usageLedger.lookup?.({ provider, threadId: event.threadId, turnId: event.turnId })
+        if (record) return `session:${record.sessionId}`
+      } catch (error) {
+        this.#reportError("Domovoi could not resolve provider usage", error)
+      }
+    }
     const session = threadId
       ? this.#snapshot.sessions.find(
           (candidate) =>
@@ -4763,7 +4783,7 @@ export class DomovoiDaemon {
         try {
           const outcome = await this.#sendVersionedSessionTransfer(
             params as RpcParams<"session.transfer"> & {
-              contractVersion: 1
+              contractVersion: typeof sessionTransferContractVersion
               intentDigest: string
             },
             { ...prepared, target: prepared.target, intent: prepared.intent },
@@ -6419,9 +6439,10 @@ export class DomovoiDaemon {
           ? finalizePendingWorkingPlanEdit(currentPlan, new Date().toISOString())
           : undefined
         const boundaryPlan = boundaryMutation?.plan ?? currentPlan
+        const dispatchRuntime = { ...session.runtime }
         const providerTarget = {
-          provider: session.runtime.provider,
-          model: session.runtime.model,
+          provider: dispatchRuntime.provider,
+          model: dispatchRuntime.model,
           providerThreadId: session.providerThreadId,
         }
         const deliversPlan = !session.activeTurnId
@@ -6529,7 +6550,7 @@ export class DomovoiDaemon {
                 threadId: providerThreadId,
                 cwd: session.workspacePath,
                 prompt,
-                runtime: session.runtime,
+                runtime: dispatchRuntime,
                 ...(preparedTurn.visualContexts.length > 0
                   ? { visualContexts: preparedTurn.visualContexts }
                   : {}),
@@ -6537,6 +6558,11 @@ export class DomovoiDaemon {
               this.#agentTimeoutMs,
               "Agent turn timed out",
             )
+            const dispatchedTurnId = turnId
+            this.#updateUsageAccounting(() => this.#usageLedger.begin?.({
+              sessionId: session.id, provider: dispatchRuntime.provider, model: dispatchRuntime.model,
+              threadId: providerThreadId, turnId: dispatchedTurnId,
+            }))
           }
         } catch (error) {
           this.#inFlightProviderThreads.delete(emergencyThread)
@@ -6911,6 +6937,25 @@ export class DomovoiDaemon {
     }
     const threadId = threadIdForAgentEvent(event)
     if (!threadId) return
+    if (event.type === "usage") {
+      // Stops block execution/content events; already-incurred usage still belongs to its known dispatch.
+      this.#updateUsageAccounting(() => {
+        const identity = { provider, threadId: event.threadId, turnId: event.turnId }
+        if (this.#usageLedger.lookup && this.#usageLedger.observe) {
+          const record = this.#usageLedger.lookup(identity)
+          const owner = record && this.#snapshot.sessions.find((candidate) => candidate.id === record.sessionId)
+          if (owner && !sessionIsReadOnly(owner)) this.#usageLedger.observe(identity, event)
+          return
+        }
+        // Compatibility for embedded ledgers that implement the original interface.
+        const owner = this.#snapshot.sessions.find((candidate) => candidate.runtime.provider === provider
+          && candidate.providerThreadId === threadId && candidate.activeTurnId === event.turnId)
+        if (owner && !sessionIsReadOnly(owner)) this.#usageLedger.record({
+          sessionId: owner.id, ...identity, model: owner.runtime.model, usage: event.usage,
+        })
+      })
+      return
+    }
     if (this.#emergencyBlockedThreads.has(providerThreadKey(provider, threadId))) return
     const session = this.#snapshot.sessions.find(
       (candidate) => candidate.runtime.provider === provider && candidate.providerThreadId === threadId,
@@ -6919,21 +6964,6 @@ export class DomovoiDaemon {
     if (sessionIsReadOnly(session)) return
     const eventTurnId = turnIdForAgentEvent(event)
     if (eventTurnId && eventTurnId !== session.activeTurnId) return
-    if (event.type === "usage") {
-      try {
-        this.#usageLedger.record({
-          sessionId: session.id,
-          turnId: event.turnId,
-          threadId: event.threadId,
-          provider,
-          model: session.runtime.model,
-          usage: event.usage,
-        })
-      } catch (error) {
-        this.#reportError("Domovoi could not persist provider usage", error)
-      }
-      return
-    }
     const createdAt = new Date().toISOString()
     const delta: WorkspaceDelta = {
       sessionId: session.id,
@@ -7297,6 +7327,9 @@ export class DomovoiDaemon {
 
     if (event.type === "turn-completed") {
       const { failed, failure } = providerTurnCompletion(event.params)
+      if (eventTurnId) this.#updateUsageAccounting(() => this.#usageLedger.finish?.(
+        { provider, threadId, turnId: eventTurnId }, failed ? "failed" : "completed",
+      ))
       session.state = failed ? "failed" : "idle"
       if (failure) session.providerFailure = failure
       else delete session.providerFailure
@@ -8348,7 +8381,7 @@ export class DomovoiDaemon {
       sessionId: session.id,
       kind: "system",
       body: `Provider thread quarantined after ${redactDurableText(reason).value}.`,
-      detail: "The detached provider thread can no longer publish events into this session.",
+      detail: "The detached provider thread can no longer change session content. Usage already incurred can still be recorded.",
       createdAt: session.updatedAt,
     })
     try {

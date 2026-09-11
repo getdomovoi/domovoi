@@ -3,10 +3,26 @@ import { DatabaseSync } from "node:sqlite"
 
 import {
   sessionTransferUsageRecordSchema,
+  usageAccountingSchema,
+  type UsageAccounting,
+  type UsageCoverage,
   type SessionTransferUsageRecord,
 } from "@getdomovoi/protocol"
+import {
+  accountedUsage, beginUsageAccounting, observeUsage, updateUsageCoverage, usageCoverage, usageIdentity,
+  type UsageDispatch, type UsageIdentity, type UsageReport,
+} from "./usage-accounting.js"
 
 export type ProviderCost = { amount: number; currency: string }
+
+export type UsageSource = {
+  kind: "turn" | "message" | "session"
+  id?: string
+  model?: string
+  tokens: "reported" | "unavailable"
+  final?: boolean
+  invalid?: boolean
+}
 
 type ActiveUsageContext = {
   provider: string
@@ -34,9 +50,11 @@ export type TurnUsage = {
   provider: string
   model: string
   usage: NormalizedUsage
+  accounting?: UsageAccounting
 }
 
 export type UsageWindowTotals = {
+  coverage?: UsageCoverage
   sessions: number
   turns: number
   inputTokens: number
@@ -117,9 +135,14 @@ export function normalizeProviderUsage(payload: unknown): NormalizedUsage | unde
   // payload without them is untouched.
   const anthropicCacheRead = counter(usage.cache_read_input_tokens)
   const anthropicCacheWrite = counter(usage.cache_creation_input_tokens)
-  const inputTokens = anthropicCacheRead === undefined && anthropicCacheWrite === undefined
+  const anthropicInputTokens = anthropicCacheRead === undefined && anthropicCacheWrite === undefined
     ? reportedInputTokens
     : (reportedInputTokens ?? 0) + (anthropicCacheRead ?? 0) + (anthropicCacheWrite ?? 0)
+  // OpenCode (including Kilo) also reports disjoint input/cache buckets.
+  // Its SDK uses tokens.cache; do not reinterpret inclusive inputTokens payloads.
+  const inputTokens = root.tokens && cache
+    ? (reportedInputTokens ?? 0) + (counter(cache.read) ?? 0) + (counter(cache.write) ?? 0)
+    : anthropicInputTokens
   const reportedOutputTokens = counter(
     usage.output_tokens ?? usage.outputTokens ?? usage.output,
   )
@@ -201,14 +224,65 @@ export class UsageLedger {
     this.#addColumnIfMissing("context_tokens", "INTEGER")
     this.#addColumnIfMissing("context_window_tokens", "INTEGER")
     this.#addColumnIfMissing("recorded_at", "INTEGER")
+    this.#addColumnIfMissing("accounting", "TEXT")
     this.#database.exec(
       "CREATE INDEX IF NOT EXISTS provider_usage_recorded_at ON provider_usage(recorded_at)",
     )
+    // Replace the old expression index, which could not open malformed durable JSON.
+    this.#database.exec(`DROP INDEX IF EXISTS provider_usage_accounting_status;
+      CREATE INDEX IF NOT EXISTS provider_usage_valid_accounting_status
+      ON provider_usage(CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END)`)
+    this.#database.exec(`CREATE INDEX IF NOT EXISTS provider_usage_identity
+      ON provider_usage(turn_id, provider)`)
     this.#restrictFilePermissions()
   }
 
   record(record: TurnUsage): void {
     this.#upsert(record, this.#now())
+  }
+
+  begin(dispatch: UsageDispatch): void {
+    if (this.lookup(dispatch)) return
+    const accounting = beginUsageAccounting(dispatch)
+    this.#upsert({ ...dispatch, turnId: accounting.key, accounting,
+      usage: accountedUsage(accounting) }, this.#now())
+  }
+
+  lookup(identity: UsageIdentity): TurnUsage | undefined {
+    const rows = this.#database.prepare(
+      "SELECT * FROM provider_usage WHERE turn_id = ? AND provider = ? AND accounting IS NOT NULL",
+    ).all(usageIdentity(identity), identity.provider)
+    // Ambiguous provider identities are not evidence of a session association.
+    return rows.length === 1 ? turnUsageFromRow(rows[0]) : undefined
+  }
+
+  observe(identity: UsageIdentity, report: UsageReport): boolean {
+    const row = this.lookup(identity)
+    if (!row?.accounting) return false
+    const accounting = observeUsage(row.accounting, report)
+    this.#upsert({ ...row, accounting, usage: accountedUsage(accounting) }, null)
+    return true
+  }
+
+  finish(identity: UsageIdentity, status: Exclude<UsageAccounting["status"], "pending">): void {
+    const row = this.lookup(identity)
+    if (!row?.accounting || row.accounting.status !== "pending") return
+    const accounting = updateUsageCoverage({ ...row.accounting, status })
+    this.#upsert({ ...row, accounting }, null)
+  }
+
+  interruptPending(active: readonly UsageIdentity[] = []): void {
+    const activeKeys = new Set(active.map(usageIdentity))
+    const rows = this.#database.prepare(
+      `SELECT * FROM provider_usage
+        WHERE CASE WHEN json_valid(accounting) THEN json_extract(accounting, '$.status') END = 'pending'`,
+    ).all()
+    for (const value of rows) {
+      const row = turnUsageFromRow(value)
+      if (!row.accounting || activeKeys.has(row.accounting.key)) continue
+      const accounting = updateUsageCoverage({ ...row.accounting, status: "interrupted" })
+      this.#upsert({ ...row, accounting }, null)
+    }
   }
 
   #upsert(record: TurnUsage, recordedAt: number | null): void {
@@ -230,8 +304,8 @@ export class UsageLedger {
         session_id, turn_id, provider_thread_id, provider, model,
         input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
         context_tokens, context_window_tokens,
-        cost_source, cost_micros, currency, recorded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cost_source, cost_micros, currency, recorded_at, accounting
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, turn_id) DO UPDATE SET
         provider_thread_id = excluded.provider_thread_id,
         provider = excluded.provider,
@@ -249,6 +323,7 @@ export class UsageLedger {
         cost_source = excluded.cost_source,
         cost_micros = excluded.cost_micros,
         currency = excluded.currency,
+        accounting = excluded.accounting,
         recorded_at = COALESCE(provider_usage.recorded_at, excluded.recorded_at)
     `).run(
       record.sessionId,
@@ -267,6 +342,7 @@ export class UsageLedger {
       record.usage.costMicros ?? null,
       record.usage.currency ?? null,
       recordedAt,
+      record.accounting ? JSON.stringify(usageAccountingSchema.parse(record.accounting)) : null,
     )
     this.#restrictFilePermissions()
   }
@@ -302,6 +378,9 @@ export class UsageLedger {
       ...(singleCurrency ? { currency: row.currency as string } : {}),
       reportedCostTurns: Number(row.reported_cost_turns),
       unavailableCostTurns: Number(row.unavailable_cost_turns),
+      ...usageCoverage(this.#database.prepare(
+        "SELECT * FROM provider_usage WHERE recorded_at >= ? AND recorded_at < ?",
+      ).all(start, end).map((value) => turnUsageFromRow(value).accounting)),
     }
   }
 
@@ -328,7 +407,23 @@ export class UsageLedger {
     }).sort((left, right) => (
       `${left.provider}\0${left.model}`.localeCompare(`${right.provider}\0${right.model}`)
     ))
-    return { sessionId, ...totals, ...context, byRuntime }
+    const sessionCosts = new Map<string, { provider: string; threadKey: string; currency: string; costMicros: number }>()
+    for (const turn of turns) {
+      if (!turn.accounting) continue
+      for (const observation of turn.accounting.observations) {
+        if (observation.kind !== "session" || observation.invalid
+          || observation.usage.costSource !== "provider-reported") continue
+        const { threadKey } = turn.accounting
+        const { currency, costMicros } = observation.usage
+        const key = `${threadKey}\0${currency}`
+        sessionCosts.set(key, { provider: turn.provider, threadKey, currency,
+          costMicros: Math.max(sessionCosts.get(key)?.costMicros ?? 0, costMicros) })
+      }
+    }
+    return { sessionId, ...totals, ...context, byRuntime,
+      ...usageCoverage(turns.map((turn) => turn.accounting)),
+      ...(sessionCosts.size > 0 ? { sessionCosts: [...sessionCosts.values()] } : {}),
+    }
   }
 
   transferSession(sessionId: string): SessionTransferUsageRecord[] {
@@ -339,6 +434,7 @@ export class UsageLedger {
         provider: turn.provider,
         model: turn.model,
         ...turn.usage,
+        ...(turn.accounting ? { accounting: turn.accounting } : {}),
       })
     })
   }
@@ -369,18 +465,32 @@ export class UsageLedger {
           } : {}),
         }
         const { turnId, provider, model } = record
-        this.#upsert({ sessionId, turnId, provider, model, usage }, null)
+        this.#upsert({ sessionId, turnId, provider, model, usage,
+          ...(record.accounting ? { accounting: record.accounting } : {}),
+        }, null)
       }
       this.#database.exec("COMMIT")
     } catch (error) {
-      this.#database.exec("ROLLBACK")
-      throw error
+      this.#rollback(error)
     }
     this.#restrictFilePermissions()
   }
 
   close(): void {
     this.#database.close()
+  }
+
+  #rollback(error: unknown): never {
+    let rollbackFailure: { error: unknown } | undefined
+    try {
+      this.#database.exec("ROLLBACK")
+    } catch (rollbackError) {
+      rollbackFailure = { error: rollbackError }
+    }
+    if (rollbackFailure) {
+      throw new AggregateError([error, rollbackFailure.error], "Usage transaction and rollback failed", { cause: error })
+    }
+    throw error
   }
 
   #restrictFilePermissions(): void {
@@ -402,7 +512,7 @@ export class UsageLedger {
         session_id, turn_id, provider_thread_id, provider, model,
         input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens,
         context_tokens, context_window_tokens,
-        cost_source, cost_micros, currency
+        cost_source, cost_micros, currency, accounting
       FROM provider_usage WHERE session_id = ? ORDER BY rowid
     `).all(sessionId)
   }
@@ -443,6 +553,7 @@ function safeCostMicros(amount: number): number {
 
 function turnUsageFromRow(value: unknown): TurnUsage {
   const row = value as Record<string, unknown>
+  const accounting = parsedAccounting(row.accounting)
   const usage: NormalizedUsage = {
     inputTokens: Number(row.input_tokens),
     cachedInputTokens: Number(row.cached_input_tokens),
@@ -465,6 +576,18 @@ function turnUsageFromRow(value: unknown): TurnUsage {
     provider: String(row.provider),
     model: String(row.model),
     usage,
+    ...(accounting ? { accounting } : {}),
+  }
+}
+
+function parsedAccounting(value: unknown): UsageAccounting | undefined {
+  if (typeof value !== "string") return undefined
+  try {
+    const parsed = usageAccountingSchema.safeParse(JSON.parse(value))
+    return parsed.success ? parsed.data : undefined
+  } catch {
+    // Preserve the row's measured usage as legacy, without claiming valid accounting evidence.
+    return undefined
   }
 }
 

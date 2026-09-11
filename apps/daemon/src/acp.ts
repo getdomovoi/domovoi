@@ -293,8 +293,8 @@ export class AcpAgentAdapter implements AgentAdapter {
         type: "usage",
         threadId,
         turnId,
+        source: { kind: "session", tokens: "unavailable" },
         usage: normalizeUsage({
-          totalTokens: update.used,
           contextTokens: update.used,
           contextWindowTokens: update.size,
           ...(update.cost ? { cost: update.cost } : {}),

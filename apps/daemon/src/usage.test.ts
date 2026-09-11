@@ -17,6 +17,18 @@ function clock(start: string) {
 }
 
 describe("provider usage telemetry", () => {
+  it("includes OpenCode cache reads and writes in input and total tokens", () => {
+    expect(normalizeProviderUsage({ tokens: {
+      input: 4, output: 10, reasoning: 2, cache: { read: 21_000, write: 500 },
+    } })).toMatchObject({
+      inputTokens: 21_504,
+      cachedInputTokens: 21_000,
+      outputTokens: 10,
+      reasoningTokens: 2,
+      totalTokens: 21_516,
+    })
+  })
+
   it("normalizes tokens and provider-reported cost into integer micros", () => {
     expect(normalizeUsage({
       inputTokens: 100,
@@ -653,7 +665,7 @@ describe("provider usage telemetry", () => {
     expect(normalizeProviderUsage({
       tokens: { input: 12, output: 4, reasoning: 2, cache: { read: 3 } },
       cost: 0.01,
-    })).toMatchObject({ inputTokens: 12, cachedInputTokens: 3, reasoningTokens: 2 })
+    })).toMatchObject({ inputTokens: 15, cachedInputTokens: 3, reasoningTokens: 2 })
     expect(normalizeProviderUsage({ usage: { total_tokens: 144 } })).toEqual({
       inputTokens: 0,
       cachedInputTokens: 0,
