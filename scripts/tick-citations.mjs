@@ -23,8 +23,14 @@ const pruneCommand = "pnpm ticks:prune"
 // claim rather than a tidy one.
 export const citedFiles = ["ROADMAP.md", "WORK-SPLIT.md", "SHIP-PLAN.md"]
 
-const tickPattern = /^(\s*)[-*]\s+\[x\]\s+(.*)$/i
-const listItemPattern = /^\s*(?:[-*]\s|\d+[.)]\s)/
+// Every bullet Markdown allows, not the two this file happened to use. A "+"
+// bullet or an ordered "1." item collected no tick at all, so it passed uncited
+// while looking identical to a checked one — and worse, a nested "+ [x] Child
+// (sha)" was not recognised as opening a list either, so it was folded into an
+// uncited parent's body and satisfied the parent's citation from the child's
+// evidence. A gate that fails open is the shape this whole file exists to stop.
+const tickPattern = /^(\s*)(?:[-*+]|\d+[.)])\s+\[x\]\s+(.*)$/i
+const listItemPattern = /^\s*(?:[-*+]\s|\d+[.)]\s)/
 // A citation lives in parentheses so it reads as evidence beside the claim
 // rather than as part of it. Anything inside those parentheses may sit beside
 // the sha — "(1b683d6 · session totals 76d11c2)" cites two commits and says

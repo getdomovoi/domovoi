@@ -62,6 +62,35 @@ test("does not let a nested item borrow the parent's citation", () => {
   assert.deepEqual(citedShas(ticks[1].body), [])
 })
 
+// The test above uses "-" for both lines, so it passed while the parser only knew
+// "-" and "*". Markdown allows "+" and ordered items too, and a tick written that
+// way collected nothing at all: not a tick, so never checked, and not a list item
+// either, so folded into whatever tick sat above it. Both halves fail open.
+test("collects a tick under every bullet Markdown allows", () => {
+  const ticks = collectTicks([
+    "- [x] Dash",
+    "* [x] Star",
+    "+ [x] Plus",
+    "1. [x] Ordered with a period",
+    "2) [x] Ordered with a parenthesis",
+  ].join("\n"))
+  assert.deepEqual(ticks.map(({ text }) => text), [
+    "Dash", "Star", "Plus", "Ordered with a period", "Ordered with a parenthesis",
+  ])
+})
+
+// The sharper half. The child was not recognised as opening a list, so its line
+// was appended to the parent's body and the parent passed on the child's sha.
+test("does not let a plus-bullet child pay for an uncited parent", () => {
+  const ticks = collectTicks([
+    "- [x] The parent claim with nothing behind it",
+    "  + [x] A nested claim (1b683d6)",
+  ].join("\n"))
+  assert.equal(ticks.length, 2)
+  assert.deepEqual(citedShas(ticks[0].body), [])
+  assert.deepEqual(citedShas(ticks[1].body), ["1b683d6"])
+})
+
 test("reads a file path in parentheses as prose rather than a citation", () => {
   assert.deepEqual(citedShas("Usage is stamped at write time (`server.ts:6903`, switch at `5835`)"), [])
 })
