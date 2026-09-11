@@ -1,0 +1,288 @@
+import { randomUUID } from "node:crypto"
+import { win32 } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
+
+import { expect, it } from "vitest"
+
+import { OperationDeadline } from "../operation-deadline.js"
+import { localOwnerRecordSchema, type ReadyLocalOwner } from "../local-owner-record.js"
+import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
+import { withinServiceDeadline } from "./deadline.js"
+import { nodeServiceEffects, type ServiceCommand } from "./install.js"
+import { removeWindowsTask, windowsPowerShellPath } from "./windows-task.js"
+import { wslTaskPlan } from "./wsl-task.js"
+
+const lifecycleBudget = 240_000
+const cleanupBudget = 30_000
+const node = "/opt/domovoi-ci-node/bin/node"
+const daemon = "/opt/domovoi-ci-daemon/dist/index.js"
+const distribution = process.env["DOMOVOI_WSL_REQUIRED_DISTRIBUTION"]
+const required = process.env["DOMOVOI_WSL_NATIVE_SERVICE"] === "1"
+const literal = (value: string) => "'" + value.replaceAll("'", "''") + "'"
+
+// Run the production entry in the same foreground process. The preload adds
+// only a private failure/stop input, so a test never signals a saved PID that
+// might have been reused. It consumes each request before signalling itself.
+const observer = [
+  "import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';",
+  "const home = process.env.HOME;",
+  "const request = home + '/request.json';",
+  "const identity = { pid: process.pid, start: readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ')[19] };",
+  "writeFileSync(home + '/process.json', JSON.stringify(identity), { mode: 0o600 });",
+  "setInterval(() => {",
+  "  let value;",
+  "  try { value = JSON.parse(readFileSync(request, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return; throw e; }",
+  "  if (value.pid !== process.pid || value.start !== identity.start) return;",
+  "  if (value.signal !== 'SIGKILL' && value.signal !== 'SIGTERM') throw new Error('Unknown fixture signal');",
+  "  unlinkSync(request);",
+  "  process.kill(process.pid, value.signal);",
+  "}, 100).unref();",
+].join("\n")
+
+type GuestIdentity = { pid: number; start: string }
+
+it.runIf(process.platform === "win32" && required)(
+  "propagates guest failure, restarts it, and removes only its WSL task",
+  async () => {
+    expect(distribution).toMatch(/^domovoi-ci-[0-9a-f-]{36}$/)
+    const name = "Domovoi-WSL-test-" + randomUUID()
+    const registrationId = randomUUID()
+    const home = "/tmp/domovoi-wsl-task-" + randomUUID()
+    const configPath = home + "/.domovoi/service.json"
+    const powershell = windowsPowerShellPath()
+    const wsl = win32.join(process.env.SystemRoot!, "System32", "wsl.exe")
+    const effects = nodeServiceEffects()
+    const deadline = OperationDeadline.start(lifecycleBudget)
+    const target = {
+      name, registrationId, distribution: distribution!, linuxUser: "root",
+      executable: "/usr/bin/env",
+      args: ["HOME=" + home, "PATH=/opt/domovoi-ci-node/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        node, "--import", home + "/observer.mjs", daemon, "--service-config", configPath],
+      powershell, wsl,
+    }
+    const plan = wslTaskPlan(target)
+    const bystander = wslTaskPlan({ ...target, name: name + "-other", registrationId: randomUUID() })
+    let registered = false
+    let bystanderRegistered = false
+    let guestStaged = false
+    let identity: GuestIdentity | undefined
+    let companion: GuestIdentity | undefined
+    let failure: unknown
+    let phase = "guest fixture preparation"
+    const began = performance.now()
+    const mark = (next: string) => {
+      process.stdout.write("WSL service " + phase + ": " + Math.round(performance.now() - began) + "ms elapsed\n")
+      phase = next
+    }
+    const capture = (command: ServiceCommand, active = deadline) =>
+      withinServiceDeadline(active, () => effects.capture(command.command, command.args, active))
+    const checked = async (command: ServiceCommand, active = deadline) => {
+      const result = await capture(command, active)
+      if (result.code !== 0) throw new Error(command.command + " exited " + result.code + ": " + result.stderr)
+      return result.stdout.trim()
+    }
+    const guest = (script: string, args: string[] = [], active = deadline) =>
+      checked({ command: wsl, args: ["--distribution", distribution!, "--user", "root", "--exec", node, "-e", script, ...args] }, active)
+    const read = (path: string, active = deadline) => guest(
+      "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", [path], active)
+    const inspect = (script: string, active = deadline) => {
+      // This read-only probe has the same private UUID name as the production
+      // commands. No wildcard, localized status, or inferred absence.
+      const text = [
+        "$ErrorActionPreference = 'Stop'",
+        "$scheduler = New-Object -ComObject 'Schedule.Service'",
+        "$scheduler.Connect()",
+        "$task = $scheduler.GetFolder('\\').GetTask(" + literal(name) + ")",
+        script,
+      ].join("\n")
+      return checked({ command: powershell, args: ["-NoLogo", "-NoProfile", "-NonInteractive",
+        "-EncodedCommand", Buffer.from(text, "utf16le").toString("base64")] }, active)
+    }
+    const observe = async <T>(probe: () => Promise<T | undefined>, active = deadline): Promise<T> => {
+      for (;;) {
+        active.throwIfExpired()
+        const value = await withinServiceDeadline(active, probe)
+        if (value !== undefined) return value
+        await withinServiceDeadline(active, () => delay(100, undefined, { signal: active.signal }))
+      }
+    }
+    const processIdentity = async (active = deadline, file = "/process.json"): Promise<GuestIdentity | undefined> => {
+      const text = await guest([
+        "const fs = require('node:fs');",
+        "try { process.stdout.write(fs.readFileSync(process.argv[1], 'utf8')); }",
+        "catch (e) { if (e.code !== 'ENOENT') throw e; process.stdout.write('null'); }",
+      ].join("\n"), [home + file], active)
+      const value: unknown = JSON.parse(text)
+      if (value === null) return undefined
+      if (typeof value !== "object" || !("pid" in value) || !("start" in value)
+        || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0
+        || typeof value.start !== "string" || !/^[0-9]+$/.test(value.start)) throw new Error("Invalid guest process identity")
+      return { pid: value.pid, start: value.start }
+    }
+    const alive = async (owned: GuestIdentity, active = deadline) => {
+      const answer = await guest([
+        "const fs = require('node:fs');",
+        "let stat;",
+        "try { stat = fs.readFileSync('/proc/' + process.argv[1] + '/stat', 'utf8').split(') ').at(-1).split(' '); }",
+        "catch (e) { if (e.code !== 'ENOENT' && e.code !== 'ESRCH') throw e; }",
+        "process.stdout.write(String(!!stat && stat[19] === process.argv[2] && stat[0] !== 'Z'));",
+      ].join("\n"), [String(owned.pid), owned.start], active)
+      if (answer !== "true" && answer !== "false") throw new Error("Invalid guest liveness answer")
+      return answer === "true"
+    }
+    const signal = (owned: GuestIdentity, value: "SIGTERM" | "SIGKILL", active = deadline) => guest([
+      "const fs = require('node:fs');",
+      "fs.writeFileSync(process.argv[1] + '/request.partial', process.argv[2], { mode: 0o600 });",
+      "fs.renameSync(process.argv[1] + '/request.partial', process.argv[1] + '/request.json');",
+    ].join("\n"), [home, JSON.stringify({ ...owned, signal: value })], active)
+    const ready = (previous?: { process: GuestIdentity; owner: ReadyLocalOwner }) => observe(async () => {
+      const current = await processIdentity()
+      if (!current || (previous && current.pid === previous.process.pid && current.start === previous.process.start)) return undefined
+      identity = current
+      const text = await guest([
+        "const fs = require('node:fs');",
+        "try { process.stdout.write(fs.readFileSync(process.argv[1], 'utf8')); }",
+        "catch (e) { if (e.code !== 'ENOENT') throw e; process.stdout.write('null'); }",
+      ].join("\n"), [home + "/.domovoi/local-owner.json"])
+      const owner = localOwnerRecordSchema.safeParse(JSON.parse(text))
+      if (!owner.success || owner.data.state !== "ready" || owner.data.serviceRegistrationId !== registrationId) return undefined
+      if (previous && owner.data.instanceId === previous.owner.instanceId) return undefined
+      if (!(await alive(current))) throw new Error("Guest daemon exited before readiness")
+      return { process: current, owner: owner.data }
+    })
+    try {
+      expect(await checked(plan.inspect)).toBe("domovoi-task:missing")
+      // Set cleanup obligation before the first mutating call, including a
+      // late completion after cancellation. All paths live in this UUID guest.
+      guestStaged = true
+      const configuration = {
+        ...createServiceConfiguration({ DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0" },
+          { platform: "linux", homeDirectory: home, workingDirectory: home }),
+        registrationId,
+      }
+      await guest([
+        "const fs = require('node:fs');",
+        "const home = process.argv[1];",
+        "fs.mkdirSync(home, { mode: 0o700 });",
+        "fs.mkdirSync(home + '/.domovoi', { mode: 0o700 });",
+        "fs.writeFileSync(home + '/observer.mjs', process.argv[2], { mode: 0o600, flag: 'wx' });",
+        "fs.writeFileSync(home + '/.domovoi/service.json', process.argv[3], { mode: 0o600, flag: 'wx' });",
+        "const child = require('node:child_process').spawn(process.execPath, ['-e', process.argv[4], home], { detached: true, stdio: 'ignore' });",
+        "child.unref();",
+      ].join("\n"), [home, observer, serializeServiceConfiguration(configuration), [
+        "const fs = require('node:fs'), home = process.argv[1];",
+        "fs.writeFileSync(home + '/companion.json', JSON.stringify({ pid: process.pid, start: fs.readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ')[19] }), { mode: 0o600 });",
+        "setInterval(() => { if (fs.existsSync(home + '/companion.stop')) process.exit(0); }, 100);",
+        "setTimeout(() => process.exit(0), 300000);",
+      ].join("\n")])
+      companion = await observe(() => processIdentity(deadline, "/companion.json"))
+      expect(await alive(companion)).toBe(true)
+      const boot = await read("/proc/sys/kernel/random/boot_id")
+      const wslConfig = await read("/etc/wsl.conf")
+      const configBefore = await read(configPath)
+      mark("task registration")
+      registered = true
+      expect(await checked(plan.register)).toBe("domovoi-task:created")
+      bystanderRegistered = true
+      expect(await checked(bystander.register)).toBe("domovoi-task:created")
+      expect(await checked(bystander.disable)).toBe("domovoi-task:1")
+      const settings = JSON.parse(await inspect([
+        "$d = $task.Definition",
+        "[ordered]@{ logonType = [int]$d.Principal.LogonType; runLevel = [int]$d.Principal.RunLevel;",
+        "triggers = @($d.Triggers | ForEach-Object { [int]$_.Type }); user = $d.Principal.UserId;",
+        "triggerUser = $d.Triggers.Item(1).UserId; interval = $d.Settings.RestartInterval;",
+        "retries = $d.Settings.RestartCount; limit = $d.Settings.ExecutionTimeLimit;",
+        "instances = [int]$d.Settings.MultipleInstances; path = $d.Actions.Item(1).Path } | ConvertTo-Json -Compress",
+      ].join("\n")))
+      expect(settings).toMatchObject({ logonType: 3, runLevel: 0, triggers: [9], interval: "PT1M",
+        retries: 3, limit: "PT0S", instances: 2, path: wsl })
+      expect(settings.triggerUser).toBe(settings.user)
+      mark("first guest start")
+      expect(await checked(plan.start)).toMatch(/^domovoi-task:[234]$/)
+      const first = await ready()
+      mark("guest failure reaching Windows")
+      await signal(first.process, "SIGKILL")
+      await observe(async () => !(await alive(first.process)) ? true : undefined)
+      await observe(async () => {
+        const result = JSON.parse(await inspect(
+          "[ordered]@{ state = [int]$task.State; result = $task.LastTaskResult } | ConvertTo-Json -Compress"))
+        if (result.state !== 3) return undefined
+        // SIGKILL must reach the action as 128 + 9. A ready task whose
+        // LastTaskResult is zero cannot exercise Task Scheduler's retries.
+        expect(result.result).toBe(137)
+        return true
+      })
+      mark("scheduler restart")
+      const second = await ready(first)
+      expect(second.owner.instanceId).not.toBe(first.owner.instanceId)
+      expect(second.owner.machineId).toBe(first.owner.machineId)
+      expect(await checked(plan.inspect)).toBe("domovoi-task:4")
+      mark("task disable and exact guest stop")
+      expect(await checked(plan.disable)).toMatch(/^domovoi-task:[14]$/)
+      await signal(second.process, "SIGTERM")
+      await observe(async () => !(await alive(second.process)) ? true : undefined)
+      mark("task removal")
+      expect(await removeWindowsTask(plan.removal, effects, deadline)).toBe("removed")
+      expect(await checked(plan.inspect)).toBe("domovoi-task:missing")
+      registered = false
+      // The same running distro and its config survive. The private profile
+      // survives too: deleting a task is not deleting user state.
+      expect(await read("/proc/sys/kernel/random/boot_id")).toBe(boot)
+      expect(await read("/etc/wsl.conf")).toBe(wslConfig)
+      expect(await read(configPath)).toBe(configBefore)
+      expect(await alive(second.process)).toBe(false)
+      expect(await alive(companion)).toBe(true)
+      expect(await checked(bystander.inspect)).toBe("domovoi-task:1")
+      mark("complete")
+    } catch (cause) {
+      failure = new Error("WSL service proof failed during " + phase, { cause })
+    } finally {
+      deadline.clear()
+      const cleanup = OperationDeadline.start(cleanupBudget)
+      const failures: unknown[] = []
+      // An error cannot skip the other teardown obligation. Keep both errors
+      // if stopping the guest and deleting the task independently fail.
+      try {
+        if (registered) await checked(plan.disable, cleanup)
+      } catch (error) { failures.push(error) }
+      try {
+        if (guestStaged) {
+          identity = await processIdentity(cleanup) ?? identity
+          if (identity && await alive(identity, cleanup)) {
+            await signal(identity, "SIGTERM", cleanup)
+            const stopped = identity
+            await observe(async () => !(await alive(stopped, cleanup)) ? true : undefined, cleanup)
+          }
+        }
+      } catch (error) { failures.push(error) }
+      try {
+        if (registered) await removeWindowsTask(plan.removal, effects, cleanup)
+      } catch (error) { failures.push(error) }
+      try {
+        if (bystanderRegistered) await removeWindowsTask(bystander.removal, effects, cleanup)
+      } catch (error) { failures.push(error) }
+      try {
+        if (guestStaged) {
+          companion = await processIdentity(cleanup, "/companion.json") ?? companion
+          await guest("require('node:fs').writeFileSync(process.argv[1] + '/companion.stop', '')", [home], cleanup)
+          if (companion) {
+            const stopped = companion
+            await observe(async () => !(await alive(stopped, cleanup)) ? true : undefined, cleanup)
+          }
+        }
+      } catch (error) { failures.push(error) }
+      try {
+        // Never delete the stop input while an owned guest could still need it.
+        if (guestStaged && failures.length === 0) await guest(
+          "require('node:fs').rmSync(process.argv[1], { recursive: true })", [home], cleanup)
+      } catch (error) { failures.push(error) }
+      finally { cleanup.clear() }
+      if (failures.length) {
+        failure = new AggregateError(failure === undefined ? failures : [failure, ...failures],
+          "WSL service proof or fixture cleanup failed", { cause: failure ?? failures[0] })
+      }
+    }
+    if (failure !== undefined) throw failure
+  },
+  lifecycleBudget + cleanupBudget + 1_000,
+)
