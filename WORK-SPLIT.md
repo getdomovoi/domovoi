@@ -638,6 +638,33 @@ restatement, and neither ramp can drift from the other because they describe dif
 but the phone ramp living here rather than upstream is the same fork question as `D1`, arriving as
 an addition instead of a summary.
 
+### D6 · every `verify` run depends on a third-party CDN being up
+Found 2026-09-11 when `#363` failed `verify (macos-latest)` on a comment-only commit. The
+cause was not the commit and not a flaky test:
+
+    Downloading Electron binary...
+    HTTPError: Response code 500 (Internal Server Error) for
+      https://github.com/electron/electron/releases/download/v44.1.0/electron-v44.1.0-darwin-arm64.zip
+    Error: Electron failed to install correctly.
+    [ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] @getdomovoi/desktop@0.0.1 test:launch
+
+Every suite passed first — 35, 128, 5, 156 with 3 skipped, 20 and 26 files, 2,164 daemon tests
+and all 12 mobile Jest suites — and `test:launch` then failed before launching anything. Confirmed
+independently by both agents from separate log captures.
+
+`apps/desktop/package.json:51` pins `electron` at `44.1.0`, and `.github/workflows/ci.yml` caches
+only pnpm at line 29. Nothing caches `~/Library/Caches/electron` or its Linux and Windows
+equivalents, so **every** verify job on **every** platform fetches that binary from GitHub's
+release CDN at test time. A red that means "GitHub had a bad minute" is indistinguishable from a
+red that means the code broke, which is the same failure as a green that means nothing was read.
+
+Not a coding task until decided, because the fix has a shape question in it: cache the binary per
+version, vendor it, or split `test:launch` out of `verify` so a CDN fault cannot fail the gate that
+decides whether code is correct. The third is the only one that also stops a slow download counting
+against the suite's time.
+
+**Recorded, not scheduled.** It cost one rerun, and it will do this again.
+
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can
 re-read at check time — a downloaded bundle with its own digest, rather than a live project
