@@ -99,6 +99,7 @@ import {
   skillInstallSourceSchema,
   skillInventorySchema,
   skillReviewDecisionSchema,
+  skillReviewRevisionResultSchema,
   skillSummariesSchema,
   skillSummarySchema,
   turnSkillSelectionSchema,
@@ -1359,6 +1360,10 @@ export const rpcMethods = {
     params: z.object({ id: skillIdSchema }),
     result: skillDocumentSchema,
   },
+  "skill.reviewRevision": {
+    params: z.object({ id: skillIdSchema, contentDigest: skillContentDigestSchema }).strict(),
+    result: skillReviewRevisionResultSchema,
+  },
   "skill.setEnabled": {
     params: z.object({
       id: skillIdSchema,
@@ -1497,6 +1502,7 @@ export const rpcMethodMutations = {
   "skill.list": "read-only",
   "skill.inventory": "read-only",
   "skill.read": "read-only",
+  "skill.reviewRevision": "read-only",
   "skill.installPreview": "read-only",
   "runtime.models": "read-only",
   "runtime.discover": "read-only",
