@@ -226,6 +226,22 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    What remains genuinely different is the reviewer, not the instructions: a different model, one
    pass, no second opinion. Enough to justify the label below, not enough to justify the excuse.
 
+   **And on `#364` the substitute found something the CLI did not, for a structural reason worth
+   keeping.** CodeRabbit completed `ae05970..85603f9` with zero findings. The substitute review of
+   the same head reported that the decoded-UTF-8 refusal had landed at two of its three sites:
+   `skills.ts:147` and `skills.ts:354` gained it, `skill-install.ts:204` did not, so a malformed
+   skill installs successfully and is then invisible to `list()` and `read()`. Codex agreed and
+   fixed it.
+
+   The reason is not that one reviewer is sharper. `skill-install.ts` is not in that diff — 17
+   files are, and it is not among them. A reviewer reading the changed lines cannot see a site the
+   change failed to reach, because the defect is the absence of a line in a file nobody touched.
+   Asking "where else is this constant used" is a different question from "is this diff correct",
+   and only the second one is what a diff review answers.
+
+   So the two are not ranked, they are shaped differently, and the substitute is worth running even
+   when the CLI is available. Neither closes the other's row.
+
    So the substitute review is recorded as what it is. Never write "reviewed" unqualified, and
    never let a substitute close a `CodeRabbit` row. Name the reviewer, name the diff range, and
    say the CodeRabbit review is still outstanding. Same shape as rule 6: the failure is not an
