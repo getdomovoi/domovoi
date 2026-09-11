@@ -40,4 +40,17 @@ describe("usage accounting contracts", () => {
       expect(sessionTransferUsageRecordSchema.safeParse({ ...record, ...change }).success).toBe(false)
     }
   })
+
+  it.each([
+    [Number.MAX_SAFE_INTEGER - 1, 1, Number.MAX_SAFE_INTEGER, true],
+    [Number.MAX_SAFE_INTEGER, 1, Number.MAX_SAFE_INTEGER, false],
+    [Number.MAX_SAFE_INTEGER, 2, Number.MAX_SAFE_INTEGER + 2, false],
+  ] as const)("bounds aggregate counters even when addition rounds: %s + %s", (first, second, declared, accepted) => {
+    const counts = (value: number) => ({ ...usage, inputTokens: value, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: value })
+    const evidence = { ...accounting, observations: [first, second].map((value, index) => ({
+      ...accounting.observations[0], id: `message-${index}`, usage: counts(value),
+    })) }
+    const record = { turnId: accounting.key, provider: "opencode", model: "requested", ...counts(declared), accounting: evidence }
+    expect(sessionTransferUsageRecordSchema.safeParse(record).success).toBe(accepted)
+  })
 })

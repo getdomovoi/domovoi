@@ -16,6 +16,35 @@ const observation = (id: string, inputTokens: number, final = true) => ({
 })
 
 describe("durable usage accounting", () => {
+  it.each(["transfer", "begin"])("preserves the %s failure when SQLite has already rolled back", async (operation) => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-rollback-"))
+    const path = join(directory, "usage.sqlite")
+    const ledger = new UsageLedger(path)
+    try {
+      ledger.begin(dispatch)
+      const before = ledger.transferSession(dispatch.sessionId)
+      const database = new DatabaseSync(path)
+      try {
+        const event = operation === "begin" ? "INSERT" : "DELETE"
+        database.exec(`CREATE TRIGGER rollback_usage_write BEFORE ${event} ON provider_usage BEGIN SELECT RAISE(ROLLBACK, 'usage transaction failure'); END`)
+      } finally { database.close() }
+      let failure: unknown
+      try {
+        if (operation === "begin") ledger.begin({ ...dispatch, turnId: "new-turn" })
+        else ledger.replaceTransferredSession(dispatch.sessionId, [])
+      } catch (error) { failure = error }
+      expect(failure).toBeInstanceOf(AggregateError)
+      expect(failure).toMatchObject({
+        cause: expect.objectContaining({ message: "usage transaction failure" }),
+        errors: [expect.objectContaining({ message: "usage transaction failure" }), expect.any(Error)],
+      })
+      expect(ledger.transferSession(dispatch.sessionId)).toEqual(before)
+    } finally {
+      ledger.close()
+      await removeScratchDirectory(directory)
+    }
+  })
+
   it.each(["{", JSON.stringify({ version: 1, status: "pending" }), JSON.stringify({ turn: { ordinal: "invalid" } })])(
     "keeps corrupt accounting from blocking other rows: %s", async (corrupt) => {
       const directory = await mkdtemp(join(tmpdir(), "domovoi-accounting-corrupt-"))
