@@ -150,6 +150,25 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
 
    Written as a rule rather than a third anecdote, because there are two and a third is likely.
 
+   **The third arrived hours after the rule was written, and the rule did not stop it.** The fix in
+   `1a17ff5c` fell back from `origin/main` to `main` on any error, because `git rev-parse --verify`
+   exits non-zero both for a ref that does not exist and for a ref it could not read. The rule as
+   written above cannot separate those: "non-zero is refusal" treats an answer exit and a failure
+   exit alike, so the code treated both as absence and moved on. With local `main` already at the
+   tip, a read failure on the remote ref narrowed the range to the clean tip and passed. Fixed in
+   `671c4914` with `--quiet`, whose exit 1 means absent and nothing else; every other error throws.
+
+   So the rule is sharper than "non-zero": **a shell-out's exit codes are enumerated, not
+   thresholded.** Name each code that carries an answer and handle it as one; refuse on every code
+   not named. "Non-zero is refusal" is only correct for a command with no meaningful non-zero exit,
+   and a checker that has not looked up its command's exit codes does not know whether it is one.
+
+   **Codex found it by injecting the failure, not by reading the diff.** It stubbed the `git` runner
+   to throw `EIO` on `origin/main` with `main` at `HEAD` and a forbidden commit below, and watched
+   refusal become `ok: true`. Both earlier instances were found by reading. Injection is the
+   standard probe for this class from here: for each shell-out, make it fail in every way it can
+   and assert that the checker refuses; the shallow clone is one such failure, not the whole set.
+
 ---
 
 ## The blocked chain
