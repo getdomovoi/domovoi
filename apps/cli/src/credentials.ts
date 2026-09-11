@@ -1,4 +1,5 @@
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
+import { chmod, mkdir, open, rename, rm, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 
 import { z } from "zod"
@@ -21,6 +22,9 @@ const fileSchema = z.object({
 
 export type Keyring = {
   available(): Promise<boolean>
+  // Why available() said no, when the backend exists but did not answer: a
+  // locked keychain is not an absent one, and the fix for each is different.
+  cause?(): Error | undefined
   get(account: string): Promise<string | undefined>
   set(account: string, secret: string): Promise<void>
   delete(account: string): Promise<void>
@@ -54,30 +58,47 @@ export async function openCredentialStore(input: {
   home: string
   credentialFile?: string
   warn: (text: string) => void
+  publish?: (staging: string, path: string) => Promise<void>
 }): Promise<CredentialStore> {
   if (input.credentialFile !== undefined) {
     const path = input.credentialFile
-    await ensureFileMode(path)
+    await checkedFile(path, "check")
     input.warn(fileWarning(path))
-    return fileStore(path)
+    return fileStore(path, input.publish ?? rename)
   }
   if (await input.keyring.available()) return keyringStore(input.keyring)
+  const cause = input.keyring.cause?.()
   throw new CredentialStoreError(
-    "No OS keychain is available here, so there is nowhere safe to keep this daemon's credential."
+    (cause
+      ? `The OS keychain did not answer (${cause.message}), so this daemon's credential cannot be kept there. Unlock it and run this again, or`
+      : "No OS keychain is available here, so there is nowhere safe to keep this daemon's credential.")
     + " Pass --credential-file <path> to keep it in a file you own (mode 0600), and treat that file as the bearer it holds.",
   )
 }
 
-async function ensureFileMode(path: string): Promise<void> {
-  let existing
+// The mode check and the read are one operation on one descriptor: open the
+// file without following links, then judge and read the thing that was
+// opened. A stat followed by a path read judges one file and reads whatever
+// the path names by then.
+async function checkedFile(path: string, mode: "check" | "read"): Promise<string | undefined> {
+  let handle
   try {
-    existing = await stat(path)
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT") return undefined
+    if (code === "ELOOP" || code === "EMLINK") throw new CredentialStoreError(`${path} is a symlink. A credential file must be a regular file you own.`)
     throw error
   }
-  if (process.platform !== "win32" && (existing.mode & 0o077) !== 0) {
-    throw new CredentialStoreError(`${path} is readable by other users. Set it to mode 0600 before using it as a credential file.`)
+  try {
+    const status = await handle.stat()
+    if (!status.isFile()) throw new CredentialStoreError(`${path} is not a regular file.`)
+    if (process.platform !== "win32" && (status.mode & 0o077) !== 0) {
+      throw new CredentialStoreError(`${path} is readable by other users. Set it to mode 0600 before using it as a credential file.`)
+    }
+    return mode === "read" ? await handle.readFile("utf8") : undefined
+  } finally {
+    await handle.close()
   }
 }
 
@@ -98,21 +119,27 @@ function keyringStore(keyring: Keyring): CredentialStore {
   }
 }
 
-function fileStore(path: string): CredentialStore {
+function fileStore(path: string, publish: (staging: string, path: string) => Promise<void>): CredentialStore {
   const read = async () => {
-    try {
-      return fileSchema.parse(JSON.parse(await readFile(path, "utf8")))
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1 as const, daemons: [] }
-      throw error
-    }
+    const text = await checkedFile(path, "read")
+    return text === undefined ? { version: 1 as const, daemons: [] } : fileSchema.parse(JSON.parse(text))
   }
+  // Write beside the target and publish by rename, so a reader never sees a
+  // half-written file. A failed publication removes the staging file first:
+  // it holds the bearer, and "nothing was kept" has to be true.
   const write = async (contents: z.infer<typeof fileSchema>) => {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 })
     const staging = `${path}.${process.pid}.tmp`
     await writeFile(staging, `${JSON.stringify(contents, null, 2)}\n`, { mode: 0o600, flag: "wx" })
     await chmod(staging, 0o600)
-    await rename(staging, path)
+    try {
+      await publish(staging, path)
+    } catch (error) {
+      await rm(staging, { force: true }).catch((cleanup: unknown) => {
+        throw new CredentialStoreError(`${error instanceof Error ? error.message : String(error)}; and the staging file ${staging} could not be removed (${cleanup instanceof Error ? cleanup.message : String(cleanup)}). It holds the bearer. Delete it.`)
+      })
+      throw error
+    }
   }
   return {
     where: "file",
@@ -134,9 +161,11 @@ function fileStore(path: string): CredentialStore {
 
 // @napi-rs/keyring throws at first use where no backend exists (a headless
 // Linux box with no unlocked libsecret, most containers). Probe once with a
-// read, which touches the backend without writing anything.
+// read, which touches the backend without writing anything, and keep the
+// error: a locked keychain and a missing one need different advice.
 export function nativeKeyring(): Keyring {
   let module: Promise<typeof import("@napi-rs/keyring")> | undefined
+  let cause: Error | undefined
   const load = () => (module ??= import("@napi-rs/keyring"))
   const entry = async (account: string) => new (await load()).Entry(keyringService, account)
   return {
@@ -144,10 +173,12 @@ export function nativeKeyring(): Keyring {
       try {
         await (await entry("domovoi-cli-probe")).getPassword()
         return true
-      } catch {
+      } catch (error) {
+        cause = error instanceof Error ? error : new Error(String(error))
         return false
       }
     },
+    cause: () => cause,
     async get(account) {
       return (await entry(account)).getPassword() ?? undefined
     },

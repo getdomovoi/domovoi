@@ -103,3 +103,51 @@ describe("credential store", () => {
     expect(await store.load("ws://10.0.0.2:47831/rpc")).toBeDefined()
   })
 })
+
+describe("credential file boundary", () => {
+  it("refuses a credential file that is a symlink", async () => {
+    if (process.platform === "win32") return
+    const home = await directory()
+    const { writeFile, symlink } = await import("node:fs/promises")
+    const target = join(home, "real.json")
+    await writeFile(target, JSON.stringify({ version: 1, daemons: [] }), { mode: 0o600 })
+    const link = join(home, "link.json")
+    await symlink(target, link)
+    await expect(openCredentialStore({ keyring: absentKeyring, home, credentialFile: link, warn: () => {} }))
+      .rejects.toThrow(/symlink/)
+  })
+
+  it("checks the mode of the file it reads, not a file it looked at earlier", async () => {
+    if (process.platform === "win32") return
+    const home = await directory()
+    const file = join(home, "f.json")
+    const { writeFile, chmod } = await import("node:fs/promises")
+    await writeFile(file, JSON.stringify({ version: 1, daemons: [paired] }), { mode: 0o600 })
+    const store = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {} })
+    await chmod(file, 0o644)
+    await expect(store.load(paired.endpoint)).rejects.toThrow(/mode 0600/)
+  })
+
+  it("leaves no staging file holding the bearer when publication fails", async () => {
+    const home = await directory()
+    const file = join(home, "f.json")
+    const publish = async () => { throw Object.assign(new Error("EIO"), { code: "EIO" }) }
+    const store = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {}, publish })
+    await expect(store.save(paired)).rejects.toThrow(/EIO/)
+    const { readdir } = await import("node:fs/promises")
+    expect(await readdir(home)).toEqual([])
+  })
+
+  it("names the keyring's own failure when it is present but not answering", async () => {
+    const home = await directory()
+    const locked: Keyring = {
+      available: async () => false,
+      cause: () => new Error("The user name or passphrase you entered is not correct"),
+      get: async () => { throw new Error("locked") },
+      set: async () => { throw new Error("locked") },
+      delete: async () => { throw new Error("locked") },
+    }
+    await expect(openCredentialStore({ keyring: locked, home, warn: () => {} }))
+      .rejects.toThrow(/passphrase you entered is not correct/)
+  })
+})
