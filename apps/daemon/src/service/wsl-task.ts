@@ -18,6 +18,7 @@ export type WslTaskTarget = {
 
 export type WslTaskPlan = {
   name: string
+  action: { path: string; arguments: string }
   register: ServiceCommand
   start: ServiceCommand
   disable: ServiceCommand
@@ -99,6 +100,7 @@ if ($action.Arguments -cne ${actionArgs}) { throw 'WSL task ownership mismatch: 
   const inspect = command(owned + state)
   const plan: WslTaskPlan = {
     name: target.name,
+    action: { path: target.wsl, arguments: args },
     register: command(`
 $definition = $scheduler.NewTask(0)
 $definition.RegistrationInfo.Source = ${source}

@@ -42,6 +42,14 @@ describe("Windows supervision of a WSL daemon", () => {
     expect(body).not.toContain("sh -c")
   })
 
+  it("exposes the exact registered action for a verbatim launch probe", () => {
+    const plan = wslTaskPlan(input)
+    expect(plan.action).toEqual({ path: input.wsl,
+      arguments: '"--distribution" "Ubuntu test\'s distro" "--user" "alice" "--exec" "/opt/domovoi/bin/node" '
+        + '"/home/alice/repo $HOME/daemon.js" "--service-config" "/home/alice/.domovoi/service.json"' })
+    expect(script(plan.register.args)).toContain("$action.Arguments = '" + plan.action.arguments.replaceAll("'", "''") + "'")
+  })
+
   it("sets bounded crash retries without a runtime or battery stop", () => {
     const body = script(wslTaskPlan(input).register.args)
     expect(body).toContain("$definition.Settings.RestartInterval = 'PT1M'")
