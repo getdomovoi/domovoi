@@ -1282,6 +1282,7 @@ export class DomovoiDaemon {
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
     this.#recoverInterruptedTurns()
+    await this.#recoverSessionCreations()
     this.#syncArtifactWatchers()
 
     const listen = this.#tls
@@ -6120,6 +6121,7 @@ export class DomovoiDaemon {
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
+          await this.#recoverSessionCreations()
           changed = true
         }
       }
@@ -6172,6 +6174,11 @@ export class DomovoiDaemon {
           return
         }
         const sessionId = `session-${randomUUID()}`
+        const creationDraft: WorkspaceSnapshot["sessions"][number] = {
+          id: sessionId, projectId: project.id, title: params.title, state: "failed", runtime,
+          changedFiles: 0, testsPassed: 0, testsFailed: 0, updatedAt: new Date().toISOString(),
+        }
+        this.#recordSessionCreation(creationDraft, project.path)
         let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
           (signal) => {
@@ -6181,12 +6188,15 @@ export class DomovoiDaemon {
               signal,
             )
             creatingWorkspace = creating
-            return creating
+            return creating.then((workspace) => {
+              this.#store.sessionCreations?.complete(sessionId, workspace)
+              return workspace
+            })
           },
           this.#agentTimeoutMs,
           "Session workspace creation timed out",
         ).catch((error: unknown) => {
-          this.#removeAbandonedWorkspace(creatingWorkspace)
+          this.#removeAbandonedWorkspace(sessionId, creatingWorkspace)
           throw error
         })
         let providerThreadId: string
@@ -6212,7 +6222,7 @@ export class DomovoiDaemon {
         } catch (error) {
           try {
             await this.#withAbortTimeout(
-              (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
+              (signal) => this.#removeCreatedWorkspace(sessionId, workspace.path, signal),
               this.#agentTimeoutMs,
               "Session workspace cleanup timed out",
             )
@@ -6223,14 +6233,8 @@ export class DomovoiDaemon {
         }
         const createdAt = new Date().toISOString()
         this.#snapshot.sessions.push({
-          id: sessionId,
-          projectId: project.id,
-          title: params.title,
+          ...creationDraft,
           state: "idle",
-          runtime,
-          changedFiles: 0,
-          testsPassed: 0,
-          testsFailed: 0,
           updatedAt: createdAt,
           workspacePath: workspace.path,
           providerThreadId,
@@ -6358,6 +6362,14 @@ export class DomovoiDaemon {
           .update(params.requestId)
           .digest("hex")
           .slice(0, 20)}`
+        const creationDraft: WorkspaceSnapshot["sessions"][number] = {
+          id: sessionId, projectId: source.projectId, title: `${source.title} · fork`, state: "failed", runtime,
+          changedFiles: 0, testsPassed: source.testsPassed, testsFailed: source.testsFailed,
+          updatedAt: new Date().toISOString(),
+          forkedFrom: { sourceSessionId: source.id, checkpointId: checkpoint.id, checkpointCommit: checkpoint.commit,
+            requestId: params.requestId, client: params.client, requestedRuntime: params.runtime },
+        }
+        this.#recordSessionCreation(creationDraft, this.#snapshot.project?.path ?? source.workspacePath)
         let creatingWorkspace: Promise<{ path: string }> | undefined
         const workspace = await this.#withAbortTimeout(
           (signal) => {
@@ -6368,12 +6380,15 @@ export class DomovoiDaemon {
               signal,
             )
             creatingWorkspace = creating
-            return creating
+            return creating.then((workspace) => {
+              this.#store.sessionCreations?.complete(sessionId, workspace)
+              return workspace
+            })
           },
           this.#agentTimeoutMs,
           "Fork workspace creation timed out",
         ).catch((error: unknown) => {
-          this.#removeAbandonedWorkspace(creatingWorkspace)
+          this.#removeAbandonedWorkspace(sessionId, creatingWorkspace)
           throw error
         })
         const agent = this.#agents.require(runtime.provider)
@@ -6398,7 +6413,7 @@ export class DomovoiDaemon {
         } catch (error) {
           try {
             await this.#withAbortTimeout(
-              (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
+              (signal) => this.#removeCreatedWorkspace(sessionId, workspace.path, signal),
               this.#agentTimeoutMs,
               "Fork workspace cleanup timed out",
             )
@@ -6410,26 +6425,12 @@ export class DomovoiDaemon {
         const createdAt = new Date().toISOString()
         const candidate = structuredClone(this.#snapshot)
         candidate.sessions.push({
-          id: sessionId,
-          projectId: source.projectId,
-          title: `${source.title} · fork`,
+          ...creationDraft,
           state: "idle",
-          runtime,
-          changedFiles: 0,
-          testsPassed: source.testsPassed,
-          testsFailed: source.testsFailed,
           updatedAt: createdAt,
           workspacePath: workspace.path,
           providerThreadId,
           baseCommit: checkpoint.commit,
-          forkedFrom: {
-            sourceSessionId: source.id,
-            checkpointId: checkpoint.id,
-            checkpointCommit: checkpoint.commit,
-            requestId: params.requestId,
-            client: params.client,
-            requestedRuntime: params.runtime,
-          },
         })
         candidate.thread.push({
           id: `checkpoint-${randomUUID()}`,
@@ -6465,7 +6466,7 @@ export class DomovoiDaemon {
           }
           try {
             await this.#withAbortTimeout(
-              (signal) => this.#workspaceService.removeSessionWorkspace(workspace.path, signal),
+              (signal) => this.#removeCreatedWorkspace(sessionId, workspace.path, signal),
               this.#agentTimeoutMs,
               "Fork workspace cleanup timed out",
             )
@@ -6475,6 +6476,7 @@ export class DomovoiDaemon {
           throw error
         }
         this.#snapshot = candidate
+        this.#clearCommittedSessionCreations()
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -7799,12 +7801,12 @@ export class DomovoiDaemon {
   // A deadline rejects without waiting for the git run it aborted, so the
   // worktree that run may still finish is recorded only by this promise.
   // Remove it once it settles instead of stranding a worktree and its branch.
-  #removeAbandonedWorkspace(creating: Promise<{ path: string }> | undefined): void {
+  #removeAbandonedWorkspace(sessionId: string, creating: Promise<{ path: string }> | undefined): void {
     if (!creating) return
     void creating.then(async (workspace) => {
       try {
         await withTimeout(
-          this.#workspaceService.removeSessionWorkspace(workspace.path),
+          this.#removeCreatedWorkspace(sessionId, workspace.path),
           this.#agentTimeoutMs,
           "Late session worktree cleanup timed out",
         )
@@ -7812,6 +7814,13 @@ export class DomovoiDaemon {
         this.#reportError("Domovoi could not remove a late session worktree", error)
       }
     }, () => undefined)
+  }
+
+  async #removeCreatedWorkspace(sessionId: string, path: string, signal?: AbortSignal): Promise<void> {
+    await this.#workspaceService.removeSessionWorkspace(path, signal)
+    // Keep the intent on failure or timeout until removal itself settles.
+    // A later retry must not replace evidence for a worktree still being used.
+    this.#store.sessionCreations?.discardAfterCleanup(sessionId)
   }
 
   #emergencyFailureMessage(error: unknown, fallback: string): string {
@@ -7903,6 +7912,90 @@ export class DomovoiDaemon {
       this.#quarantineProviderThread(sessionId, reason),
     ))
     return active.length > 0
+  }
+
+  #recordSessionCreation(session: WorkspaceSnapshot["sessions"][number], repositoryPath: string): void {
+    const expectedWorkspacePath = this.#workspaceService.sessionWorkspacePath?.(session.id)
+    try {
+      this.#store.sessionCreations?.begin({ session, repositoryPath,
+        ...(expectedWorkspacePath ? { expectedWorkspacePath } : {}) })
+    } catch (error) {
+      if (error instanceof SessionCreationRefusalError) throw new PublicRpcError(invalidParams, error.message)
+      throw error
+    }
+  }
+
+  #clearCommittedSessionCreations(): void {
+    // The snapshot is already durable. Failed journal cleanup must not turn
+    // that successful commit into an RPC refusal; restart deduplicates it.
+    try { this.#store.sessionCreations?.clearCommitted(this.#snapshot.sessions) } catch (error) {
+      this.#reportError("Domovoi could not clear committed session creation intents", error)
+    }
+  }
+
+  async #recoverSessionCreations(): Promise<void> {
+    const journal = this.#store.sessionCreations
+    const projectId = this.#snapshot.project?.id
+    if (!journal || !projectId) return
+    const candidate = structuredClone(this.#snapshot)
+    let changed = false
+    for (const intent of journal.pending(projectId)) {
+      if (candidate.sessions.some(({ id }) => id === intent.session.id)) continue
+      try {
+        process.kill(intent.ownerPid, 0)
+        this.#reportError(`Session creation recovery deferred for ${intent.session.id}`,
+          new Error(`Recorded creator PID ${intent.ownerPid} is still alive; preserve ${intent.expectedWorkspacePath ?? "its worktree"}`))
+        continue
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+          this.#reportError(`Session creation owner could not be checked for ${intent.session.id}`, error)
+          continue
+        }
+      }
+      const recoveredAt = new Date().toISOString()
+      const session = { ...intent.session, updatedAt: recoveredAt }
+      let detail = "No durable worktree completion receipt exists; the partial worktree requires inspection."
+      if (intent.workspace) {
+        try {
+          if (!this.#workspaceService.validateCreatedSessionWorkspace) throw new Error("Workspace service cannot verify a creation receipt")
+          const workspace = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.validateCreatedSessionWorkspace!(intent.repositoryPath, session.id, intent.workspace!, signal),
+            this.#agentTimeoutMs,
+            "Interrupted session worktree validation timed out",
+          )
+          session.workspacePath = workspace.path
+          session.baseCommit = workspace.baseCommit
+          detail = "The completed worktree still matches its receipt. Restart its provider explicitly to continue."
+          candidate.thread.push({ id: `creation-checkpoint-${session.id}`, sessionId: session.id, kind: "checkpoint",
+            reason: session.forkedFrom ? "fork" : "session-start", label: "Recovered session creation checkpoint",
+            commit: workspace.baseCommit, createdAt: recoveredAt })
+        } catch (error) {
+          detail = "The worktree completion receipt could not be verified; preserve the worktree for inspection."
+          this.#reportError(`Session creation worktree could not be verified for ${session.id}`, error)
+        }
+      }
+      const path = intent.workspace?.path ?? intent.expectedWorkspacePath
+      candidate.sessions.push(session)
+      candidate.thread.push({ id: `creation-recovery-${session.id}`, sessionId: session.id, kind: "system",
+        body: "Session creation was interrupted. No provider thread was restarted.",
+        detail: `${detail}${path ? ` Preserved setup location: ${path}.` : " Setup location was not recorded."}`, createdAt: recoveredAt })
+      changed = true
+    }
+    if (changed) {
+      await this.#serializeSnapshotPersistence(async () => {
+        try {
+          if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
+          else this.#store.save(candidate)
+        } catch (error) {
+          this.#persistenceFailed(error)
+          throw error
+        }
+        this.#persistenceSucceeded()
+        this.#snapshot = candidate
+        this.#sessionHistory.invalidate()
+      })
+    }
+    this.#clearCommittedSessionCreations()
   }
 
   async #recoverSessionArchives(): Promise<void> {
@@ -8422,6 +8515,7 @@ export class DomovoiDaemon {
         throw error
       }
       this.#persistenceSucceeded()
+      this.#clearCommittedSessionCreations()
     })
   }
 
@@ -8835,3 +8929,4 @@ function withAbortTimeout<T>(
     )
   })
 }
+import { SessionCreationRefusalError } from "./session-creation-intents.js"
