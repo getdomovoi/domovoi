@@ -26,3 +26,15 @@ export async function readSecretLine(input: NodeJS.ReadStream = stdin, output: N
     reader.close()
   }
 }
+
+// A visible yes-or-no line; a pipe answers with its first line.
+export async function readPlainLine(prompt: string, input: NodeJS.ReadStream = stdin, output: NodeJS.WriteStream = process.stderr): Promise<string> {
+  output.write(prompt)
+  if (!input.isTTY) {
+    let text = ""
+    for await (const chunk of input) { text += chunk.toString(); if (text.includes("\n")) break }
+    return text.split("\n")[0] ?? ""
+  }
+  const reader = createInterface({ input, output, terminal: true })
+  try { return await reader.question("") } finally { reader.close() }
+}
