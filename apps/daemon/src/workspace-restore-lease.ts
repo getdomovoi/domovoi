@@ -42,6 +42,7 @@ export class RestoreOperationLease {
   readonly #file: FileLease
   readonly #ownerPath: string
   readonly #owner: RestoreOwner
+  readonly #commands = new Set<Promise<unknown>>()
 
   constructor(root: string, sessionId: string, token: string) {
     const claimPath = join(root, ".restore-claims", sessionId)
@@ -76,10 +77,23 @@ export class RestoreOperationLease {
     }
   }
 
-  run<T>(operation: () => T): T { return currentLease.run(this, operation) }
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    try { return await currentLease.run(this, operation) } finally {
+      // Promise.all rejects on the first failure, while sibling Git commands
+      // can still write. Keep exclusion until every tracked child has closed.
+      while (this.#commands.size > 0) await Promise.allSettled(this.#commands)
+    }
+  }
   release(): void { this.#file.release() }
 
-  async command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+  command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+    const pending = this.#command(launch)
+    this.#commands.add(pending)
+    void pending.then(() => this.#commands.delete(pending), () => this.#commands.delete(pending))
+    return pending
+  }
+
+  async #command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
     if (this.#owner.starting + this.#owner.children.length >= 32) throw new Error("Too many restore subprocesses")
     this.#owner.starting++
     this.#publish()

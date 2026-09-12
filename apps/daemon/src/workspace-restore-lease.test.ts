@@ -122,6 +122,41 @@ describe("restore owner reclamation", () => {
     }
   })
 
+  it("waits for a sibling child after Promise.all rejects early", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-restore-sibling-"))
+    directories.push(root)
+    const lease = new RestoreOperationLease(root, "session-test", randomUUID())
+    const failedChild = new EventEmitter() as ChildProcess
+    const sibling = new EventEmitter() as ChildProcess
+    Object.defineProperty(failedChild, "pid", { value: 45678 })
+    Object.defineProperty(sibling, "pid", { value: 56789 })
+    const failure = new Error("First Git query failed")
+    const failed = Object.assign(Promise.reject(failure), { child: failedChild }) as PromiseWithChild<never>
+    let finishSibling!: () => void
+    const pending = Object.assign(new Promise<void>((resolve) => { finishSibling = resolve }), { child: sibling }) as PromiseWithChild<void>
+    const result = lease.run(() => Promise.all([
+      trackRestoreCommand(() => failed),
+      trackRestoreCommand(() => pending),
+    ]))
+    let settled = false
+    const observed = result.then(() => { settled = true }, () => { settled = true })
+    failedChild.emit("close", 1, null)
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(settled).toBe(false)
+      expect(JSON.parse(await readFile(join(root, ".restore-leases", "session-test.json"), "utf8")))
+        .toMatchObject({ starting: 0, children: [56789] })
+      finishSibling()
+      sibling.emit("close", 0, null)
+      await expect(result).rejects.toBe(failure)
+    } finally {
+      finishSibling()
+      sibling.emit("close", 0, null)
+      await observed
+      lease.release()
+    }
+  })
+
   it("preserves command failure when recording its exit also fails", async () => {
     const root = await mkdtemp(join(tmpdir(), "domovoi-restore-record-failure-"))
     directories.push(root)

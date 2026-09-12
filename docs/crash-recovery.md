@@ -21,8 +21,9 @@ replacing its file can allow two processes to hold independent locks at one path
 The record binds the claim token to its owner PID, every running Git child PID,
 and any launch whose child PID has not yet been recorded. Repository calls share
 that record, including concurrent inspection commands. Aborting a command does
-not release exclusion until its child closes. Claim cleanup that exceeds its
-deadline also keeps the lock until the pending I/O actually settles.
+not release exclusion until its child closes. A failed concurrent query also
+waits for its sibling children before returning. Claim cleanup that exceeds its
+deadline keeps the lock until the pending I/O actually settles.
 
 A successor may reclaim a matching claim only while it holds the SQLite lock and
 every recorded process probe reports `ESRCH` (no such process). A live or reused
@@ -57,7 +58,8 @@ setup remain separate work. The restore-claim fix does not close that gap.
 before Git starts and while a real Git child remains alive. The latter case
 refuses a successor until the child exits, then restores the same bundle.
 `workspace-restore-lease.test.ts` injects process-probe failures, incomplete
-records, concurrent children, and command rejection before child close.
+records, concurrent children, command rejection before child close, and an early
+`Promise.all` rejection while a sibling child remains active.
 `workspace.test.ts` retains the ownership-token and delayed-cleanup tests.
 
 These prove process-crash recovery and refusal boundaries. They do not prove
