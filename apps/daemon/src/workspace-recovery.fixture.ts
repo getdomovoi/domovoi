@@ -10,7 +10,7 @@ const [root, repository, bundle, mode = "before-git"] = process.argv.slice(2)
 if (!root) throw new Error("Missing workspace recovery fixture root")
 
 if (mode === "hold-child") {
-  writeFileSync(join(root, "child-ready"), "ready")
+  writeFileSync(join(root, "child-ready"), JSON.stringify({ pid: process.pid, parentPid: process.ppid }))
   const timeout = setTimeout(() => process.exit(1), 20_000)
   const timer = setInterval(() => {
     if (!existsSync(join(root, "child-release"))) return

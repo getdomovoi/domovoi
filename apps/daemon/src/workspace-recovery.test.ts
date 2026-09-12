@@ -24,6 +24,7 @@ describe("worktree crash recovery", () => {
     await execute("git", ["init", repository])
     await git(["config", "user.name", "Fixture"])
     await git(["config", "user.email", "fixture@example.test"])
+    await git(["config", "core.autocrlf", "false"])
     await writeFile(join(repository, "README.md"), "preserved work\n")
     await git(["add", "README.md"])
     await git(["commit", "-m", "fixture"])
@@ -34,15 +35,27 @@ describe("worktree crash recovery", () => {
     let exited: Promise<unknown> | undefined
     let diagnostics = ""
     let gitPid: number | undefined
+    let holdPid: number | undefined
+    let holdParentPid: number | undefined
+    const stateOf = (pid: number | undefined) => {
+      if (pid === undefined) return "unrecorded"
+      try { process.kill(pid, 0); return "alive" } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return "absent"
+        throw error
+      }
+    }
+    const recordWriters = (phase: string) => console.info(JSON.stringify({ phase, platform: process.platform,
+      owner: { pid: child?.pid, state: stateOf(child?.pid) },
+      git: { pid: gitPid, state: stateOf(gitPid) }, descendant: { pid: holdPid, state: stateOf(holdPid) },
+      descendantParent: { pid: holdParentPid, state: stateOf(holdParentPid) } }))
     const waitForGitExit = async () => {
-      if (gitPid === undefined) return
-      await waitForFixtureStartup("orphaned Git child exit", () => {
-        try { process.kill(gitPid!, 0) } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ESRCH") return
-          throw error
-        }
-        throw new Error(`Recorded Git child ${gitPid} is still alive`)
-      })
+      for (const pid of new Set([gitPid, holdPid, holdParentPid])) {
+        if (pid === undefined) continue
+        await waitForFixtureStartup(`owned writer ${pid} exit`, () => {
+          if (stateOf(pid) === "absent") return
+          throw new Error(`Owned writer ${pid} is still alive`)
+        })
+      }
     }
     try {
       child = fork(new URL("./workspace-recovery.fixture.ts", import.meta.url), [root, repository, bundle, mode], {
@@ -59,11 +72,19 @@ describe("worktree crash recovery", () => {
       await beforeDeadline(claimed, deadline)
       if (mode === "during-git") {
         await waitForFixtureStartup("Git child holding after launch", async () => {
-          await expect(readFile(join(root, "child-ready"), "utf8")).resolves.toBe("ready")
+          const holding = JSON.parse(await readFile(join(root, "child-ready"), "utf8")) as { pid: number; parentPid: number }
+          expect(Number.isSafeInteger(holding.pid) && holding.pid > 0).toBe(true)
+          expect(Number.isSafeInteger(holding.parentPid) && holding.parentPid > 0).toBe(true)
+          holdPid = holding.pid
+          holdParentPid = holding.parentPid
+          console.info(JSON.stringify({ phase: "descendant-ready", ...holding }))
         })
         const owner = JSON.parse(await readFile(join(root, ".restore-leases", "session-recovery.json"), "utf8")) as { children: number[] }
         expect(owner.children).toHaveLength(1)
         gitPid = owner.children[0]!
+        recordWriters("before-owner-death")
+        expect(stateOf(gitPid)).toBe("alive")
+        expect(stateOf(holdPid)).toBe("alive")
       }
       const successor = new GitWorkspaceService(root)
       await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }))
@@ -72,10 +93,12 @@ describe("worktree crash recovery", () => {
       expect(child.kill("SIGKILL")).toBe(true)
       await beforeDeadline(exited, deadline)
       if (mode === "during-git") {
+        recordWriters("after-owner-death")
         await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }))
           .rejects.toThrow(`Recorded Git child ${gitPid} is still alive`)
         await writeFile(join(root, "child-release"), "finish")
         await waitForGitExit()
+        recordWriters("after-writer-release")
       }
       await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }))
         .resolves.toMatchObject({ branch: "domovoi/session-recovery" })
