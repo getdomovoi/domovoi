@@ -33,7 +33,7 @@ const execute = promisify(execFile)
 // service is a provisional engineering bound, not a measured runtime: Task
 // Scheduler's documented minimum retry interval is 60 seconds, and only the
 // first native run measures the full path. The fixture prints phase times.
-const defaultBudgets = { provision: 300_000, runtime: 300_000, proofs: 240_000, service: 300_000, cleanup: 60_000 }
+export const defaultBudgets = { provision: 300_000, runtime: 300_000, proofs: 240_000, service: 300_000, cleanup: 60_000 }
 
 function text(bytes) {
   if (typeof bytes === "string") return bytes

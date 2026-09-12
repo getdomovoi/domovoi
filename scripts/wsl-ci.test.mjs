@@ -7,7 +7,7 @@ import { join, matchesGlob } from "node:path"
 import test from "node:test"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
-import { assertWslReport, assertWslServiceReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
+import { assertWslReport, assertWslServiceReport, defaultBudgets, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
@@ -77,9 +77,20 @@ test("WSL job is separate, path-filtered, nightly and bounded", async () => {
   assert.deepEqual(Object.keys(workflow.jobs), ["native"])
   const job = workflow.jobs.native
   assert.equal(job["runs-on"], "windows-2025")
-  assert.equal(job["timeout-minutes"], 25)
   assert.equal(job["continue-on-error"], undefined)
-  assert.ok(job.steps.some((step) => step.run === "node scripts/wsl-ci.mjs"))
+  const proofStep = job.steps.find((step) => step.run === "node scripts/wsl-ci.mjs")
+  assert.ok(proofStep)
+  // The phase budgets are the run's own deadlines, and each phase ends in its
+  // own cleanup. A step or job cap below their sum kills a valid slow run
+  // before it can reach that cleanup and leaves a distro behind on the
+  // runner. Adding a phase must raise these; the sum is derived, not typed.
+  const phaseSeconds = Object.values(defaultBudgets).reduce((total, ms) => total + ms, 0) / 1000
+  const diagnosticsSeconds = 10
+  assert.ok(proofStep["timeout-minutes"] * 60 >= phaseSeconds + diagnosticsSeconds,
+    `the proof step cap must hold every phase budget: ${phaseSeconds + diagnosticsSeconds} s`)
+  const setupMinutes = 5
+  assert.ok(job["timeout-minutes"] >= proofStep["timeout-minutes"] + setupMinutes,
+    "the job cap must hold the proof step plus checkout, install and runtime preparation")
   for (const step of job.steps) assert.equal(step["continue-on-error"], undefined)
   const ordinary = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8")
   assert.doesNotMatch(ordinary, /wsl-ci|wsl\.exe --install/)
