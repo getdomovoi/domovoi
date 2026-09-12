@@ -30,7 +30,10 @@ const mountRoot = "/domovoi-ci-drives/"
 const rootDirectory = fileURLToPath(new URL("../", import.meta.url))
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const execute = promisify(execFile)
-const defaultBudgets = { provision: 300_000, runtime: 300_000, proofs: 240_000, cleanup: 60_000 }
+// service is a provisional engineering bound, not a measured runtime: Task
+// Scheduler's documented minimum retry interval is 60 seconds, and only the
+// first native run measures the full path. The fixture prints phase times.
+const defaultBudgets = { provision: 300_000, runtime: 300_000, proofs: 240_000, service: 300_000, cleanup: 60_000 }
 
 function text(bytes) {
   if (typeof bytes === "string") return bytes
@@ -75,20 +78,35 @@ const requiredWslProofs = [
   "rediscovers the restarted guest with its repository and pairing intact",
 ]
 
-export function assertWslReport(report) {
-  assert.ok(report?.success === true && report.numTotalTests === requiredWslProofs.length
+// The supervisor proof stops and restarts the guest daemon and its Windows
+// task, so it runs alone after the transport proofs have finished with the
+// distro, in its own Vitest invocation, and is judged on its own name list.
+const requiredWslServiceProofs = [
+  "propagates guest failure, restarts it, and removes only its WSL task",
+]
+
+function assertExactReport(report, required, label, describes) {
+  assert.ok(report?.success === true && report.numTotalTests === required.length
     && report.numPassedTests === report.numTotalTests && report.numFailedTests === 0
     && report.numPendingTests === 0 && report.numTodoTests === 0,
-  `WSL native proofs must pass exactly ${requiredWslProofs.length} discovery, transport and repository tests with no skipped, pending or failed tests`)
+  `${label} must pass exactly ${required.length} ${describes} with no skipped, pending or failed tests`)
   // Neither unrelated passes nor duplicate names may substitute for a proof.
   // Adding a test requires an explicit update here, not a stale lower minimum.
   const assertions = report.testResults?.flatMap((suite) => suite.assertionResults ?? []) ?? []
-  for (const title of requiredWslProofs) {
+  for (const title of required) {
     const matches = assertions.filter((test) => test.title === title)
     assert.ok(matches.length === 1 && matches[0].status === "passed",
-      `WSL native proofs require one passed assertion: ${title}`)
+      `${label} require one passed assertion: ${title}`)
   }
-  assert.equal(assertions.length, requiredWslProofs.length, "WSL native proofs contain unaccounted assertions")
+  assert.equal(assertions.length, required.length, `${label} contain unaccounted assertions`)
+}
+
+export function assertWslReport(report) {
+  assertExactReport(report, requiredWslProofs, "WSL native proofs", "discovery, transport and repository tests")
+}
+
+export function assertWslServiceReport(report) {
+  assertExactReport(report, requiredWslServiceProofs, "WSL service proof", "supervisor test")
 }
 
 const nodeEffects = {
@@ -123,6 +141,7 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
   let installAttempted = false
   let failure
   let report
+  let serviceReport
   async function phase(name, budget, work) {
     const start = performance.now()
     const deadline = bootstrapDeadline(budget, `WSL ${name} exceeded its ${budget} ms deadline`)
@@ -203,6 +222,29 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
         throw error
       }
     })
+    await phase("service proofs", budgets.service, async (deadline) => {
+      const reportPath = join(staging, "service.json")
+      const vitestCli = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs")
+      try {
+        effects.log(await run(deadline, process.execPath, [vitestCli, "run", "src/service/wsl-task.native.test.ts",
+          "--coverage.enabled=false", "--reporter=default", "--reporter=json", `--outputFile=${reportPath}`], {
+          cwd: join(rootDirectory, "apps", "daemon"),
+          env: { ...process.env, DOMOVOI_WSL_REQUIRED_DISTRIBUTION: distribution,
+            DOMOVOI_WSL_NATIVE_SERVICE: "1", DOMOVOI_WSL_NATIVE_SERVICE_BUDGET_MS: String(budgets.service) },
+        }))
+        serviceReport = await deadline.run(() => effects.readReport(reportPath))
+        assertWslServiceReport(serviceReport)
+      } catch (error) {
+        const diagnostics = bootstrapDeadline(5_000, "WSL service report read exceeded its deadline")
+        try {
+          const failedReport = serviceReport ?? await diagnostics.run(() => effects.readReport(reportPath))
+          effects.log(`WSL service proof report (${reportPath}):\n${JSON.stringify(failedReport, null, 2)}`)
+        } catch (diagnosticError) {
+          effects.log(`WSL service proof report unavailable (${reportPath}): ${diagnosticError.message}`)
+        } finally { diagnostics.clear() }
+        throw error
+      }
+    })
   } catch (error) {
     failure = error
   } finally {
@@ -231,7 +273,7 @@ export async function runWslCi({ platform = process.platform, effects = nodeEffe
   }
   if (failure) throw failure
   effects.log(`DOMOVOI_WSL_NATIVE_OK: ${report.numPassedTests} passed, zero skipped`)
-  return { phases, tests: report.numPassedTests }
+  return { phases, tests: report.numPassedTests, serviceTests: serviceReport.numPassedTests }
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
@@ -241,7 +283,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       const summary = bootstrapDeadline(5_000, "WSL job summary write exceeded its deadline")
       try {
         await summary.run(() => appendFile(process.env.GITHUB_STEP_SUMMARY,
-          `### WSL native proofs\n\n${result.tests} passed, zero skipped. One Ubuntu 24.04.4 WSL 2 distribution.\n\n`
+          `### WSL native proofs\n\n${result.tests} transport proofs and ${result.serviceTests} supervisor proof passed, zero skipped. One Ubuntu 24.04.4 WSL 2 distribution.\n\n`
           + result.phases.map(({ name, seconds }) => `- ${name}: ${seconds} seconds\n`).join("")
           + "\nProves guest boot, custom-mount refusal, Windows CLI repository open, guest ownership and Git, authenticated WSL routes, graceful daemon restart, stale endpoints and stopped-distribution refusal. Does not prove cross-distribution routing, service supervision, mirrored networking or VPNs.\n"))
       } finally { summary.clear() }

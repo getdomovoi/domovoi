@@ -7,7 +7,7 @@ import { join, matchesGlob } from "node:path"
 import test from "node:test"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
-import { assertWslReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
+import { assertWslReport, assertWslServiceReport, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
@@ -33,6 +33,9 @@ const nativeProofs = await Promise.all([
 const assertionResults = nativeProofs.flatMap(({ titles }) => titles.map((title) => ({ title, status: "passed" })))
 const passed = { numTotalTests: assertionResults.length, numPassedTests: assertionResults.length,
   numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true, testResults: [{ assertionResults }] }
+const serviceTitle = "propagates guest failure, restarts it, and removes only its WSL task"
+const servicePassed = { numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0,
+  success: true, testResults: [{ assertionResults: [{ title: serviceTitle, fullName: serviceTitle, status: "passed" }] }] }
 
 function fixture(overrides = {}) {
   const calls = []
@@ -46,7 +49,7 @@ function fixture(overrides = {}) {
       return args.includes("uname") ? "6.6.87.2-microsoft-standard-WSL2\n"
         : args.includes("wslpath") ? "/fixture/path" : ""
     },
-    readReport: async () => passed,
+    readReport: async (path) => path.endsWith("service.json") ? servicePassed : passed,
     log: () => {},
     ...overrides,
   }
@@ -187,8 +190,69 @@ test("provisions exactly one distro, requires it in the test process, then remov
     assert.equal(args[4], "--exec", "provisioning must not add an implicit Linux shell")
   }
   assert.deepEqual(calls.at(-1).args, ["--unregister", distribution])
-  assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "guest runtime", "native proofs", "cleanup"])
+  assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "guest runtime", "native proofs", "service proofs", "cleanup"])
   assert.equal(result.tests, 15)
+  assert.equal(result.serviceTests, 1)
+})
+
+// The WSL supervisor test stops and restarts the guest daemon and its task, so
+// it runs alone, after the transport proofs have finished with the distro,
+// never inside the same Vitest invocation, and its report is judged on its own
+// exact name list: one title, no skips, nothing unaccounted.
+test("the service proof runs in its own sequential invocation after the transport proofs", async () => {
+  const { calls, effects } = fixture()
+  await runWslCi({ platform: "win32", effects })
+  const proofs = calls.findIndex(({ args }) => args.includes("src/wsl-windows.test.ts"))
+  const service = calls.findIndex(({ args }) => args.includes("src/service/wsl-task.native.test.ts"))
+  assert.ok(proofs >= 0 && service > proofs, "service proof must start after the transport proofs")
+  assert.equal(calls[proofs].args.includes("src/service/wsl-task.native.test.ts"), false, "never in the same invocation")
+  const run = calls[service]
+  assert.equal(run.options.env.DOMOVOI_WSL_NATIVE_SERVICE, "1")
+  assert.match(run.options.env.DOMOVOI_WSL_REQUIRED_DISTRIBUTION, /^domovoi-ci-[a-f0-9-]{36}$/)
+  assert.equal(run.options.env.DOMOVOI_WSL_REQUIRED_DISTRIBUTION, calls[proofs].options.env.DOMOVOI_WSL_REQUIRED_DISTRIBUTION)
+  assert.ok(run.args.some((argument) => argument.endsWith("service.json")), "its own report file")
+  assert.ok(run.args.includes("--reporter=json"))
+})
+
+test("the service proof has its own budget, 300 seconds by default", async () => {
+  const { calls, effects } = fixture()
+  await runWslCi({ platform: "win32", effects })
+  const run = calls.find(({ args }) => args.includes("src/service/wsl-task.native.test.ts"))
+  assert.equal(run.options.env.DOMOVOI_WSL_NATIVE_SERVICE_BUDGET_MS, "300000")
+  const tuned = fixture()
+  await runWslCi({ platform: "win32", effects: tuned.effects, budgets: { service: 4_321 } })
+  assert.equal(tuned.calls.find(({ args }) => args.includes("src/service/wsl-task.native.test.ts")).options.env.DOMOVOI_WSL_NATIVE_SERVICE_BUDGET_MS, "4321")
+})
+
+test("a skipped or renamed service proof fails even when the runner exits zero", () => {
+  assert.doesNotThrow(() => assertWslServiceReport(servicePassed))
+  assert.throws(() => assertWslServiceReport({ ...servicePassed, numPassedTests: 0, numPendingTests: 1 }), /WSL service proof.*no skipped/)
+  assert.throws(() => assertWslServiceReport({ ...servicePassed,
+    testResults: [{ assertionResults: [{ title: "something else", fullName: "something else", status: "passed" }] }] }), (error) => error.message.includes(serviceTitle))
+  assert.throws(() => assertWslServiceReport({ ...servicePassed, numTotalTests: 2, numPassedTests: 2,
+    testResults: [{ assertionResults: [...servicePassed.testResults[0].assertionResults, { title: "extra", fullName: "extra", status: "passed" }] }] }), /WSL service proof/)
+})
+
+test("a failed service proof prints its own report before cleanup and keeps the process error", async () => {
+  const events = []
+  const serviceError = new Error("Vitest exited 1: JSON report written to service.json")
+  const original = fixture()
+  const { effects } = fixture({
+    run: (command, args, options) => {
+      if (args.includes("src/service/wsl-task.native.test.ts")) throw serviceError
+      if (args[0] === "--unregister") events.push("unregister")
+      return original.effects.run(command, args, options)
+    },
+    readReport: async (path) => path.endsWith("service.json")
+      ? { ...servicePassed, success: false, numFailedTests: 1, numPassedTests: 0,
+        testResults: [{ assertionResults: [{ title: serviceTitle, fullName: serviceTitle, status: "failed", failureMessages: ["LastTaskResult was 0, expected 137"] }] }] }
+      : passed,
+    log: (line) => events.push(line),
+  })
+  await assert.rejects(runWslCi({ platform: "win32", effects }), (error) => error === serviceError)
+  const report = events.findIndex((line) => line.includes("LastTaskResult was 0"))
+  assert.ok(report >= 0, "the nonzero Vitest exit must not hide the service JSON report")
+  assert.ok(report < events.indexOf("unregister"), "read the report before removing its directory")
 })
 
 test("missing virtualization fails before the proofs, not as a green skip", async () => {
