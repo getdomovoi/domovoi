@@ -18,6 +18,8 @@ export function wslTaskActionProbe(target: WslTaskTarget, input: {
   environment: readonly string[]
   files: readonly { path: string; executable: boolean }[]
 }) {
+  // The legacy negative control deliberately falls back to a shell. Keep its
+  // fixture identifiers literal-safe; the real planner accepts a wider set.
   if (!/^[A-Za-z0-9_-]+$/.test(target.distribution) || !/^[A-Za-z0-9_-]+$/.test(target.linuxUser)) {
     throw new Error("WSL launch controls require plain fixture prefix tokens")
   }
