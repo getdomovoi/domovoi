@@ -72,9 +72,12 @@ describe("doctor", () => {
     expect(olderDaemon.ok).toBe(false)
     expect(behind.failed).toBe(true)
 
-    const ahead = await diagnose({ endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: `${major}.${minor - 1}.0`, call: daemon({}) })
+    // Step down whichever component can go down; 1.0.0 must not produce 1.-1.0.
+    if (major === 0 && minor === 0) throw new Error("This test needs a protocol version above 0.0")
+    const older = minor > 0 ? `${major}.${minor - 1}.0` : `${major - 1}.0.0`
+    const ahead = await diagnose({ endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: older, call: daemon({}) })
     const newerDaemon = ahead.probes.find((entry) => entry.name === "protocol")!
-    expect(newerDaemon.detail).toBe(`client ${major}.${minor - 1}.0, daemon ${protocolVersion}; daemon ahead: update this CLI`)
+    expect(newerDaemon.detail).toBe(`client ${older}, daemon ${protocolVersion}; daemon ahead: update this CLI`)
     expect(newerDaemon.ok).toBe(false)
   })
 
