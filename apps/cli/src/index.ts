@@ -122,6 +122,7 @@ async function main(argv: string[]): Promise<number> {
   const exactly = (count: number, shape: string) => {
     if (options.positional.length !== count) throw new UsageError(`${shape} takes no further arguments; got ${options.positional.slice(count).map((word) => JSON.stringify(word)).join(" ")}`)
   }
+  if (command === "pair" && options.positional.length > 1) throw new UsageError("pair takes the credential on stdin, not as an argument")
   if (command === "pair" || command === "status" || command === "doctor" || command === "logs") exactly(1, `domovoi ${command}`)
   if (command === "skill" && options.positional[1] === "install") exactly(3, "domovoi skill install <path>")
 
