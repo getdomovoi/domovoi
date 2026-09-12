@@ -177,10 +177,12 @@ describe.runIf(typeof constants.O_NOFOLLOW === "number")("guest sidecar snapshot
   it("captures raw sidecars and distinguishes missing from unreadable files", async () => {
     const directory = await home()
     await writeFile(join(directory, "process.json"), '{"pid":42,"start":"17"}')
+    await writeFile(join(directory, ".domovoi/supervisor.json"), '{"state":"exhausted"}')
     await mkdir(join(directory, ".domovoi/local-owner.json"))
     expect(await snapshot(directory)).toMatchObject({
       "process.json": { state: "present", content: '{"pid":42,"start":"17"}', truncated: false },
       "process.partial": { state: "missing" },
+      ".domovoi/supervisor.json": { state: "present", content: '{"state":"exhausted"}', truncated: false },
       ".domovoi/local-owner.json": { state: "error", code: expect.any(String) },
     })
   })
@@ -191,7 +193,7 @@ describe.runIf(typeof constants.O_NOFOLLOW === "number")("guest sidecar snapshot
     const result = await snapshot(directory)
     expect(result[".domovoi/local-owner.json"]).toMatchObject({ state: "present", bytes: 4096, truncated: true })
     expect(result[".domovoi/local-owner.json"].content).toHaveLength(4096)
-    expect(Object.keys(result).sort()).toEqual([".domovoi/local-owner.json", "process.json", "process.partial"])
+    expect(Object.keys(result).sort()).toEqual([".domovoi/local-owner.json", ".domovoi/supervisor.json", "process.json", "process.partial"])
   })
 
   it("refuses a sidecar symlink without exposing its target", async () => {

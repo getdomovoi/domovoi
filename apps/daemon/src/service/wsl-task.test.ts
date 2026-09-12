@@ -50,10 +50,10 @@ describe("Windows supervision of a WSL daemon", () => {
     expect(script(plan.register.args)).toContain("$action.Arguments = '" + plan.action.arguments.replaceAll("'", "''") + "'")
   })
 
-  it("sets bounded crash retries without a runtime or battery stop", () => {
+  it("leaves retries to the guest loop without a runtime or battery stop", () => {
     const body = script(wslTaskPlan(input).register.args)
-    expect(body).toContain("$definition.Settings.RestartInterval = 'PT1M'")
-    expect(body).toContain("$definition.Settings.RestartCount = 3")
+    expect(body).not.toContain("$definition.Settings.RestartInterval =")
+    expect(body).toContain("$definition.Settings.RestartCount = 0")
     expect(body).toContain("$definition.Settings.ExecutionTimeLimit = 'PT0S'")
     expect(body).toContain("$definition.Settings.MultipleInstances = 2")
     expect(body).toContain("$definition.Settings.DisallowStartIfOnBatteries = $false")

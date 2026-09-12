@@ -119,8 +119,8 @@ $trigger.Enabled = $true
 $definition.Settings.Enabled = $true
 $definition.Settings.AllowDemandStart = $true
 $definition.Settings.MultipleInstances = 2
-$definition.Settings.RestartInterval = 'PT1M'
-$definition.Settings.RestartCount = 3
+# The guest loop owns its bounded allowance. Do not reset it by retrying the action.
+$definition.Settings.RestartCount = 0
 $definition.Settings.ExecutionTimeLimit = 'PT0S'
 $definition.Settings.DisallowStartIfOnBatteries = $false
 $definition.Settings.StopIfGoingOnBatteries = $false

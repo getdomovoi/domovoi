@@ -9,6 +9,7 @@ import { localOwnerRecordSchema, type ReadyLocalOwner } from "../local-owner-rec
 import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type ServiceCommand } from "./install.js"
+import { supervisorRecordSchema, type SupervisorRecord } from "./supervisor-record.js"
 import { removeWindowsTask, windowsPowerShellPath } from "./windows-task.js"
 import { wslTaskPlan } from "./wsl-task.js"
 import { captureWslTaskAction, wslTaskActionProbe } from "./wsl-task-action-probe.js"
@@ -23,12 +24,24 @@ const lifecycleBudget = budget.lifecycle
 const cleanupBudget = budget.cleanup
 const literal = (value: string) => "'" + value.replaceAll("'", "''") + "'"
 
-// Run the production entry in the same foreground process. The preload adds
-// only a private failure/stop input, so a test never signals a saved PID that
-// might have been reused. It consumes each request before signalling itself.
+// The production supervisor inherits this preload into each daemon child.
+// Inject one real ENOENT at spawn and use private self-signal requests for
+// crashes: no test ever signals a saved PID that might have been reused.
 const observer = [
   "import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';",
+  "import childProcess from 'node:child_process';",
+  "import { syncBuiltinESMExports } from 'node:module';",
   "const home = process.env.HOME;",
+  "if (process.argv.includes('--service-supervise')) {",
+  "  const spawn = childProcess.spawn;",
+  "  childProcess.spawn = (executable, args, options) => {",
+  "    try { unlinkSync(home + '/fail-launch'); executable = home + '/missing-node'; }",
+  "    catch (e) { if (e.code !== 'ENOENT') throw e; }",
+  "    return spawn(executable, args, options);",
+  "  };",
+  "  syncBuiltinESMExports();",
+  "}",
+  "if (process.argv.includes('--service-config')) {",
   "const request = home + '/request.json';",
   "const identity = { pid: process.pid, start: readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ')[19] };",
   "writeFileSync(home + '/process.partial', JSON.stringify({ ...identity, executable: process.execPath, argv: process.argv, uid: process.getuid(), home, path: process.env.PATH, distribution: process.env.WSL_DISTRO_NAME }), { mode: 0o600 });",
@@ -41,6 +54,7 @@ const observer = [
   "  unlinkSync(request);",
   "  process.kill(process.pid, value.signal);",
   "}, 100).unref();",
+  "}",
 ].join("\n")
 
 type GuestIdentity = { pid: number; start: string }
@@ -50,7 +64,7 @@ it.runIf(process.platform === "win32" && required)(
   async () => {
     expect(distribution).toMatch(/^domovoi-ci-[0-9a-f-]{36}$/)
     const name = "Domovoi-WSL-test-" + randomUUID()
-    const registrationId = randomUUID()
+    let registrationId = randomUUID()
     const home = "/tmp/domovoi-wsl-task-" + randomUUID()
     const configPath = home + "/.domovoi/service.json"
     const powershell = windowsPowerShellPath()
@@ -61,17 +75,18 @@ it.runIf(process.platform === "win32" && required)(
     const target = {
       name, registrationId, distribution: distribution!, linuxUser: "root",
       executable: "/usr/bin/env",
-      args: [...guestEnvironment, node, "--import", home + "/observer.mjs", daemon, "--service-config", configPath],
+      args: [...guestEnvironment, node, "--import", home + "/observer.mjs", daemon, "--service-supervise", configPath],
       powershell, wsl,
     }
-    const plan = wslTaskPlan(target)
+    let plan = wslTaskPlan(target)
     const bystander = wslTaskPlan({ ...target, name: name + "-other", registrationId: randomUUID() })
     let registered = false
+    let taskStarted = false
     let bystanderRegistered = false
     let guestStaged = false
-    let identity: GuestIdentity | undefined
     let companion: GuestIdentity | undefined
     let failure: unknown
+    let diagnosticsCollected = false
     let phase = "guest fixture preparation"
     const began = performance.now()
     const mark = (next: string) => {
@@ -91,6 +106,26 @@ it.runIf(process.platform === "win32" && required)(
       checked({ command: wsl, args: ["--distribution", distribution!, "--user", "root", "--exec", node, "-e", script, ...args] }, active)
     const read = (path: string, active = deadline) => guest(
       "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", [path], active)
+    const supervisor = async (active = deadline): Promise<SupervisorRecord | undefined> => {
+      const text = await guest([
+        "const fs = require('node:fs');",
+        "try {",
+        "  if (fs.statSync(process.argv[1]).size > 16384) throw new Error('Supervisor fixture record is oversized');",
+        "  process.stdout.write(fs.readFileSync(process.argv[1], 'utf8'));",
+        "} catch (e) { if (e.code !== 'ENOENT') throw e; process.stdout.write('null'); }",
+      ].join("\n"), [home + "/.domovoi/supervisor.json"], active)
+      return text === "null" ? undefined : supervisorRecordSchema.parse(JSON.parse(text))
+    }
+    const stopSupervisor = async (active = deadline) => supervisorRecordSchema.parse(JSON.parse(await checked({
+      command: wsl, args: ["--distribution", distribution!, "--user", "root", "--exec",
+        node, daemon, "--service-supervisor-stop", configPath],
+    }, active)))
+    const serviceStatus = () => checked({ command: wsl, args: ["--distribution", distribution!, "--user", "root",
+      "--exec", "/usr/bin/env", ...guestEnvironment, node, daemon, "service", "status"] })
+    const snapshot = async (active: OperationDeadline) => {
+      diagnosticsCollected = true
+      return JSON.parse(await guest(wslGuestReadinessSnapshotScript, [home], active))
+    }
     const inspect = (script: string, active = deadline) => {
       // This read-only probe has the same private UUID name as the production
       // commands. No wildcard, localized status, or inferred absence.
@@ -136,6 +171,14 @@ it.runIf(process.platform === "win32" && required)(
         await withinServiceDeadline(active, () => delay(100, undefined, { signal: active.signal }))
       }
     }
+    let lastRecorded = ""
+    const observeSupervisor = (accept: (record: SupervisorRecord) => boolean) => observe(async () => {
+      const record = await supervisor()
+      if (!record) return undefined
+      const text = JSON.stringify(record)
+      if (text !== lastRecorded) { launchRecord({ event: "supervisor-record", record }); lastRecorded = text }
+      return accept(record) ? record : undefined
+    })
     const processIdentity = async (active = deadline, file = "/process.json"): Promise<GuestIdentity | undefined> => {
       const text = await guest([
         "const fs = require('node:fs');",
@@ -165,10 +208,11 @@ it.runIf(process.platform === "win32" && required)(
       "fs.writeFileSync(process.argv[1] + '/request.partial', process.argv[2], { mode: 0o600 });",
       "fs.renameSync(process.argv[1] + '/request.partial', process.argv[1] + '/request.json');",
     ].join("\n"), [home, JSON.stringify({ ...owned, signal: value })], active)
-    const ready = (previous?: { process: GuestIdentity; owner: ReadyLocalOwner }) => observeWslTaskReadiness({
+    const ready = (previous?: { process: GuestIdentity; owner: ReadyLocalOwner }, start = previous === undefined) => observeWslTaskReadiness({
       deadline, diagnosticsMs: budget.diagnostics,
       // Include Run in the observed operation: it may stall before any poll.
-      ...(!previous ? { start: async () => {
+      ...(start ? { start: async () => {
+        taskStarted = true
         const result = await checked(plan.start)
         expect(result).toMatch(/^domovoi-task:[234]$/)
         return result
@@ -198,7 +242,6 @@ it.runIf(process.platform === "win32" && required)(
           report({ step: "replacement-process", state: "waiting" })
           return undefined
         }
-        identity = current
         report({ step: "owner-record", state: "reading" })
         const text = await guest([
           "const fs = require('node:fs');",
@@ -222,12 +265,32 @@ it.runIf(process.platform === "win32" && required)(
         const running = await alive(current)
         report({ step: "process-liveness", state: running ? "alive" : "exited" })
         if (!running) throw new Error("Guest daemon exited before readiness")
-        return { process: current, owner: owner.data }
+        const record = await supervisor()
+        if (!record || record.state !== "running") return undefined
+        const child = record.attempts.at(-1)?.child
+        if (!child || child.pid !== current.pid || child.start !== current.start) return undefined
+        report({ step: "supervisor-record", supervisorId: record.supervisorId,
+          loop: record.loop, attemptCount: record.attemptCount, crashes: record.crashes })
+        return { process: current, owner: owner.data, supervisor: record }
       },
-      snapshot: async (active) => JSON.parse(await guest(wslGuestReadinessSnapshotScript, [home], active)),
+      snapshot,
       record: (entry) => process.stdout.write("WSL service readiness: " + JSON.stringify({
         phase, lifecycleElapsedMs: Math.round(performance.now() - began), ...entry,
       }) + "\n"),
+    })
+    const proveStopped = async (record: SupervisorRecord, active = deadline) => {
+      for (const owned of [record.loop, ...record.attempts.flatMap((attempt) => attempt.child ? [attempt.child] : [])]) {
+        expect(await alive(owned, active)).toBe(false)
+      }
+    }
+    const taskRunTime = () => inspect("([datetime]$task.LastRunTime).ToUniversalTime().ToString('o')")
+    const waitForTaskExit = (code: number) => observe(async () => {
+      const state = JSON.parse(await inspect(
+        "[ordered]@{ state = [int]$task.State; result = [long]$task.LastTaskResult } | ConvertTo-Json -Compress"))
+      if (state.state === 2 || state.state === 4) return undefined
+      expect(state.state).toBe(3)
+      expect(state.result).toBe(code)
+      return true
     })
     try {
       expect(await checked(plan.inspect)).toBe("domovoi-task:missing")
@@ -246,6 +309,7 @@ it.runIf(process.platform === "win32" && required)(
         "fs.mkdirSync(home + '/.domovoi', { mode: 0o700 });",
         "fs.writeFileSync(home + '/observer.mjs', process.argv[2], { mode: 0o600, flag: 'wx' });",
         "fs.writeFileSync(home + '/.domovoi/service.json', process.argv[3], { mode: 0o600, flag: 'wx' });",
+        "fs.writeFileSync(home + '/fail-launch', '', { mode: 0o600, flag: 'wx' });",
         "const child = require('node:child_process').spawn(process.execPath, ['-e', process.argv[4], home], { detached: true, stdio: 'ignore' });",
         "child.unref();",
       ].join("\n"), [home, observer, serializeServiceConfiguration(configuration), [
@@ -299,8 +363,8 @@ it.runIf(process.platform === "win32" && required)(
         "retries = $d.Settings.RestartCount; limit = $d.Settings.ExecutionTimeLimit;",
         "instances = [int]$d.Settings.MultipleInstances; path = $d.Actions.Item(1).Path } | ConvertTo-Json -Compress",
       ].join("\n")))
-      expect(settings).toMatchObject({ logonType: 3, runLevel: 0, triggers: [9], interval: "PT1M",
-        retries: 3, limit: "PT0S", instances: 2, path: wsl })
+      expect(settings).toMatchObject({ logonType: 3, runLevel: 0, triggers: [9],
+        retries: 0, limit: "PT0S", instances: 2, path: wsl })
       expect(settings.userSid).toBe(settings.currentUserSid)
       expect(settings.triggerUserSid).toBe(settings.currentUserSid)
       launchRecord({ event: "registered-action", value: JSON.parse(await inspect([
@@ -310,66 +374,139 @@ it.runIf(process.platform === "win32" && required)(
         "host = [ordered]@{ userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;",
         "is64Bit = [Environment]::Is64BitProcess; WSL_UTF8 = $env:WSL_UTF8; WSLENV = $env:WSLENV } } | ConvertTo-Json -Depth 3 -Compress",
       ].join("\n"))), expectedAction: plan.action, wslConfig })
-      mark("first guest start")
+      mark("failed launch and first guest recovery")
       const first = await ready()
-      mark("guest failure reaching Windows")
-      await signal(first.process, "SIGKILL")
-      await observe(async () => !(await alive(first.process)) ? true : undefined)
-      await observe(async () => {
-        const result = JSON.parse(await inspect(
-          "[ordered]@{ state = [int]$task.State; result = $task.LastTaskResult } | ConvertTo-Json -Compress"))
-        if (result.state !== 3) return undefined
-        // WSL 2.7.13 forwards raw waitpid status for signal death: 9 for
-        // SIGKILL. See the vendor source and native run in the assessment.
-        // Zero would not establish guest failure reaching the Windows action.
-        expect(result.result).toBe(9)
-        return true
+      const runTime = await taskRunTime()
+      expect(first.supervisor).toMatchObject({ attemptCount: 2, crashes: 1 })
+      expect(first.supervisor.attempts[0]).toMatchObject({
+        child: null, exit: { kind: "launch-failed", errorCode: "ENOENT" }, backoffMs: 1000, backoffOutcome: "completed",
       })
-      mark("scheduler restart")
-      const second = await ready(first)
-      expect(second.owner.instanceId).not.toBe(first.owner.instanceId)
-      expect(second.owner.machineId).toBe(first.owner.machineId)
+      let previous = first
+      for (const attempt of [3, 4]) {
+        mark("SIGKILL recovery to attempt " + attempt)
+        await signal(previous.process, "SIGKILL")
+        const next = await ready(previous)
+        expect(next.owner.instanceId).not.toBe(previous.owner.instanceId)
+        expect(next.owner.machineId).toBe(first.owner.machineId)
+        expect(next.supervisor.supervisorId).toBe(first.supervisor.supervisorId)
+        expect(next.supervisor.loop).toEqual(first.supervisor.loop)
+        expect(next.supervisor.attemptCount).toBe(attempt)
+        expect(await taskRunTime()).toBe(runTime)
+        previous = next
+      }
       expect(await checked(plan.inspect)).toBe("domovoi-task:4")
-      mark("task disable and exact guest stop")
+      mark("fourth crash and loud exhaustion")
+      await signal(previous.process, "SIGKILL")
+      const exhausted = await observeSupervisor((record) => record.state === "exhausted")
+      expect(exhausted).toMatchObject({ attemptCount: 4, crashes: 4, reason: { kind: "restart-limit" } })
+      expect(exhausted.attempts.slice(1).map((attempt) => attempt.exit?.signal)).toEqual(["SIGKILL", "SIGKILL", "SIGKILL"])
+      expect(exhausted.attempts.map((attempt) => attempt.backoffMs)).toEqual([1000, 5000, 15000, 0])
+      for (let index = 0; index < 3; index++) {
+        const attempt = exhausted.attempts[index]!
+        const next = exhausted.attempts[index + 1]!
+        expect(attempt.backoffOutcome).toBe("completed")
+        // Actual guest wall-clock measurements, not just the configured delay.
+        expect(Date.parse(attempt.backoffEndedAt!) - Date.parse(attempt.exit!.at)).toBeGreaterThanOrEqual(attempt.backoffMs)
+        expect(Date.parse(next.startedAt)).toBeGreaterThanOrEqual(Date.parse(attempt.backoffEndedAt!))
+      }
+      expect(await taskRunTime()).toBe(runTime)
+      await waitForTaskExit(1)
+      await proveStopped(exhausted)
+      expect(await serviceStatus()).toContain("stopped; supervision exhausted after 4 crashes; last exit signal SIGKILL at " + exhausted.attempts[3]!.exit!.at)
+
+      mark("explicit new lifetime and clean exit")
+      const clean = await ready(previous, true)
+      expect(clean.supervisor.supervisorId).not.toBe(exhausted.supervisorId)
+      expect(clean.supervisor.attemptCount).toBe(1)
+      await signal(clean.process, "SIGTERM")
+      const cleanExit = await observeSupervisor((record) => record.state === "stopped")
+      expect(cleanExit).toMatchObject({ attemptCount: 1, crashes: 0, reason: { kind: "clean-exit" } })
+      expect(cleanExit.attempts[0]).toMatchObject({ exit: { kind: "clean", code: 0 }, backoffMs: 0, backoffOutcome: null })
+      await waitForTaskExit(0)
+      await proveStopped(cleanExit)
+
+      mark("deliberate removal during a live child")
+      const live = await ready(clean, true)
       expect(await checked(plan.disable)).toMatch(/^domovoi-task:[14]$/)
-      await signal(second.process, "SIGTERM")
-      await observe(async () => !(await alive(second.process)) ? true : undefined)
-      mark("task removal")
+      const liveStop = await stopSupervisor()
+      expect(liveStop).toMatchObject({ supervisorId: live.supervisor.supervisorId, state: "stopped",
+        attemptCount: 1, crashes: 0, reason: { kind: "deliberate-stop" } })
+      expect(liveStop.attempts[0]!.exit?.kind).toBe("stopped")
+      await proveStopped(liveStop)
       expect(await removeWindowsTask(plan.removal, effects, deadline)).toBe("removed")
       expect(await checked(plan.inspect)).toBe("domovoi-task:missing")
       registered = false
-      // The same running distro and its config survive. The private profile
-      // survives too: deleting a task is not deleting user state.
+      taskStarted = false
+      expect(await read(configPath)).toBe(configBefore)
+
+      // Removal retires a registration. Reinstall explicitly with a fresh ID;
+      // never erase its stop request to restart the removed lifetime.
+      mark("reinstall for removal during backoff")
+      registrationId = randomUUID()
+      configuration.registrationId = registrationId
+      const reinstalledConfig = serializeServiceConfiguration(configuration)
+      await guest([
+        "const fs = require('node:fs');",
+        "fs.writeFileSync(process.argv[1] + '.partial', process.argv[2], { mode: 0o600 });",
+        "fs.renameSync(process.argv[1] + '.partial', process.argv[1]);",
+      ].join("\n"), [configPath, reinstalledConfig])
+      plan = wslTaskPlan({ ...target, registrationId })
+      registered = true
+      expect(await checked(plan.register)).toBe("domovoi-task:created")
+      let backoffChild = await ready(live, true)
+      for (let crash = 1; crash <= 2; crash++) {
+        await signal(backoffChild.process, "SIGKILL")
+        backoffChild = await ready(backoffChild)
+      }
+      await signal(backoffChild.process, "SIGKILL")
+      const backingOff = await observeSupervisor((record) => record.state === "backoff" && record.crashes === 3)
+      expect(backingOff.attempts[2]).toMatchObject({ backoffMs: 15000, backoffOutcome: null })
+      expect(await checked(plan.disable)).toMatch(/^domovoi-task:[14]$/)
+      const backoffStop = await stopSupervisor()
+      expect(backoffStop).toMatchObject({ supervisorId: backingOff.supervisorId, state: "stopped",
+        attemptCount: 3, crashes: 3, reason: { kind: "deliberate-stop" } })
+      expect(backoffStop.attempts[2]).toMatchObject({ backoffMs: 15000, backoffOutcome: "cancelled" })
+      await proveStopped(backoffStop)
+      expect(await removeWindowsTask(plan.removal, effects, deadline)).toBe("removed")
+      expect(await checked(plan.inspect)).toBe("domovoi-task:missing")
+      registered = false
+      taskStarted = false
+      // Distro, host config, private profile, bystander and companion survive.
       expect(await read("/proc/sys/kernel/random/boot_id")).toBe(boot)
       expect(await read("/etc/wsl.conf")).toBe(wslConfig)
-      expect(await read(configPath)).toBe(configBefore)
-      expect(await alive(second.process)).toBe(false)
+      expect(await read(configPath)).toBe(reinstalledConfig.trim())
       expect(await alive(companion)).toBe(true)
       expect(await checked(bystander.inspect)).toBe("domovoi-task:1")
       mark("complete")
     } catch (cause) {
       failure = new Error("WSL service proof failed during " + phase, { cause })
+      if (!diagnosticsCollected && guestStaged) {
+        const diagnostics = OperationDeadline.start(budget.diagnostics)
+        try {
+          const [guestResult, taskResult] = await Promise.allSettled([snapshot(diagnostics), taskHistory(diagnostics)])
+          const result = (value: PromiseSettledResult<unknown>) => value.status === "fulfilled"
+            ? { value: value.value } : { error: String(value.reason).slice(0, 4096) }
+          launchRecord({ event: "failure-diagnostics", guest: result(guestResult), task: result(taskResult) })
+        } finally { diagnostics.clear() }
+      }
     } finally {
       deadline.clear()
       const cleanup = OperationDeadline.start(cleanupBudget)
       const failures: unknown[] = []
-      // An error cannot skip the other teardown obligation. Keep both errors
-      // if stopping the guest and deleting the task independently fail.
+      // Guest death must precede task deletion. Keep the trigger disabled and
+      // preserve diagnostics if exact shutdown cannot be proved.
       try {
         if (registered) await checked(plan.disable, cleanup)
       } catch (error) { failures.push(error) }
       try {
-        if (guestStaged) {
-          identity = await processIdentity(cleanup) ?? identity
-          if (identity && await alive(identity, cleanup)) {
-            await signal(identity, "SIGTERM", cleanup)
-            const stopped = identity
-            await observe(async () => !(await alive(stopped, cleanup)) ? true : undefined, cleanup)
-          }
+        if (guestStaged && taskStarted) {
+          const stopped = await stopSupervisor(cleanup)
+          await proveStopped(stopped, cleanup)
+          taskStarted = false
         }
       } catch (error) { failures.push(error) }
       try {
-        if (registered) await removeWindowsTask(plan.removal, effects, cleanup)
+        if (registered && !taskStarted) await removeWindowsTask(plan.removal, effects, cleanup)
       } catch (error) { failures.push(error) }
       try {
         if (bystanderRegistered) await removeWindowsTask(bystander.removal, effects, cleanup)

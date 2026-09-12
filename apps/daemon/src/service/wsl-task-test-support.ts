@@ -78,7 +78,7 @@ export async function observeWslTaskReadiness<T>(options: {
 export const wslGuestReadinessSnapshotScript = [
   "const fs = require('node:fs'), path = require('node:path');",
   "const snapshot = {};",
-  "for (const file of ['process.json', 'process.partial', '.domovoi/local-owner.json']) {",
+  "for (const file of ['process.json', 'process.partial', '.domovoi/local-owner.json', '.domovoi/supervisor.json']) {",
   "  let descriptor;",
   "  try {",
   "    if (typeof fs.constants.O_NOFOLLOW !== 'number') throw Object.assign(new Error('No-follow sidecar reads unavailable'), { code: 'ENOTSUP' });",

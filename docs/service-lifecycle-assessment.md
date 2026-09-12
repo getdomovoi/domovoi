@@ -18,7 +18,7 @@ existing lifecycle handlers and supervisor entry point.
 ## WSL decision
 
 Domovoi will own a Windows task that starts the selected WSL distribution and
-foreground daemon at that distribution owner's Windows logon. Windows boot
+guest restart loop at that distribution owner's Windows logon. Windows boot
 supervision is unavailable. Starting the distro by other means is a separate
 event and does not trigger the Windows task.
 
@@ -40,11 +40,11 @@ boot configuration to supply one. Task Scheduler also offers passwordless
 with network/encrypted-file restrictions; it has no acceptance proof for this
 WSL/keychain/repository contract and remains outside support.
 
-The current crash-restart fixture separately observes guest death, the Windows
+The initial crash-restart fixture separately observed guest death, the Windows
 action's result, and an automatic restart. A nonzero result alone does not
 establish supervision.
-The fixture sends SIGKILL to its identified guest daemon, expects action result
-9 on WSL 2.7.13, then requires a new identified guest without another manual
+That fixture sent SIGKILL to its identified guest daemon, expected action result
+9 on WSL 2.7.13, then required a new identified guest without another manual
 task start. Guest death reaching Windows is proved below; the configured task
 retry did not restart it. Selecting logon start only would change this acceptance
 contract, not satisfy its restart assertion. The service path filter landed in [#368](https://github.com/getdomovoi/domovoi/pull/368),
@@ -171,6 +171,41 @@ an expired deadline must prevent deletion/recovery, with both primary and cleanu
 failures retained. The runner's exact-name/no-skip report checks remain required
 for the selected contract. The guest loop and its status evidence must pass
 acceptance before this assessment claims crash supervision.
+
+### Guest implementation, native acceptance pending
+
+The Windows action now invokes `domovoid --service-supervise <service.json>`.
+Task Scheduler retries are disabled: restarting the whole loop would reset its
+lifetime allowance. The loop starts the installed daemon as a local child and
+writes `.domovoi/supervisor.json` before launch, after capturing the child's
+birth identity, on exit and around backoff. The private, bounded record is
+published by rename. Process identity includes the Linux boot ID and start
+ticks as well as PID; attempt timestamps are UTC. Backoff records distinguish
+completed waits from cancellation.
+
+`domovoid service status` reads the record and probes those identities. It
+reports the Windows registration as unverified, because a guest file cannot
+prove the host task exists. A missing record after the supervisor lease was
+created, corrupt evidence or a mismatched installed configuration is a refusal.
+
+Removal first disables the matching Windows task. The guest-only
+`--service-supervisor-stop <service.json>` command publishes a request bound
+to the loop and registration. The loop cancels backoff, stops and reaps its
+owned child, and exits. The stop command independently waits for the loop and
+all recorded children to be dead. A launch without a recorded child identity
+or exit is unresolved, even if the loop is dead, and blocks removal and a new
+loop. The request also retires that registration, preventing a replacement
+loop between shutdown proof and task deletion. Reinstallation requires a new
+registration ID; it does not erase the stop marker.
+
+The native fixture now checks failed launch, SIGKILL recovery, actual backoff
+times, four-crash exhaustion, clean exit and deliberate removal during both a
+live child and backoff. Child replacements must share the same loop identity
+and task LastRunTime. Exhaustion must be readable through service status and
+reach the Windows action as exit 1. This is a test contract awaiting a native
+run, not a claim that the expanded acceptance has passed. The fixture's task
+installation still does not wire WSL selection into `service install` or
+establish actual logon acceptance.
 
 ## Measured platform gaps
 
