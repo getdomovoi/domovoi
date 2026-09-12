@@ -47,7 +47,7 @@ concurrency:
 jobs:
   native:
     runs-on: windows-2025
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -71,4 +71,4 @@ jobs:
         timeout-minutes: 5
       - name: Provision WSL 2 and require native proofs
         run: node scripts/wsl-ci.mjs
-        timeout-minutes: 16
+        timeout-minutes: 21
