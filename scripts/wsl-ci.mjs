@@ -285,7 +285,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
         await summary.run(() => appendFile(process.env.GITHUB_STEP_SUMMARY,
           `### WSL native proofs\n\n${result.tests} transport proofs and ${result.serviceTests} supervisor proof passed, zero skipped. One Ubuntu 24.04.4 WSL 2 distribution.\n\n`
           + result.phases.map(({ name, seconds }) => `- ${name}: ${seconds} seconds\n`).join("")
-          + "\nProves guest boot, custom-mount refusal, Windows CLI repository open, guest ownership and Git, authenticated WSL routes, graceful daemon restart, stale endpoints and stopped-distribution refusal. Does not prove cross-distribution routing, service supervision, mirrored networking or VPNs.\n"))
+          + "\nProves guest boot, custom-mount refusal, Windows CLI repository open, guest ownership and Git, authenticated WSL routes, graceful daemon restart, stale endpoints and stopped-distribution refusal; and, for the supervisor, that a guest daemon failure reaches the Windows task as failure, that the task restarts it, and that removal takes only Domovoi's own task. Does not prove cross-distribution routing, logon or boot acceptance (the fixture triggers the task itself), mirrored networking or VPNs.\n"))
       } finally { summary.clear() }
     }
   } catch (error) {
