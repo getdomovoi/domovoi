@@ -80,3 +80,44 @@ describe("doctor", () => {
     expect(probe.detail).toContain(deviceId)
   })
 })
+
+describe("doctor, after peer review", () => {
+  it("asks for source-local routes only when the daemon itself is on loopback", async () => {
+    const seen: Record<string, unknown>[] = []
+    const call = async (method: string, params: Record<string, unknown>) => {
+      if (method === "fleet.clientRoute") seen.push(params)
+      return daemon({ [machineId]: { outcome: "refused", reason: "client-route-unavailable" } })(method, params)
+    }
+    await diagnose({ endpoint: "wss://remote.example/rpc", clientProtocolVersion: protocolVersion, call })
+    await diagnose({ endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: protocolVersion, call })
+    expect(seen.map((params) => params.allowSourceLocal)).toEqual([false, true])
+  })
+
+  it("does not claim to know the daemon host's tunnel configuration", async () => {
+    const report = await diagnose({
+      endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: protocolVersion,
+      call: daemon({ [machineId]: { outcome: "ready", machineId, transport: { kind: "ssh", endpoint: "ws://127.0.0.1:1234/rpc", authenticated: true, configured: true } } },
+        [fleetMachine({ verifiedRoute: undefined, connection: "lan", transports: [] })]),
+    })
+    const hetzner = report.machines[0]!
+    expect(hetzner.route).toBe("ssh ws://127.0.0.1:1234/rpc")
+    expect(hetzner.because).not.toContain("ssh: no tunnel configured here")
+    expect(hetzner.because).toContain("ssh: chosen; tunnels are configured on the daemon host, not advertised")
+    expect(report.failed).toBe(false)
+  })
+
+  it("judges loopback by the parsed hostname, as the daemon does", async () => {
+    const report = await diagnose({
+      endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: protocolVersion,
+      call: daemon({ [machineId]: { outcome: "refused", reason: "client-route-unavailable" } }, [fleetMachine({ verifiedRoute: undefined, connection: "lan", transports: [
+        { kind: "lan", endpoint: "wss://localhost.remote.example:47831/rpc", authenticated: true },
+      ] })]),
+    })
+    const because = report.machines[0]!.because
+    // A hostname that merely starts with "localhost" is not loopback; the
+    // protocol refuses real loopback hosts on remote transports before doctor
+    // sees them, so the only spelling doctor can meet is this one.
+    expect(because).toContain("lan wss://localhost.remote.example:47831/rpc: advertised, not chosen")
+    expect(because.some((line) => line.includes("never trusted"))).toBe(false)
+  })
+})

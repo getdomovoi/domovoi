@@ -36,3 +36,21 @@ describe("skill install", () => {
       .rejects.toThrow(/already occupies/)
   })
 })
+
+describe("skill install, after peer review", () => {
+  it("shows both digests with labels, and pins the source digest it showed", async () => {
+    const content = "sha256:" + "a".repeat(64)
+    const source = "sha256:" + "b".repeat(64)
+    const seen = preview({ contentDigest: content, sourceDigest: source })
+    const text = renderPreview(seen as never, "user")
+    expect(text).toMatch(new RegExp(`^content    ${content}$`, "m"))
+    expect(text).toMatch(new RegExp(`^source     ${source}$`, "m"))
+    let pinned: unknown
+    const call = async (method: string, params: Record<string, unknown>) => {
+      if (method === "skill.install") pinned = params.sourceDigest
+      return { id: `skill-${"b".repeat(12)}`, name: "pr-triage", description: "Triage pull requests", path: "/p", scope: "user", source: "domovoi", manifest: { version: 1, capabilities: [] }, contentDigest: content, signature: { state: "unsigned" }, trust: { state: "untrusted", reason: "unsigned" } }
+    }
+    await installSkill({ call, path: "/skills/pr-triage", scope: "user", preview: seen as never })
+    expect(pinned).toBe(source)
+  })
+})

@@ -81,7 +81,6 @@ async function main(argv: string[]): Promise<number> {
   })
 
   if (command === "pair") {
-    if (options.positional.length > 1) throw new UsageError("pair takes the credential on stdin, not as an argument")
     const credentials = await store()
     const credential = readCredential(await readSecretLine())
     const paired = await pairWithDaemon({
@@ -117,6 +116,14 @@ async function main(argv: string[]): Promise<number> {
     }
     return connectToDaemon({ endpoint: options.daemon, authToken: record.token })
   }
+
+  // Surplus arguments are a wrong command, not noise: refuse before any
+  // connection or RPC, so a stray word cannot ride along with --yes.
+  const exactly = (count: number, shape: string) => {
+    if (options.positional.length !== count) throw new UsageError(`${shape} takes no further arguments; got ${options.positional.slice(count).map((word) => JSON.stringify(word)).join(" ")}`)
+  }
+  if (command === "pair" || command === "status" || command === "doctor" || command === "logs") exactly(1, `domovoi ${command}`)
+  if (command === "skill" && options.positional[1] === "install") exactly(3, "domovoi skill install <path>")
 
   if (command === "doctor") {
     const connection = await paired()

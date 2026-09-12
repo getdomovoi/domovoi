@@ -1,4 +1,4 @@
-import { deviceCurrentResultSchema, fleetClientRouteResultSchema, fleetSnapshotSchema, workspaceSnapshotSchema } from "@getdomovoi/protocol"
+import { deviceCurrentResultSchema, fleetClientRouteResultSchema, fleetSnapshotSchema, isTransportLoopbackHost, workspaceSnapshotSchema } from "@getdomovoi/protocol"
 
 import type { RpcCall } from "./pair.js"
 
@@ -28,22 +28,37 @@ const absent: Record<(typeof transportKinds)[number], string> = {
   local: "local: not advertised", wsl: "wsl: not a WSL guest of this host", lan: "lan: not advertised",
   tailnet: "tailnet: not advertised", ssh: "ssh: no tunnel configured here", relay: "relay: not implemented",
 }
-function explain(machine: { connection: string; transports: { kind: string; endpoint: string }[]; verifiedRoute?: { endpoint: string } | undefined }, chosen: string | undefined): string[] {
+// Loopback is judged on the parsed hostname, as the daemon judges it, not on
+// a spelling of the URL: ws://LOCALHOST and ws://2130706433 are loopback,
+// wss://localhost.remote.example is not.
+function loopbackEndpoint(endpoint: string): boolean {
+  try { return isTransportLoopbackHost(new URL(endpoint).hostname.toLowerCase()) } catch { return false }
+}
+
+function explain(machine: { connection: string; transports: { kind: string; endpoint: string }[]; verifiedRoute?: { endpoint: string } | undefined }, chosen: { kind: string; endpoint: string } | undefined): string[] {
   const because: string[] = []
   if (machine.verifiedRoute) {
-    because.push(chosen === machine.verifiedRoute.endpoint ? "verified route matched" : `verified route ${machine.verifiedRoute.endpoint}: not the route chosen`)
+    because.push(chosen?.endpoint === machine.verifiedRoute.endpoint ? "verified route matched" : `verified route ${machine.verifiedRoute.endpoint}: not the route chosen`)
   } else {
     because.push("no verified route yet")
   }
   for (const kind of transportKinds) {
     const advertised = machine.transports.filter((transport) => transport.kind === kind)
+    // ssh and wsl are configured on the daemon host and never advertised, so
+    // an empty advertisement list says nothing about them; only the daemon's
+    // choice does.
+    if (chosen?.kind === kind && advertised.every((transport) => transport.endpoint !== chosen.endpoint)) {
+      because.push(kind === "ssh" ? "ssh: chosen; tunnels are configured on the daemon host, not advertised"
+        : kind === "wsl" ? "wsl: chosen; inspected on the daemon host, not advertised" : `${kind}: chosen`)
+      continue
+    }
     if (advertised.length === 0) { because.push(absent[kind]); continue }
     for (const transport of advertised) {
-      if (transport.endpoint === chosen) continue
+      if (transport.endpoint === chosen?.endpoint) continue
       if (kind === "relay") because.push("relay: not implemented")
       else if (kind === "ssh") because.push("ssh: a peer cannot advertise a forward for this machine")
       else if (kind === "wsl") because.push("wsl: inspected on this host, not dialled from an advertisement")
-      else if (machine.connection !== "local" && /^wss?:\/\/(127\.|localhost|\[::1\])/.test(transport.endpoint)) because.push(`${kind} ${transport.endpoint}: loopback on another machine, never trusted`)
+      else if (machine.connection !== "local" && loopbackEndpoint(transport.endpoint)) because.push(`${kind} ${transport.endpoint}: loopback on another machine, never trusted`)
       else if (!transport.endpoint.startsWith("wss://") && kind !== "local") because.push(`${kind} ${transport.endpoint}: not encrypted, refused`)
       else because.push(`${kind} ${transport.endpoint}: advertised, not chosen`)
     }
@@ -61,6 +76,10 @@ export async function diagnose(input: { endpoint: string; clientProtocolVersion:
     : { name: "credential", ok: false, detail: "accepted, but as a daemon credential; a client should not hold one" })
   const same = input.clientProtocolVersion === snapshot.protocolVersion
   probes.push({ name: "protocol", ok: same, detail: `client ${input.clientProtocolVersion}, daemon ${snapshot.protocolVersion}; negotiation: unknown until version negotiation lands` })
+  // A source-local route (the daemon's own loopback, its WSL distro, its
+  // SSH forward) is usable only by a client on the daemon's host. That is
+  // this client exactly when the daemon endpoint is loopback.
+  const allowSourceLocal = loopbackEndpoint(input.endpoint)
   const fleet = fleetSnapshotSchema.parse(await input.call("fleet.list", {}))
   const machines: DoctorMachine[] = []
   for (const entry of fleet.entries) {
@@ -73,12 +92,12 @@ export async function diagnose(input: { endpoint: string; clientProtocolVersion:
       continue
     }
     let route: string
-    let chosen: string | undefined
+    let chosen: { kind: string; endpoint: string } | undefined
     let advice: string | undefined
     try {
-      const result = fleetClientRouteResultSchema.parse(await input.call("fleet.clientRoute", { machineId: machine.id, allowSourceLocal: true }))
+      const result = fleetClientRouteResultSchema.parse(await input.call("fleet.clientRoute", { machineId: machine.id, allowSourceLocal }))
       if (result.outcome === "ready") {
-        chosen = result.transport.endpoint
+        chosen = { kind: result.transport.kind, endpoint: result.transport.endpoint }
         route = `${result.transport.kind} ${result.transport.endpoint}`
       } else {
         route = `refused: ${result.reason}`

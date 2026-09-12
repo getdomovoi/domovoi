@@ -19,8 +19,16 @@ describe("logs", () => {
     const page = await readLogs({ call, query: { limit: 2 } })
     const text = renderLogs(page)
     expect(text.split("\n").filter(Boolean)).toHaveLength(3)
-    expect(text).toMatch(/^2026-09-12T12:00:00\.000Z succeeded device\.claim device-1 \[daemon\] line one line two$/m)
+    expect(text).toMatch(/^2026-09-12T12:00:00\.000Z succeeded device\.claim device-1 \[daemon rpc\] line one line two$/m)
     expect(text).toMatch(/^more: run again with --before 1$/m)
     expect(text).not.toMatch(/follow/)
+  })
+})
+
+describe("logs, after peer review", () => {
+  it("renders the client's clientId from the protocol type", async () => {
+    const call = async () => ({ entries: [entry("3", { actor: { kind: "client", client: "cli", clientId: `device-${"1".repeat(32)}` } })], hasMore: false })
+    const text = renderLogs(await readLogs({ call, query: { limit: 1 } }))
+    expect(text).toMatch(/\[client device-1111111\]/)
   })
 })

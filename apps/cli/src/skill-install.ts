@@ -21,7 +21,11 @@ export function renderPreview(preview: ReturnType<typeof skillInstallPreviewSche
   const lines = [
     `skill      ${preview.name}: ${preview.description}`,
     `files      ${preview.files.length} (${preview.files.reduce((total, file) => total + file.bytes, 0)} bytes)`,
-    `digest     ${preview.contentDigest}`,
+    // Two digests, two meanings: content is what the skill's files hash to,
+    // source is what the daemon pins on install so a changed directory is
+    // refused. Both are shown because both are decisions.
+    `content    ${preview.contentDigest}`,
+    `source     ${preview.sourceDigest}`,
     `signature  ${preview.signature.state}`,
     `trust      ${preview.trust.state}`,
   ]

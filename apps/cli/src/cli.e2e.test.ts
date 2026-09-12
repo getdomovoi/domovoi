@@ -158,6 +158,13 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     expect(declined.code).toBe(1)
   })
 
+  it("refuses surplus arguments before any connection, even with --yes", async () => {
+    const surplus = await runCli(["skill", "install", join(home!, "skills", "pr-triage"), "extra", "--yes", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")])
+    expect(surplus.code).toBe(2)
+    expect(surplus.stderr).toMatch(/takes no further arguments; got "extra"/)
+    expect(await runCli(["doctor", "now", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")])).toMatchObject({ code: 2 })
+  })
+
   it("refuses a credential passed as an argument", async () => {
     const result = await runCli(["pair", "x".repeat(43), "--daemon", url, "--credential-file", join(home!, "unused.json")])
     expect(result.code).toBe(2)

@@ -19,8 +19,9 @@ export async function readLogs(input: { call: RpcCall; query: LogsQuery }) {
 
 export function renderLogs(page: ReturnType<typeof auditQueryPageSchema.parse>): string {
   const lines = page.entries.map((entry) => {
-    const actor = entry.actor.kind === "client" ? `client ${"deviceId" in entry.actor && entry.actor.deviceId ? String(entry.actor.deviceId).slice(0, 15) : ""}`.trim()
-      : entry.actor.kind === "machine" ? `machine ${String((entry.actor as { machineId?: string }).machineId ?? "").slice(0, 16)}`
+    const actor = entry.actor.kind === "client" ? `client ${entry.actor.clientId ? entry.actor.clientId.slice(0, 14) : ""}`.trim()
+      : entry.actor.kind === "machine" ? `machine ${entry.actor.machineId.slice(0, 16)}`
+      : entry.actor.kind === "daemon" ? `daemon${entry.actor.component ? ` ${entry.actor.component}` : ""}`
       : entry.actor.kind
     const where = entry.sessionId ? ` session ${entry.sessionId}` : ""
     const target = entry.target ? ` ${entry.target}` : ""
