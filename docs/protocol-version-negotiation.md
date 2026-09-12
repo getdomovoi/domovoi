@@ -46,6 +46,13 @@ validating the entire payload and refuse incompatible major or minor versions.
 The machine dialer uses these schemas directly; it no longer substitutes its
 own version to make a peer snapshot pass validation.
 
+Previously, the dialer validated a value it had just written: it replaced the
+peer's version with its own before parsing the snapshot. The separate
+compatibility check had already examined the actual peer version, and the
+dialer returned only the machine ID. The substitution did not publish a changed
+patch; it made the snapshot's version check prove only the substituted value.
+Parsing the received snapshot directly removes that self-validation.
+
 Parsing a snapshot proves its format and compatibility with this build. It does
 not prove an authenticated hello took place. A client may report negotiation as
 successful only after its hello succeeds and the returned snapshot validates.
