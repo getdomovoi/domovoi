@@ -106,7 +106,9 @@ describe.runIf(process.platform === "win32")("WSL task ownership guard in Window
     { form: "SID", change: "" },
     { form: "account name", change: "$script:fixtureTask.Definition.Principal.UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name" },
   ])("accepts the current user expressed as $form", async ({ change }) => {
-    expect((await inspectInjectedTask(change)).stdout.trim()).toBe("domovoi-task:3")
+    // Console.Out bypasses Out-Null. Account for registration and inspection.
+    expect((await inspectInjectedTask(change)).stdout.trim().split(/\r?\n/))
+      .toEqual(["domovoi-task:created", "domovoi-task:3"])
   }, 15_000)
 
   it.each([
