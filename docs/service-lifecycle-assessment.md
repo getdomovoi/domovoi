@@ -2,7 +2,10 @@
 
 Status: fetzy selected option A for Windows user logon on 2026-09-11, with
 option D's explicit lack of Windows boot supervision. The task compiler and
-native fixture exist; installer integration and supervision acceptance remain open.
+native fixture exist. Task-managed crash restart failed native acceptance on
+2026-09-12; fetzy is deciding between a Domovoi-owned restart loop and logon
+start only. Neither follow-up is selected or implemented. Installer integration
+and complete removal acceptance remain open.
 Measured on 2026-09-11 after fetching `origin/main` at
 `98c412c540bad49b9cbf2459a47bc3309cda62b8`. S1.1 remains open; this document
 does not claim completed lifecycle acceptance.
@@ -38,12 +41,14 @@ boot configuration to supply one. Task Scheduler also offers passwordless
 with network/encrypted-file restrictions; it has no acceptance proof for this
 WSL/keychain/repository contract and remains outside support.
 
-Acceptance must separately observe guest death, the Windows action's result,
-and an automatic restart. A nonzero result alone does not establish supervision.
+The current crash-restart fixture separately observes guest death, the Windows
+action's result, and an automatic restart. A nonzero result alone does not
+establish supervision.
 The fixture sends SIGKILL to its identified guest daemon, expects action result
 9 on WSL 2.7.13, then requires a new identified guest without another manual
-task start. Guest death reaching Windows is proved below; automatic restart
-remains unproved. The service path filter landed in [#368](https://github.com/getdomovoi/domovoi/pull/368),
+task start. Guest death reaching Windows is proved below; the configured task
+retry did not restart it. Selecting logon start only would change this acceptance
+contract, not satisfy its restart assertion. The service path filter landed in [#368](https://github.com/getdomovoi/domovoi/pull/368),
 and the fixture now runs in its own WSL CI phase. Removal must independently
 prove the exact guest daemon stopped, as described below. Native Windows
 supervision remains a separate decision.
@@ -86,8 +91,8 @@ and stopped before restart polling. WSL 2.7.13's
 [init exit reporting](https://github.com/microsoft/WSL/blob/80697fd42cca3de0c0d5dd1931c36112372a577e/src/linux/init/init.cpp#L2043)
 applies WEXITSTATUS only to normal exits; signal death retains the raw waitpid
 status. For SIGKILL that status is 9, matching the measured Windows result.
-The assertion now pins 9. Whether this result triggers the configured PT1M
-retry and whether the full removal proof passes remain open.
+The assertion now pins 9. That run supplied no retry observation; the following
+run reached that wait. The full removal proof remains open.
 
 All three invoking-host quoting controls executed in this run. The bare-prefix
 control returned 0 with literal guest arguments intact. Quoting every prefix
@@ -95,6 +100,58 @@ token returned 127 with `--distribution: command not found`; quoting just the
 prefix values returned 4294967295 with WSL_E_DISTRO_NOT_FOUND. These controls
 explain the earlier launch failure; the task's own live guest separately proves
 that the corrected action launches in Task Scheduler context.
+
+[WSL run 34676238405](https://github.com/getdomovoi/domovoi/actions/runs/34676238405/job/103506492631)
+at `4aa07b0e71ebfe37b37810af4b55c0727e4e114d` reached the live guest at
+19.572 seconds and completed guest death/result-9 acceptance at 20.137 seconds
+of lifecycle time. All 503 completed restart polls returned State 3 and
+LastTaskResult 9, with LastRunTime fixed at
+`2026-09-12T05:44:29.0000000Z`. The last poll completed 219.836 seconds after
+restart waiting began. No replacement guest was observed; the fixture expired in
+`scheduler restart`, before complete removal acceptance.
+
+Both failure kinds remained unrestarted for more than three configured
+one-minute intervals. These intervals measure the gap between the first and
+last completed query of the stated failure result, not total job runtime:
+
+| Native run | Action outcome | Completed failure-result queries | Observation interval | Task LastRunTime |
+| --- | --- | --- | --- | --- |
+| [34673797459](https://github.com/getdomovoi/domovoi/actions/runs/34673797459/job/103499922442) | Prefix/command failure, 127 | 446 | 223.064 s | Unchanged, 2026-09-12T04:47:25Z |
+| [34676238405](https://github.com/getdomovoi/domovoi/actions/runs/34676238405/job/103506492631) | Guest SIGKILL forwarded as 9 | 503 | 219.595 s | Unchanged, 2026-09-12T05:44:29Z |
+
+Measured conclusion: RestartInterval PT1M and RestartCount 3 did not restart
+this direct `wsl.exe` action after either observed program exit on these WSL
+2.7.13.0 runners. This action has no demonstrated crash supervision. The result
+does not classify every Task Scheduler failure mode, exit code or Windows build.
+Increasing the observation budget does not supply the missing supervisor.
+
+### Crash-restart decision pending
+
+Fetzy is choosing between the following two contracts. Both keep Domovoi's own
+per-user Windows task, leave distro configuration untouched, and retain the
+logon trigger. Windows boot supervision stays unavailable. Starting the distro
+by other means does not trigger the task. The existing fixture starts the task
+manually, so neither option gains a real Windows-logon proof from that fixture.
+
+| Option | Behavior and cost | Acceptance changes | Removal proof |
+| --- | --- | --- | --- |
+| Domovoi-owned restart loop inside the action | Task launches an owned loop; the loop starts the daemon and owns crash classification, backoff, retry limit and exhaustion reporting. Those policy values remain to be specified. Clean exit and deliberate stop must not become crash retries. This adds a supervisor and its lifetime/identity state. | Keep automatic crash restart as an explicit requirement. Inject a failed launch and SIGKILL; observe the loop's attempt/result records and a new identified daemon without another task start. Verify backoff, retry exhaustion, clean exit and deliberate stop against the chosen policy. A stable task LastRunTime is expected while one loop owns several children, so it cannot prove child restart. | Disable the task trigger, then shut down the loop through a path that cancels retries/backoff and stops its owned child. Independently prove both loop and exact guest daemon dead before deletion or recovery. Inject removal during a live child and during backoff; neither may leave a later launch. Preserve unrelated tasks, distro configuration and guest profile data. |
+| Logon start only | Task launches the foreground daemon once at logon. A daemon crash or failed launch leaves it stopped until an explicit start or a later logon. No automatic recovery promise; the ineffective retry configuration and any supervision claim must be removed if this contract is selected. Smaller implementation, operator recovery required. | Replace the restart contract explicitly, including the native test title and the runner's exact required-name list in the same change. Prove launch, identified guest death, propagated result and no automatic relaunch over a stated observation window. Any later manual start is an explicit-start proof. Never turn the existing restart requirement green by skipping it. | Disable the task, stop and independently prove the exact guest daemon dead, then stop/observe/delete only the owned task. Exercise removal while the daemon is live, using an explicit start when needed after the crash observation. Task exit alone remains insufficient guest-stop evidence. |
+
+Loop placement is part of the first option's cost, not an implementation
+decision made here. A guest loop dies with its distro; a Windows loop needs an
+owned Windows runtime/launcher and must track the `wsl.exe` child and exact
+guest instance across that boundary. Neither placement makes the loop itself
+self-restarting. Loop death and distro loss need an explicit reported limit;
+the measured task policy cannot be assumed to recover them. Guest code,
+repositories and credentials stay in the guest.
+
+Existing ownership checks and `service/removal-recovery.ts` refusal rules remain
+required under either choice. The latter consumes manager-stop evidence; it
+does not prove a new loop or guest stopped. Unknown identity, failed shutdown or
+an expired deadline must prevent deletion/recovery, with both primary and cleanup
+failures retained. The runner's exact-name/no-skip report checks remain required
+under either acceptance contract. Implementation waits for fetzy's choice.
 
 ## Measured platform gaps
 
@@ -125,8 +182,9 @@ that reconciliation limit. Turn/worktree/transfer recovery belongs to S1.3.
 
 ## WSL options
 
-These are the assessed alternatives; the decision above selects A for logon
-and rejects boot supervision. The assessment distinguished **Windows boot**,
+These are the original assessed alternatives; the decision above selects A for
+logon and rejects boot supervision. Its crash-restart follow-up is pending above.
+The assessment distinguished **Windows boot**,
 **Windows user logon**, and **WSL
 distribution startup**. A process supervisor and an event that launches that
 supervisor are separate mechanisms; some requirements would need a combination.
@@ -139,7 +197,7 @@ is another reason to test instance lifetime separately from process restart.
 
 | Option | Restart after daemon crash | Windows boot | Windows user logon | Distribution startup | Removal obligation |
 | --- | --- | --- | --- | --- | --- |
-| A. Windows task runs `wsl.exe -d <distro> --exec domovoid` in the foreground | Possible with an explicit task restart policy and verified propagation of guest failure to the Windows action. Neither is currently proved. | Possible with a boot trigger and a suitable principal; not supplied by the current logon trigger. | A logon trigger can launch it using the distribution owner's Windows identity. | The task's explicit launch can start the selected distro. Starting it elsewhere does not itself trigger this task. | Disable triggers/restarts, stop and observe the Windows task, independently prove the exact guest daemon stopped, then remove only the matching registration/configuration. |
+| A. Windows task runs `wsl.exe -d <distro> --exec domovoid` in the foreground | Guest failure reaches Windows. Configured task retries did not restart outcomes 127 or 9 in the native runs above; owned loop versus logon start only is pending. | Unavailable under the selected per-user contract. | A logon trigger can launch it using the distribution owner's Windows identity; a real logon remains unproved. | The task's explicit launch can start the selected distro. Starting it elsewhere does not itself trigger this task. | Disable triggers/restarts, stop and observe the Windows task, independently prove the exact guest daemon stopped, then remove only the matching registration/configuration. An owned loop adds the shutdown obligations above. |
 | B. Enable `systemd=true`, use the existing user unit | Existing `Restart=on-failure` policy is reusable while the guest and user manager remain alive. WSL execution of that unit still needs a native proof. | No Windows launch trigger supplied. | Logging on to Windows alone supplies no trigger. | Enabled unit starts when its user manager starts; user-session readiness or lingering must be established. | Use the Linux stop/disable/removal path in the guest. Preserve distro-wide systemd and any pre-existing lingering settings. |
 | C. A `wsl.conf` boot command launches Domovoi | A boot command alone supplies no retry policy. A restart loop would introduce another supervisor to implement and remove. | No Windows launch trigger supplied. | No Windows logon trigger supplied. | Hook runs when the distro starts, under root. An owned launcher must select the intended Linux user/profile and allow distro startup to complete. | Remove only the owned hook, stop the exact process or helper, and verify it cannot relaunch. Preserve other `wsl.conf` settings and any existing command. |
 | D. No managed WSL lifecycle; document foreground operation | No automatic restart supplied by Domovoi. | No trigger. | No trigger. | No trigger; operator explicitly launches the daemon. | Stop the owned foreground invocation. An unknown custom supervisor requires operator confirmation; absence of a task/file is not stop proof. |
@@ -161,7 +219,8 @@ Supporting pre-login boot therefore changes the privilege/identity contract.
 Task Scheduler exposes [restart count](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-restartcount)
 and [restart interval](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-restartinterval);
 the documented minimum interval is one minute, unlike the existing systemd unit's
-five seconds. Specify retry exhaustion, clean exit and deliberate stop behavior.
+five seconds. The configured values did not restart the two measured action exits
+above. These settings cannot stand in for a proved crash-restart contract.
 Also specify and read back runtime, battery and multiple-instance settings.
 The documented [execution limit](https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit)
 defaults to 72 hours and allows an explicit unlimited value. This is a documented
@@ -240,5 +299,8 @@ preserved. These are required follow-up proofs, not tests already run.
 The selected contract is Windows user logon, with a Domovoi-owned task and no
 distro-wide init changes. Supported versions, retry limits, idle lifetime and
 the exact Windows/Linux identity binding still need implementation evidence.
-The task fixture has exercised registration and an unsuccessful action launch
-in a disposable guest. It has not established managed WSL supervision.
+The task fixture has exercised registration, a live production daemon and guest
+death forwarded to Windows as 9 in a disposable guest. Its automatic restart
+assertion failed; complete removal acceptance remains due. The pending choice
+above determines whether to build crash supervision or explicitly accept logon
+start only.
