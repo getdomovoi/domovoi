@@ -11,24 +11,27 @@ import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type ServiceCommand } from "./install.js"
 import { removeWindowsTask, windowsPowerShellPath } from "./windows-task.js"
 import { wslTaskPlan } from "./wsl-task.js"
+import { wslTaskFixtureBudgets } from "./wsl-task-test-support.js"
 
-const lifecycleBudget = 240_000
-const cleanupBudget = 30_000
 const node = "/opt/domovoi-ci-node/bin/node"
 const daemon = "/opt/domovoi-ci-daemon/dist/index.js"
 const distribution = process.env["DOMOVOI_WSL_REQUIRED_DISTRIBUTION"]
 const required = process.env["DOMOVOI_WSL_NATIVE_SERVICE"] === "1"
+const budget = wslTaskFixtureBudgets(required ? process.env["DOMOVOI_WSL_NATIVE_SERVICE_BUDGET_MS"] : undefined)
+const lifecycleBudget = budget.lifecycle
+const cleanupBudget = budget.cleanup
 const literal = (value: string) => "'" + value.replaceAll("'", "''") + "'"
 
 // Run the production entry in the same foreground process. The preload adds
 // only a private failure/stop input, so a test never signals a saved PID that
 // might have been reused. It consumes each request before signalling itself.
 const observer = [
-  "import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';",
+  "import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';",
   "const home = process.env.HOME;",
   "const request = home + '/request.json';",
   "const identity = { pid: process.pid, start: readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ')[19] };",
-  "writeFileSync(home + '/process.json', JSON.stringify(identity), { mode: 0o600 });",
+  "writeFileSync(home + '/process.partial', JSON.stringify(identity), { mode: 0o600 });",
+  "renameSync(home + '/process.partial', home + '/process.json');",
   "setInterval(() => {",
   "  let value;",
   "  try { value = JSON.parse(readFileSync(request, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return; throw e; }",
@@ -171,9 +174,10 @@ it.runIf(process.platform === "win32" && required)(
         "child.unref();",
       ].join("\n"), [home, observer, serializeServiceConfiguration(configuration), [
         "const fs = require('node:fs'), home = process.argv[1];",
-        "fs.writeFileSync(home + '/companion.json', JSON.stringify({ pid: process.pid, start: fs.readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ')[19] }), { mode: 0o600 });",
+        "fs.writeFileSync(home + '/companion.partial', JSON.stringify({ pid: process.pid, start: fs.readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ')[19] }), { mode: 0o600 });",
+        "fs.renameSync(home + '/companion.partial', home + '/companion.json');",
         "setInterval(() => { if (fs.existsSync(home + '/companion.stop')) process.exit(0); }, 100);",
-        "setTimeout(() => process.exit(0), 300000);",
+        "setTimeout(() => process.exit(0), " + budget.phase + ");",
       ].join("\n")])
       companion = await observe(() => processIdentity(deadline, "/companion.json"))
       expect(await alive(companion)).toBe(true)
@@ -284,5 +288,5 @@ it.runIf(process.platform === "win32" && required)(
     }
     if (failure !== undefined) throw failure
   },
-  lifecycleBudget + cleanupBudget + 1_000,
+  budget.test,
 )
