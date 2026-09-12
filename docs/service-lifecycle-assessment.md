@@ -1,10 +1,11 @@
 # S1.1 service lifecycle assessment
 
 Status: fetzy selected option A for Windows user logon on 2026-09-11, with
-option D's explicit lack of Windows boot supervision. Implementation pending.
+option D's explicit lack of Windows boot supervision. The task compiler and
+native fixture exist; installer integration and supervision acceptance remain open.
 Measured on 2026-09-11 after fetching `origin/main` at
 `98c412c540bad49b9cbf2459a47bc3309cda62b8`. S1.1 remains open; this document
-does not claim implementation.
+does not claim completed lifecycle acceptance.
 
 The accepted scope is Unix acceptance, two status-reporting fixes, and Windows
 and WSL lifecycle decisions. Existing Unix adapters already install, supervise
@@ -37,13 +38,44 @@ boot configuration to supply one. Task Scheduler also offers passwordless
 with network/encrypted-file restrictions; it has no acceptance proof for this
 WSL/keychain/repository contract and remains outside support.
 
-The first acceptance test must show that failure of the guest daemon reaches
-the Windows action as failure. If `wsl.exe` exits zero when the guest daemon
-dies, the task's restart policy cannot fire and A has not met acceptance.
-The test belongs in `apps/daemon/src/service/**`; its implementation must wait
-until the WSL workflow path-filter change has merged. Removal must independently
+Acceptance must separately observe guest death, the Windows action's result,
+and an automatic restart. A nonzero result alone does not establish supervision.
+The fixture sends SIGKILL to its identified guest daemon, expects action result
+137, then requires a new identified guest without another manual task start.
+This path remains unproved. The service path filter landed in [#368](https://github.com/getdomovoi/domovoi/pull/368),
+and the fixture now runs in its own WSL CI phase. Removal must independently
 prove the exact guest daemon stopped, as described below. Native Windows
 supervision remains a separate decision.
+
+### Native observation, 2026-09-12 UTC
+
+[WSL run 34673797459](https://github.com/getdomovoi/domovoi/actions/runs/34673797459/job/103499922442)
+at `55566371dd584d9b6351f67557b9837b12828747` made 447 completed task queries.
+The first returned State 4 and LastTaskResult 267009; the following 446 returned
+State 3 and result 127. Every query retained LastRunTime
+`2026-09-12T04:47:25.0000000Z`, through 224.349 seconds after the start request.
+The fresh failure snapshot still showed that timestamp and all guest sidecars
+missing. Task history was disabled, so it supplied no event evidence.
+
+The configured one-minute, three-retry policy did not retry this 127 outcome
+within that observation window on this runner. This does not establish behavior
+for every nonzero exit, or for SIGKILL forwarded as 137. Neither automatic
+restart nor the complete removal proof has passed acceptance yet.
+
+The ordinary-argv control ran as root with the expected Node executable and
+accessible guest files. The registered action quoted every WSL prefix token.
+WSL 2.7.13 [reads those tokens raw](https://github.com/microsoft/WSL/blob/2.7.13/src/windows/common/helpers.cpp#L526)
+and [parses the exec tail with CommandLineToArgvW only after recognizing `--exec`](https://github.com/microsoft/WSL/blob/2.7.13/src/windows/common/WslClient.cpp#L1419).
+The compiler therefore leaves the prefix bare, refuses whitespace or double
+quotes in distribution/user tokens, and quotes only the exec tail. Names that
+cannot be represented by this prefix parser are explicitly unsupported here.
+
+The quoting controls did not execute in that run: their generated Node script
+contained newlines rejected by the task validator. The shared probe builder now
+uses a single-line script and is exercised by portable validation and execution
+tests. Native controls retain the old quoted prefix as a negative observation;
+their host context does not establish Task Scheduler context. Per-poll run times
+remain in place to observe the next failure and retry result.
 
 ## Measured platform gaps
 
@@ -175,8 +207,9 @@ The disposable distro and required-report checker are reusable test foundations.
 list explicitly. A separate systemd-enabled variant would be required for B,
 while retaining the current systemd-disabled transport proof. If a lifecycle
 change should run WSL CI, the path filter in `.github/workflows/wsl.yml` must cover
-its files; it currently omits `apps/daemon/src/service/**`. Workflow/script edits
-belong to Claude Code.
+its files. At the original baseline it omitted `apps/daemon/src/service/**`;
+[#368](https://github.com/getdomovoi/domovoi/pull/368) closed that gap. The service
+fixture runs separately from the transport proofs, with its own report and budget.
 
 Any selected managed option needs failure injection at every new shell-out:
 enumerate documented answer codes, refuse all other codes, preserve primary and
@@ -188,4 +221,5 @@ preserved. These are required follow-up proofs, not tests already run.
 The selected contract is Windows user logon, with a Domovoi-owned task and no
 distro-wide init changes. Supported versions, retry limits, idle lifetime and
 the exact Windows/Linux identity binding still need implementation evidence.
-No managed WSL option has been installed or exercised by this assessment.
+The task fixture has exercised registration and an unsuccessful action launch
+in a disposable guest. It has not established managed WSL supervision.
