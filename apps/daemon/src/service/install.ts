@@ -65,6 +65,7 @@ export type ServiceStatus = {
   installed: boolean | null
   running: boolean
   detail: string
+  supervisionFailure?: "exhausted" | "observation-failure" | "configuration-missing"
 }
 
 // A quote or a control character would let a value break out of the file or
@@ -571,7 +572,7 @@ export async function runServiceCommand(
     const status = await serviceStatus(target, dependencies)
     if (status.installed === null) {
       dependencies.stdout(`Windows task registration unverified: ${status.detail}\n`)
-      return 0
+      return status.supervisionFailure === undefined ? 0 : 1
     }
     const installed = status.installed ? "installed" : "not installed"
     const running = status.running ? "running" : "not running"

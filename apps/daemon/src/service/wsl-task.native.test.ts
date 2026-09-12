@@ -120,7 +120,7 @@ it.runIf(process.platform === "win32" && required)(
       command: wsl, args: ["--distribution", distribution!, "--user", "root", "--exec",
         node, daemon, "--service-supervisor-stop", configPath],
     }, active)))
-    const serviceStatus = () => checked({ command: wsl, args: ["--distribution", distribution!, "--user", "root",
+    const serviceStatus = () => capture({ command: wsl, args: ["--distribution", distribution!, "--user", "root",
       "--exec", "/usr/bin/env", ...guestEnvironment, node, daemon, "service", "status"] })
     const snapshot = async (active: OperationDeadline) => {
       diagnosticsCollected = true
@@ -412,7 +412,9 @@ it.runIf(process.platform === "win32" && required)(
       expect(await taskRunTime()).toBe(runTime)
       await waitForTaskExit(1)
       await proveStopped(exhausted)
-      expect(await serviceStatus()).toContain("stopped; supervision exhausted after 4 crashes; last exit signal SIGKILL at " + exhausted.attempts[3]!.exit!.at)
+      const exhaustedStatus = await serviceStatus()
+      expect(exhaustedStatus.code).toBe(1)
+      expect(exhaustedStatus.stdout).toContain("stopped; supervision exhausted after 4 crashes; last exit signal SIGKILL at " + exhausted.attempts[3]!.exit!.at)
 
       mark("explicit new lifetime and clean exit")
       const clean = await ready(previous, true)

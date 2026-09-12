@@ -187,6 +187,11 @@ completed waits from cancellation.
 reports the Windows registration as unverified, because a guest file cannot
 prove the host task exists. A missing record after the supervisor lease was
 created, corrupt evidence or a mismatched installed configuration is a refusal.
+Exhaustion and observation failure return status 1; a clean stop, deliberate
+stop or active backoff returns 0. A removed `service.json` leaves private
+history readable, with observed liveness explicitly marked as unbound to an
+installed service and status 1. It neither deletes history nor falls back to
+systemd. Startup and shutdown still require a matching installed configuration.
 
 Removal first disables the matching Windows task. The guest-only
 `--service-supervisor-stop <service.json>` command publishes a request bound
@@ -210,21 +215,22 @@ registration ID; it does not erase the stop marker.
 The native fixture now checks failed launch, SIGKILL recovery, actual backoff
 times, four-crash exhaustion, clean exit and deliberate removal during both a
 live child and backoff. Child replacements must share the same loop identity
-and task LastRunTime. Exhaustion must be readable through service status and
-reach the Windows action as exit 1.
+and task LastRunTime. Exhaustion must be readable through service status;
+both that command and the Windows action must exit 1.
 
 [Native run 34680715268](https://github.com/getdomovoi/domovoi/actions/runs/34680715268/job/103518731832)
 at `4918732e57beb457bf861e12ea0a1fc5b0ba8f0b` passed the required service test
 in 67,123 ms; the service phase took 68.5 seconds. Its exhausted record has
 one ENOENT launch failure, then three SIGKILL exits in the same loop. Measured
 completed waits were 1,004, 5,002 and 15,001 ms. The test also passed the status
-and Windows exit-1 assertions, clean exit, live-child removal and backoff
+diagnostic and Windows exit-1 assertions, clean exit, live-child removal and backoff
 removal, with the unrelated task, process, profile and distro preserved.
 
-That run predates the final shutdown proof acquiring the startup lease. The
+That run predates the status command returning 1 on exhaustion and the final
+shutdown proof acquiring the startup lease. The
 follow-up regression holds a real SQLite lease while the previous record says
 dead, then publishes a successor; the old implementation incorrectly returned
-the previous record without waiting. Native acceptance of that repair is still
+the previous record without waiting. Native acceptance of those repairs is still
 pending. The fixture's task installation does not wire WSL selection into
 `service install` or establish actual logon acceptance.
 

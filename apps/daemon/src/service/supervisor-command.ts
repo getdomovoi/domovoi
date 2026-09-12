@@ -41,13 +41,17 @@ function assertObservableLaunches(record: SupervisorRecord, bootId = guestBootId
   }
 }
 
+function assertRecordConfiguration(record: SupervisorRecord, configuration: ServiceConfiguration): void {
+  if (record.registrationId !== configuration.registrationId
+    || record.configurationDigest !== supervisorConfigurationDigest(configuration)) {
+    throw new Error("Supervisor record does not match the installed service configuration")
+  }
+}
+
 function boundRecord(path: string): SupervisorRecord | undefined {
   const configuration = configurationAt(path)
   const record = readSupervisorRecord(configuration.homeDirectory)
-  if (record && (record.registrationId !== configuration.registrationId
-    || record.configurationDigest !== supervisorConfigurationDigest(configuration))) {
-    throw new Error("Supervisor record does not match the installed service configuration")
-  }
+  if (record) assertRecordConfiguration(record, configuration)
   return record
 }
 
@@ -98,22 +102,34 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
     }
     throw new Error("Supervisor record is missing; supervision cannot be verified")
   }
-  const record = boundRecord(join(home, ".domovoi/service.json"))
+  // Removal can leave private history after service.json is gone. Preserve
+  // that evidence without declaring supervision absent or querying systemd.
+  // Only a missing configuration is tolerated; malformed or mismatched data
+  // still refuses. Startup and shutdown continue to require the binding.
+  let configuration: ServiceConfiguration | undefined
+  try { configuration = configurationAt(join(home, ".domovoi/service.json")) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  const record = readSupervisorRecord(home)
   if (!record) throw new Error("Supervisor record disappeared during status")
+  if (configuration) assertRecordConfiguration(record, configuration)
   const loopAlive = alive(record.loop)
   if (!loopAlive) assertObservableLaunches(record, bootId)
   const activeChild = record.attempts.at(-1)
   const running = record.state === "running" && loopAlive && activeChild?.child !== null
     && activeChild?.child !== undefined && activeChild.exit === null && alive(activeChild.child)
-  const detail = record.state === "exhausted" ? `stopped; supervision exhausted after ${record.crashes} crashes; ${lastExit(record)}`
+  const observed = record.state === "exhausted" ? `stopped; supervision exhausted after ${record.crashes} crashes; ${lastExit(record)}`
     : record.state === "failed" ? `stopped; supervision refused after an observation failure; ${lastExit(record)}`
       : record.state === "stopped" ? `stopped (${record.reason?.kind}); ${lastExit(record)}`
         : !loopAlive ? `stopped; supervisor is not alive; ${lastExit(record)}`
           : record.state === "backoff" ? `child stopped; supervisor backing off ${activeChild?.backoffMs} ms; ${lastExit(record)}`
             : running ? `guest daemon running; attempt ${record.attemptCount}; ${record.crashes} crashes`
               : `child stopped; supervisor ${record.state}; ${lastExit(record)}`
+  const supervisionFailure = configuration === undefined ? "configuration-missing"
+    : record.state === "exhausted" ? "exhausted" : record.state === "failed" ? "observation-failure" : undefined
+  const detail = configuration ? observed : `service configuration missing; guest evidence is not bound to an installed service; ${observed}`
   // A guest record cannot establish whether the Windows registration exists.
-  return { installed: null, running, detail }
+  return { installed: null, running, detail, ...(supervisionFailure === undefined ? {} : { supervisionFailure }) }
 }
 
 export async function stopGuestSupervisor(path: string, deadline: OperationDeadline, effects: {

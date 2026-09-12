@@ -36,21 +36,105 @@ function fixture() {
   return { home, path, record }
 }
 
-it("reports exhaustion count, last exit and time from the record", () => {
-  const f = fixture()
-  f.record.state = "exhausted"
-  f.record.attemptCount = 4; f.record.crashes = 4
-  f.record.reason = { kind: "restart-limit", at: "2026-09-12T12:01:00.000Z" }
-  f.record.attempts = [1000, 5000, 15000, 0].map((backoffMs, index) => ({
-    ...f.record.attempts[0]!, number: index + 1, backoffMs: backoffMs as 0 | 1000 | 5000 | 15000,
+function exhaust(record: SupervisorRecord): void {
+  record.state = "exhausted"
+  record.attemptCount = 4; record.crashes = 4
+  record.reason = { kind: "restart-limit", at: "2026-09-12T12:01:00.000Z" }
+  record.attempts = [1000, 5000, 15000, 0].map((backoffMs, index) => ({
+    ...record.attempts[0]!, number: index + 1, backoffMs: backoffMs as 0 | 1000 | 5000 | 15000,
     backoffEndedAt: backoffMs ? "2026-09-12T12:00:30.000Z" : null,
     backoffOutcome: backoffMs ? "completed" : null,
   }))
+}
+
+async function commandStatus(home: string, alive = () => false) {
+  const output: string[] = []; const errors: string[] = []
+  const code = await runServiceCommand(["service", "status"], {
+    ...nodeServiceEffects({ userHomeDirectory: home }),
+    supervisorStatus: async () => readGuestSupervisorStatus(home, alive),
+    capture: async () => { throw new Error("unrelated systemd query") },
+    platform: "linux", execPath: "/daemon.js", home,
+    stdout: (text) => output.push(text), stderr: (text) => errors.push(text),
+  })
+  return { code, output: output.join(""), errors }
+}
+
+it("reports exhaustion count, last exit and time from the record", () => {
+  const f = fixture()
+  exhaust(f.record)
   writeSupervisorRecord(f.home, f.record)
   const status = readGuestSupervisorStatus(f.home, () => false)
-  expect(status).toMatchObject({ installed: null, running: false })
+  expect(status).toMatchObject({ installed: null, running: false, supervisionFailure: "exhausted" })
   expect(status?.detail).toContain("supervision exhausted after 4 crashes")
   expect(status?.detail).toContain("last exit code 127 at 2026-09-12T12:00:01.000Z")
+})
+
+it.each(["exhausted", "failed", "clean", "deliberate", "backoff", "running"] as const)(
+  "service status exit code distinguishes %s supervision", async (kind) => {
+    const f = fixture()
+    if (kind === "exhausted") exhaust(f.record)
+    else if (kind === "failed") {
+      f.record.state = "failed"
+      f.record.reason = { kind: "observation-failure", at: f.record.updatedAt }
+    } else if (kind === "clean" || kind === "deliberate") {
+      f.record.state = "stopped"
+      f.record.reason = { kind: kind === "clean" ? "clean-exit" : "deliberate-stop", at: f.record.updatedAt }
+      if (kind === "clean") {
+        f.record.crashes = 0; f.record.attempts[0]!.backoffMs = 0
+        Object.assign(f.record.attempts[0]!.exit!, { kind: "clean", code: 0 })
+      }
+    } else if (kind === "running") {
+      f.record.state = "running"; f.record.crashes = 0
+      f.record.attempts[0]!.exit = null; f.record.attempts[0]!.backoffMs = 0
+    }
+    writeSupervisorRecord(f.home, f.record)
+    const result = await commandStatus(f.home, () => true)
+    expect(result.errors).toEqual([])
+    expect(result.output).toContain("Windows task registration unverified:")
+    expect(result.code).toBe(kind === "exhausted" || kind === "failed" ? 1 : 0)
+  },
+)
+
+it.each([true, false])("reports unbound guest evidence when configuration is missing, loop alive %s", async (alive) => {
+  const f = fixture()
+  f.record.state = "running"; f.record.crashes = 0
+  f.record.attempts[0]!.exit = null; f.record.attempts[0]!.backoffMs = 0
+  writeSupervisorRecord(f.home, f.record)
+  rmSync(f.path)
+  expect(readGuestSupervisorStatus(f.home, () => alive)).toMatchObject({
+    installed: null, running: alive, supervisionFailure: "configuration-missing",
+    detail: expect.stringContaining("service configuration missing; guest evidence is not bound to an installed service;"),
+  })
+  const result = await commandStatus(f.home, () => alive)
+  expect(result.code).toBe(1)
+  expect(result.errors).toEqual([])
+  expect(result.output).toContain(alive ? "guest daemon running" : "supervisor is not alive")
+  expect(readSupervisorRecord(f.home)).toEqual(f.record)
+})
+
+it("keeps stopped history readable after the service configuration is removed", async () => {
+  const f = fixture()
+  f.record.state = "stopped"
+  f.record.reason = { kind: "deliberate-stop", at: f.record.updatedAt }
+  writeSupervisorRecord(f.home, f.record)
+  rmSync(f.path)
+  const result = await commandStatus(f.home)
+  expect(result.code).toBe(1)
+  expect(result.errors).toEqual([])
+  expect(result.output).toContain("service configuration missing")
+  expect(result.output).toContain("stopped (deliberate-stop)")
+  const deadline = OperationDeadline.start(1000)
+  try {
+    await expect(stopGuestSupervisor(f.path, deadline, { alive: () => false, wait: async () => {} }))
+      .rejects.toMatchObject({ code: "ENOENT" })
+  } finally { deadline.clear() }
+})
+
+it("refuses malformed configuration rather than treating it as missing", () => {
+  const f = fixture()
+  writeSupervisorRecord(f.home, f.record)
+  writeFileSync(f.path, "not JSON")
+  expect(() => readGuestSupervisorStatus(f.home, () => false)).toThrow()
 })
 
 it("does not turn a stale loop record into running supervision", () => {
