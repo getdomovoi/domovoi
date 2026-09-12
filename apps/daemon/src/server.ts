@@ -39,6 +39,7 @@ import {
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
   protocolVersion,
+  protocolVersionSchema,
   sessionTransferContractVersion,
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
@@ -1025,8 +1026,8 @@ export class DomovoiDaemon {
     this.#tailnetHost = options.tailnetHost
     this.#wsl = options.wsl
     this.#advertisedProtocolVersion = options.advertisedProtocolVersion ?? protocolVersion
-    if (!/^\d+\.\d+\.\d+$/.test(this.#advertisedProtocolVersion)) {
-      throw new RangeError("Advertised protocol version must be a three-part semver")
+    if (!protocolVersionSchema.safeParse(this.#advertisedProtocolVersion).success) {
+      throw new RangeError("Advertised protocol version must be a bounded canonical major.minor.patch")
     }
     this.#machineCredentials = options.machineCredentials
     this.#clientRoute = async (params, signal) => {

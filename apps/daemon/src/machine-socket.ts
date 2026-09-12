@@ -12,6 +12,7 @@ import {
   protocolCompatibility,
   protocolMismatchSchema,
   protocolVersion,
+  protocolVersionSchema,
   protocolVersionMismatchErrorCode,
   rpcResponseSchema,
   systemHelloResultSchema,
@@ -41,8 +42,8 @@ export class MachineIdentityMismatchError extends Error {
 export class MachineProtocolMismatchError extends Error {
   readonly remoteVersion: string | undefined
   constructor(remoteVersion?: string) {
-    const safeVersion = remoteVersion !== undefined && remoteVersion.length <= 64 && /^\d+\.\d+\.\d+$/.test(remoteVersion)
-      ? remoteVersion : undefined
+    const parsedVersion = protocolVersionSchema.safeParse(remoteVersion)
+    const safeVersion = parsedVersion.success ? parsedVersion.data : undefined
     super(safeVersion === undefined ? "That machine speaks an incompatible protocol"
       : `That machine speaks protocol ${safeVersion}, this daemon speaks ${protocolVersion}`)
     this.name = "MachineProtocolMismatchError"
@@ -208,18 +209,15 @@ function openMachineChannel(input: SocketInput): Promise<MachineChannel> {
 }
 
 function handshakeIdentity(result: unknown): string {
-  const version = result && typeof result === "object" && "protocolVersion" in result ? result.protocolVersion : undefined
+  const version = protocolVersionSchema.safeParse(
+    result && typeof result === "object" && "protocolVersion" in result ? result.protocolVersion : undefined,
+  )
   // An untrusted error must not turn arbitrary peer text into a logged version.
-  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version) || version.length > 64) {
-    throw new MachineDescriptorError()
+  if (!version.success) throw new MachineDescriptorError()
+  if (protocolCompatibility(protocolVersion, version.data) !== "compatible") {
+    throw new MachineProtocolMismatchError(version.data)
   }
-  if (protocolCompatibility(protocolVersion, version) !== "compatible") {
-    throw new MachineProtocolMismatchError(version)
-  }
-  // The durable snapshot schema pins our local version. Compatible peers can
-  // differ in patch version; validate their full shape without changing any
-  // published remote fact. Only the checked identity leaves this function.
-  const snapshot = systemHelloResultSchema.safeParse({ ...result as object, protocolVersion })
+  const snapshot = systemHelloResultSchema.safeParse(result)
   if (snapshot.success) return machineIdSchema.parse(snapshot.data.machine.id)
   throw new MachineDescriptorError()
 }
