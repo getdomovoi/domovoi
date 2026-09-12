@@ -191,16 +191,22 @@ it.runIf(process.platform === "win32" && required)(
       expect(await checked(bystander.register)).toBe("domovoi-task:created")
       expect(await checked(bystander.disable)).toBe("domovoi-task:1")
       const settings = JSON.parse(await inspect([
+        "function Resolve-FixtureSid([string]$userId) {",
+        "try { [System.Security.Principal.SecurityIdentifier]::new($userId).Value }",
+        "catch { ([System.Security.Principal.NTAccount]::new($userId).Translate([System.Security.Principal.SecurityIdentifier])).Value }",
+        "}",
         "$d = $task.Definition",
         "[ordered]@{ logonType = [int]$d.Principal.LogonType; runLevel = [int]$d.Principal.RunLevel;",
-        "triggers = @($d.Triggers | ForEach-Object { [int]$_.Type }); user = $d.Principal.UserId;",
-        "triggerUser = $d.Triggers.Item(1).UserId; interval = $d.Settings.RestartInterval;",
+        "triggers = @($d.Triggers | ForEach-Object { [int]$_.Type }); userSid = (Resolve-FixtureSid $d.Principal.UserId);",
+        "triggerUserSid = (Resolve-FixtureSid $d.Triggers.Item(1).UserId); currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;",
+        "interval = $d.Settings.RestartInterval;",
         "retries = $d.Settings.RestartCount; limit = $d.Settings.ExecutionTimeLimit;",
         "instances = [int]$d.Settings.MultipleInstances; path = $d.Actions.Item(1).Path } | ConvertTo-Json -Compress",
       ].join("\n")))
       expect(settings).toMatchObject({ logonType: 3, runLevel: 0, triggers: [9], interval: "PT1M",
         retries: 3, limit: "PT0S", instances: 2, path: wsl })
-      expect(settings.triggerUser).toBe(settings.user)
+      expect(settings.userSid).toBe(settings.currentUserSid)
+      expect(settings.triggerUserSid).toBe(settings.currentUserSid)
       mark("first guest start")
       expect(await checked(plan.start)).toMatch(/^domovoi-task:[234]$/)
       const first = await ready()

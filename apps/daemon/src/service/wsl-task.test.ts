@@ -59,13 +59,37 @@ describe("Windows supervision of a WSL daemon", () => {
       expect(body).toContain("domovoi-wsl:08a1f2da-12e3-4b2c-9e4f-0123456789ab")
       expect(body).toContain("$task.Definition.Actions.Count -ne 1")
       expect(body).toContain("$action.Arguments -cne")
-      expect(body).toContain("$task.Definition.Principal.UserId -cne $ownerSid")
+      expect(body).toContain("$taskUserSid.Equals($currentUserSid)")
       expect(body).toContain("HResult -eq -2147024894")
       expect(body).toContain("throw")
     }
     expect(script(plan.disable.args)).toContain("$task.Enabled = $false")
     expect(script(plan.disable.args)).not.toContain("$task.Stop(0)")
     expect(script(plan.removal.remove.args)).toContain("if ([int]$task.State -ne 1)")
+  })
+
+  it.each([
+    { term: "Source", condition: "$task.Definition.RegistrationInfo.Source -cne 'domovoi-wsl:08a1f2da-12e3-4b2c-9e4f-0123456789ab'" },
+    { term: "UserId", condition: "-not $taskUserSid.Equals($currentUserSid)" },
+    { term: "LogonType", condition: "[int]$task.Definition.Principal.LogonType -ne 3" },
+    { term: "RunLevel", condition: "[int]$task.Definition.Principal.RunLevel -ne 0" },
+    { term: "action count", condition: "$task.Definition.Actions.Count -ne 1" },
+    { term: "action type", condition: "[int]$action.Type -ne 0" },
+    { term: "action path", condition: "$action.Path -cne 'C:\\Windows\\System32\\wsl.exe'" },
+    { term: "action args", condition: "$action.Arguments -cne" },
+  ])("names $term in its own refusal before any task mutation", ({ term, condition }) => {
+    const plan = wslTaskPlan(input)
+    for (const command of [plan.start, plan.disable, plan.inspect, plan.removal.stop, plan.removal.inspect, plan.removal.remove]) {
+      const body = script(command.args)
+      const lines = body.split("\n")
+      const guard = lines.find((line) => line.startsWith("if (" + condition))
+      expect(guard).toBeDefined()
+      expect(guard).toContain("throw 'WSL task ownership mismatch: " + term + "'")
+      expect(guard).not.toContain(" -or ")
+      for (const mutation of ["$task.Run(", "$task.Enabled =", "$task.Stop(", "$folder.DeleteTask("]) {
+        if (body.includes(mutation)) expect(body.indexOf(guard!)).toBeLessThan(body.indexOf(mutation))
+      }
+    }
   })
 
   it("quotes literal Windows argv without shell expansion or trailing-backslash loss", () => {

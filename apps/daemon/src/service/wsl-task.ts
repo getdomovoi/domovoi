@@ -61,7 +61,8 @@ $scheduler = New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
 $folder = $scheduler.GetFolder('\\')
 $name = ${literal(target.name)}
-$ownerSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$ownerSid = $currentUserSid.Value
 `
   const command = (body: string): ServiceCommand => ({
     command: target.powershell,
@@ -78,14 +79,22 @@ try { $task = $folder.GetTask($name) } catch {
   }
   throw
 }
-if ($task.Definition.RegistrationInfo.Source -cne ${source} -or
-    $task.Definition.Principal.UserId -cne $ownerSid -or
-    [int]$task.Definition.Principal.LogonType -ne 3 -or
-    [int]$task.Definition.Principal.RunLevel -ne 0 -or
-    $task.Definition.Actions.Count -ne 1) { throw 'WSL task ownership does not match this registration' }
+if ($task.Definition.RegistrationInfo.Source -cne ${source}) { throw 'WSL task ownership mismatch: Source' }
+# Task Scheduler may return an account name instead of the registered SID.
+try {
+  try { $taskUserSid = [System.Security.Principal.SecurityIdentifier]::new([string]$task.Definition.Principal.UserId) }
+  catch { $taskUserSid = [System.Security.Principal.NTAccount]::new([string]$task.Definition.Principal.UserId).Translate([System.Security.Principal.SecurityIdentifier]) }
+} catch {
+  throw [System.InvalidOperationException]::new('WSL task UserId could not be resolved to a SID', $_.Exception)
+}
+if (-not $taskUserSid.Equals($currentUserSid)) { throw 'WSL task ownership mismatch: UserId' }
+if ([int]$task.Definition.Principal.LogonType -ne 3) { throw 'WSL task ownership mismatch: LogonType' }
+if ([int]$task.Definition.Principal.RunLevel -ne 0) { throw 'WSL task ownership mismatch: RunLevel' }
+if ($task.Definition.Actions.Count -ne 1) { throw 'WSL task ownership mismatch: action count' }
 $action = $task.Definition.Actions.Item(1)
-if ([int]$action.Type -ne 0 -or $action.Path -cne ${actionPath} -or
-    $action.Arguments -cne ${actionArgs}) { throw 'WSL task action changed; refusing to manage it' }
+if ([int]$action.Type -ne 0) { throw 'WSL task ownership mismatch: action type' }
+if ($action.Path -cne ${actionPath}) { throw 'WSL task ownership mismatch: action path' }
+if ($action.Arguments -cne ${actionArgs}) { throw 'WSL task ownership mismatch: action args' }
 `
   const inspect = command(owned + state)
   const plan: WslTaskPlan = {
