@@ -29,6 +29,7 @@ import {
   SqliteTransferConflicts,
 } from "./transfer-conflicts.js"
 import { redactWorkspaceCopies } from "./workspace-redaction.js"
+import { SqliteSessionCreationIntents } from "./session-creation-intents.js"
 
 type StoredWorkspace = {
   snapshot: string
@@ -82,6 +83,7 @@ export interface WorkspaceStore {
   readonly transferOwnership?: TransferOwnership
   readonly transferConflicts?: SqliteTransferConflicts
   readonly skillReviews?: SkillReviews
+  readonly sessionCreations?: SqliteSessionCreationIntents
   readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
   loadProject?(projectId: string): ProjectWorkspaceState | undefined
@@ -527,6 +529,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   readonly transferOwnership: SqliteTransferOwnership
   readonly transferConflicts: SqliteTransferConflicts
   readonly skillReviews: SqliteSkillReviews
+  readonly sessionCreations: SqliteSessionCreationIntents
   readonly recovery: WorkspaceStoreRecovery | undefined
   #database: DatabaseSync
   #writer: WorkspaceWriter | undefined
@@ -564,6 +567,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.transferOwnership = new SqliteTransferOwnership(this.#database)
     this.transferConflicts = new SqliteTransferConflicts(this.#database)
     this.skillReviews = new SqliteSkillReviews(this.#database)
+    this.sessionCreations = new SqliteSessionCreationIntents(this.#database)
 
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
