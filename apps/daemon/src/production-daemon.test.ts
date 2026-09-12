@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -185,6 +185,60 @@ describe("createProductionDaemon", () => {
       port: 49_200,
       url: "ws://127.0.0.1:49200/rpc",
     })
+  })
+
+  it("persists diagnostic errors and stops old callbacks at the profile ownership boundary", async () => {
+    const homeDirectory = await temporaryHome()
+    const errorSink = vi.fn()
+    let captured: DaemonServerOptions | undefined
+    const create = () => createProductionDaemonWithDependencies({ environment: {}, homeDirectory, errorSink }, {
+      ...productionDaemonDependencies,
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+      createDaemon: (options) => { captured = options; return fakeRuntime(options) },
+    })
+    const first = await create()
+    running.push(first)
+    const firstSink = captured!.errorSink!
+    const entry = { context: "fixture", detail: "token=fixture-secret" }
+    firstSink(entry)
+    expect(errorSink).toHaveBeenCalledWith(entry)
+    const path = join(homeDirectory, ".domovoi", "logs", "daemon.jsonl")
+    const initial = await readFile(path, "utf8")
+    expect(JSON.parse(initial)).toMatchObject({ context: "fixture", detail: "token=[REDACTED]" })
+    await first.stop()
+    const second = await create()
+    running.push(second)
+    captured!.errorSink!({ context: "new-owner", detail: "retained" })
+    firstSink({ context: "old-owner", detail: "too late" })
+    const entries = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
+    expect(entries.map((value) => value.context)).toEqual(["fixture", "new-owner"])
+  })
+
+  it("reports unavailable file logging on stderr and preserves the caller's sink", async () => {
+    const homeDirectory = await temporaryHome()
+    const directory = join(homeDirectory, ".domovoi")
+    await mkdir(directory)
+    const blocked = join(directory, "logs")
+    await writeFile(blocked, "preserve", { mode: 0o600 })
+    const errorSink = vi.fn()
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      const handle = await createProductionDaemonWithDependencies({ environment: {}, homeDirectory, errorSink }, {
+        ...productionDaemonDependencies,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon: (options) => {
+          options.errorSink!({ context: "first", detail: "one" })
+          options.errorSink!({ context: "second", detail: "two" })
+          return fakeRuntime(options)
+        },
+      })
+      running.push(handle)
+      expect(errorSink.mock.calls).toEqual([[{ context: "first", detail: "one" }], [{ context: "second", detail: "two" }]])
+      expect(stderr).toHaveBeenCalledTimes(1)
+      expect(stderr).toHaveBeenCalledWith("Daemon diagnostic file unavailable:", expect.stringContaining("directory"))
+      expect(await readFile(blocked, "utf8")).toBe("preserve")
+      await expect(handle.start()).resolves.toHaveProperty("url")
+    } finally { stderr.mockRestore() }
   })
 
   it("refuses a plaintext non-loopback listener before constructing it", async () => {
