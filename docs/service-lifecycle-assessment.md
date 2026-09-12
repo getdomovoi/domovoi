@@ -40,8 +40,8 @@ boot configuration to supply one. Task Scheduler also offers passwordless
 with network/encrypted-file restrictions; it has no acceptance proof for this
 WSL/keychain/repository contract and remains outside support.
 
-The initial crash-restart fixture separately observed guest death, the Windows
-action's result, and an automatic restart. A nonzero result alone does not
+The initial crash-restart fixture was designed to check guest death, the Windows
+action's result, and automatic restart separately. A nonzero result alone does not
 establish supervision.
 That fixture sent SIGKILL to its identified guest daemon, expected action result
 9 on WSL 2.7.13, then required a new identified guest without another manual
