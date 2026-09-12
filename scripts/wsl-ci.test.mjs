@@ -7,7 +7,7 @@ import { join, matchesGlob } from "node:path"
 import test from "node:test"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
-import { assertWslReport, assertWslServiceReport, defaultBudgets, downloadWslImage, runWslCi } from "./wsl-ci.mjs"
+import { assertWslReport, assertWslServiceReport, defaultBudgets, downloadWslImage, requiredWslServiceProofs, runWslCi } from "./wsl-ci.mjs"
 
 const require = createRequire(new URL("../apps/daemon/package.json", import.meta.url))
 const { parse } = require("yaml")
@@ -33,9 +33,33 @@ const nativeProofs = await Promise.all([
 const assertionResults = nativeProofs.flatMap(({ titles }) => titles.map((title) => ({ title, status: "passed" })))
 const passed = { numTotalTests: assertionResults.length, numPassedTests: assertionResults.length,
   numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, success: true, testResults: [{ assertionResults }] }
-const serviceTitle = "propagates guest failure, restarts it, and removes only its WSL task"
-const servicePassed = { numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0,
-  success: true, testResults: [{ assertionResults: [{ title: serviceTitle, fullName: serviceTitle, status: "passed" }] }] }
+// The service proof registers through it.runIf(condition)(title, body): the
+// title is the first argument of the outer call, whose callee is itself the
+// runIf call. Read it from the source so a rename fails here, in the portable
+// suite, and not first on the Windows WSL runner.
+const serviceTitles = await (async () => {
+  const file = "service/wsl-task.native.test.ts"
+  const source = ts.createSourceFile(file, await readFile(new URL(`../apps/daemon/src/${file}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true)
+  assert.equal(source.parseDiagnostics.length, 0, `${file} must parse before its proof names can be checked`)
+  const titles = []
+  function visit(node) {
+    if (ts.isCallExpression(node) && ts.isCallExpression(node.expression)
+      && ts.isPropertyAccessExpression(node.expression.expression)
+      && ts.isIdentifier(node.expression.expression.expression) && node.expression.expression.expression.text === "it"
+      && node.expression.expression.name.text === "runIf") {
+      assert.ok(ts.isStringLiteral(node.arguments[0]), `${file} must register literal proof names`)
+      titles.push(node.arguments[0].text)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  assert.ok(titles.length > 0, `${file} registers no it.runIf proof`)
+  return titles
+})()
+assert.deepEqual(serviceTitles, requiredWslServiceProofs, "the runner's service proof names must be the native file's registrations")
+const serviceTitle = serviceTitles[0]
+const servicePassed = { numTotalTests: serviceTitles.length, numPassedTests: serviceTitles.length, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0,
+  success: true, testResults: [{ assertionResults: serviceTitles.map((title) => ({ title, fullName: title, status: "passed" })) }] }
 
 function fixture(overrides = {}) {
   const calls = []
@@ -88,9 +112,13 @@ test("WSL job is separate, path-filtered, nightly and bounded", async () => {
   const diagnosticsSeconds = 10
   assert.ok(proofStep["timeout-minutes"] * 60 >= phaseSeconds + diagnosticsSeconds,
     `the proof step cap must hold every phase budget: ${phaseSeconds + diagnosticsSeconds} s`)
-  const setupMinutes = 5
-  assert.ok(job["timeout-minutes"] >= proofStep["timeout-minutes"] + setupMinutes,
-    "the job cap must hold the proof step plus checkout, install and runtime preparation")
+  // Every bounded step may spend its whole cap before the proof step starts,
+  // so the job cap is the sum of the step caps plus a margin for the unbounded
+  // ones (checkout, pnpm setup), not the proof step plus a guess.
+  const boundedStepMinutes = job.steps.reduce((total, step) => total + (step["timeout-minutes"] ?? 0), 0)
+  const unboundedMarginMinutes = 5
+  assert.ok(job["timeout-minutes"] >= boundedStepMinutes + unboundedMarginMinutes,
+    `the job cap must hold every bounded step: ${boundedStepMinutes} minutes plus ${unboundedMarginMinutes} margin`)
   for (const step of job.steps) assert.equal(step["continue-on-error"], undefined)
   const ordinary = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8")
   assert.doesNotMatch(ordinary, /wsl-ci|wsl\.exe --install/)

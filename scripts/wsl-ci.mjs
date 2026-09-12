@@ -81,7 +81,7 @@ const requiredWslProofs = [
 // The supervisor proof stops and restarts the guest daemon and its Windows
 // task, so it runs alone after the transport proofs have finished with the
 // distro, in its own Vitest invocation, and is judged on its own name list.
-const requiredWslServiceProofs = [
+export const requiredWslServiceProofs = [
   "propagates guest failure, restarts it, and removes only its WSL task",
 ]
 
