@@ -319,9 +319,10 @@ it.runIf(process.platform === "win32" && required)(
         const result = JSON.parse(await inspect(
           "[ordered]@{ state = [int]$task.State; result = $task.LastTaskResult } | ConvertTo-Json -Compress"))
         if (result.state !== 3) return undefined
-        // SIGKILL must reach the action as 128 + 9. A ready task whose
-        // LastTaskResult is zero cannot exercise Task Scheduler's retries.
-        expect(result.result).toBe(137)
+        // WSL 2.7.13 forwards raw waitpid status for signal death: 9 for
+        // SIGKILL. See the vendor source and native run in the assessment.
+        // Zero would not establish guest failure reaching the Windows action.
+        expect(result.result).toBe(9)
         return true
       })
       mark("scheduler restart")

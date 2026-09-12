@@ -41,8 +41,9 @@ WSL/keychain/repository contract and remains outside support.
 Acceptance must separately observe guest death, the Windows action's result,
 and an automatic restart. A nonzero result alone does not establish supervision.
 The fixture sends SIGKILL to its identified guest daemon, expects action result
-137, then requires a new identified guest without another manual task start.
-This path remains unproved. The service path filter landed in [#368](https://github.com/getdomovoi/domovoi/pull/368),
+9 on WSL 2.7.13, then requires a new identified guest without another manual
+task start. Guest death reaching Windows is proved below; automatic restart
+remains unproved. The service path filter landed in [#368](https://github.com/getdomovoi/domovoi/pull/368),
 and the fixture now runs in its own WSL CI phase. Removal must independently
 prove the exact guest daemon stopped, as described below. Native Windows
 supervision remains a separate decision.
@@ -59,13 +60,13 @@ missing. Task history was disabled, so it supplied no event evidence.
 
 The configured one-minute, three-retry policy did not retry this 127 outcome
 within that observation window on this runner. This does not establish behavior
-for every nonzero exit, or for SIGKILL forwarded as 137. Neither automatic
+for every nonzero exit, or for SIGKILL. Neither automatic
 restart nor the complete removal proof has passed acceptance yet.
 
 The ordinary-argv control ran as root with the expected Node executable and
 accessible guest files. The registered action quoted every WSL prefix token.
-WSL 2.7.13 [reads those tokens raw](https://github.com/microsoft/WSL/blob/2.7.13/src/windows/common/helpers.cpp#L526)
-and [parses the exec tail with CommandLineToArgvW only after recognizing `--exec`](https://github.com/microsoft/WSL/blob/2.7.13/src/windows/common/WslClient.cpp#L1419).
+WSL 2.7.13 [reads those tokens raw](https://github.com/microsoft/WSL/blob/80697fd42cca3de0c0d5dd1931c36112372a577e/src/windows/common/helpers.cpp#L576)
+and [parses the exec tail with CommandLineToArgvW only after recognizing `--exec`](https://github.com/microsoft/WSL/blob/80697fd42cca3de0c0d5dd1931c36112372a577e/src/windows/common/WslClient.cpp#L1799).
 The compiler therefore leaves the prefix bare, refuses whitespace or double
 quotes in distribution/user tokens, and quotes only the exec tail. Names that
 cannot be represented by this prefix parser are explicitly unsupported here.
@@ -76,6 +77,24 @@ uses a single-line script and is exercised by portable validation and execution
 tests. Native controls retain the old quoted prefix as a negative observation;
 their host context does not establish Task Scheduler context. Per-poll run times
 remain in place to observe the next failure and retry result.
+
+[WSL run 34675277932](https://github.com/getdomovoi/domovoi/actions/runs/34675277932/job/103503921460)
+at `0b5407f59244a16fc56bc2d67eee59a55449ca33` reached its identified, live guest
+at 9.843 seconds of lifecycle time. SIGKILL stopped that guest and the ready
+Windows task reported LastTaskResult 9. The fixture incorrectly expected 137
+and stopped before restart polling. WSL 2.7.13's
+[init exit reporting](https://github.com/microsoft/WSL/blob/80697fd42cca3de0c0d5dd1931c36112372a577e/src/linux/init/init.cpp#L2043)
+applies WEXITSTATUS only to normal exits; signal death retains the raw waitpid
+status. For SIGKILL that status is 9, matching the measured Windows result.
+The assertion now pins 9. Whether this result triggers the configured PT1M
+retry and whether the full removal proof passes remain open.
+
+All three invoking-host quoting controls executed in this run. The bare-prefix
+control returned 0 with literal guest arguments intact. Quoting every prefix
+token returned 127 with `--distribution: command not found`; quoting just the
+prefix values returned 4294967295 with WSL_E_DISTRO_NOT_FOUND. These controls
+explain the earlier launch failure; the task's own live guest separately proves
+that the corrected action launches in Task Scheduler context.
 
 ## Measured platform gaps
 
