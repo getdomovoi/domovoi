@@ -8,6 +8,7 @@ import { promisify } from "node:util"
 import { maximumPreviewSourceBytes } from "@getdomovoi/protocol"
 
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
+import { RestoreOperationLease, trackRestoreCommand } from "./workspace-restore-lease.js"
 
 const execute = promisify(execFile)
 const safeSessionId = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
@@ -150,6 +151,7 @@ async function releaseRestoreClaim(
   claimToken: string,
   claimTokenWritten: boolean,
   reservation: RestoreClaimReservation,
+  lease: RestoreOperationLease,
 ): Promise<unknown[]> {
   const errors: unknown[] = []
   // Release gets one fresh budget even when the restore was cancelled. A
@@ -166,6 +168,7 @@ async function releaseRestoreClaim(
       const currentToken = await readFile(claimPath, { encoding: "utf8", signal: deadline.signal })
       deadline.throwIfExpired()
       if (currentToken !== claimToken) throw new RestoreClaimOwnerVerificationError(claimTokenWritten)
+      lease.assertRecordedSettlement()
       phase = "unlink"
       // Path verification and unlink are not atomic. Manual removal requires
       // stopped daemons, including when the release deadline has expired.
@@ -174,6 +177,7 @@ async function releaseRestoreClaim(
       // Only actual settlement releases exclusion. In particular, a pending
       // unlink must never overlap a successor, even if the path is absent.
       if (activeBundleRestores.get(claimPath) === reservation) activeBundleRestores.delete(claimPath)
+      lease.release()
     }
   })()
   try {
@@ -364,11 +368,11 @@ async function git(
   signal?: AbortSignal,
 ): Promise<string> {
   signal?.throwIfAborted()
-  const result = await execute("git", ["-C", repositoryPath, ...arguments_], {
+  const result = await trackRestoreCommand(() => execute("git", ["-C", repositoryPath, ...arguments_], {
     encoding: "utf8",
     maxBuffer: maximumGitOutputBytes,
     signal,
-  })
+  }))
   return result.stdout.trim()
 }
 
@@ -1399,11 +1403,13 @@ export class GitWorkspaceService implements WorkspaceService {
     if (active) throw new SessionWorktreeExistsError()
     const reservation: RestoreClaimReservation = { state: "restoring" }
     activeBundleRestores.set(claimPath, reservation)
+    let lease: RestoreOperationLease | undefined
     let claim: Awaited<ReturnType<typeof open>> | undefined
     let claimTokenWritten = false
     let outcome: { completed: true; workspace: SessionWorkspace } | { completed: false; error: unknown }
     let cleanupErrors: unknown[] = []
     try {
+      lease = new RestoreOperationLease(this.worktreeRoot, sessionId, claimToken)
       await mkdir(claimDirectory, { recursive: true })
       signal?.throwIfAborted()
       try {
@@ -1423,14 +1429,15 @@ export class GitWorkspaceService implements WorkspaceService {
       claimTokenWritten = true
       writeSignal.throwIfAborted()
       signal?.throwIfAborted()
-      outcome = { completed: true, workspace: await this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal) }
+      outcome = { completed: true, workspace: await lease.run(() => this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal)) }
     } catch (error) {
       outcome = { completed: false, error }
     } finally {
       if (claim) {
-        cleanupErrors = await releaseRestoreClaim(claim, claimPath, claimToken, claimTokenWritten, reservation)
+        cleanupErrors = await releaseRestoreClaim(claim, claimPath, claimToken, claimTokenWritten, reservation, lease!)
       } else {
         activeBundleRestores.delete(claimPath)
+        lease?.release()
       }
     }
     if (cleanupErrors.length > 0) {
