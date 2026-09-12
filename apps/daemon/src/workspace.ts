@@ -232,6 +232,13 @@ export type GitWorkspaceServiceOptions = {
 
 export interface WorkspaceService {
   inspect(repositoryPath: string, signal?: AbortSignal): Promise<RepositoryInfo>
+  sessionWorkspacePath?(sessionId: string): string
+  validateCreatedSessionWorkspace?(
+    repositoryPath: string,
+    sessionId: string,
+    workspace: SessionWorkspace,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace>
   createSessionWorkspace(
     repositoryPath: string,
     sessionId: string,
@@ -812,6 +819,15 @@ export class GitWorkspaceService implements WorkspaceService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace> {
+    return this.#withWorktreeClaim(sessionId,
+      () => this.#createSessionWorkspace(repositoryPath, sessionId, signal), signal)
+  }
+
+  async #createSessionWorkspace(
+    repositoryPath: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
     if (!safeSessionId.test(sessionId)) {
       throw new Error("Session id is not safe for a worktree")
     }
@@ -827,6 +843,16 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async createSessionWorkspaceFromCheckpoint(
+    sourceWorktreePath: string,
+    checkpointCommit: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
+    return this.#withWorktreeClaim(sessionId,
+      () => this.#createSessionWorkspaceFromCheckpoint(sourceWorktreePath, checkpointCommit, sessionId, signal), signal)
+  }
+
+  async #createSessionWorkspaceFromCheckpoint(
     sourceWorktreePath: string,
     checkpointCommit: string,
     sessionId: string,
@@ -1391,6 +1417,43 @@ export class GitWorkspaceService implements WorkspaceService {
     options: SessionBundleRestoreOptions,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace> {
+    return this.#withWorktreeClaim(sessionId,
+      () => this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal), signal)
+  }
+
+  sessionWorkspacePath(sessionId: string): string {
+    if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
+    return join(this.worktreeRoot, sessionId)
+  }
+
+  async validateCreatedSessionWorkspace(
+    repositoryPath: string,
+    sessionId: string,
+    workspace: SessionWorkspace,
+    signal?: AbortSignal,
+  ): Promise<SessionWorkspace> {
+    return this.#withWorktreeClaim(sessionId, async () => {
+      const expectedPath = this.sessionWorkspacePath(sessionId)
+      if ((await lstat(expectedPath)).isSymbolicLink()) throw new Error("Created worktree was replaced by a symlink")
+      const [expected, path] = await Promise.all([realpath(expectedPath), realpath(workspace.path)])
+      if (path !== expected) throw new Error("Created worktree moved outside its recorded session location")
+      const [repositoryCommon, workspaceCommon, branch, head, topLevel] = await Promise.all([
+        git(repositoryPath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+        git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+        git(path, ["branch", "--show-current"], signal),
+        git(path, ["rev-parse", "HEAD"], signal),
+        git(path, ["rev-parse", "--show-toplevel"], signal),
+      ])
+      if (await realpath(repositoryCommon) !== await realpath(workspaceCommon)
+        || await realpath(topLevel) !== path || branch !== `domovoi/${sessionId}`
+        || branch !== workspace.branch || head !== workspace.baseCommit) {
+        throw new Error("Created worktree no longer matches its repository and completion receipt")
+      }
+      return { ...workspace, path }
+    }, signal)
+  }
+
+  async #withWorktreeClaim<T>(sessionId: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!safeSessionId.test(sessionId)) {
       throw new Error("Session id is not safe for a worktree")
     }
@@ -1406,7 +1469,7 @@ export class GitWorkspaceService implements WorkspaceService {
     let lease: RestoreOperationLease | undefined
     let claim: Awaited<ReturnType<typeof open>> | undefined
     let claimTokenWritten = false
-    let outcome: { completed: true; workspace: SessionWorkspace } | { completed: false; error: unknown }
+    let outcome: { completed: true; value: T } | { completed: false; error: unknown }
     let cleanupErrors: unknown[] = []
     try {
       lease = new RestoreOperationLease(this.worktreeRoot, sessionId, claimToken)
@@ -1429,7 +1492,7 @@ export class GitWorkspaceService implements WorkspaceService {
       claimTokenWritten = true
       writeSignal.throwIfAborted()
       signal?.throwIfAborted()
-      outcome = { completed: true, workspace: await lease.run(() => this.#restoreClaimedSessionFromBundle(bundlePath, sessionId, options, signal)) }
+      outcome = { completed: true, value: await lease.run(operation) }
     } catch (error) {
       outcome = { completed: false, error }
     } finally {
@@ -1445,7 +1508,7 @@ export class GitWorkspaceService implements WorkspaceService {
       throw new SessionRestoreClaimCleanupError(claimPath, cleanupErrors, outcome.completed ? undefined : outcome)
     }
     if (!outcome.completed) throw outcome.error
-    return outcome.workspace
+    return outcome.value
   }
 
   async #restoreClaimedSessionFromBundle(
