@@ -4,7 +4,9 @@ import { basename, join } from "node:path"
 import { WebSocket } from "ws"
 import { protocolVersion, workspaceSnapshotSchema, type Runtime } from "@getdomovoi/protocol"
 import type { AgentAdapter } from "./codex.js"
-import { DomovoiDaemon } from "./server.js"
+import { createProductionDaemonWithDependencies, productionDaemonDependencies } from "./production-daemon.js"
+import { MachineCredentialStore } from "./machine-credentials.js"
+import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { productionRpcTimeoutMs } from "./test-wait-for.js"
 import { GitWorkspaceService, type SessionWorkspace } from "./workspace.js"
@@ -56,8 +58,23 @@ async function main(root: string, mode: string, phase: string) {
     await new Promise<void>((resolve) => process.once("message", () => resolve()))
     throw new Error("The fixture must be stopped during provider setup")
   }
-  const daemon = new DomovoiDaemon({ port: 0, store, workspaceService: workspace,
-    agents: { codex: agent }, agentTimeoutMs: productionRpcTimeoutMs(process.platform) })
+  if (phase === "during-cleanup") {
+    agent.startThread = async () => { throw new Error("Injected provider setup failure") }
+    workspace.removeSessionWorkspace = async (path) => {
+      await writeFile(join(path, "uncommitted.txt"), "preserve interrupted setup\n")
+      process.send!({ state: "created", sessionId: basename(path), path })
+      await new Promise<void>((resolve) => process.once("message", () => resolve()))
+      throw new Error("The fixture must be stopped during worktree cleanup")
+    }
+  }
+  const daemon = await createProductionDaemonWithDependencies({ homeDirectory: root, environment: { DOMOVOI_PORT: "0" } }, {
+    ...productionDaemonDependencies,
+    loadOrCreateIdentity: async () => ({ id: seed.machine.id, label: "creation-fixture" }),
+    createProviderProbe: () => ({ inspect: async () => [{ id: "codex", command: "codex", status: "ready" }] }),
+    createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+    createDaemon: (options) => productionDaemonDependencies.createDaemon({ ...options, store, workspaceService: workspace,
+      agents: { codex: agent }, agentTimeoutMs: productionRpcTimeoutMs(process.platform) }),
+  })
   const address = await daemon.start()
   const paired = store.devices.pair({ label: "creation-recovery-fixture", binding: { kind: "client", client: "cli" } })
   const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)

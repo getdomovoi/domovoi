@@ -30,7 +30,7 @@ describe("session creation intent journal", () => {
     journal.begin(creation)
     creation.session.title = "Changed after recording"
     expect(journal.pending("project-creation")).toEqual([{
-      ...input(), version: 1, ownerPid: process.pid,
+      ...input(), version: 1, ownerPid: process.pid, cleanupStarted: false,
     }])
     journal.complete(creation.session.id, workspace)
     expect(journal.pending("project-creation")[0]?.workspace).toEqual(workspace)
@@ -48,6 +48,8 @@ describe("session creation intent journal", () => {
     const { journal } = fixture()
     journal.begin(input())
     journal.complete("session-creation", workspace)
+    expect(() => journal.discardAfterCleanup("session-creation")).toThrow("cleanup was not recorded")
+    journal.beginCleanup("session-creation")
     journal.discardAfterCleanup("session-creation")
     expect(journal.pending("project-creation")).toEqual([])
     expect(() => journal.begin(input())).not.toThrow()
@@ -60,6 +62,7 @@ describe("session creation intent journal", () => {
     database.prepare("UPDATE session_creation_intents SET record = json_set(record, '$.ownerPid', ?)").run(process.pid + 1)
     const pending = journal.pending("project-creation")
     expect(() => journal.complete("session-creation", workspace)).toThrow("another process")
+    expect(() => journal.beginCleanup("session-creation")).toThrow("another process")
     expect(() => journal.discardAfterCleanup("session-creation")).toThrow("another process")
     expect(journal.pending("project-creation")).toEqual(pending)
   })
@@ -67,9 +70,30 @@ describe("session creation intent journal", () => {
   it("keeps recovery evidence when cleanup deletion fails", () => {
     const { journal, database } = fixture()
     journal.begin(input())
+    journal.beginCleanup("session-creation")
     database.exec("CREATE TRIGGER refuse_creation_delete BEFORE DELETE ON session_creation_intents BEGIN SELECT RAISE(FAIL, 'injected deletion failure'); END")
     expect(() => journal.discardAfterCleanup("session-creation")).toThrow("injected deletion failure")
     expect(journal.pending("project-creation")).toHaveLength(1)
+  })
+
+  it("keeps a receipt for inspection after cleanup starts and refuses a late completion", () => {
+    const { journal } = fixture()
+    expect(() => journal.beginCleanup("session-creation")).toThrow("intent disappeared")
+    journal.begin(input())
+    journal.complete("session-creation", workspace)
+    journal.beginCleanup("session-creation")
+    expect(journal.pending("project-creation")[0]).toMatchObject({ workspace, cleanupStarted: true })
+    expect(() => journal.beginCleanup("session-creation")).toThrow("cleanup already started")
+    expect(() => journal.complete("session-creation", workspace)).toThrow("cleanup already started")
+  })
+
+  it("preserves the prior receipt when recording cleanup fails", () => {
+    const { journal, database } = fixture()
+    journal.begin(input())
+    journal.complete("session-creation", workspace)
+    database.exec("CREATE TRIGGER refuse_cleanup_start BEFORE UPDATE ON session_creation_intents BEGIN SELECT RAISE(FAIL, 'injected cleanup recording failure'); END")
+    expect(() => journal.beginCleanup("session-creation")).toThrow("injected cleanup recording failure")
+    expect(journal.pending("project-creation")[0]).toMatchObject({ workspace, cleanupStarted: false })
   })
 
   it("keeps an incomplete intent when receipt publication fails", () => {

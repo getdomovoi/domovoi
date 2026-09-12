@@ -26,6 +26,7 @@ describe("session creation crash recovery", () => {
   it.each([
     ["create", "before-receipt"], ["create", "after-receipt"],
     ["fork", "before-receipt"], ["fork", "after-receipt"],
+    ["create", "during-cleanup"], ["fork", "during-cleanup"],
   ])("retains %s intent and its worktree when setup dies %s", async (mode, phase) => {
     const root = await mkdtemp(join(tmpdir(), "domovoi-creation-recovery-"))
     directories.push(root)
@@ -52,6 +53,10 @@ describe("session creation crash recovery", () => {
         label: "Source checkpoint", commit: source.baseCommit, createdAt: "2026-09-12T12:00:00.000Z" })
     }
     await writeFile(join(root, "seed.json"), JSON.stringify(seed))
+    // Child workers must resolve the built protocol, including build-version.
+    // Match the existing production fixture's tsx configuration.
+    const tsconfig = join(root, "fixture-tsconfig.json")
+    await writeFile(tsconfig, JSON.stringify({ compilerOptions: { paths: {} } }))
     const statePath = join(root, "state.sqlite")
     const initialStore = new SqliteWorkspaceStore(statePath, seed)
     initialStore.close()
@@ -63,6 +68,7 @@ describe("session creation crash recovery", () => {
     try {
       child = fork(new URL("./session-creation-recovery.fixture.ts", import.meta.url), ["--creation-crash-fixture", root, mode, phase], {
         execArgv: ["--import", import.meta.resolve("tsx")],
+        env: { ...process.env, TSX_TSCONFIG_PATH: tsconfig },
         stdio: ["ignore", "ignore", "pipe", "ipc"], signal: deadline.signal, killSignal: "SIGKILL",
       })
       child.stderr!.on("data", (bytes: Buffer) => { diagnostics = (diagnostics + bytes.toString()).slice(-8_192) })
@@ -75,6 +81,7 @@ describe("session creation crash recovery", () => {
       const interrupted = await beforeDeadline(created, deadline)
       expect(child.kill("SIGKILL")).toBe(true)
       await beforeDeadline(exited, deadline)
+      expect(diagnostics).not.toContain("Domovoi mutation failed")
       deadline.clear()
       let startedThreads = 0
       const reopen = async (): Promise<WorkspaceSnapshot> => {
@@ -168,7 +175,7 @@ describe("session creation cleanup", () => {
     const fixture = await liveCreationFixture(mode, async ({ root }) => {
       const database = new DatabaseSync(join(root, "state.sqlite"))
       try {
-        database.exec("CREATE TRIGGER refuse_creation_receipt BEFORE UPDATE ON session_creation_intents BEGIN SELECT RAISE(FAIL, 'injected receipt publication failure'); END")
+        database.exec("CREATE TRIGGER refuse_creation_receipt BEFORE UPDATE ON session_creation_intents WHEN json_extract(NEW.record, '$.workspace') IS NOT NULL AND json_extract(NEW.record, '$.cleanupStarted') = 0 BEGIN SELECT RAISE(FAIL, 'injected receipt publication failure'); END")
       } finally { database.close() }
     })
     try {
@@ -200,6 +207,25 @@ describe("session creation cleanup", () => {
       expect(fixture.store.sessionCreations.pending("project-cleanup")).toEqual([expect.objectContaining({ session: expect.objectContaining({ id: created!.id }) })])
       expect(fixture.agent.startThread).toHaveBeenCalledOnce()
       expect(fixture.errorSink).toHaveBeenCalledWith(expect.objectContaining({ context: "Domovoi could not clear committed session creation intents" }))
+    } finally { await fixture.close() }
+  })
+
+  it("refuses worktree removal if cleanup intent cannot be persisted", async () => {
+    const fixture = await liveCreationFixture("create", async ({ root }) => {
+      const database = new DatabaseSync(join(root, "state.sqlite"))
+      try {
+        database.exec("CREATE TRIGGER refuse_cleanup_intent BEFORE UPDATE ON session_creation_intents WHEN json_extract(NEW.record, '$.cleanupStarted') = 1 BEGIN SELECT RAISE(FAIL, 'injected cleanup recording failure'); END")
+      } finally { database.close() }
+    })
+    try {
+      fixture.agent.startThread = vi.fn().mockRejectedValue(new Error("injected provider setup failure"))
+      const remove = vi.spyOn(fixture.workspace, "removeSessionWorkspace")
+      expect((await fixture.request()).error).toBeDefined()
+      expect(remove).not.toHaveBeenCalled()
+      const pending = fixture.store.sessionCreations.pending("project-cleanup")
+      expect(pending).toHaveLength(1)
+      expect(pending[0]?.cleanupStarted).toBe(false)
+      await expect(readFile(join(pending[0]!.workspace!.path, "README.md"), "utf8")).resolves.toBe("preserve source\n")
     } finally { await fixture.close() }
   })
 

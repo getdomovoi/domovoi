@@ -1769,6 +1769,7 @@ describe("DomovoiDaemon", () => {
     releaseWorkspace!()
     await waitForDaemon(() => expect(removeSessionWorkspace).toHaveBeenCalledWith(
       expect.stringMatching(/^\/worktrees\/session-/),
+      undefined,
     ))
     socket.close()
   })

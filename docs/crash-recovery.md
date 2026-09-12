@@ -84,6 +84,13 @@ failed-setup cleanup removes an intent only after worktree removal settles,
 including when setup or cleanup finishes after the request's deadline. Failed or
 pending removal retains the intent and refuses a repeated fork request.
 
+Cleanup must first record that it is starting. That transition retains the old
+receipt for inspection but invalidates its claim that the worktree is usable.
+If recording fails, removal does not start. A crash after this transition leaves
+a failed session without a usable path, even if its Git metadata still matches:
+an unfinished removal may still have repository writers. Preserve the files and
+stop remaining writers before inspection. Only settled removal discards the intent.
+
 ## Evidence and limits
 
 `workspace-recovery.test.ts` uses separate processes: it stops the restore owner
@@ -106,7 +113,10 @@ stale-intent deletion failure, and late removal held behind a fixture gate.
 `session-creation-intents.test.ts` exercises journal ownership, record and count
 bounds, duplicate refusal, and failed SQLite writes. Mutations that discard before
 removal or snapshot persistence, treat `EPERM` as absence, or trust an unverified
-receipt each fail their corresponding regression.
+receipt each fail their corresponding regression. Two further process-crash
+cases stop create and fork owners during cleanup. Their old receipts must not
+expose a worktree after restart; an injected cleanup-record failure also refuses
+removal before it can touch the worktree.
 
 Windows CI run [34713763719](https://github.com/getdomovoi/domovoi/actions/runs/34713763719)
 measured the restore owner and recorded Git launcher absent while the holding

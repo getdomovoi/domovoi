@@ -7817,6 +7817,7 @@ export class DomovoiDaemon {
   }
 
   async #removeCreatedWorkspace(sessionId: string, path: string, signal?: AbortSignal): Promise<void> {
+    this.#store.sessionCreations?.beginCleanup(sessionId)
     await this.#workspaceService.removeSessionWorkspace(path, signal)
     // Keep the intent on failure or timeout until removal itself settles.
     // A later retry must not replace evidence for a worktree still being used.
@@ -7954,8 +7955,10 @@ export class DomovoiDaemon {
       }
       const recoveredAt = new Date().toISOString()
       const session = { ...intent.session, updatedAt: recoveredAt }
-      let detail = "No durable worktree completion receipt exists; the partial worktree requires inspection."
-      if (intent.workspace) {
+      let detail = intent.cleanupStarted
+        ? "Worktree cleanup started but did not record completion; preserve the worktree for inspection."
+        : "No durable worktree completion receipt exists; the partial worktree requires inspection."
+      if (intent.workspace && !intent.cleanupStarted) {
         try {
           if (!this.#workspaceService.validateCreatedSessionWorkspace) throw new Error("Workspace service cannot verify a creation receipt")
           const workspace = await this.#withAbortTimeout(

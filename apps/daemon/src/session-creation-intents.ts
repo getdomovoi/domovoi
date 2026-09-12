@@ -13,6 +13,7 @@ const pathSchema = z.string().min(1).max(32_768)
 const intentSchema = z.object({
   version: z.literal(1),
   ownerPid: z.number().int().min(1).max(2_147_483_647),
+  cleanupStarted: z.boolean(),
   session: sessionSummarySchema,
   repositoryPath: pathSchema,
   expectedWorkspacePath: pathSchema.optional(),
@@ -54,7 +55,7 @@ export class SqliteSessionCreationIntents {
   }
 
   begin(input: NewIntent): void {
-    const record = encode({ ...input, version: 1, ownerPid: process.pid,
+    const record = encode({ ...input, version: 1, ownerPid: process.pid, cleanupStarted: false,
       session: { ...input.session, title: redactDurableText(input.session.title).value } })
     const inserted = this.#database.prepare(`INSERT INTO session_creation_intents (session_id, project_id, record)
       SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM session_creation_intents) < ?
@@ -74,6 +75,7 @@ export class SqliteSessionCreationIntents {
     if (!row) throw new Error("Session creation intent disappeared before completion")
     const intent = decode(row)
     if (intent.ownerPid !== process.pid) throw new Error("Session creation intent belongs to another process")
+    if (intent.cleanupStarted) throw new Error("Session creation cleanup already started")
     const updated = this.#database.prepare("UPDATE session_creation_intents SET record = ? WHERE session_id = ? AND record = ?")
       .run(encode({ ...intent, workspace }), sessionId, row.record)
     if (updated.changes !== 1) throw new Error("Session creation intent changed while recording completion")
@@ -86,12 +88,27 @@ export class SqliteSessionCreationIntents {
     return rows.map(decode)
   }
 
+  /** Invalidate the receipt's usable-worktree claim before removal can start. */
+  beginCleanup(sessionId: string): void {
+    const row = this.#database.prepare("SELECT session_id, project_id, record FROM session_creation_intents WHERE session_id = ?")
+      .get(sessionId) as StoredIntent | undefined
+    if (!row) throw new Error("Session creation intent disappeared before cleanup")
+    const intent = decode(row)
+    if (intent.ownerPid !== process.pid) throw new Error("Session creation intent belongs to another process")
+    if (intent.cleanupStarted) throw new Error("Session creation cleanup already started")
+    const updated = this.#database.prepare("UPDATE session_creation_intents SET record = ? WHERE session_id = ? AND record = ?")
+      .run(encode({ ...intent, cleanupStarted: true }), sessionId, row.record)
+    if (updated.changes !== 1) throw new Error("Session creation intent changed before cleanup")
+  }
+
   /** Caller must await successful worktree removal before discarding evidence. */
   discardAfterCleanup(sessionId: string): void {
     const row = this.#database.prepare("SELECT session_id, project_id, record FROM session_creation_intents WHERE session_id = ?")
       .get(sessionId) as StoredIntent | undefined
     if (!row) return
-    if (decode(row).ownerPid !== process.pid) throw new Error("Session creation intent belongs to another process")
+    const intent = decode(row)
+    if (intent.ownerPid !== process.pid) throw new Error("Session creation intent belongs to another process")
+    if (!intent.cleanupStarted) throw new Error("Session creation cleanup was not recorded")
     const removed = this.#database.prepare("DELETE FROM session_creation_intents WHERE session_id = ? AND record = ?")
       .run(sessionId, row.record)
     if (removed.changes !== 1) throw new Error("Session creation intent changed during cleanup")
