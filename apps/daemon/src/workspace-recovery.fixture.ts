@@ -22,11 +22,13 @@ if (mode === "hold-child") {
   const workspace = new GitWorkspaceService(root)
   workspace.inspect = async () => {
     process.send!({ state: "claimed" })
-    if (mode === "during-git") {
+    if (mode !== "before-git") {
+      const abort = new AbortController()
+      if (mode === "after-git-abort") process.once("message", () => abort.abort())
       const quote = (value: string) => `'${value.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`
       const command = [process.execPath, "--import", import.meta.resolve("tsx"), fileURLToPath(import.meta.url), root, repository, bundle, "hold-child"]
         .map(quote).join(" ")
-      await trackRestoreCommand(() => promisify(execFile)("git", ["-C", repository, "-c", `alias.hold=!${command}`, "hold"]))
+      await trackRestoreCommand(() => promisify(execFile)("git", ["-C", repository, "-c", `alias.hold=!${command}`, "hold"], { signal: abort.signal, killSignal: "SIGKILL" }))
     } else {
       await new Promise<void>((resolve) => process.once("message", () => resolve()))
     }

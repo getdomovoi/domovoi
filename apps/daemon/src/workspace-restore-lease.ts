@@ -8,7 +8,8 @@ import { claimExclusiveFileLease, type FileLease } from "./file-lease.js"
 
 const pidSchema = z.number().int().min(1).max(2_147_483_647)
 const ownerSchema = z.object({
-  version: z.literal(1), token: z.string().uuid(), ownerPid: pidSchema,
+  version: z.literal(2), token: z.string().uuid(), ownerPid: pidSchema,
+  descendantsUnknown: z.boolean(),
   starting: z.number().int().min(0).max(32), children: z.array(pidSchema).max(32),
 })
 type RestoreOwner = z.infer<typeof ownerSchema>
@@ -49,7 +50,7 @@ export class RestoreOperationLease {
     this.#file = claimExclusiveFileLease(join(root, ".restore-leases", `${sessionId}.sqlite`),
       () => new RestoreLeaseRecoveryError(claimPath, "Another restore or its cleanup still holds the operation lease"))
     this.#ownerPath = join(root, ".restore-leases", `${sessionId}.json`)
-    this.#owner = { version: 1, token, ownerPid: process.pid, starting: 0, children: [] }
+    this.#owner = { version: 2, token, ownerPid: process.pid, descendantsUnknown: false, starting: 0, children: [] }
     try {
       let heldToken: string | undefined
       try { heldToken = readBounded(claimPath) } catch (error) {
@@ -66,8 +67,12 @@ export class RestoreOperationLease {
         for (const pid of previous.children) {
           if (processIsAlive(pid)) throw new RestoreLeaseRecoveryError(claimPath, `Recorded Git child ${pid} is still alive`)
         }
-        // All new restorers hold the same persistent SQLite lock. PID absence,
-        // never PID reuse or an elapsed timeout, proves the old writers stopped.
+        if (previous.descendantsUnknown || previous.children.length > 0) {
+          throw new RestoreLeaseRecoveryError(claimPath, "A Git child exit was interrupted or not recorded; descendant liveness is unknown")
+        }
+        // PID absence covers only the launcher. An owner crash can terminate
+        // it while descendants survive, so automatic recovery also requires
+        // recorded settlement of every Git command.
         unlinkSync(claimPath)
       }
       this.#publish()
@@ -86,6 +91,12 @@ export class RestoreOperationLease {
   }
   release(): void { this.#file.release() }
 
+  assertRecordedSettlement(): void {
+    if (this.#owner.descendantsUnknown || this.#owner.starting !== 0 || this.#owner.children.length > 0) {
+      throw new Error("Git descendant liveness is unknown; preserve the claim for inspection")
+    }
+  }
+
   command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
     const pending = this.#command(launch)
     this.#commands.add(pending)
@@ -94,6 +105,7 @@ export class RestoreOperationLease {
   }
 
   async #command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+    if (this.#owner.descendantsUnknown) throw new Error("Git descendant liveness is unknown after an interrupted command")
     if (this.#owner.starting + this.#owner.children.length >= 32) throw new Error("Too many restore subprocesses")
     this.#owner.starting++
     this.#publish()
@@ -105,13 +117,17 @@ export class RestoreOperationLease {
       pending = launch()
       // execFile can reject on abort before its child closes. Keep both the
       // operation lease and durable child identity until actual settlement.
-      closed = new Promise<void>((resolve) => pending!.child.once("close", () => resolve()))
+      closed = new Promise<void>((resolve) => pending!.child.once("close", (_code, signal) => {
+        if (signal || pending!.child.killed) this.#owner.descendantsUnknown = true
+        resolve()
+      }))
       pid = pending.child.pid
       this.#owner.starting--
       if (pid !== undefined) this.#owner.children.push(pidSchema.parse(pid))
       this.#publish()
       outcome = { value: await pending }
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") this.#owner.descendantsUnknown = true
       outcome = { error }
     }
     // Observe a spawn rejection even if publishing its PID failed first.

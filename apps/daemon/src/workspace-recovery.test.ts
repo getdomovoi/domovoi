@@ -1,5 +1,5 @@
 import { execFile, fork, type ChildProcess } from "node:child_process"
-import { mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -14,7 +14,7 @@ const directories: string[] = []
 afterEach(async () => { await removeScratchDirectories(directories) })
 
 describe("worktree crash recovery", () => {
-  it.each(["before-git", "during-git"])("reclaims an interrupted restore only after its writers stop: %s", async (mode) => {
+  it.each(["before-git", "during-git", "after-git-death", "after-git-abort"])("uses recorded Git settlement for restore recovery: %s", async (mode) => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-worktree-recovery-"))
     directories.push(scratch)
     const repository = join(scratch, "repository")
@@ -70,7 +70,7 @@ describe("worktree crash recovery", () => {
         void exited!.then((result) => reject(new Error(`Restore fixture exited before its claim: ${JSON.stringify(result)} ${diagnostics}`)))
       })
       await beforeDeadline(claimed, deadline)
-      if (mode === "during-git") {
+      if (mode !== "before-git") {
         await waitForFixtureStartup("Git child holding after launch", async () => {
           const holding = JSON.parse(await readFile(join(root, "child-ready"), "utf8")) as { pid: number; parentPid: number }
           expect(Number.isSafeInteger(holding.pid) && holding.pid > 0).toBe(true)
@@ -90,15 +90,26 @@ describe("worktree crash recovery", () => {
       await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }))
         .rejects.toThrow("Session worktree already exists")
 
-      expect(child.kill("SIGKILL")).toBe(true)
+      if (mode === "after-git-abort") child.send("abort-git")
+      else expect(child.kill("SIGKILL")).toBe(true)
       await beforeDeadline(exited, deadline)
-      if (mode === "during-git") {
+      if (mode !== "before-git") {
+        if (mode === "after-git-death") {
+          if (stateOf(gitPid) === "alive") process.kill(gitPid!, "SIGKILL")
+          await waitForFixtureStartup("recorded Git launcher exit", () => expect(stateOf(gitPid)).toBe("absent"))
+          expect(stateOf(holdPid)).toBe("alive")
+        }
         recordWriters("after-owner-death")
         await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }))
-          .rejects.toThrow(`Recorded Git child ${gitPid} is still alive`)
+          .rejects.toThrow(stateOf(gitPid) === "alive" ? `Recorded Git child ${gitPid} is still alive` : "descendant liveness")
         await writeFile(join(root, "child-release"), "finish")
         await waitForGitExit()
         recordWriters("after-writer-release")
+        await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }))
+          .rejects.toThrow("descendant liveness")
+        // Model inspection after every known fixture writer has stopped.
+        // Production never clears an uncertain claim from PID absence alone.
+        await unlink(join(root, ".restore-claims", "session-recovery"))
       }
       await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }))
         .resolves.toMatchObject({ branch: "domovoi/session-recovery" })
@@ -109,7 +120,7 @@ describe("worktree crash recovery", () => {
       const cleanup = OperationDeadline.start(10_000)
       try {
         if (exited) await beforeDeadline(exited, cleanup)
-        if (mode === "during-git") {
+        if (mode !== "before-git") {
           await writeFile(join(root, "child-release"), "finish")
           await waitForGitExit()
         }
