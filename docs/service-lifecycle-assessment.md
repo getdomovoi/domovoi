@@ -3,9 +3,8 @@
 Status: fetzy selected option A for Windows user logon on 2026-09-11, with
 option D's explicit lack of Windows boot supervision. The task compiler and
 native fixture exist. Task-managed crash restart failed native acceptance on
-2026-09-12; fetzy is deciding between a Domovoi-owned restart loop and logon
-start only. Neither follow-up is selected or implemented. Installer integration
-and complete removal acceptance remain open.
+2026-09-12. Fetzy selected a Domovoi-owned restart loop in the guest on that date.
+Implementation and complete removal acceptance remain open.
 Measured on 2026-09-11 after fetching `origin/main` at
 `98c412c540bad49b9cbf2459a47bc3309cda62b8`. S1.1 remains open; this document
 does not claim completed lifecycle acceptance.
@@ -125,24 +124,43 @@ this direct `wsl.exe` action after either observed program exit on these WSL
 does not classify every Task Scheduler failure mode, exit code or Windows build.
 Increasing the observation budget does not supply the missing supervisor.
 
-### Crash-restart decision pending
+### Guest restart loop selected, 2026-09-12
 
-Fetzy is choosing between the following two contracts. Both keep Domovoi's own
-per-user Windows task, leave distro configuration untouched, and retain the
-logon trigger. Windows boot supervision stays unavailable. Starting the distro
-by other means does not trigger the task. The existing fixture starts the task
-manually, so neither option gains a real Windows-logon proof from that fixture.
+Fetzy selected the first contract below, with the loop placed in the guest.
+A Windows loop would have to track `wsl.exe` and the guest process, which die
+independently, adding a distributed liveness protocol across the boundary the
+daemon already lives behind. A guest loop supervises a local child with a pid:
+local bookkeeping instead of a new failure surface. The Windows task supplies
+the logon trigger; Domovoi's guest loop owns crash restarts.
+
+Policy: at most three crash restarts per loop lifetime, after delays of 1, 5 and
+15 seconds. Initial launch plus three restarts allows four attempts. A fourth
+crash exhausts the allowance and stops the loop. A crash is a failed launch or
+any child exit other than a clean exit or a deliberate stop. Clean exit and
+deliberate stop never increment crashes or schedule another attempt. Exhaustion
+must record the reason and time; reporting it is part of the deliverable.
+
+Before supervision is trusted, atomically rename a bounded supervisor record
+into the guest profile. It records loop identity, attempt and crash counts, each
+child pid and start time, exit kind/code, applied backoff, and exhaustion reason
+and time. `domovoid service status` reads this evidence and reports stopped or
+supervision exhausted after N crashes, with the last exit and its time. Missing,
+damaged or stale evidence cannot be reported as active supervision. Task fields
+describe action activity; only the loop record describes its child attempts.
+The fixture starts the task manually and does not establish an actual logon.
+
+Domovoi keeps its own per-user Windows task and leaves distro configuration
+untouched. Windows boot supervision stays unavailable. Starting the distro by
+other means does not trigger the task. The second option below is retained as
+the rejected alternative, not an outstanding choice.
 
 | Option | Behavior and cost | Acceptance changes | Removal proof |
 | --- | --- | --- | --- |
-| Domovoi-owned restart loop inside the action | Task launches an owned loop; the loop starts the daemon and owns crash classification, backoff, retry limit and exhaustion reporting. Those policy values remain to be specified. Clean exit and deliberate stop must not become crash retries. This adds a supervisor and its lifetime/identity state. | Keep automatic crash restart as an explicit requirement. Inject a failed launch and SIGKILL; observe the loop's attempt/result records and a new identified daemon without another task start. Verify backoff, retry exhaustion, clean exit and deliberate stop against the chosen policy. A stable task LastRunTime is expected while one loop owns several children, so it cannot prove child restart. | Disable the task trigger, then shut down the loop through a path that cancels retries/backoff and stops its owned child. Independently prove both loop and exact guest daemon dead before deletion or recovery. Inject removal during a live child and during backoff; neither may leave a later launch. Preserve unrelated tasks, distro configuration and guest profile data. |
-| Logon start only | Task launches the foreground daemon once at logon. A daemon crash or failed launch leaves it stopped until an explicit start or a later logon. No automatic recovery promise; the ineffective retry configuration and any supervision claim must be removed if this contract is selected. Smaller implementation, operator recovery required. | Replace the restart contract explicitly, including the native test title and the runner's exact required-name list in the same change. Prove launch, identified guest death, propagated result and no automatic relaunch over a stated observation window. Any later manual start is an explicit-start proof. Never turn the existing restart requirement green by skipping it. | Disable the task, stop and independently prove the exact guest daemon dead, then stop/observe/delete only the owned task. Exercise removal while the daemon is live, using an explicit start when needed after the crash observation. Task exit alone remains insufficient guest-stop evidence. |
+| Guest restart loop, selected | Task launches the owned guest loop; it supervises one local child with the three-restart policy above. This adds the supervisor record and an explicit shutdown path. | Keep automatic crash restart as an explicit requirement. Inject a failed launch and SIGKILL; observe the loop's records and a new identified daemon without another task start. Verify 1/5/15-second backoff, exhaustion, clean exit and deliberate stop. Stable task LastRunTime cannot prove child restart. | Disable the task trigger, then shut down the loop through a path that cancels retries/backoff and stops its owned child. Independently prove both loop and exact guest daemon dead before deletion or recovery. Inject removal during a live child and during backoff; neither may leave a later launch. Preserve unrelated tasks, distro configuration and guest profile data. |
+| Logon start only, rejected | Task launches the foreground daemon once at logon; operator recovery after a crash. | Would require an explicit acceptance-contract and runner-name change, not a skipped restart assertion. | Would still require independent guest-stop proof before task deletion. |
 
-Loop placement is part of the first option's cost, not an implementation
-decision made here. A guest loop dies with its distro; a Windows loop needs an
-owned Windows runtime/launcher and must track the `wsl.exe` child and exact
-guest instance across that boundary. Neither placement makes the loop itself
-self-restarting. Loop death and distro loss need an explicit reported limit;
+The selected guest loop dies with its distro and is not itself self-restarting.
+Loop death and distro loss remain explicit limits;
 the measured task policy cannot be assumed to recover them. Guest code,
 repositories and credentials stay in the guest.
 
@@ -151,7 +169,8 @@ required under either choice. The latter consumes manager-stop evidence; it
 does not prove a new loop or guest stopped. Unknown identity, failed shutdown or
 an expired deadline must prevent deletion/recovery, with both primary and cleanup
 failures retained. The runner's exact-name/no-skip report checks remain required
-under either acceptance contract. Implementation waits for fetzy's choice.
+for the selected contract. The guest loop and its status evidence must pass
+acceptance before this assessment claims crash supervision.
 
 ## Measured platform gaps
 
@@ -183,7 +202,7 @@ that reconciliation limit. Turn/worktree/transfer recovery belongs to S1.3.
 ## WSL options
 
 These are the original assessed alternatives; the decision above selects A for
-logon and rejects boot supervision. Its crash-restart follow-up is pending above.
+logon and rejects boot supervision. Its guest-loop follow-up is selected above.
 The assessment distinguished **Windows boot**,
 **Windows user logon**, and **WSL
 distribution startup**. A process supervisor and an event that launches that
@@ -197,7 +216,7 @@ is another reason to test instance lifetime separately from process restart.
 
 | Option | Restart after daemon crash | Windows boot | Windows user logon | Distribution startup | Removal obligation |
 | --- | --- | --- | --- | --- | --- |
-| A. Windows task runs `wsl.exe -d <distro> --exec domovoid` in the foreground | Guest failure reaches Windows. Configured task retries did not restart outcomes 127 or 9 in the native runs above; owned loop versus logon start only is pending. | Unavailable under the selected per-user contract. | A logon trigger can launch it using the distribution owner's Windows identity; a real logon remains unproved. | The task's explicit launch can start the selected distro. Starting it elsewhere does not itself trigger this task. | Disable triggers/restarts, stop and observe the Windows task, independently prove the exact guest daemon stopped, then remove only the matching registration/configuration. An owned loop adds the shutdown obligations above. |
+| A. Windows task runs `wsl.exe -d <distro> --exec domovoid` in the foreground | Guest failure reaches Windows. Task retries did not restart outcomes 127 or 9. The selected guest loop must supply and report restarts. | Unavailable under the selected per-user contract. | A logon trigger can launch it using the distribution owner's Windows identity; a real logon remains unproved. | The task's explicit launch can start the selected distro. Starting it elsewhere does not itself trigger this task. | Disable triggers/restarts, stop and observe the Windows task, independently prove loop and exact guest daemon stopped, then remove only the matching registration/configuration. |
 | B. Enable `systemd=true`, use the existing user unit | Existing `Restart=on-failure` policy is reusable while the guest and user manager remain alive. WSL execution of that unit still needs a native proof. | No Windows launch trigger supplied. | Logging on to Windows alone supplies no trigger. | Enabled unit starts when its user manager starts; user-session readiness or lingering must be established. | Use the Linux stop/disable/removal path in the guest. Preserve distro-wide systemd and any pre-existing lingering settings. |
 | C. A `wsl.conf` boot command launches Domovoi | A boot command alone supplies no retry policy. A restart loop would introduce another supervisor to implement and remove. | No Windows launch trigger supplied. | No Windows logon trigger supplied. | Hook runs when the distro starts, under root. An owned launcher must select the intended Linux user/profile and allow distro startup to complete. | Remove only the owned hook, stop the exact process or helper, and verify it cannot relaunch. Preserve other `wsl.conf` settings and any existing command. |
 | D. No managed WSL lifecycle; document foreground operation | No automatic restart supplied by Domovoi. | No trigger. | No trigger. | No trigger; operator explicitly launches the daemon. | Stop the owned foreground invocation. An unknown custom supervisor requires operator confirmation; absence of a task/file is not stop proof. |
@@ -301,6 +320,5 @@ distro-wide init changes. Supported versions, retry limits, idle lifetime and
 the exact Windows/Linux identity binding still need implementation evidence.
 The task fixture has exercised registration, a live production daemon and guest
 death forwarded to Windows as 9 in a disposable guest. Its automatic restart
-assertion failed; complete removal acceptance remains due. The pending choice
-above determines whether to build crash supervision or explicitly accept logon
-start only.
+assertion failed; complete removal acceptance remains due. The selected guest
+loop supplies the next crash-supervision contract to implement and prove.
