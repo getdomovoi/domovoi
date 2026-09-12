@@ -1,0 +1,128 @@
+import { AsyncLocalStorage } from "node:async_hooks"
+import type { PromiseWithChild } from "node:child_process"
+import { randomUUID } from "node:crypto"
+import { closeSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { z } from "zod"
+import { claimExclusiveFileLease, type FileLease } from "./file-lease.js"
+
+const pidSchema = z.number().int().min(1).max(2_147_483_647)
+const ownerSchema = z.object({
+  version: z.literal(1), token: z.string().uuid(), ownerPid: pidSchema,
+  starting: z.number().int().min(0).max(32), children: z.array(pidSchema).max(32),
+})
+type RestoreOwner = z.infer<typeof ownerSchema>
+const currentLease = new AsyncLocalStorage<RestoreOperationLease>()
+
+function readBounded(path: string): string {
+  const handle = openSync(path, "r")
+  try {
+    const bytes = Buffer.alloc(4_097)
+    const length = readSync(handle, bytes)
+    if (length > 4_096) throw new Error("Restore owner record exceeds its size limit")
+    return bytes.toString("utf8", 0, length)
+  } finally { closeSync(handle) }
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false
+    throw error
+  }
+}
+
+export class RestoreLeaseRecoveryError extends Error {
+  constructor(path: string, reason: string, cause?: unknown) {
+    super(`Session worktree already exists or its restore claim is held at ${path}. ${reason}. Preserve the worktree; stop Domovoi and its supervisor before inspecting an unresolved claim.`, { cause })
+    this.name = "RestoreLeaseRecoveryError"
+  }
+}
+
+export class RestoreOperationLease {
+  readonly #file: FileLease
+  readonly #ownerPath: string
+  readonly #owner: RestoreOwner
+
+  constructor(root: string, sessionId: string, token: string) {
+    const claimPath = join(root, ".restore-claims", sessionId)
+    this.#file = claimExclusiveFileLease(join(root, ".restore-leases", `${sessionId}.sqlite`),
+      () => new RestoreLeaseRecoveryError(claimPath, "Another restore or its cleanup still holds the operation lease"))
+    this.#ownerPath = join(root, ".restore-leases", `${sessionId}.json`)
+    this.#owner = { version: 1, token, ownerPid: process.pid, starting: 0, children: [] }
+    try {
+      let heldToken: string | undefined
+      try { heldToken = readBounded(claimPath) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
+      if (heldToken !== undefined) {
+        let previous: RestoreOwner
+        try { previous = ownerSchema.parse(JSON.parse(readBounded(this.#ownerPath))) } catch (cause) {
+          throw new RestoreLeaseRecoveryError(claimPath, "The claim has no readable recovery record; legacy and damaged claims cannot be reclaimed automatically", cause)
+        }
+        if (previous.token !== heldToken) throw new RestoreLeaseRecoveryError(claimPath, "The claim token does not match its recovery record")
+        if (processIsAlive(previous.ownerPid)) throw new RestoreLeaseRecoveryError(claimPath, "The recorded restore owner is still alive")
+        if (previous.starting !== 0) throw new RestoreLeaseRecoveryError(claimPath, "A Git launch was not fully recorded; child liveness is unknown")
+        for (const pid of previous.children) {
+          if (processIsAlive(pid)) throw new RestoreLeaseRecoveryError(claimPath, `Recorded Git child ${pid} is still alive`)
+        }
+        // All new restorers hold the same persistent SQLite lock. PID absence,
+        // never PID reuse or an elapsed timeout, proves the old writers stopped.
+        unlinkSync(claimPath)
+      }
+      this.#publish()
+    } catch (error) {
+      this.#file.release()
+      throw error
+    }
+  }
+
+  run<T>(operation: () => T): T { return currentLease.run(this, operation) }
+  release(): void { this.#file.release() }
+
+  async command<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+    if (this.#owner.starting + this.#owner.children.length >= 32) throw new Error("Too many restore subprocesses")
+    this.#owner.starting++
+    this.#publish()
+    let pending: PromiseWithChild<T> | undefined
+    let closed: Promise<void> | undefined
+    let pid: number | undefined
+    let outcome: { value: T } | { error: unknown }
+    try {
+      pending = launch()
+      // execFile can reject on abort before its child closes. Keep both the
+      // operation lease and durable child identity until actual settlement.
+      closed = new Promise<void>((resolve) => pending!.child.once("close", () => resolve()))
+      pid = pending.child.pid
+      this.#owner.starting--
+      if (pid !== undefined) this.#owner.children.push(pidSchema.parse(pid))
+      this.#publish()
+      outcome = { value: await pending }
+    } catch (error) {
+      outcome = { error }
+    }
+    // Observe a spawn rejection even if publishing its PID failed first.
+    await pending?.catch(() => undefined)
+    await closed
+    if (!pending) this.#owner.starting--
+    if (pid !== undefined) this.#owner.children = this.#owner.children.filter((child) => child !== pid)
+    let recordFailure: { error: unknown } | undefined
+    try { this.#publish() } catch (error) { recordFailure = { error } }
+    if (recordFailure) {
+      if ("error" in outcome) throw new AggregateError([outcome.error, recordFailure.error], "Restore command and exit recording failed", { cause: outcome.error })
+      throw recordFailure.error
+    }
+    if ("error" in outcome) throw outcome.error
+    return outcome.value
+  }
+
+  #publish(): void {
+    mkdirSync(dirname(this.#ownerPath), { recursive: true, mode: 0o700 })
+    const temporary = `${this.#ownerPath}.${randomUUID()}.tmp`
+    writeFileSync(temporary, JSON.stringify(this.#owner), { flag: "wx", mode: 0o600, flush: true })
+    renameSync(temporary, this.#ownerPath)
+  }
+}
+
+export function trackRestoreCommand<T>(launch: () => PromiseWithChild<T>): Promise<T> {
+  return currentLease.getStore()?.command(launch) ?? launch()
+}
