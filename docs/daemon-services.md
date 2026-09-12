@@ -225,29 +225,31 @@ asynchronous, so the domain is polled until it stops answering instead of sample
 relaunch is reported as `spawn scheduled` rather than as absent, so the no-relaunch half excludes
 that state as well as `running`.
 
-Both macOS tests are unexecuted. They were written on Linux, which cannot run launchd, so their
-first run on a real macOS runner is the evidence for every assertion in them. What is settled now
-is the runner question they depend on and the three facts the supervision test is sized against,
-all read off real hosted macOS jobs rather than assumed. A hosted GitHub macOS runner does run
-inside a GUI login session: `actions/runner-images` provisions every macOS image with GUI
-auto-login for the runner user, and a green `macos-14` job has published a `launchctl print` dump
-showing `domain = gui/501` with a live audit session id, `type = LaunchAgent`, `state = running`
-and a real `pid`. That is an agent which runs, not one which only loads. The relaunch witness is
-`runs`, launchd's own spawn counter, which belongs to a single bootstrap and is therefore only read
-as a delta across a crash. The relaunch delay is launchd's own throttle, reported as
-`minimum runtime` and defaulting to ten seconds, which is what the no-relaunch window is sized
-past. What remains unobserved in any public run is the exact composition these tests perform, a
-`SIGKILL` through the manager followed by a `KeepAlive` relaunch in the per-user domain, so that is
-what their first run settles.
+Both macOS native tests ran successfully on 2026-09-11. The
+[macOS main CI job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119331)
+at `98c412c540bad49b9cbf2459a47bc3309cda62b8` reports nine tests in
+`service/launchd-agent.native.test.ts`, including these two native proofs, with no skips.
+The [Linux job from that run](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119025)
+also reports both native systemd tests passing. These tests use throwaway fixture processes;
+they establish the manager lifecycle and crash/clean-exit policies, not host reboot acceptance or
+production-daemon state recovery. The earlier claim that macOS remained unexecuted understated
+what was built and proved, inviting duplicated work. The
+[S1.1 assessment](service-lifecycle-assessment.md) records the platform gaps and WSL options.
 
-macOS status reports loadedness, not liveness. `domovoid service status` runs
-`launchctl print gui/<uid>/<label>` and reads its exit code, so an agent whose process has exited
-and will not be relaunched still reports as running. The lifecycle test asserts that exact wording
-rather than treating it as a liveness check.
+macOS status reads the job's own runtime `state` from
+`launchctl print gui/<uid>/<label>`. Only `running` reports a live job; a loaded agent whose
+process exited or is waiting for a scheduled spawn remains installed but reports not running.
+The crash-supervision test also checks status after a clean exit. A missing or ambiguous runtime
+field is a refusal, as is any command failure other than the missing-service answer (113).
+
+Windows status uses the numeric Task Scheduler `RegisteredTask.State` through the same read-only
+COM inspection as removal. State 4 reports running; 1, 2 and 3 report registered but not running.
+Only an explicit missing-task answer reports no registration. Unknown state 0, malformed output
+and every nonzero PowerShell exit refuse the query. Localized `schtasks` prose is not parsed.
 
 Beyond those native tests these are configuration delivery and focused removal checks, not full
-native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision is proven on
-systemd, written but not yet run on launchd, and absent on Windows: the logon task is created with
+native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture
+process is proven on systemd and launchd, and absent on Windows: the logon task is created with
 no restart setting at all, so nothing on that platform claims to relaunch a crashed daemon before
 the next logon and there is no policy there for a test to hold to. Installer rollback
 remains separate audit work. A timed-out manager may already have changed OS state; inspect service

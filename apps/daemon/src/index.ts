@@ -26,6 +26,7 @@ import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+import { runGuestSupervisor, stopGuestSupervisor } from "./service/supervisor-command.js"
 import { runSkillCommand } from "./skill-command.js"
 import { readServiceConfiguration, serviceEnvironment, type ServiceConfiguration } from "./service/configuration.js"
 
@@ -99,6 +100,8 @@ Options:
   -h, --help       Show this help
   -v, --version    Show the installed version
   --service-config <path>  Run with the installed non-secret service configuration
+  --service-supervise <path>  Run the installed guest crash supervisor
+  --service-supervisor-stop <path>  Retire that guest supervisor and prove shutdown
 
 Environment:
   DOMOVOI_HOST                    Listener host (default: 127.0.0.1)
@@ -234,6 +237,24 @@ async function main() {
     return
   }
   let serviceConfig: ServiceConfiguration | undefined
+  if (args.length === 2 && args[0] === "--service-supervise") {
+    const entry = process.argv[1]
+    if (!entry) throw new Error("Guest supervision requires an installed daemon entry point")
+    const record = await runGuestSupervisor(args[1]!, {
+      executable: process.execPath, args: [...process.execArgv, entry, "--service-config", args[1]!],
+    })
+    if (record.state === "exhausted") {
+      process.stderr.write(`Guest supervision exhausted after ${record.crashes} crashes and ${record.attemptCount} attempts. See the profile's supervisor.json and domovoid service status.\n`)
+      process.exitCode = 1
+    }
+    return
+  }
+  if (args.length === 2 && args[0] === "--service-supervisor-stop") {
+    const deadline = OperationDeadline.start(15_000)
+    try { process.stdout.write(JSON.stringify(await stopGuestSupervisor(args[1]!, deadline)) + "\n") }
+    finally { deadline.clear() }
+    return
+  }
   if (args.length === 2 && args[0] === "--service-config") {
     try {
       serviceConfig = await readServiceConfiguration(args[1]!)
