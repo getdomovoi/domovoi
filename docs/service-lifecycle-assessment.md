@@ -172,7 +172,7 @@ failures retained. The runner's exact-name/no-skip report checks remain required
 for the selected contract. The guest loop and its status evidence must pass
 acceptance before this assessment claims crash supervision.
 
-### Guest implementation, native acceptance pending
+### Guest implementation and first native proof
 
 The Windows action now invokes `domovoid --service-supervise <service.json>`.
 Task Scheduler retries are disabled: restarting the whole loop would reset its
@@ -200,17 +200,33 @@ that recovery. An unavailable boot probe remains a refusal. The kernel
 [documents boot ID as unvarying after its first read](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html#random);
 a distro start or changed task result alone is not this evidence.
 The request also retires that registration, preventing a replacement
-loop between shutdown proof and task deletion. Reinstallation requires a new
+loop between shutdown proof and task deletion. The final proof acquires the
+startup lease and reads the record again: an old dead-loop record cannot hide
+a successor that already holds the lease but has not published its identity.
+Only the SQLite busy outcome is retried; other lease failures are refusals.
+Reinstallation requires a new
 registration ID; it does not erase the stop marker.
 
 The native fixture now checks failed launch, SIGKILL recovery, actual backoff
 times, four-crash exhaustion, clean exit and deliberate removal during both a
 live child and backoff. Child replacements must share the same loop identity
 and task LastRunTime. Exhaustion must be readable through service status and
-reach the Windows action as exit 1. This is a test contract awaiting a native
-run, not a claim that the expanded acceptance has passed. The fixture's task
-installation still does not wire WSL selection into `service install` or
-establish actual logon acceptance.
+reach the Windows action as exit 1.
+
+[Native run 34680715268](https://github.com/getdomovoi/domovoi/actions/runs/34680715268/job/103518731832)
+at `4918732e57beb457bf861e12ea0a1fc5b0ba8f0b` passed the required service test
+in 67,123 ms; the service phase took 68.5 seconds. Its exhausted record has
+one ENOENT launch failure, then three SIGKILL exits in the same loop. Measured
+completed waits were 1,004, 5,002 and 15,001 ms. The test also passed the status
+and Windows exit-1 assertions, clean exit, live-child removal and backoff
+removal, with the unrelated task, process, profile and distro preserved.
+
+That run predates the final shutdown proof acquiring the startup lease. The
+follow-up regression holds a real SQLite lease while the previous record says
+dead, then publishes a successor; the old implementation incorrectly returned
+the previous record without waiting. Native acceptance of that repair is still
+pending. The fixture's task installation does not wire WSL selection into
+`service install` or establish actual logon acceptance.
 
 ## Measured platform gaps
 

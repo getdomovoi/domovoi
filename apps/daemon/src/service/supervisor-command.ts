@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
-import { claimExclusiveFileLease } from "../file-lease.js"
+import { claimExclusiveFileLease, type FileLease } from "../file-lease.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
@@ -59,6 +59,32 @@ function lastExit(record: SupervisorRecord): string {
   return `last exit ${value} at ${exit.at}`
 }
 
+class GuestSupervisorBusyError extends Error {}
+
+function claimGuestSupervisorLease(home: string): FileLease {
+  prepareSupervisorDirectory(home)
+  const path = join(home, ".domovoi/supervisor-lease.sqlite")
+  try {
+    const info = lstatSync(path)
+    if (!info.isFile() || info.nlink !== 1 || (process.platform !== "win32"
+      && (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0))) {
+      throw new Error("Supervisor lease must be an owned private regular file")
+    }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+  return claimExclusiveFileLease(path, () => new GuestSupervisorBusyError("This guest supervisor is already running"))
+}
+
+async function releaseGuestSupervisorLease<T>(lease: FileLease, outcome: PromiseSettledResult<T>): Promise<T> {
+  const [released] = await Promise.allSettled([Promise.resolve().then(() => lease.release())])
+  if (outcome.status === "rejected") {
+    if (released.status === "rejected") throw new AggregateError([outcome.reason, released.reason],
+      "Supervisor failure and lease release failure", { cause: outcome.reason })
+    throw outcome.reason
+  }
+  if (released.status === "rejected") throw released.reason
+  return outcome.value
+}
+
 export function readGuestSupervisorStatus(home: string, alive = guestProcessAlive, bootId = guestBootId): ServiceStatus | undefined {
   let present = true
   try { lstatSync(supervisorRecordPath(home)) } catch (error) {
@@ -100,8 +126,7 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
   const initial = boundRecord(path)
   if (!initial) throw new Error("Supervisor shutdown requires its recorded identity")
   writeSupervisorStopRequest(configuration.homeDirectory, initial)
-  for (;;) {
-    deadline.throwIfExpired()
+  const proof = (): SupervisorRecord | undefined => {
     const current = boundRecord(path)
     if (!current || current.supervisorId !== initial.supervisorId || !sameProcess(current.loop, initial.loop)) {
       throw new Error("Supervisor identity changed during shutdown")
@@ -110,6 +135,24 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
     const childrenAlive = current.attempts.some((attempt) => attempt.child !== null && effects.alive(attempt.child))
     if (!loopAlive && !childrenAlive) { assertObservableLaunches(current, effects.bootId ?? guestBootId); return current }
     if (!loopAlive) throw new Error("Supervisor stopped but its guest child is still alive; removal refused")
+    return undefined
+  }
+  for (;;) {
+    deadline.throwIfExpired()
+    if (proof() !== undefined) {
+      let lease: FileLease | undefined
+      try { lease = claimGuestSupervisorLease(configuration.homeDirectory) } catch (error) {
+        if (!(error instanceof GuestSupervisorBusyError)) throw error
+      }
+      if (lease) {
+        // A successor may hold the startup lease before publishing its record.
+        // Re-read and prove death under that same lease; the retirement marker
+        // then prevents another start after the proof releases it.
+        const [outcome] = await Promise.allSettled([Promise.resolve().then(() => { deadline.throwIfExpired(); return proof() })])
+        const stopped = await releaseGuestSupervisorLease(lease, outcome)
+        if (stopped !== undefined) return stopped
+      }
+    }
     await withinServiceDeadline(deadline, effects.wait)
   }
 }
@@ -118,15 +161,7 @@ export async function runGuestSupervisor(path: string, entry: { executable: stri
   if (process.platform !== "linux") throw new Error("The guest supervisor requires Linux process birth identities")
   const configuration = configurationAt(path)
   const home = configuration.homeDirectory
-  prepareSupervisorDirectory(home)
-  const leasePath = join(home, ".domovoi/supervisor-lease.sqlite")
-  try {
-    const info = lstatSync(leasePath)
-    if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
-      throw new Error("Supervisor lease must be an owned private regular file")
-    }
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-  const lease = claimExclusiveFileLease(leasePath, () => new Error("This guest supervisor is already running"))
+  const lease = claimGuestSupervisorLease(home)
   const controller = new AbortController()
   const stop = () => controller.abort()
   let latest: SupervisorRecord | undefined
@@ -175,12 +210,5 @@ export async function runGuestSupervisor(path: string, entry: { executable: stri
   if (monitor) clearInterval(monitor)
   process.removeListener("SIGTERM", stop)
   process.removeListener("SIGINT", stop)
-  const [released] = await Promise.allSettled([Promise.resolve().then(() => lease.release())])
-  if (outcome.status === "rejected") {
-    if (released.status === "rejected") throw new AggregateError([outcome.reason, released.reason],
-      "Supervisor failure and lease release failure", { cause: outcome.reason })
-    throw outcome.reason
-  }
-  if (released.status === "rejected") throw released.reason
-  return outcome.value
+  return releaseGuestSupervisorLease(lease, outcome)
 }

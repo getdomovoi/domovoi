@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, expect, it } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { claimExclusiveFileLease } from "../file-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, runServiceCommand } from "./install.js"
 import { readGuestSupervisorStatus, runGuestSupervisor, stopGuestSupervisor, supervisorConfigurationDigest } from "./supervisor-command.js"
@@ -177,6 +178,37 @@ it("refuses a successor loop instead of accepting its stopped predecessor", asyn
       alive: () => true,
       wait: async () => { writeSupervisorRecord(f.home, { ...f.record, supervisorId: randomUUID() }) },
     })).rejects.toThrow("Supervisor identity changed during shutdown")
+  } finally { deadline.clear() }
+})
+
+it("does not accept an old record while a successor holds the startup lease", async () => {
+  const f = fixture()
+  writeSupervisorRecord(f.home, f.record)
+  const lease = claimExclusiveFileLease(join(f.home, ".domovoi/supervisor-lease.sqlite"), () => new Error("fixture lease busy"))
+  let holding = true
+  const release = () => { if (holding) { holding = false; lease.release() } }
+  const deadline = OperationDeadline.start(1000)
+  try {
+    await expect(stopGuestSupervisor(f.path, deadline, {
+      alive: () => false,
+      wait: async () => {
+        release()
+        writeSupervisorRecord(f.home, { ...f.record, supervisorId: randomUUID() })
+      },
+    })).rejects.toThrow("Supervisor identity changed during shutdown")
+  } finally { release(); deadline.clear() }
+})
+
+it("refuses SQLite corruption rather than treating every lease error as contention", async () => {
+  const f = fixture()
+  writeSupervisorRecord(f.home, f.record)
+  writeFileSync(join(f.home, ".domovoi/supervisor-lease.sqlite"), "not a database", { mode: 0o600 })
+  const deadline = OperationDeadline.start(1000)
+  try {
+    await expect(stopGuestSupervisor(f.path, deadline, {
+      alive: () => false,
+      wait: async () => { throw new Error("must not retry corrupt SQLite") },
+    })).rejects.toMatchObject({ errcode: 26 })
   } finally { deadline.clear() }
 })
 
