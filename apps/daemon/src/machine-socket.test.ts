@@ -169,6 +169,19 @@ describe("openMachineSocket", () => {
       .rejects.toThrow("different machine")
   })
 
+  it.each(["00.6.0", "0.06.0", "0.6.0\n", "1".repeat(61) + ".0.0"])("refuses malformed hello version %j as an invalid descriptor", async (version) => {
+    const machine = await machineServer(() => ({ ...structuredClone(machineWorkspace), protocolVersion: version }))
+    const opening = openMachineSocket({ endpoint: machine.endpoint, credential: "n".repeat(43) })
+    void opening.then((connection) => connection.close(), () => {})
+    await expect(opening).rejects.toThrow("invalid descriptor")
+  })
+
+  it.each(["00.6.0", "0.6.0\n", "1".repeat(61) + ".0.0"])("does not publish malformed refusal version %j", (version) => {
+    const error = new MachineProtocolMismatchError(version)
+    expect(error.remoteVersion).toBeUndefined()
+    expect(error.message).toBe("That machine speaks an incompatible protocol")
+  })
+
   it("classifies a rejected machine credential without exposing its history", async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
     servers.push(server)

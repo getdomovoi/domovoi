@@ -4,6 +4,7 @@ import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
 import { fleetMachineDescriptorSchema } from "./fleet.js"
+import { protocolVersionSchema } from "./protocol-version.js"
 
 export const maximumPairedDeviceLabelLength = 128
 export const maximumListedDevices = 256
@@ -149,7 +150,7 @@ export const deviceClaimParamsSchema = z.object({
   label: deviceLabelSchema,
   machineId: machineIdSchema,
   // Compatibility is checked before the one-time code is consumed.
-  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  protocolVersion: protocolVersionSchema,
 }).strict()
 
 // A claim is not a paired device. Only its confirmation capability exists
@@ -170,7 +171,7 @@ export const deviceClaimResultSchema = z.object({
 export const deviceConfirmClaimParamsSchema = z.object({
   authToken: deviceCredentialSchema,
   machineId: machineIdSchema,
-  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  protocolVersion: protocolVersionSchema,
 }).strict()
 
 export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSchema }).strict()

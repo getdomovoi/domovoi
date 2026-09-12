@@ -21,12 +21,11 @@ import {
 } from "./identifiers.js"
 import { skillEnablementReviewsSchema } from "./skills.js"
 import { sessionTurnIdSchema } from "./usage-accounting.js"
+import { compatibleProtocolVersionSchema } from "./protocol-version.js"
 
 export { clientIdentityIdSchema, clientKindSchema }
 
-// 0.6 adds a transfers history variant that older clients cannot parse. Reject
-// those clients at hello. Existing bound credentials still need no re-pairing.
-export const protocolVersion = "0.6.0" as const
+export { protocolVersion } from "./protocol-version.js"
 
 export const connectionIdSchema = z.string().uuid()
 export const permissionModeSchema = z.enum(["ask", "plan", "build"])
@@ -822,7 +821,7 @@ export const annotationSchema = z.object({
 })
 
 export const workspaceSnapshotSchema = z.object({
-  protocolVersion: z.literal(protocolVersion),
+  protocolVersion: compatibleProtocolVersionSchema,
   machine: machineSchema,
   project: projectSchema.nullable(),
   sessions: z.array(sessionSummarySchema),
