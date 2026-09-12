@@ -1,6 +1,5 @@
 import { execFile, fork, type ChildProcess } from "node:child_process"
 import { mkdtemp, readFile, realpath, rename, symlink, writeFile } from "node:fs/promises"
-import { createHash } from "node:crypto"
 import { DatabaseSync } from "node:sqlite"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -264,20 +263,31 @@ describe("session creation cleanup", () => {
       removal = operation
       return operation
     })
+    let phase = "repository inspection"
     try {
-      expect((await fixture.request()).error).toBeDefined()
+      // Repository inspection is setup, not the operation this fixture times
+      // out. Resolve real Git first so the short budget reaches creation.
+      const repository = await beforeDeadline(fixture.workspace.inspect(fixture.repository), deadline)
+      vi.spyOn(fixture.workspace, "inspect").mockResolvedValue(repository)
+      phase = "creation timeout"
+      expect((await fixture.request()).error).toMatchObject({ message: "Session workspace creation timed out" })
+      phase = "late worktree creation"
       const path = await beforeDeadline(created, deadline)
       expect(fixture.store.sessionCreations.pending("project-cleanup")).toHaveLength(1)
       expect(fixture.agent.startThread).not.toHaveBeenCalled()
       releaseCreation()
+      phase = "removal start"
       await beforeDeadline(removing, deadline)
       expect(fixture.store.sessionCreations.pending("project-cleanup")).toHaveLength(1)
       await expect(readFile(join(path, "README.md"), "utf8")).resolves.toBe("preserve source\n")
       releaseRemoval()
+      phase = "removal settlement"
       await waitForFixtureStartup("late creation cleanup settled", () => {
         expect(fixture.store.sessionCreations.pending("project-cleanup")).toEqual([])
       })
       await expect(readFile(join(path, "README.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+    } catch (error) {
+      throw new Error(`Late creation cleanup fixture failed during ${phase}`, { cause: error })
     } finally {
       releaseCreation()
       releaseRemoval()
@@ -394,30 +404,45 @@ describe("session creation recovery boundaries", () => {
   })
 
   it("recovers a dormant project's intent only when that project opens", async () => {
-    let dormantPath = ""
-    let dormantId = ""
-    const fixture = await liveCreationFixture("create", async (setup) => {
-      const path = join(setup.root, "dormant-repository")
-      await execute("git", ["clone", "--quiet", setup.repository, path])
-      dormantPath = await realpath(path)
-      dormantId = `project-${createHash("sha256").update(dormantPath).digest("hex").slice(0, 12)}`
-      const dormant = structuredClone(setup.seed)
-      dormant.project = { ...setup.seed.project!, id: dormantId, path: dormantPath }
-      setup.store.save(dormant)
-      setup.store.save(setup.seed)
-      await prepareInterruptedCreation({ ...setup, repository: dormantPath, seed: dormant })
-      injectOwnerProbe("ESRCH")
-    })
+    const fixture = await liveCreationFixture("create")
+    let restarted: Awaited<ReturnType<typeof connectCreationFixture>> | undefined
+    let initialClosed = false
     try {
-      expect((await fixture.rpc("workspace.get", {})).result?.sessions).toEqual([])
-      expect(fixture.store.sessionCreations.pending(dormantId)).toHaveLength(1)
-      const opened = await fixture.rpc("project.open", { path: dormantPath, client: "cli" })
+      const path = join(fixture.root, "dormant-repository")
+      await execute("git", ["clone", "--quiet", fixture.repository, path])
+      const dormantPath = await realpath(path)
+      const firstOpen = await fixture.rpc("project.open", { path: dormantPath, client: "cli" })
+      expect(firstOpen.error).toBeUndefined()
+      const dormant = firstOpen.result!
+      const dormantId = dormant.project!.id
+      const alias = join(fixture.root, "dormant-alias")
+      await symlink(dormantPath, alias, process.platform === "win32" ? "junction" : "dir")
+      const aliasOpen = await fixture.rpc("project.open", { path: alias, client: "cli" })
+      expect(aliasOpen.error).toBeUndefined()
+      expect(aliasOpen.result?.project).toEqual(dormant.project)
+      process.stdout.write(`Dormant project identity: ${JSON.stringify({ requestedPath: dormantPath,
+        repositoryRoot: dormant.project!.path, projectId: dormantId, aliasProjectId: aliasOpen.result?.project?.id })}\n`)
+      const active = await fixture.rpc("project.open", { path: fixture.repository, client: "cli" })
+      expect(active.error).toBeUndefined()
+      await prepareInterruptedCreation({ ...fixture, repository: dormantPath, seed: dormant })
+      await fixture.close()
+      initialClosed = true
+      injectOwnerProbe("ESRCH")
+      const store = new SqliteWorkspaceStore(join(fixture.root, "state.sqlite"), active.result!)
+      restarted = await connectCreationFixture("create", { ...fixture, seed: active.result!, store })
+      expect((await restarted.rpc("workspace.get", {})).result?.project).toEqual(active.result?.project)
+      expect((await restarted.rpc("workspace.get", {})).result?.sessions).toEqual([])
+      expect(restarted.store.sessionCreations.pending(dormantId)).toHaveLength(1)
+      const opened = await restarted.rpc("project.open", { path: dormantPath, client: "cli" })
       expect(opened.error).toBeUndefined()
       expect(opened.result?.project?.id).toBe(dormantId)
       expect(opened.result?.sessions).toEqual([expect.objectContaining({ id: "session-interrupted", state: "failed", workspacePath: expect.any(String) })])
-      expect(fixture.store.sessionCreations.pending(dormantId)).toEqual([])
-      expect(fixture.agent.startThread).not.toHaveBeenCalled()
-    } finally { await fixture.close() }
+      expect(restarted.store.sessionCreations.pending(dormantId)).toEqual([])
+      expect(restarted.agent.startThread).not.toHaveBeenCalled()
+    } finally {
+      await restarted?.close()
+      if (!initialClosed) await fixture.close()
+    }
   })
 })
 
@@ -475,6 +500,13 @@ async function liveCreationFixture(mode: string, configure?: (setup: CreationSet
       label: "Source checkpoint", commit: source.baseCommit, createdAt: "2026-09-12T12:00:00.000Z" })
   }
   const store = new SqliteWorkspaceStore(join(root, "state.sqlite"), seed)
+  const setup = { root, repository, seed, store, workspace }
+  try { await configure?.(setup) } catch (error) { store.close(); throw error }
+  return connectCreationFixture(mode, setup, options)
+}
+
+async function connectCreationFixture(mode: string, setup: CreationSetup, options: { agentTimeoutMs?: number } = {}) {
+  const { store, workspace } = setup
   const agent = creationTestAgent()
   agent.startThread = vi.fn(agent.startThread)
   const errorSink = vi.fn()
@@ -482,7 +514,6 @@ async function liveCreationFixture(mode: string, configure?: (setup: CreationSet
   let socket: WebSocket | undefined
   const close = async () => { socket?.terminate(); if (daemon) await daemon.stop(); else store.close() }
   try {
-    await configure?.({ root, repository, seed, store, workspace })
     daemon = new DomovoiDaemon({ port: 0, store, workspaceService: workspace, agents: { codex: agent }, errorSink, ...options })
     const address = await daemon.start()
     const paired = store.devices.pair({ label: "creation-cleanup-fixture", binding: { kind: "client", client: "cli" } })
@@ -505,7 +536,7 @@ async function liveCreationFixture(mode: string, configure?: (setup: CreationSet
       } finally { deadline.clear(); socket!.off("message", receive) }
     }
     expect((await rpc("system.hello", { client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: paired.token })).error).toBeUndefined()
-    return { root, store, agent, workspace, errorSink, close, rpc, request: () => mode === "fork"
+    return { ...setup, agent, errorSink, close, rpc, request: () => mode === "fork"
       ? rpc("session.fork", { sessionId: "session-source", checkpointId: "checkpoint-source", requestId: "cleanup-fork", client: "cli", runtime: creationTestRuntime })
       : rpc("session.create", { title: "Cleanup fixture", client: "cli", runtime: creationTestRuntime }) }
   } catch (error) { await close(); throw error }
