@@ -11,7 +11,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type ServiceCommand } from "./install.js"
 import { removeWindowsTask, windowsPowerShellPath } from "./windows-task.js"
 import { wslTaskPlan } from "./wsl-task.js"
-import { wslTaskFixtureBudgets } from "./wsl-task-test-support.js"
+import { observeWslTaskReadiness, wslGuestReadinessSnapshotScript, wslTaskFixtureBudgets } from "./wsl-task-test-support.js"
 
 const node = "/opt/domovoi-ci-node/bin/node"
 const daemon = "/opt/domovoi-ci-daemon/dist/index.js"
@@ -138,20 +138,63 @@ it.runIf(process.platform === "win32" && required)(
       "fs.writeFileSync(process.argv[1] + '/request.partial', process.argv[2], { mode: 0o600 });",
       "fs.renameSync(process.argv[1] + '/request.partial', process.argv[1] + '/request.json');",
     ].join("\n"), [home, JSON.stringify({ ...owned, signal: value })], active)
-    const ready = (previous?: { process: GuestIdentity; owner: ReadyLocalOwner }) => observe(async () => {
-      const current = await processIdentity()
-      if (!current || (previous && current.pid === previous.process.pid && current.start === previous.process.start)) return undefined
-      identity = current
-      const text = await guest([
-        "const fs = require('node:fs');",
-        "try { process.stdout.write(fs.readFileSync(process.argv[1], 'utf8')); }",
-        "catch (e) { if (e.code !== 'ENOENT') throw e; process.stdout.write('null'); }",
-      ].join("\n"), [home + "/.domovoi/local-owner.json"])
-      const owner = localOwnerRecordSchema.safeParse(JSON.parse(text))
-      if (!owner.success || owner.data.state !== "ready" || owner.data.serviceRegistrationId !== registrationId) return undefined
-      if (previous && owner.data.instanceId === previous.owner.instanceId) return undefined
-      if (!(await alive(current))) throw new Error("Guest daemon exited before readiness")
-      return { process: current, owner: owner.data }
+    const ready = (previous?: { process: GuestIdentity; owner: ReadyLocalOwner }) => observeWslTaskReadiness({
+      deadline, diagnosticsMs: budget.diagnostics,
+      // Include Run in the observed operation: it may stall before any poll.
+      ...(!previous ? { start: async () => {
+        const result = await checked(plan.start)
+        expect(result).toMatch(/^domovoi-task:[234]$/)
+        return result
+      } } : {}),
+      task: async (active) => {
+        const value: unknown = JSON.parse(await inspect(
+          "[ordered]@{ state = [int]$task.State; lastTaskResult = [long]$task.LastTaskResult } | ConvertTo-Json -Compress", active))
+        if (value === null || typeof value !== "object" || !("state" in value) || !("lastTaskResult" in value)
+          || typeof value.state !== "number" || !Number.isInteger(value.state) || value.state < 0 || value.state > 4
+          || typeof value.lastTaskResult !== "number" || !Number.isSafeInteger(value.lastTaskResult)) {
+          throw new Error("Invalid task State or LastTaskResult")
+        }
+        return { state: value.state, lastTaskResult: value.lastTaskResult }
+      },
+      probe: async (report) => {
+        report({ step: "process-sidecar", state: "reading" })
+        const current = await processIdentity()
+        report({ step: "process-sidecar", state: current ? "present" : "missing", ...current })
+        if (!current) return undefined
+        if (previous && current.pid === previous.process.pid && current.start === previous.process.start) {
+          report({ step: "replacement-process", state: "waiting" })
+          return undefined
+        }
+        identity = current
+        report({ step: "owner-record", state: "reading" })
+        const text = await guest([
+          "const fs = require('node:fs');",
+          "try { process.stdout.write(fs.readFileSync(process.argv[1], 'utf8')); }",
+          "catch (e) { if (e.code !== 'ENOENT') throw e; process.stdout.write('null'); }",
+        ].join("\n"), [home + "/.domovoi/local-owner.json"])
+        const raw: unknown = JSON.parse(text)
+        const owner = localOwnerRecordSchema.safeParse(raw)
+        if (!owner.success) {
+          report({ step: "owner-record", state: raw === null ? "missing" : "invalid" })
+          return undefined
+        }
+        report({ step: "owner-record", state: owner.data.state,
+          ...("serviceRegistrationId" in owner.data ? { serviceRegistrationId: owner.data.serviceRegistrationId } : {}) })
+        if (owner.data.state !== "ready" || owner.data.serviceRegistrationId !== registrationId) return undefined
+        if (previous && owner.data.instanceId === previous.owner.instanceId) {
+          report({ step: "replacement-owner", state: "waiting" })
+          return undefined
+        }
+        report({ step: "process-liveness", state: "reading" })
+        const running = await alive(current)
+        report({ step: "process-liveness", state: running ? "alive" : "exited" })
+        if (!running) throw new Error("Guest daemon exited before readiness")
+        return { process: current, owner: owner.data }
+      },
+      snapshot: async (active) => JSON.parse(await guest(wslGuestReadinessSnapshotScript, [home], active)),
+      record: (entry) => process.stdout.write("WSL service readiness: " + JSON.stringify({
+        phase, lifecycleElapsedMs: Math.round(performance.now() - began), ...entry,
+      }) + "\n"),
     })
     try {
       expect(await checked(plan.inspect)).toBe("domovoi-task:missing")
@@ -208,7 +251,6 @@ it.runIf(process.platform === "win32" && required)(
       expect(settings.userSid).toBe(settings.currentUserSid)
       expect(settings.triggerUserSid).toBe(settings.currentUserSid)
       mark("first guest start")
-      expect(await checked(plan.start)).toMatch(/^domovoi-task:[234]$/)
       const first = await ready()
       mark("guest failure reaching Windows")
       await signal(first.process, "SIGKILL")
