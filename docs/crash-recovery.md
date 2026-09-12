@@ -1,8 +1,9 @@
 # Crash recovery
 
-Startup reconciles interrupted turns before accepting client requests. Transfers
-recover on retry. Recovery does not replay a provider turn or discard uncommitted
-work.
+Startup reconciles interrupted turns and session creation for the loaded project
+before accepting client requests. Opening another project reconciles its pending
+creation intents. Transfers recover on retry. Recovery does not replay a provider
+turn or discard uncommitted work.
 
 ## Interrupted turns
 
@@ -11,12 +12,13 @@ usage evidence, and clears the session's active turn. Pending approvals expire,
 working-plan approval blockers clear, and session history records the interruption.
 The next message starts a new turn using the preserved session and worktree.
 
-## Transfer restore claims
+## Managed worktree claims
 
-A bundle restore holds a per-session claim under the managed worktree root's
-`.restore-claims/` directory. `.restore-leases/` contains a persistent SQLite lock
-and a bounded recovery record for each session. Never unlink a lock database:
-replacing its file can allow two processes to hold independent locks at one path.
+Bundle restore, session creation, checkpoint forks, and creation-receipt validation
+hold a per-session claim under the managed worktree root's `.restore-claims/`
+directory. `.restore-leases/` contains a persistent SQLite lock and a bounded
+recovery record for each session. Never unlink a lock database: replacing its file
+can allow two processes to hold independent locks at one path.
 
 The record binds the claim token to its owner PID, every running Git child PID,
 and any launch whose child PID has not yet been recorded. Repository calls share
@@ -50,12 +52,37 @@ Transfer member reception has a separate SQLite lease. Retained chunks can be
 retried after the receiver exits; the completed member's length and digest must
 still validate before publication.
 
-## Remaining S1.3 work
+## Interrupted session creation
 
-Session creation currently saves the session after creating its worktree and
-starting its provider thread. A crash between those steps can leave a worktree
-without a saved session. Durable creation intent and recovery of that incomplete
-setup remain separate work. The restore-claim fix does not close that gap.
+Create and fork record a SQLite intent before starting Git. It contains the
+creator PID, a failed-session draft, repository path, and expected managed worktree
+location. A separate completion receipt records the worktree path, branch, and
+base commit only after the guarded Git operation and claim cleanup settle. That
+receipt precedes provider setup; it does not claim a provider thread was created.
+The journal admits at most 1,024 pending intents across projects and 64 KiB of
+UTF-8 JSON per intent. Exhaustion refuses new setup without replacing old evidence.
+
+Recovery requires the creator probe to return `ESRCH`. A live or reused PID,
+permission error, or other probe failure defers recovery and preserves the intent.
+Only the loaded project's intents are recovered; other projects wait until opened.
+
+An abandoned intent becomes a failed session. Recovery starts no provider thread.
+If a completion receipt exists, Git must still verify the canonical worktree
+location, repository, managed branch, and HEAD under the worktree claim. A verified
+receipt exposes the preserved worktree and a recovered checkpoint. The existing
+explicit provider-restart action can then continue the session.
+
+Readable Git metadata alone is not a completion receipt. A missing or invalid
+receipt leaves the session without a usable worktree path. Its system history
+records the preserved setup location for inspection; provider restart refuses it.
+Recovery neither reconstructs an unproven checkout nor deletes its files.
+
+The recovered snapshot commits before journal cleanup. A leftover intent for an
+already-saved session is deduplicated by session ID. Failed journal deletion is
+reported without turning a durable session commit into an RPC refusal. Normal
+failed-setup cleanup removes an intent only after worktree removal settles,
+including when setup or cleanup finishes after the request's deadline. Failed or
+pending removal retains the intent and refuses a repeated fork request.
 
 ## Evidence and limits
 
@@ -69,6 +96,17 @@ after those writers stop, permits the latter fixtures to restore the bundle.
 records, concurrent children, command rejection before child close, and an early
 `Promise.all` rejection while a sibling child remains active.
 `workspace.test.ts` retains the ownership-token and delayed-cleanup tests.
+
+`session-creation-recovery.test.ts` terminates a separate creator after Git
+completes, on either side of receipt publication, for both create and fork. It
+checks preserved uncommitted content, one recovered failed session, and no provider
+replay. Additional probes cover explicit restart, wrong HEAD, symlink replacement,
+owner-probe failures, dormant projects, failed snapshot and receipt publication,
+stale-intent deletion failure, and late removal held behind a fixture gate.
+`session-creation-intents.test.ts` exercises journal ownership, record and count
+bounds, duplicate refusal, and failed SQLite writes. Mutations that discard before
+removal or snapshot persistence, treat `EPERM` as absence, or trust an unverified
+receipt each fail their corresponding regression.
 
 Windows CI run [34713763719](https://github.com/getdomovoi/domovoi/actions/runs/34713763719)
 measured the restore owner and recorded Git launcher absent while the holding
