@@ -83,3 +83,8 @@ These prove process-crash recovery and refusal boundaries. They do not prove
 recovery from filesystem corruption, background helpers outliving a normally
 settled Git command, or arbitrary external repository writers. PID reuse remains
 a conservative refusal pending a separate process-identity decision.
+
+External termination of a Git child on Windows is not covered. An exit reported
+only as an ordinary nonzero code, without a signal or an owned-kill flag, cannot
+be distinguished from a normal Git failure by this record. That native path has
+not been probed.
