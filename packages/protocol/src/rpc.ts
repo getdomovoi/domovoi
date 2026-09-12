@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { protocolVersionSchema } from "./protocol-version.js"
 import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
@@ -804,20 +805,18 @@ export const sessionEvidenceSchema = z.object({
 // versionless client stays correctly classified once this daemon moves on.
 export const versionlessClientProtocol = "0.1.0" as const
 
-const protocolVersionPatternSchema = z.string().regex(/^\d+\.\d+\.\d+$/, "Protocol version must be a three-part semver")
-
 const clientHelloParamsSchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema.optional(),
   clientVersion: z.string().min(1).check(utf16MaxLength(64)),
-  protocolVersion: protocolVersionPatternSchema.optional(),
+  protocolVersion: protocolVersionSchema.optional(),
   authToken: credentialSchema.optional(),
 }).strict()
 
 const machineHelloParamsSchema = z.object({
   client: z.literal("machine"),
   clientVersion: z.string().min(1).check(utf16MaxLength(64)),
-  protocolVersion: protocolVersionPatternSchema.optional(),
+  protocolVersion: protocolVersionSchema.optional(),
   authToken: credentialSchema.optional(),
 }).strict()
 

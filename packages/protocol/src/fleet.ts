@@ -6,6 +6,7 @@ import { fleetHealthSchema } from "./fleet-health.js"
 import { machineIdSchema } from "./identifiers.js"
 import { directTransportEndpointSchema, transportCandidateSchema } from "./transport.js"
 import { connectionKindSchema } from "./schema.js"
+import { protocolVersionSchema } from "./protocol-version.js"
 
 export const maximumFleetMachines = 128
 export const maximumFleetEntries = 512
@@ -83,7 +84,7 @@ const fleetMachineDescriptorObject = z.object({
   arch: z.string().trim().min(1).check(utf16MaxLength(64)),
   version: z.string().trim().min(1).check(utf16MaxLength(64)),
   capabilities: z.array(machineCapabilitySchema).max(16),
-  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  protocolVersion: protocolVersionSchema,
   // Only endpoints the dialer would accept: the schema refuses an
   // unauthenticated candidate, so a machine cannot advertise one.
   transports: z.array(transportCandidateSchema).max(8),
