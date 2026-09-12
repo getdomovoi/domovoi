@@ -91,6 +91,23 @@ describe("WSL readiness diagnostics", () => {
     expect(records).toContainEqual(expect.objectContaining({ event: "guest", step: "owner-record", state: "reading" }))
   })
 
+  it("keeps changing run times when separate launches return the same state and exit", async () => {
+    const records: Record<string, unknown>[] = []
+    const runTimes = ["2026-09-11T22:00:00.000Z", "2026-09-11T22:01:00.000Z"]
+    let polls = 0
+    await observeWslTaskReadiness({
+      deadline: lifecycle(), diagnosticsMs: 100,
+      task: async () => ({ state: 3, lastTaskResult: 127, lastRunTime: runTimes[polls++] }),
+      probe: async () => polls === 2 ? "observed" : undefined,
+      snapshot: async () => { throw new Error("No failure snapshot expected") },
+      record: (entry) => records.push(entry),
+    })
+    expect(records.filter((entry) => entry.event === "task")).toMatchObject([
+      { poll: 1, state: 3, lastTaskResult: 127, lastRunTime: runTimes[0] },
+      { poll: 2, state: 3, lastTaskResult: 127, lastRunTime: runTimes[1] },
+    ])
+  })
+
   it("bounds a stalled diagnostic capture and keeps the readiness failure primary", async () => {
     const abort = new AbortController()
     const primary = new OperationDeadlineExceededError()

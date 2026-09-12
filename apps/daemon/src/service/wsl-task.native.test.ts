@@ -11,6 +11,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type ServiceCommand } from "./install.js"
 import { removeWindowsTask, windowsPowerShellPath } from "./windows-task.js"
 import { wslTaskPlan } from "./wsl-task.js"
+import { captureWslTaskAction } from "./wsl-task-action-probe.js"
 import { observeWslTaskReadiness, wslGuestReadinessSnapshotScript, wslTaskFixtureBudgets } from "./wsl-task-test-support.js"
 
 const node = "/opt/domovoi-ci-node/bin/node"
@@ -30,7 +31,7 @@ const observer = [
   "const home = process.env.HOME;",
   "const request = home + '/request.json';",
   "const identity = { pid: process.pid, start: readFileSync('/proc/self/stat', 'utf8').split(') ').at(-1).split(' ')[19] };",
-  "writeFileSync(home + '/process.partial', JSON.stringify(identity), { mode: 0o600 });",
+  "writeFileSync(home + '/process.partial', JSON.stringify({ ...identity, executable: process.execPath, argv: process.argv, uid: process.getuid(), home, path: process.env.PATH, distribution: process.env.WSL_DISTRO_NAME }), { mode: 0o600 });",
   "renameSync(home + '/process.partial', home + '/process.json');",
   "setInterval(() => {",
   "  let value;",
@@ -56,11 +57,11 @@ it.runIf(process.platform === "win32" && required)(
     const wsl = win32.join(process.env.SystemRoot!, "System32", "wsl.exe")
     const effects = nodeServiceEffects()
     const deadline = OperationDeadline.start(lifecycleBudget)
+    const guestEnvironment = ["HOME=" + home, "PATH=/opt/domovoi-ci-node/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
     const target = {
       name, registrationId, distribution: distribution!, linuxUser: "root",
       executable: "/usr/bin/env",
-      args: ["HOME=" + home, "PATH=/opt/domovoi-ci-node/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        node, "--import", home + "/observer.mjs", daemon, "--service-config", configPath],
+      args: [...guestEnvironment, node, "--import", home + "/observer.mjs", daemon, "--service-config", configPath],
       powershell, wsl,
     }
     const plan = wslTaskPlan(target)
@@ -77,6 +78,8 @@ it.runIf(process.platform === "win32" && required)(
       process.stdout.write("WSL service " + phase + ": " + Math.round(performance.now() - began) + "ms elapsed\n")
       phase = next
     }
+    const launchRecord = (entry: Record<string, unknown>) => process.stdout.write("WSL service launch: "
+      + JSON.stringify({ lifecycleElapsedMs: Math.round(performance.now() - began), ...entry }) + "\n")
     const capture = (command: ServiceCommand, active = deadline) =>
       withinServiceDeadline(active, () => effects.capture(command.command, command.args, active))
     const checked = async (command: ServiceCommand, active = deadline) => {
@@ -101,6 +104,30 @@ it.runIf(process.platform === "win32" && required)(
       return checked({ command: powershell, args: ["-NoLogo", "-NoProfile", "-NonInteractive",
         "-EncodedCommand", Buffer.from(text, "utf16le").toString("base64")] }, active)
     }
+    const taskHistory = (active: OperationDeadline) => inspect([
+      // Read existing history only. Enabling a host log is outside this fixture.
+      "$log = 'Microsoft-Windows-TaskScheduler/Operational'",
+      "$channel = Get-WinEvent -ListLog $log -ErrorAction Stop",
+      "if (-not $channel.IsEnabled) { [ordered]@{ state = 'disabled' } | ConvertTo-Json -Compress; exit 0 }",
+      "$path = [string]$task.Path",
+      "if ($path -notmatch '^\\\\Domovoi-WSL-test-[0-9a-f-]{36}$') { throw 'Unexpected task history scope' }",
+      "$query = \"*[EventData[Data[@Name='TaskName']='\" + $path + \"']]\"",
+      "try { $events = @(Get-WinEvent -LogName $log -FilterXPath $query -MaxEvents 16 -ErrorAction Stop) }",
+      "catch {",
+      "  if ($_.FullyQualifiedErrorId -ne 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') { throw }",
+      "  $events = @()",
+      "}",
+      "$entries = @($events | ForEach-Object {",
+      "  $xml = [xml]$_.ToXml(); $data = [ordered]@{}",
+      "  foreach ($value in @($xml.Event.EventData.Data)) {",
+      "    if (@('TaskName', 'ActionName', 'ResultCode', 'TaskInstanceId', 'EnginePID', 'ProcessID') -contains [string]$value.Name) {",
+      "      $text = [string]$value.InnerText; $data[[string]$value.Name] = $text.Substring(0, [Math]::Min(256, $text.Length))",
+      "    }",
+      "  }",
+      "  [ordered]@{ id = $_.Id; recordId = $_.RecordId; time = $_.TimeCreated.ToUniversalTime().ToString('o'); data = $data }",
+      "})",
+      "[ordered]@{ state = 'available'; events = $entries } | ConvertTo-Json -Depth 5 -Compress",
+    ].join("\n"), active)
     const observe = async <T>(probe: () => Promise<T | undefined>, active = deadline): Promise<T> => {
       for (;;) {
         active.throwIfExpired()
@@ -148,13 +175,19 @@ it.runIf(process.platform === "win32" && required)(
       } } : {}),
       task: async (active) => {
         const value: unknown = JSON.parse(await inspect(
-          "[ordered]@{ state = [int]$task.State; lastTaskResult = [long]$task.LastTaskResult } | ConvertTo-Json -Compress", active))
+          "[ordered]@{ state = [int]$task.State; lastTaskResult = [long]$task.LastTaskResult; lastRunTime = ([datetime]$task.LastRunTime).ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress", active))
         if (value === null || typeof value !== "object" || !("state" in value) || !("lastTaskResult" in value)
           || typeof value.state !== "number" || !Number.isInteger(value.state) || value.state < 0 || value.state > 4
-          || typeof value.lastTaskResult !== "number" || !Number.isSafeInteger(value.lastTaskResult)) {
-          throw new Error("Invalid task State or LastTaskResult")
+          || typeof value.lastTaskResult !== "number" || !Number.isSafeInteger(value.lastTaskResult)
+          || !("lastRunTime" in value) || typeof value.lastRunTime !== "string" || value.lastRunTime.length > 64
+          || Number.isNaN(Date.parse(value.lastRunTime))) {
+          throw new Error("Invalid task State, LastTaskResult or LastRunTime")
         }
-        return { state: value.state, lastTaskResult: value.lastTaskResult }
+        const state = { state: value.state, lastTaskResult: value.lastTaskResult, lastRunTime: value.lastRunTime }
+        if (active === deadline) return state
+        const [history] = await Promise.allSettled([(async () => JSON.parse(await taskHistory(active)))()])
+        return { ...state, history: history.status === "fulfilled"
+          ? { value: history.value } : { error: String(history.reason).slice(0, 4_096) } }
       },
       probe: async (report) => {
         report({ step: "process-sidecar", state: "reading" })
@@ -227,6 +260,44 @@ it.runIf(process.platform === "win32" && required)(
       const boot = await read("/proc/sys/kernel/random/boot_id")
       const wslConfig = await read("/etc/wsl.conf")
       const configBefore = await read(configPath)
+      // Compare Node's ordinary argv launch with the task's serialized string.
+      // These controls run in the invoking host context, not Task Scheduler's.
+      const facts = [
+        "const fs = require('node:fs'), os = require('node:os');",
+        "const files = JSON.parse(process.argv[1]).map(({ path, executable }) => {",
+        "  try { fs.accessSync(path, executable ? fs.constants.X_OK : fs.constants.R_OK); return { path, realPath: fs.realpathSync(path), state: 'accessible' }; }",
+        "  catch (error) { return { path, state: 'error', code: String(error.code) }; }",
+        "});",
+        "process.stdout.write(JSON.stringify({ executable: process.execPath, uid: process.getuid(), user: os.userInfo().username, argv: process.argv.slice(2), home: process.env.HOME, path: process.env.PATH, distribution: process.env.WSL_DISTRO_NAME, files }));",
+      ].join("\n")
+      const paths = JSON.stringify([
+        { path: target.executable, executable: true }, { path: node, executable: true },
+        { path: daemon, executable: false }, { path: home + "/observer.mjs", executable: false },
+      ])
+      const expectedArgv = [...target.args, "space value", 'a"b', "tail\\", "$HOME", "$(printf domovoi-shell-expanded)"]
+      const controls = OperationDeadline.start(Math.min(10_000, deadline.remainingMs()), { signal: deadline.signal })
+      try {
+        const ordinary = await guest(facts, [paths, ...expectedArgv], controls)
+        launchRecord({ event: "ordinary-argv-control", context: "invoking host", value: JSON.parse(ordinary) })
+        const probe = wslTaskPlan({ ...target, args: [...guestEnvironment, node, "-e", facts, "--", paths, ...expectedArgv] })
+        // Isolate quoted option names as a control, without changing the task.
+        const bareOptions = probe.action.arguments.replace(/^"--distribution" /, "--distribution ")
+          .replace(' "--user" ', ' --user ').replace(' "--exec" ', ' --exec ')
+        const variants = [["registered-quoting", probe.action.arguments], ["bare-option-names", bareOptions]]
+        // WSL parses the prefix before CommandLineToArgvW sees the exec tail.
+        // Only remove value quotes for this fixture's demonstrably plain tokens.
+        if (/^[A-Za-z0-9_-]+$/.test(target.distribution) && /^[A-Za-z0-9_-]+$/.test(target.linuxUser)) {
+          variants.push(["bare-prefix", bareOptions.replace('--distribution "' + target.distribution + '"', '--distribution ' + target.distribution)
+            .replace('--user "' + target.linuxUser + '"', '--user ' + target.linuxUser)])
+        } else launchRecord({ event: "control-unavailable", variant: "bare-prefix", error: "Fixture prefix is not plain tokens" })
+        for (const [variant, args] of variants) {
+          launchRecord({ event: "verbatim-control-start", context: "invoking host", variant, path: probe.action.path, arguments: args })
+          const result = await captureWslTaskAction({ path: probe.action.path, arguments: args! }, controls)
+          launchRecord({ event: "verbatim-control-result", context: "invoking host", variant, ...result })
+        }
+      } catch (error) {
+        launchRecord({ event: "control-unavailable", error: String(error).slice(0, 4_096) })
+      } finally { controls.clear() }
       mark("task registration")
       registered = true
       expect(await checked(plan.register)).toBe("domovoi-task:created")
@@ -250,6 +321,13 @@ it.runIf(process.platform === "win32" && required)(
         retries: 3, limit: "PT0S", instances: 2, path: wsl })
       expect(settings.userSid).toBe(settings.currentUserSid)
       expect(settings.triggerUserSid).toBe(settings.currentUserSid)
+      launchRecord({ event: "registered-action", value: JSON.parse(await inspect([
+        "[ordered]@{ path = $task.Definition.Actions.Item(1).Path; arguments = $task.Definition.Actions.Item(1).Arguments;",
+        "workingDirectory = $task.Definition.Actions.Item(1).WorkingDirectory; userId = $task.Definition.Principal.UserId;",
+        "lastRunTime = ([datetime]$task.LastRunTime).ToUniversalTime().ToString('o');",
+        "host = [ordered]@{ userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value;",
+        "is64Bit = [Environment]::Is64BitProcess; WSL_UTF8 = $env:WSL_UTF8; WSLENV = $env:WSLENV } } | ConvertTo-Json -Depth 3 -Compress",
+      ].join("\n"))), expectedAction: plan.action, wslConfig })
       mark("first guest start")
       const first = await ready()
       mark("guest failure reaching Windows")
