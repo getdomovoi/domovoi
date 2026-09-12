@@ -13,6 +13,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
 import { readWindowsTaskState, removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { readGuestSupervisorStatus } from "./supervisor-command.js"
 
 const serviceName = "domovoid"
 const unitFile = `${serviceName}.service`
@@ -57,10 +58,11 @@ export type ServiceEffects = {
   capture: (command: string, args: string[], deadline: OperationDeadline) => Promise<CapturedRun>
   exists: (path: string, deadline: OperationDeadline) => Promise<boolean>
   remove: (path: string, deadline: OperationDeadline) => Promise<void>
+  supervisorStatus?: (home: string) => Promise<ServiceStatus | undefined>
 }
 
 export type ServiceStatus = {
-  installed: boolean
+  installed: boolean | null
   running: boolean
   detail: string
 }
@@ -423,10 +425,12 @@ export function removeService(
 
 async function statusWithDeadline(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "capture" | "exists">,
+  effects: Pick<ServiceEffects, "capture" | "exists" | "supervisorStatus">,
   deadline: OperationDeadline,
 ): Promise<ServiceStatus> {
   if (target.platform === "linux") {
+    const supervisor = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
+    if (supervisor !== undefined) return supervisor
     const path = unitPath(target.home)
     const installed = await withinServiceDeadline(deadline, () => effects.exists(path, deadline))
     const active = await withinServiceDeadline(deadline, () => effects.capture("systemctl", ["--user", "is-active", unitFile], deadline))
@@ -486,7 +490,7 @@ async function statusWithDeadline(
 
 export function serviceStatus(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation">,
+  effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation" | "supervisorStatus">,
 ): Promise<ServiceStatus> {
   return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline))
 }
@@ -565,6 +569,10 @@ export async function runServiceCommand(
     }
 
     const status = await serviceStatus(target, dependencies)
+    if (status.installed === null) {
+      dependencies.stdout(`Windows task registration unverified: ${status.detail}\n`)
+      return 0
+    }
     const installed = status.installed ? "installed" : "not installed"
     const running = status.running ? "running" : "not running"
     dependencies.stdout(`${installed}, ${running}: ${status.detail}\n`)
@@ -584,6 +592,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     claimProfile,
     removalSnapshot: readServiceRemovalSnapshot,
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
+    supervisorStatus: async (home) => readGuestSupervisorStatus(home),
     write: writeUnit,
     run: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")
