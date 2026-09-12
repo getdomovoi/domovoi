@@ -13,7 +13,7 @@ import { WebSocket } from "ws"
 
 import { OperationDeadline } from "../operation-deadline.js"
 import { readLocalOwnerRecord } from "../local-owner-record.js"
-import { waitForDaemon } from "../test-wait-for.js"
+import { waitForFixtureStartup } from "../test-wait-for.js"
 import { parseServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { removeScratchDirectory } from "../test-scratch.js"
@@ -110,7 +110,7 @@ describe("distributed service CLI", () => {
       let stderr = ""
       child.stdout!.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
       child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
-      await within(() => waitForDaemon(() => {
+      await within(() => waitForFixtureStartup("Distributed service daemon", () => {
         expect(stderr).not.toContain("Error:")
         const owner = readLocalOwnerRecord(home)
         expect(owner?.state).toBe("ready")
