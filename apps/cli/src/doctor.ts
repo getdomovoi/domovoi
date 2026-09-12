@@ -1,4 +1,4 @@
-import { deviceCurrentResultSchema, fleetClientRouteResultSchema, fleetSnapshotSchema, isTransportLoopbackHost, workspaceSnapshotSchema } from "@getdomovoi/protocol"
+import { deviceCurrentResultSchema, fleetClientRouteResultSchema, fleetSnapshotSchema, isTransportLoopbackHost, protocolCompatibility, workspaceSnapshotSchema } from "@getdomovoi/protocol"
 
 import type { RpcCall } from "./pair.js"
 
@@ -74,8 +74,13 @@ export async function diagnose(input: { endpoint: string; clientProtocolVersion:
   probes.push(current.kind === "client"
     ? { name: "credential", ok: true, detail: `accepted as device ${current.deviceId} (${current.client})` }
     : { name: "credential", ok: false, detail: "accepted, but as a daemon credential; a client should not hold one" })
-  const same = input.clientProtocolVersion === snapshot.protocolVersion
-  probes.push({ name: "protocol", ok: same, detail: `client ${input.clientProtocolVersion}, daemon ${snapshot.protocolVersion}; negotiation: unknown until version negotiation lands` })
+  // The daemon applies the same rule at hello, so this line explains an
+  // admission that already happened rather than predicting one.
+  const compatibility = protocolCompatibility(snapshot.protocolVersion, input.clientProtocolVersion)
+  const outcome = compatibility === "compatible" ? "compatible: major and minor match, patch may differ"
+    : compatibility === "machine-behind" ? "daemon behind: update the daemon"
+    : "daemon ahead: update this CLI"
+  probes.push({ name: "protocol", ok: compatibility === "compatible", detail: `client ${input.clientProtocolVersion}, daemon ${snapshot.protocolVersion}; ${outcome}` })
   // A source-local route (the daemon's own loopback, its WSL distro, its
   // SSH forward) is usable only by a client on the daemon's host. That is
   // this client exactly when the daemon endpoint is loopback.
