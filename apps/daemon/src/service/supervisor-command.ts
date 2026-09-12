@@ -10,7 +10,7 @@ import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceC
 import { withinServiceDeadline } from "./deadline.js"
 import { superviseGuest } from "./guest-supervisor.js"
 import type { ServiceStatus } from "./install.js"
-import { guestProcessAlive, guestProcessIdentity, launchGuestChild } from "./supervisor-process.js"
+import { guestBootId, guestProcessAlive, guestProcessIdentity, launchGuestChild } from "./supervisor-process.js"
 import { prepareSupervisorDirectory, readSupervisorRecord, readSupervisorStopRequest, supervisorRecordPath, writeSupervisorRecord,
   writeSupervisorStopRequest, type GuestProcessIdentity, type SupervisorRecord } from "./supervisor-record.js"
 
@@ -30,10 +30,13 @@ function configurationAt(path: string): ServiceConfiguration & { registrationId:
 const sameProcess = (left: GuestProcessIdentity, right: GuestProcessIdentity): boolean =>
   left.pid === right.pid && left.start === right.start && left.bootId === right.bootId
 
-function assertObservableLaunches(record: SupervisorRecord): void {
+function assertObservableLaunches(record: SupervisorRecord, bootId = guestBootId): void {
   // A spawn may have completed before its birth identity was published. An
   // empty slot is not evidence that no unrecorded child survived the loop.
+  // A different kernel boot is such evidence. Never infer it from a failed
+  // boot probe or just from a changed PID, task result or distro start.
   if (record.attempts.some((attempt) => attempt.child === null && attempt.exit === null)) {
+    if (record.loop.bootId !== bootId()) return
     throw new Error("Supervisor launch has no recorded child outcome; removal or another loop refused")
   }
 }
@@ -56,7 +59,7 @@ function lastExit(record: SupervisorRecord): string {
   return `last exit ${value} at ${exit.at}`
 }
 
-export function readGuestSupervisorStatus(home: string, alive = guestProcessAlive): ServiceStatus | undefined {
+export function readGuestSupervisorStatus(home: string, alive = guestProcessAlive, bootId = guestBootId): ServiceStatus | undefined {
   let present = true
   try { lstatSync(supervisorRecordPath(home)) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
@@ -72,7 +75,7 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
   const record = boundRecord(join(home, ".domovoi/service.json"))
   if (!record) throw new Error("Supervisor record disappeared during status")
   const loopAlive = alive(record.loop)
-  if (!loopAlive) assertObservableLaunches(record)
+  if (!loopAlive) assertObservableLaunches(record, bootId)
   const activeChild = record.attempts.at(-1)
   const running = record.state === "running" && loopAlive && activeChild?.child !== null
     && activeChild?.child !== undefined && activeChild.exit === null && alive(activeChild.child)
@@ -89,6 +92,7 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
 
 export async function stopGuestSupervisor(path: string, deadline: OperationDeadline, effects: {
   alive(identity: GuestProcessIdentity): boolean
+  bootId?: () => string
   wait(): Promise<void>
 } = { alive: guestProcessAlive, wait: async () => { await delay(100, undefined, { signal: deadline.signal }) } }): Promise<SupervisorRecord> {
   deadline.throwIfExpired()
@@ -104,7 +108,7 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
     }
     const loopAlive = effects.alive(current.loop)
     const childrenAlive = current.attempts.some((attempt) => attempt.child !== null && effects.alive(attempt.child))
-    if (!loopAlive && !childrenAlive) { assertObservableLaunches(current); return current }
+    if (!loopAlive && !childrenAlive) { assertObservableLaunches(current, effects.bootId ?? guestBootId); return current }
     if (!loopAlive) throw new Error("Supervisor stopped but its guest child is still alive; removal refused")
     await withinServiceDeadline(deadline, effects.wait)
   }

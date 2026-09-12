@@ -10,7 +10,7 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, runServiceCommand } from "./install.js"
 import { readGuestSupervisorStatus, runGuestSupervisor, stopGuestSupervisor, supervisorConfigurationDigest } from "./supervisor-command.js"
-import { guestProcessAlive, guestProcessIdentity } from "./supervisor-process.js"
+import { guestBootId, guestProcessAlive, guestProcessIdentity } from "./supervisor-process.js"
 import { readSupervisorRecord, readSupervisorStopRequest, supervisorStopPath, writeSupervisorStopRequest, writeSupervisorRecord, type SupervisorRecord } from "./supervisor-record.js"
 
 const homes: string[] = []
@@ -109,11 +109,41 @@ it("refuses removal of a dead loop whose launch outcome was never recorded", asy
   f.record.state = "starting"; f.record.crashes = 0
   Object.assign(f.record.attempts[0]!, { child: null, exit: null, backoffMs: 0 })
   writeSupervisorRecord(f.home, f.record)
-  expect(() => readGuestSupervisorStatus(f.home, () => false)).toThrow("launch has no recorded child outcome")
+  expect(() => readGuestSupervisorStatus(f.home, () => false, () => f.record.loop.bootId)).toThrow("launch has no recorded child outcome")
   const deadline = OperationDeadline.start(1000)
   try {
-    await expect(stopGuestSupervisor(f.path, deadline, { alive: () => false, wait: async () => {} }))
+    await expect(stopGuestSupervisor(f.path, deadline, { alive: () => false, bootId: () => f.record.loop.bootId, wait: async () => {} }))
       .rejects.toThrow("launch has no recorded child outcome")
+  } finally { deadline.clear() }
+})
+
+it("uses a changed boot ID to resolve an otherwise unobservable old launch", async () => {
+  const f = fixture()
+  f.record.state = "starting"; f.record.crashes = 0
+  Object.assign(f.record.attempts[0]!, { child: null, exit: null, backoffMs: 0 })
+  writeSupervisorRecord(f.home, f.record)
+  const bootId = () => "6c4fce1c-cb9d-46a6-9403-3c355b06a8d4"
+  expect(readGuestSupervisorStatus(f.home, () => false, bootId)).toMatchObject({
+    running: false, detail: expect.stringContaining("supervisor is not alive"),
+  })
+  const deadline = OperationDeadline.start(1000)
+  try {
+    await expect(stopGuestSupervisor(f.path, deadline, { alive: () => false, bootId, wait: async () => {} }))
+      .resolves.toMatchObject({ supervisorId: f.record.supervisorId })
+  } finally { deadline.clear() }
+})
+
+it("refuses a boot probe failure instead of assuming the boot changed", async () => {
+  const f = fixture()
+  f.record.state = "starting"; f.record.crashes = 0
+  Object.assign(f.record.attempts[0]!, { child: null, exit: null, backoffMs: 0 })
+  writeSupervisorRecord(f.home, f.record)
+  const failure = new Error("boot ID unavailable")
+  const bootId = () => { throw failure }
+  expect(() => readGuestSupervisorStatus(f.home, () => false, bootId)).toThrow(failure)
+  const deadline = OperationDeadline.start(1000)
+  try {
+    await expect(stopGuestSupervisor(f.path, deadline, { alive: () => false, bootId, wait: async () => {} })).rejects.toBe(failure)
   } finally { deadline.clear() }
 })
 
@@ -196,10 +226,25 @@ it.runIf(process.platform === "linux")("refuses a recorded live child even when 
 it.runIf(process.platform === "linux")("refuses another loop after an unobservable launch", async () => {
   const f = fixture()
   f.record.state = "starting"; f.record.crashes = 0
+  f.record.loop.bootId = guestBootId()
+  f.record.loop.pid = process.pid
+  f.record.loop.start = String(BigInt(guestProcessIdentity(process.pid).start) + 1n)
   Object.assign(f.record.attempts[0]!, { child: null, exit: null, backoffMs: 0 })
   writeSupervisorRecord(f.home, f.record)
   await expect(runGuestSupervisor(f.path, { executable: process.execPath, args: ["-e", "process.exit(0)"] }))
     .rejects.toThrow("launch has no recorded child outcome")
+})
+
+it.runIf(process.platform === "linux")("starts a fresh loop after an unfinished launch from an earlier boot", async () => {
+  const f = fixture()
+  f.record.state = "starting"; f.record.crashes = 0
+  expect(f.record.loop.bootId).not.toBe(guestBootId())
+  Object.assign(f.record.attempts[0]!, { child: null, exit: null, backoffMs: 0 })
+  writeSupervisorRecord(f.home, f.record)
+  const record = await runGuestSupervisor(f.path, { executable: process.execPath, args: ["-e", "process.exitCode = 0"] })
+  expect(record).toMatchObject({ state: "stopped", attemptCount: 1, crashes: 0 })
+  expect(record.supervisorId).not.toBe(f.record.supervisorId)
+  expect(record.loop.bootId).toBe(guestBootId())
 })
 
 it.runIf(process.platform === "linux")("a corrupt stop request stops the real child and refuses further supervision", async () => {

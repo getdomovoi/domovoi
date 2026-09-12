@@ -16,16 +16,19 @@ export function parseGuestProcessStat(text: string): { start: string; alive: boo
   return { start, alive: fields[0] !== "Z" && fields[0] !== "X" }
 }
 
+export function guestBootId(): string {
+  return guestProcessIdentitySchema.shape.bootId.parse(readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim())
+}
+
 export function guestProcessIdentity(pid: number): GuestProcessIdentity {
   const stat = parseGuestProcessStat(readFileSync(`/proc/${pid}/stat`, "utf8"))
   if (!stat.alive) throw new Error("Guest process exited before its birth identity could be recorded")
-  return guestProcessIdentitySchema.parse({ pid, start: stat.start,
-    bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() })
+  return guestProcessIdentitySchema.parse({ pid, start: stat.start, bootId: guestBootId() })
 }
 
 export function guestProcessAlive(identity: GuestProcessIdentity): boolean {
   guestProcessIdentitySchema.parse(identity)
-  if (readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== identity.bootId) return false
+  if (guestBootId() !== identity.bootId) return false
   try {
     const stat = parseGuestProcessStat(readFileSync(`/proc/${identity.pid}/stat`, "utf8"))
     return stat.alive && stat.start === identity.start

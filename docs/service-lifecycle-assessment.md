@@ -193,8 +193,13 @@ Removal first disables the matching Windows task. The guest-only
 to the loop and registration. The loop cancels backoff, stops and reaps its
 owned child, and exits. The stop command independently waits for the loop and
 all recorded children to be dead. A launch without a recorded child identity
-or exit is unresolved, even if the loop is dead, and blocks removal and a new
-loop. The request also retires that registration, preventing a replacement
+or exit is unresolved within the same boot, even if the loop is dead, and
+blocks removal and a new loop. A different validated kernel boot ID proves
+that no child of the earlier boot survives; startup, status and removal allow
+that recovery. An unavailable boot probe remains a refusal. The kernel
+[documents boot ID as unvarying after its first read](https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html#random);
+a distro start or changed task result alone is not this evidence.
+The request also retires that registration, preventing a replacement
 loop between shutdown proof and task deletion. Reinstallation requires a new
 registration ID; it does not erase the stop marker.
 
