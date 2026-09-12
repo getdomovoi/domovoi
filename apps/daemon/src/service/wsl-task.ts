@@ -50,8 +50,13 @@ export function wslTaskPlan(target: WslTaskTarget): WslTaskPlan {
     || target.args.length > 128) {
     throw new Error("WSL task requires bounded names, a registration identity and absolute executables")
   }
-  const args = ["--distribution", target.distribution, "--user", target.linuxUser,
-    "--exec", target.executable, ...target.args].map(argument).join(" ")
+  for (const [name, value] of [["distribution", target.distribution], ["Linux user", target.linuxUser]] as const) {
+    if (/[\s"]/.test(value)) throw new Error("WSL task " + name + " must be a single unquoted token")
+  }
+  // WSL parses this prefix raw. Only the exec tail reaches CommandLineToArgvW;
+  // quoting a switch instead sends the command to the default guest shell.
+  const prefix = ["--distribution", target.distribution, "--user", target.linuxUser, "--exec"].join(" ")
+  const args = prefix + " " + [target.executable, ...target.args].map(argument).join(" ")
   if (args.length > 16_384) throw new Error("WSL task action arguments exceed 16 Ki UTF-16 code units")
   const source = literal("domovoi-wsl:" + target.registrationId)
   const actionPath = literal(target.wsl)

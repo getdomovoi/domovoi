@@ -5,7 +5,7 @@ import { wslTaskPlan } from "./wsl-task.js"
 const input = {
   name: "Domovoi WSL test",
   registrationId: "08a1f2da-12e3-4b2c-9e4f-0123456789ab",
-  distribution: "Ubuntu test's distro",
+  distribution: "Ubuntu-test's-distro",
   linuxUser: "alice",
   executable: "/opt/domovoi/bin/node",
   args: ["/home/alice/repo $HOME/daemon.js", "--service-config", "/home/alice/.domovoi/service.json"],
@@ -35,17 +35,17 @@ describe("Windows supervision of a WSL daemon", () => {
     const plan = wslTaskPlan(input)
     const body = script(plan.register.args)
     expect(body).toContain("$action.Path = 'C:\\Windows\\System32\\wsl.exe'")
-    expect(body).toContain("\"--distribution\" \"Ubuntu test''s distro\" \"--user\" \"alice\" \"--exec\" \"/opt/domovoi/bin/node\"")
+    expect(body).toContain("--distribution Ubuntu-test''s-distro --user alice --exec \"/opt/domovoi/bin/node\"")
     expect(body).toContain("\"/home/alice/repo $HOME/daemon.js\"")
     expect(body).not.toContain("Start-Process")
     expect(body).not.toContain("cmd.exe")
     expect(body).not.toContain("sh -c")
   })
 
-  it("exposes the exact registered action for a verbatim launch probe", () => {
+  it("keeps WSL prefix tokens bare and quotes only the exec tail", () => {
     const plan = wslTaskPlan(input)
     expect(plan.action).toEqual({ path: input.wsl,
-      arguments: '"--distribution" "Ubuntu test\'s distro" "--user" "alice" "--exec" "/opt/domovoi/bin/node" '
+      arguments: '--distribution Ubuntu-test\'s-distro --user alice --exec "/opt/domovoi/bin/node" '
         + '"/home/alice/repo $HOME/daemon.js" "--service-config" "/home/alice/.domovoi/service.json"' })
     expect(script(plan.register.args)).toContain("$action.Arguments = '" + plan.action.arguments.replaceAll("'", "''") + "'")
   })
@@ -108,6 +108,12 @@ describe("Windows supervision of a WSL daemon", () => {
   it("bounds the encoded PowerShell command as well as the guest argv", () => {
     expect(() => wslTaskPlan({ ...input, args: ["x".repeat(10_000)] }))
       .toThrow("Encoded WSL task command exceeds")
+  })
+
+  it.each(["distribution", "linuxUser"] as const)("refuses quotes or whitespace in the raw %s token", (field) => {
+    for (const value of ['bad"name', "bad name", "bad\tname", "bad\nname", "bad\u00a0name", "name --exec /bin/false"]) {
+      expect(() => wslTaskPlan({ ...input, [field]: value }), value).toThrow()
+    }
   })
 
   it.each([
