@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
+import { mkdir, mkdtemp, rmdir, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -142,15 +143,17 @@ describe("WSL readiness diagnostics", () => {
   })
 })
 
-describe("guest sidecar snapshot", () => {
+// This program runs inside the Linux guest, even when Vitest runs on Windows.
+// POSIX hosts can exercise its no-follow reads directly; Windows has no such flag.
+describe.runIf(typeof constants.O_NOFOLLOW === "number")("guest sidecar snapshot", () => {
   async function home() {
     const directory = await mkdtemp(join(tmpdir(), "domovoi readiness "))
     directories.push(directory)
     await mkdir(join(directory, ".domovoi"))
     return directory
   }
-  async function snapshot(directory: string) {
-    const result = await run(process.execPath, ["-e", wslGuestReadinessSnapshotScript, directory], { timeout: 5_000 })
+  async function snapshot(directory: string, setup = "") {
+    const result = await run(process.execPath, ["-e", setup + "\n" + wslGuestReadinessSnapshotScript, directory], { timeout: 5_000 })
     return JSON.parse(result.stdout)
   }
 
@@ -172,5 +175,47 @@ describe("guest sidecar snapshot", () => {
     expect(result[".domovoi/local-owner.json"]).toMatchObject({ state: "present", bytes: 4096, truncated: true })
     expect(result[".domovoi/local-owner.json"].content).toHaveLength(4096)
     expect(Object.keys(result).sort()).toEqual([".domovoi/local-owner.json", "process.json", "process.partial"])
+  })
+
+  it("refuses a sidecar symlink without exposing its target", async () => {
+    const directory = await home()
+    const outside = await home()
+    await writeFile(join(outside, "private"), "outside-file-sentinel")
+    await symlink(join(outside, "private"), join(directory, "process.json"))
+    const result = await snapshot(directory)
+    expect(result["process.json"]).toMatchObject({ state: "error", code: expect.any(String) })
+    expect(JSON.stringify(result)).not.toContain("outside-file-sentinel")
+  })
+
+  it("refuses a symlinked sidecar directory without exposing its target", async () => {
+    const directory = await home()
+    const outside = await home()
+    await writeFile(join(outside, "local-owner.json"), "outside-directory-sentinel")
+    await rmdir(join(directory, ".domovoi"))
+    await symlink(outside, join(directory, ".domovoi"), "junction")
+    const result = await snapshot(directory)
+    expect(result[".domovoi/local-owner.json"]).toMatchObject({ state: "error", code: expect.any(String) })
+    expect(JSON.stringify(result)).not.toContain("outside-directory-sentinel")
+  })
+
+  it.runIf(process.platform === "linux")("refuses a parent swapped after validation using the actual opened descriptor", async () => {
+    const directory = await home()
+    const outside = await home()
+    await writeFile(join(outside, "local-owner.json"), "outside-race-sentinel")
+    const result = await snapshot(directory, [
+      "{",
+      "  const fs = require('node:fs'), path = require('node:path'), open = fs.openSync;",
+      "  const parent = path.join(fs.realpathSync(process.argv[1]), '.domovoi');",
+      "  fs.openSync = (file, ...args) => {",
+      "    if (file === path.join(parent, 'local-owner.json')) {",
+      "      fs.renameSync(parent, parent + '.original');",
+      "      fs.symlinkSync(" + JSON.stringify(outside) + ", parent);",
+      "    }",
+      "    return open(file, ...args);",
+      "  };",
+      "}",
+    ].join("\n"))
+    expect(result[".domovoi/local-owner.json"]).toMatchObject({ state: "error", code: "EOUTSIDE" })
+    expect(JSON.stringify(result)).not.toContain("outside-race-sentinel")
   })
 })
