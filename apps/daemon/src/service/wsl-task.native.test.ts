@@ -11,7 +11,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { nodeServiceEffects, type ServiceCommand } from "./install.js"
 import { removeWindowsTask, windowsPowerShellPath } from "./windows-task.js"
 import { wslTaskPlan } from "./wsl-task.js"
-import { captureWslTaskAction } from "./wsl-task-action-probe.js"
+import { captureWslTaskAction, wslTaskActionProbe } from "./wsl-task-action-probe.js"
 import { observeWslTaskReadiness, wslGuestReadinessSnapshotScript, wslTaskFixtureBudgets } from "./wsl-task-test-support.js"
 
 const node = "/opt/domovoi-ci-node/bin/node"
@@ -262,38 +262,20 @@ it.runIf(process.platform === "win32" && required)(
       const configBefore = await read(configPath)
       // Compare Node's ordinary argv launch with the task's serialized string.
       // These controls run in the invoking host context, not Task Scheduler's.
-      const facts = [
-        "const fs = require('node:fs'), os = require('node:os');",
-        "const files = JSON.parse(process.argv[1]).map(({ path, executable }) => {",
-        "  try { fs.accessSync(path, executable ? fs.constants.X_OK : fs.constants.R_OK); return { path, realPath: fs.realpathSync(path), state: 'accessible' }; }",
-        "  catch (error) { return { path, state: 'error', code: String(error.code) }; }",
-        "});",
-        "process.stdout.write(JSON.stringify({ executable: process.execPath, uid: process.getuid(), user: os.userInfo().username, argv: process.argv.slice(2), home: process.env.HOME, path: process.env.PATH, distribution: process.env.WSL_DISTRO_NAME, files }));",
-      ].join("\n")
-      const paths = JSON.stringify([
+      // Build before the optional capture: an invalid fixture is a test defect,
+      // not an unavailable host observation to hide for another four minutes.
+      const probe = wslTaskActionProbe(target, { runtime: node, environment: guestEnvironment, files: [
         { path: target.executable, executable: true }, { path: node, executable: true },
         { path: daemon, executable: false }, { path: home + "/observer.mjs", executable: false },
-      ])
-      const expectedArgv = [...target.args, "space value", 'a"b', "tail\\", "$HOME", "$(printf domovoi-shell-expanded)"]
+      ] })
       const controls = OperationDeadline.start(Math.min(10_000, deadline.remainingMs()), { signal: deadline.signal })
       try {
-        const ordinary = await guest(facts, [paths, ...expectedArgv], controls)
+        const ordinary = await guest(probe.script, probe.argv, controls)
         launchRecord({ event: "ordinary-argv-control", context: "invoking host", value: JSON.parse(ordinary) })
-        const probe = wslTaskPlan({ ...target, args: [...guestEnvironment, node, "-e", facts, "--", paths, ...expectedArgv] })
-        // Isolate quoted option names as a control, without changing the task.
-        const bareOptions = probe.action.arguments.replace(/^"--distribution" /, "--distribution ")
-          .replace(' "--user" ', ' --user ').replace(' "--exec" ', ' --exec ')
-        const variants = [["registered-quoting", probe.action.arguments], ["bare-option-names", bareOptions]]
-        // WSL parses the prefix before CommandLineToArgvW sees the exec tail.
-        // Only remove value quotes for this fixture's demonstrably plain tokens.
-        if (/^[A-Za-z0-9_-]+$/.test(target.distribution) && /^[A-Za-z0-9_-]+$/.test(target.linuxUser)) {
-          variants.push(["bare-prefix", bareOptions.replace('--distribution "' + target.distribution + '"', '--distribution ' + target.distribution)
-            .replace('--user "' + target.linuxUser + '"', '--user ' + target.linuxUser)])
-        } else launchRecord({ event: "control-unavailable", variant: "bare-prefix", error: "Fixture prefix is not plain tokens" })
-        for (const [variant, args] of variants) {
-          launchRecord({ event: "verbatim-control-start", context: "invoking host", variant, path: probe.action.path, arguments: args })
-          const result = await captureWslTaskAction({ path: probe.action.path, arguments: args! }, controls)
-          launchRecord({ event: "verbatim-control-result", context: "invoking host", variant, ...result })
+        for (const variant of probe.variants) {
+          launchRecord({ event: "verbatim-control-start", context: "invoking host", variant: variant.name, ...variant.action })
+          const result = await captureWslTaskAction(variant.action, controls)
+          launchRecord({ event: "verbatim-control-result", context: "invoking host", variant: variant.name, ...result })
         }
       } catch (error) {
         launchRecord({ event: "control-unavailable", error: String(error).slice(0, 4_096) })
