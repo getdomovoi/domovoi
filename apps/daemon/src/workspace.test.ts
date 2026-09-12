@@ -1386,6 +1386,8 @@ describe("GitWorkspaceService bundle restore", () => {
     const claimPath = join(root, ".restore-claims", "session-1")
     const target = new GitWorkspaceService(root)
     const writeError = Object.freeze(new Error("claim token write failed"))
+    // Source creation released its own claim. Observe only the target refusal.
+    vi.mocked(unlink).mockClear()
     const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
     vi.mocked(open).mockImplementationOnce(async (...args) => {
       const handle = await actual.open(...args)
