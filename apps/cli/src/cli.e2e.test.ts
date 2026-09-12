@@ -125,6 +125,46 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 2 })
   })
 
+  it("doctor reports the daemon, credential and protocol probes against a real daemon", async () => {
+    const credentialFile = join(home!, "doctor-credentials.json")
+    const credential = await mintClientCredential()
+    expect(await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `${credential}\n`)).toMatchObject({ code: 0 })
+    const doctor = await runCli(["doctor", "--daemon", url, "--credential-file", credentialFile])
+    expect(doctor.stdout).toMatch(/^ok {3}daemon {6}\S/m)
+    expect(doctor.stdout).toMatch(/^ok {3}credential {2}accepted as device device-[0-9a-f]{32} \(cli\)$/m)
+    expect(doctor.stdout).toMatch(/^ok {3}protocol {4}client \d+\.\d+\.\d+, daemon \d+\.\d+\.\d+; negotiation: unknown/m)
+    expect(doctor.stdout).toMatch(/^doctor: no problems found$/m)
+    expect(doctor.code).toBe(0)
+
+    const logs = await runCli(["logs", "--daemon", url, "--credential-file", credentialFile, "--limit", "5"])
+    expect(logs.code).toBe(0)
+    expect(logs.stdout).toMatch(/device\.(pair|claim|current)|system\.hello/)
+    expect(logs.stdout).not.toMatch(/follow/)
+  })
+
+  it("skill install previews a real directory and refuses a relative path", async () => {
+    const credentialFile = join(home!, "skill-credentials.json")
+    const credential = await mintClientCredential()
+    expect(await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `${credential}\n`)).toMatchObject({ code: 0 })
+    const skill = join(home!, "skills", "pr-triage")
+    const { mkdir, writeFile } = await import("node:fs/promises")
+    await mkdir(skill, { recursive: true })
+    await writeFile(join(skill, "SKILL.md"), "---\nname: pr-triage\ndescription: Triage pull requests\n---\n\nTriage.\n")
+    const relative = await runCli(["skill", "install", "skills/pr-triage", "--daemon", url, "--credential-file", credentialFile])
+    expect(relative.code).toBe(2)
+    const declined = await runCli(["skill", "install", skill, "--daemon", url, "--credential-file", credentialFile], "n\n")
+    expect(declined.stdout).toMatch(/^skill {6}pr-triage/m)
+    expect(declined.stdout).toMatch(/^not installed$/m)
+    expect(declined.code).toBe(1)
+  })
+
+  it("refuses surplus arguments before any connection, even with --yes", async () => {
+    const surplus = await runCli(["skill", "install", join(home!, "skills", "pr-triage"), "extra", "--yes", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")])
+    expect(surplus.code).toBe(2)
+    expect(surplus.stderr).toMatch(/takes no further arguments; got "extra"/)
+    expect(await runCli(["doctor", "now", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")])).toMatchObject({ code: 2 })
+  })
+
   it("refuses a credential passed as an argument", async () => {
     const result = await runCli(["pair", "x".repeat(43), "--daemon", url, "--credential-file", join(home!, "unused.json")])
     expect(result.code).toBe(2)
