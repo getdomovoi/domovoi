@@ -10,7 +10,7 @@ const [root, repository, bundle, mode = "before-git"] = process.argv.slice(2)
 if (!root) throw new Error("Missing workspace recovery fixture root")
 
 if (mode === "hold-child") {
-  writeFileSync(join(root, "child-ready"), "ready")
+  writeFileSync(join(root, "child-ready"), JSON.stringify({ pid: process.pid, parentPid: process.ppid }))
   const timeout = setTimeout(() => process.exit(1), 20_000)
   const timer = setInterval(() => {
     if (!existsSync(join(root, "child-release"))) return
@@ -22,11 +22,13 @@ if (mode === "hold-child") {
   const workspace = new GitWorkspaceService(root)
   workspace.inspect = async () => {
     process.send!({ state: "claimed" })
-    if (mode === "during-git") {
+    if (mode !== "before-git") {
+      const abort = new AbortController()
+      if (mode === "after-git-abort") process.once("message", () => abort.abort())
       const quote = (value: string) => `'${value.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`
       const command = [process.execPath, "--import", import.meta.resolve("tsx"), fileURLToPath(import.meta.url), root, repository, bundle, "hold-child"]
         .map(quote).join(" ")
-      await trackRestoreCommand(() => promisify(execFile)("git", ["-C", repository, "-c", `alias.hold=!${command}`, "hold"]))
+      await trackRestoreCommand(() => promisify(execFile)("git", ["-C", repository, "-c", `alias.hold=!${command}`, "hold"], { signal: abort.signal, killSignal: "SIGKILL" }))
     } else {
       await new Promise<void>((resolve) => process.once("message", () => resolve()))
     }

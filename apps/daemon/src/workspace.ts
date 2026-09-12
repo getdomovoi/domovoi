@@ -168,6 +168,7 @@ async function releaseRestoreClaim(
       const currentToken = await readFile(claimPath, { encoding: "utf8", signal: deadline.signal })
       deadline.throwIfExpired()
       if (currentToken !== claimToken) throw new RestoreClaimOwnerVerificationError(claimTokenWritten)
+      lease.assertRecordedSettlement()
       phase = "unlink"
       // Path verification and unlink are not atomic. Manual removal requires
       // stopped daemons, including when the release deadline has expired.
