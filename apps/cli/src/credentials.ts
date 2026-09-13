@@ -33,9 +33,6 @@ export type CredentialStore = {
 
 export const keyringService = "domovoi-cli"
 
-// A paired-daemon file is a small JSON document. Anything larger is not one.
-const maximumCredentialFileBytes = 64 * 1024
-
 const fileWarning = (path: string) =>
   `Credentials for this daemon are kept in ${path}, not in an OS keychain. The file is mode 0600 and holds a bearer that grants session sends, approvals and terminals. Anyone who can read it can act as you on that daemon.`
 
@@ -64,7 +61,6 @@ export async function openCredentialStore(input: {
     warn: input.warn,
     fileWarning,
     unavailable,
-    maximumBytes: maximumCredentialFileBytes,
     ...(input.publish === undefined ? {} : { publish: input.publish }),
   })
   return backend.where === "keyring" ? keyringStore(backend.keyring) : fileStore(backend)
