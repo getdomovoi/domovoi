@@ -57,6 +57,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@getdomovoi/credential-store": "workspace:*",
     "@types/node": "^26.4.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "catalog:",
