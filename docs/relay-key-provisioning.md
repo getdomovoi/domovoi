@@ -45,8 +45,9 @@ between lstat and open refuse. Parent-directory trust is required.
 
 The profile's `.domovoi/relay-identity.json` contains only a versioned public pin
 and custody selector: machine id, Ed25519 public key, generation, suite and X25519
-public key, plus the explicit file path when selected. File credentials carry
-only the warm private key and its machine/public-identity bindings. File reads
+public key, plus the explicit file path when selected. After adoption it also
+holds the latest signed successor. File credentials carry only warm private keys
+and their machine/public-identity bindings. File reads
 are capped before allocation: 1 KiB for the credential and 8 KiB for the public
 record. The same limits apply to publication.
 
@@ -108,10 +109,85 @@ public pin only after every check passes.
 `verifyRelayProfileSuccessor(homeDirectory, envelope)` binds that verifier to the
 saved daemon public record. It is read-only and works even if the warm credential
 is missing or the keychain is locked. Verification does not adopt a successor or
-consume a statement. A future adoption path must atomically persist the returned
-pin before using it; repeated verification against the same old pin is not a
-replay ledger. The factory also exposes its public pin as `relayIdentity` on the
-local handle. Existing strict pairing responses are unchanged.
+consume a statement. Verification alone does not persist the returned
+pin; repeated verification against the same old pin is not a
+replay ledger. The adoption APIs below perform that persistence. The factory also
+exposes its public pin as `relayIdentity` on the local handle. Existing strict
+pairing responses are unchanged.
+
+## Prepare and adopt on the daemon profile
+
+The daemon package exports `prepareRelayProfileSuccessor({ homeDirectory, warn })`
+and `adoptRelayProfileSuccessor({ homeDirectory, warn }, signedSuccessor)`. These
+are local library operations, not RPCs or new CLI commands. Stop the daemon first:
+each operation acquires the same profile lease as production startup and refuses
+an already-owned profile. The lease remains held through pending custody work.
+
+Preparation generates a fresh warm X25519 key through the daemon's CSPRNG and
+returns a public successor statement for the external signer. It uses the saved
+custody selector and refuses a locked keychain, malformed credential or malformed
+public record. A missing warm credential is recoverable when the authentic public
+record remains. No identity private key enters either API. A repeated preparation
+returns the same staged statement, so retrying does not invalidate a signature
+the signer is preparing elsewhere.
+
+During preparation, credential format version 2 holds at most two warm keys and
+one bounded unsigned statement: the old active key if it still exists, and the
+candidate key. The public pin remains unchanged. Startup selects by the public key
+in that pin, never by array order. If only the candidate exists, startup refuses
+until signed adoption. Generation exhaustion refuses before generating a key.
+
+Adoption verifies the signature against the saved identity through
+`verifyRelayChannelSuccessor`, then requires the exact staged statement and a
+matching private key in the same custody backend. It republishes and reads back
+the staged credential before publishing the new public pin. That public-record
+rename is the commit point. Only afterwards does it replace the credential with
+version 1 containing the new key alone. It never serves both channel keys.
+
+If public publication fails before rename, the old pin and old key remain usable.
+If it fails after rename, both keys remain, and startup selects the new key,
+republishes the public record to finish its directory flush, then removes the
+retired key before starting. A cleanup failure says that adoption already happened;
+retrying the exact recorded successor completes cleanup without generating a key.
+That retry never erases a newer preparation. Preparing the following generation
+also finishes a previously interrupted public-record flush before retiring keys.
+The existing Windows directory-durability limit still applies.
+
+The record retains the latest signed successor only. A client more than one
+generation behind needs each intervening signed statement, applied in order.
+Statement archival and delivery belong to the next integration layer. Resetting
+a generation or replacing the saved identity anchor is not recovery.
+
+## Recover a client pin
+
+The protocol main entry exports `relayClientPinSchema`: a strict public record
+with version 1, the saved identity pin, and state `trusted` or `recovery-required`.
+The `@getdomovoi/protocol/relay-admission` entry exports three reusable operations:
+
+- `requireRelayPinRecovery(store)` durably marks the current pin untrusted while
+  retaining the authentic identity and predecessor needed to check a successor.
+- `adoptRelayPinSuccessor(store, envelope)` verifies with that saved identity,
+  then durably replaces the complete record with the next trusted pin. A failed
+  signature, failed write or compare-and-swap conflict never returns success.
+- `createPinnedRelayClient(store, options)` reads the saved record for every new
+  admission, refuses a recovery-required or foreign-machine pin, and derives the
+  handshake context from its saved channel key. Callers supply a route id, client
+  credential and carrier, not a replacement channel pin.
+
+`RelayPinStore` is a persistence contract, not an in-memory pin cache. `read`
+returns a committed snapshot. `compareAndSwap` compares the complete record by
+value and resolves true only after its replacement is durable. Reads and writes
+must share the backing store's transaction boundary; an unlocked read followed by
+rename is not an implementation of this contract. Errors propagate and conflicts
+refuse. There is no automatic retry that could overwrite a concurrent distrust
+decision. Storage adapters, authentic initial enrollment and closing existing
+channels on suspicion remain client integration responsibilities. These functions
+gate new admissions and do not revoke channels held in another process.
+
+An untrusted carrier may deliver a signed statement, but cannot supply the identity
+used to verify it. Client adoption rejects replay after advancing its pin. The
+daemon's exact-envelope retry above completes a known profile transaction; it is
+not a client replay exception. Neither side accepts identity private-key fields.
 
 ## Evidence and remaining boundary
 
@@ -123,11 +199,24 @@ failed read-back, missing/tampered keys and cancellation. Production factory tes
 generate and reopen an actual stored channel key and verify the key supplied to
 the server, including buffer cleanup and the lease during cancellation.
 
-This is custody and statement verification. Client identity-pin enrollment,
-successor delivery, persistent adoption, rebuilt-host rotation, and the relay
-server are not implemented here. The stolen-disk launch row is not closed merely
-by provisioning keys. A client must retain its authentic identity pin separately
-from an attacker-controlled daemon profile before R2 can protect its recovery.
+`apps/daemon/src/relay-pin-recovery.test.ts` provisions and starts a real production
+daemon, pairs a client, persists its pin in a separate SQLite database, and rotates
+the daemon using an external Node Ed25519 signer. Both normal rotation and warm-key
+loss require signed adoption before the reopened client can admit to the new key.
+The same bearer and pairing record survive the daemon restart. A second real daemon
+holds the old private key and a copy of the actual pairing ledger: the stale client
+still admits there, while the recovered client refuses it. That control separates
+pin refusal from a peer merely missing the bearer. Fault-injection tests cover
+staging, read-back, profile ownership, both sides of rename, and retirement failure.
+
+Client identity-pin enrollment, successor delivery, full host-profile restoration
+and the relay server remain outside this range. Warm-key recovery requires a
+retained or authentically restored public profile; the real-daemon proof also
+retains the machine identity and paired-device ledger. It does not prove recovery
+from losing those records too. The stolen-disk launch row still needs delivery:
+an offline client with no distrust decision or signed successor can still accept
+the stolen key. A client must retain its authentic identity pin separately from
+an attacker-controlled daemon profile before R2 can protect its recovery.
 
 The shared `@getdomovoi/credential-store` package is publishable. It is bundled
 into daemon dist, with `@napi-rs/keyring` still a daemon runtime dependency. The
