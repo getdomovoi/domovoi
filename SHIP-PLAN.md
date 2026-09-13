@@ -48,14 +48,20 @@ If a task does not serve the next milestone, it waits.
 
 Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 
-- [ ] **S0.1 [H] The open-core line.** Which capabilities are Apache 2.0 and which are paid.
-      Hard to reverse once published.
+- [x] **S0.1 [H] The open-core line.** Which capabilities are Apache 2.0 and which are paid.
+      Hard to reverse once published. **Resolved 2026-09-12: B.** The payload claim rests on
+      client-side encryption with a reviewed composition, so closing the relay server costs the
+      claim nothing. Record in `S0.2-RELAY-CRYPTO.md` §9.
 - [ ] **S0.2 [H] Relay crypto design, written and reviewed.** "Carries encrypted payloads it
       cannot read" is the product's central claim. Key exchange, forward secrecy, what the
       relay sees in the clear (it must see routing metadata), rotation, and recovery when a
       device is lost. Cannot be retrofitted.
       *Agents may draft: threat model, two or three candidate designs with tradeoffs, and
       what each implies for device loss.*
+      **Design ruled 2026-09-12: suite A, `Noise_IK_25519_ChaChaPoly_SHA256`, our own
+      composition reviewed (R-A); `S0.2-RELAY-CRYPTO.md` §9.** Final once the phone custody
+      statement there is accepted. Stays open until the review lands: budget line $25k to $50k
+      estimated (§7a), quote pending the `S0.7` firm conversation.
 - [ ] **S0.3 [H] What the relay retains.** Billing by machine requires knowing which
       machines were active and for how long. "Payloads unreadable" and "nothing recorded"
       are different claims. State both halves publicly.
@@ -65,9 +71,11 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 - [ ] **S0.5 [H] The four open product decisions** in `HANDOFF-NOTES.md`: transfer to an
       offline target, what the handoff UI may promise, skill install trust, guest browser
       session scope.
-- [ ] **S0.6 [H] Where the relay lives.** Follows S0.1. Until it is answered, the relay has
+- [x] **S0.6 [H] Where the relay lives.** Follows S0.1. Until it is answered, the relay has
       no directory and Phase 2 cannot be scaffolded — `apps/relay` in this monorepo and a
-      separate private repo are different answers about what ships open.
+      separate private repo are different answers about what ships open. **Resolved
+      2026-09-12: separate private repository for the relay server; `packages/protocol/relay/`
+      keeps the wire format and the client side open.**
 - [ ] **S0.7 [H] Start the long-lead clock.** Apple Developer enrolment, Windows
       code-signing certificate, and a first conversation with an audit firm. Weeks of
       calendar, zero engineering.
