@@ -72,6 +72,23 @@ describe("credential store", () => {
     expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ version: 1 })
   })
 
+  it("loads and forgets from a large file written before this port", async () => {
+    const home = await directory()
+    const file = join(home, "cli-credentials.json")
+    // 350 records is about 76 KiB: a real file from a CLI paired with many
+    // daemons, and larger than any cap a custody-only change might add.
+    const daemons = Array.from({ length: 350 }, (_, index) => ({
+      ...paired, endpoint: `ws://127.0.0.1:${40000 + index}/rpc`, deviceId: `device-${index.toString(16).padStart(32, "0")}`,
+    }))
+    const { writeFile } = await import("node:fs/promises")
+    await writeFile(file, `${JSON.stringify({ version: 1, daemons }, null, 2)}\n`, { mode: 0o600 })
+    const store = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {} })
+    expect(await store.load(daemons[349]!.endpoint)).toEqual(daemons[349])
+    await store.forget(daemons[0]!.endpoint)
+    expect(await store.load(daemons[0]!.endpoint)).toBeUndefined()
+    expect(JSON.parse(await readFile(file, "utf8")).daemons).toHaveLength(349)
+  })
+
   it("refuses a credential file whose mode lets others read it", async () => {
     if (process.platform === "win32") return
     const home = await directory()
