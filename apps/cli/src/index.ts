@@ -97,9 +97,12 @@ async function main(argv: string[]): Promise<number> {
       connect: (authToken) => connectToDaemon({ endpoint: options.daemon, authToken }),
     })
     process.stdout.write(`Paired with ${paired.machineId} as device ${paired.deviceId}. Credential stored in the ${credentials.where}.\n`)
-    process.stdout.write(paired.relayPin === "enrolled"
-      ? "Relay identity pinned; a rotated key is accepted only when signed by this daemon's identity key.\n"
-      : "No relay identity published; this daemon is not provisioned for relay use.\n")
+    process.stdout.write({
+      enrolled: "Relay identity pinned; a rotated key is accepted only when signed by this daemon's identity key.\n",
+      recovered: "Relay identity recovered from a signed successor and pinned again.\n",
+      trusted: "Relay identity already pinned; unchanged.\n",
+      unavailable: "The daemon refused the relay identity fetch: it is not provisioned for relay use, or the fetch was refused. No relay pin kept.\n",
+    }[paired.relayPin])
     return 0
   }
 
