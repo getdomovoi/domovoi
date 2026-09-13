@@ -88,10 +88,12 @@ export type RelayPinCall = (method: string, params: Record<string, unknown>) => 
 // trusted, because the token that opened this connection is what pairing
 // proved. Recovery required: fetch the latest signed successor and adopt it
 // against the saved pin, never the fetched identity. Trusted: nothing to do.
-// A daemon without relay provisioning refuses relay.recovery; that leaves the
-// pairing without a pin rather than failing it. Only the daemon's own refusal
-// means that. A timeout, a closed socket or a failed send says nothing about
-// the daemon, so those surface to the caller.
+// A daemon refuses relay.recovery when it has no relay provisioning or when
+// the caller's quota is spent; the two are not told apart here. A refusal
+// leaves whatever pin is saved unchanged, so a first pairing stays without a
+// pin and a distrusted pin stays distrusted, and neither fails the pairing.
+// A timeout, a closed socket or a failed send says nothing about the daemon,
+// so those surface to the caller.
 export async function reconcileRelayPin(input: {
   store: PhoneRelayPinStore
   machineId: string
