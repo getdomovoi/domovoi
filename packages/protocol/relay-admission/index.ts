@@ -6,3 +6,5 @@
 export { createRelayClient, createRelayResponder, relayPublicKeyFromPrivateKey } from "./channel.js"
 export type { RelayCarrier, RelayChannel, RelayClient, RelayClientOptions, RelayResponderOptions } from "./channel.js"
 export { relayIdentityPublicKeyIsValid, relaySuccessorSigningBytes, verifyRelayChannelSuccessor } from "./identity.js"
+export { adoptRelayPinSuccessor, createPinnedRelayClient, requireRelayPinRecovery } from "./pin-recovery.js"
+export type { PinnedRelayClientOptions, RelayPinStore } from "./pin-recovery.js"
