@@ -32,6 +32,7 @@
   "files": ["dist/*.js", "dist/*.d.ts", "runtime/lock.json", "runtime/package.json", "runtime/protocol.tgz"],
   "scripts": {
     "prepack": "node ../../scripts/prepare-daemon-runtime.mjs",
+    "prebuild": "pnpm --filter @getdomovoi/credential-store build",
     "build": "tsup",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "tsx watch src/index.ts",
