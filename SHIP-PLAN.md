@@ -51,7 +51,10 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 - [x] **S0.1 [H] The open-core line.** Which capabilities are Apache 2.0 and which are paid.
       Hard to reverse once published. **Resolved 2026-09-12: B (c158a4df).** The payload claim rests on
       client-side encryption with a reviewed composition, so closing the relay server costs the
-      claim nothing. Record in `S0.2-RELAY-CRYPTO.md` §9.
+      claim nothing. Record in `S0.2-RELAY-CRYPTO.md` §9. B's tier boundary is metered relay consumption,
+      and the meter lives in the relay server. That is why the server stays closed (`S0.6`): an
+      open server has no enforcement point, the same argument that moved enforcement off the
+      Apache-2.0 daemon in `S0.4`, one layer up. The two decisions depend on each other.
 - [ ] **S0.2 [H] Relay crypto design, written and reviewed.** "Carries encrypted payloads it
       cannot read" is the product's central claim. Key exchange, forward secrecy, what the
       relay sees in the clear (it must see routing metadata), rotation, and recovery when a
@@ -74,7 +77,12 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
       no directory and Phase 2 cannot be scaffolded — `apps/relay` in this monorepo and a
       separate private repo are different answers about what ships open. **Resolved
       2026-09-12 (c158a4df): separate private repository for the relay server; `packages/protocol/relay/`
-      keeps the wire format and the client side open.**
+      keeps the wire format and the client side open.** Created 2026-09-13 as
+      `github.com/getdomovoi/relay`. **The relay is hosted only, permanently.** Not a preference: the
+      tier meter lives in the server, so an open server has no enforcement point, and hosting is
+      what funds the project. Trust is unaffected: payload unreadability is a property of the open
+      clients under suite A; the metadata claim rests on `S6.1`'s audit. Self-hosting, if ever, is a
+      paid licence of the same code with the meter intact, never a source release.
 - [ ] **S0.7 [H] Start the long-lead clock.** Apple Developer enrolment, Windows
       code-signing certificate, and a first conversation with an audit firm. Weeks of
       calendar, zero engineering.
