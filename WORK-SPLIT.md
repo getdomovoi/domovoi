@@ -312,8 +312,12 @@ building them:
 - [ ] Second pass, easy to lose: the classification lives in the compiled manifest, not the
       source. `design/design_system_domovoi/_adherence.oxlintrc.json` still carries
       `"--transition-control": "color"` under `x-omelette.tokenKinds`, and will until the
-      design app recompiles the manifest (open the project once; DesignSync cannot trigger it)
-      and the file is re-vendored. Done when this reads `other`:
+      design app recompiles the manifest and the file is re-vendored. What does not trigger
+      that recompile, tried 2026-09-13: opening the project, and two DesignSync writes to
+      `_ds/.../tokens/motion.css` (the annotation, then a same-bytes touch), each followed by
+      a read of the live manifest. So the self-check runs inside the Claude Design app, on
+      its own edits, and this item's owner is whoever next edits the design system in the
+      app itself. Done when this reads `other`:
       `grep -n '"--transition-control"' design/design_system_domovoi/_adherence.oxlintrc.json`
       Then `pnpm design:revision` and `node scripts/design-rule.mjs` to regenerate the rule.
 
