@@ -87,19 +87,12 @@ Parallel with Phase 0. Touches nothing the gates decide.
       builds ship *with* it, not after.
 - [ ] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart.
-- [ ] **S1.6 [CC]** CLI to parity: pair, status, doctor, logs, skill install, skill push.
-      **Resolved 2026-09-11: its home is `apps/cli`, a new package owned by Claude Code.** The
-      CLI is a client, the terminal-shaped client for the daemon, so it lives beside the other
-      clients and talks JSON-RPC only, with no daemon internals and no shared file against
-      Codex's `S1.1`. The binary is `domovoi`, without the `d`. `domovoid pair`, `domovoid
-      service install` and `domovoid service status` stay in `apps/daemon` where they already
-      exist (`index.ts:77-92`); `apps/cli` supplies the client half of pairing, which no client
-      in this repository implements today. `skill push` is machine-to-machine as drawn: copy an
-      installed skill to another machine as a signed bundle over the machine channel, with
-      enabling a separate decision on the target, because copying is not consent to run.
-      `skill install <path>` is the local command. The CLI ships over loopback and tailnet now;
-      the relay route is blocked on `S0.2` like every other client, and that is not a reason to
-      hold this.
+- [ ] **S1.6 [CC]** · `apps/cli` — the paired-client CLI, over JSON-RPC on loopback and
+      tailnet. Shipped: pair, status, doctor, logs, skill install. Not shipped: skill push,
+      which is machine-to-machine as the design draws it and waits on a daemon RPC that does
+      not exist. install and service status are not here and never were — they need the
+      profile and keychain, so they stay in domovoid. The relay route is blocked on S0.2, like
+      every other client, and that does not hold this item.
       *History: reassigned `[CX]` 2026-09-10 on the ownership-table argument, since every CLI
       file was under `apps/daemon/src/`. The new package removes that collision instead of
       arbitrating it.*
@@ -234,9 +227,9 @@ since `WORK-SPLIT.md`'s UI is already waiting on it. In parallel it drafts S0.2'
 designs without choosing one.
 
 **Claude Code** finishes `WORK-SPLIT.md` — `CC2`, `CC3`, then `CC5`'s read-only diff work,
-which produces the estimates for all of Phase 3. Then Phase 3's surfaces. `S1.6` used to sit here
-and does not: it is `[CX]`, and leaving it in this paragraph is how a reassignment survives at the
-top of a file and dies at the bottom.
+which produces the estimates for all of Phase 3. Then Phase 3's surfaces. `S1.6` is `[CC]` and
+lives in `apps/cli`; it is listed once, in Phase 1, so that a reassignment cannot survive at the
+top of a file and die at the bottom.
 
 **Neither** scaffolds the relay until S0.6 is answered. Its directory is a statement about
 what ships open, and moving it later moves its whole history.
