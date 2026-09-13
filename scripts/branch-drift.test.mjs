@@ -1,5 +1,10 @@
 import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
+import { promisify } from "node:util"
 
 import { branchDrift, driftReport, stackThreshold } from "./branch-drift.mjs"
 
@@ -38,9 +43,38 @@ test("says it does not know rather than reporting zero", () => {
   assert.equal(driftReport({ detached: true, branch: "main" }), "branch drift unknown: no main to compare against")
 })
 
-test("reads the real repository without throwing", async () => {
-  const drift = await branchDrift()
-  assert.equal(typeof driftReport(drift), "string")
+// A bare origin and a clone of it, both under one temporary directory, so the
+// count is against a main this test wrote rather than whatever the checkout's
+// origin holds. The clone's remote.origin.fetch is removed on purpose: without
+// it a bare `git fetch origin main` updates FETCH_HEAD only, and origin/main
+// keeps the value it had at clone time. The fetch has to name the tracking ref
+// for the numbers here to be about main rather than about the last clone.
+test("counts ahead and behind against a freshly fetched origin/main", async (t) => {
+  const run = promisify(execFile)
+  const dir = await mkdtemp(join(tmpdir(), "domovoi-branch-drift-"))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const origin = join(dir, "origin.git")
+  const clone = join(dir, "clone")
+  const git = (cwd, ...args) => run("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd })
+  const commit = (cwd, name) => git(cwd, "commit", "--quiet", "--allow-empty", "-m", name)
+  await git(dir, "init", "--quiet", "--bare", "-b", "main", origin)
+  const seed = join(dir, "seed")
+  await git(dir, "init", "--quiet", "-b", "main", seed)
+  await commit(seed, "one")
+  await git(seed, "push", "--quiet", origin, "main")
+  await git(dir, "clone", "--quiet", "--no-local", origin, clone)
+  await git(clone, "config", "--unset-all", "remote.origin.fetch")
+  await git(clone, "checkout", "--quiet", "-b", "feat/two")
+  await commit(clone, "two")
+  await commit(clone, "three")
+  await commit(seed, "four")
+  await git(seed, "push", "--quiet", origin, "main")
+
+  const drift = await branchDrift(clone)
+  assert.deepEqual(
+    { detached: drift.detached, branch: drift.branch, baseline: drift.baseline, ahead: drift.ahead, behind: drift.behind, fetched: drift.fetched },
+    { detached: false, branch: "feat/two", baseline: "origin/main", ahead: 2, behind: 1, fetched: true },
+  )
 })
 
 // A stale local main answers every question wrongly while looking exactly like a

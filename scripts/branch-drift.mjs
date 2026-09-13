@@ -54,9 +54,14 @@ export function driftReport(drift) {
 // Offline it does not fail. It falls back to the ref it has and says how old
 // that ref is, because a baseline whose age is stated is usable and one that
 // looks fresh is not.
+//
+// The refspec names the tracking ref. With a bare `fetch origin main`, git
+// updates FETCH_HEAD and moves origin/main only if remote.origin.fetch maps
+// it, so a clone without that mapping would fetch, report fetched, and then
+// count against the origin/main it had before.
 async function fetchBaseline(git) {
   try {
-    await git(["fetch", "--quiet", "origin", "main"])
+    await git(["fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"])
     return { fetched: true }
   } catch {
     return { fetched: false }
