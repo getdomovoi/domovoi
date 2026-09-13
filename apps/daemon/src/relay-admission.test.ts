@@ -1,4 +1,5 @@
 import { once } from "node:events"
+import { generateKeyPairSync } from "node:crypto"
 import { createEmptyWorkspace, demoWorkspace, protocolVersion } from "@getdomovoi/protocol"
 import { createRelayClient, relayPublicKeyFromPrivateKey, type RelayClient } from "@getdomovoi/protocol/relay-admission"
 import { WebSocket } from "ws"
@@ -13,6 +14,9 @@ import { waitForDaemon } from "./test-wait-for.js"
 const key = new Uint8Array(32).fill(11)
 const otherKey = new Uint8Array(32).fill(13)
 const daemonKey = new Uint8Array(32).fill(12)
+const relayIdentity = { version: 1 as const, machineId: demoWorkspace.machine.id, generation: 1,
+  identityPublicKey: generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64url"),
+  channel: { suite: "Noise_IK_25519_ChaChaPoly_SHA256" as const, responderPublicKey: relayPublicKeyFromPrivateKey(daemonKey) } }
 const daemons: DomovoiDaemon[] = []
 const clients: RelayClient[] = []
 const sockets: WebSocket[] = []
@@ -25,7 +29,7 @@ afterEach(async () => {
 
 async function fixture(relayEnabled = true) {
   const store = new SqliteWorkspaceStore(":memory:", createEmptyWorkspace(demoWorkspace.machine))
-  const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", store, ...(relayEnabled ? { relayStaticKey: daemonKey } : {}), errorSink: vi.fn() })
+  const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", store, ...(relayEnabled ? { relayStaticKey: daemonKey, relayRecovery: { identity: relayIdentity } } : {}), errorSink: vi.fn() })
   daemons.push(daemon)
   await daemon.start()
   const paired = store.devices.pair({ label: "phone", binding: { kind: "client", client: "phone" }, channelPublicKey: relayPublicKeyFromPrivateKey(key) })
@@ -152,8 +156,10 @@ describe("direct relay enrolment", () => {
     const ordinary = await rpc("device.pair", { client: "cli", targetClient: "phone", label: "ordinary" })
     expect(ordinary).toHaveProperty("result")
     expect(ordinary.result).not.toHaveProperty("relay")
+    expect(ordinary.result).not.toHaveProperty("relayIdentity")
     const response = await rpc("device.pair", { client: "cli", targetClient: "phone", label: "relay phone", channelPublicKey: relayPublicKeyFromPrivateKey(key) })
     expect(response).toMatchObject({ result: { relay: { suite: "Noise_IK_25519_ChaChaPoly_SHA256", responderPublicKey: relayPublicKeyFromPrivateKey(daemonKey) } } })
+    expect((response.result as { relayIdentity: unknown }).relayIdentity).toEqual(relayIdentity)
     const result = response.result as { token: string }
     expect(store.devices.verify(result.token)?.channelPublicKey).toBe(relayPublicKeyFromPrivateKey(key))
     expect(connect(daemon, result.token).client.admitted).toBe(true)
@@ -167,6 +173,7 @@ describe("direct relay enrolment", () => {
     const machineId = `machine-${"a".repeat(32)}`
     const response = await rpc("device.claim", { code, label: "source", machineId, protocolVersion, channelPublicKey: relayPublicKeyFromPrivateKey(key) })
     expect(response).toMatchObject({ result: { relay: { responderPublicKey: relayPublicKeyFromPrivateKey(daemonKey) } } })
+    expect((response.result as { relayIdentity: unknown }).relayIdentity).toEqual(relayIdentity)
     const token = (response.result as { token: string }).token
     expect(store.devices.verify(token)).toBeUndefined()
     expect(await rpc("device.confirmClaim", { authToken: token, machineId, protocolVersion })).toHaveProperty("result")
