@@ -580,7 +580,7 @@ Every ledger entry is now merged.
     the daemon root token is never valid on relay ingress. Pairing remains direct-only for the
     alpha.
 - [x] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise
-  suite or public-key shape in protocol
+  suite or public-key shape in protocol (531a46b6)
   - **Frozen 2026-09-13 at `531a46b6` (#376):** suite A, `Noise_IK_25519_ChaChaPoly_SHA256`, one
     noble composition published at `@getdomovoi/protocol/relay`. The wire format is pinned by
     committed static fixtures (`packages/protocol/relay/testing/wire-layout.json`,

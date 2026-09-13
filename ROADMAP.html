@@ -802,7 +802,7 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[x] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise suite or public-key shape in protocol
+<li>[x] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise suite or public-key shape in protocol (531a46b6)
 <ul>
 <li>**Frozen 2026-09-13 at <code>531a46b6</code> (#376):** suite A, <code>Noise_IK_25519_ChaChaPoly_SHA256</code>, one noble composition published at <code>@getdomovoi/protocol/relay</code>. The wire format is pinned by committed static fixtures (<code>packages/protocol/relay/testing/wire-layout.json</code>, <code>wire-frames.json</code>) whose digests are recorded in <code>docs/relay-wire-format.md</code> and asserted by test; a byte change fails the suite. The <code>node:crypto</code> backend is a test-only second reader. P-256 and AES-GCM paths are removed. External cryptographic review of that head is outstanding (<code>S0.2-RELAY-CRYPTO.md</code> §7a, §9). Real Hermes or on-device execution, relay admission, framing and key storage remain open.
 </li>

@@ -49,7 +49,7 @@ If a task does not serve the next milestone, it waits.
 Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 
 - [x] **S0.1 [H] The open-core line.** Which capabilities are Apache 2.0 and which are paid.
-      Hard to reverse once published. **Resolved 2026-09-12: B.** The payload claim rests on
+      Hard to reverse once published. **Resolved 2026-09-12: B (c158a4df).** The payload claim rests on
       client-side encryption with a reviewed composition, so closing the relay server costs the
       claim nothing. Record in `S0.2-RELAY-CRYPTO.md` §9.
 - [ ] **S0.2 [H] Relay crypto design, written and reviewed.** "Carries encrypted payloads it
@@ -73,7 +73,7 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 - [x] **S0.6 [H] Where the relay lives.** Follows S0.1. Until it is answered, the relay has
       no directory and Phase 2 cannot be scaffolded — `apps/relay` in this monorepo and a
       separate private repo are different answers about what ships open. **Resolved
-      2026-09-12: separate private repository for the relay server; `packages/protocol/relay/`
+      2026-09-12 (c158a4df): separate private repository for the relay server; `packages/protocol/relay/`
       keeps the wire format and the client side open.**
 - [ ] **S0.7 [H] Start the long-lead clock.** Apple Developer enrolment, Windows
       code-signing certificate, and a first conversation with an audit firm. Weeks of
