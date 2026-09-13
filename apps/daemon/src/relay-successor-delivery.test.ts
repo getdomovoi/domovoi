@@ -17,7 +17,7 @@ import { adoptRelayProfileSuccessor, prepareRelayProfileSuccessor } from "./rela
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { waitForDaemon } from "./test-wait-for.js"
+import { productionRpcTimeoutMs, waitForDaemon } from "./test-wait-for.js"
 
 const roots: string[] = [], sockets: WebSocket[] = [], stops: Array<() => Promise<void>> = [], databases: DatabaseSync[] = []
 afterEach(async () => {
@@ -30,7 +30,7 @@ afterEach(async () => {
 })
 
 async function rpc(url: string, headers?: Record<string, string>) {
-  const socket = new WebSocket(url, { headers })
+  const socket = new WebSocket(url, { headers, handshakeTimeout: productionRpcTimeoutMs(process.platform) })
   sockets.push(socket)
   const messages: Array<{ id?: number; result?: unknown; error?: { code: number; message: string } }> = []
   socket.on("message", (data) => messages.push(JSON.parse(data.toString())))
