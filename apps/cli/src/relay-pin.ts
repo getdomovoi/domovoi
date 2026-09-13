@@ -2,7 +2,7 @@ import { relayClientPinSchema, relayRecoveryResultSchema, type RelayClientPin } 
 import { adoptRelayRecovery, type RelayPinStore } from "@getdomovoi/protocol/relay-admission"
 
 import type { CredentialStore } from "./credentials.js"
-import { DaemonUnreachableError } from "./rpc.js"
+import { DaemonRefusedError } from "./rpc.js"
 
 // Pins compare by value. Two records that serialise the same are the same pin.
 function samePin(left: RelayClientPin | undefined, right: RelayClientPin | undefined): boolean {
@@ -47,8 +47,9 @@ export type RelayPinCall = (method: string, params: Record<string, unknown>) => 
 // proved. Recovery required: fetch the latest signed successor and adopt it
 // against the saved pin, never the fetched identity. Trusted: nothing to do.
 // A refusal from the daemon (not provisioned, rate limited, wrong machine)
-// leaves the pairing without a pin rather than failing it. A transport
-// failure is not a refusal and is thrown, so nobody reads a timeout as "not
+// leaves whatever pin is saved as it is rather than failing the pairing.
+// Anything that is not the daemon's own answer, a timeout, a reset, a send
+// that threw, is not a refusal and is thrown, so nobody reads it as "not
 // provisioned".
 export async function reconcileRelayPin(input: {
   store: CredentialStore
@@ -61,8 +62,8 @@ export async function reconcileRelayPin(input: {
   if (current?.state === "trusted") return "trusted"
   let publication: unknown
   try { publication = await input.call("relay.recovery", { machineId: input.machineId }) } catch (error) {
-    if (error instanceof DaemonUnreachableError) throw error
-    return "unavailable"
+    if (error instanceof DaemonRefusedError) return "unavailable"
+    throw error
   }
   const parsed = relayRecoveryResultSchema.parse(publication)
   if (parsed.identity.machineId !== input.machineId) throw new Error("The daemon published a relay identity for another machine.")

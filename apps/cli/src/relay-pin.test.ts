@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import { openCredentialStore, type Keyring, type PairedDaemon } from "./credentials.js"
 import { reconcileRelayPin, relayPinStore } from "./relay-pin.js"
+import { DaemonRefusedError } from "./rpc.js"
 
 const memoryKeyring = (): Keyring => {
   const entries = new Map<string, string>()
@@ -224,7 +225,7 @@ describe("relay pin store", () => {
     it("leaves the pairing without a pin when the daemon has no relay identity", async () => {
       const store = await openCredentialStore({ keyring: memoryKeyring(), home: await directory(), warn: () => {} })
       await store.save(paired)
-      const call = async () => { throw new Error("Relay recovery is unavailable") }
+      const call = async () => { throw new DaemonRefusedError("Relay recovery is unavailable", -32602) }
       expect(await reconcileRelayPin({ store, endpoint: paired.endpoint, machineId, call })).toBe("unavailable")
       expect(await relayPinStore(store, paired.endpoint).read()).toBeUndefined()
     })

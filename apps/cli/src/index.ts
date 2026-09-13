@@ -101,7 +101,7 @@ async function main(argv: string[]): Promise<number> {
       enrolled: "Relay identity pinned; a rotated key is accepted only when signed by this daemon's identity key.\n",
       recovered: "Relay identity recovered from a signed successor and pinned again.\n",
       trusted: "Relay identity already pinned; unchanged.\n",
-      unavailable: "The daemon refused the relay identity fetch: it is not provisioned for relay use, or the fetch was refused. No relay pin kept.\n",
+      unavailable: "The daemon refused the relay identity fetch: it is not provisioned for relay use, or the fetch was refused. No relay pin changed.\n",
     }[paired.relayPin])
     return 0
   }

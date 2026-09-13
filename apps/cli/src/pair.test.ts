@@ -4,7 +4,7 @@ import type { CredentialStore, PairedDaemon } from "./credentials.js"
 import { createPrivateKey, createPublicKey } from "node:crypto"
 
 import { pairWithDaemon, PairingError, readCredential } from "./pair.js"
-import { DaemonUnreachableError } from "./rpc.js"
+import { DaemonRefusedError, DaemonUnreachableError } from "./rpc.js"
 
 const token = "t".repeat(43)
 const machineId = `machine-${"d".repeat(32)}`
@@ -63,7 +63,7 @@ function fakeDaemon(options: { helloRejects?: string; current?: unknown; recover
         if (method === "device.current") return options.current ?? { kind: "client", machineId, deviceId, client: "cli" }
         if (method === "relay.recovery") {
           if (options.recoveryThrows) throw options.recoveryThrows
-          if (options.recovery === undefined) throw new Error("Relay recovery is unavailable")
+          if (options.recovery === undefined) throw new DaemonRefusedError("Relay recovery is unavailable", -32602)
           return options.recovery
         }
         throw new Error(`unexpected ${method}`)
@@ -174,11 +174,15 @@ describe("pair", () => {
     expect(store.saved[0]?.relayPin).toBeUndefined()
   })
 
-  it("does not read a transport failure as the daemon being unprovisioned", async () => {
+  it.each([
+    ["a timeout", new DaemonUnreachableError("The daemon did not answer relay.recovery within 100 ms"), /did not answer/],
+    ["a socket error passed through raw", Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }), /ECONNRESET/],
+    ["a send that threw", new TypeError("socket.send is not a function"), /socket\.send/],
+  ])("does not read %s as the daemon being unprovisioned", async (_name, failure, expected) => {
     const store = memoryStore()
-    const daemon = fakeDaemon({ recoveryThrows: new DaemonUnreachableError("The daemon did not answer relay.recovery within 100 ms") })
+    const daemon = fakeDaemon({ recoveryThrows: failure })
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
-      .rejects.toThrow(/not enrolled.*did not answer/)
+      .rejects.toThrow(expected)
     expect(store.saved).toHaveLength(1)
   })
 })
