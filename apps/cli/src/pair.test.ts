@@ -15,6 +15,13 @@ function memoryStore(failSave = false): CredentialStore & { saved: PairedDaemon[
     load: async (endpoint) => saved.find((record) => record.endpoint === endpoint),
     save: async (record) => { if (failSave) throw new Error("disk full"); saved.push(record) },
     forget: async () => {},
+    update: async (endpoint, change) => {
+      const index = saved.findIndex((record) => record.endpoint === endpoint)
+      const next = change(saved[index])
+      if (next === undefined) return false
+      if (index === -1) saved.push(next); else saved[index] = next
+      return true
+    },
   }
 }
 

@@ -1,9 +1,10 @@
-import { rename } from "node:fs/promises"
+import { open, rename, unlink } from "node:fs/promises"
 
 import {
-  nativeKeyring as sharedNativeKeyring, openCredentialBackend,
+  CredentialStoreError, nativeKeyring as sharedNativeKeyring, openCredentialBackend,
   type CredentialBackend, type Keyring,
 } from "@getdomovoi/credential-store"
+import { relayClientPinSchema } from "@getdomovoi/protocol"
 import { z } from "zod"
 
 export { CredentialStoreError, type Keyring } from "@getdomovoi/credential-store"
@@ -15,6 +16,9 @@ export const pairedDaemonSchema = z.object({
   machineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
   deviceId: z.string().min(1),
   token: z.string().min(1),
+  // The daemon's relay identity as this client last trusted it. Public data,
+  // but its integrity is what admission rests on, so it lives with the bearer.
+  relayPin: relayClientPinSchema.optional(),
 }).strict()
 
 export type PairedDaemon = z.infer<typeof pairedDaemonSchema>
@@ -29,6 +33,11 @@ export type CredentialStore = {
   load(endpoint: string): Promise<PairedDaemon | undefined>
   save(record: PairedDaemon): Promise<void>
   forget(endpoint: string): Promise<void>
+  // Read-modify-write of one pairing with no other writer in between. The
+  // file backend takes an exclusive lock beside the file; the keyring backend
+  // serialises within this process only, since the OS keychain offers no
+  // cross-process compare. Returning undefined from update leaves the record.
+  update(endpoint: string, change: (current: PairedDaemon | undefined) => PairedDaemon | undefined): Promise<boolean>
 }
 
 export const keyringService = "domovoi-cli"
@@ -66,20 +75,66 @@ export async function openCredentialStore(input: {
   return backend.where === "keyring" ? keyringStore(backend.keyring) : fileStore(backend)
 }
 
+// One writer at a time within this process. Callers chain on the previous
+// operation, so a rejected change never leaves the queue stuck.
+function serialised(): <T>(operation: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve()
+  return (operation) => {
+    const next = tail.then(operation, operation)
+    tail = next.catch(() => undefined)
+    return next
+  }
+}
+
 function keyringStore(keyring: Keyring): CredentialStore {
+  const exclusive = serialised()
+  const load = async (endpoint: string) => {
+    const raw = await keyring.get(endpoint)
+    if (raw === undefined) return undefined
+    return pairedDaemonSchema.parse(JSON.parse(raw))
+  }
   return {
     where: "keyring",
-    async load(endpoint) {
-      const raw = await keyring.get(endpoint)
-      if (raw === undefined) return undefined
-      return pairedDaemonSchema.parse(JSON.parse(raw))
-    },
+    load,
     async save(record) {
       await keyring.set(record.endpoint, JSON.stringify(pairedDaemonSchema.parse(record)))
     },
     async forget(endpoint) {
       await keyring.delete(endpoint)
     },
+    update(endpoint, change) {
+      return exclusive(async () => {
+        const next = change(await load(endpoint))
+        if (next === undefined) return false
+        await keyring.set(endpoint, JSON.stringify(pairedDaemonSchema.parse(next)))
+        return true
+      })
+    },
+  }
+}
+
+// An exclusive lock file beside the credential file. Creation is atomic
+// (O_EXCL), so two processes cannot both hold it; a holder that died leaves
+// a file that a later caller treats as stale after the wait limit and says so.
+async function withFileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = `${path}.lock`
+  const deadline = Date.now() + 10_000
+  for (;;) {
+    let handle
+    try {
+      handle = await open(lockPath, "wx", 0o600)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      if (Date.now() > deadline) throw new CredentialStoreError(`${lockPath} is held by another process, or was left behind by one that died. Remove it if no other domovoi is running.`)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      continue
+    }
+    try {
+      await handle.close()
+      return await operation()
+    } finally {
+      await unlink(lockPath).catch(() => undefined)
+    }
   }
 }
 
@@ -89,10 +144,21 @@ function fileStore(backend: Extract<CredentialBackend, { where: "file" }>): Cred
     return text === undefined ? { version: 1 as const, daemons: [] } : fileSchema.parse(JSON.parse(text))
   }
   const write = (contents: z.infer<typeof fileSchema>) => backend.write(`${JSON.stringify(contents, null, 2)}\n`)
+  const exclusive = serialised()
   return {
     where: "file",
     async load(endpoint) {
       return (await read()).daemons.find((daemon) => daemon.endpoint === endpoint)
+    },
+    update(endpoint, change) {
+      return exclusive(() => withFileLock(backend.path, async () => {
+        const contents = await read()
+        const next = change(contents.daemons.find((daemon) => daemon.endpoint === endpoint))
+        if (next === undefined) return false
+        contents.daemons = [...contents.daemons.filter((daemon) => daemon.endpoint !== endpoint), pairedDaemonSchema.parse(next)]
+        await write(contents)
+        return true
+      }))
     },
     async save(record) {
       const contents = await read()
