@@ -57,6 +57,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@getdomovoi/credential-store':
+        specifier: workspace:*
+        version: link:../../packages/credential-store
       '@getdomovoi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
