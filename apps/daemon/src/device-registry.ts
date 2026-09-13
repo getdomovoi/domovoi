@@ -7,6 +7,7 @@ import {
   deviceRenameLabelSchema,
   machineIdSchema,
   pairedDeviceSchema,
+  relayPublicKeySchema,
   type ClientKind,
   type DeviceCredentialBinding as PublicDeviceCredentialBinding,
   type DeviceLabelMismatch,
@@ -28,6 +29,7 @@ export type DeviceCredentialBinding =
 export type VerifiedDeviceCredential = {
   device: PairedDevice
   binding: DeviceCredentialBinding
+  channelPublicKey?: string
 }
 
 export const maximumPairedDevices = 128
@@ -37,8 +39,8 @@ export const pendingDeviceClaimTtlMs = 300_000
 export type DeviceClaim = { claim: PendingDeviceClaim; token: string }
 
 export interface DeviceRegistry {
-  pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing
-  claim(input: { label: string; machineId: string }, nowMs: number): DeviceClaim
+  pair(input: { label: string; binding: DeviceCredentialBinding; channelPublicKey?: string }): DevicePairing
+  claim(input: { label: string; machineId: string; channelPublicKey?: string }, nowMs: number): DeviceClaim
   confirmClaim(token: string, machineId: string, nowMs: number): PairedDevice | undefined
   verify(token: string): VerifiedDeviceCredential | undefined
   markSeen(deviceId: string, seenAt: string): void
@@ -83,6 +85,7 @@ type StoredDevice = {
   credential_role: string
   client_kind: string | null
   machine_id: string | null
+  channel_public_key: string | null
 }
 
 function hashDeviceToken(token: string): string {
@@ -155,7 +158,8 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         revocation_reason TEXT,
         credential_role TEXT NOT NULL,
         client_kind TEXT,
-        machine_id TEXT
+        machine_id TEXT,
+        channel_public_key TEXT
       );
       CREATE INDEX IF NOT EXISTS paired_devices_revoked_at ON paired_devices (revoked_at);
       CREATE TABLE IF NOT EXISTS pending_device_claims (
@@ -163,10 +167,18 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         label TEXT NOT NULL,
         token_hash TEXT NOT NULL UNIQUE,
         machine_id TEXT NOT NULL UNIQUE,
-        expires_at INTEGER NOT NULL
+        expires_at INTEGER NOT NULL,
+        channel_public_key TEXT
       );
     `)
     const columns = this.#database.prepare("PRAGMA table_info(paired_devices)").all() as Array<{ name: string }>
+    if (!columns.some((column) => column.name === "channel_public_key")) {
+      this.#database.exec("ALTER TABLE paired_devices ADD COLUMN channel_public_key TEXT")
+    }
+    const pendingColumns = this.#database.prepare("PRAGMA table_info(pending_device_claims)").all() as Array<{ name: string }>
+    if (!pendingColumns.some((column) => column.name === "channel_public_key")) {
+      this.#database.exec("ALTER TABLE pending_device_claims ADD COLUMN channel_public_key TEXT")
+    }
     if (!columns.some((column) => column.name === "credential_role")) {
       // The old table mixed client and daemon-to-daemon credentials. There is
       // no sound way to infer which authority an existing token held, so the
@@ -200,8 +212,9 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     `).run(new Date().toISOString())
   }
 
-  pair(input: { label: string; binding: DeviceCredentialBinding }): DevicePairing {
+  pair(input: { label: string; binding: DeviceCredentialBinding; channelPublicKey?: string }): DevicePairing {
     const label = validateLabel(input.label)
+    const channelPublicKey = relayPublicKeySchema.optional().parse(input.channelPublicKey)
     if (input.binding.kind === "machine") machineIdSchema.parse(input.binding.machineId)
     else clientKindSchema.parse(input.binding.client)
     const token = randomBytes(32).toString("base64url")
@@ -230,8 +243,8 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
       this.#database
       .prepare(`
         INSERT INTO paired_devices (
-          id, label, token_hash, paired_at, credential_role, client_kind, machine_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          id, label, token_hash, paired_at, credential_role, client_kind, machine_id, channel_public_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         device.id,
@@ -241,6 +254,7 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         input.binding.kind,
         input.binding.kind === "client" ? input.binding.client : null,
         input.binding.kind === "machine" ? input.binding.machineId : null,
+        channelPublicKey ?? null,
       )
       this.#database.exec("COMMIT")
       return { device, token }
@@ -250,9 +264,10 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     }
   }
 
-  claim(input: { label: string; machineId: string }, nowMs: number): DeviceClaim {
+  claim(input: { label: string; machineId: string; channelPublicKey?: string }, nowMs: number): DeviceClaim {
     const label = validateLabel(input.label)
     const machineId = machineIdSchema.parse(input.machineId)
+    const channelPublicKey = relayPublicKeySchema.optional().parse(input.channelPublicKey)
     const token = randomBytes(32).toString("base64url")
     const claim: PendingDeviceClaim = {
       state: "pending", deviceId: `device-${randomBytes(16).toString("hex")}`, machineId,
@@ -266,8 +281,8 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         WHERE revoked_at IS NULL AND NOT (credential_role = 'machine' AND machine_id = ?)`)
         .get(machineId) as { total: number }
       if (pending.total >= maximumPairedDevices || active.total >= maximumPairedDevices) throw new DeviceLimitReachedError()
-      this.#database.prepare("INSERT INTO pending_device_claims (id, label, token_hash, machine_id, expires_at) VALUES (?, ?, ?, ?, ?)")
-        .run(claim.deviceId, label, hashDeviceToken(token), machineId, nowMs + pendingDeviceClaimTtlMs)
+      this.#database.prepare("INSERT INTO pending_device_claims (id, label, token_hash, machine_id, expires_at, channel_public_key) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(claim.deviceId, label, hashDeviceToken(token), machineId, nowMs + pendingDeviceClaimTtlMs, channelPublicKey ?? null)
       this.#database.exec("COMMIT")
       return { claim, token }
     } catch (error) { this.#database.exec("ROLLBACK"); throw error }
@@ -286,8 +301,9 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         return active.device
       }
       const pending = this.#database.prepare("SELECT * FROM pending_device_claims WHERE token_hash = ? AND machine_id = ?")
-        .get(hashDeviceToken(token), machineId) as { id: string; label: string; token_hash: string; machine_id: string } | undefined
+        .get(hashDeviceToken(token), machineId) as { id: string; label: string; token_hash: string; machine_id: string; channel_public_key: string | null } | undefined
       if (!pending) { this.#database.exec("COMMIT"); return undefined }
+      const channelPublicKey = relayPublicKeySchema.nullable().parse(pending.channel_public_key)
       const pairedAt = new Date(nowMs).toISOString()
       // An unfinished re-pair must not revoke working authority. Replacement
       // happens atomically here, after the source's durable token readback.
@@ -295,8 +311,8 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
         .run(pairedAt, machineId)
       const count = this.#database.prepare("SELECT COUNT(*) AS total FROM paired_devices WHERE revoked_at IS NULL").get() as { total: number }
       if (count.total >= maximumPairedDevices) throw new DeviceLimitReachedError()
-      this.#database.prepare("INSERT INTO paired_devices (id, label, token_hash, paired_at, credential_role, machine_id) VALUES (?, ?, ?, ?, 'machine', ?)")
-        .run(pending.id, pending.label, pending.token_hash, pairedAt, machineId)
+      this.#database.prepare("INSERT INTO paired_devices (id, label, token_hash, paired_at, credential_role, machine_id, channel_public_key) VALUES (?, ?, ?, ?, 'machine', ?, ?)")
+        .run(pending.id, pending.label, pending.token_hash, pairedAt, machineId, channelPublicKey)
       this.#database.prepare("DELETE FROM pending_device_claims WHERE id = ?").run(pending.id)
       this.#database.exec("COMMIT")
       return { id: pending.id, label: pending.label, pairedAt, binding: { kind: "machine", machineId } }
@@ -312,7 +328,9 @@ export class SqliteDeviceRegistry implements DeviceRegistry {
     const binding = credentialBinding(row)
     if (!binding) return undefined
 
-    return { device: toPairedDevice(row), binding }
+    const channelPublicKey = relayPublicKeySchema.nullable().parse(row.channel_public_key)
+    return { device: toPairedDevice(row), binding,
+      ...(channelPublicKey === null ? {} : { channelPublicKey }) }
   }
 
   markSeen(deviceId: string, seenAt: string): void {

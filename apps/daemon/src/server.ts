@@ -213,10 +213,15 @@ import { TerminalReplayBuffer } from "./terminal-replay.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
+  type RpcOutboundSocket,
 } from "./rpc-outbound.js"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
+import { DaemonRelaySocket, maximumDaemonRelayChannels } from "./relay-admission.js"
+import { relayPublicKeyFromPrivateKey, type RelayCarrier, type RelayChannel } from "@getdomovoi/protocol/relay-admission"
+import { relayNoiseSuite } from "@getdomovoi/protocol/relay"
+import type { RelayAdmissionContext } from "@getdomovoi/protocol"
 import { resolveFleetClientRoute } from "./fleet-client-route.js"
 import {
   appendDurableOutput,
@@ -824,6 +829,8 @@ export type DaemonServerOptions = {
   // Tests may shorten the public end-to-end discovery deadline.
   runtimeDiscoveryTimeoutMs?: number
   authToken?: string
+  // Supplied from endpoint-owned custody. No generated per-process fallback.
+  relayStaticKey?: Uint8Array
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
   terminalReapGraceMs?: number
@@ -890,7 +897,7 @@ type ActiveTerminal = {
   // broadcast to every client, so a caller-supplied one authorizes nothing.
   // A released ownership waits through a grace window for the next connection
   // to re-claim it, then the terminal is reaped rather than stranded forever.
-  ownerSocket: WebSocket | undefined
+  ownerSocket: RpcOutboundSocket | undefined
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -904,6 +911,9 @@ export class DomovoiDaemon {
   readonly allowedOrigins: ReadonlySet<string>
   #http: HttpServer | undefined
   #websocket: WebSocketServer | undefined
+  #rpcClients = new Set<RpcOutboundSocket>()
+  #relaySockets = new Set<DaemonRelaySocket>()
+  #relayStaticKey: Uint8Array | undefined
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
@@ -911,7 +921,7 @@ export class DomovoiDaemon {
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
   #auditLog: AuditLog | undefined
-  #pendingAudits = new WeakMap<WebSocket, Map<string, AuditAppendInput>>()
+  #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
   #agents: AgentRegistry
   #workspaceService: WorkspaceService
@@ -938,19 +948,20 @@ export class DomovoiDaemon {
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
   #authToken: string
-  #authenticatedClients = new WeakSet<WebSocket>()
-  #deviceCredentials = new WeakMap<WebSocket, {
+  #authenticatedClients = new WeakSet<RpcOutboundSocket>()
+  #deviceCredentials = new WeakMap<RpcOutboundSocket, {
     token: string
     verified: VerifiedDeviceCredential
+    relayKey?: string
   }>()
-  #authenticatedActors = new WeakMap<WebSocket, AuditActor>()
-  #connectionIds = new WeakMap<WebSocket, string>()
+  #authenticatedActors = new WeakMap<RpcOutboundSocket, AuditActor>()
+  #connectionIds = new WeakMap<RpcOutboundSocket, string>()
   #preAuthAuditDeadlines = new Map<PreAuthAuditKind, number>()
   #pairingClaimAdmission = new PairingClaimAdmission()
   #clientRoute: (params: RpcParams<"fleet.clientRoute">, signal?: AbortSignal) => Promise<RpcResult<"fleet.clientRoute">>
-  #socketSources = new WeakMap<WebSocket, string>()
-  #authenticationDeadlines = new WeakMap<WebSocket, ReturnType<typeof setTimeout>>()
-  #authenticationFailures = new WeakMap<WebSocket, number>()
+  #socketSources = new WeakMap<RpcOutboundSocket, string>()
+  #authenticationDeadlines = new WeakMap<RpcOutboundSocket, ReturnType<typeof setTimeout>>()
+  #authenticationFailures = new WeakMap<RpcOutboundSocket, number>()
   #authTimeoutMs: number
   #artifactSigningSecret = randomBytes(32).toString("base64url")
   #artifactAccessTtlSeconds = 60
@@ -1010,6 +1021,10 @@ export class DomovoiDaemon {
     this.#providerPromptBudgetCodeUnits = options.providerPromptBudgetCodeUnits
       ?? maximumProviderPromptCodeUnits
     validateProviderPromptBudget(this.#providerPromptBudgetCodeUnits)
+    if (options.relayStaticKey !== undefined) {
+      relayPublicKeyFromPrivateKey(options.relayStaticKey)
+      this.#relayStaticKey = new Uint8Array(options.relayStaticKey)
+    }
     const authToken = options.authToken ?? randomBytes(32).toString("base64url")
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
@@ -1231,7 +1246,8 @@ export class DomovoiDaemon {
     }
   }
 
-  #credentialAccepted(socket: WebSocket, token: string | undefined): boolean {
+  #credentialAccepted(socket: RpcOutboundSocket, token: string | undefined): boolean {
+    if (socket instanceof DaemonRelaySocket) return false
     if (secureTokenMatch(this.#authToken, token)) return true
     if (!token) return false
     const verified = this.#store.devices?.verify(token)
@@ -1243,7 +1259,7 @@ export class DomovoiDaemon {
   // Revocation has to reach a device that is only listening, so its socket is
   // closed as soon as its credential stops being active.
   #disconnectInactiveDevices(): void {
-    for (const client of this.#websocket?.clients ?? []) {
+    for (const client of this.#rpcClients) {
       if (this.#deviceCredentials.get(client) === undefined) continue
       if (this.#deviceCredentialActive(client)) continue
       this.#authenticatedClients.delete(client)
@@ -1253,10 +1269,62 @@ export class DomovoiDaemon {
 
   // A paired device can be revoked or rotated while it holds an open socket, so
   // its credential is rechecked for every request rather than only at connect.
-  #deviceCredentialActive(socket: WebSocket): boolean {
+  #deviceCredentialActive(socket: RpcOutboundSocket): boolean {
     const credential = this.#deviceCredentials.get(socket)
     if (credential === undefined) return true
+    if (credential.relayKey !== undefined) {
+      return this.#relayCredentialAccepted(socket, credential.token, Buffer.from(credential.relayKey, "base64url"))
+    }
     return this.#store.devices?.isActive(credential.token) === true
+  }
+
+  #relayCredentialAccepted(socket: RpcOutboundSocket, token: string, peerKey: Uint8Array): boolean {
+    if (secureTokenMatch(this.#authToken, token)) return false
+    try {
+      const verified = this.#store.devices?.verify(token)
+      const relayKey = Buffer.from(peerKey).toString("base64url")
+      if (!verified || verified.channelPublicKey !== relayKey) return false
+      const previous = this.#deviceCredentials.get(socket)
+      if (previous) {
+        return this.#authenticatedClients.has(socket)
+          && previous.token === token && previous.relayKey === relayKey
+          && previous.verified.device.id === verified.device.id
+          && JSON.stringify(previous.verified.binding) === JSON.stringify(verified.binding)
+      }
+      this.#deviceCredentials.set(socket, { token, verified, relayKey })
+      this.#authenticatedClients.add(socket)
+      return true
+    } catch { return false }
+  }
+
+  openRelayChannel(options: { context: RelayAdmissionContext; carrier: RelayCarrier }): Pick<RelayChannel, "receive" | "close" | "closed"> {
+    if (!this.#http || this.#stopping || this.#stopped || !this.#relayStaticKey || !this.#store.devices
+      || this.#relaySockets.size >= maximumDaemonRelayChannels) {
+      try { options.carrier.close() } catch { /* Refusal cannot expose cleanup errors. */ }
+      throw new Error("Relay admission is unavailable")
+    }
+    let socket: DaemonRelaySocket | undefined
+    try {
+      socket = new DaemonRelaySocket({ ...options, staticPrivateKey: this.#relayStaticKey,
+        authorize: (token, peerKey) => this.#relayCredentialAccepted(socket!, token, peerKey),
+        onMessage: (message) => this.#dispatch(socket!, message),
+        onClose: () => {
+          if (!socket) return
+          this.#relaySockets.delete(socket)
+          this.#rpcClients.delete(socket)
+          this.#authenticatedClients.delete(socket)
+          this.#rpcOutbound.forget(socket)
+          this.#releaseTerminalOwnership(socket)
+        },
+      })
+    } catch {
+      // The protocol factory has already closed the carrier on construction failure.
+      throw new Error("Relay admission is unavailable")
+    }
+    const active = socket
+    this.#relaySockets.add(active)
+    this.#rpcClients.add(active)
+    return { receive: (frame) => active.receive(frame), close: () => active.close(), get closed() { return active.closed } }
   }
 
   issuePairingCode(): { code: string; expiresAt: string } {
@@ -1333,10 +1401,12 @@ export class DomovoiDaemon {
       }
     })
     this.#websocket.on("connection", (socket, request) => {
+      this.#rpcClients.add(socket)
       // Use the socket peer, never caller-authored forwarding headers. NAT or
       // proxy peers share a budget; neither a reconnect nor hello resets it.
       if (request.socket.remoteAddress) this.#socketSources.set(socket, request.socket.remoteAddress)
       socket.once("close", () => {
+        this.#rpcClients.delete(socket)
         this.#rpcOutbound.forget(socket)
         this.#releaseTerminalOwnership(socket)
       })
@@ -1367,44 +1437,7 @@ export class DomovoiDaemon {
           return
         }
         const raw = data.toString()
-        if (this.#stopping || this.#stopped) {
-          let id: string | number | null = null
-          try {
-            const request = JSON.parse(raw) as { id?: unknown }
-            if (typeof request.id === "string" || typeof request.id === "number") id = request.id
-            else return
-          } catch {
-            // The daemon is already shutting down; a stable unavailable response is sufficient.
-          }
-          this.#error(socket, id, daemonShuttingDownErrorCode, "Daemon is shutting down")
-          return
-        }
-        if (!this.#authenticatedClients.has(socket)) {
-          void this.#handle(socket, raw).catch((error: unknown) => {
-            this.#reportError("RPC dispatch failed", error)
-            this.#error(socket, null, internalError, internalRpcErrorMessage)
-          })
-          return
-        }
-        const resource = this.#requestResource(raw)
-        if (resource) {
-          void this.#mutations.enqueue(
-            resource,
-            (signal) => this.#handle(socket, raw, signal),
-            { onCancelled: () => this.#cancelRpcRequest(socket, raw) },
-          )
-        } else if (
-          this.#bypassesMutationQueue(raw)
-          && this.#authenticatedClients.has(socket)
-        ) {
-          void this.#handle(socket, raw).catch((error: unknown) => {
-            this.#reportError("RPC dispatch failed", error)
-            this.#error(socket, null, internalError, internalRpcErrorMessage)
-          })
-        } else void this.#mutations.enqueueExclusive(
-          (signal) => this.#handle(socket, raw, signal),
-          { onCancelled: () => this.#cancelRpcRequest(socket, raw) },
-        )
+        this.#dispatch(socket, raw)
       })
     })
 
@@ -1461,7 +1494,7 @@ export class DomovoiDaemon {
     }
     this.#closeAllTerminals()
     this.#rpcOutbound.dispose()
-    for (const client of this.#websocket?.clients ?? []) client.close(1001, "daemon stopping")
+    for (const client of this.#rpcClients) client.close(1001, "daemon stopping")
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -1473,6 +1506,9 @@ export class DomovoiDaemon {
     }
 
     this.#websocket = undefined
+    this.#rpcClients.clear()
+    this.#relayStaticKey?.fill(0)
+    this.#relayStaticKey = undefined
     this.#http = undefined
     const providerClosures = await Promise.allSettled(
       this.#agents.adapters().map((agent) => agent.close()),
@@ -1514,12 +1550,53 @@ export class DomovoiDaemon {
     if (failures.length > 0) throw new AggregateError(failures, "Domovoi shutdown failed")
   }
 
-  #send(socket: WebSocket, payload: unknown): void {
+  #dispatch(socket: RpcOutboundSocket, raw: string): void {
+    if (this.#stopping || this.#stopped) {
+      let id: string | number | null = null
+      try {
+        const request = JSON.parse(raw) as { id?: unknown }
+        if (typeof request.id === "string" || typeof request.id === "number") id = request.id
+        else return
+      } catch {
+        // The daemon is already shutting down; a stable unavailable response is sufficient.
+      }
+      this.#error(socket, id, daemonShuttingDownErrorCode, "Daemon is shutting down")
+      return
+    }
+    if (!this.#authenticatedClients.has(socket)) {
+      void this.#handle(socket, raw).catch((error: unknown) => {
+        this.#reportError("RPC dispatch failed", error)
+        this.#error(socket, null, internalError, internalRpcErrorMessage)
+      })
+      return
+    }
+    const resource = this.#requestResource(raw)
+    if (resource) {
+      void this.#mutations.enqueue(
+        resource,
+        (signal) => this.#handle(socket, raw, signal),
+        { onCancelled: () => this.#cancelRpcRequest(socket, raw) },
+      )
+    } else if (
+      this.#bypassesMutationQueue(raw)
+      && this.#authenticatedClients.has(socket)
+    ) {
+      void this.#handle(socket, raw).catch((error: unknown) => {
+        this.#reportError("RPC dispatch failed", error)
+        this.#error(socket, null, internalError, internalRpcErrorMessage)
+      })
+    } else void this.#mutations.enqueueExclusive(
+      (signal) => this.#handle(socket, raw, signal),
+      { onCancelled: () => this.#cancelRpcRequest(socket, raw) },
+    )
+  }
+
+  #send(socket: RpcOutboundSocket, payload: unknown): void {
     this.#completeAudit(socket, payload)
     this.#sendWithoutAudit(socket, payload)
   }
 
-  #sendWithoutAudit(socket: WebSocket, payload: unknown): void {
+  #sendWithoutAudit(socket: RpcOutboundSocket, payload: unknown): void {
     this.#rpcOutbound.send(socket, JSON.stringify(payload))
   }
 
@@ -1545,7 +1622,7 @@ export class DomovoiDaemon {
   }
 
   #registerAudit(
-    socket: WebSocket,
+    socket: RpcOutboundSocket,
     id: string | number | null,
     method: RpcMethod,
     params: unknown,
@@ -1588,7 +1665,7 @@ export class DomovoiDaemon {
   }
 
   #amendPendingAudit(
-    socket: WebSocket,
+    socket: RpcOutboundSocket,
     id: string | number | null,
     updates: Pick<AuditAppendInput, "target" | "detail"> & { outcome?: AuditOutcome },
   ): void {
@@ -1609,7 +1686,7 @@ export class DomovoiDaemon {
     return undefined
   }
 
-  #completeAudit(socket: WebSocket, payload: unknown): void {
+  #completeAudit(socket: RpcOutboundSocket, payload: unknown): void {
     if (!payload || typeof payload !== "object") return
     const response = payload as { id?: unknown; error?: unknown; result?: unknown }
     if (response.id === undefined) return
@@ -1689,7 +1766,7 @@ export class DomovoiDaemon {
   #broadcastNotification(method: string, params: unknown): void {
     const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
-    for (const client of this.#websocket?.clients ?? []) {
+    for (const client of this.#rpcClients) {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
@@ -1712,7 +1789,7 @@ export class DomovoiDaemon {
 
   #maximumAuthenticatedClientBufferedBytes(): number {
     let maximum = 0
-    for (const client of this.#websocket?.clients ?? []) {
+    for (const client of this.#rpcClients) {
       if (client.readyState === WebSocket.OPEN && this.#authenticatedClients.has(client)) {
         maximum = Math.max(maximum, client.bufferedAmount)
       }
@@ -1744,7 +1821,7 @@ export class DomovoiDaemon {
   }
 
   #error(
-    socket: WebSocket,
+    socket: RpcOutboundSocket,
     id: string | number | null,
     code: number,
     message: string,
@@ -2952,7 +3029,7 @@ export class DomovoiDaemon {
     return this.#mutations.enqueueExclusive(task)
   }
 
-  #cancelRpcRequest(socket: WebSocket, raw: string): void {
+  #cancelRpcRequest(socket: RpcOutboundSocket, raw: string): void {
     if (socket.readyState !== WebSocket.OPEN) return
     try {
       const request = JSON.parse(raw) as { id?: unknown }
@@ -3396,7 +3473,7 @@ export class DomovoiDaemon {
     }
   }
 
-  async #handle(socket: WebSocket, raw: string, signal?: AbortSignal): Promise<void> {
+  async #handle(socket: RpcOutboundSocket, raw: string, signal?: AbortSignal): Promise<void> {
     let input: unknown
     try {
       input = JSON.parse(raw)
@@ -3420,6 +3497,13 @@ export class DomovoiDaemon {
     }
 
     const method = request.method as RpcMethod
+    if (socket instanceof DaemonRelaySocket && (
+      method === "device.pair" || method === "device.claim" || method === "device.confirmClaim"
+      || method === "device.issueCode" || method === "artifact.authorize"
+    )) {
+      this.#error(socket, request.id, invalidParams, "This method requires a direct connection")
+      return
+    }
     if (method === "device.claim" && !this.#pairingClaimAdmission.admit(this.#socketSources.get(socket))) {
       // Admission precedes shape, version and code checks. Incompatible claims
       // cost admission, not code guesses; exhausted sources get this uniform
@@ -3452,6 +3536,10 @@ export class DomovoiDaemon {
         this.#authenticatedClients.add(socket)
       }
       const hello = paramsResult.data as RpcParams<"system.hello">
+      if (socket instanceof DaemonRelaySocket && hello.authToken !== undefined) {
+        this.#error(socket, request.id, invalidParams, "Relay credentials belong only in the admission record")
+        return
+      }
       if (this.#authenticatedActors.has(socket)) {
         this.#error(socket, request.id, invalidParams, "Connection client identity is already established")
         return
@@ -3546,10 +3634,15 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, internalError, "Device pairing is unavailable")
         return
       }
+      if (params.channelPublicKey !== undefined && !this.#relayStaticKey) {
+        this.#error(socket, request.id, internalError, "Relay admission is unavailable")
+        return
+      }
       try {
         const paired = this.#pairing.claim(params.code, {
           label: params.label,
           machineId: params.machineId,
+          ...(params.channelPublicKey === undefined ? {} : { channelPublicKey: params.channelPublicKey }),
         }, Date.now())
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
@@ -3560,7 +3653,11 @@ export class DomovoiDaemon {
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse({ ...paired, machine: this.#machineDescriptor() }),
+          result: rpcMethods[method].result.parse({ ...paired, machine: this.#machineDescriptor(),
+            ...(params.channelPublicKey === undefined ? {} : { relay: {
+              suite: relayNoiseSuite, responderPublicKey: relayPublicKeyFromPrivateKey(this.#relayStaticKey!),
+            } }),
+          }),
         })
       } catch (error) {
         if (error instanceof DeviceLimitReachedError) {
@@ -4905,9 +5002,15 @@ export class DomovoiDaemon {
           )
           return
         }
+        const channelPublicKey = method === "device.pair" ? (params as RpcParams<"device.pair">).channelPublicKey : undefined
+        if (channelPublicKey !== undefined && !this.#relayStaticKey) {
+          this.#error(socket, request.id, internalError, "Relay admission is unavailable")
+          return
+        }
         try {
           const result = method === "device.pair"
             ? devices.pair({
+                ...(channelPublicKey === undefined ? {} : { channelPublicKey }),
                 label: (params as { label: string }).label,
                 binding: {
                   kind: "client",
@@ -4933,7 +5036,11 @@ export class DomovoiDaemon {
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
-            result: rpcMethods[method].result.parse(result),
+            result: rpcMethods[method].result.parse({ ...result,
+              ...(channelPublicKey === undefined ? {} : { relay: {
+                suite: relayNoiseSuite, responderPublicKey: relayPublicKeyFromPrivateKey(this.#relayStaticKey!),
+              } }),
+            }),
           })
         } catch (error) {
           if (!(error instanceof DeviceLabelMismatchError)) throw error
@@ -8286,7 +8393,7 @@ export class DomovoiDaemon {
   }
 
   #rejectAuthentication(
-    socket: WebSocket,
+    socket: RpcOutboundSocket,
     id: string | number | null,
     message: string,
   ): void {
@@ -8318,7 +8425,7 @@ export class DomovoiDaemon {
     return true
   }
 
-  #releaseTerminalOwnership(socket: WebSocket): void {
+  #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
