@@ -4,7 +4,7 @@ import { join, resolve } from "node:path"
 
 import { protocolVersion } from "@getdomovoi/protocol"
 
-import type { MachineWslFacts } from "@getdomovoi/protocol"
+import type { MachineWslFacts, RelayIdentityPin } from "@getdomovoi/protocol"
 
 import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
@@ -16,6 +16,7 @@ import { claimProfile, type ProfileLease } from "./profile-lease.js"
 import { createLocalOwnerSecret, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { redactErrorDetail } from "./rpc-errors.js"
+import { loadOrProvisionRelayChannel, type ProvisionedRelayChannel } from "./relay-provisioning.js"
 import {
   DomovoiDaemon,
   type DaemonErrorSink,
@@ -52,6 +53,7 @@ export type ProductionDaemonHandle = {
   readonly authToken: string
   readonly secureTransport: boolean
   readonly credential: ProductionDaemonCredential
+  readonly relayIdentity?: RelayIdentityPin
   start(): Promise<ProductionDaemonEndpoint>
   stop(): Promise<void>
 }
@@ -74,6 +76,7 @@ export type ProductionDaemonDependencies = {
     defaults: { label: string },
   ): Promise<MachineIdentity>
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
+  loadRelayChannel: typeof loadOrProvisionRelayChannel
   createProviderProbe(): ProviderProbe
   createMachineCredentials(): AsyncMachineCredentials
   wslFacts(environment: DaemonEnvironment): MachineWslFacts | undefined
@@ -85,6 +88,7 @@ export const productionDaemonDependencies = {
   loadOrCreateToken: loadOrCreateDaemonToken,
   loadOrCreateIdentity: loadOrCreateMachineIdentity,
   loadTls: loadTlsMaterial,
+  loadRelayChannel: loadOrProvisionRelayChannel,
   createProviderProbe: () => new CliProviderProbe(),
   createMachineCredentials: () => new MachineCredentialWorker(),
   wslFacts: (environment) => wslHostFacts({ environment }),
@@ -107,6 +111,9 @@ export async function createProductionDaemonWithDependencies(
   let lease = ownership?.lease
   let diagnosticLog: RotatingDaemonLog | undefined
   let published = false
+  let loadingRelay: Promise<ProvisionedRelayChannel | undefined> | undefined
+  let relaySettled = false
+  let relayResult: ProvisionedRelayChannel | undefined
   try {
     const config = dependencies.parseEnvironment(environment, homeDirectory)
     if (options.owner === "desktop" && options.serviceRegistrationId !== undefined) throw new Error("Desktop cannot claim a service registration")
@@ -137,6 +144,14 @@ export async function createProductionDaemonWithDependencies(
         : dependencies.loadOrCreateToken(config.credentialPath, deadline),
       dependencies.loadOrCreateIdentity(config.machineIdentityPath, { label: machineLabel }),
     ]), deadline)
+    loadingRelay = dependencies.loadRelayChannel({
+      homeDirectory, machineId: machineIdentity.id, deadline,
+      ...(config.relayIdentityPublicKey !== undefined ? { identityPublicKey: config.relayIdentityPublicKey } : {}),
+      ...(config.relayCredentialFile !== undefined ? { credentialFile: config.relayCredentialFile } : {}),
+      warn: (message) => errorSink({ context: "Relay channel credential custody", detail: message }),
+    })
+    void loadingRelay.then((value) => { relayResult = value; relaySettled = true }, () => { relaySettled = true })
+    const relay = await beforeDeadline(loadingRelay, deadline)
     const secret = await beforeDeadline(createLocalOwnerSecret(homeDirectory, authToken, deadline), deadline)
     deadline.throwIfExpired()
     const identity = { instanceId: randomUUID(), machineId: machineIdentity.id, protocolVersion }
@@ -157,6 +172,7 @@ export async function createProductionDaemonWithDependencies(
       port: config.port,
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
       authToken,
+      ...(relay ? { relayStaticKey: relay.privateKey } : {}),
       ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
       providerProbe: dependencies.createProviderProbe(),
       machineIdentity,
@@ -192,6 +208,7 @@ export async function createProductionDaemonWithDependencies(
     return {
       host: daemon.host, requestedPort: daemon.requestedPort, authToken: daemon.authToken,
       secureTransport, credential,
+      ...(relay ? { relayIdentity: structuredClone(relay.identity) } : {}),
       start: () => {
         if (stopping) return Promise.reject(new Error("Daemon cannot restart after shutdown"))
         if (!starting) {
@@ -216,6 +233,15 @@ export async function createProductionDaemonWithDependencies(
       },
     }
   } catch (error) {
+    if (loadingRelay && !relaySettled && lease) {
+      // A deadline stops waiting, not a keychain write already in flight. Keep
+      // ownership until it settles so another startup cannot race publication.
+      const heldLease = lease
+      lease = undefined
+      void loadingRelay.then((late) => late?.privateKey.fill(0), () => {})
+        .finally(() => heldLease.release())
+        .catch((cleanup) => console.error("Relay provisioning cleanup failed:", redactErrorDetail(cleanup)))
+    }
     try {
       if (published) writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
     } finally {
@@ -224,6 +250,7 @@ export async function createProductionDaemonWithDependencies(
     }
     throw error
   } finally {
+    relayResult?.privateKey.fill(0)
     if (!ownership) deadline.clear()
   }
 }
