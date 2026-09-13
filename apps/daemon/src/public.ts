@@ -8,6 +8,7 @@ export {
 
 export type { DaemonErrorEntry, DaemonErrorSink } from "./server.js"
 export { verifyLocalFleetClientRoute } from "./local-client-route.js"
+export { verifyRelayProfileSuccessor } from "./relay-provisioning.js"
 export {
   acquireLocalDaemon,
   type AcquireLocalDaemonOptions,

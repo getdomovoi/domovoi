@@ -1,0 +1,23 @@
+{
+  "name": "@getdomovoi/credential-store",
+  "version": "0.0.1",
+  "description": "Explicit keychain or private-file custody for Domovoi credentials.",
+  "type": "module",
+  "engines": { "node": ">=22.13.0" },
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/getdomovoi/domovoi.git", "directory": "packages/credential-store" },
+  "homepage": "https://domovoi.sh",
+  "bugs": { "url": "https://github.com/getdomovoi/domovoi/issues" },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "default": "./dist/index.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
+  "scripts": { "build": "tsup", "prepack": "pnpm run build", "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "dependencies": { "@napi-rs/keyring": "^1.3.0" },
+  "devDependencies": { "@types/node": "^26.4.0", "@vitest/coverage-v8": "catalog:", "tsup": "^8.5.0", "typescript": "catalog:", "vitest": "catalog:" },
+  "publishConfig": { "access": "public", "provenance": true }
+}

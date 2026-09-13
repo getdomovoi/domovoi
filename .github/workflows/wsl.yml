@@ -64,11 +64,14 @@ jobs:
         timeout-minutes: 5
       - run: pnpm --filter @getdomovoi/protocol build
         timeout-minutes: 2
-      - name: Build and lock the guest's production daemon
-        run: |
-          pnpm --filter @getdomovoi/daemon build
-          node scripts/prepare-daemon-runtime.mjs
-        timeout-minutes: 5
+      - run: pnpm --filter @getdomovoi/credential-store build
+        timeout-minutes: 2
+      - name: Build the guest's production daemon
+        run: pnpm --filter @getdomovoi/daemon build
+        timeout-minutes: 3
+      - name: Lock the guest's production daemon runtime
+        run: node scripts/prepare-daemon-runtime.mjs
+        timeout-minutes: 2
       - name: Provision WSL 2 and require native proofs
         run: node scripts/wsl-ci.mjs
         timeout-minutes: 21

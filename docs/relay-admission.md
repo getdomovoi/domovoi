@@ -43,8 +43,9 @@ record. Knowing only a bearer or only a private key is insufficient.
 
 `DaemonServerOptions.relayStaticKey` requires caller-supplied, persisted secret
 material. The daemon copies that key and clears its copy on shutdown. This slice
-does not provision it in the live profile, rotate it, or connect the production
-transport factory. Client key storage and actual mobile transport wiring remain
+now receives profile-provisioned keys from the production factory through
+[relay key provisioning](relay-key-provisioning.md). Rotation and carrier dialing
+remain separate. Client key storage and actual mobile transport wiring remain
 integration work. The endpoint wrapper obtains fresh handshake entropy from
 `globalThis.crypto.getRandomValues`; an absent or failing platform CSPRNG refuses
 construction. A platform adapter must provide a real CSPRNG, never a seeded or

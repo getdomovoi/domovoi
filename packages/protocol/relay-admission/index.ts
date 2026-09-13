@@ -5,3 +5,4 @@
  */
 export { createRelayClient, createRelayResponder, relayPublicKeyFromPrivateKey } from "./channel.js"
 export type { RelayCarrier, RelayChannel, RelayClient, RelayClientOptions, RelayResponderOptions } from "./channel.js"
+export { relayIdentityPublicKeyIsValid, relaySuccessorSigningBytes, verifyRelayChannelSuccessor } from "./identity.js"

@@ -18,6 +18,8 @@ const configurationSchema = z.object({
   port: z.number().int(),
   credentialPath: pathSchema,
   machineIdentityPath: pathSchema,
+  relayIdentityPublicKey: z.string().optional(),
+  relayCredentialFile: pathSchema.optional(),
   tls: z.object({ certPath: pathSchema, keyPath: pathSchema }).strict().optional(),
   advertiseHost: z.string().optional(),
   tailnetHost: tailnetHostSchema.optional(),
@@ -42,6 +44,8 @@ export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironm
     DOMOVOI_PORT: String(config.port),
     DOMOVOI_CREDENTIAL_PATH: config.credentialPath,
     DOMOVOI_MACHINE_IDENTITY_PATH: config.machineIdentityPath,
+    ...(config.relayIdentityPublicKey !== undefined ? { DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY: config.relayIdentityPublicKey } : {}),
+    ...(config.relayCredentialFile !== undefined ? { DOMOVOI_RELAY_CREDENTIAL_FILE: config.relayCredentialFile } : {}),
     DOMOVOI_ALLOW_REMOTE_TRANSPORT: config.allowRemoteTransport ? "1" : "0",
     ...(config.tls ? {
       DOMOVOI_TLS_CERT_PATH: config.tls.certPath,
@@ -86,9 +90,11 @@ export function serviceConfigurationPath(home: string, platform: string): string
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, relayIdentityPublicKey, relayCredentialFile, ...required } = configurationSchema.parse(JSON.parse(text))
     const config: ServiceConfiguration = {
       ...required,
+      ...(relayIdentityPublicKey !== undefined ? { relayIdentityPublicKey } : {}),
+      ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),
       ...(registrationId !== undefined ? { registrationId } : {}),
       ...(tls !== undefined ? { tls } : {}),
       ...(advertiseHost !== undefined ? { advertiseHost } : {}),
