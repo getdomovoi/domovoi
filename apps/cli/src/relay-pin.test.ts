@@ -132,6 +132,42 @@ describe("relay pin store", () => {
     expect(saved).toEqual(wonA ? trusted : { ...trusted, state: "recovery-required" })
   })
 
+  it("serialises two store handles on one keyring so a swap sees the other's write", async () => {
+    const keyring = memoryKeyring()
+    const home = await directory()
+    const first = await openCredentialStore({ keyring, home, warn: () => {} })
+    await first.save(paired)
+    const second = await openCredentialStore({ keyring, home, warn: () => {} })
+    const [wonA, wonB] = await Promise.all([
+      relayPinStore(first, paired.endpoint).compareAndSwap(undefined, trusted),
+      relayPinStore(second, paired.endpoint).compareAndSwap(undefined, { ...trusted, state: "recovery-required" }),
+    ])
+    expect([wonA, wonB].filter(Boolean)).toHaveLength(1)
+  })
+
+  it("holds save and forget behind the same lock as a swap on a file", async () => {
+    const home = await directory()
+    const file = join(home, "cli-credentials.json")
+    let releasePublish: () => void = () => {}
+    const publishGate = new Promise<void>((resolve) => { releasePublish = resolve })
+    const { rename } = await import("node:fs/promises")
+    const other = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {} })
+    await other.save(paired)
+    const slow = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {},
+      publish: async (staging, path) => { await publishGate; await rename(staging, path) } })
+    const swapping = relayPinStore(slow, paired.endpoint).compareAndSwap(undefined, trusted)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    let forgotten = false
+    const forgetting = other.forget(paired.endpoint).then(() => { forgotten = true })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    // forget must wait for the swap's lock, not run underneath it.
+    expect(forgotten).toBe(false)
+    releasePublish()
+    expect(await swapping).toBe(true)
+    await forgetting
+    expect(await other.load(paired.endpoint)).toBeUndefined()
+  })
+
   it("runs the protocol's recovery and adoption against the CLI store", async () => {
     const store = await openCredentialStore({ keyring: memoryKeyring(), home: await directory(), warn: () => {} })
     await store.save(paired)

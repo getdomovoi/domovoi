@@ -1,4 +1,5 @@
-import { open, rename, unlink } from "node:fs/promises"
+import { mkdir, open, rename, unlink } from "node:fs/promises"
+import { dirname, join } from "node:path"
 
 import {
   CredentialStoreError, nativeKeyring as sharedNativeKeyring, openCredentialBackend,
@@ -33,10 +34,11 @@ export type CredentialStore = {
   load(endpoint: string): Promise<PairedDaemon | undefined>
   save(record: PairedDaemon): Promise<void>
   forget(endpoint: string): Promise<void>
-  // Read-modify-write of one pairing with no other writer in between. The
-  // file backend takes an exclusive lock beside the file; the keyring backend
-  // serialises within this process only, since the OS keychain offers no
-  // cross-process compare. Returning undefined from update leaves the record.
+  // Read-modify-write of one pairing with no other writer in between. Every
+  // writer on a backing store, from any handle in any process, takes the same
+  // exclusive lock file: beside the credential file, or under $HOME for the
+  // keyring, which offers no compare of its own. Returning undefined from
+  // update leaves the record untouched.
   update(endpoint: string, change: (current: PairedDaemon | undefined) => PairedDaemon | undefined): Promise<boolean>
 }
 
@@ -72,38 +74,32 @@ export async function openCredentialStore(input: {
     unavailable,
     ...(input.publish === undefined ? {} : { publish: input.publish }),
   })
-  return backend.where === "keyring" ? keyringStore(backend.keyring) : fileStore(backend)
+  // Every writer, from every handle and every process, takes the same lock.
+  // The keyring has no file to lock beside, so its lock lives under $HOME
+  // like the profile does; it guards ordering only and holds no secret.
+  return backend.where === "keyring"
+    ? keyringStore(backend.keyring, join(input.home, ".domovoi", "cli-credentials.lock"))
+    : fileStore(backend)
 }
 
-// One writer at a time within this process. Callers chain on the previous
-// operation, so a rejected change never leaves the queue stuck.
-function serialised(): <T>(operation: () => Promise<T>) => Promise<T> {
-  let tail: Promise<unknown> = Promise.resolve()
-  return (operation) => {
-    const next = tail.then(operation, operation)
-    tail = next.catch(() => undefined)
-    return next
-  }
-}
-
-function keyringStore(keyring: Keyring): CredentialStore {
-  const exclusive = serialised()
+function keyringStore(keyring: Keyring, lockPath: string): CredentialStore {
   const load = async (endpoint: string) => {
     const raw = await keyring.get(endpoint)
     if (raw === undefined) return undefined
     return pairedDaemonSchema.parse(JSON.parse(raw))
   }
+  const locked = <T>(operation: () => Promise<T>) => withFileLock(lockPath, operation)
   return {
     where: "keyring",
     load,
-    async save(record) {
-      await keyring.set(record.endpoint, JSON.stringify(pairedDaemonSchema.parse(record)))
+    save(record) {
+      return locked(async () => { await keyring.set(record.endpoint, JSON.stringify(pairedDaemonSchema.parse(record))) })
     },
-    async forget(endpoint) {
-      await keyring.delete(endpoint)
+    forget(endpoint) {
+      return locked(async () => { await keyring.delete(endpoint) })
     },
     update(endpoint, change) {
-      return exclusive(async () => {
+      return locked(async () => {
         const next = change(await load(endpoint))
         if (next === undefined) return false
         await keyring.set(endpoint, JSON.stringify(pairedDaemonSchema.parse(next)))
@@ -116,8 +112,8 @@ function keyringStore(keyring: Keyring): CredentialStore {
 // An exclusive lock file beside the credential file. Creation is atomic
 // (O_EXCL), so two processes cannot both hold it; a holder that died leaves
 // a file that a later caller treats as stale after the wait limit and says so.
-async function withFileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
-  const lockPath = `${path}.lock`
+async function withFileLock<T>(lockPath: string, operation: () => Promise<T>): Promise<T> {
+  await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 })
   const deadline = Date.now() + 10_000
   for (;;) {
     let handle
@@ -144,31 +140,35 @@ function fileStore(backend: Extract<CredentialBackend, { where: "file" }>): Cred
     return text === undefined ? { version: 1 as const, daemons: [] } : fileSchema.parse(JSON.parse(text))
   }
   const write = (contents: z.infer<typeof fileSchema>) => backend.write(`${JSON.stringify(contents, null, 2)}\n`)
-  const exclusive = serialised()
+  const locked = <T>(operation: () => Promise<T>) => withFileLock(`${backend.path}.lock`, operation)
   return {
     where: "file",
     async load(endpoint) {
       return (await read()).daemons.find((daemon) => daemon.endpoint === endpoint)
     },
     update(endpoint, change) {
-      return exclusive(() => withFileLock(backend.path, async () => {
+      return locked(async () => {
         const contents = await read()
         const next = change(contents.daemons.find((daemon) => daemon.endpoint === endpoint))
         if (next === undefined) return false
         contents.daemons = [...contents.daemons.filter((daemon) => daemon.endpoint !== endpoint), pairedDaemonSchema.parse(next)]
         await write(contents)
         return true
-      }))
+      })
     },
-    async save(record) {
-      const contents = await read()
-      contents.daemons = [...contents.daemons.filter((daemon) => daemon.endpoint !== record.endpoint), pairedDaemonSchema.parse(record)]
-      await write(contents)
+    save(record) {
+      return locked(async () => {
+        const contents = await read()
+        contents.daemons = [...contents.daemons.filter((daemon) => daemon.endpoint !== record.endpoint), pairedDaemonSchema.parse(record)]
+        await write(contents)
+      })
     },
-    async forget(endpoint) {
-      const contents = await read()
-      contents.daemons = contents.daemons.filter((daemon) => daemon.endpoint !== endpoint)
-      await write(contents)
+    forget(endpoint) {
+      return locked(async () => {
+        const contents = await read()
+        contents.daemons = contents.daemons.filter((daemon) => daemon.endpoint !== endpoint)
+        await write(contents)
+      })
     },
   }
 }

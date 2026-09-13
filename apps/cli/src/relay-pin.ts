@@ -16,6 +16,8 @@ export type CliRelayPinStore = RelayPinStore & {
 // The pin for one paired daemon, kept on its pairing record. Enrollment passes
 // undefined as the expected value; recovery and adoption pass the pin they
 // read. A swap against anything but the saved value is refused, not merged.
+// The compare and the write happen under the store's lock, so two handles or
+// two processes cannot both pass the same compare.
 export function relayPinStore(store: CredentialStore, endpoint: string): CliRelayPinStore {
   return {
     async read() {
