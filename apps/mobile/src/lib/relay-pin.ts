@@ -10,7 +10,10 @@ export type SecretItems = {
   deleteItemAsync(key: string): Promise<void>
 }
 
-export const relayPinKey = "domovoi.daemon.relayPin"
+// One key per machine. A pin is a claim about one daemon's identity, so a
+// phone paired with a different daemon must not find the previous one's pin
+// under a shared key and take it as trusted.
+export const relayPinKey = (machineId: string) => `domovoi.daemon.relayPin.${machineId}`
 
 function parsePin(raw: string | null): RelayClientPin | undefined {
   if (raw === null) return undefined
@@ -28,8 +31,10 @@ function canonical(pin: RelayClientPin | undefined): string | undefined {
 // Read-only. Safe from any process that shares the keychain, including a
 // future notification extension: it may decide whether the pin is trusted,
 // it may not change it.
-export async function readRelayPin(secrets: SecretItems): Promise<RelayClientPin | undefined> {
-  return parsePin(await secrets.getItemAsync(relayPinKey))
+export async function readRelayPin(secrets: SecretItems, machineId: string): Promise<RelayClientPin | undefined> {
+  const pin = parsePin(await secrets.getItemAsync(relayPinKey(machineId)))
+  if (pin !== undefined && pin.identity.machineId !== machineId) throw new Error("The saved relay pin belongs to another machine. Pair again to replace it.")
+  return pin
 }
 
 export type PhoneRelayPinStore = Omit<RelayPinStore, "read" | "compareAndSwap"> & {
@@ -56,16 +61,19 @@ function exclusive<T>(secrets: SecretItems, key: string, operation: () => Promis
 // Android process. It does not cover a second process writing the same key.
 // If a notification extension ever needs the pin, give it readRelayPin and
 // keep every write in the app process, or this store's guarantee is gone.
-export function createRelayPinStore(secrets: SecretItems, options: { keychainAccessible?: KeychainAccessibilityConstant } = {}): PhoneRelayPinStore {
+export function createRelayPinStore(secrets: SecretItems, machineId: string, options: { keychainAccessible?: KeychainAccessibilityConstant } = {}): PhoneRelayPinStore {
+  const key = relayPinKey(machineId)
   return {
-    read: () => readRelayPin(secrets),
-    compareAndSwap(expected, replacement) {
-      const next = canonical(replacement)!
-      return exclusive(secrets, relayPinKey, async () => {
-        if (canonical(await readRelayPin(secrets)) !== canonical(expected)) return false
-        await secrets.setItemAsync(relayPinKey, next, options)
+    read: () => readRelayPin(secrets, machineId),
+    async compareAndSwap(expected, replacement) {
+      const parsed = relayClientPinSchema.parse(replacement)
+      if (parsed.identity.machineId !== machineId) throw new Error("The relay pin belongs to another machine; it cannot be saved here.")
+      const next = canonical(parsed)!
+      return exclusive(secrets, key, async () => {
+        if (canonical(await readRelayPin(secrets, machineId)) !== canonical(expected)) return false
+        await secrets.setItemAsync(key, next, options)
         // The write already ran. Say the truth: it is unconfirmed, not absent.
-        if (await secrets.getItemAsync(relayPinKey) !== next) throw new Error("The relay pin write could not be confirmed; read the saved pin again before trusting or retrying.")
+        if (await secrets.getItemAsync(key) !== next) throw new Error("The relay pin write could not be confirmed; read the saved pin again before trusting or retrying.")
         return true
       })
     },
@@ -87,7 +95,7 @@ export async function reconcileRelayPin(input: {
   call: RelayPinCall
 }): Promise<"trusted" | "enrolled" | "recovered" | "unavailable"> {
   const current = await input.store.read()
-  if (current?.state === "trusted") return "trusted"
+  if (current?.state === "trusted" && current.identity.machineId === input.machineId) return "trusted"
   let publication: unknown
   try { publication = await input.call("relay.recovery", { machineId: input.machineId }) } catch { return "unavailable" }
   const parsed = relayRecoveryResultSchema.parse(publication)

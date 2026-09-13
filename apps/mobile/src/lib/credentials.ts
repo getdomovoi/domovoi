@@ -37,6 +37,6 @@ export async function clearCredential(): Promise<void> {
 
 // App-process wiring for the relay pin. Nothing else constructs a writable
 // store; see relay-pin.ts for why that matters once an extension exists.
-export function openRelayPinStore(): PhoneRelayPinStore {
-  return createRelayPinStore(SecureStore, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY })
+export function openRelayPinStore(machineId: string): PhoneRelayPinStore {
+  return createRelayPinStore(SecureStore, machineId, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY })
 }

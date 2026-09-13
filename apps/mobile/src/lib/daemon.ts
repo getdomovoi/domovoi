@@ -44,6 +44,10 @@ export class DaemonConnection {
     private readonly token: string,
     private readonly handlers: {
       onSnapshot: (snapshot: WorkspaceSnapshot) => void
+      // Only after the daemon accepted this connection's token. A snapshot
+      // can also arrive as a notification before that, and nothing that
+      // pins trust may run on one of those.
+      onHello?: (snapshot: WorkspaceSnapshot) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       // The daemon pushes the whole fleet whenever it changes, so a list on
       // screen stops being a claim about when the tab was opened.
@@ -73,6 +77,7 @@ export class DaemonConnection {
         (snapshot) => {
           this.handlers.onStatus("open")
           this.handlers.onSnapshot(snapshot as WorkspaceSnapshot)
+          this.handlers.onHello?.(snapshot as WorkspaceSnapshot)
         },
         (cause: Error) => {
           this.handlers.onError(cause)

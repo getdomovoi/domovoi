@@ -57,11 +57,14 @@ export function useDaemon(
           attempt.current = 0
           setFault(undefined)
           setSnapshot(next)
-          // The token that opened this connection is what pairing proved, so
-          // this is where the daemon's relay identity is pinned or a
-          // distrusted pin is recovered. It never decides the connection.
+        },
+        // The token that opened this connection is what pairing proved, and
+        // only the answered hello proves it. This is where the daemon's relay
+        // identity is pinned or a distrusted pin is recovered; it never
+        // decides the connection.
+        onHello: (next) => {
           void reconcileRelayPin({
-            store: openRelayPinStore(),
+            store: openRelayPinStore(next.machine.id),
             machineId: next.machine.id,
             call: (method, params) => daemon.call(method, params),
           }).catch((cause: unknown) => {
