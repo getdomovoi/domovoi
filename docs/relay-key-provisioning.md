@@ -155,20 +155,83 @@ The existing Windows directory-durability limit still applies.
 
 The record retains the latest signed successor only. A client more than one
 generation behind needs each intervening signed statement, applied in order.
-Statement archival and delivery belong to the next integration layer. Resetting
-a generation or replacing the saved identity anchor is not recovery.
+The query below delivers that latest statement; archival of earlier statements
+remains separate. Resetting a generation or replacing the saved identity anchor
+is not recovery.
+
+## Enrollment and successor delivery
+
+An opt-in direct `device.pair` or `device.claim` reply now carries both
+`relay: { suite, responderPublicKey }` and `relayIdentity: RelayIdentityPin`.
+The identity includes the daemon's machine id, cold identity public key,
+generation and channel pin. Schemas require both fields together and matching
+channel keys. A claim also binds the pin to the returned daemon descriptor, not
+the claiming machine. Ordinary pairing replies omit both fields. The daemon
+refuses opt-in enrollment before minting a credential or spending a claim code
+unless it has a complete provisioned public identity matching its key. Enrollment
+adapters save that pin as trusted only from their existing trusted direct pairing
+exchange. The public recovery query is never an enrollment source.
+
+`relay.recovery({ machineId })` returns `{ identity, successor? }` over JSON-RPC.
+`identity` is the current public pin. Generation 1 has no successor; later
+generations require the latest signed envelope matching every identity field.
+No custody path, private key, bearer or paired-device list appears in this result.
+
+**The fetch is unauthenticated by design.** An offline client whose old channel
+pin cannot admit must fetch before admission. R2 makes this work: the client
+verifies the cold identity key's signature against its saved public pin. The
+delivery channel supplies bytes; the saved identity supplies trust. Requiring a
+bearer or a successful Noise handshake on this fetch would strand the clients it
+exists to recover. A fetched identity never replaces the saved verification key.
+
+The RPC runs before `system.hello`. It grants no connection identity or workspace
+authority, leaves the authentication deadline intact, and accepts no credential
+parameter. Requests use the existing pre-authentication frame bound. The strict
+result has bounded ASCII fields and a total cap of 2,048 bytes. The daemon checks
+machine scoping and permits three requests per source and thirty across the
+daemon in a rolling sixty seconds, independently of pairing-code quotas. Malformed
+requests count too. Sources come from the observed socket peer, never forwarding
+headers; reconnecting does not reset the quota. Missing or oversized source
+identifiers refuse. Proxy peers share a quota.
+
+`DomovoiDaemon.relayRecovery(params, observedSource)` exposes the same bounded,
+rate-limited public result to the future carrier adapter. It serves only while
+the daemon is running and returns a copy. The production factory supplies the
+public record validated during startup; neither a query nor enrollment reads
+private custody. The daemon verifies the publication's signature and its match
+to the active channel key before serving. Disabled, malformed, rate-limited,
+foreign-machine and unavailable queries receive the same RPC refusal,
+`Relay recovery is unavailable`. This does not change the frozen codec.
+
+After next contact, the client passes the result to
+`adoptRelayRecovery(store, publication)` from
+`@getdomovoi/protocol/relay-admission`. It validates the result and calls
+`verifyRelayChannelSuccessor` with the **saved** identity pin. It then uses the
+unchanged whole-record `RelayPinStore` compare-and-swap to persist the trusted
+successor. A missing envelope, skipped generation, wrong predecessor, invalid
+signature, replay, failed write or concurrent pin change refuses adoption. No
+refusal clears a saved distrust decision. Clients multiple generations behind
+must obtain the intervening statements; the latest query cannot skip that chain.
+
+The private relay server still needs to route this public query before opening
+an admitted channel. The real-daemon test here exercises the public JSON-RPC
+listener; it does not claim a deployed relay path. An adversary can withhold a
+newer statement or replay an old publication. Neither advances a saved pin, and
+this offline signature scheme cannot prove that a response is globally newest.
 
 ## Recover a client pin
 
 The protocol main entry exports `relayClientPinSchema`: a strict public record
 with version 1, the saved identity pin, and state `trusted` or `recovery-required`.
-The `@getdomovoi/protocol/relay-admission` entry exports three reusable operations:
+The `@getdomovoi/protocol/relay-admission` entry exports reusable operations:
 
 - `requireRelayPinRecovery(store)` durably marks the current pin untrusted while
   retaining the authentic identity and predecessor needed to check a successor.
 - `adoptRelayPinSuccessor(store, envelope)` verifies with that saved identity,
   then durably replaces the complete record with the next trusted pin. A failed
   signature, failed write or compare-and-swap conflict never returns success.
+- `adoptRelayRecovery(store, publication)` validates a public query result, then
+  performs the same saved-pin verification and durable replacement.
 - `createPinnedRelayClient(store, options)` reads the saved record for every new
   admission, refuses a recovery-required or foreign-machine pin, and derives the
   handshake context from its saved channel key. Callers supply a route id, client
@@ -180,8 +243,8 @@ value and resolves true only after its replacement is durable. Reads and writes
 must share the backing store's transaction boundary; an unlocked read followed by
 rename is not an implementation of this contract. Errors propagate and conflicts
 refuse. There is no automatic retry that could overwrite a concurrent distrust
-decision. Storage adapters, authentic initial enrollment and closing existing
-channels on suspicion remain client integration responsibilities. These functions
+decision. Storage adapters, wiring the trusted enrollment receipt and closing
+existing channels on suspicion remain client integration responsibilities. These functions
 gate new admissions and do not revoke channels held in another process.
 
 An untrusted carrier may deliver a signed statement, but cannot supply the identity
@@ -209,11 +272,19 @@ still admits there, while the recovered client refuses it. That control separate
 pin refusal from a peer merely missing the bearer. Fault-injection tests cover
 staging, read-back, profile ownership, both sides of rename, and retirement failure.
 
-Client identity-pin enrollment, successor delivery, full host-profile restoration
-and the relay server remain outside this range. Warm-key recovery requires a
+`apps/daemon/src/relay-successor-delivery.test.ts` obtains the initial identity from
+the opt-in pairing RPC, persists it in SQLite, disconnects the client, and rotates
+the real daemon with the external signer. The client receives no signer output
+or factory pin: its next unauthenticated query supplies the successor. Both normal
+rotation and warm-key loss then admit with the same paired bearer and reject the
+stale channel pin. Other probes cover source and daemon quotas, forwarding-header
+spoofing, payload limits, copied publications and refusal before pairing effects.
+
+Client storage adapters, full host-profile restoration and the relay server
+remain outside this range. Warm-key recovery requires a
 retained or authentically restored public profile; the real-daemon proof also
 retains the machine identity and paired-device ledger. It does not prove recovery
-from losing those records too. The stolen-disk launch row still needs delivery:
+from losing those records too. The stolen-disk launch row still needs transport and client integration:
 an offline client with no distrust decision or signed successor can still accept
 the stolen key. A client must retain its authentic identity pin separately from
 an attacker-controlled daemon profile before R2 can protect its recovery.

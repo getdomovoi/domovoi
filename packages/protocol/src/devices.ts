@@ -6,6 +6,7 @@ import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifie
 import { fleetMachineDescriptorSchema } from "./fleet.js"
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayChannelPinSchema, relayPublicKeySchema } from "./relay-admission.js"
+import { relayIdentityPinSchema } from "./relay-identity.js"
 
 export const maximumPairedDeviceLabelLength = 128
 export const maximumListedDevices = 256
@@ -96,7 +97,15 @@ export const devicePairResultSchema = z.object({
   device: pairedDeviceSchema,
   token: deviceCredentialSchema,
   relay: relayChannelPinSchema.optional(),
-}).strict()
+  relayIdentity: relayIdentityPinSchema.optional(),
+}).strict().superRefine((result, context) => {
+  if (result.relay === undefined && result.relayIdentity === undefined) return
+  if (!result.relay || !result.relayIdentity
+    || result.relay.suite !== result.relayIdentity.channel.suite
+    || result.relay.responderPublicKey !== result.relayIdentity.channel.responderPublicKey) {
+    context.addIssue({ code: "custom", message: "Relay enrollment requires matching channel and identity pins" })
+  }
+})
 
 // The server derives this receipt from the authenticated socket, not a caller
 // id, label or token in the request. A root bearer is not a paired client.
@@ -171,7 +180,16 @@ export const deviceClaimResultSchema = z.object({
   token: deviceCredentialSchema,
   machine: fleetMachineDescriptorSchema,
   relay: relayChannelPinSchema.optional(),
-}).strict()
+  relayIdentity: relayIdentityPinSchema.optional(),
+}).strict().superRefine((result, context) => {
+  if (result.relay === undefined && result.relayIdentity === undefined) return
+  if (!result.relay || !result.relayIdentity
+    || result.relay.suite !== result.relayIdentity.channel.suite
+    || result.relay.responderPublicKey !== result.relayIdentity.channel.responderPublicKey
+    || result.machine.id !== result.relayIdentity.machineId) {
+    context.addIssue({ code: "custom", message: "Relay enrollment requires matching channel, identity and daemon pins" })
+  }
+})
 
 export const deviceConfirmClaimParamsSchema = z.object({
   authToken: deviceCredentialSchema,

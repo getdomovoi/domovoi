@@ -22,8 +22,9 @@ store. It presents the corresponding canonical, unpadded base64url public key as
 `channelPublicKey` during an existing **direct** `device.pair` or `device.claim`.
 The daemon persists that public key in the same SQLite row as the paired bearer
 hash and client-kind or machine binding. The caller receives the ordinary
-credential response plus `relay: { suite, responderPublicKey }` only when it
-opted in. The daemon must have a configured static key before minting that
+credential response plus `relay: { suite, responderPublicKey }` and
+`relayIdentity: RelayIdentityPin` only when it opted in. The two pins must agree.
+The daemon must have a complete provisioned identity matching its static key before minting that
 credential or spending a claim code. Public device summaries stay unchanged.
 
 A machine claim retains the key in the pending row. It has no admission authority
@@ -43,9 +44,11 @@ record. Knowing only a bearer or only a private key is insufficient.
 
 `DaemonServerOptions.relayStaticKey` requires caller-supplied, persisted secret
 material. The daemon copies that key and clears its copy on shutdown. This slice
-now receives profile-provisioned keys from the production factory through
-[relay key provisioning](relay-key-provisioning.md). Rotation and carrier dialing
-remain separate. Client key storage and actual mobile transport wiring remain
+now receives profile-provisioned keys and the signed recovery publication from
+the production factory through [relay key provisioning](relay-key-provisioning.md).
+That document defines local rotation, full identity enrollment and the public
+`relay.recovery` query used before admission. Carrier dialing remains separate.
+Client key storage and actual mobile transport wiring remain
 integration work. The endpoint wrapper obtains fresh handshake entropy from
 `globalThis.crypto.getRandomValues`; an absent or failing platform CSPRNG refuses
 construction. A platform adapter must provide a real CSPRNG, never a seeded or

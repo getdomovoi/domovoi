@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { protocolVersionSchema } from "./protocol-version.js"
+import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
 import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
@@ -1255,6 +1256,7 @@ export const usageWindowSchema = usageTotalsSchema.extend({
 
 export const rpcMethods = {
   "system.hello": { params: helloParamsSchema, result: systemHelloResultSchema },
+  "relay.recovery": { params: relayRecoveryParamsSchema, result: relayRecoveryResultSchema },
   "artifact.authorize": {
     params: artifactAuthorizeParamsSchema,
     result: artifactAuthorizeResultSchema,
@@ -1476,6 +1478,7 @@ export type RpcMethodMutation = "mutating" | "read-only"
 // here rather than inferred by each implementation, because a daemon that can no
 // longer persist refuses mutating methods and must answer read-only ones.
 export const rpcMethodMutations = {
+  "relay.recovery": "read-only",
   "system.hello": "read-only",
   "workspace.get": "read-only",
   "artifact.authorize": "read-only",

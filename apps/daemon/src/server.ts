@@ -219,9 +219,8 @@ import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
 import { DaemonRelaySocket, maximumDaemonRelayChannels } from "./relay-admission.js"
-import { relayPublicKeyFromPrivateKey, type RelayCarrier, type RelayChannel } from "@getdomovoi/protocol/relay-admission"
-import { relayNoiseSuite } from "@getdomovoi/protocol/relay"
-import type { RelayAdmissionContext } from "@getdomovoi/protocol"
+import { relayIdentityPublicKeyIsValid, relayPublicKeyFromPrivateKey, verifyRelayChannelSuccessor, type RelayCarrier, type RelayChannel } from "@getdomovoi/protocol/relay-admission"
+import { relayRecoveryParamsSchema, relayRecoveryResultSchema, type RelayAdmissionContext, type RelayRecoveryResult } from "@getdomovoi/protocol"
 import { resolveFleetClientRoute } from "./fleet-client-route.js"
 import {
   appendDurableOutput,
@@ -831,6 +830,7 @@ export type DaemonServerOptions = {
   authToken?: string
   // Supplied from endpoint-owned custody. No generated per-process fallback.
   relayStaticKey?: Uint8Array
+  relayRecovery?: RelayRecoveryResult
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
   terminalReapGraceMs?: number
@@ -914,6 +914,9 @@ export class DomovoiDaemon {
   #rpcClients = new Set<RpcOutboundSocket>()
   #relaySockets = new Set<DaemonRelaySocket>()
   #relayStaticKey: Uint8Array | undefined
+  #relayRecovery: RelayRecoveryResult | undefined
+  // Independent of code-claim attempts, with the same bounded source/listener budgets.
+  #relayRecoveryAdmission = new PairingClaimAdmission()
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
@@ -1021,6 +1024,20 @@ export class DomovoiDaemon {
     this.#providerPromptBudgetCodeUnits = options.providerPromptBudgetCodeUnits
       ?? maximumProviderPromptCodeUnits
     validateProviderPromptBudget(this.#providerPromptBudgetCodeUnits)
+    if (options.relayRecovery !== undefined) {
+      const publication = relayRecoveryResultSchema.parse(options.relayRecovery)
+      const identity = publication.identity
+      if (!options.relayStaticKey || !relayIdentityPublicKeyIsValid(identity.identityPublicKey)
+        || relayPublicKeyFromPrivateKey(options.relayStaticKey) !== identity.channel.responderPublicKey
+        || (options.machineIdentity !== undefined && identity.machineId !== options.machineIdentity.id)) {
+        throw new Error("Relay recovery publication does not match this daemon")
+      }
+      if (publication.successor) {
+        verifyRelayChannelSuccessor({ ...identity, generation: identity.generation - 1,
+          channel: { ...identity.channel, responderPublicKey: publication.successor.statement.previousChannelPublicKey } }, publication.successor)
+      }
+      this.#relayRecovery = publication
+    }
     if (options.relayStaticKey !== undefined) {
       relayPublicKeyFromPrivateKey(options.relayStaticKey)
       this.#relayStaticKey = new Uint8Array(options.relayStaticKey)
@@ -1325,6 +1342,22 @@ export class DomovoiDaemon {
     this.#relaySockets.add(active)
     this.#rpcClients.add(active)
     return { receive: (frame) => active.receive(frame), close: () => active.close(), get closed() { return active.closed } }
+  }
+
+  // Public by design. Recovery must be fetchable before the old pin can admit;
+  // its cold-key signature, checked against client storage, supplies trust.
+  // A carrier supplies its observed source, never a forwarded caller field.
+  relayRecovery(params: unknown, source: string | undefined): RelayRecoveryResult {
+    if (typeof source !== "string" || source.length > 256 || !this.#relayRecoveryAdmission.admit(source)) {
+      throw new Error("Relay recovery is unavailable")
+    }
+    const parsed = relayRecoveryParamsSchema.safeParse(params)
+    if (!parsed.success || !this.#http || this.#stopping || this.#stopped || !this.#relayRecovery
+      || parsed.data.machineId !== this.#snapshot.machine.id
+      || parsed.data.machineId !== this.#relayRecovery.identity.machineId) {
+      throw new Error("Relay recovery is unavailable")
+    }
+    return structuredClone(this.#relayRecovery)
   }
 
   issuePairingCode(): { code: string; expiresAt: string } {
@@ -3112,6 +3145,7 @@ export class DomovoiDaemon {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
+        || request.method === "relay.recovery"
         || request.method === "runtime.discover"
         || request.method === "provider.refresh"
         || request.method === "provider.secret.list"
@@ -3497,6 +3531,15 @@ export class DomovoiDaemon {
     }
 
     const method = request.method as RpcMethod
+    if (method === "relay.recovery") {
+      try {
+        const source = this.#socketSources.get(socket) ?? (socket instanceof DaemonRelaySocket ? "admitted-relay" : undefined)
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.relayRecovery(request.params ?? {}, source) })
+      } catch {
+        this.#error(socket, request.id, invalidParams, "Relay recovery is unavailable")
+      }
+      return
+    }
     if (socket instanceof DaemonRelaySocket && (
       method === "device.pair" || method === "device.claim" || method === "device.confirmClaim"
       || method === "device.issueCode" || method === "artifact.authorize"
@@ -3634,7 +3677,7 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, internalError, "Device pairing is unavailable")
         return
       }
-      if (params.channelPublicKey !== undefined && !this.#relayStaticKey) {
+      if (params.channelPublicKey !== undefined && (!this.#relayRecovery || this.#relayRecovery.identity.machineId !== this.#snapshot.machine.id)) {
         this.#error(socket, request.id, internalError, "Relay admission is unavailable")
         return
       }
@@ -3654,9 +3697,9 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({ ...paired, machine: this.#machineDescriptor(),
-            ...(params.channelPublicKey === undefined ? {} : { relay: {
-              suite: relayNoiseSuite, responderPublicKey: relayPublicKeyFromPrivateKey(this.#relayStaticKey!),
-            } }),
+            ...(params.channelPublicKey === undefined ? {} : {
+              relay: this.#relayRecovery!.identity.channel, relayIdentity: this.#relayRecovery!.identity,
+            }),
           }),
         })
       } catch (error) {
@@ -5003,7 +5046,7 @@ export class DomovoiDaemon {
           return
         }
         const channelPublicKey = method === "device.pair" ? (params as RpcParams<"device.pair">).channelPublicKey : undefined
-        if (channelPublicKey !== undefined && !this.#relayStaticKey) {
+        if (channelPublicKey !== undefined && (!this.#relayRecovery || this.#relayRecovery.identity.machineId !== this.#snapshot.machine.id)) {
           this.#error(socket, request.id, internalError, "Relay admission is unavailable")
           return
         }
@@ -5037,9 +5080,9 @@ export class DomovoiDaemon {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({ ...result,
-              ...(channelPublicKey === undefined ? {} : { relay: {
-                suite: relayNoiseSuite, responderPublicKey: relayPublicKeyFromPrivateKey(this.#relayStaticKey!),
-              } }),
+              ...(channelPublicKey === undefined ? {} : {
+                relay: this.#relayRecovery!.identity.channel, relayIdentity: this.#relayRecovery!.identity,
+              }),
             }),
           })
         } catch (error) {

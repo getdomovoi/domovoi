@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { isAbsolute, join, resolve } from "node:path"
 
 import { nativeKeyring, openCredentialBackend, readPrivateFile, writePrivateFile, type Keyring } from "@getdomovoi/credential-store"
-import { machineIdSchema, relayBytes32Schema, relayIdentityPinSchema, relayPublicKeySchema, relaySignedSuccessorSchema, relaySuccessorStatementSchema, type RelayIdentityPin, type RelaySuccessorStatement } from "@getdomovoi/protocol"
+import { machineIdSchema, relayBytes32Schema, relayIdentityPinSchema, relayPublicKeySchema, relaySignedSuccessorSchema, relaySuccessorStatementSchema, type RelayIdentityPin, type RelaySignedSuccessor, type RelaySuccessorStatement } from "@getdomovoi/protocol"
 import { relayIdentityPublicKeyIsValid, relayPublicKeyFromPrivateKey, verifyRelayChannelSuccessor } from "@getdomovoi/protocol/relay-admission"
 import { z } from "zod"
 
@@ -33,7 +33,7 @@ const secretSchema = z.discriminatedUnion("version", [initialSecretSchema, stage
 type ChannelSecret = { machineId: string; identityPublicKey: string; keys: string[]; pending?: RelaySuccessorStatement }
 type ProvisioningRecord = z.infer<typeof recordSchema>
 
-export type ProvisionedRelayChannel = { privateKey: Uint8Array; identity: RelayIdentityPin }
+export type ProvisionedRelayChannel = { privateKey: Uint8Array; identity: RelayIdentityPin; successor?: RelaySignedSuccessor }
 type Options = {
   homeDirectory: string
   machineId: string
@@ -203,7 +203,7 @@ export async function loadOrProvisionRelayChannel(options: Options, dependencies
       }) + "\n", { maximumBytes: maximumRecordBytes })
     }
     check()
-    return { privateKey: new Uint8Array(privateKey), identity }
+    return { privateKey: new Uint8Array(privateKey), identity, ...(record?.successor ? { successor: record.successor } : {}) }
   } finally { privateKey?.fill(0) }
 }
 
