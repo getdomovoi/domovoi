@@ -1,7 +1,8 @@
 # Frozen relay IK codec
 
 Status: suite A selected on 2026-09-12. The composition and its byte contract are
-frozen for external review. Review has not completed. This does not enable relay
+frozen for external review, pinned by `packages/protocol/relay/testing/wire-format.test.ts`
+and its committed layout and frame fixtures. Review has not completed. This does not enable relay
 connections or claim that the composition has been audited.
 
 The decision is recorded in [sections 7a and 9 of the crypto ruling](https://github.com/getdomovoi/domovoi/blob/0a91c532d21c8c58163673ac7ed5e942aa93ef85/S0.2-RELAY-CRYPTO.md).
@@ -55,6 +56,7 @@ An initiator writes once, reads once, then uses transport. A responder reads
 once, writes once, then uses transport. `handshakeHash()` returns a copy only
 when the handshake is complete. `remoteStaticKey()` returns a copy of the
 authenticated peer key at that same boundary, for later device admission.
+Calling either accessor before completion is a terminal failure for that instance.
 Handshake AEAD authenticates the running
 transcript; transport AEAD has empty associated data and independent ordered
 counters. A successful decrypt advances its receive counter.
@@ -102,6 +104,28 @@ created here. The operator may observe addresses, timing, sizes, route ids and
 connection counts. Traffic class must not become a cleartext quota field.
 
 ## Evidence and limits
+
+`packages/protocol/relay/testing/wire-format.test.ts` pins named field offsets,
+16-byte tags, 96/48-byte handshake overheads, the 65,535-byte maximum and
+little-endian nonce bytes 4..12. Its static fixtures under `relay/testing/` have
+these SHA-256 digests over the complete JSON file bytes, including the final newline:
+
+- `wire-layout.json`: `sha256:451c521f03230e58c8582b09461dfa32f2fac266b56722fa51e76dad7da9c449`
+- `wire-frames.json`: `sha256:191b444bdf0ff8caf54987242f6952273ce8648e49a5887fafeaa8ad02f49aab`
+
+The frame fixture records fixed public test keys, prologues and repeated-byte
+payload descriptions, complete ciphertexts in base64, transcript hashes and
+literal nonce bytes. Empty and maximum cases cover both handshake messages and
+both transport directions, followed by another record in each direction. Four
+nonce cases include the high counter word and the last usable counter.
+
+Frames were recorded once with the suite-A Node oracle at `c32065ab`; nonce
+records used `node:crypto` with the literal nonce bytes. Fixture provenance names
+that full commit and Node version. File digests above were computed separately
+with Python SHA-256. Tests read committed records and compare both implementations
+against them; neither ciphertext expectations nor recorded digests are generated
+at test time. The tests also compare the actual JSON digests with these literal
+documentation pins. Updating a fixture and its pin requires explicit review.
 
 The unchanged Cacophony fixture pins two handshake frames, four transport frames
 and the final transcript hash. Both role combinations also interoperate with

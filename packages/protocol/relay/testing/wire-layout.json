@@ -1,0 +1,22 @@
+{
+  "format": "domovoi.relay.wire-layout.v1",
+  "message1": {
+    "ephemeral": [0, 32],
+    "encryptedStatic": [32, 80],
+    "payloadStart": 80,
+    "overheadBytes": 96
+  },
+  "message2": {
+    "ephemeral": [0, 32],
+    "payloadStart": 32,
+    "overheadBytes": 48
+  },
+  "tagBytes": 16,
+  "maximumFrameBytes": 65535,
+  "nonce": {
+    "bytes": 12,
+    "zeroPrefix": [0, 4],
+    "counter": [4, 12],
+    "byteOrder": "little"
+  }
+}

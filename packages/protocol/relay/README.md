@@ -3,6 +3,8 @@
 Frozen wire composition: `Noise_IK_25519_ChaChaPoly_SHA256`, Noise revision 34.
 External review is pending. Changes to the frozen composition require a
 compatibility break. Read [the byte contract and integration limits](../../../docs/relay-wire-format.md).
+`testing/wire-format.test.ts` pins the named layout and recorded frame bytes;
+the document records the static fixtures' SHA-256 digests.
 
 `@getdomovoi/protocol/relay` exports only the noble codec and its suite constant.
 `noise-ik.ts` contains the composition; `index.ts` is the public boundary.

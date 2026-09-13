@@ -72,13 +72,13 @@ export class NodeCipherState {
     if (decrypt) {
       bound(input, 16, 65535)
       const cipher = createDecipheriv("chacha20-poly1305", this.key, nonce, { authTagLength: 16 })
-      cipher.setAAD(ad)
+      cipher.setAAD(ad, { plaintextLength: input.length - 16 })
       cipher.setAuthTag(input.subarray(-16))
       const plaintext = cipher.update(input.subarray(0, -16))
       try { result = concat(plaintext, cipher.final()) } finally { plaintext.fill(0) }
     } else {
       const cipher = createCipheriv("chacha20-poly1305", this.key, nonce, { authTagLength: 16 })
-      cipher.setAAD(ad)
+      cipher.setAAD(ad, { plaintextLength: input.length })
       result = concat(cipher.update(input), cipher.final(), cipher.getAuthTag())
     }
     this.nonce += 1n
