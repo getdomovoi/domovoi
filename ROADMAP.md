@@ -579,13 +579,16 @@ Every ledger entry is now merged.
   - Relay admission requires both the current paired-device bearer and proof of its channel key;
     the daemon root token is never valid on relay ingress. Pairing remains direct-only for the
     alpha.
-- [ ] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise
+- [x] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise
   suite or public-key shape in protocol
-  - `packages/protocol/experimental/relay` checks one candidate codec against the same published
-    Cacophony handshake, transport and transcript fixtures in the daemon Node suite and the phone
-    jest-expo suite. Both runners use Node; this proves one codec, two runners, identical vectors.
-    Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution of that codec, and
-    selection and review of the production Noise layer, remain open. No production suite or key shape is frozen. See `docs/relay-crypto-spike.md`.
+  - **Frozen 2026-09-13 at `531a46b6` (#376):** suite A, `Noise_IK_25519_ChaChaPoly_SHA256`, one
+    noble composition published at `@getdomovoi/protocol/relay`. The wire format is pinned by
+    committed static fixtures (`packages/protocol/relay/testing/wire-layout.json`,
+    `wire-frames.json`) whose digests are recorded in `docs/relay-wire-format.md` and asserted by
+    test; a byte change fails the suite. The `node:crypto` backend is a test-only second reader.
+    P-256 and AES-GCM paths are removed. External cryptographic review of that head is
+    outstanding (`S0.2-RELAY-CRYPTO.md` §7a, §9). Real Hermes or on-device execution, relay
+    admission, framing and key storage remain open.
   - Phone-side key custody is proven for P-256. `apps/mobile/modules/domovoi-device-key` generates
     the static key inside the platform key service and never returns it, and the probe in
     `apps/mobile/src/lib/device-key.ts` checks the key by agreeing against a software key and
