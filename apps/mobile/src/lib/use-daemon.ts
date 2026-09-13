@@ -9,7 +9,9 @@ import {
 } from "@getdomovoi/protocol"
 
 import { connectionFault, type ConnectionFault } from "./connection-fault"
+import { openRelayPinStore } from "./credentials"
 import { DaemonConnection, type DaemonStatus } from "./daemon"
+import { reconcileRelayPin } from "./relay-pin"
 import { retryDelayMs } from "./reconnect"
 
 export function useDaemon(
@@ -55,6 +57,16 @@ export function useDaemon(
           attempt.current = 0
           setFault(undefined)
           setSnapshot(next)
+          // The token that opened this connection is what pairing proved, so
+          // this is where the daemon's relay identity is pinned or a
+          // distrusted pin is recovered. It never decides the connection.
+          void reconcileRelayPin({
+            store: openRelayPinStore(),
+            machineId: next.machine.id,
+            call: (method, params) => daemon.call(method, params),
+          }).catch((cause: unknown) => {
+            console.warn("Relay pin not reconciled:", cause instanceof Error ? cause.message : String(cause))
+          })
         },
         onDelta: (delta: WorkspaceDelta) =>
           setSnapshot((current) => current ? applyWorkspaceDelta(current, delta) : current),

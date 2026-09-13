@@ -4,7 +4,7 @@ import type { RelayClientPin, RelaySignedSuccessor } from "@getdomovoi/protocol"
 import { adoptRelayPinSuccessor, relaySuccessorSigningBytes, requireRelayPinRecovery } from "@getdomovoi/protocol/relay-admission"
 import { describe, expect, it } from "vitest"
 
-import { createRelayPinStore, readRelayPin, relayPinKey, type SecretItems } from "./relay-pin"
+import { createRelayPinStore, readRelayPin, reconcileRelayPin, relayPinKey, type SecretItems } from "./relay-pin"
 
 function memorySecrets(options: { corruptWrites?: boolean } = {}): SecretItems & { writes: number } {
   const items = new Map<string, string>()
@@ -108,5 +108,41 @@ describe("phone relay pin store", () => {
     expect(adopted.identity.generation).toBe(2)
     expect(await store.read()).toEqual(adopted)
     await expect(adoptRelayPinSuccessor(store, signedSuccessor(trusted, 12))).rejects.toThrow(/successor rejected/)
+  })
+
+  describe("reconcile against a daemon", () => {
+    const publication = (pin: RelayClientPin, successor?: RelaySignedSuccessor) => ({
+      identity: successor ? { ...pin.identity, generation: successor.statement.generation, channel: successor.statement.channel } : pin.identity,
+      ...(successor ? { successor } : {}),
+    })
+
+    it("enrols the published identity when nothing is saved, then leaves a trusted pin alone", async () => {
+      const store = createRelayPinStore(memorySecrets())
+      const calls: string[] = []
+      const call = async (method: string) => { calls.push(method); return publication(trusted) }
+      expect(await reconcileRelayPin({ store, machineId, call })).toBe("enrolled")
+      expect(await store.read()).toEqual(trusted)
+      expect(await reconcileRelayPin({ store, machineId, call })).toBe("trusted")
+      expect(calls).toEqual(["relay.recovery"])
+    })
+
+    it("leaves the phone without a pin when the daemon publishes none", async () => {
+      const store = createRelayPinStore(memorySecrets())
+      expect(await reconcileRelayPin({ store, machineId, call: async () => { throw new Error("Relay recovery is unavailable") } })).toBe("unavailable")
+      expect(await store.read()).toBeUndefined()
+    })
+
+    it("recovers a distrusted pin from the fetched successor and refuses a fetch without one", async () => {
+      const store = createRelayPinStore(memorySecrets())
+      await store.compareAndSwap(undefined, trusted)
+      await requireRelayPinRecovery(store)
+      const foreign = { ...trusted, identity: { ...trusted.identity, channel: { ...trusted.identity.channel, responderPublicKey: channelKey(30) } } }
+      await expect(reconcileRelayPin({ store, machineId, call: async () => publication(foreign) })).rejects.toThrow(/No relay successor/)
+      expect((await store.read())?.state).toBe("recovery-required")
+      expect(await reconcileRelayPin({ store, machineId, call: async () => publication(trusted, signedSuccessor(trusted, 21)) })).toBe("recovered")
+      const saved = await store.read()
+      expect(saved?.state).toBe("trusted")
+      expect(saved?.identity.channel.responderPublicKey).toBe(channelKey(21))
+    })
   })
 })

@@ -1,6 +1,6 @@
 import type { KeychainAccessibilityConstant } from "expo-secure-store"
-import { relayClientPinSchema, type RelayClientPin } from "@getdomovoi/protocol"
-import type { RelayPinStore } from "@getdomovoi/protocol/relay-admission"
+import { relayClientPinSchema, relayRecoveryResultSchema, type RelayClientPin } from "@getdomovoi/protocol"
+import { adoptRelayRecovery, type RelayPinStore } from "@getdomovoi/protocol/relay-admission"
 
 // The three SecureStore calls this module uses, so tests can supply memory
 // and the app supplies the Keychain or Keystore.
@@ -32,7 +32,8 @@ export async function readRelayPin(secrets: SecretItems): Promise<RelayClientPin
   return parsePin(await secrets.getItemAsync(relayPinKey))
 }
 
-export type PhoneRelayPinStore = RelayPinStore & {
+export type PhoneRelayPinStore = Omit<RelayPinStore, "read" | "compareAndSwap"> & {
+  read(): Promise<RelayClientPin | undefined>
   compareAndSwap(expected: RelayClientPin | undefined, replacement: RelayClientPin): Promise<boolean>
 }
 
@@ -69,4 +70,33 @@ export function createRelayPinStore(secrets: SecretItems, options: { keychainAcc
       })
     },
   }
+}
+
+export type RelayPinCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
+
+// Bring the saved pin in line with the daemon on the other end of an
+// authenticated connection. No pin yet: enrol what this daemon publishes as
+// trusted, because the token that opened this connection is what pairing
+// proved. Recovery required: fetch the latest signed successor and adopt it
+// against the saved pin, never the fetched identity. Trusted: nothing to do.
+// A daemon without relay provisioning refuses relay.recovery; that leaves the
+// pairing without a pin rather than failing it.
+export async function reconcileRelayPin(input: {
+  store: PhoneRelayPinStore
+  machineId: string
+  call: RelayPinCall
+}): Promise<"trusted" | "enrolled" | "recovered" | "unavailable"> {
+  const current = await input.store.read()
+  if (current?.state === "trusted") return "trusted"
+  let publication: unknown
+  try { publication = await input.call("relay.recovery", { machineId: input.machineId }) } catch { return "unavailable" }
+  const parsed = relayRecoveryResultSchema.parse(publication)
+  if (parsed.identity.machineId !== input.machineId) throw new Error("The daemon published a relay identity for another machine.")
+  if (current === undefined) {
+    const enrolled = await input.store.compareAndSwap(undefined, { version: 1, identity: parsed.identity, state: "trusted" })
+    if (!enrolled) throw new Error("The relay pin changed while enrolling; read it again.")
+    return "enrolled"
+  }
+  await adoptRelayRecovery(input.store, parsed)
+  return "recovered"
 }
