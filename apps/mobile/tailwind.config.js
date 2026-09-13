@@ -12,8 +12,19 @@ const faces = Object.fromEntries(
   Object.entries(fontFamily).map(([name, face]) => [name, [face]]),
 )
 
+// cn carries a role's line height as a leading-[..] class when a caller
+// replaces only the size. That class is built at runtime, which the content
+// scan below cannot see, so the finite set of heights the roles carry is
+// listed here from the same generated map. A token change adds its height
+// here by construction; carried-leading.test.ts compiles the config and asks
+// for each one.
+const carriedLeading = [...new Set(
+  Object.values(fontSize).flatMap((size) => (Array.isArray(size) ? [`leading-[${size[1]}]`] : [])),
+)]
+
 module.exports = {
   content: ["./index.ts", "./src/**/*.{ts,tsx}"],
+  safelist: carriedLeading,
   presets: [require("nativewind/preset")],
   theme: {
     // The phone follows the desktop's dark theme; it has no light surface yet.
