@@ -255,6 +255,11 @@ about custody and rotation; neither blocks the other or makes its authority deci
 
 ## Decision for fetzy
 
+**Decided 2026-09-12: A, `Noise_IK_25519_ChaChaPoly_SHA256`, our own composition under review.**
+The phone key-operation requirement is changed, not preserved; the stolen-phone consequences are
+stated in `S0.2-RELAY-CRYPTO.md` §9. The recommendation below is kept as the record of what was
+weighed.
+
 **Recommendation, not a settled choice:** preserve the current phone key-operation requirement
 and select C, `Noise_IK_P256_AESGCM_SHA256`, using the pinned uncompressed P-256 profile, platform
 handles, and a separately reviewed Noise integration. The Android hardware proof strengthens this

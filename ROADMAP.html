@@ -802,9 +802,9 @@ td { color: var(--ink2); }
 </li>
 </ul>
 </li>
-<li>[ ] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise suite or public-key shape in protocol
+<li>[x] Prove the Node and phone crypto codec with deterministic vectors before freezing the Noise suite or public-key shape in protocol (531a46b6)
 <ul>
-<li><code>packages/protocol/experimental/relay</code> checks one candidate codec against the same published Cacophony handshake, transport and transcript fixtures in the daemon Node suite and the phone jest-expo suite. Both runners use Node; this proves one codec, two runners, identical vectors. Metro/hermesc also compiles the entry to phone bytecode. Real Hermes or on-device execution of that codec, and selection and review of the production Noise layer, remain open. No production suite or key shape is frozen. See <code>docs/relay-crypto-spike.md</code>.
+<li>**Frozen 2026-09-13 at <code>531a46b6</code> (#376):** suite A, <code>Noise_IK_25519_ChaChaPoly_SHA256</code>, one noble composition published at <code>@getdomovoi/protocol/relay</code>. The wire format is pinned by committed static fixtures (<code>packages/protocol/relay/testing/wire-layout.json</code>, <code>wire-frames.json</code>) whose digests are recorded in <code>docs/relay-wire-format.md</code> and asserted by test; a byte change fails the suite. The <code>node:crypto</code> backend is a test-only second reader. P-256 and AES-GCM paths are removed. External cryptographic review of that head is outstanding (<code>S0.2-RELAY-CRYPTO.md</code> §7a, §9). Real Hermes or on-device execution, relay admission, framing and key storage remain open.
 </li>
 <li>Phone-side key custody is proven for P-256. <code>apps/mobile/modules/domovoi-device-key</code> generates the static key inside the platform key service and never returns it, and the probe in <code>apps/mobile/src/lib/device-key.ts</code> checks the key by agreeing against a software key and requiring both shared secrets to match. On a Pixel 10 running GrapheneOS the run reported <code>strongbox</code> custody, a 65 byte public point, a handle that survived a reopen, and a 32 byte shared secret identical on both sides. An Android emulator on API 36 passes the same steps and reports <code>software</code>, which is what an emulator can offer.
 </li>
