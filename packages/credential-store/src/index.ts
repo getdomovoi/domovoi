@@ -23,9 +23,11 @@ const symlinkError = (path: string) => new CredentialStoreError(`${path} is a sy
 const sizeError = (path: string, maximum: number) => new CredentialStoreError(`${path} exceeds the credential file limit of ${maximum} bytes.`)
 
 async function closeFile(handle: FileHandle | undefined, failure?: { error: unknown }): Promise<void> {
-  try { await handle?.close() } catch (cleanup) {
-    if (failure) throw new AggregateError([failure.error, cleanup], "Credential operation and file close failed", { cause: failure.error })
-    throw cleanup
+  let cleanup: { error: unknown } | undefined
+  try { await handle?.close() } catch (error) { cleanup = { error } }
+  if (cleanup) {
+    if (failure) throw new AggregateError([failure.error, cleanup.error], "Credential operation and file close failed", { cause: failure.error })
+    throw cleanup.error
   }
 }
 
@@ -89,10 +91,10 @@ export async function writePrivateFile(path: string, content: string, options: {
     } catch (error) { failure = { error }; throw error } finally { await closeFile(handle, failure) }
     await (options.publish ?? rename)(staging, path)
   } catch (error) {
-    try { await unlink(staging) } catch (cleanup) {
-      if ((cleanup as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw new AggregateError([error, cleanup], `Credential publication failed and staging cleanup failed at ${staging}. This file may contain a credential.`, { cause: error })
-      }
+    let cleanup: { error: unknown } | undefined
+    try { await unlink(staging) } catch (failure) { cleanup = { error: failure } }
+    if (cleanup && (cleanup.error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new AggregateError([error, cleanup.error], `Credential publication failed and staging cleanup failed at ${staging}. This file may contain a credential.`, { cause: error })
     }
     throw error
   }
