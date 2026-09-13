@@ -12,6 +12,15 @@ export class DaemonUnreachableError extends Error {
   }
 }
 
+// The daemon answered and said no. Distinct from every transport failure so
+// a caller can tell a refusal from a socket that died mid-request.
+export class DaemonRefusedError extends Error {
+  constructor(message: string, readonly code: number | undefined) {
+    super(message)
+    this.name = "DaemonRefusedError"
+  }
+}
+
 export type DaemonConnection = {
   call(method: string, params: Record<string, unknown>): Promise<unknown>
   close(): void
@@ -43,12 +52,12 @@ export async function connectToDaemon(input: {
     // Valid JSON is not yet an envelope: null, a number, an array. Anything
     // that is not an object with a numeric id is not a reply to anything here.
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return
-    const message = parsed as { id?: unknown; result?: unknown; error?: { message?: string } }
+    const message = parsed as { id?: unknown; result?: unknown; error?: { message?: string; code?: number } }
     if (typeof message.id !== "number") return
     const waiter = pending.get(message.id)
     if (!waiter) return
     pending.delete(message.id)
-    if (message.error) waiter.reject(new Error(message.error.message ?? "The daemon refused the request"))
+    if (message.error) waiter.reject(new DaemonRefusedError(message.error.message ?? "The daemon refused the request", message.error.code))
     else waiter.resolve(message.result)
   })
   socket.once("close", () => failAll(new DaemonUnreachableError("The daemon closed the connection")))
