@@ -1,5 +1,11 @@
 # Relay crypto spike
 
+Historical evidence and options. The 2026-09-12 decision supersedes the suite,
+custody and implementation recommendations below: suite A, the noble composition.
+See [the frozen codec contract](relay-wire-format.md) for the current decision
+and remaining integration limits. Commands and source paths below describe the
+pre-freeze experiment, preserved at [5211e818](https://github.com/getdomovoi/domovoi/tree/5211e81826b29601bd61b210693113c9a394ea04/packages/protocol/experimental/relay).
+
 Status, 2026-09-07: one experimental codec, two runners, identical published
 vectors. The suite and public-key shape remain unresolved in production protocol.
 The production route schema remains gated on that decision. The RPC/terminal
@@ -18,7 +24,7 @@ The candidate is `Noise_IK_25519_ChaChaPoly_SHA256`. A complete, published
 Cacophony vector provides two handshake ciphertexts, four transport ciphertexts
 with alternating directions and increasing nonces, and the final handshake hash.
 Fixture provenance, immutable source revision, digest, and license are in the
-[fixture README](../packages/protocol/experimental/relay/README.md).
+[fixture README](https://github.com/getdomovoi/domovoi/blob/5211e81826b29601bd61b210693113c9a394ea04/packages/protocol/experimental/relay/README.md).
 
 The shared cases also check:
 

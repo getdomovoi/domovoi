@@ -1,5 +1,5 @@
 import fixture from "./cacophony-ik.json"
-import { createNoiseIk } from "./noise-ik"
+import { createNoiseIk } from "../noise-ik"
 
 // Runner-neutral assertions. Defaults preserve the same noble codec and fixture
 // in daemon vitest and mobile jest-expo. Node comparison backends opt in below;

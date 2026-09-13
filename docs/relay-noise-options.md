@@ -1,5 +1,11 @@
 # Production relay Noise suite options
 
+Historical evidence and options. The 2026-09-12 decision supersedes the suite,
+custody and implementation recommendations below: suite A, the noble composition.
+See [the frozen codec contract](relay-wire-format.md) for the current decision
+and remaining integration limits. Commands and source paths below describe the
+pre-freeze experiment, preserved at [5211e818](https://github.com/getdomovoi/domovoi/tree/5211e81826b29601bd61b210693113c9a394ea04/packages/protocol/experimental/relay).
+
 Status, 2026-09-07: updated with reported Android hardware evidence, awaiting fetzy's decision.
 This is an options document, not a production suite selection or protocol schema.
 

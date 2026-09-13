@@ -1,8 +1,9 @@
 # Encrypted relay transport and commercial rendezvous
 
-Status: agreed design direction on 2026-09-04, including the corrected open-core licensing
-boundary. Credential prerequisites are implemented. The cryptographic suite and library are
-deliberately unresolved, and no relay wire or networking is implemented yet.
+Status: design agreed on 2026-09-04, updated by the 2026-09-12 crypto ruling.
+Credential prerequisites are implemented. Suite A and the noble IK composition
+are selected and [frozen for external review](relay-wire-format.md). Relay
+framing, admission and networking are not implemented yet.
 
 ## Requirement and scope
 
@@ -19,9 +20,9 @@ the official relay a free self-hosted component.
 Direct private transports remain preferred. The relay is the last transport, used only when a
 configured encrypted route is available.
 
-The [production Noise options](relay-noise-options.md) compare wire bytes, native dependencies,
-pin encodings, and phone requirements. They contain Codex's recommendation for fetzy to decide;
-they do not select a suite or unblock the production schema.
+The [historical Noise options](relay-noise-options.md) compare wire bytes, native
+dependencies, pin encodings and phone requirements. The later ruling selects
+`Noise_IK_25519_ChaChaPoly_SHA256`, composed with noble, not a Snow adapter.
 
 ## Open-core and trust boundaries
 
@@ -34,7 +35,8 @@ This split keeps the open daemon useful and avoids binding it to one service URL
 project dogfood a privately deployed commercial rendezvous before the hosted account system is
 ready. Domovoi does not offer the official relay server as a free self-hosted package.
 
-The official relay is a separately licensed and distributed app, not a `domovoid relay serve`
+The official relay lives in a separate private repository, created separately.
+It is a separately licensed and distributed app, not a `domovoid relay serve`
 mode. That is both a licensing boundary and a security boundary. The two processes have opposite
 threat models:
 
@@ -73,9 +75,10 @@ type RelayRouteV1 = {
 }
 ```
 
-`endpoint`, `routeId`, and `relayProtocol` are settled. The exact `channel.suite` literal and the
-public-key byte constraint are not production schema yet; the crypto spike below must select and
-prove them first. `Noise_IK_25519_ChaChaPoly_SHA256` is a candidate, not a decision.
+`endpoint`, `routeId`, and `relayProtocol` are settled. The chosen `channel.suite`
+is `Noise_IK_25519_ChaChaPoly_SHA256`, with a 32-byte X25519 responder public key.
+The route descriptor schema remains a later slice; the frozen codec alone does
+not add a transport candidate or enable dialing.
 
 The client stores the descriptor with its paired machine. The descriptor contains public routing
 and key-pinning material only. The relay registration secret, a device bearer, and every private
@@ -98,10 +101,9 @@ channel suite and responder pin. A standalone capability list would not supply t
 and an optional or permissive `channel` would bypass the crypto gate. This item stays open rather
 than introducing a second, incomplete relay route shape for clients to consume.
 
-To unblock it, select and review the production Noise integration and prove a phone native key
-operation boundary with supported key types, fresh entropy, device-only storage, backup exclusion,
-and forget/key-loss behavior. That evidence must determine the exact suite and public-key byte
-constraints. The shared vectors must also run through the chosen phone implementation; the
+To unblock it, complete external review and prove the phone integration with
+fresh entropy, device-only software-key storage, backup exclusion and
+forget/key-loss behavior. The shared vectors must run through the chosen phone implementation; the
 current two Node runners and hermesc compilation leave real Hermes/device execution unproven.
 Then add the strict route variant and its capability data together, with rejection tests for
 preview claims, invalid pins, misplaced credentials, and unsupported versions. A valid descriptor
@@ -117,10 +119,18 @@ Each paired device has its own static channel key, and the daemon stores that de
 on the paired-device record. Every logical relay connection performs a fresh handshake and gets a
 fresh transport cipher.
 
-On a phone, the device private channel key is generated and used inside the platform keychain. It
-is device-only, non-synchronizing, excluded from backups and exports, and never returned through
-Domovoi protocol state or logs. Forgetting a daemon deletes both its bearer and its private channel
-key. If the key is lost, the device must pair again; no recovery path exports it to another device.
+Suite A uses exportable software X25519 key material on phones, loaded into the
+codec for agreement. The storage adapter must keep it device-only,
+non-synchronizing and excluded from backups, protocol state and logs. This is
+not hardware key custody. Forgetting a daemon must delete both its bearer and
+private channel key. Key loss requires direct re-pairing; device loss requires
+revocation on each paired daemon. These storage/lifecycle paths remain to be built.
+
+Both relay handshake payloads must be empty. The first IK message is replayable
+and lacks forward secrecy against later responder-key compromise. It carries
+no application effects. Send the bearer only in the first transport record,
+after the responder ephemeral exchange. This policy is enforced by the later
+admission layer, not by the generic low-level Noise codec.
 
 Relay admission requires two factors belonging to the same active device record:
 
@@ -156,7 +166,7 @@ would require either a pinned daemon key delivered out of band or a real passwor
 key exchange; neither exists today.
 
 Existing pairings without channel public keys stay direct-only. Enabling their relay route requires
-an explicit direct re-pair after the channel suite is selected.
+an explicit direct re-pair that binds the selected channel key.
 
 ## Connection lifecycle
 
@@ -185,17 +195,15 @@ and protocol evidence support that claim. It is not zero knowledge, because the 
 observes the metadata above and controls availability. Documentation and client copy must state
 both halves plainly.
 
-## Open cryptography decision
+## Selected composition and remaining gates
 
-The next slice is a cross-runtime crypto spike and codec with no networking. The first
-[experimental evidence](relay-crypto-spike.md) reproduces published vectors in the daemon Node
-suite and phone jest-expo suite, plus Metro/hermesc compilation. Both runners use Node; real
-Hermes execution, native entropy/key operations, and the production Noise implementation remain
-open. This is not permission to freeze the suite or public-key shape. The codec must work in Node
-and the phone runtime without assuming `node:crypto` or generally available WebCrypto.
+The [frozen codec](relay-wire-format.md) uses noble at the public protocol relay
+subpath. The Node implementation is a test oracle only. The first
+[experimental evidence](relay-crypto-spike.md) reproduced published vectors in
+the daemon and phone Node runners, plus Metro/hermesc compilation. Full Hermes
+execution, production entropy and storage, and external review remain open.
 
-The candidate is Noise IK over X25519, ChaCha20-Poly1305, and SHA-256, potentially using
-`@noble/curves` and `@noble/ciphers`. Before any suite literal enters the protocol, the spike must:
+Before enabling a relay connection, integration must:
 
 - verify React Native bundling, secure randomness, and private-key storage;
 - verify the libraries' audit and maintenance claims rather than relying on reputation;
@@ -203,8 +211,7 @@ The candidate is Noise IK over X25519, ChaCha20-Poly1305, and SHA-256, potential
 - prove transcript binding, tamper rejection, replay rejection, and downgrade refusal;
 - prove that no bearer, private key, JSON-RPC plaintext, or error text crosses the relay boundary;
   and
-- decide whether an audited Noise layer exists or whether assembling primitives would create an
-  unacceptable custom-protocol burden.
+- complete external review of the chosen composition at the frozen commit.
 
 The protocol schema follows that evidence. A permissive placeholder suite or key shape must not be
 shipped merely to let networking start.
@@ -213,9 +220,9 @@ shipped merely to let networking start.
 
 1. Credential prerequisites: strong fixed-width credentials, exact client or machine bindings,
    verified durable attribution, hello-time activity, and a single migration for both legacy
-   credential shapes. Implemented. Channel keys wait for the crypto decision.
-2. Cross-runtime crypto spike and codec with deterministic vectors and no networking. Experimental
-   two-runner agreement exists; remaining crypto gates are in `docs/relay-crypto-spike.md`.
+   credential shapes. Implemented. Channel-key integration remains pending.
+2. Suite-A codec with deterministic vectors and no networking, frozen for review.
+   The current contract and limits are in `docs/relay-wire-format.md`.
 3. Protocol route, channel-key, and transport-capability schemas, reviewed before callers build on
    them.
 4. In-process hostile-relay tests proving plaintext and endpoint credentials never cross the

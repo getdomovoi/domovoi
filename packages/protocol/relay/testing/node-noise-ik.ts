@@ -1,9 +1,8 @@
-// Experimental comparison backend, not a reviewed Noise library or production API.
-// A/B follow Noise revision 34. C uses Snow 0.10's P256 extension wire profile.
+// Test-only suite-A comparison oracle. Never exported or selected at runtime.
 // KeyObjects here are exportable OpenSSL keys. Dropping references cannot promise
 // immediate native-memory erasure or establish OS-protected private-key custody.
 import type { KeyObject } from "node:crypto"
-import type { NoiseIkOptions } from "./noise-ik"
+import type { NoiseIkOptions } from "../noise-ik"
 import { bound, concat, dh, hmac, nodeSuite, NodeCipherState, peerKey, privateKey, publicBytes, reject, sha256 } from "./node-primitives"
 import type { NodeSuite } from "./node-primitives"
 
@@ -35,14 +34,14 @@ export function createNodeNoiseIk(options: NodeNoiseIkOptions) {
 
 function handshake(options: NodeNoiseIkOptions, suite: NodeSuite) {
   const initiator = options.role === "initiator"
-  let staticKey: KeyObject | undefined = privateKey(suite, options.staticKey)
-  let ephemeralKey: KeyObject | undefined = privateKey(suite, options.ephemeralKey)
-  const publicStatic = publicBytes(suite, staticKey)
-  const publicEphemeral = publicBytes(suite, ephemeralKey)
+  let staticKey: KeyObject | undefined = privateKey(options.staticKey)
+  let ephemeralKey: KeyObject | undefined = privateKey(options.ephemeralKey)
+  const publicStatic = publicBytes(staticKey)
+  const publicEphemeral = publicBytes(ephemeralKey)
   const publicLength = suite.publicLength
   let remoteStatic: Uint8Array | undefined = initiator && options.responderPublicKey ? new Uint8Array(options.responderPublicKey) : undefined
   let remoteEphemeral: Uint8Array | undefined
-  if (remoteStatic) peerKey(suite, remoteStatic)
+  if (remoteStatic) peerKey(remoteStatic)
   // Names shorter than HASHLEN are zero-padded, not hashed (Noise 5.2).
   const name = Uint8Array.from(suite.name, (letter) => letter.charCodeAt(0))
   let hash: Uint8Array = name.length > 32 ? sha256(name) : new Uint8Array(32)
@@ -77,7 +76,7 @@ function handshake(options: NodeNoiseIkOptions, suite: NodeSuite) {
     secret.fill(0)
     chainingKey = next
     cipher?.key.fill(0)
-    cipher = new NodeCipherState(suite, key)
+    cipher = new NodeCipherState(key)
   }
   function encryptAndHash(plaintext: Uint8Array): Uint8Array {
     if (!cipher) throw new Error("Missing handshake cipher")
@@ -93,8 +92,8 @@ function handshake(options: NodeNoiseIkOptions, suite: NodeSuite) {
   }
   function split(): void {
     const [first, second] = hkdf(chainingKey, empty)
-    sendCipher = new NodeCipherState(suite, initiator ? first : second)
-    receiveCipher = new NodeCipherState(suite, initiator ? second : first)
+    sendCipher = new NodeCipherState(initiator ? first : second)
+    receiveCipher = new NodeCipherState(initiator ? second : first)
     staticKey = undefined
     ephemeralKey = undefined
     chainingKey.fill(0)
@@ -111,17 +110,17 @@ function handshake(options: NodeNoiseIkOptions, suite: NodeSuite) {
         bound(payload, 0, maxFrame - (initiator ? 2 * publicLength + 32 : publicLength + 16))
         if (initiator && step === 0 && remoteStatic) {
           mixHash(publicEphemeral) // -> e, es, s, ss
-          mixKey(dh(suite, ephemeralKey, remoteStatic))
+          mixKey(dh(ephemeralKey, remoteStatic))
           const encryptedStatic = encryptAndHash(publicStatic)
-          mixKey(dh(suite, staticKey, remoteStatic))
+          mixKey(dh(staticKey, remoteStatic))
           const frame = concat(publicEphemeral, encryptedStatic, encryptAndHash(payload))
           step = 1
           return frame
         }
         if (!initiator && step === 1 && remoteEphemeral && remoteStatic) {
           mixHash(publicEphemeral) // <- e, ee, se
-          mixKey(dh(suite, ephemeralKey, remoteEphemeral))
-          mixKey(dh(suite, ephemeralKey, remoteStatic))
+          mixKey(dh(ephemeralKey, remoteEphemeral))
+          mixKey(dh(ephemeralKey, remoteStatic))
           const frame = concat(publicEphemeral, encryptAndHash(payload))
           step = 2
           split()
@@ -136,9 +135,9 @@ function handshake(options: NodeNoiseIkOptions, suite: NodeSuite) {
         if (!initiator && step === 0) {
           remoteEphemeral = new Uint8Array(message.subarray(0, publicLength))
           mixHash(remoteEphemeral)
-          mixKey(dh(suite, staticKey, remoteEphemeral))
+          mixKey(dh(staticKey, remoteEphemeral))
           remoteStatic = decryptAndHash(message.subarray(publicLength, 2 * publicLength + 16))
-          mixKey(dh(suite, staticKey, remoteStatic))
+          mixKey(dh(staticKey, remoteStatic))
           const payload = decryptAndHash(message.subarray(2 * publicLength + 16))
           step = 1
           return payload
@@ -146,14 +145,20 @@ function handshake(options: NodeNoiseIkOptions, suite: NodeSuite) {
         if (initiator && step === 1) {
           remoteEphemeral = new Uint8Array(message.subarray(0, publicLength))
           mixHash(remoteEphemeral)
-          mixKey(dh(suite, ephemeralKey, remoteEphemeral))
-          mixKey(dh(suite, staticKey, remoteEphemeral))
+          mixKey(dh(ephemeralKey, remoteEphemeral))
+          mixKey(dh(staticKey, remoteEphemeral))
           const payload = decryptAndHash(message.subarray(publicLength))
           step = 2
           split()
           return payload
         }
         throw new Error("Unexpected handshake read")
+      })
+    },
+    remoteStaticKey(): Uint8Array {
+      return guarded(() => {
+        if (step !== 2 || !remoteStatic) reject()
+        return new Uint8Array(remoteStatic)
       })
     },
     handshakeHash(): Uint8Array {
