@@ -59,8 +59,7 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
       *Agents may draft: threat model, two or three candidate designs with tradeoffs, and
       what each implies for device loss.*
       **Design ruled 2026-09-12: suite A, `Noise_IK_25519_ChaChaPoly_SHA256`, our own
-      composition reviewed (R-A); `S0.2-RELAY-CRYPTO.md` §9.** Final once the phone custody
-      statement there is accepted. Stays open until the review lands: budget line $25k to $50k
+      composition reviewed (R-A); `S0.2-RELAY-CRYPTO.md` §9, final.** Stays open until the review lands: budget line $25k to $50k
       estimated (§7a), quote pending the `S0.7` firm conversation.
 - [ ] **S0.3 [H] What the relay retains.** Billing by machine requires knowing which
       machines were active and for how long. "Payloads unreadable" and "nothing recorded"
