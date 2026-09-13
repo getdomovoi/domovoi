@@ -1,5 +1,5 @@
-import { relayClientPinSchema, type RelayClientPin } from "@getdomovoi/protocol"
-import type { RelayPinStore } from "@getdomovoi/protocol/relay-admission"
+import { relayClientPinSchema, relayRecoveryResultSchema, type RelayClientPin } from "@getdomovoi/protocol"
+import { adoptRelayRecovery, type RelayPinStore } from "@getdomovoi/protocol/relay-admission"
 
 import type { CredentialStore } from "./credentials.js"
 
@@ -9,7 +9,8 @@ function samePin(left: RelayClientPin | undefined, right: RelayClientPin | undef
   return JSON.stringify(relayClientPinSchema.parse(left)) === JSON.stringify(relayClientPinSchema.parse(right))
 }
 
-export type CliRelayPinStore = RelayPinStore & {
+export type CliRelayPinStore = Omit<RelayPinStore, "read" | "compareAndSwap"> & {
+  read(): Promise<RelayClientPin | undefined>
   compareAndSwap(expected: RelayClientPin | undefined, replacement: RelayClientPin): Promise<boolean>
 }
 
@@ -20,7 +21,7 @@ export type CliRelayPinStore = RelayPinStore & {
 // two processes cannot both pass the same compare.
 export function relayPinStore(store: CredentialStore, endpoint: string): CliRelayPinStore {
   return {
-    async read() {
+    async read(): Promise<RelayClientPin | undefined> {
       return (await store.load(endpoint))?.relayPin
     },
     async compareAndSwap(expected, replacement) {
@@ -35,4 +36,35 @@ export function relayPinStore(store: CredentialStore, endpoint: string): CliRela
       return updated
     },
   }
+}
+
+export type RelayPinCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
+
+// Bring the saved pin in line with the daemon on the other end of an
+// authenticated connection. No pin yet: enrol what this daemon publishes as
+// trusted, because the bearer that opened this connection is what pairing
+// proved. Recovery required: fetch the latest signed successor and adopt it
+// against the saved pin, never the fetched identity. Trusted: nothing to do.
+// A daemon without relay provisioning answers relay.recovery with a refusal;
+// that leaves the pairing without a pin rather than failing it.
+export async function reconcileRelayPin(input: {
+  store: CredentialStore
+  endpoint: string
+  machineId: string
+  call: RelayPinCall
+}): Promise<"trusted" | "enrolled" | "recovered" | "unavailable"> {
+  const pins = relayPinStore(input.store, input.endpoint)
+  const current = await pins.read()
+  if (current?.state === "trusted") return "trusted"
+  let publication: unknown
+  try { publication = await input.call("relay.recovery", { machineId: input.machineId }) } catch { return "unavailable" }
+  const parsed = relayRecoveryResultSchema.parse(publication)
+  if (parsed.identity.machineId !== input.machineId) throw new Error("The daemon published a relay identity for another machine.")
+  if (current === undefined) {
+    const enrolled = await pins.compareAndSwap(undefined, { version: 1, identity: parsed.identity, state: "trusted" })
+    if (!enrolled) throw new Error("The relay pin changed while enrolling; read it again.")
+    return "enrolled"
+  }
+  await adoptRelayRecovery(pins, parsed)
+  return "recovered"
 }

@@ -97,6 +97,9 @@ async function main(argv: string[]): Promise<number> {
       connect: (authToken) => connectToDaemon({ endpoint: options.daemon, authToken }),
     })
     process.stdout.write(`Paired with ${paired.machineId} as device ${paired.deviceId}. Credential stored in the ${credentials.where}.\n`)
+    process.stdout.write(paired.relayPin === "enrolled"
+      ? "Relay identity pinned; a rotated key is accepted only when signed by this daemon's identity key.\n"
+      : "No relay identity published; this daemon is not provisioned for relay use.\n")
     return 0
   }
 

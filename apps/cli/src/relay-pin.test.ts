@@ -9,7 +9,7 @@ import { adoptRelayPinSuccessor, createPinnedRelayClient, relaySuccessorSigningB
 import { afterEach, describe, expect, it } from "vitest"
 
 import { openCredentialStore, type Keyring, type PairedDaemon } from "./credentials.js"
-import { relayPinStore } from "./relay-pin.js"
+import { reconcileRelayPin, relayPinStore } from "./relay-pin.js"
 
 const memoryKeyring = (): Keyring => {
   const entries = new Map<string, string>()
@@ -201,5 +201,67 @@ describe("relay pin store", () => {
     // A replayed successor for the old generation cannot move the pin back.
     await expect(adoptRelayPinSuccessor(pins, signedSuccessor(trusted, 12))).rejects.toThrow(/successor rejected/)
     expect(await pins.read()).toEqual(adopted)
+  })
+
+  describe("reconcile against a daemon", () => {
+    const publication = (pin: RelayClientPin, successor?: RelaySignedSuccessor) => ({
+      identity: successor ? { ...pin.identity, generation: successor.statement.generation, channel: successor.statement.channel } : pin.identity,
+      ...(successor ? { successor } : {}),
+    })
+
+    it("enrols the published identity as trusted when nothing is saved", async () => {
+      const store = await openCredentialStore({ keyring: memoryKeyring(), home: await directory(), warn: () => {} })
+      await store.save(paired)
+      const calls: string[] = []
+      const call = async (method: string) => { calls.push(method); return publication(trusted) }
+      expect(await reconcileRelayPin({ store, endpoint: paired.endpoint, machineId, call })).toBe("enrolled")
+      expect(await relayPinStore(store, paired.endpoint).read()).toEqual(trusted)
+      expect(calls).toEqual(["relay.recovery"])
+      expect(await reconcileRelayPin({ store, endpoint: paired.endpoint, machineId, call })).toBe("trusted")
+      expect(calls).toEqual(["relay.recovery"])
+    })
+
+    it("leaves the pairing without a pin when the daemon has no relay identity", async () => {
+      const store = await openCredentialStore({ keyring: memoryKeyring(), home: await directory(), warn: () => {} })
+      await store.save(paired)
+      const call = async () => { throw new Error("Relay recovery is unavailable") }
+      expect(await reconcileRelayPin({ store, endpoint: paired.endpoint, machineId, call })).toBe("unavailable")
+      expect(await relayPinStore(store, paired.endpoint).read()).toBeUndefined()
+    })
+
+    it("refuses a published identity for another machine", async () => {
+      const store = await openCredentialStore({ keyring: memoryKeyring(), home: await directory(), warn: () => {} })
+      await store.save(paired)
+      const call = async () => publication({ ...trusted, identity: { ...trusted.identity, machineId: `machine-${"c".repeat(32)}` } })
+      await expect(reconcileRelayPin({ store, endpoint: paired.endpoint, machineId, call })).rejects.toThrow(/another machine/)
+      expect(await relayPinStore(store, paired.endpoint).read()).toBeUndefined()
+    })
+
+    it("recovers a distrusted pin from the fetched successor, verified against the saved pin", async () => {
+      const store = await openCredentialStore({ keyring: memoryKeyring(), home: await directory(), warn: () => {} })
+      await store.save(paired)
+      const pins = relayPinStore(store, paired.endpoint)
+      await pins.compareAndSwap(undefined, trusted)
+      await requireRelayPinRecovery(pins)
+      const successor = signedSuccessor(trusted, 21)
+      expect(await reconcileRelayPin({ store, endpoint: paired.endpoint, machineId, call: async () => publication(trusted, successor) })).toBe("recovered")
+      const saved = await pins.read()
+      expect(saved?.state).toBe("trusted")
+      expect(saved?.identity.generation).toBe(2)
+      expect(saved?.identity.channel.responderPublicKey).toBe(channelKey(21))
+    })
+
+    it("does not take a new anchor from the fetch when recovery is required", async () => {
+      const store = await openCredentialStore({ keyring: memoryKeyring(), home: await directory(), warn: () => {} })
+      await store.save(paired)
+      const pins = relayPinStore(store, paired.endpoint)
+      await pins.compareAndSwap(undefined, trusted)
+      await requireRelayPinRecovery(pins)
+      // A publication with a fresh identity and no successor is what a stolen
+      // profile would serve. It must not become the pin.
+      const foreign = { ...trusted, identity: { ...trusted.identity, generation: 1, channel: { ...trusted.identity.channel, responderPublicKey: channelKey(30) } } }
+      await expect(reconcileRelayPin({ store, endpoint: paired.endpoint, machineId, call: async () => publication(foreign) })).rejects.toThrow(/No relay successor/)
+      expect((await pins.read())?.state).toBe("recovery-required")
+    })
   })
 })

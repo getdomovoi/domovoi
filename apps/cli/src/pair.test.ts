@@ -25,7 +25,7 @@ function memoryStore(failSave = false): CredentialStore & { saved: PairedDaemon[
   }
 }
 
-function fakeDaemon(options: { helloRejects?: string; current?: unknown } = {}) {
+function fakeDaemon(options: { helloRejects?: string; current?: unknown; recovery?: unknown } = {}) {
   const calls: string[] = []
   let closed = 0
   const connect = async (authToken: string) => {
@@ -35,6 +35,10 @@ function fakeDaemon(options: { helloRejects?: string; current?: unknown } = {}) 
       call: async (method: string) => {
         calls.push(method)
         if (method === "device.current") return options.current ?? { kind: "client", machineId, deviceId, client: "cli" }
+        if (method === "relay.recovery") {
+          if (options.recovery === undefined) throw new Error("Relay recovery is unavailable")
+          return options.recovery
+        }
         throw new Error(`unexpected ${method}`)
       },
       close: () => { closed += 1 },
@@ -60,10 +64,32 @@ describe("pair", () => {
     const store = memoryStore()
     const daemon = fakeDaemon()
     const result = await pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect })
-    expect(daemon.calls).toEqual(["hello ok", "device.current"])
+    expect(daemon.calls).toEqual(["hello ok", "device.current", "relay.recovery"])
     expect(store.saved).toEqual([{ endpoint: "ws://127.0.0.1:47831/rpc", deviceId, machineId, token }])
-    expect(result).toEqual({ deviceId, machineId })
+    expect(result).toEqual({ deviceId, machineId, relayPin: "unavailable" })
     expect(daemon.closed()).toBe(1)
+  })
+
+  it("enrols the daemon's relay identity as the trusted pin when it publishes one", async () => {
+    const store = memoryStore()
+    const identity = {
+      version: 1, machineId, generation: 1, identityPublicKey: "A".repeat(42) + "E",
+      channel: { suite: "Noise_IK_25519_ChaChaPoly_SHA256", responderPublicKey: "B".repeat(42) + "E" },
+    }
+    const daemon = fakeDaemon({ recovery: { identity } })
+    const result = await pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect })
+    expect(result.relayPin).toBe("enrolled")
+    expect(store.saved[0]?.relayPin).toEqual({ version: 1, identity, state: "trusted" })
+  })
+
+  it("keeps the pairing when the published relay identity cannot be enrolled, and says so", async () => {
+    const store = memoryStore()
+    const daemon = fakeDaemon({ recovery: { identity: { version: 1, machineId: `machine-${"9".repeat(32)}`, generation: 1,
+      identityPublicKey: "A".repeat(42) + "E", channel: { suite: "Noise_IK_25519_ChaChaPoly_SHA256", responderPublicKey: "B".repeat(42) + "E" } } } })
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, store, connect: daemon.connect }))
+      .rejects.toThrow(/paired, but its relay identity was not enrolled.*another machine/)
+    expect(store.saved).toHaveLength(1)
+    expect(store.saved[0]?.relayPin).toBeUndefined()
   })
 
   it("stores nothing when the daemon refuses the credential, and never quotes it", async () => {

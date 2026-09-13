@@ -1,6 +1,7 @@
 import { credentialSchema, deviceCurrentResultSchema } from "@getdomovoi/protocol"
 
 import type { CredentialStore } from "./credentials.js"
+import { reconcileRelayPin } from "./relay-pin.js"
 
 export class PairingError extends Error {
   constructor(message: string) {
@@ -34,7 +35,7 @@ export async function pairWithDaemon(input: {
   // Opens an authenticated connection and returns a caller for it; the
   // daemon's hello is where a wrong or revoked bearer is refused.
   connect: (authToken: string) => Promise<{ call: RpcCall; close(): void }>
-}): Promise<{ deviceId: string; machineId: string }> {
+}): Promise<{ deviceId: string; machineId: string; relayPin: "enrolled" | "unavailable" }> {
   let connection
   try {
     connection = await input.connect(input.credential)
@@ -52,7 +53,17 @@ export async function pairWithDaemon(input: {
     } catch (error) {
       throw new PairingError(`The credential works but could not be stored (${error instanceof Error ? error.message : String(error)}). Nothing was kept.`)
     }
-    return { deviceId: current.deviceId, machineId: current.machineId }
+    // The bearer just proved this daemon is the one being paired, so what it
+    // publishes now is the identity this client pins. A daemon without relay
+    // provisioning has nothing to publish; the pairing stands without a pin.
+    let relayPin: "enrolled" | "unavailable"
+    try {
+      relayPin = (await reconcileRelayPin({ store: input.store, endpoint: input.endpoint, machineId: current.machineId, call: connection.call })) === "unavailable"
+        ? "unavailable" : "enrolled"
+    } catch (error) {
+      throw new PairingError(`The daemon is paired, but its relay identity was not enrolled (${error instanceof Error ? error.message : String(error)}). Relay use will need pairing again.`)
+    }
+    return { deviceId: current.deviceId, machineId: current.machineId, relayPin }
   } finally {
     connection.close()
   }
