@@ -139,9 +139,9 @@
      pixel subtends a fixed angle by definition, so 8px is no more readable on a
      phone than on a desk, and the phone's floor is therefore higher than the
      desktop's rather than lower. --text-phone-machine at 10px is as far down as
-     the phone goes, because anything under it stops responding to iOS Dynamic
-     Type and Android font scaling in a hardcoded class, and those are settings
-     people have already told the OS they need. */
+     the phone goes: it is the smallest size the design calls legible, and the
+     lint rule holds the app to it. It is not a platform threshold; the OS font
+     scaling settings apply at every size. */
   --text-phone-heading: 26px;
   --text-phone-nav: 13.5px;
   --text-phone-title: 13px;

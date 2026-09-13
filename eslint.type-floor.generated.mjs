@@ -22,10 +22,10 @@ export const typeFloorRules = [
 export const phoneTypeFloorRules = [
   {
     selector: "Literal[value=/text-\\[(?:[0-9](?:\\.\\d+)?)px\\]/]",
-    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. A hardcoded size under the floor stops responding to iOS Dynamic Type and Android font scaling. Declared as --text-phone-* in packages/ui/src/styles.css.",
+    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. The floor is the smallest size the design calls legible, not a platform threshold. Declared as --text-phone-* in packages/ui/src/styles.css.",
   },
   {
     selector: "TemplateElement[value.raw=/text-\\[(?:[0-9](?:\\.\\d+)?)px\\]/]",
-    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. A hardcoded size under the floor stops responding to iOS Dynamic Type and Android font scaling. Declared as --text-phone-* in packages/ui/src/styles.css.",
+    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. The floor is the smallest size the design calls legible, not a platform threshold. Declared as --text-phone-* in packages/ui/src/styles.css.",
   },
 ]

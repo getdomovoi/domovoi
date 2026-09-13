@@ -15,6 +15,18 @@ describe("cn", () => {
     expect(cn("text-[10px]", "text-[13px]")).toBe("text-[13px]")
   })
 
+  // A named role is a size too. Text's variants are text-machine and friends,
+  // and a caller's text-[10.5px] has to beat them the same way it beats a
+  // bracketed base, or the stylesheet order decides and the caller loses.
+  it("lets a caller's size beat a named role, in either order", () => {
+    expect(cn("font-mono text-machine text-muted-foreground", "text-[10.5px]"))
+      .toBe("font-mono text-muted-foreground text-[10.5px]")
+    expect(cn("font-sans text-body text-foreground", "text-[10.5px]"))
+      .toBe("font-sans text-foreground text-[10.5px]")
+    expect(cn("text-[10.5px]", "text-note")).toBe("text-note")
+    expect(cn("text-body", "text-machine")).toBe("text-machine")
+  })
+
   it("lets the later colour win", () => {
     expect(cn("text-muted-foreground", "text-faint")).toBe("text-faint")
     expect(cn("bg-card", "bg-warn-bg")).toBe("bg-warn-bg")

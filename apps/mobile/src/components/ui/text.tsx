@@ -26,8 +26,9 @@ type Variant =
 // definition, so a size is no more readable on a phone than on a desk, and the
 // phone's floor is therefore higher than the desktop's rather than lower.
 // `machine` at 10px is as far down as this scale goes, and nothing may sit
-// below it: a hardcoded size under it stops responding to iOS Dynamic Type and
-// Android font scaling, which people turn on because they need it.
+// below it. That is the design's floor, not a platform threshold: Text forwards
+// its props, so allowFontScaling stays at React Native's default of true at
+// every size, and the floor is the smallest size the design calls legible.
 const variants: Record<Variant, string> = {
   heading: "font-sans-semibold text-heading tracking-[-0.02em] text-foreground",
   nav: "font-sans-medium text-nav text-foreground",

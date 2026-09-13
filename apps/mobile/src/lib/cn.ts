@@ -1,4 +1,4 @@
-import { colors, fontFamily } from "../theme/tokens.generated"
+import { colors, fontFamily, fontSize } from "../theme/tokens.generated"
 
 // NativeWind does not resolve a conflict the way the className string reads. It
 // sorts the matched rules by CSS specificity and, on a tie, by the order the
@@ -13,6 +13,10 @@ import { colors, fontFamily } from "../theme/tokens.generated"
 // active:opacity-70 next to opacity-60 is a condition rather than a conflict.
 const colourNames = new Set([...Object.keys(colors.dark), "transparent"])
 const faceNames = new Set(Object.keys(fontFamily))
+// text-machine and the other named roles are sizes as much as text-[10px] is,
+// and the generated map is the list of them, so a role added to the ramp is
+// recognised here without a second list to keep in step.
+const sizeNames = new Set(Object.keys(fontSize))
 const edges = ["", "x", "y", "t", "r", "b", "l"]
 
 function colourGroup(property: string, value: string): string | undefined {
@@ -26,7 +30,7 @@ function conflictGroup(className: string): string | undefined {
   const prefix = className.slice(0, dash)
   const value = className.slice(dash + 1)
   if (prefix === "text") {
-    if (/^\[.+\]$/.test(value)) return "size"
+    if (/^\[.+\]$/.test(value) || sizeNames.has(value)) return "size"
     if (["left", "center", "right", "justify"].includes(value)) return "align"
     return colourGroup("color", value)
   }
