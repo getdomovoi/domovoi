@@ -164,9 +164,10 @@ describe("relay pin store", () => {
       const swapping = relayPinStore(slow, paired.endpoint).compareAndSwap(undefined, trusted)
       await swapEntered.waited
       const forgetting = other.forget(paired.endpoint)
-      // A locked forget cannot reach its publish while the swap holds the lock.
-      // An unlocked one reaches it within a few I/O turns; 500 ms is the bound
-      // on how long a leak could hide, not a wait the correct code needs.
+      // A locked forget cannot reach its publish while the swap holds the lock,
+      // so on correct code this is a 500 ms observation window that always
+      // runs to its end. An unlocked forget reaches its publish within a few
+      // I/O turns and ends the window early with a leak.
       const leaked = await Promise.race([
         forgetEntered.waited.then(() => true),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
