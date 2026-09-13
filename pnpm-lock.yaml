@@ -341,10 +341,6 @@ importers:
 
   packages/protocol:
     dependencies:
-      zod:
-        specifier: 'catalog:'
-        version: 4.5.2
-    devDependencies:
       '@noble/ciphers':
         specifier: 2.4.0
         version: 2.4.0
@@ -354,6 +350,13 @@ importers:
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
+      zod:
+        specifier: 'catalog:'
+        version: 4.5.2
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.11(vitest@4.1.11)

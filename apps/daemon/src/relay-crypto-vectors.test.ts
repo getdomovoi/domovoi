@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { relayVectorCases } from "../../../packages/protocol/experimental/relay/vector-cases"
-import fixture from "../../../packages/protocol/experimental/relay/cacophony-ik.json"
-import { createNoiseIk } from "../../../packages/protocol/experimental/relay/noise-ik"
+import { relayVectorCases } from "../../../packages/protocol/relay/testing/vector-cases"
+import fixture from "../../../packages/protocol/relay/testing/cacophony-ik.json"
+import { createNoiseIk } from "@getdomovoi/protocol/relay"
 
-describe("experimental relay codec in the daemon Node runner", () => {
+describe("published relay codec in the daemon Node runner", () => {
   for (const test of relayVectorCases) it(test.name, test.run)
 
   it("copies Node Buffer inputs instead of retaining their shared slice views", () => {

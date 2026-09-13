@@ -3,4 +3,4 @@
 import { relayVectorCases } from "./vector-cases"
 
 for (const test of relayVectorCases) test.run()
-console.log(`Experimental relay vectors: ${relayVectorCases.length} cases passed`)
+console.log(`Relay vectors: ${relayVectorCases.length} cases passed`)
