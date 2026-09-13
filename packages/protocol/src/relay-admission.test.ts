@@ -6,6 +6,7 @@ import { protocolVersion } from "./protocol-version.js"
 
 const publicKey = Buffer.alloc(32, 11).toString("base64url")
 const channel = { suite: "Noise_IK_25519_ChaChaPoly_SHA256", responderPublicKey: Buffer.alloc(32, 12).toString("base64url") }
+const relayIdentity = { version: 1, machineId: `machine-${"c".repeat(32)}`, identityPublicKey: publicKey, generation: 1, channel }
 
 describe("paired relay channel keys", () => {
   it("accepts an explicit channel key at direct client pairing", () => {
@@ -17,7 +18,7 @@ describe("paired relay channel keys", () => {
     expect(devicePairResultSchema.parse({
       device: { id: `device-${"a".repeat(32)}`, label: "phone", pairedAt: "2026-09-13T00:00:00Z",
         binding: { kind: "client", client: "phone" } },
-      token: "t".repeat(43), relay: channel,
+      token: "t".repeat(43), relay: channel, relayIdentity,
     })).toMatchObject({ relay: channel })
   })
 
@@ -34,7 +35,7 @@ describe("paired relay channel keys", () => {
       token: "t".repeat(43),
       machine: { id: `machine-${"c".repeat(32)}`, label: "target", platform: "linux", arch: "x64",
         version: "0.0.1", protocolVersion, capabilities: [], transports: [] },
-      relay: channel,
+      relay: channel, relayIdentity,
     })).toMatchObject({ relay: channel })
   })
 })

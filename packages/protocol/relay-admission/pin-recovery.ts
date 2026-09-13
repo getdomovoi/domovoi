@@ -1,4 +1,5 @@
 import { relayClientPinSchema, type RelayClientPin } from "../src/relay-pin-recovery.js"
+import { relayRecoveryResultSchema } from "../src/relay-recovery.js"
 
 import { createRelayClient, type RelayClientOptions } from "./channel.js"
 import { relayIdentityPublicKeyIsValid, verifyRelayChannelSuccessor } from "./identity.js"
@@ -30,6 +31,16 @@ export async function requireRelayPinRecovery(store: RelayPinStore): Promise<Rel
 export async function adoptRelayPinSuccessor(store: RelayPinStore, envelope: unknown): Promise<RelayClientPin> {
   const current = await readPin(store)
   const identity = verifyRelayChannelSuccessor(current.identity, envelope)
+  return replacePin(store, current, { version: 1, identity, state: "trusted" })
+}
+
+export async function adoptRelayRecovery(store: RelayPinStore, publication: unknown): Promise<RelayClientPin> {
+  const current = await readPin(store)
+  const result = relayRecoveryResultSchema.parse(publication)
+  if (!result.successor) throw new Error("No relay successor is available")
+  // The returned identity describes the envelope, but never supplies its trust
+  // anchor. Both the signature and exact predecessor are checked against storage.
+  const identity = verifyRelayChannelSuccessor(current.identity, result.successor)
   return replacePin(store, current, { version: 1, identity, state: "trusted" })
 }
 
