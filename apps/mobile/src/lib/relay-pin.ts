@@ -36,27 +36,35 @@ export type PhoneRelayPinStore = RelayPinStore & {
   compareAndSwap(expected: RelayClientPin | undefined, replacement: RelayClientPin): Promise<boolean>
 }
 
+// One write queue per backing store and key, shared by every handle in the
+// process. Keyed on the SecureStore object itself, so two createRelayPinStore
+// calls over the same module cannot each pass the same compare.
+const queues = new WeakMap<SecretItems, Map<string, Promise<unknown>>>()
+function exclusive<T>(secrets: SecretItems, key: string, operation: () => Promise<T>): Promise<T> {
+  let byKey = queues.get(secrets)
+  if (!byKey) { byKey = new Map(); queues.set(secrets, byKey) }
+  const tail = byKey.get(key) ?? Promise.resolve()
+  const next = tail.then(operation, operation)
+  byKey.set(key, next.catch(() => undefined))
+  return next
+}
+
 // The writable store. SecureStore has no compare-and-swap, so the compare is
-// done here under an in-process queue and the write is confirmed by reading
-// it back. That covers the app as shipped: one process, no extension, no
-// second Android process. It does not cover a second process writing the same
-// key. If a notification extension ever needs the pin, give it readRelayPin
-// and keep every write in the app process, or this store's guarantee is gone.
+// done here under the shared queue and the write is confirmed by reading it
+// back. That covers the app as shipped: one process, no extension, no second
+// Android process. It does not cover a second process writing the same key.
+// If a notification extension ever needs the pin, give it readRelayPin and
+// keep every write in the app process, or this store's guarantee is gone.
 export function createRelayPinStore(secrets: SecretItems, options: { keychainAccessible?: KeychainAccessibilityConstant } = {}): PhoneRelayPinStore {
-  let tail: Promise<unknown> = Promise.resolve()
-  const exclusive = <T>(operation: () => Promise<T>): Promise<T> => {
-    const next = tail.then(operation, operation)
-    tail = next.catch(() => undefined)
-    return next
-  }
   return {
     read: () => readRelayPin(secrets),
     compareAndSwap(expected, replacement) {
       const next = canonical(replacement)!
-      return exclusive(async () => {
+      return exclusive(secrets, relayPinKey, async () => {
         if (canonical(await readRelayPin(secrets)) !== canonical(expected)) return false
         await secrets.setItemAsync(relayPinKey, next, options)
-        if (await secrets.getItemAsync(relayPinKey) !== next) throw new Error("The relay pin read-back did not match what was written; nothing was adopted.")
+        // The write already ran. Say the truth: it is unconfirmed, not absent.
+        if (await secrets.getItemAsync(relayPinKey) !== next) throw new Error("The relay pin write could not be confirmed; read the saved pin again before trusting or retrying.")
         return true
       })
     },

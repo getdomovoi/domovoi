@@ -76,6 +76,15 @@ describe("phone relay pin store", () => {
     expect([a, b].filter(Boolean)).toHaveLength(1)
   })
 
+  it("serialises two store handles over one secret store so exactly one swap wins", async () => {
+    const secrets = memorySecrets()
+    const [a, b] = await Promise.all([
+      createRelayPinStore(secrets).compareAndSwap(undefined, trusted),
+      createRelayPinStore(secrets).compareAndSwap(undefined, { ...trusted, state: "recovery-required" }),
+    ])
+    expect([a, b].filter(Boolean)).toHaveLength(1)
+  })
+
   it("treats a stored value that does not parse as absent for reads and refuses to swap over it", async () => {
     const secrets = memorySecrets()
     await secrets.setItemAsync(relayPinKey, "{not json")
@@ -84,9 +93,11 @@ describe("phone relay pin store", () => {
     await expect(store.compareAndSwap(undefined, trusted)).rejects.toThrow(/relay pin/)
   })
 
-  it("refuses a write whose read-back does not match", async () => {
+  it("reports an unconfirmed write when the read-back does not match, and says to read again", async () => {
     const store = createRelayPinStore(memorySecrets({ corruptWrites: true }))
-    await expect(store.compareAndSwap(undefined, trusted)).rejects.toThrow(/read-back/)
+    await expect(store.compareAndSwap(undefined, trusted)).rejects.toThrow(/could not be confirmed.*read the saved pin again/)
+    // The write did land; a later read must say so rather than the error claiming absence.
+    expect(await store.read()).toEqual(trusted)
   })
 
   it("runs the protocol's recovery and adoption against SecureStore-shaped storage", async () => {
