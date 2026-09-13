@@ -111,21 +111,26 @@ export async function loadOrProvisionRelayChannel(options: Options, dependencies
   let stored = await read()
   check()
   if (stored === undefined && record) throw new Error("The provisioned relay channel key is missing. Restore its credential; automatic replacement is refused.")
+  // A recovered file may be visible after a rename whose directory flush
+  // failed. Republish the same bytes before committing their first public pin.
+  const needsPublication = stored === undefined || (!record && store.where === "file")
   let privateKey: Uint8Array | undefined
   try {
     if (stored === undefined) {
       privateKey = dependencies.generateKey()
       if (!(privateKey instanceof Uint8Array) || privateKey.length !== 32) throw new Error("Invalid generated relay channel key")
       stored = JSON.stringify({ version: 1, machineId: options.machineId, identityPublicKey, privateKey: Buffer.from(privateKey).toString("base64url") })
+    } else {
+      const secret = parseSecret(stored)
+      if (secret.machineId !== options.machineId || secret.identityPublicKey !== identityPublicKey) throw new Error("Relay channel credential does not match this machine and identity anchor")
+      privateKey = Buffer.from(secret.privateKey, "base64url")
+    }
+    if (needsPublication) {
       check()
       await write(stored)
       check()
       if (await read() !== stored) throw new Error("Relay channel credential read-back did not match. The public anchor was not published.")
       check()
-    } else {
-      const secret = parseSecret(stored)
-      if (secret.machineId !== options.machineId || secret.identityPublicKey !== identityPublicKey) throw new Error("Relay channel credential does not match this machine and identity anchor")
-      privateKey = Buffer.from(secret.privateKey, "base64url")
     }
     const responderPublicKey = relayPublicKeyFromPrivateKey(privateKey)
     if (record && record.identity.channel.responderPublicKey !== responderPublicKey) throw new Error("Relay channel credential does not match the pinned public key")

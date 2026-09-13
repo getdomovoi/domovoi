@@ -1,17 +1,18 @@
-import { chmod, mkdtemp as createTempDirectory, open, readFile, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdtemp as createTempDirectory, open, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { nativeKeyring, openCredentialBackend, readPrivateFile, type Keyring } from "./index.js"
+import { nativeKeyring, openCredentialBackend, readPrivateFile, writePrivateFile, type Keyring } from "./index.js"
 
 vi.mock("node:fs/promises", async (original) => ({
   ...await original<typeof import("node:fs/promises")>(),
+  lstat: vi.fn((...args: Parameters<typeof lstat>) => actualLstat(...args)),
   open: vi.fn((...args: Parameters<typeof open>) => actualOpen(...args)),
   unlink: vi.fn((...args: Parameters<typeof unlink>) => actualUnlink(...args)),
 }))
-const { open: actualOpen, unlink: actualUnlink } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+const { lstat: actualLstat, open: actualOpen, unlink: actualUnlink } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
 const keyring = (): Keyring => ({ available: vi.fn(async () => true), get: vi.fn(), set: vi.fn(), delete: vi.fn() })
 const options = (ring = keyring()) => ({ keyring: ring, warn: vi.fn(), fileWarning: (path: string) => `private file: ${path}`, unavailable: (cause?: Error) => `keychain refused: ${cause?.message ?? "absent"}` })
 const roots: string[] = []
@@ -83,6 +84,63 @@ describe("credential custody", () => {
     await writeFile(path, "1234567")
     await expect(store.read()).rejects.toThrow("6 bytes")
     await expect(readPrivateFile(join(path, "missing"))).rejects.toThrow()
+  })
+
+  it.each([NaN, Infinity, -Infinity, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects byte limit %s before touching an absent file", async (maximumBytes) => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-custody-"))
+    const path = join(root, "missing", "key")
+    const reads = vi.mocked(lstat).mock.calls.length
+    const opens = vi.mocked(open).mock.calls.length
+    await expect(readPrivateFile(path, { maximumBytes })).rejects.toThrow("positive safe integer")
+    await expect(writePrivateFile(path, "", { maximumBytes })).rejects.toThrow("positive safe integer")
+    await expect(openCredentialBackend({ ...options(), credentialFile: path, maximumBytes })).rejects.toThrow("positive safe integer")
+    expect(vi.mocked(lstat).mock.calls).toHaveLength(reads)
+    expect(vi.mocked(open).mock.calls).toHaveLength(opens)
+    expect(await readdir(root)).toEqual([])
+  })
+
+  it.skipIf(process.platform === "win32")("flushes new parent entries before the credential and its final name after rename", async () => {
+    const root = resolve(await mkdtemp(join(tmpdir(), "domovoi-custody-")))
+    const parent = join(root, "new", "nested")
+    const path = join(parent, "key")
+    const events: string[] = []
+    vi.mocked(open).mockImplementation(async (...args) => {
+      const handle = await actualOpen(...args)
+      const directory = (await handle.stat()).isDirectory()
+      const sync = handle.sync.bind(handle)
+      vi.spyOn(handle, "sync").mockImplementation(async () => {
+        events.push(directory ? `sync:${String(args[0])}` : "file-sync")
+        await sync()
+      })
+      return handle
+    })
+    await writePrivateFile(path, "fixture", { publish: async (from, to) => { await rename(from, to); events.push("rename") } })
+    expect(events).toEqual([
+      `sync:${parent}`, `sync:${join(root, "new")}`, `sync:${root}`,
+      "file-sync", "rename", `sync:${parent}`,
+    ])
+    expect(await readFile(path, "utf8")).toBe("fixture")
+  })
+
+  it.skipIf(process.platform === "win32")("names an already published credential when directory flush and close fail", async () => {
+    const root = resolve(await mkdtemp(join(tmpdir(), "domovoi-custody-")))
+    const path = join(root, "key")
+    const primary = new Error("directory sync failed"), cleanup = new Error("directory close failed")
+    vi.mocked(open).mockImplementation(async (...args) => {
+      const handle = await actualOpen(...args)
+      if ((await handle.stat()).isDirectory()) {
+        const close = handle.close.bind(handle)
+        vi.spyOn(handle, "sync").mockRejectedValueOnce(primary)
+        vi.spyOn(handle, "close").mockImplementationOnce(async () => { await close(); throw cleanup })
+      }
+      return handle
+    })
+    await expect(writePrivateFile(path, "fixture")).rejects.toMatchObject({
+      message: expect.stringContaining(`published at ${path}`),
+      cause: { errors: [primary, cleanup], cause: primary },
+    })
+    expect(await readFile(path, "utf8")).toBe("fixture")
+    expect(await readdir(root)).toEqual(["key"])
   })
 
   it("refuses nonregular files, open errors and a replaced descriptor", async () => {

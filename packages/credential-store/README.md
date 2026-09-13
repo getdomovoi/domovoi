@@ -15,8 +15,17 @@ outside this check, matching the existing CLI policy. Parent-directory trust and
 concurrent writers remain the caller's responsibility.
 
 Files publish through an exclusive random staging file, mode 0600, fsync and
-rename. Publication failure removes staging or reports both failures and its
-path. `maximumBytes` bounds reads before allocation and is recommended for each
+rename. On POSIX, newly created directory entries are flushed before writing and
+the containing directory is flushed after rename. Unsupported directory flushes
+and other flush errors refuse. Windows file contents are flushed, but directory
+flushing is not implemented here; power-loss name durability is not promised.
+Before rename, failure removes staging or reports both failures and its path.
+After rename, failure names the already published file and uncertain durability;
+it does not remove that credential. These are filesystem flush requests, not a
+physical power-loss test.
+
+`maximumBytes` must be a positive safe integer when supplied, checked before
+filesystem access. It bounds reads before allocation and is recommended for each
 record kind. Returned JavaScript strings cannot be wiped by this package.
 
 The package is publishable. The daemon bundles it into dist, leaving its native

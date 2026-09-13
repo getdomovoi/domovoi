@@ -51,11 +51,22 @@ are capped before allocation: 1 KiB for the credential and 8 KiB for the public
 record. The same limits apply to publication.
 
 The profile lease is held before any key read or publication. The secret is
-stored and read back before the public record is atomically published. An
-interruption between those writes can reuse the already stored secret for the
-same machine and identity, avoiding another key generation. Missing, malformed,
-or mismatched credentials on a provisioned profile refuse. Changing the configured
-identity or custody also refuses; neither implicitly rotates or moves a key.
+stored and read back before the public record is atomically published. POSIX file
+publication flushes newly created directory entries before writing, then flushes
+the containing directory after rename. A flush failure after rename reports that
+the named file is already visible but its durability is uncertain. Windows file
+contents are flushed, but this implementation does not flush directory entries;
+survival of those names after power loss is not promised on Windows.
+The separate directory flush follows the distinction documented in
+[fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html).
+
+An interruption between the secret and public writes can reuse the already
+stored secret for the same machine and identity, avoiding another key generation.
+A recovered file credential is republished and read back before its first public
+pin, since seeing a previous rename does not prove its directory flush succeeded.
+Missing, malformed or mismatched credentials on a provisioned profile refuse.
+Changing the configured identity or custody also refuses; neither implicitly
+rotates or moves a key.
 
 After provisioning, startup reads the saved custody choice and public pin even
 when the two environment settings are absent. Service configuration retains only

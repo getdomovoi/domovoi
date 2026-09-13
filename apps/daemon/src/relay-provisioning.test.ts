@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, sign } from "node:crypto"
-import { chmod, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, open, readFile, stat, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -88,6 +88,29 @@ describe("relay channel provisioning", () => {
       await expect(loadOrProvisionRelayChannel(restart, dependencies)).rejects.toThrow("mode 0600")
     }
     first!.privateKey.fill(0)
+  })
+
+  it("republishes a recovered file credential before publishing its first public pin", async () => {
+    const { input, dependencies } = await fixture()
+    const credentialFile = join(input.homeDirectory, "recovered.key")
+    const secret = JSON.stringify({ version: 1, machineId: input.machineId, identityPublicKey: publicIdentity, privateKey: Buffer.alloc(32, 7).toString("base64url") })
+    await writeFile(credentialFile, secret, { mode: 0o600 })
+    // Hold the old inode open so its identifier cannot be reused by the rename.
+    // Existing bytes alone do not prove an interrupted publication was flushed.
+    const previous = await open(credentialFile, "r")
+    try {
+      const identity = await previous.stat({ bigint: true })
+      const publishRecord = vi.fn(async (...args: Parameters<typeof dependencies.publishRecord>) => {
+        expect((await stat(credentialFile, { bigint: true })).ino).not.toBe(identity.ino)
+        expect(await readFile(credentialFile, "utf8")).toBe(secret)
+        await dependencies.publishRecord(...args)
+      })
+      const provisioned = await loadOrProvisionRelayChannel({ ...input, credentialFile }, { ...dependencies, publishRecord })
+      expect(dependencies.generateKey).not.toHaveBeenCalled()
+      expect(publishRecord).toHaveBeenCalledOnce()
+      expect(provisioned!.privateKey).toEqual(new Uint8Array(32).fill(7))
+      provisioned!.privateKey.fill(0)
+    } finally { await previous.close() }
   })
 
   it("refuses key loss, tampering, machine changes and custody changes without replacing the pin", async () => {

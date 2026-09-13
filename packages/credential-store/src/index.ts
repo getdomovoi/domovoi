@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import { lstat, mkdir, open, rename, unlink, type FileHandle } from "node:fs/promises"
-import { dirname } from "node:path"
+import { dirname, resolve } from "node:path"
 
 export interface Keyring {
   available(): Promise<boolean>
@@ -22,6 +22,10 @@ type FileOptions = { maximumBytes?: number; checkOnly?: boolean }
 const symlinkError = (path: string) => new CredentialStoreError(`${path} is a symlink. A credential file must be a regular file you own.`)
 const sizeError = (path: string, maximum: number) => new CredentialStoreError(`${path} exceeds the credential file limit of ${maximum} bytes.`)
 
+function validateMaximumBytes(maximum: number | undefined): void {
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new CredentialStoreError("Credential byte limit must be a positive safe integer")
+}
+
 async function closeFile(handle: FileHandle | undefined, failure?: { error: unknown }): Promise<void> {
   let cleanup: { error: unknown } | undefined
   try { await handle?.close() } catch (error) { cleanup = { error } }
@@ -32,6 +36,7 @@ async function closeFile(handle: FileHandle | undefined, failure?: { error: unkn
 }
 
 export async function readPrivateFile(path: string, options: FileOptions = {}): Promise<string | undefined> {
+  validateMaximumBytes(options.maximumBytes)
   let handle
   let failure: { error: unknown } | undefined
   try {
@@ -47,7 +52,6 @@ export async function readPrivateFile(path: string, options: FileOptions = {}): 
       throw new CredentialStoreError(`${path} is readable by other users. Set it to mode 0600 before using it as a credential file.`)
     }
     const maximum = options.maximumBytes
-    if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new CredentialStoreError("Credential byte limit must be a positive safe integer")
     if (maximum !== undefined && status.size > maximum) throw sizeError(path, maximum)
     if (options.checkOnly) return undefined
     if (maximum === undefined) return await handle.readFile("utf8")
@@ -73,15 +77,36 @@ export async function readPrivateFile(path: string, options: FileOptions = {}): 
   } finally { await closeFile(handle, failure) }
 }
 
+async function syncDirectory(path: string): Promise<void> {
+  // Windows directory flushing is not implemented here. File contents are
+  // flushed there; power-loss name durability is not promised. POSIX flush
+  // errors, including unsupported filesystems, refuse.
+  if (process.platform === "win32") return
+  const handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0))
+  let failure: { error: unknown } | undefined
+  try { await handle.sync() } catch (error) { failure = { error }; throw error } finally { await closeFile(handle, failure) }
+}
+
 export async function writePrivateFile(path: string, content: string, options: {
   maximumBytes?: number
   publish?: typeof rename
 } = {}): Promise<void> {
+  validateMaximumBytes(options.maximumBytes)
   if (options.maximumBytes !== undefined && Buffer.byteLength(content, "utf8") > options.maximumBytes) throw sizeError(path, options.maximumBytes)
   await readPrivateFile(path, { ...options, checkOnly: true })
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  const directory = resolve(dirname(path))
+  const firstCreated = await mkdir(directory, { recursive: true, mode: 0o700 })
+  if (firstCreated !== undefined && process.platform !== "win32") {
+    // Make the new directory chain persistent before it can hold a credential.
+    const existingParent = dirname(firstCreated)
+    for (let at = directory; ; at = dirname(at)) {
+      await syncDirectory(at)
+      if (at === existingParent) break
+    }
+  }
   const staging = `${path}.${process.pid}.${randomUUID()}.tmp`
   const handle = await open(staging, "wx", 0o600)
+  let published = false
   try {
     let failure: { error: unknown } | undefined
     try {
@@ -90,7 +115,10 @@ export async function writePrivateFile(path: string, content: string, options: {
       await handle.sync()
     } catch (error) { failure = { error }; throw error } finally { await closeFile(handle, failure) }
     await (options.publish ?? rename)(staging, path)
+    published = true
+    await syncDirectory(directory)
   } catch (error) {
+    if (published) throw new Error(`Credential is published at ${path}, but directory synchronization did not complete. The file may not survive a system failure.`, { cause: error })
     let cleanup: { error: unknown } | undefined
     try { await unlink(staging) } catch (failure) { cleanup = { error: failure } }
     if (cleanup && (cleanup.error as NodeJS.ErrnoException).code !== "ENOENT") {
