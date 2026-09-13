@@ -83,7 +83,15 @@ describe("credential custody", () => {
     await expect(store.write("é🙂x")).rejects.toThrow("6 bytes")
     await writeFile(path, "1234567")
     await expect(store.read()).rejects.toThrow("6 bytes")
-    await expect(readPrivateFile(join(path, "missing"))).rejects.toThrow()
+  })
+
+  it.each(["ENOTDIR", "EACCES", "EIO"])("propagates lstat %s failures instead of reporting absence", async (code) => {
+    const path = join(await mkdtemp(join(tmpdir(), "domovoi-custody-")), "key")
+    const failure = Object.assign(new Error("stat failed"), { code })
+    const opens = vi.mocked(open).mock.calls.length
+    vi.mocked(lstat).mockRejectedValueOnce(failure)
+    await expect(readPrivateFile(path)).rejects.toBe(failure)
+    expect(vi.mocked(open).mock.calls).toHaveLength(opens)
   })
 
   it.each([NaN, Infinity, -Infinity, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects byte limit %s before touching an absent file", async (maximumBytes) => {
