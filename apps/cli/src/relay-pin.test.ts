@@ -148,23 +148,34 @@ describe("relay pin store", () => {
   it("holds save and forget behind the same lock as a swap on a file", async () => {
     const home = await directory()
     const file = join(home, "cli-credentials.json")
-    let releasePublish: () => void = () => {}
-    const publishGate = new Promise<void>((resolve) => { releasePublish = resolve })
     const { rename } = await import("node:fs/promises")
-    const other = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {} })
+    const gate = <T,>() => { let open: (value: T) => void = () => {}; const waited = new Promise<T>((resolve) => { open = resolve }); return { open, waited } }
+    const swapEntered = gate<void>()
+    const swapRelease = gate<void>()
+    const forgetEntered = gate<void>()
+    let watchingForget = false
+    const other = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {},
+      publish: async (staging, path) => { if (watchingForget) forgetEntered.open(); await rename(staging, path) } })
     await other.save(paired)
+    watchingForget = true
     const slow = await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: () => {},
-      publish: async (staging, path) => { await publishGate; await rename(staging, path) } })
-    const swapping = relayPinStore(slow, paired.endpoint).compareAndSwap(undefined, trusted)
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    let forgotten = false
-    const forgetting = other.forget(paired.endpoint).then(() => { forgotten = true })
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    // forget must wait for the swap's lock, not run underneath it.
-    expect(forgotten).toBe(false)
-    releasePublish()
-    expect(await swapping).toBe(true)
-    await forgetting
+      publish: async (staging, path) => { swapEntered.open(); await swapRelease.waited; await rename(staging, path) } })
+    try {
+      const swapping = relayPinStore(slow, paired.endpoint).compareAndSwap(undefined, trusted)
+      await swapEntered.waited
+      const forgetting = other.forget(paired.endpoint)
+      // A locked forget cannot reach its publish while the swap holds the lock.
+      // An unlocked one reaches it within a few I/O turns; 500 ms is the bound
+      // on how long a leak could hide, not a wait the correct code needs.
+      const leaked = await Promise.race([
+        forgetEntered.waited.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+      ])
+      expect(leaked).toBe(false)
+      swapRelease.open()
+      expect(await swapping).toBe(true)
+      await forgetting
+    } finally { swapRelease.open() }
     expect(await other.load(paired.endpoint)).toBeUndefined()
   })
 
