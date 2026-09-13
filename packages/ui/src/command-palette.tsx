@@ -279,6 +279,12 @@ export function opensElsewhere(event: { key: string; metaKey: boolean; ctrlKey: 
   return event.key === "Enter" && (platform === "darwin" ? event.metaKey : event.ctrlKey)
 }
 
+// A session with somewhere to go. An empty target list is a session that
+// cannot move, and offering it a picker with nothing in it says otherwise.
+function canChooseMachine(command: WorkspaceCommand): boolean {
+  return (command.elsewhereTargets?.length ?? 0) > 0
+}
+
 export function restoreCommandPaletteFocus(target: { focus(): void } | null): void {
   target?.focus()
 }
@@ -311,18 +317,37 @@ export function CommandPalette({
   // cmdk highlights the first row on open and only tells us once the selection
   // moves, so an empty report means the first row.
   // While a session is choosing a machine, the list is that session's targets.
-  const [choosing, setChoosing] = useState<WorkspaceCommand | null>(null)
-  const rows = choosing?.elsewhereTargets ?? ranked
+  // The session is held by id and looked up in the commands of this render, so
+  // a target the list no longer offers cannot run, and a session that has left
+  // the list takes the picker with it.
+  const [choosingId, setChoosingId] = useState<string | null>(null)
+  const choosing = choosingId === null
+    ? null
+    : commands.find((command) => command.id === choosingId && canChooseMachine(command)) ?? null
+  const targets = useMemo(
+    () => (choosing ? rankWorkspaceCommands(choosing.elsewhereTargets!, query) : null),
+    [choosing, query],
+  )
+  const rows = targets ?? ranked
   const current = highlighted || rows[0]?.id
   const elsewhere = rows.find((command) => command.id === current
-    && (command.openElsewhere || command.elsewhereTargets)
+    && (command.openElsewhere || canChooseMachine(command))
     && !command.disabled)
   const sections = commandSections
+  const reset = () => { setQuery(""); setChoosingId(null); setHighlighted("") }
+  // Every way out closes the same way: nothing chosen and nothing typed is
+  // left behind for the next open, whichever side asked for the close.
+  const close = () => { reset(); onOpenChange(false) }
+
+  useEffect(() => {
+    if (choosingId !== null && choosing === null) reset()
+  }, [choosingId, choosing])
 
   useEffect(() => {
     if (!wasOpen.current && open) shouldRestoreFocus.current = true
-    if (wasOpen.current && !open && shouldRestoreFocus.current) {
-      queueMicrotask(() => restoreCommandPaletteFocus(restoreFocusTo))
+    if (wasOpen.current && !open) {
+      reset()
+      if (shouldRestoreFocus.current) queueMicrotask(() => restoreCommandPaletteFocus(restoreFocusTo))
     }
     wasOpen.current = open
   }, [open, restoreFocusTo])
@@ -334,11 +359,10 @@ export function CommandPalette({
         // Escape backs out of a half-made choice before it closes the whole
         // launcher. The dialog owns the key, so the step back happens here.
         if (!nextOpen && choosing) {
-          setChoosing(null)
-          setHighlighted("")
+          reset()
           return
         }
-        if (!nextOpen) { setQuery(""); setChoosing(null); setHighlighted("") }
+        if (!nextOpen) { close(); return }
         onOpenChange(nextOpen)
       }}
       title="Domovoi commands"
@@ -358,14 +382,15 @@ export function CommandPalette({
           // answer than doing nothing, and the footer already says which it is.
           event.preventDefault()
           if (!elsewhere) return
-          if (elsewhere.elsewhereTargets) {
+          if (canChooseMachine(elsewhere)) {
             // The launcher picks the machine. The preflight takes the decision.
-            setChoosing(elsewhere)
+            setChoosingId(elsewhere.id)
+            setQuery("")
             setHighlighted("")
             return
           }
           shouldRestoreFocus.current = elsewhere.restoreFocus !== false
-          onOpenChange(false)
+          close()
           elsewhere.openElsewhere!()
         }}
       >
@@ -392,7 +417,7 @@ export function CommandPalette({
                       onSelect={() => {
                         if (command.disabled) return
                         shouldRestoreFocus.current = command.restoreFocus !== false
-                        onOpenChange(false)
+                        close()
                         command.run()
                       }}
                     >
@@ -436,7 +461,7 @@ export function CommandPalette({
             className="shrink-0 text-[11px] text-primary"
             onClick={() => {
               shouldRestoreFocus.current = false
-              onOpenChange(false)
+              close()
               onOpenFirstRun()
             }}
           >

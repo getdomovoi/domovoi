@@ -165,3 +165,58 @@ it("offers first-run setup, and hides it while a machine is being chosen", async
   await user.click(screen.getByRole("button", { name: "First-run setup" }))
   expect(onOpenFirstRun).toHaveBeenCalledOnce()
 })
+
+// The picker is a step inside one open of the launcher, not a mode the launcher
+// keeps. Every way out (a chosen target, a plain action, the parent closing)
+// leaves the next open at the root, and the session being moved is looked up by
+// id in the current commands rather than kept as an object, so a target the
+// list no longer offers cannot run and a list that changed underneath is what
+// Enter acts on.
+const target = (id: string, run = vi.fn()): WorkspaceCommand => ({ id, label: id, section: "Machines", keywords: [], run })
+const session = (targets: WorkspaceCommand[]): WorkspaceCommand => ({
+  id: "session-a", label: "Session A", section: "Sessions", keywords: [], elsewhereTargets: targets, run: vi.fn(),
+})
+const view = (commands: WorkspaceCommand[], open = true, onOpenChange = vi.fn()) => (
+  <CommandPalette commands={commands} open={open} onOpenChange={onOpenChange} platform="darwin" restoreFocusTo={null} />
+)
+
+it("reopens at the root after a target is chosen", async () => {
+  const user = userEvent.setup()
+  const run = vi.fn()
+  const commands = [session([target("remote-a", run)])]
+  const changed = vi.fn()
+  const { rerender } = render(view(commands, true, changed))
+  await user.keyboard("{Meta>}{Enter}{/Meta}")
+  await user.keyboard("{Enter}")
+  expect(run).toHaveBeenCalledOnce()
+  expect(changed).toHaveBeenCalledWith(false)
+  rerender(view(commands, false, changed))
+  rerender(view(commands, true, changed))
+  expect(hints()).not.toContain("move Session A")
+  expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual(["Session A"])
+})
+
+it("acts on the current targets, not the ones it was opened with", async () => {
+  const user = userEvent.setup()
+  const removed = vi.fn()
+  const current = vi.fn()
+  const { rerender } = render(view([session([target("removed-target", removed)])]))
+  await user.keyboard("{Meta>}{Enter}{/Meta}")
+  rerender(view([session([target("current-target", current)])]))
+  await user.keyboard("{Enter}")
+  expect(removed).not.toHaveBeenCalled()
+  expect(current).toHaveBeenCalledOnce()
+})
+
+it("filters the machines with the search input", async () => {
+  const user = userEvent.setup()
+  render(view([session([target("mac-mini"), target("thinkpad")])]))
+  await user.keyboard("{Meta>}{Enter}{/Meta}")
+  await user.type(screen.getByRole("combobox"), "thinkpad")
+  expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual(["thinkpad"])
+})
+
+it("does not offer to move a session that has nowhere to go", () => {
+  render(view([session([])]))
+  expect(hints()).not.toContain("open elsewhere")
+})
