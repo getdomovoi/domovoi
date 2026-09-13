@@ -8,12 +8,14 @@ import type { MachineWslFacts } from "@getdomovoi/protocol"
 
 import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
+import { RotatingDaemonLog } from "./daemon-logs.js"
 import { loadOrCreateMachineIdentity, type MachineIdentity } from "./machine-identity.js"
 import { MachineCredentialWorker, type AsyncMachineCredentials } from "./machine-credential-worker.js"
 import { CliProviderProbe, type ProviderProbe } from "./providers.js"
 import { claimProfile, type ProfileLease } from "./profile-lease.js"
 import { createLocalOwnerSecret, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
+import { redactErrorDetail } from "./rpc-errors.js"
 import {
   DomovoiDaemon,
   type DaemonErrorSink,
@@ -103,6 +105,7 @@ export async function createProductionDaemonWithDependencies(
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
   const machineLabel = options.machineLabel ?? hostname()
   let lease = ownership?.lease
+  let diagnosticLog: RotatingDaemonLog | undefined
   let published = false
   try {
     const config = dependencies.parseEnvironment(environment, homeDirectory)
@@ -113,6 +116,21 @@ export async function createProductionDaemonWithDependencies(
     deadline.throwIfExpired()
     lease ??= claimProfile(homeDirectory)
     const ownedLease = lease
+    diagnosticLog = new RotatingDaemonLog(join(homeDirectory, ".domovoi", "logs"))
+    const ownedLog = diagnosticLog
+    let reportedLogFailure = false
+    const errorSink: DaemonErrorSink = (entry) => {
+      try { ownedLog.append(entry) } catch (error) {
+        // Preserve existing error reporting if disk logging fails. Retry future
+        // appends, but do not turn a full disk into an unbounded warning stream.
+        if (!reportedLogFailure) {
+          reportedLogFailure = true
+          console.error("Daemon diagnostic file unavailable:", redactErrorDetail(error))
+        }
+      }
+      if (options.errorSink) options.errorSink(entry)
+      else console.error(entry.context, entry.detail)
+    }
     const [authToken, machineIdentity] = await beforeDeadline(Promise.all([
       config.authToken
         ? Promise.resolve(config.authToken)
@@ -152,7 +170,7 @@ export async function createProductionDaemonWithDependencies(
       worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
       skillTrustPath: skillTrustPath(homeDirectory),
       manageStateDirectoryPermissions: true,
-      ...(options.errorSink ? { errorSink: options.errorSink } : {}),
+      errorSink,
     })
     const secureTransport = tls !== undefined
     let starting: Promise<ProductionDaemonEndpoint> | undefined
@@ -165,6 +183,7 @@ export async function createProductionDaemonWithDependencies(
         // stop retains the lease. Expiring a caller never authorizes a writer.
         stopping = Promise.resolve(starting).catch(() => {}).then(() => daemon.stop()).then(() => {
           writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
+          ownedLog.close()
           ownedLease.release()
         })
       }
@@ -199,7 +218,10 @@ export async function createProductionDaemonWithDependencies(
   } catch (error) {
     try {
       if (published) writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
-    } finally { lease?.release() }
+    } finally {
+      diagnosticLog?.close()
+      lease?.release()
+    }
     throw error
   } finally {
     if (!ownership) deadline.clear()

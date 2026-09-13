@@ -278,6 +278,48 @@ describe("SqliteAuditLog", () => {
     }
   })
 
+  it("keeps the shipped 10000 activity and 1000 pre-auth caps across restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-audit-defaults-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "state.sqlite")
+    let database = new DatabaseSync(path)
+    const append = (audit: SqliteAuditLog, kind: "activity" | "pre-auth", index: number) => audit.append({
+      id: `${kind}-${index}`,
+      actor: { kind: "daemon", component: "retention-proof" },
+      action: kind === "activity" ? "approval.resolve" : "security.authentication",
+      outcome: "denied",
+      ...(kind === "pre-auth" ? { retention: "pre-auth" as const } : {}),
+    })
+    const retained = (kind: string) => database.prepare(
+      "SELECT id FROM audit_log WHERE retention_class = ? ORDER BY sequence",
+    ).all(kind).map((row) => row.id)
+    try {
+      const audit = new SqliteAuditLog(database)
+      // Batch disk commits, not append/prune operations. Every append still
+      // executes its own savepoint and the shipped count-based deletion.
+      database.exec("BEGIN IMMEDIATE")
+      for (let index = 0; index <= 10_000; index += 1) append(audit, "activity", index)
+      for (let index = 0; index <= 1_000; index += 1) append(audit, "pre-auth", index)
+      database.exec("COMMIT")
+      const expectedActivity = Array.from({ length: 10_000 }, (_, index) => `activity-${index + 1}`)
+      const expectedPreAuth = Array.from({ length: 1_000 }, (_, index) => `pre-auth-${index + 1}`)
+      expect(retained("activity")).toEqual(expectedActivity)
+      expect(retained("pre-auth")).toEqual(expectedPreAuth)
+
+      database.close()
+      database = new DatabaseSync(path)
+      const reopened = new SqliteAuditLog(database)
+      expect(retained("activity")).toEqual(expectedActivity)
+      expect(retained("pre-auth")).toEqual(expectedPreAuth)
+      append(reopened, "pre-auth", 1_001)
+      expect(retained("pre-auth")).toEqual([...expectedPreAuth.slice(1), "pre-auth-1001"])
+      expect(retained("activity")).toEqual(expectedActivity)
+      append(reopened, "activity", 10_001)
+      expect(retained("activity")).toEqual([...expectedActivity.slice(1), "activity-10001"])
+      expect(retained("pre-auth")).toEqual([...expectedPreAuth.slice(1), "pre-auth-1001"])
+    } finally { database.close() }
+  })
+
   it("pages exports before their wire-size bound", () => {
     const database = new DatabaseSync(":memory:")
     const audit = new SqliteAuditLog(database)
