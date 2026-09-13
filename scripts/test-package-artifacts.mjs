@@ -59,6 +59,13 @@ function unresolvedDependencies(manifest) {
 
 const contracts = [
   {
+    selector: "@getdomovoi/credential-store",
+    requiredFiles: ["README.md", "LICENSE", "package.json", "dist/index.js", "dist/index.d.ts"],
+    exports: [".", "./package.json"],
+    // Loads the native keyring, so it carries the daemon's floor.
+    engines: ">=22.13.0",
+  },
+  {
     selector: "@getdomovoi/protocol",
     requiredFiles: [
       "README.md",
@@ -99,7 +106,7 @@ for (const contract of contracts) {
   assert.equal(manifest.license, "Apache-2.0")
   assert.equal(manifest.publishConfig?.access, "public")
   assert.equal(manifest.homepage, "https://domovoi.sh")
-  assert.equal(manifest.engines?.node, contract.selector === "@getdomovoi/daemon" ? ">=22.13.0" : ">=22")
+  assert.equal(manifest.engines?.node, contract.engines ?? (contract.selector === "@getdomovoi/daemon" ? ">=22.13.0" : ">=22"))
   assert.ok(manifest.description, `${contract.selector} must describe itself for the registry`)
   assert.ok(manifest.bugs?.url, `${contract.selector} must say where to report bugs`)
   assert.ok(

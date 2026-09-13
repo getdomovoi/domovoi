@@ -7,7 +7,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build": "pnpm -r --if-present build",
+    "build": "pnpm -r --if-present --workspace-concurrency=1 build",
     "changeset": "changeset",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "pnpm --parallel --filter @getdomovoi/daemon --filter @getdomovoi/web dev",
@@ -37,9 +37,9 @@
     "roadmap:html": "node scripts/roadmap-html.mjs",
     "ticks:prune": "node scripts/tick-citations.mjs --prune",
     "release:version": "changeset version",
-    "pretest": "pnpm --filter @getdomovoi/protocol build",
+    "pretest": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/credential-store build",
     "pretest:packages": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
-    "test": "pnpm --filter @getdomovoi/protocol test && pnpm --filter @getdomovoi/ui test && pnpm --filter @getdomovoi/web test && pnpm --filter @getdomovoi/daemon test && pnpm --filter @getdomovoi/cli test && pnpm --filter @getdomovoi/desktop test && pnpm --filter @getdomovoi/mobile test && pnpm test:packages && pnpm --filter @getdomovoi/desktop test:launch",
+    "test": "pnpm --filter @getdomovoi/protocol test && pnpm --filter @getdomovoi/credential-store test && pnpm --filter @getdomovoi/ui test && pnpm --filter @getdomovoi/web test && pnpm --filter @getdomovoi/daemon test && pnpm --filter @getdomovoi/cli test && pnpm --filter @getdomovoi/desktop test && pnpm --filter @getdomovoi/mobile test && pnpm test:packages && pnpm --filter @getdomovoi/desktop test:launch",
     "pretest:install": "pnpm --filter @getdomovoi/protocol build",
     "test:install": "node scripts/test-package-install.mjs",
     "pretest:musl": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",

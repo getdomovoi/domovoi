@@ -12,6 +12,7 @@ export { maximumProtocolVersionLength, protocolVersionSchema, compatibleProtocol
 export * from "./prompt-delivery.js"
 export * from "./preview-bridge.js"
 export * from "./relay-admission.js"
+export * from "./relay-identity.js"
 export * from "./rpc.js"
 export * from "./runtime-discovery.js"
 export * from "./schema.js"

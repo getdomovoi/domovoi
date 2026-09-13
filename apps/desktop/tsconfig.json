@@ -5,6 +5,7 @@
     "types": ["node", "vite/client"],
     "paths": {
       "@/*": ["../../packages/ui/src/*"],
+      "@getdomovoi/credential-store": ["../../packages/credential-store/src/index.ts"],
       "@getdomovoi/daemon": ["../daemon/src/public.ts"],
       "@getdomovoi/protocol": ["../../packages/protocol/src/index.ts"],
       "@getdomovoi/ui": ["../../packages/ui/src/index.ts"]

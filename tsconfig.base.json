@@ -14,6 +14,7 @@
     "paths": {
       "@getdomovoi/daemon": ["./apps/daemon/src/public.ts"],
       "@getdomovoi/daemon/internal": ["./apps/daemon/src/internal.ts"],
+      "@getdomovoi/credential-store": ["./packages/credential-store/src/index.ts"],
       "@getdomovoi/protocol": ["./packages/protocol/src/index.ts"],
       "@getdomovoi/protocol/relay": ["./packages/protocol/relay/index.ts"],
       "@getdomovoi/protocol/relay-admission": ["./packages/protocol/relay-admission/index.ts"],

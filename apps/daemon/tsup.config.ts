@@ -10,6 +10,7 @@ export default defineConfig({
   },
   format: ["esm"],
   platform: "node",
+  noExternal: ["@getdomovoi/credential-store"],
   target: "node22",
   dts: true,
   clean: true,

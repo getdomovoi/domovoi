@@ -1,6 +1,7 @@
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 
 import { credentialSchema } from "@getdomovoi/protocol"
+import { relayIdentityPublicKeyIsValid } from "@getdomovoi/protocol/relay-admission"
 
 import { configuredSshTunnelsSchema, isLoopbackHost, maximumSshConfigurationBytes, tailnetHostSchema, type ConfiguredSshTunnel } from "./transport-config.js"
 
@@ -20,6 +21,8 @@ export type DaemonEnvironmentConfig = {
   sshTunnels?: ConfiguredSshTunnel[]
   credentialPath: string
   machineIdentityPath: string
+  relayIdentityPublicKey?: string
+  relayCredentialFile?: string
   authToken?: string
   allowedOrigins?: string[]
   allowRemoteTransport: boolean
@@ -75,6 +78,14 @@ export function parseDaemonEnvironment(
     throw new DaemonConfigurationError("DOMOVOI_TAILNET_HOST requires a routable host without a port or URL components and a non-loopback TLS listener")
   }
   const sshTunnels = parseSshTunnels(environment.DOMOVOI_SSH_TUNNELS)
+  const relayIdentityPublicKey = environment.DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY
+  if (relayIdentityPublicKey !== undefined && !relayIdentityPublicKeyIsValid(relayIdentityPublicKey)) {
+    throw new DaemonConfigurationError("DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY must be a canonical base64url Ed25519 public key from an off-machine signer")
+  }
+  const relayCredentialFile = environment.DOMOVOI_RELAY_CREDENTIAL_FILE
+  if (relayCredentialFile !== undefined && (relayCredentialFile.length > 4_096 || !isAbsolute(relayCredentialFile) || /[\0\r\n]/u.test(relayCredentialFile))) {
+    throw new DaemonConfigurationError("DOMOVOI_RELAY_CREDENTIAL_FILE must be an explicit absolute file path")
+  }
 
   return {
     host,
@@ -85,6 +96,8 @@ export function parseDaemonEnvironment(
     ...(sshTunnels !== undefined ? { sshTunnels } : {}),
     credentialPath,
     machineIdentityPath,
+    ...(relayIdentityPublicKey !== undefined ? { relayIdentityPublicKey } : {}),
+    ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),
     ...(authToken !== undefined ? { authToken } : {}),
     ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
     allowRemoteTransport,
