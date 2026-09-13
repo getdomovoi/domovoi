@@ -31,6 +31,11 @@
       "types": "./dist/relay/index.d.ts",
       "import": "./dist/relay/index.js",
       "default": "./dist/relay/index.js"
+    },
+    "./relay-admission": {
+      "types": "./dist/relay-admission/index.d.ts",
+      "import": "./dist/relay-admission/index.js",
+      "default": "./dist/relay-admission/index.js"
     }
   },
   "files": ["dist"],

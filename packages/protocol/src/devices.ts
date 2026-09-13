@@ -5,6 +5,7 @@ import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
 import { fleetMachineDescriptorSchema } from "./fleet.js"
 import { protocolVersionSchema } from "./protocol-version.js"
+import { relayChannelPinSchema, relayPublicKeySchema } from "./relay-admission.js"
 
 export const maximumPairedDeviceLabelLength = 128
 export const maximumListedDevices = 256
@@ -88,11 +89,13 @@ export const devicePairParamsSchema = z.object({
   // client remains the authenticated issuer. Only local root can mint this
   // separate kind-bound credential. Omission retains the existing behavior.
   targetClient: clientKindSchema.optional(),
+  channelPublicKey: relayPublicKeySchema.optional(),
 }).strict()
 
 export const devicePairResultSchema = z.object({
   device: pairedDeviceSchema,
   token: deviceCredentialSchema,
+  relay: relayChannelPinSchema.optional(),
 }).strict()
 
 // The server derives this receipt from the authenticated socket, not a caller
@@ -151,6 +154,7 @@ export const deviceClaimParamsSchema = z.object({
   machineId: machineIdSchema,
   // Compatibility is checked before the one-time code is consumed.
   protocolVersion: protocolVersionSchema,
+  channelPublicKey: relayPublicKeySchema.optional(),
 }).strict()
 
 // A claim is not a paired device. Only its confirmation capability exists
@@ -166,6 +170,7 @@ export const deviceClaimResultSchema = z.object({
   claim: pendingDeviceClaimSchema,
   token: deviceCredentialSchema,
   machine: fleetMachineDescriptorSchema,
+  relay: relayChannelPinSchema.optional(),
 }).strict()
 
 export const deviceConfirmClaimParamsSchema = z.object({

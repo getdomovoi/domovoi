@@ -16,6 +16,7 @@
       "@getdomovoi/daemon/internal": ["./apps/daemon/src/internal.ts"],
       "@getdomovoi/protocol": ["./packages/protocol/src/index.ts"],
       "@getdomovoi/protocol/relay": ["./packages/protocol/relay/index.ts"],
+      "@getdomovoi/protocol/relay-admission": ["./packages/protocol/relay-admission/index.ts"],
       "@getdomovoi/ui": ["./packages/ui/src/index.ts"]
     },
     "resolveJsonModule": true,
