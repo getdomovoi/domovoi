@@ -1,21 +1,18 @@
 import { describe, expect, it } from "vitest"
 import { createPublicKey, generateKeyPairSync } from "node:crypto"
 
-import fixture from "../../../packages/protocol/experimental/relay/cacophony-ik.json"
-import aesFixture from "../../../packages/protocol/experimental/relay/cacophony-ik-aesgcm.json"
-import p256Fixture from "../../../packages/protocol/experimental/relay/cacophony-derived-p256.json"
-import { createNodeNoiseIk } from "../../../packages/protocol/experimental/relay/node-noise-ik"
-import { createRelayVectorCases } from "../../../packages/protocol/experimental/relay/vector-cases"
-import { generatePrivateKey, nodeSuites, NodeCipherState, publicBytes } from "../../../packages/protocol/experimental/relay/node-primitives"
+import fixture from "./cacophony-ik.json"
+import { createNodeNoiseIk } from "./node-noise-ik"
+import { createRelayVectorCases } from "./vector-cases"
+import { generatePrivateKey, nodeSuite, NodeCipherState, publicBytes } from "./node-primitives"
 
-const suites = [fixture, aesFixture, p256Fixture].map((vector) => vector.protocol_name)
-for (const vector of [fixture, aesFixture, p256Fixture]) {
-  describe(`experimental node:crypto ${vector.protocol_name}`, () => {
-    for (const test of createRelayVectorCases(createNodeNoiseIk, vector, suites)) it(test.name, test.run)
+for (const vector of [fixture]) {
+  describe(`test-only node:crypto ${vector.protocol_name}`, () => {
+    for (const test of createRelayVectorCases(createNodeNoiseIk, vector)) it(test.name, test.run)
   })
 }
 
-describe("experimental Node crypto Noise backend", () => {
+describe("Node crypto comparison oracle", () => {
   it("reproduces the published option A first handshake through node:crypto", () => {
     const peer = createNodeNoiseIk({
       role: "initiator", suite: fixture.protocol_name,
@@ -28,15 +25,15 @@ describe("experimental Node crypto Noise backend", () => {
       .toBe(fixture.messages[0]!.ciphertext)
   })
 
-  for (const suite of nodeSuites) {
+  for (const suite of [nodeSuite(fixture.protocol_name)]) {
     it(`${suite.name} completes with generated native KeyObjects and maximum frames`, () => {
-      const staticKey = generatePrivateKey(suite)
-      const pin = publicBytes(suite, staticKey)
+      const staticKey = generatePrivateKey()
+      const pin = publicBytes(staticKey)
       const initiator = createNodeNoiseIk({ role: "initiator", suite: suite.name,
-        prologue: new Uint8Array(), staticKey: generatePrivateKey(suite),
-        ephemeralKey: generatePrivateKey(suite), responderPublicKey: pin })
+        prologue: new Uint8Array(), staticKey: generatePrivateKey(),
+        ephemeralKey: generatePrivateKey(), responderPublicKey: pin })
       const responder = createNodeNoiseIk({ role: "responder", suite: suite.name,
-        prologue: new Uint8Array(), staticKey, ephemeralKey: generatePrivateKey(suite) })
+        prologue: new Uint8Array(), staticKey, ephemeralKey: generatePrivateKey() })
       const first = initiator.writeHandshake(new Uint8Array())
       expect(first.length).toBe(2 * suite.publicLength + 32)
       expect(responder.readHandshake(first).length).toBe(0)
@@ -49,27 +46,27 @@ describe("experimental Node crypto Noise backend", () => {
         expect(Buffer.from(receiver.decrypt(sender.encrypt(payload))).equals(payload)).toBe(true)
       }
       // The codec releases its references; it cannot destroy the caller's key.
-      expect(publicBytes(suite, staticKey)).toEqual(pin)
+      expect(publicBytes(staticKey)).toEqual(pin)
     })
 
     it(`${suite.name} rejects unsuitable KeyObjects and a valid but incorrect responder pin`, () => {
       const options = { role: "initiator" as const, suite: suite.name, prologue: new Uint8Array(),
-        staticKey: generatePrivateKey(suite), ephemeralKey: generatePrivateKey(suite),
-        responderPublicKey: publicBytes(suite, generatePrivateKey(suite)) }
+        staticKey: generatePrivateKey(), ephemeralKey: generatePrivateKey(),
+        responderPublicKey: publicBytes(generatePrivateKey()) }
       for (const key of [createPublicKey(options.staticKey), generateKeyPairSync("ec", { namedCurve: "secp384r1" }).privateKey]) {
         expect(() => createNodeNoiseIk({ ...options, staticKey: key })).toThrow("Relay channel rejected")
         expect(() => createNodeNoiseIk({ ...options, ephemeralKey: key })).toThrow("Relay channel rejected")
       }
       const initiator = createNodeNoiseIk(options)
       const responder = createNodeNoiseIk({ role: "responder", suite: suite.name, prologue: new Uint8Array(),
-        staticKey: generatePrivateKey(suite), ephemeralKey: generatePrivateKey(suite) })
+        staticKey: generatePrivateKey(), ephemeralKey: generatePrivateKey() })
       expect(() => responder.readHandshake(initiator.writeHandshake(new Uint8Array()))).toThrow("Relay channel rejected")
       expect(() => responder.writeHandshake(new Uint8Array())).toThrow("Relay channel rejected")
     })
 
     it(`${suite.name} carries a 64-bit nonce and refuses its reserved maximum`, () => {
-      const sender = new NodeCipherState(suite, new Uint8Array(32))
-      const receiver = new NodeCipherState(suite, new Uint8Array(32))
+      const sender = new NodeCipherState(new Uint8Array(32))
+      const receiver = new NodeCipherState(new Uint8Array(32))
       sender.nonce = receiver.nonce = 0x100000000n
       const ciphertext = sender.crypt(Uint8Array.of(42), new Uint8Array(), false)
       expect(Buffer.from(receiver.crypt(ciphertext, new Uint8Array(), true)).toString("hex")).toBe("2a")

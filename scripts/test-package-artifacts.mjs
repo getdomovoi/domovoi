@@ -60,8 +60,16 @@ function unresolvedDependencies(manifest) {
 const contracts = [
   {
     selector: "@getdomovoi/protocol",
-    requiredFiles: ["README.md", "LICENSE", "package.json", "dist/index.js", "dist/index.d.ts"],
-    exports: [".", "./package.json"],
+    requiredFiles: [
+      "README.md",
+      "LICENSE",
+      "package.json",
+      "dist/index.js",
+      "dist/index.d.ts",
+      "dist/relay/index.js",
+      "dist/relay/index.d.ts",
+    ],
+    exports: [".", "./package.json", "./relay"],
   },
   {
     selector: "@getdomovoi/daemon",
@@ -118,7 +126,8 @@ for (const contract of contracts) {
   }
 
   for (const file of files) {
-    assert.doesNotMatch(file, /(^|\/)(src|test|tests)(\/|$)/, `${contract.selector} leaked ${file}`)
+    // testing/ holds the relay Node oracle and vectors; they never ship.
+    assert.doesNotMatch(file, /(^|\/)(src|test|tests|testing)(\/|$)/, `${contract.selector} leaked ${file}`)
     assert.doesNotMatch(file, /\.map$/, `${contract.selector} leaked the source map ${file}`)
   }
 }

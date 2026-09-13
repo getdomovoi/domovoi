@@ -1,9 +1,0 @@
-{
-  "extends": "../../../../tsconfig.base.json",
-  "compilerOptions": {
-    "types": ["node"],
-    "typeRoots": ["../../../../apps/daemon/node_modules/@types"],
-    "noEmit": true
-  },
-  "include": ["node-*.ts", "vector-cases.ts"]
-}

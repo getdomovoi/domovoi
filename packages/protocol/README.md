@@ -53,6 +53,16 @@ dates and times and reject local datetimes. Minute-only values such as `2026-09-
 remain unchanged on read, including in persisted state and hashed transfer manifests. Adding
 seconds on load would change a manifest's digest. Writers continue using `toISOString()`.
 
+## Relay codec
+
+The separate `@getdomovoi/protocol/relay` entry exports `createNoiseIk` and
+`relayNoiseSuite`: the frozen suite-A Noise IK composition. External review is
+pending. It does not enable relay networking or implement device admission,
+key generation or storage. The Node comparison oracle and public vectors are
+test-only and are excluded from the package. Read the
+[wire contract and integration limits](https://github.com/getdomovoi/domovoi/blob/main/docs/relay-wire-format.md)
+before integrating it.
+
 ## RPC surface
 
 `rpcMethods` is the whole method surface. Every method is also classified in `rpcMethodMutations`

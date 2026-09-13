@@ -1,12 +1,12 @@
-// Experimental Noise revision 34 IK codec. No production export or caller.
-// This composition has NOT been independently audited. Explicit private keys
-// exist only to reproduce public test vectors; this is not a phone key store.
+// Frozen suite-A Noise revision 34 IK composition. See README.md and
+// docs/relay-wire-format.md for the byte contract and integration limits.
+// External review is pending. This codec does not generate or store keys.
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js"
 import { x25519 } from "@noble/curves/ed25519.js"
 import { hmac } from "@noble/hashes/hmac.js"
 import { sha256 } from "@noble/hashes/sha2.js"
 
-export const candidateSuite = "Noise_IK_25519_ChaChaPoly_SHA256"
+export const relayNoiseSuite = "Noise_IK_25519_ChaChaPoly_SHA256"
 const empty = new Uint8Array()
 const maxFrame = 65535
 
@@ -41,7 +41,8 @@ function hkdf(chainingKey: Uint8Array, input: Uint8Array): [Uint8Array, Uint8Arr
   return [first, second]
 }
 
-class CipherState {
+// Internal test seam, deliberately absent from the package entry point.
+export class CipherState {
   nonce = 0n
   constructor(readonly key: Uint8Array) {}
 
@@ -60,7 +61,7 @@ class CipherState {
 
 export function createNoiseIk(options: NoiseIkOptions) {
   try {
-    if (options.suite !== candidateSuite || !["initiator", "responder"].includes(options.role)) reject()
+    if (options.suite !== relayNoiseSuite || !["initiator", "responder"].includes(options.role)) reject()
     bound(options.staticKey, 32, 32)
     bound(options.ephemeralKey, 32, 32)
     bound(options.prologue, 0, maxFrame)
@@ -78,9 +79,9 @@ function handshake(options: NoiseIkOptions) {
   const publicEphemeral = x25519.getPublicKey(ephemeralKey)
   let remoteStatic: Uint8Array | undefined = initiator && options.responderPublicKey ? new Uint8Array(options.responderPublicKey) : undefined
   let remoteEphemeral: Uint8Array | undefined
-  // This candidate's name is exactly HASHLEN bytes. InitializeSymmetric uses
+  // This suite's name is exactly HASHLEN bytes. InitializeSymmetric uses
   // it verbatim, hashing only names longer than HASHLEN (Noise section 5.2).
-  let hash: Uint8Array = Uint8Array.from(candidateSuite, (letter) => letter.charCodeAt(0))
+  let hash: Uint8Array = Uint8Array.from(relayNoiseSuite, (letter) => letter.charCodeAt(0))
   let chainingKey: Uint8Array = hash.slice()
   let cipher: CipherState | undefined
   let sendCipher: CipherState | undefined
@@ -188,6 +189,12 @@ function handshake(options: NoiseIkOptions) {
           return payload
         }
         throw new Error("Unexpected handshake read")
+      })
+    },
+    remoteStaticKey(): Uint8Array {
+      return guarded(() => {
+        if (step !== 2 || !remoteStatic) reject()
+        return new Uint8Array(remoteStatic)
       })
     },
     handshakeHash(): Uint8Array {
