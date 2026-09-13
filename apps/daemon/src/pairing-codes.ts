@@ -63,7 +63,7 @@ export class PairingCodeService {
     return this.#open !== undefined && this.#open.expiresAtMs > nowMs
   }
 
-  claim(code: string, input: { label: string; machineId: string }, nowMs: number): DeviceClaim {
+  claim(code: string, input: { label: string; machineId: string; channelPublicKey?: string }, nowMs: number): DeviceClaim {
     const open = this.#open
     if (!open) throw new PairingCodeError("Pairing code is not valid")
     if (open.expiresAtMs <= nowMs) {

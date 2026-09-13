@@ -68,8 +68,10 @@ const contracts = [
       "dist/index.d.ts",
       "dist/relay/index.js",
       "dist/relay/index.d.ts",
+      "dist/relay-admission/index.js",
+      "dist/relay-admission/index.d.ts",
     ],
-    exports: [".", "./package.json", "./relay"],
+    exports: [".", "./package.json", "./relay", "./relay-admission"],
   },
   {
     selector: "@getdomovoi/daemon",
