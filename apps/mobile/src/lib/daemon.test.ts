@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { demoWorkspace } from "@getdomovoi/protocol"
+
 import { DaemonConnection } from "./daemon"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
@@ -29,9 +31,12 @@ function withSocket(send: (payload: string) => void): FakeSocket {
 
 function connection(handlers: {
   onFleet?: (entries: unknown[]) => void
+  onSnapshot?: (snapshot: unknown) => void
+  onHello?: (snapshot: unknown) => void
 } = {}) {
   return new DaemonConnection("ws://desk:8787", "token", {
-    onSnapshot: () => {},
+    onSnapshot: handlers.onSnapshot ?? (() => {}),
+    ...(handlers.onHello ? { onHello: handlers.onHello } : {}),
     onDelta: () => {},
     onFleet: handlers.onFleet ?? (() => {}),
     onStatus: () => {},
@@ -124,6 +129,28 @@ describe("DaemonConnection notifications", () => {
         }),
       })
       expect(onFleet).not.toHaveBeenCalled()
+    } finally { daemon.close() }
+  })
+
+  it("announces a hello only when the daemon answered it, never for a snapshot pushed before", async () => {
+    const sent: string[] = []
+    const socket = withSocket((payload) => { sent.push(payload) })
+    const onSnapshot = vi.fn()
+    const onHello = vi.fn()
+    const daemon = connection({ onSnapshot, onHello })
+    daemon.connect()
+    try {
+      socket.onopen?.()
+      // A snapshot that arrives as a notification before the greeting is
+      // answered updates the screen and proves nothing about the token.
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method: "workspace.changed", params: demoWorkspace }) })
+      expect(onSnapshot).toHaveBeenCalledTimes(1)
+      expect(onHello).not.toHaveBeenCalled()
+      const hello = JSON.parse(sent[0]!) as { id: number }
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: hello.id, result: demoWorkspace }) })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(onHello).toHaveBeenCalledTimes(1)
+      expect(onSnapshot).toHaveBeenCalledTimes(2)
     } finally { daemon.close() }
   })
 })

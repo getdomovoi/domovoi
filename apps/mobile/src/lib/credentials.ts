@@ -1,5 +1,7 @@
 import * as SecureStore from "expo-secure-store"
 
+import { createRelayPinStore, type PhoneRelayPinStore } from "./relay-pin"
+
 export type DaemonCredential = { url: string, token: string }
 
 const urlKey = "domovoi.daemon.url"
@@ -31,4 +33,10 @@ export async function clearCredential(): Promise<void> {
     SecureStore.deleteItemAsync(urlKey),
     SecureStore.deleteItemAsync(tokenKey),
   ])
+}
+
+// App-process wiring for the relay pin. Nothing else constructs a writable
+// store; see relay-pin.ts for why that matters once an extension exists.
+export function openRelayPinStore(machineId: string): PhoneRelayPinStore {
+  return createRelayPinStore(SecureStore, machineId, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY })
 }
