@@ -22,9 +22,20 @@ describe("cn", () => {
     expect(cn("font-mono text-machine text-muted-foreground", "text-[10.5px]"))
       .toBe("font-mono text-muted-foreground text-[10.5px]")
     expect(cn("font-sans text-body text-foreground", "text-[10.5px]"))
-      .toBe("font-sans text-foreground text-[10.5px]")
+      .toBe("font-sans text-foreground text-[10.5px] leading-[19px]")
     expect(cn("text-[10.5px]", "text-note")).toBe("text-note")
     expect(cn("text-body", "text-machine")).toBe("text-machine")
+  })
+
+  // body is 12.5px over 19px. A caller that changes only the size still gets
+  // the role's line height, and one that names a leading gets that instead.
+  it("keeps a role's line height when a caller replaces only its size", () => {
+    expect(cn("font-sans text-body text-foreground", "text-[12.5px]"))
+      .toBe("font-sans text-foreground text-[12.5px] leading-[19px]")
+    expect(cn("font-sans text-body text-foreground", "text-[12.5px] leading-[16px]"))
+      .toBe("font-sans text-foreground text-[12.5px] leading-[16px]")
+    expect(cn("font-mono text-machine", "text-[10.5px]")).toBe("font-mono text-[10.5px]")
+    expect(cn("text-body", "text-note")).toBe("text-note")
   })
 
   it("lets the later colour win", () => {

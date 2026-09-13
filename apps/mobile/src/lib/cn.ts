@@ -46,6 +46,15 @@ function conflictGroup(className: string): string | undefined {
   return undefined
 }
 
+// A named role can carry a line height with its size. When a bracketed size
+// replaces the role, the role's line height would go with it, though the
+// caller only asked to change the size; it is carried over as a leading class
+// unless the caller set one. A role replacing a role brings its own.
+function roleLineHeight(className: string): string | undefined {
+  const size = fontSize[className.slice("text-".length) as keyof typeof fontSize]
+  return Array.isArray(size) ? size[1] : undefined
+}
+
 export function cn(...parts: Array<string | false | null | undefined>): string {
   const classes = parts.filter(Boolean).join(" ").split(/\s+/).filter(Boolean)
   const winner = new Map<string, number>()
@@ -53,10 +62,18 @@ export function cn(...parts: Array<string | false | null | undefined>): string {
     const group = conflictGroup(className)
     if (group !== undefined) winner.set(group, index)
   })
-  return classes
-    .filter((className, index) => {
-      const group = conflictGroup(className)
-      return group === undefined || winner.get(group) === index
-    })
-    .join(" ")
+  const kept = classes.filter((className, index) => {
+    const group = conflictGroup(className)
+    return group === undefined || winner.get(group) === index
+  })
+  const size = winner.get("size")
+  if (size !== undefined && !winner.has("line-height") && /^text-\[.+\]$/.test(classes[size]!)) {
+    const carried = classes
+      .filter((className, index) => index < size && conflictGroup(className) === "size")
+      .map(roleLineHeight)
+      .filter((lineHeight): lineHeight is string => lineHeight !== undefined)
+      .at(-1)
+    if (carried !== undefined) kept.push(`leading-[${carried}]`)
+  }
+  return kept.join(" ")
 }
