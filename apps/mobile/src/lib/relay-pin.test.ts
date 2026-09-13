@@ -4,6 +4,8 @@ import type { RelayClientPin, RelaySignedSuccessor } from "@getdomovoi/protocol"
 import { adoptRelayPinSuccessor, relaySuccessorSigningBytes, requireRelayPinRecovery } from "@getdomovoi/protocol/relay-admission"
 import { describe, expect, it } from "vitest"
 
+import { DaemonError } from "./daemon"
+import { DaemonTimeoutError } from "./request-timeout"
 import { createRelayPinStore, readRelayPin, reconcileRelayPin, relayPinKey, type SecretItems } from "./relay-pin"
 
 function memorySecrets(options: { corruptWrites?: boolean } = {}): SecretItems & { writes: number } {
@@ -128,7 +130,18 @@ describe("phone relay pin store", () => {
 
     it("leaves the phone without a pin when the daemon publishes none", async () => {
       const store = createRelayPinStore(memorySecrets(), machineId)
-      expect(await reconcileRelayPin({ store, machineId, call: async () => { throw new Error("Relay recovery is unavailable") } })).toBe("unavailable")
+      expect(await reconcileRelayPin({ store, machineId, call: async () => { throw new DaemonError("Relay recovery is unavailable", -32602, undefined) } })).toBe("unavailable")
+      expect(await store.read()).toBeUndefined()
+    })
+
+    it.each([
+      ["a request timeout", () => new DaemonTimeoutError("relay.recovery", 30_000)],
+      ["a closed connection", () => new Error("The daemon closed the connection")],
+      ["a send failure", () => new TypeError("The request could not be sent")],
+    ])("surfaces %s instead of calling it unavailable", async (_label, failure) => {
+      const store = createRelayPinStore(memorySecrets(), machineId)
+      const expected = failure()
+      await expect(reconcileRelayPin({ store, machineId, call: async () => { throw failure() } })).rejects.toThrow(expected.message)
       expect(await store.read()).toBeUndefined()
     })
 
@@ -153,7 +166,7 @@ describe("phone relay pin store", () => {
     const other = createRelayPinStore(secrets, otherMachine)
     expect(await other.read()).toBeUndefined()
     const calls: string[] = []
-    const call = async (method: string) => { calls.push(method); throw new Error("Relay recovery is unavailable") }
+    const call = async (method: string) => { calls.push(method); throw new DaemonError("Relay recovery is unavailable", -32602, undefined) }
     expect(await reconcileRelayPin({ store: other, machineId: otherMachine, call })).toBe("unavailable")
     expect(calls).toEqual(["relay.recovery"])
     // The first machine's pin is untouched, and a pin for another machine cannot be written under this key.

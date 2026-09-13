@@ -1,6 +1,7 @@
 import type { KeychainAccessibilityConstant } from "expo-secure-store"
 import { relayClientPinSchema, relayRecoveryResultSchema, type RelayClientPin } from "@getdomovoi/protocol"
 import { adoptRelayRecovery, type RelayPinStore } from "@getdomovoi/protocol/relay-admission"
+import { DaemonError } from "./daemon"
 
 // The three SecureStore calls this module uses, so tests can supply memory
 // and the app supplies the Keychain or Keystore.
@@ -88,7 +89,9 @@ export type RelayPinCall = (method: string, params: Record<string, unknown>) => 
 // proved. Recovery required: fetch the latest signed successor and adopt it
 // against the saved pin, never the fetched identity. Trusted: nothing to do.
 // A daemon without relay provisioning refuses relay.recovery; that leaves the
-// pairing without a pin rather than failing it.
+// pairing without a pin rather than failing it. Only the daemon's own refusal
+// means that. A timeout, a closed socket or a failed send says nothing about
+// the daemon, so those surface to the caller.
 export async function reconcileRelayPin(input: {
   store: PhoneRelayPinStore
   machineId: string
@@ -97,7 +100,12 @@ export async function reconcileRelayPin(input: {
   const current = await input.store.read()
   if (current?.state === "trusted" && current.identity.machineId === input.machineId) return "trusted"
   let publication: unknown
-  try { publication = await input.call("relay.recovery", { machineId: input.machineId }) } catch { return "unavailable" }
+  try {
+    publication = await input.call("relay.recovery", { machineId: input.machineId })
+  } catch (error: unknown) {
+    if (error instanceof DaemonError) return "unavailable"
+    throw error
+  }
   const parsed = relayRecoveryResultSchema.parse(publication)
   if (parsed.identity.machineId !== input.machineId) throw new Error("The daemon published a relay identity for another machine.")
   if (current === undefined) {
