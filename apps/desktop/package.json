@@ -1,6 +1,6 @@
 {
   "name": "@getdomovoi/desktop",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "description": "Domovoi Desktop, the client that owns the local execution daemon.",
   "productName": "Domovoi",
