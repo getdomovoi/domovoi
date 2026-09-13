@@ -58,12 +58,27 @@ describe("doctor", () => {
     expect(report.failed).toBe(true)
   })
 
-  it("reports the protocol as a fact and negotiation as unknown until S1.2", async () => {
-    const report = await diagnose({ endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: "9.9.9", call: daemon({}) })
-    const probe = report.probes.find((entry) => entry.name === "protocol")!
-    expect(probe.detail).toBe(`client 9.9.9, daemon ${protocolVersion}; negotiation: unknown until version negotiation lands`)
-    expect(probe.ok).toBe(false)
-    expect(report.failed).toBe(true)
+  it("reports the negotiated protocol outcome from the shared compatibility rule", async () => {
+    const [major, minor, patch] = protocolVersion.split(".").map(Number) as [number, number, number]
+    const samePatch = `${major}.${minor}.${patch + 1}`
+    const compatible = await diagnose({ endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: samePatch, call: daemon({}) })
+    const same = compatible.probes.find((entry) => entry.name === "protocol")!
+    expect(same.detail).toBe(`client ${samePatch}, daemon ${protocolVersion}; compatible: major and minor match, patch may differ`)
+    expect(same.ok).toBe(true)
+
+    const behind = await diagnose({ endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: `${major}.${minor + 1}.0`, call: daemon({}) })
+    const olderDaemon = behind.probes.find((entry) => entry.name === "protocol")!
+    expect(olderDaemon.detail).toBe(`client ${major}.${minor + 1}.0, daemon ${protocolVersion}; daemon behind: update the daemon`)
+    expect(olderDaemon.ok).toBe(false)
+    expect(behind.failed).toBe(true)
+
+    // Step down whichever component can go down; 1.0.0 must not produce 1.-1.0.
+    if (major === 0 && minor === 0) throw new Error("This test needs a protocol version above 0.0")
+    const older = minor > 0 ? `${major}.${minor - 1}.0` : `${major - 1}.0.0`
+    const ahead = await diagnose({ endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: older, call: daemon({}) })
+    const newerDaemon = ahead.probes.find((entry) => entry.name === "protocol")!
+    expect(newerDaemon.detail).toBe(`client ${older}, daemon ${protocolVersion}; daemon ahead: update this CLI`)
+    expect(newerDaemon.ok).toBe(false)
   })
 
   it("lists the daemon itself as this connection, not as a route to choose", async () => {

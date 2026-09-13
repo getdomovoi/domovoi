@@ -132,7 +132,7 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     const doctor = await runCli(["doctor", "--daemon", url, "--credential-file", credentialFile])
     expect(doctor.stdout).toMatch(/^ok {3}daemon {6}\S/m)
     expect(doctor.stdout).toMatch(/^ok {3}credential {2}accepted as device device-[0-9a-f]{32} \(cli\)$/m)
-    expect(doctor.stdout).toMatch(/^ok {3}protocol {4}client \d+\.\d+\.\d+, daemon \d+\.\d+\.\d+; negotiation: unknown/m)
+    expect(doctor.stdout).toMatch(/^ok {3}protocol {4}client \d+\.\d+\.\d+, daemon \d+\.\d+\.\d+; compatible: major and minor match, patch may differ/m)
     expect(doctor.stdout).toMatch(/^doctor: no problems found$/m)
     expect(doctor.code).toBe(0)
 
