@@ -10,7 +10,9 @@ const internal = await import("./dist/server.js")
 
 // Published entry points cannot bypass production assembly. The internal path
 // remains as a package-artifact compatibility surface, not a construction API.
-assert.deepEqual(Object.keys(publicApi).sort(), ["acquireLocalDaemon", "createProductionDaemon", "verifyLocalFleetClientRoute"])
+assert.deepEqual(Object.keys(publicApi).sort(), [
+  "acquireLocalDaemon", "createProductionDaemon", "verifyLocalFleetClientRoute", "verifyRelayProfileSuccessor",
+])
 assert.equal("DomovoiDaemon" in internal, false)
 
 const publicTypes = readFileSync(new URL("./dist/public.d.ts", import.meta.url), "utf8")
