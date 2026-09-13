@@ -60,7 +60,10 @@ Two caveats:
 2. **Data is realistic but invented.** Machine names (`macbook-pro-m3`, `hetzner-cx42`,
    `Ubuntu-24.04 · WSL`, `studio-arch`, `win-desk`), session titles, commit SHAs, costs and
    timings are written to be plausible at the right length. Keep the *lengths* when you build —
-   the layouts were tuned against long session titles, not short ones.
+   the layouts were tuned against long session titles, not short ones. The machines are a
+   fictional user's fleet. Domovoi hosts no user machines, so a name like `hetzner-cx42` says
+   nothing about where Domovoi's own services run; that is undecided and lives with the relay
+   server, not here.
 
 ## Design tokens
 
@@ -452,6 +455,13 @@ Subscription-backed CLIs, each owning its own credentials: `claude-code`, `codex
 `cursor-agent`, `opencode`, `grok`, `kilo`. Direct API: OpenAI, Anthropic, OpenRouter, Google,
 any OpenAI-compatible endpoint — keys in the OS keychain on the machine that uses them, never
 sent to another client, never held by the relay.
+
+## Brand
+
+Brand identity — the mark, its state family, wordmark rules, voice and the copy constraints — is a
+**separate package**: `design_handoff_domovoi_brand`. It carries the shipping SVG path data, the
+28px reduction breakpoint, and the state-to-surface rules for the tray icon. This package's token
+tables remain the source of truth for colour; the brand package does not define its own.
 
 ## Assets
 
