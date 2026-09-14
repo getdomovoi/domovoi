@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionHistoryEntry, SessionHistoryPage } from "@getdomovoi/protocol"
+import { sessionHistoryCategorySchema } from "@getdomovoi/protocol"
 
 import {
   latestSessionHistoryRequest,
+  sessionHistoryEntryBody,
   SessionHistoryRequestController,
   sessionHistorySearchDebounceMs,
   historyWindowedAfterMerge,
@@ -30,16 +32,19 @@ const message = (id: string): SessionHistoryEntry => ({
 })
 
 describe("session history view model", () => {
-  it("exposes every semantic filter in roadmap order", () => {
-    expect(sessionHistoryCategories.map(({ value }) => value)).toEqual([
-      "messages",
-      "tools",
-      "approvals",
-      "handoffs",
-      "transfers",
-      "checkpoints",
-      "annotations",
-      "tests",
+  // The drawn filters lead and carry the design's words. Handoffs is not one of
+  // them and is not Transfers either: it holds provider handoffs, so it keeps
+  // its own word and sits at the tail with the other undrawn filters.
+  it("leads with the drawn filters and keeps Handoffs its own word", () => {
+    expect(sessionHistoryCategories).toEqual([
+      { value: "messages", label: "Turns" },
+      { value: "approvals", label: "Approvals" },
+      { value: "checkpoints", label: "Checkpoints" },
+      { value: "transfers", label: "Transfers" },
+      { value: "handoffs", label: "Handoffs" },
+      { value: "tools", label: "Tools" },
+      { value: "annotations", label: "Annotations" },
+      { value: "tests", label: "Tests" },
     ])
   })
 
@@ -62,6 +67,38 @@ describe("session history view model", () => {
     })
   })
 
+  it("renders a machine transfer as a transfer rather than an annotation", () => {
+    const entry: SessionHistoryEntry = {
+      id: "thread:transfer-note",
+      sourceId: "transfer-note",
+      sessionId: "session-one",
+      category: "transfers",
+      body: "Transferred to another machine.",
+      detail: "The source keeps a recovery checkpoint.",
+      createdAt: "2026-09-10T12:00:00.000Z",
+      transfer: {
+        transferId: `transfer-${"a".repeat(32)}`,
+        sourceMachineId: `machine-${"b".repeat(32)}`,
+        targetMachineId: `machine-${"c".repeat(32)}`,
+        checkpointCommit: "d".repeat(40),
+        outcome: "succeeded",
+        preflight: "passed",
+      },
+    }
+    expect(sessionHistoryEntryTitle(entry)).toBe("Transferred to another machine.")
+    expect(sessionHistoryEntryDetail(entry)).toBe("The source keeps a recovery checkpoint.")
+    delete entry.detail
+    entry.transfer.coverage = { included: [], excluded: [{ kind: "ignored-files", count: 3 }], warnings: [] }
+    const detail = sessionHistoryEntryDetail(entry)
+    expect(detail).toContain(entry.transfer.sourceMachineId)
+    expect(detail).toContain(entry.transfer.targetMachineId)
+    expect(detail).toContain(entry.transfer.checkpointCommit)
+    expect(detail).toContain("preflight passed")
+    expect(detail).toContain("3 ignored files held back")
+    delete entry.transfer.coverage
+    expect(sessionHistoryEntryDetail(entry)).not.toContain("0 ignored files")
+  })
+
   it("formats typed entries without discarding recorded detail", () => {
     const testEntry: SessionHistoryEntry = {
       id: "thread:test-one",
@@ -76,7 +113,10 @@ describe("session history view model", () => {
     }
 
     expect(sessionHistoryEntryTitle(testEntry)).toBe("pnpm test")
-    expect(sessionHistoryEntryDetail(testEntry)).toBe("one failed")
+    // The meta is the row's one line; the output it recorded is not discarded,
+    // it moves to the row's expanded state.
+    expect(sessionHistoryEntryDetail(testEntry)).toBe("command · failed")
+    expect(sessionHistoryEntryBody(testEntry)).toBe("one failed")
   })
 
   it("moves a bounded window backward through sequential older pages", () => {
@@ -227,5 +267,15 @@ describe("session history view model", () => {
     const signal = load.mock.calls[0]![0]
     controller.dispose()
     expect(signal.aborted).toBe(true)
+  })
+})
+
+// A filter list shorter than the enum is not a smaller list, it is a hole:
+// latestSessionHistoryRequest sends the selected categories, so a category with
+// no control never reaches the daemon and its rows never load.
+describe("session history filters against the wire", () => {
+  it("offers a filter for every category the daemon can stamp", () => {
+    expect(sessionHistoryCategories.map(({ value }) => value).toSorted())
+      .toEqual([...sessionHistoryCategorySchema.options].toSorted())
   })
 })

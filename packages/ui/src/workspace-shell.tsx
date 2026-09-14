@@ -222,6 +222,8 @@ import {
   selectRuntimeModel,
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
+import type { SessionHistoryFocus } from "./session-history"
+import { StatusDot } from "./status-dot"
 import {
   latestSessionHistoryRequest,
   historyWindowedAfterMerge,
@@ -229,7 +231,9 @@ import {
   resetSessionHistoryWindow,
   SessionHistoryRequestController,
   sessionHistoryCategories,
+  sessionHistoryEntryBody,
   sessionHistoryEntryDetail,
+  sessionHistoryEntryOutcome,
   sessionHistoryEntryTitle,
 } from "./session-history"
 import { SessionEvidencePanel } from "./session-evidence"
@@ -1237,6 +1241,50 @@ export function CheckpointRestore({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <CheckpointRestoreAction checkpointId={checkpointId} disabled={disabled} onRestore={onRestore} />
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+// The existing fork starts a fresh provider thread and gives the candidate a
+// checkpoint and a system note; it does not replay the source conversation
+// (apps/daemon/src/server.ts:6272 and :6324). The label alone promises more
+// than that, so the confirm ships both halves the way a provider handoff does:
+// what travels, and what does not.
+export function CheckpointFork({
+  checkpointId,
+  label,
+  disabled,
+  onFork,
+}: {
+  checkpointId: string
+  label: string
+  disabled: boolean
+  onFork: (checkpointId: string) => void
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-micro">
+          Fork from here
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Fork from this checkpoint?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Domovoi starts a new session in a separate worktree at {label}, and records
+            the source checkpoint in its history. The conversation is not replayed:
+            the new session begins with a note naming where it came from, not with
+            this thread behind it.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction disabled={disabled} onClick={() => onFork(checkpointId)}>
+            Fork session
+          </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -2351,12 +2399,23 @@ export function RuntimeControls({
 export function HistoryPanel({
   sessionId,
   connected,
+  focus,
+  onForkCheckpoint,
+  worktreeName,
   onLoad,
   onRestoreCheckpoint,
   restoreBlocked = false,
 }: {
   sessionId: string | null
   connected: boolean
+  focus?: SessionHistoryFocus | undefined
+  // A row gets Fork from here when it names a point you can resume from. Only a
+  // checkpoint does: sessionForkParamsSchema takes a checkpointId, and the
+  // daemon makes checkpoints at events rather than per turn.
+  onForkCheckpoint?: ((checkpointId: string) => void) | undefined
+  // The worktree a checkpoint belongs to is on the session, not on the entry,
+  // and history is requested per session, so the shell hands it down.
+  worktreeName?: string | undefined
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
   restoreBlocked?: boolean
   onLoad: (
@@ -2415,6 +2474,16 @@ export function HistoryPanel({
       onSettled: () => setLoading(false),
     })
   }, [connected, filterKey, historyRefresh, onLoad, sessionId])
+
+  // Checkpoints is a view of this pane rather than a pane of its own, so the
+  // affordance that names it arrives here as a focus request and narrows the
+  // filters to the one category it names.
+  const appliedFocusRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!focus || appliedFocusRef.current === focus.requestId) return
+    appliedFocusRef.current = focus.requestId
+    setCategories([focus.category])
+  }, [focus])
 
   useEffect(() => () => requestControllerRef.current?.dispose(), [])
 
@@ -2476,6 +2545,21 @@ export function HistoryPanel({
           />
         </div>
         <div className="flex flex-wrap gap-1">
+          <Button
+            type="button"
+            size="xs"
+            variant={categories.length === sessionHistoryCategories.length ? "secondary" : "ghost"}
+            aria-pressed={categories.length === sessionHistoryCategories.length}
+            onClick={() => {
+              // Already the state: nothing to reload, and clearing the page
+              // with the filter unchanged would leave it empty for good.
+              if (categories.length === sessionHistoryCategories.length) return
+              setPage(undefined)
+              setCategories(sessionHistoryCategories.map(({ value }) => value))
+            }}
+          >
+            Everything
+          </Button>
           {sessionHistoryCategories.map(({ value, label }) => (
             <Button
               key={value}
@@ -2491,36 +2575,83 @@ export function HistoryPanel({
         </div>
       </div>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col p-3">
-          {page?.items.map((entry) => {
-            const detail = sessionHistoryEntryDetail(entry)
+        {/* The viewport lays its content out as a table that grows to the
+            widest child, so a one-line title with nowrap would widen the whole
+            list past the viewport instead of ellipsing. w-0 with min-w-full
+            contributes no intrinsic width to that table and still fills it,
+            so the rows are bound to the viewport and truncate has an edge. */}
+        <div data-testid="history-content" className="flex w-0 min-w-full flex-col p-3">
+          {page?.items.length ? (
+          <div data-testid="history-rows" className="rounded-xl border">
+          {page.items.map((entry) => {
+            const detail = sessionHistoryEntryDetail(entry, { worktreeName })
+            const body = sessionHistoryEntryBody(entry)
+            const outcome = sessionHistoryEntryOutcome(entry)
             return (
-              <div key={entry.id} className="flex gap-3 border-b py-3 last:border-b-0">
-                <span className="mt-1 size-2 shrink-0 rounded-full bg-primary" />
+              // Dot, time, content. The time holds a column of its own so the
+              // titles line up down the list instead of starting wherever the
+              // time before them happened to end.
+              <div key={entry.id} data-testid="history-row" className="flex items-start gap-2 border-b px-3 py-3 last:border-b-0">
+                <StatusDot meaning={outcome.meaning} label={outcome.label} size="inline" labelHidden className="mt-1.5" />
+                <span data-testid="history-time" className="mt-0.5 w-[42px] shrink-0 font-machine text-mono-xs text-faint">{entry.createdAt.slice(11, 16)}</span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="min-w-0 flex-1 break-words text-[12px] font-medium">{sessionHistoryEntryTitle(entry)}</span>
-                    <span className="font-machine text-mono-xs text-faint">{entry.createdAt.slice(11, 16)}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{sessionHistoryEntryTitle(entry)}</span>
+                    <Badge variant="outline" className="shrink-0 font-machine text-mono-xs">{entry.category}</Badge>
                   </div>
-                  <Badge variant="outline" className="mt-1 font-machine text-mono-xs">{entry.category}</Badge>
-                  {detail ? <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-machine text-[10px] leading-relaxed text-muted-foreground">{detail}</pre> : null}
-                  {onRestoreCheckpoint && entry.category === "checkpoints" && entry.commit ? (
-                    <div className="mt-2">
-                      <CheckpointRestore
-                        // sourceId, not id: the daemon builds history ids as
-                        // thread:<checkpoint-id> and checkpoint.restore searches
-                        // by the checkpoint id it kept in sourceId.
-                        checkpointId={entry.sourceId}
-                        label={entry.label}
-                        disabled={restoreBlocked}
-                        onRestore={onRestoreCheckpoint}
-                      />
+                  {/* Wraps rather than truncates: the scroll viewport's content
+                      box grows to its widest child, so a truncated line widens
+                      the whole list and the viewport hides the rest. */}
+                  {detail ? <p data-testid="history-meta" className="break-words font-machine text-mono-xs text-muted-foreground">{detail}</p> : null}
+                  {body ? (
+                    // The row says what happened in one line. What it produced
+                    // is still here, it just stops being the row.
+                    <details className="mt-1">
+                      <summary className="cursor-pointer font-machine text-mono-xs text-faint">Output</summary>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-machine text-[10px] leading-relaxed text-muted-foreground">{body}</pre>
+                    </details>
+                  ) : null}
+                  {/* Restore and fork are two decisions about one row, not one
+                      control with two buttons, so each asks for itself. What
+                      they share is the commit: a checkpoint that names no state
+                      offers neither, because there is nothing to go back to and
+                      nothing to branch from. */}
+                  {entry.category === "checkpoints" && entry.commit && (onRestoreCheckpoint || onForkCheckpoint) ? (
+                    <div className="mt-2 flex gap-1">
+                      {onRestoreCheckpoint ? (
+                        <CheckpointRestore
+                          // sourceId, not id: the daemon builds history ids as
+                          // thread:<checkpoint-id> and checkpoint.restore searches
+                          // by the checkpoint id it kept in sourceId.
+                          checkpointId={entry.sourceId}
+                          label={entry.label}
+                          disabled={restoreBlocked}
+                          onRestore={onRestoreCheckpoint}
+                        />
+                      ) : null}
+                      {/* The session-start checkpoint is the worktree's base
+                          commit, so forking from it produces a session identical
+                          to starting a new one. The design draws it absent
+                          rather than disabled, because a disabled control still
+                          says the decision exists. A legacy row carries no
+                          reason and is not guessed into this branch: it keeps
+                          the fork it has always had. */}
+                      {onForkCheckpoint && entry.reason !== "session-start" ? (
+                        <CheckpointFork
+                          checkpointId={entry.sourceId}
+                          label={sessionHistoryEntryTitle(entry)}
+                          disabled={restoreBlocked}
+                          onFork={onForkCheckpoint}
+                        />
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
               </div>
             )
           })}
+          </div>
+          ) : null}
           {!loading && !error && page?.items.length === 0 ? (
             <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia><EmptyTitle>No matching history</EmptyTitle><EmptyDescription>Change filters or search terms.</EmptyDescription></EmptyHeader></Empty>
           ) : null}
@@ -2553,6 +2684,9 @@ export function ArtifactDock({
   onCreateAnnotation,
   onLoadSessionHistory,
   onRestoreCheckpoint,
+  historyFocus,
+  worktreeName,
+  onForkCheckpoint,
   restoreBusy = false,
   onLoadSessionEvidence,
   onRevertSessionFile,
@@ -2609,6 +2743,9 @@ export function ArtifactDock({
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
   onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
+  historyFocus?: SessionHistoryFocus | undefined
+  worktreeName?: string | undefined
+  onForkCheckpoint?: ((checkpointId: string) => void) | undefined
   restoreBusy?: boolean
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
@@ -3112,6 +3249,9 @@ export function ArtifactDock({
             connected={connected}
             onLoad={onLoadSessionHistory}
             onRestoreCheckpoint={onRestoreCheckpoint}
+            focus={historyFocus}
+            worktreeName={worktreeName}
+            onForkCheckpoint={onForkCheckpoint}
             // An archived session and a running turn hold this shut, and so
             // does a restore already in flight. The in-flight half has to come
             // from the shell: the dock cannot see the thread's own pending
@@ -3605,6 +3745,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
   const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
+  const [historyFocus, setHistoryFocus] = useState<SessionHistoryFocus>()
   // Held above the pin and unpin swaps, each of which removes the control that
   // was focused. The sheet cannot capture this for itself.
   const dockOpenerRef = useRef<Element | null>(null)
@@ -3612,6 +3753,29 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     dockOpenerRef.current = document.activeElement
     setDockTab(next)
     setDockCollapsed(false)
+  }
+  // Checkpoints is a view of History rather than a pane beside it. The request
+  // id rises on every call because a second press carries the same category as
+  // the first, and the pane has no other way to tell them apart.
+  // The history row forks at the session's current runtime. Choosing a
+  // different provider or model is the thread dialog's job, not a row's.
+  const forkFromCheckpoint = (checkpointId: string) => {
+    const active = snapshot ? activeSession(snapshot) : undefined
+    if (!active) return
+    void forkSession({
+      sessionId: active.id,
+      checkpointId,
+      runtime: active.runtime,
+      requestId: `fork-${globalThis.crypto.randomUUID()}`,
+    })
+  }
+  const openCheckpoints = () => {
+    setSurface("workspace")
+    openDockTab("history")
+    setHistoryFocus((current) => ({
+      category: "checkpoints",
+      requestId: (current?.requestId ?? 0) + 1,
+    }))
   }
   const activeWorkspacePath = snapshot?.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
@@ -3899,6 +4063,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     skills,
     activateSession: openSessionInWorkspace,
     selectMachine: switchMachine,
+    openCheckpoints,
     openSkill: (skillId) => {
       setRequestedSkillId(skillId)
       setSurface("skills")
@@ -3930,7 +4095,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
   }
   // One dock, rendered either as the pinned panel or inside the floating sheet.
-  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} historyFocus={historyFocus} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
