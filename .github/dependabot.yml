@@ -19,21 +19,25 @@ updates:
       # bundles declarations without a TypeScript 6 peer.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
-      # Expo SDK 57 pins these to the versions its own installer resolves. A
-      # bare bump breaks jest-expo's preset (react-native 0.87.1 dropped
-      # @react-native/assets-registry, measured 2026-09-14). They move together
-      # in an Expo SDK upgrade through `npx expo install --fix`, not one at a
-      # time here.
-      - dependency-name: expo
-      - dependency-name: "expo-*"
-      - dependency-name: jest-expo
-      - dependency-name: react-native
-      - dependency-name: "@react-native/*"
-      - dependency-name: react-native-reanimated
-      - dependency-name: react-native-safe-area-context
-      - dependency-name: react-native-svg
-      - dependency-name: react-native-worklets
     groups:
+      # Expo SDK 57 resolves these versions itself, and a bare bump breaks
+      # jest-expo's preset (react-native 0.87.1 dropped
+      # @react-native/assets-registry, measured 2026-09-14). They travel as
+      # one PR so `pnpm --filter @getdomovoi/mobile deps:check` can refuse
+      # the set together; security updates stay eligible, which an ignore
+      # rule would have suppressed.
+      expo-sdk:
+        patterns:
+          - expo
+          - "expo-*"
+          - jest-expo
+          - jest
+          - react-native
+          - "@react-native/*"
+          - react-native-reanimated
+          - react-native-safe-area-context
+          - react-native-svg
+          - react-native-worklets
       production-minor-and-patch:
         dependency-type: production
         update-types:
