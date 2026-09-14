@@ -90,3 +90,23 @@ it("keeps saying why Restart is inert when the process has exited offline", asyn
   expect(screen.getByRole("button", { name: /Restart/ }).hasAttribute("disabled")).toBe(true)
   expect(screen.getByText(/Reconnect to the execution machine to restart/)).toBeTruthy()
 })
+
+// Restart is also the control after a failed create, and the reason has to say
+// so there too; the copy follows the control, not the closed flag.
+it("names restart when create failed and the connection dropped", async () => {
+  const failing = { ...controls(), create: vi.fn(async () => { throw new Error("no pty") }) }
+  const view = (connected: boolean) => (
+    <TerminalPane
+      connected={connected}
+      controls={failing as unknown as Parameters<typeof TerminalPane>[0]["controls"]}
+      machineName="mac-mini-m4"
+      sessionId="session-billing"
+    />
+  )
+  const { rerender } = render(view(true))
+  await act(async () => { await Promise.resolve() })
+  rerender(view(false))
+
+  expect(screen.getByRole("button", { name: /Restart/ }).hasAttribute("disabled")).toBe(true)
+  expect(screen.getByText(/Reconnect to the execution machine to restart/)).toBeTruthy()
+})

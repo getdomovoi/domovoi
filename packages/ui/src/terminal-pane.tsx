@@ -171,6 +171,9 @@ export function TerminalPane({
 
   const writable = metadata?.owner.clientId === controls.clientId
   const terminalStatus = closed ? "closed" : connected ? metadata ? "connected" : "connecting" : "disconnected"
+  // One selection drives the primary button and the reason shown while it is
+  // inert, so the reason names the control that is actually there.
+  const primaryAction = metadata && !writable && !closed ? "take-over" : closed || error ? "restart" : "interrupt"
   const sendInterrupt = () => {
     if (!terminalId || !writable) return
     void controls.write(terminalId, "\x03").catch((cause: unknown) => {
@@ -232,11 +235,11 @@ export function TerminalPane({
           pty · {machineName} · {metadata?.shell ?? (connected ? "connecting" : "shell unknown")} · {metadata?.cwd ?? "session worktree"}
         </span>
         <div className="ml-auto flex items-center gap-1">
-          {metadata && !writable && !closed ? (
+          {primaryAction === "take-over" ? (
             <Button variant="outline" size="xs" disabled={!connected} onClick={claim}>
               Take over
             </Button>
-          ) : closed || error ? (
+          ) : primaryAction === "restart" ? (
             <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>
               <TerminalSquareIcon data-icon="inline-start" />Restart
             </Button>
@@ -260,9 +263,11 @@ export function TerminalPane({
           rather than unavailable, so the reason is on screen beside them. */}
       {!connected ? (
         <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
-          {closed
+          {primaryAction === "restart"
             ? "Reconnect to the execution machine to restart this terminal."
-            : "Reconnect to the execution machine to take over, interrupt or close this terminal."}
+            : primaryAction === "take-over"
+              ? "Reconnect to the execution machine to take over or close this terminal."
+              : "Reconnect to the execution machine to interrupt or close this terminal."}
         </p>
       ) : null}
       {error ? (
