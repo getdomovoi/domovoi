@@ -12,6 +12,10 @@ Claude Design handoffs.
     did; `[x]` alone is checkable only by trusting the prose beside it. New and revised ticks
     cite; existing ticks are dated with
     `git log -L '/<tick text>/,+1:ROADMAP.md' --oneline --no-patch` when one is questioned.
+    A tick ships in the pull request that lands the commit it cites, so the citation resolves on
+    any clone. Citations are durable only because this repository merges rather than squashes: a
+    squash policy would leave every cited sha on no branch after merge, while the checker kept
+    passing on feature branches that still held the original commit.
 - `[ ]` not complete
 - `P0` required before untrusted or remote use
 - `P1` required for the first useful public alpha

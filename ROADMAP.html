@@ -189,7 +189,7 @@ td { color: var(--ink2); }
 <ul>
 <li><code>[x]</code> implemented and verified in the repository, citing the commits that verified it
 <ul>
-<li>A tick is a claim with a date. <code>[x] … (1b683d6)</code> is checkable by reading what that commit did; <code>[x]</code> alone is checkable only by trusting the prose beside it. New and revised ticks cite; existing ticks are dated with <code>git log -L '/&lt;tick text&gt;/,+1:ROADMAP.md' --oneline --no-patch</code> when one is questioned.
+<li>A tick is a claim with a date. <code>[x] … (1b683d6)</code> is checkable by reading what that commit did; <code>[x]</code> alone is checkable only by trusting the prose beside it. New and revised ticks cite; existing ticks are dated with <code>git log -L '/&lt;tick text&gt;/,+1:ROADMAP.md' --oneline --no-patch</code> when one is questioned. A tick ships in the pull request that lands the commit it cites, so the citation resolves on any clone. Citations are durable only because this repository merges rather than squashes: a squash policy would leave every cited sha on no branch after merge, while the checker kept passing on feature branches that still held the original commit.
 </li>
 </ul>
 </li>
