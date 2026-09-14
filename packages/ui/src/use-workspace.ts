@@ -170,12 +170,8 @@ export function useWorkspace(
       clientId: clientIdRef.current,
     })
     clientRef.current = client
-    // The hello's snapshot arrives before the connected event, and the
-    // reconcile below needs the machine it names.
-    let helloSnapshot: WorkspaceSnapshot | undefined
     const onSnapshot = (event: Event) => {
-      helloSnapshot = (event as CustomEvent<WorkspaceSnapshot>).detail
-      if (active) updateSnapshotFrom(client, helloSnapshot)
+      if (active) updateSnapshotFrom(client, (event as CustomEvent<WorkspaceSnapshot>).detail)
     }
     const onDelta = (event: Event) => {
       if (active) updateDeltaFrom(client, (event as CustomEvent<WorkspaceDelta>).detail)
@@ -197,8 +193,9 @@ export function useWorkspace(
       if (active) setConnected(false)
     }
     // The token that opened this connection is what pairing proved, and only
-    // the answered hello proves it. This is where the daemon's relay identity
-    // is pinned or a distrusted pin is recovered; it never decides the
+    // the answered hello proves it, so the machine pinned is the one the hello
+    // named, never one a later snapshot names. This is where the daemon's relay
+    // identity is pinned or a distrusted pin is recovered; it never decides the
     // connection, so a failure is a warning, not a disconnect.
     const reconcilePin = (snapshot: WorkspaceSnapshot) => {
       if (!relayPinStorage) return
@@ -210,11 +207,12 @@ export function useWorkspace(
         console.warn("Relay pin not reconciled:", cause instanceof Error ? cause.message : String(cause))
       })
     }
-    const onConnected = () => {
+    const onConnected = (event: Event) => {
       if (!active) return
       setConnected(true)
       setEndpointUrl(client.url)
-      if (helloSnapshot) reconcilePin(helloSnapshot)
+      const hello = (event as CustomEvent<WorkspaceSnapshot | undefined>).detail
+      if (hello) reconcilePin(hello)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
       void client.listFleet().then(

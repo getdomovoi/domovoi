@@ -7,9 +7,16 @@ import { DaemonRpcError } from "./client.js"
 // browser supplies localStorage; the desktop supplies a main-process file over
 // its bridge; tests supply a Map. Nothing here is secret: a pin is the daemon's
 // public relay identity plus whether this client still trusts it.
+//
+// The compare belongs to the storage, not to this package: the storage is the
+// only place that can see every writer (every tab, every renderer), so it is
+// the only place a compare-and-swap means anything. read returns undefined
+// only when nothing is saved; a storage that cannot say must throw, because
+// "unknown" read as "absent" would let a fresh enrolment replace a pin that is
+// waiting for recovery.
 export type RelayPinStorage = {
   read(key: string): Promise<string | undefined>
-  write(key: string, value: string): Promise<void>
+  compareAndSwap(key: string, expected: string | undefined, replacement: string): Promise<boolean>
 }
 
 // One key per machine. A pin is a claim about one daemon's identity, so a
@@ -30,10 +37,15 @@ function canonical(pin: RelayClientPin | undefined): string | undefined {
   return pin === undefined ? undefined : JSON.stringify(relayClientPinSchema.parse(pin))
 }
 
-export async function readRelayPin(storage: RelayPinStorage, machineId: string): Promise<RelayClientPin | undefined> {
-  const pin = parsePin(await storage.read(relayPinKey(machineId)))
+async function readRaw(storage: RelayPinStorage, machineId: string): Promise<{ raw: string | undefined; pin: RelayClientPin | undefined }> {
+  const raw = await storage.read(relayPinKey(machineId))
+  const pin = parsePin(raw)
   if (pin !== undefined && pin.identity.machineId !== machineId) throw new Error("The saved relay pin belongs to another machine. Pair again to replace it.")
-  return pin
+  return { raw, pin }
+}
+
+export async function readRelayPin(storage: RelayPinStorage, machineId: string): Promise<RelayClientPin | undefined> {
+  return (await readRaw(storage, machineId)).pin
 }
 
 export type ClientRelayPinStore = Omit<RelayPinStore, "read" | "compareAndSwap"> & {
@@ -41,24 +53,9 @@ export type ClientRelayPinStore = Omit<RelayPinStore, "read" | "compareAndSwap">
   compareAndSwap(expected: RelayClientPin | undefined, replacement: RelayClientPin): Promise<boolean>
 }
 
-// One write queue per backing storage and key, shared by every handle in the
-// process. Keyed on the storage object itself, so two createRelayPinStore
-// calls over the same storage cannot each pass the same compare.
-const queues = new WeakMap<RelayPinStorage, Map<string, Promise<unknown>>>()
-function exclusive<T>(storage: RelayPinStorage, key: string, operation: () => Promise<T>): Promise<T> {
-  let byKey = queues.get(storage)
-  if (!byKey) { byKey = new Map(); queues.set(storage, byKey) }
-  const tail = byKey.get(key) ?? Promise.resolve()
-  const next = tail.then(operation, operation)
-  byKey.set(key, next.catch(() => undefined))
-  return next
-}
-
-// Key-value storage has no compare-and-swap, so the compare is done here under
-// the shared queue and the write is confirmed by reading it back. That covers
-// one process. Two windows of the same origin, or two desktop renderers, are
-// two processes; the browser's storage event and the desktop's single main
-// process are what keep those honest, not this queue.
+// The pin compare is semantic (two encodings of one pin are equal); the
+// storage compare is on the bytes this read returned. A swap that passes the
+// first and fails the second lost a race to another writer, and says so.
 export function createRelayPinStore(storage: RelayPinStorage, machineId: string): ClientRelayPinStore {
   const key = relayPinKey(machineId)
   return {
@@ -66,42 +63,66 @@ export function createRelayPinStore(storage: RelayPinStorage, machineId: string)
     async compareAndSwap(expected, replacement) {
       const parsed = relayClientPinSchema.parse(replacement)
       if (parsed.identity.machineId !== machineId) throw new Error("The relay pin belongs to another machine; it cannot be saved here.")
-      const next = canonical(parsed)!
-      return exclusive(storage, key, async () => {
-        if (canonical(await readRelayPin(storage, machineId)) !== canonical(expected)) return false
-        await storage.write(key, next)
-        // The write already ran. Say the truth: it is unconfirmed, not absent.
-        if (await storage.read(key) !== next) throw new Error("The relay pin write could not be confirmed; read the saved pin again before trusting or retrying.")
-        return true
-      })
+      const { raw, pin } = await readRaw(storage, machineId)
+      if (canonical(pin) !== canonical(expected)) return false
+      return storage.compareAndSwap(key, raw, canonical(parsed)!)
     },
   }
 }
 
 // localStorage is the browser's one durable, same-origin place for this. It
 // can be absent (a worker, an opaque origin) or refuse (a private window that
-// throws on access), and both read as "no saved pin": the client then enrols
-// again on the next hello, which is the state a fresh install is in anyway. A
-// write into an absent storage is refused rather than dropped silently.
-export function localStorageRelayPinStorage(storage: Storage | undefined = globalThis.localStorage): RelayPinStorage {
+// throws on access); both are reported as failures, never as "no saved pin".
+// Discovery is deferred to the first call, so a refusing getter cannot throw
+// out of a render. The compare and the write run under a Web Lock named by
+// the key, which every tab of this origin shares; where Web Locks are missing
+// a per-process lock covers the tabs this process has, which is all of them
+// in the environments that lack it (tests, workers).
+export function localStorageRelayPinStorage(storage?: Storage): RelayPinStorage {
+  const resolve = (): Storage => {
+    let found: Storage | undefined
+    try { found = storage ?? globalThis.localStorage } catch { found = undefined }
+    if (!found) throw new Error("The relay pin could not be read or saved: browser storage is unavailable.")
+    return found
+  }
   return {
     async read(key) {
-      try { return storage?.getItem(key) ?? undefined } catch { return undefined }
+      return resolve().getItem(key) ?? undefined
     },
-    async write(key, value) {
-      if (!storage) throw new Error("The relay pin could not be saved: browser storage is unavailable.")
-      storage.setItem(key, value)
+    async compareAndSwap(key, expected, replacement) {
+      const found = resolve()
+      return withLock(key, async () => {
+        if ((found.getItem(key) ?? undefined) !== expected) return false
+        found.setItem(key, replacement)
+        return true
+      })
     },
   }
 }
 
+const localLocks = new Map<string, Promise<unknown>>()
+function withLock<T>(name: string, operation: () => Promise<T>): Promise<T> {
+  const locks = (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks
+  if (locks) return locks.request(name, operation) as Promise<T>
+  const tail = localLocks.get(name) ?? Promise.resolve()
+  const next = tail.then(operation, operation)
+  localLocks.set(name, next.catch(() => undefined))
+  return next
+}
+
 // The desktop's storage is the main process's file, reached over the bridge.
-// A bridge without the two calls (an older desktop) means no pin is kept.
-export function bridgeRelayPinStorage(bridge: { readRelayPin?(key: string): Promise<string | undefined>; writeRelayPin?(key: string, value: string): Promise<void> } | undefined): RelayPinStorage | undefined {
-  if (!bridge?.readRelayPin || !bridge.writeRelayPin) return undefined
+// The main process does the compare, so two renderer windows cannot both pass
+// it. A bridge without the two calls (an older desktop) means no pin is kept.
+export type RelayPinBridge = {
+  readRelayPin?(key: string): Promise<string | undefined>
+  swapRelayPin?(key: string, expected: string | undefined, replacement: string): Promise<boolean>
+}
+
+export function bridgeRelayPinStorage(bridge: RelayPinBridge | undefined): RelayPinStorage | undefined {
+  if (!bridge?.readRelayPin || !bridge.swapRelayPin) return undefined
   const read = bridge.readRelayPin.bind(bridge)
-  const write = bridge.writeRelayPin.bind(bridge)
-  return { read: (key) => read(key), write: (key, value) => write(key, value) }
+  const swap = bridge.swapRelayPin.bind(bridge)
+  return { read: (key) => read(key), compareAndSwap: (key, expected, replacement) => swap(key, expected, replacement) }
 }
 
 export type RelayPinCall = (method: string, params: Record<string, unknown>) => Promise<unknown>

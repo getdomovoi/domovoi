@@ -38,7 +38,7 @@ export type DesktopWindowBridge = {
   // One machine's relay pin, kept by the main process in a private file. The
   // renderer sees keys and values, never the path.
   readRelayPin?(key: string): Promise<string | undefined>
-  writeRelayPin?(key: string, value: string): Promise<void>
+  swapRelayPin?(key: string, expected: string | undefined, replacement: string): Promise<boolean>
   platform: "darwin" | "linux" | "win32"
   getRpcEndpoint(): Promise<{ url: string; token: string }>
   captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{

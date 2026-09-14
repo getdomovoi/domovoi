@@ -15,16 +15,23 @@ import {
   type RelayPinStorage,
 } from "./relay-pin"
 
-function memoryStorage(options: { corruptWrites?: boolean } = {}): RelayPinStorage & { writes: number } {
+function memoryStorage(): RelayPinStorage & { items: Map<string, string> } {
   const items = new Map<string, string>()
   return {
-    writes: 0,
+    items,
     async read(key) { return items.get(key) },
-    async write(key, value) {
-      this.writes += 1
-      items.set(key, options.corruptWrites ? `${value} ` : value)
+    async compareAndSwap(key, expected, replacement) {
+      if (items.get(key) !== expected) return false
+      items.set(key, replacement)
+      return true
     },
   }
+}
+
+function gate() {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => { release = resolve })
+  return { promise, release }
 }
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -100,15 +107,48 @@ describe("browser and desktop relay pin store", () => {
 
   it("refuses a stored value that does not parse, for reads and for swaps over it", async () => {
     const storage = memoryStorage()
-    await storage.write(relayPinKey(machineId), "{not json")
+    storage.items.set(relayPinKey(machineId), "{not json")
     const store = createRelayPinStore(storage, machineId)
     await expect(store.read()).rejects.toThrow(/relay pin/)
     await expect(store.compareAndSwap(undefined, trusted)).rejects.toThrow(/relay pin/)
   })
 
-  it("reports an unconfirmed write when the read-back does not match, and says to read again", async () => {
-    const store = createRelayPinStore(memoryStorage({ corruptWrites: true }), machineId)
-    await expect(store.compareAndSwap(undefined, trusted)).rejects.toThrow(/could not be confirmed.*read the saved pin again/)
+  // The compare that decides is the storage's, on the bytes the swap's own
+  // read returned. A swap whose read is stale by the time it reaches the
+  // storage loses, whichever handle it came through.
+  it("lets the storage refuse a swap whose read went stale under another handle", async () => {
+    const storage = memoryStorage()
+    storage.items.set(relayPinKey(machineId), JSON.stringify(trusted))
+    const captured = gate(), resume = gate()
+    let first = true
+    const slow: RelayPinStorage = {
+      ...storage,
+      async read(key) {
+        const raw = await storage.read(key)
+        if (first) { first = false; captured.release(); await resume.promise }
+        return raw
+      },
+    }
+    const stale = createRelayPinStore(slow, machineId).compareAndSwap(trusted, { ...trusted, state: "recovery-required" })
+    await captured.promise
+    const successor = { ...trusted, identity: { ...trusted.identity, generation: 2, channel: { ...trusted.identity.channel, responderPublicKey: channelKey(11) } } }
+    const fresh = createRelayPinStore(storage, machineId)
+    expect(await fresh.compareAndSwap(trusted, successor)).toBe(true)
+    resume.release()
+    expect(await stale).toBe(false)
+    expect(await fresh.read()).toEqual(successor)
+  })
+
+  it("refuses to enrol over a pin its storage could not read", async () => {
+    const storage = memoryStorage()
+    const recovery = { ...trusted, state: "recovery-required" as const }
+    storage.items.set(relayPinKey(machineId), JSON.stringify(recovery))
+    let failures = 1
+    const flaky: RelayPinStorage = { ...storage, async read(key) { if (failures-- > 0) throw new Error("read denied"); return storage.read(key) } }
+    const foreign = { ...trusted.identity, identityPublicKey: publicKey("ed25519", new Uint8Array(32).fill(31)), channel: { ...trusted.identity.channel, responderPublicKey: channelKey(29) } }
+    const store = createRelayPinStore(flaky, machineId)
+    await expect(reconcileRelayPin({ store, machineId, call: async () => ({ identity: foreign }) })).rejects.toThrow("read denied")
+    expect(JSON.parse(storage.items.get(relayPinKey(machineId))!)).toEqual(recovery)
   })
 
   it("runs the protocol's recovery and adoption against key-value storage", async () => {
@@ -186,8 +226,8 @@ describe("browser and desktop relay pin store", () => {
 // The browser's only durable home for a pin is localStorage. It is same-origin
 // storage, so any script on this origin could rewrite it; that is the browser's
 // trust boundary, and the pin only ever narrows what a relay may claim, it never
-// grants anything. A missing or refusing storage is an absent pin, never a
-// crash.
+// grants anything. A missing or refusing storage is a failure to report, never
+// an absent pin and never a crash out of a render.
 describe("localStorage storage", () => {
   function fakeLocalStorage(): Storage & { store: Map<string, string> } {
     const store = new Map<string, string>()
@@ -209,36 +249,75 @@ describe("localStorage storage", () => {
     expect(await store.read()).toEqual(trusted)
   })
 
-  it("treats an unavailable localStorage as no saved pin and refuses to write", async () => {
-    const storage = localStorageRelayPinStorage(undefined)
-    expect(await storage.read(relayPinKey(machineId))).toBeUndefined()
-    await expect(storage.write(relayPinKey(machineId), "x")).rejects.toThrow(/storage is unavailable/)
+  it("reports an unavailable localStorage on read and on swap, never as an absent pin", async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage")
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, get() { throw new DOMException("denied", "SecurityError") } })
+    try {
+      let storage!: RelayPinStorage
+      expect(() => { storage = localStorageRelayPinStorage() }).not.toThrow()
+      await expect(storage.read(relayPinKey(machineId))).rejects.toThrow(/storage is unavailable/)
+      await expect(storage.compareAndSwap(relayPinKey(machineId), undefined, "x")).rejects.toThrow(/storage is unavailable/)
+    } finally {
+      if (original) Object.defineProperty(globalThis, "localStorage", original)
+      else Reflect.deleteProperty(globalThis, "localStorage")
+    }
   })
 
-  it("treats a throwing localStorage as unavailable rather than crashing the read", async () => {
+  it("surfaces a localStorage that refuses the read rather than reporting no pin", async () => {
     const broken = fakeLocalStorage()
     broken.getItem = () => { throw new DOMException("denied", "SecurityError") }
     const storage = localStorageRelayPinStorage(broken)
-    expect(await storage.read(relayPinKey(machineId))).toBeUndefined()
+    await expect(storage.read(relayPinKey(machineId))).rejects.toThrow("denied")
+  })
+
+  it("compares the stored bytes under the swap, so a change since the read loses", async () => {
+    const backing = fakeLocalStorage()
+    const storage = localStorageRelayPinStorage(backing)
+    const key = relayPinKey(machineId)
+    expect(await storage.compareAndSwap(key, "stale", "next")).toBe(false)
+    expect(backing.store.has(key)).toBe(false)
+    expect(await storage.compareAndSwap(key, undefined, "first")).toBe(true)
+    expect(await storage.compareAndSwap(key, undefined, "second")).toBe(false)
+    expect(await storage.compareAndSwap(key, "first", "second")).toBe(true)
+    expect(backing.store.get(key)).toBe("second")
+  })
+
+  it("holds a Web Lock named by the key around the compare and the write when the browser has one", async () => {
+    const backing = fakeLocalStorage()
+    const held: string[] = []
+    const locks = { request: async (name: string, run: () => Promise<unknown>) => { held.push(name); return run() } }
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { locks } })
+    try {
+      expect(await localStorageRelayPinStorage(backing).compareAndSwap(relayPinKey(machineId), undefined, "x")).toBe(true)
+    } finally {
+      Reflect.deleteProperty(globalThis, "navigator")
+    }
+    expect(held).toEqual([relayPinKey(machineId)])
   })
 })
 
-// The desktop's storage is a pair of bridge calls to the main process. An older
-// desktop without them yields no storage, which the shell reads as "keep no
-// pin", the same as a browser with no localStorage.
+// The desktop's storage is a pair of bridge calls to the main process, which
+// does the compare. An older desktop without them yields no storage, which the
+// shell reads as "keep no pin".
 describe("bridge storage", () => {
   it("wraps a bridge that has both calls and refuses one that lacks either", async () => {
     const calls: string[] = []
     const items = new Map<string, string>()
     const bridge = {
       readRelayPin: async (key: string) => { calls.push(`read ${key}`); return items.get(key) },
-      writeRelayPin: async (key: string, value: string) => { calls.push(`write ${key}`); items.set(key, value) },
+      swapRelayPin: async (key: string, expected: string | undefined, replacement: string) => {
+        calls.push(`swap ${key} ${expected === undefined ? "absent" : "present"}`)
+        if (items.get(key) !== expected) return false
+        items.set(key, replacement)
+        return true
+      },
     }
     const storage = bridgeRelayPinStorage(bridge)!
     const store = createRelayPinStore(storage, machineId)
     expect(await store.compareAndSwap(undefined, trusted)).toBe(true)
     expect(await store.read()).toEqual(trusted)
-    expect(calls.filter((call) => call.startsWith("write"))).toHaveLength(1)
+    expect(await store.compareAndSwap(undefined, trusted)).toBe(false)
+    expect(calls.filter((call) => call.startsWith("swap"))).toEqual([`swap ${relayPinKey(machineId)} absent`])
     expect(bridgeRelayPinStorage({ readRelayPin: bridge.readRelayPin })).toBeUndefined()
     expect(bridgeRelayPinStorage(undefined)).toBeUndefined()
   })

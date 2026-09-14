@@ -1,14 +1,16 @@
 import { createPrivateKey, createPublicKey } from "node:crypto"
 
-import { act, cleanup, render } from "@testing-library/react"
+import { act, cleanup, render, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { createRelayPinStore, relayPinKey, type RelayPinStorage } from "./relay-pin"
+import { useWorkspace } from "./use-workspace"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
   fail,
   installFakeWebSocket,
+  notify,
   respond,
   sentRequests,
   workspaceSnapshot,
@@ -23,7 +25,28 @@ const settle = () => act(async () => { for (let index = 0; index < 8; index += 1
 
 function memoryStorage(): RelayPinStorage & { items: Map<string, string> } {
   const items = new Map<string, string>()
-  return { items, async read(key) { return items.get(key) }, async write(key, value) { items.set(key, value) } }
+  return {
+    items,
+    async read(key) { return items.get(key) },
+    async compareAndSwap(key, expected, replacement) {
+      if (items.get(key) !== expected) return false
+      items.set(key, replacement)
+      return true
+    },
+  }
+}
+
+const identityFor = (machineId: string) => ({
+  version: 1 as const, machineId, identityPublicKey: publicKey("ed25519", 3), generation: 1,
+  channel: { suite: "Noise_IK_25519_ChaChaPoly_SHA256" as const, responderPublicKey: publicKey("x25519", 7) },
+})
+
+function otherMachine(original: ReturnType<typeof workspaceSnapshot>) {
+  const otherId = `machine-${"b".repeat(32)}`
+  return workspaceSnapshot({
+    machine: { ...original.machine, id: otherId, name: "Other machine" },
+    ...(original.project ? { project: { ...original.project, machineId: otherId } } : {}),
+  })
 }
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -74,6 +97,49 @@ describe("relay pin on hello", () => {
     await act(async () => { fail(socket, "relay.recovery", { code: -32602, message: "Relay recovery is unavailable" }) })
     await settle()
     expect(storage.items.size).toBe(0)
+  })
+
+  // Admission replays the notifications it buffered before the identity
+  // receipt, and one of them may already name another machine. The pin goes
+  // to the machine the hello named and admission checked.
+  it("pins the machine the hello named, not one a replayed notification names", async () => {
+    const storage = memoryStorage()
+    const original = workspaceSnapshot()
+    const other = otherMachine(original)
+    const deviceId = `device-${"c".repeat(32)}`
+    renderHook(() => useWorkspace("ws://127.0.0.1:47831/rpc", "web", undefined, undefined, {
+      state: "client", admission: { machineId: original.machine.id, deviceId },
+      resolveEndpoint: async () => ({ url: "ws://127.0.0.1:47832/rpc", token: "x".repeat(43) }),
+    }, storage))
+    await settle()
+    const socket = harness.socket(0)
+    await act(async () => { completeHandshake(socket, original) })
+    await settle()
+    expect(sentRequests(socket, "device.current")).toHaveLength(1)
+    expect(sentRequests(socket, "relay.recovery")).toHaveLength(0)
+    await act(async () => {
+      notify(socket, "workspace.changed", other)
+      respond(socket, "device.current", { kind: "client", machineId: original.machine.id, deviceId, client: "web" })
+    })
+    await settle()
+    expect(sentRequests(socket, "relay.recovery").map((request) => request.params)).toEqual([{ machineId: original.machine.id }])
+    await act(async () => { respond(socket, "relay.recovery", { identity: identityFor(original.machine.id) }) })
+    await settle()
+    expect(await createRelayPinStore(storage, other.machine.id).read()).toBeUndefined()
+    expect((await createRelayPinStore(storage, original.machine.id).read())?.state).toBe("trusted")
+  })
+
+  it("ignores a snapshot that arrived before the hello was answered", async () => {
+    const storage = memoryStorage()
+    const original = workspaceSnapshot()
+    renderHook(() => useWorkspace("ws://127.0.0.1:47831/rpc", "web", undefined, undefined, undefined, storage))
+    const socket = harness.socket(0)
+    await act(async () => { socket.open(); notify(socket, "workspace.changed", otherMachine(original)) })
+    await settle()
+    expect(sentRequests(socket, "relay.recovery")).toHaveLength(0)
+    await act(async () => { respond(socket, "system.hello", original) })
+    await settle()
+    expect(sentRequests(socket, "relay.recovery").map((request) => request.params)).toEqual([{ machineId: original.machine.id }])
   })
 
   it("asks for nothing when the shell has no pin storage", async () => {
