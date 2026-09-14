@@ -56,7 +56,7 @@ jobs:
         timeout-minutes: 50
         run: pnpm release:gate
       - id: mode
-        uses: changesets/action/select-mode@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
 
   version:
     needs: gate
@@ -77,7 +77,7 @@ jobs:
         with:
           node-version: 22
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - uses: changesets/action/version@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+      - uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           script: pnpm release:version
           commit-message: "chore(release): version packages"
@@ -155,7 +155,7 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - id: publish
-        uses: changesets/action/publish@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         env:
           npm_config_provenance: "true"
           NODE_AUTH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.first_publish && secrets.NPM_BOOTSTRAP_TOKEN || '' }}
