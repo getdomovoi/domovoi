@@ -304,6 +304,23 @@ building them:
 - [ ] Mechanical now: widening the lint rule's files glob is what lands it. The config
       comment already says so.
 
+### CC9 · `--transition-control` is still a colour in the vendored manifest
+- [x] The live `tokens/motion.css` annotates all seven motion tokens `@kind other`. The
+      seventh, `--transition-control`, was written upstream on 2026-09-13; its value names
+      `border-color` and `color`, so unannotated it classified as a colour and the generated
+      type-floor rule read a transition as one. Re-vendored in #395 (469edb8b).
+- [ ] Second pass, easy to lose: the classification lives in the compiled manifest, not the
+      source. `design/design_system_domovoi/_adherence.oxlintrc.json` still carries
+      `"--transition-control": "color"` under `x-omelette.tokenKinds`, and will until the
+      design app recompiles the manifest and the file is re-vendored. What does not trigger
+      that recompile, tried 2026-09-13: opening the project, and two DesignSync writes to
+      `_ds/.../tokens/motion.css` (the annotation, then a same-bytes touch), each followed by
+      a read of the live manifest. So the self-check runs inside the Claude Design app, on
+      its own edits, and this item's owner is whoever next edits the design system in the
+      app itself. Done when this reads `other`:
+      `grep -n '"--transition-control"' design/design_system_domovoi/_adherence.oxlintrc.json`
+      Then `pnpm design:revision` and `node scripts/design-rule.mjs` to regenerate the rule.
+
 ---
 
 ## Needs a decision before it can be worked

@@ -2,13 +2,21 @@
    something wants you. Nothing decorative, nothing bouncy, no parallax. */
 
 :root {
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  --dur-instant: 90ms;
-  --dur-fast: 140ms;
-  --dur-base: 200ms;
-  --dur-slow: 320ms;
-  --transition-control: background var(--dur-fast) var(--ease-in-out), border-color var(--dur-fast) var(--ease-in-out), color var(--dur-fast) var(--ease-in-out);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* @kind other */
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --dur-instant: 90ms; /* @kind other */
+  --dur-fast: 140ms; /* @kind other */
+  --dur-base: 200ms; /* @kind other */
+  --dur-slow: 320ms; /* @kind other */
+  /* Annotated because its value names two other kinds. A transition shorthand
+     contains "border-color" and "color", so an unannotated token here is
+     classified from its value and lands in the colour set — it did, and the
+     generated type-floor rule read a transition as a colour. The six above
+     carry the same annotation for the same reason. Nothing else in the system
+     needs one: 127 of 134 tokens classify correctly with no annotation at all,
+     and only a token whose value contains a word naming a different kind can
+     be misread this way. */
+  --transition-control: background var(--dur-fast) var(--ease-in-out), border-color var(--dur-fast) var(--ease-in-out), color var(--dur-fast) var(--ease-in-out); /* @kind other */
 }
 
 /* popover / menu entry */
