@@ -14,8 +14,10 @@ import { cn } from "./lib/utils"
 // stalls, this is the only thing left on screen saying the client is trying.
 //
 // dv-pulse is the other family, reserved for something that wants a decision,
-// and would be the wrong claim here: a skeleton wants nothing. Reduced motion
-// collapses both to 0.01ms through the tokens rather than through omitting them.
+// and would be the wrong claim here: a skeleton wants nothing. Under reduced
+// motion the shimmer stops outright (styles.css sets animation: none on
+// .skeleton-bar), because shortening an infinite loop would speed it up; the
+// sentence beside the bars carries the state alone.
 function Bar({ className }: { className?: string }) {
   return <span aria-hidden className={cn("skeleton-bar block rounded-sm", className)} />
 }
