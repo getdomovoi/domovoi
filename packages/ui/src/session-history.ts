@@ -172,7 +172,10 @@ function withoutCommitPrefix(label: string, commit: string | undefined): string 
 // history row stops the list scanning as a list, so the body lives on the row's
 // expanded state and the row keeps its one line.
 export function sessionHistoryEntryBody(entry: SessionHistoryEntry): string | undefined {
-  if (entry.category === "messages") return entry.body
+  // A message's detail is the diagnostic behind a system note; it belongs to
+  // the body, beneath the words, rather than being dropped because the meta
+  // line now carries the turn instead.
+  if (entry.category === "messages") return entry.detail ? `${entry.body}\n${entry.detail}` : entry.body
   if (entry.category === "tools" || entry.category === "tests") return entry.output
   return undefined
 }
@@ -260,7 +263,13 @@ export function sessionHistoryEntryDetail(
     const decidedIn = entry.decisionDurationMs === undefined
       ? ""
       : ` · decided in ${Math.round(entry.decisionDurationMs / 1_000)}s`
-    return `decided on ${entry.client}${entry.clientId ? ` · device ${entry.clientId}` : entry.connectionId ? ` · connection ${entry.connectionId}` : ""}${decidedIn}${entry.explanation ? ` · ${entry.explanation}` : ""}`
+    // The checkpoint and the connection are the evidence of what was approved
+    // and from where. A declared client id is what a hello may assert without
+    // a paired credential, so it is named as declared, never as a device.
+    const from = entry.connectionId
+      ? ` · connection ${entry.connectionId}`
+      : entry.clientId ? ` · declared client ${entry.clientId}` : ""
+    return `checkpoint ${entry.checkpoint} · decided on ${entry.client}${from}${decidedIn}${entry.explanation ? ` · ${entry.explanation}` : ""}`
   }
   if (entry.category === "handoffs") return entry.detail
   if (entry.category === "transfers") {

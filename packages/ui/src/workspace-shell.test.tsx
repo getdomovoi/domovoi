@@ -421,18 +421,20 @@ describe("CheckpointThreadItem", () => {
 })
 
 describe("HistoryPanel", () => {
-  it("exposes search and every semantic category, Messages named Turns", () => {
+  it("exposes search, Everything and every semantic category", () => {
     const markup = renderToStaticMarkup(
       <HistoryPanel sessionId="session-billing" connected={false} onLoad={vi.fn()} />,
     )
 
     expect(markup).toContain('aria-label="Search session history"')
     for (const label of [
+      "Everything",
       "Turns",
-      "Tools",
       "Approvals",
-      "Handoffs",
       "Checkpoints",
+      "Transfers",
+      "Handoffs",
+      "Tools",
       "Annotations",
       "Tests",
     ]) expect(markup).toContain(`>${label}</button>`)
