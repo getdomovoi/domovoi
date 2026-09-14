@@ -220,7 +220,9 @@ The product's argument is trustworthiness. Asserting it is not shipping it.
 ## Phase 7 — docs, site, launch — M3
 
 - [ ] **S7.1 [CC]** Docs: install per platform, pairing, the permission model, skills trust,
-      transfer semantics, and what the relay does and does not see.
+      transfer semantics, and what the relay does and does not see. Windows install docs must
+      say scheduled task, not service: that is what `S1.1` shipped (`windows-task.ts`), and
+      the word "service" there would be a promise nothing provides.
 - [ ] **S7.2 [CC]** The marketing site. The design system flags it as WIP and needing
       another pass.
 - [ ] **S7.3 [H]** Pricing page consistent with S0.1 and S0.3.
