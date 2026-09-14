@@ -42,6 +42,8 @@ const channels: readonly ChannelSpec[] = [
   { channel: "domovoi:rpc-endpoint-reconnect", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:fleet-route", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:fleet-route-forget", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:relay-pin-read", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:relay-pin-swap", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
     channel: "domovoi:capture-annotation",
     via: "handle",

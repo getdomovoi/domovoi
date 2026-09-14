@@ -148,6 +148,7 @@ import { artifactUrlFor } from "./artifact-url"
 import { DaemonRpcError, ProjectSwitchConfirmationError } from "./client"
 import { SessionsDrawer } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
+import type { RelayPinStorage } from "./relay-pin"
 import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
@@ -285,6 +286,9 @@ export type WorkspaceShellProps = {
   windowBridge?: DesktopWindowBridge
   platform?: WorkspacePlatform
   onChangeCredential?: () => void
+  // Where this client keeps each daemon's relay identity pin. Absent means no
+  // pin is kept and none is reconciled; the web passes localStorage.
+  relayPinStorage?: RelayPinStorage
 }
 
 export function ProjectSwitchConfirmationDialog({
@@ -3554,7 +3558,7 @@ function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandB
   )
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // The queue outlives the thread view and is not limited to the session on
   // screen. Thread is keyed by session, so a switch unmounts it; and a message
@@ -3572,7 +3576,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // for some unrelated render to wake it.
   const [settled, setSettled] = useState(0)
   const [seenStop, setSeenStop] = useState<SystemEmergencyStopResult | null>(null)
-  const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint)
+  const home = useWorkspace(rpcUrl, clientKind, rpcToken, resolveRpcEndpoint, undefined, relayPinStorage)
   const homeMachineId = home.snapshot?.machine.id ?? null
   const accessScope = JSON.stringify([homeMachineId, clientKind, rpcUrl, rpcToken])
   const accessInputs = useRef({ scope: accessScope, homeUrl: home.endpointUrl, kind: clientKind, route: home.fleetClientRoute,
@@ -3594,7 +3598,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const remote = useWorkspace(rpcUrl, clientKind, undefined, undefined,
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
-    } : { state: "disabled" })
+    } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
   const {

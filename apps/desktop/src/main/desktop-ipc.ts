@@ -37,6 +37,7 @@ export type DesktopDeepLinkSink = (link: DesktopDeepLink) => void
 export type DesktopIpcDependencies = {
   fleetRoute?(machineId: string, budgetMs: number): Promise<unknown>
   forgetFleetRoute?(machineId: string): void
+  relayPins?: { read(key: string): Promise<string | undefined>; compareAndSwap(key: string, expected: string | undefined, replacement: string): Promise<boolean> }
   authorized(event: DesktopIpcEvent): boolean
   mainWindow(): DesktopIpcWindow | undefined
   focusMainWindow(): void
@@ -110,6 +111,18 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
     daemonRequest(event)
     if (typeof machineId !== "string" || machineId.length > 128) throw new Error("Fleet route request is invalid")
     deps.forgetFleetRoute?.(machineId)
+  })
+  // The renderer names one machine's relay pin by key; the file validates the
+  // key's shape and the value's size, and the renderer never learns the path.
+  ipcMain.handle("domovoi:relay-pin-read", (event, key) => {
+    daemonRequest(event)
+    if (!deps.relayPins) throw new Error("Relay pins are unavailable")
+    return deps.relayPins.read(key as string)
+  })
+  ipcMain.handle("domovoi:relay-pin-swap", (event, key, expected, replacement) => {
+    daemonRequest(event)
+    if (!deps.relayPins) throw new Error("Relay pins are unavailable")
+    return deps.relayPins.compareAndSwap(key as string, expected as string | undefined, replacement as string)
   })
   ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
     const window = deps.authorized(event) ? deps.mainWindow() : undefined
