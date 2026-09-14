@@ -19,7 +19,10 @@ const dotColour: Record<SessionRow["dot"], string> = {
   quiet: "bg-faint",
 }
 
-const attentionColour: Record<"approval" | "preview", string> = {
+// Keyed by the row's own type rather than restating its two values. A third
+// kind of attention already failed at the indexed lookup below; keying the
+// table moves that failure to this declaration, where the omission is.
+const attentionColour: Record<NonNullable<SessionRow["attention"]>, string> = {
   approval: "text-warning",
   preview: "text-primary",
 }
@@ -67,14 +70,14 @@ function SessionCard({ row, onOpen }: { row: SessionRow, onOpen: (id: string) =>
         <Badge label={row.mode} tone="outline" />
         {row.attention ? (
           <Text className={cn(
-            "ml-auto font-sans-medium text-[9.5px] uppercase tracking-[0.06em]",
+            "ml-auto font-sans-medium text-label uppercase tracking-[0.06em]",
             attentionColour[row.attention],
           )}>
             {row.attention}
           </Text>
         ) : null}
       </View>
-      <Text variant="machine" className="mt-[5px] pl-[17px] text-[9.5px] text-faint">
+      <Text variant="machine" className="mt-[5px] pl-[17px] text-faint">
         {row.machine}
       </Text>
     </PressableCard>

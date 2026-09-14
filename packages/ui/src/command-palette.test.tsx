@@ -1,7 +1,10 @@
+import { demoWorkspace } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
 import {
   buildWorkspaceCommands,
+  opensElsewhere,
+  sessionTone,
   commandPaletteShortcut,
   rankWorkspaceCommands,
   restoreCommandPaletteFocus,
@@ -167,3 +170,98 @@ it("restores focus to the element active before the palette opened", () => {
   expect(focus).toHaveBeenCalledOnce()
   expect(() => restoreCommandPaletteFocus(null)).not.toThrow()
 })
+
+describe("launcher entities", () => {
+  // The design lists things, not only verbs: a dot for state, a machine-readable
+  // line beneath the name, and the kind it is. A verb carries none of those, and
+  // detail stays on the entity because launcher-entries.test.ts pins it.
+  it("gives an entity its kind and meta, and a verb neither", () => {
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+      skills: [{ id: "design-studio", name: "design-studio", scope: "built-in" }],
+      openSkill: vi.fn(),
+    })
+    const found = (id: string) => commands.find((command) => command.id === id)!
+
+    expect(found("skill-design-studio").kind).toBe("SKILL")
+    expect(found("skill-design-studio").meta).toBe("built-in skill")
+    expect(found("skill-design-studio").detail).toBe("built-in")
+
+    expect(found("open-project").kind).toBeUndefined()
+    expect(found("open-project").meta).toBeUndefined()
+  })
+
+  it("reads a session's tone from its state rather than leaving it to colour", () => {
+    expect(sessionTone("failed")).toBe("offline")
+    expect(sessionTone("waiting")).toBe("waiting")
+    expect(sessionTone("transferred")).toBe("idle")
+    expect(sessionTone("active")).toBe("online")
+    expect(sessionTone("idle")).toBe("idle")
+  })
+})
+
+describe("open elsewhere", () => {
+  it("reads the platform's own modifier, matching the toggle", () => {
+    expect(opensElsewhere({ key: "Enter", metaKey: true, ctrlKey: false }, "darwin")).toBe(true)
+    expect(opensElsewhere({ key: "Enter", metaKey: false, ctrlKey: true }, "darwin")).toBe(false)
+    expect(opensElsewhere({ key: "Enter", metaKey: false, ctrlKey: true }, "linux")).toBe(true)
+    expect(opensElsewhere({ key: "Enter", metaKey: true, ctrlKey: false }, "linux")).toBe(false)
+    expect(opensElsewhere({ key: "Enter", metaKey: false, ctrlKey: false }, "darwin")).toBe(false)
+    expect(opensElsewhere({ key: "k", metaKey: true, ctrlKey: false }, "darwin")).toBe(false)
+  })
+
+  // A move is never performed from the launcher. It opens the preflight and the
+  // existing consent surface takes the decision.
+  it("offers a live session a move and a machine a start, and a verb neither", () => {
+    const session = structuredClone(demoWorkspace).sessions[0]!
+    const previewTransferTo = vi.fn()
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+      sessions: [session],
+      activateSession: vi.fn(),
+      previewTransferTo,
+      currentMachineId: "machine-here",
+      entries: [],
+    })
+    const found = (id: string) => commands.find((command) => command.id === id)!
+
+    // A live session carries a choice, not an action: it has to be told which
+    // machine before anything can move.
+    expect(found(`session-${session.id}`).elsewhereTargets).toEqual([])
+    expect(found(`session-${session.id}`).openElsewhere).toBeUndefined()
+    expect(found("open-project").elsewhereTargets).toBeUndefined()
+    expect(found("new-session").elsewhereTargets).toBeUndefined()
+  })
+
+  it("says nothing about elsewhere when the shell offers no way to get there", () => {
+    const session = structuredClone(demoWorkspace).sessions[0]!
+    const commands = buildWorkspaceCommands({
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+      sessions: [session],
+      activateSession: vi.fn(),
+    })
+    expect(commands.find((command) => command.id === `session-${session.id}`)?.elsewhereTargets).toBeUndefined()
+  })
+})
+

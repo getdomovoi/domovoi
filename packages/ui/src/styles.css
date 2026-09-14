@@ -132,6 +132,29 @@
   --text-mono-xs: 10px;
   --text-eyebrow: 9.5px;
   --text-eyebrow-ls: 0.12em;
+  /* The phone's ramp, declared here beside the desktop's for the same reason
+     light and dark coexist here: two ramps, one source. It is legitimately
+     different rather than a scaled copy — a phone has less width, so the steps
+     between roles are smaller. That is layout pressure, not legibility: a CSS
+     pixel subtends a fixed angle by definition, so 8px is no more readable on a
+     phone than on a desk, and the phone's floor is therefore higher than the
+     desktop's rather than lower. --text-phone-machine at 10px is as far down as
+     the phone goes: it is the smallest size the design calls legible, and the
+     lint rule holds the app to it. It is not a platform threshold; the OS font
+     scaling settings apply at every size. */
+  --text-phone-heading: 26px;
+  --text-phone-nav: 13.5px;
+  --text-phone-title: 13px;
+  --text-phone-title-lh: 18px;
+  --text-phone-body: 12.5px;
+  --text-phone-body-lh: 19px;
+  --text-phone-section: 11.5px;
+  --text-phone-meta: 11.5px;
+  --text-phone-meta-lh: 18px;
+  --text-phone-note: 10.5px;
+  --text-phone-note-lh: 16px;
+  --text-phone-label: 10.5px;
+  --text-phone-machine: 10px;
   --shell-rail: 62px;
   --shell-sidebar: 240px;
   --shell-thread: 760px;

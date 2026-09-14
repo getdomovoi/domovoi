@@ -45,7 +45,7 @@ function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
         <View className="mt-2 flex-row items-center gap-3.5">
           {row.stats.map((stat) => (
             <View key={stat.label}>
-              <Text variant="label" className="text-[8.5px] tracking-[0.1em]">{stat.label}</Text>
+              <Text variant="label" className="tracking-[0.1em]">{stat.label}</Text>
               <Text
                 variant="machine"
                 className={cn("mt-0.5 text-[10.5px]", stat.attention ? "text-warning" : "text-strong")}
