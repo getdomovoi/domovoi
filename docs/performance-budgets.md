@@ -32,7 +32,7 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 
 | Surface | Alpha budget | Stable gate |
 | --- | --- | --- |
-| Startup | Web JS 1,250,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,250,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 32,768; preload 8,192 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
+| Startup | Web JS 1,250,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,250,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 36,864; preload 8,192 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
 | Memory | 100 thread items in a client snapshot; 200 retained history items; 262,144 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
 | Long threads | 100 snapshot/rendered items; 100 items per history page; 32,768 Markdown characters and 500 lines per item | Durable history remains daemon-owned and pageable; client and quick-view tests enforce windows |
 | Terminal throughput | 65,536 characters per notification; 16 ms batching; WebSocket pause/resume at 1,048,576/262,144 buffered bytes | Fake-clock batching and backpressure tests plus protocol payload validation; bytes remain ordered and lossless |
@@ -43,6 +43,12 @@ web sheet to 115,147. The added bytes are the `--ok-*` state ramp and the `--ske
 v2 screens read, in both themes. Raised to 124,000 rather than trimmed, because the remaining v2
 screens add more utility classes and a ceiling that fails on the next screen teaches nothing. If a
 measurement approaches it again, check what is unused before raising it further.
+
+The desktop main budget was 33,792 until 2026-09-14, when the relay pin file took the main bundle
+to 35,813 bytes locally and 35,397 on CI. The added bytes are the file's shape validation, the
+synced whole-file publication and the compare-and-swap the renderer reaches over one IPC channel.
+Raised to 36,864 rather than trimmed: the validation and the sync are the finding they answer, and
+the main process has no lazy path to move them to.
 
 Budget failures require reducing work or an explicit documented budget revision. Do not replace
 these gates with wall-clock or RSS assertions: CI runner speed and memory vary by OS and load.
