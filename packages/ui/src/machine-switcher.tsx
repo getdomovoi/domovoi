@@ -7,6 +7,7 @@ import {
   pendingOperationWord,
   shortMachineId,
   unenrolledNote,
+  transferTargets,
 } from "./fleet-entries.js"
 import { machineAttachment, machineSelection } from "./machine-selection.js"
 import { Badge } from "./components/ui/badge"
@@ -116,8 +117,7 @@ export function MachineSwitcher({
   const machines = fleetMachines(entries)
   const current = machines.find((machine) => machine.id === currentMachineId)
   const others = entries.filter((entry) => entry.kind !== "machine" || entry.machine.id !== currentMachineId)
-  // A move lands on a daemon, and only a machine entry names one.
-  const transferTargets = fleetMachines(transferEntries ?? entries).filter((machine) => machine.id !== currentMachineId)
+  const targets = transferTargets({ entries, transferEntries, currentMachineId })
 
   return (
     <DropdownMenu>
@@ -144,11 +144,11 @@ export function MachineSwitcher({
         ) : null}
         {others.length > 0 ? <DropdownMenuSeparator /> : null}
         {others.map((entry) => entryItem(entry, onSelectMachine, admittedMachines))}
-        {onTransferSession && transferTargets.length > 0 ? (
+        {onTransferSession && targets.length > 0 ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuLabel>Move this session to</DropdownMenuLabel>
-            {transferTargets.map((machine) => {
+            {targets.map((machine) => {
               const selection = machineSelection(machine)
               return (
                 <DropdownMenuItem
