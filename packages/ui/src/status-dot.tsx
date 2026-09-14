@@ -24,17 +24,23 @@ export function StatusDot({
   meaning,
   label,
   size = "default",
+  labelHidden = false,
   className,
 }: {
   meaning: StatusMeaning
   label: string
   size?: StatusDotSize
+  // A row that already carries its own prose beside the dot has no room for a
+  // second visible label. Hiding it is not dropping it: the label stays
+  // required and stays in the accessibility tree, because the rule above is
+  // about who can read the meaning, not about who can see it.
+  labelHidden?: boolean
   className?: string
 }) {
   return (
-    <span className={cn("inline-flex items-center gap-2", className)}>
+    <span className={cn("inline-flex items-center", labelHidden ? "" : "gap-2", className)}>
       <span aria-hidden className={cn("shrink-0 rounded-full", diameter[size], fill[meaning])} />
-      <span className="text-[11.5px] text-muted-foreground">{label}</span>
+      <span className={labelHidden ? "sr-only" : "text-[11.5px] text-muted-foreground"}>{label}</span>
     </span>
   )
 }

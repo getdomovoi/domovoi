@@ -137,6 +137,17 @@ export declare const radius: {
   readonly xl: "10.4px"
   readonly "2xl": "14px"
 }
+export declare const fontSize: {
+  readonly body: readonly ["12.5px", "19px"]
+  readonly heading: "26px"
+  readonly label: "10.5px"
+  readonly machine: "10px"
+  readonly meta: readonly ["11.5px", "18px"]
+  readonly nav: "13.5px"
+  readonly note: readonly ["10.5px", "16px"]
+  readonly section: "11.5px"
+  readonly title: readonly ["13px", "18px"]
+}
 export interface Shadow {
   readonly shadowColor: string
   readonly shadowOpacity: number

@@ -45,7 +45,7 @@ export function Badge({
     )}>
       <Text className={cn(
         "font-mono uppercase tracking-[0.06em]",
-        pill ? "text-[9.5px]" : "text-[9px]",
+        "text-machine",
         style.label,
       )}>
         {label}
