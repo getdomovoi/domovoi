@@ -128,6 +128,18 @@ const radius = {
   "2xl": "14px",
 }
 
+const fontSize = {
+  "body": ["12.5px","19px"],
+  "heading": "26px",
+  "label": "10.5px",
+  "machine": "10px",
+  "meta": ["11.5px","18px"],
+  "nav": "13.5px",
+  "note": ["10.5px","16px"],
+  "section": "11.5px",
+  "title": ["13px","18px"],
+}
+
 const fonts = [
   {"utility":"sans","family":"Instrument Sans","weight":400,"name":"InstrumentSans_400Regular","package":"@expo-google-fonts/instrument-sans","file":"400Regular/InstrumentSans_400Regular.ttf"},
   {"utility":"sans-medium","family":"Instrument Sans","weight":500,"name":"InstrumentSans_500Medium","package":"@expo-google-fonts/instrument-sans","file":"500Medium/InstrumentSans_500Medium.ttf"},
@@ -167,4 +179,4 @@ function withAlpha(color, percent) {
   return color.slice(0, 7) + alpha.toString(16).padStart(2, "0")
 }
 
-module.exports = { colors, radius, fonts, fontFamily, shadows, outOfGamut, alphaSteps, withAlpha }
+module.exports = { colors, radius, fontSize, fonts, fontFamily, shadows, outOfGamut, alphaSteps, withAlpha }

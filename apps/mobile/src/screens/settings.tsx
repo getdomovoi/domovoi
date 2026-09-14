@@ -163,7 +163,7 @@ export function SettingsScreen({
                   )}
                 >
                   <Text className="flex-1 text-[12.5px]">{label}</Text>
-                  <Text className="font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint">
+                  <Text className="font-mono text-machine uppercase tracking-[0.06em] text-faint">
                     Unavailable
                   </Text>
                 </View>
