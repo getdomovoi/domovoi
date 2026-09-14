@@ -57,6 +57,15 @@ export default tseslint.config(
     },
   },
   {
+    // StatusDot is the one place the raw dot belongs: styles.css keys its
+    // forced-colors override on data-status-dot, and the atom is what every
+    // other file is told to use instead. The rule stays on for everything else.
+    files: ["packages/ui/src/status-dot.tsx"],
+    rules: {
+      "no-restricted-syntax": ["error", ...typeFloorRules],
+    },
+  },
+  {
     // The phone's floor is 10px and the desktop's boundary is 9.5px, so this is
     // its own block with its own generated rule. Both are derived: the desktop's
     // from the design system's typography tokens, the phone's from the

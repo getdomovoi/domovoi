@@ -3670,16 +3670,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (attached && remote.authenticationRequired) accessSession.refuse(attached.machineId, remote.authenticationRequired)
   }, [attached, remote.authenticationRequired, accessSession])
 
-  const switchMachine = useCallback((machineId: string) => {
+  const switchMachine = useCallback((machineId: string): boolean => {
     if (machineId === homeMachineId) {
       setAttached(null)
-      return
+      return true
     }
     const machine = fleetMachines(fleet?.entries ?? []).find((candidate) => candidate.id === machineId)
-    if (!machine) return
+    if (!machine) return false
     const selected = accessSession.access(machineId)
-    if (!home.connected || !selected || !machineAttachment(machine, true).selectable) return
+    if (!home.connected || !selected || !machineAttachment(machine, true).selectable) return false
     setAttached({ machineId })
+    return true
   }, [fleet, homeMachineId, accessSession, home.connected])
   const removeClientAccess = (machineId: string) => {
     accessSession.remove(machineId)
@@ -3704,6 +3705,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [requestedSkillId, setRequestedSkillId] = useState<string>()
   const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
+  // A launch the palette asked for on a named machine. It becomes a launcher
+  // only when that machine is the one attached and its snapshot has a project.
+  const [launchIntent, setLaunchIntent] = useState<{ machineId: string } | null>(null)
   const [launcherProjectNote, setLauncherProjectNote] = useState("")
   const [notificationDelivery, setNotificationDelivery] = useState<WorkspaceNotificationDelivery | undefined>(
     () => platform?.notifications.delivery(),
@@ -4115,17 +4119,29 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     selectMachine: switchMachine,
     openCheckpoints,
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
-    // then open the launcher on it. Nothing is running yet, so there is nothing
-    // to reconcile.
+    // then open the launcher on it. The intent names the machine, and the
+    // launcher opens only once that machine's snapshot is the one on screen;
+    // a refused or abandoned attachment drops it rather than opening the form
+    // on whichever daemon is left.
     startSessionOn: (machineId: string) => {
-      switchMachine(machineId)
-      setLauncherMode("session")
+      if (!switchMachine(machineId)) return
+      setLaunchIntent({ machineId })
     },
     // The launcher names the target. The preflight takes the decision, so this
-    // opens the transfer dialog and never moves anything itself.
+    // opens the transfer dialog and never moves anything itself. The intent is
+    // bound to the session and the machine it was made on: the dialog opens
+    // only once that session is the active one, and a refused activation or a
+    // switch of daemon drops the intent rather than handing it to whichever
+    // session is on screen.
     previewTransferTo: (sessionId: string, machineId: string) => {
-      openSessionInWorkspace(sessionId)
-      setLauncherTransferTargetId(machineId)
+      setSurface("workspace")
+      setWorkspaceError("")
+      const sourceMachineId = attached?.machineId ?? snapshot?.machine.id ?? null
+      setLauncherTransfer({ sessionId, machineId, sourceMachineId })
+      void activateSession(sessionId).catch((cause: unknown) => {
+        setLauncherTransfer((current) => current?.sessionId === sessionId ? null : current)
+        setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
+      })
     },
     currentMachineId: attached?.machineId ?? snapshot?.machine.id,
     transferEntries: attached ? remote.fleet?.entries ?? [] : fleet?.entries,
@@ -4141,8 +4157,31 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // pending operations and the dock cannot see that state, so a restore started
   // from either one has to hold the other shut until it answers.
   const [checkpointRestorePending, setCheckpointRestorePending] = useState(false)
-  // Named by the launcher, consumed by the thread's transfer dialog.
-  const [launcherTransferTargetId, setLauncherTransferTargetId] = useState<string | null>(null)
+  // Named by the launcher, consumed by the thread's transfer dialog once the
+  // named session is the active one on the daemon it was named on.
+  const [launcherTransfer, setLauncherTransfer] = useState<{ sessionId: string; machineId: string; sourceMachineId: string | null } | null>(null)
+  const launcherTransferMachineId = attached?.machineId ?? snapshot?.machine.id ?? null
+  const launcherTransferTargetId = launcherTransfer
+    && launcherTransfer.sessionId === snapshot?.activeSessionId
+    && launcherTransfer.sourceMachineId === launcherTransferMachineId
+    ? launcherTransfer.machineId
+    : null
+  useEffect(() => {
+    if (launcherTransfer && launcherTransfer.sourceMachineId !== launcherTransferMachineId) setLauncherTransfer(null)
+  }, [launcherTransfer, launcherTransferMachineId])
+  useEffect(() => {
+    if (!launchIntent) return
+    const onMachine = (attached?.machineId ?? homeMachineId) === launchIntent.machineId
+    if (!onMachine) { setLaunchIntent(null); return }
+    if (!connected || !snapshot?.project) return
+    setLaunchIntent(null)
+    setLauncherMode("session")
+  }, [launchIntent, attached, homeMachineId, connected, snapshot])
+  const setLauncherTransferTargetId = (machineId: string | null) => {
+    if (machineId === null) { setLauncherTransfer(null); return }
+    const sessionId = snapshot?.activeSessionId
+    if (sessionId) setLauncherTransfer({ sessionId, machineId, sourceMachineId: launcherTransferMachineId })
+  }
   // Both surfaces restore through this one function, so an attempt started from
   // either holds the other shut for as long as it runs.
   const restoreCheckpointGuarded = async (sessionId: string, checkpointId: string) => {
