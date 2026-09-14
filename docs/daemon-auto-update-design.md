@@ -53,12 +53,18 @@ protected release workflow. Targets metadata binds the exact daemon archive name
 length, SHA-256, version, source commit, channel, and runtime-lock digest. The
 client follows the TUF update workflow and persists trusted metadata versions.
 
+The embedded root is only as trustworthy as the out-of-band digest that the
+bootstrap caller pins. The root ceremony must publish the initial root digest
+where that caller obtains the archive digest, and the bootstrap must verify both
+values before trusting the installed root. Publishing the root digest only inside
+the archive does not create an independent trust anchor.
+
 This is the only option here that directly specifies root rotation, threshold
 trust, key compromise recovery, rollback refusal, mix-and-match refusal, and
 expiration for freeze detection. Use a conforming library rather than a local
-signature composition. The current `tuf-js` main branch requires newer Node 22
-patch releases than Domovoi's declared `>=22.13.0`; selecting a library version
-must either preserve the supported floor or deliberately raise it.
+signature composition. Selecting a library version must verify its declared
+engine floor against Domovoi's `>=22.13.0` floor and record the exact package
+version used for that decision.
 
 Maintainer decisions:
 
@@ -69,6 +75,8 @@ Maintainer decisions:
    expiry and required review. They are not repository secrets available to pull
    requests.
 3. Initial trusted root bytes and the ceremony that records their digest.
+   The ceremony publishes that digest beside the independently distributed
+   bootstrap archive digest so the bootstrap caller can verify both.
 4. Recovery procedure when an online role key or a root holder is lost.
 
 ### B. GitHub or Sigstore identity attestation
@@ -119,6 +127,16 @@ length or digest mismatch refuses the update and records a bounded diagnostic.
 Clock rollback is reported separately because expiry cannot establish freshness
 without a credible local clock.
 
+Rollback protection means corrected bytes cannot reuse a failed version. If the
+highest signed target cannot start, the watchdog restores the prior receipt and
+the daemon quarantines that exact version and target digest instead of staging it
+again on every check. The release operator must publish a higher metadata version
+that removes the target or marks its digest withdrawn. A corrected release uses a
+higher application version. Until one of those signed changes arrives, the old
+runtime continues and status names the quarantined target. A local operator may
+disable the channel while waiting; ordinary scheduled checks never clear the
+quarantine.
+
 ## Reproducible release proof
 
 One successful pack followed by a checksum is an integrity check, not a
@@ -146,8 +164,10 @@ second extractor or dependency installer. Each version remains immutable under
 The updater holds one cross-process update lease, stages and verifies the new
 version, then writes a pending record with the old and new receipt identities.
 
-Automatic means check and stage without a per-release prompt after the operator
-has enabled an update channel. It does not mean interrupting work. Activation
+Automatic means check, stage, and activate without a per-release prompt after the
+local operator has enabled an update channel and automatic activation during
+installation. That stored policy is the explicit authorization; activation is
+not a per-release hard gate. It does not mean interrupting work. Activation
 waits until there is no active provider turn, approval, terminal, transfer, or
 repository mutation. A continuously busy daemon keeps the verified update
 pending and reports why.
@@ -184,6 +204,15 @@ schemas and tests for:
 - `update.check`: start one deduplicated check and return its observed result;
 - `update.activate`: request activation of an already verified pending version,
   subject to the idle boundary and update policy.
+
+`update.status` is available to every authenticated client, including read-only
+relay admission. `update.check` and `update.activate` accept only a loopback
+connection that completed the local-owner proof, or the daemon's background
+updater acting under the stored install policy. Relay-carried connections,
+watch-only clients, and paired machine actors refuse both mutating methods. A
+manual local activation still respects the idle boundary; it is the operator's
+explicit request, not an agent hard-gate approval, and it does not change the
+stored policy.
 
 The background scheduler uses the same operation. Timers do not keep a stopped
 daemon alive. Network, signature, metadata, install, activation, rollback, and
