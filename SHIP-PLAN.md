@@ -92,28 +92,40 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 Parallel with Phase 0. Touches nothing the gates decide.
 
 - [ ] **S1.1 [CX]** Service lifecycle per platform: launchd, systemd, Windows service, and
-      WSL's init gap.
-- [ ] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
-      clearly rather than half-working.
-- [ ] **S1.3 [CX]** Crash recovery: an interrupted turn, a half-written worktree, an
-      orphaned transfer lease.
+      WSL's init gap. Built, not accepted: #367 (617ac46d) carries the per-user LaunchAgent,
+      the per-user systemd unit, and on Windows a limited-user `ONLOGON` scheduled task
+      registered by `service/install.ts`, with `windows-task.ts` for its status and removal.
+      `docs/service-lifecycle-assessment.md` keeps the box open: WSL selection is not wired
+      into `service install`, logon acceptance is not established, the guest supervisor's
+      automatic-restart assertion failed, and complete removal acceptance is still due. Tick
+      when that document says so.
+- [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
+      clearly rather than half-working. The hello refuses with
+      `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`); exact version parsing and
+      patch-compatible snapshots in 91b1e157, the same admission checks shared by the daemon
+      and its machine socket in 86891409.
+- [x] **S1.3 [CX]** Crash recovery: an interrupted turn, a half-written worktree, an
+      orphaned transfer lease. Interrupted turns reconcile at startup (00e6c678, #113), interrupted
+      and half-written session creation with it (42c4403e, #372), and transfer ownership and
+      receive leases recover on retry or release when abandoned (b5b1aa90, a6294547).
+      `docs/crash-recovery.md` states the bounds: no provider turn is replayed and no
+      uncommitted work is discarded.
 - [ ] **S1.4 [CX]** Auto-update, signed and verified. A self-updating daemon holding your
       credentials is a supply-chain target, so signature verification and reproducible
-      builds ship *with* it, not after.
-- [ ] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
-      pre-auth) proven across restart.
-- [ ] **S1.6 [CX, not CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
-      **Reassigned 2026-09-10, not yet agreed by Codex.** The binary is `domovoid`, declared at
-      `apps/daemon/package.json:20` against `apps/daemon/dist/index.js`, and every CLI file is
-      under `apps/daemon/src/` — Codex's half by `WORK-SPLIT.md`'s ownership table, so `[CC]`
-      contradicts rule 1. Codex accepted it as `CX` and corrected the scope: `domovoid service
-      install` and `domovoid service status` already exist (`index.ts:86`), so what is missing
-      there is top-level aliases rather than the commands. `doctor`, `logs` and `skill push` do
-      not exist and their behaviour is undefined. No binary named `domovoi` without the `d` exists or is
-      declared anywhere, so if a separate user-facing CLI is intended that is a product decision
-      rather than a client task, and it needs a home before it needs an owner.
-- [ ] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
-      lands here — it is daemon bookkeeping and it unblocks UI in Phase 3.
+      builds ship *with* it, not after. Nothing on `main` as of 2026-09-14.
+- [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
+      pre-auth) proven across restart. Landed as #374 (c8eb1a93).
+- [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
+      Five of six landed. `domovoid service install` and `domovoid service status` are the
+      daemon's (`apps/daemon/src/index.ts`). The user-facing `domovoi` binary is `apps/cli`:
+      `pair` and `status` (95711761), `doctor` (83f1406d), `logs` (d81ef5c9), and
+      `skill install <path>`, a reviewed local copy. `skill push` is the open sixth:
+      `docs/cli-parity-decision.md` says local copying does not establish remote
+      distribution, and no push command or RPC exists on `main`. The 2026-09-10 note that no
+      `domovoi` binary existed was true when written and is superseded by `apps/cli`.
+- [x] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
+      lands here — it is daemon bookkeeping and it unblocks UI in Phase 3. `CX1` (4359bcf9)
+      and `CX2` (e7364720, 84d90d50, 1991666a) are ticked there with the same citations.
 
 ## Phase 2 — the relay — M2, critical path
 
@@ -217,7 +229,10 @@ The product's argument is trustworthiness. Asserting it is not shipping it.
 ## Phase 7 — docs, site, launch — M3
 
 - [ ] **S7.1 [CC]** Docs: install per platform, pairing, the permission model, skills trust,
-      transfer semantics, and what the relay does and does not see.
+      transfer semantics, and what the relay does and does not see. Windows install docs must
+      say scheduled task, not service: the current Windows implementation registers a
+      per-user scheduled task in `service/install.ts`, and the word "service" there would be
+      a promise nothing provides.
 - [ ] **S7.2 [CC]** The marketing site. The design system flags it as WIP and needing
       another pass.
 - [ ] **S7.3 [H]** Pricing page consistent with S0.1 and S0.3.

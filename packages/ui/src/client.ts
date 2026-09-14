@@ -356,7 +356,9 @@ export class DomovoiClient extends EventTarget {
                 this.#admissionNotifications = undefined
                 this.dispatchEvent(new CustomEvent("snapshot", { detail: snapshot }))
                 for (const notification of notifications ?? []) this.#receive(notification)
-                this.dispatchEvent(new Event("connected"))
+                // The connected event carries the hello's own snapshot: the
+                // replayed notifications above may already name another machine.
+                this.dispatchEvent(new CustomEvent("connected", { detail: snapshot }))
                 resolve(snapshot)
               },
             ).catch((cause: unknown) => {

@@ -8,6 +8,7 @@ import { Deadline } from "./deadline"
 import { applyWorkspaceDelta } from "@getdomovoi/protocol"
 import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
+import { createRelayPinStore, reconcileRelayPin, type RelayPinStorage } from "./relay-pin"
 
 
 type WorkspaceSnapshotState = {
@@ -91,6 +92,7 @@ export function useWorkspace(
   authToken?: string,
   resolveRpcEndpoint?: WorkspaceEndpointResolver,
   connection?: WorkspaceClientConnection,
+  relayPinStorage?: RelayPinStorage,
 ) {
   const enabled = connection?.state !== "disabled"
   const admission = connection?.state === "client" ? connection.admission : undefined
@@ -190,10 +192,27 @@ export function useWorkspace(
     const onDisconnected = () => {
       if (active) setConnected(false)
     }
-    const onConnected = () => {
+    // The token that opened this connection is what pairing proved, and only
+    // the answered hello proves it, so the machine pinned is the one the hello
+    // named, never one a later snapshot names. This is where the daemon's relay
+    // identity is pinned or a distrusted pin is recovered; it never decides the
+    // connection, so a failure is a warning, not a disconnect.
+    const reconcilePin = (snapshot: WorkspaceSnapshot) => {
+      if (!relayPinStorage) return
+      void reconcileRelayPin({
+        store: createRelayPinStore(relayPinStorage, snapshot.machine.id),
+        machineId: snapshot.machine.id,
+        call: (method, params) => client.request(method as "relay.recovery", params as { machineId: string }),
+      }).catch((cause: unknown) => {
+        console.warn("Relay pin not reconciled:", cause instanceof Error ? cause.message : String(cause))
+      })
+    }
+    const onConnected = (event: Event) => {
       if (!active) return
       setConnected(true)
       setEndpointUrl(client.url)
+      const hello = (event as CustomEvent<WorkspaceSnapshot | undefined>).detail
+      if (hello) reconcilePin(hello)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
       void client.listFleet().then(

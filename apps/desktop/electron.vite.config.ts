@@ -47,6 +47,13 @@ export default defineConfig({
     resolve: {
       alias: {
         "@": path.resolve(import.meta.dirname, "../../packages/ui/src"),
+        // Subpath first: an object alias matches by prefix in insertion order, so
+        // the bare package alias below would otherwise turn this into
+        // src/index.ts/relay-admission.
+        "@getdomovoi/protocol/relay-admission": path.resolve(
+          import.meta.dirname,
+          "../../packages/protocol/relay-admission/index.ts",
+        ),
         "@getdomovoi/protocol": path.resolve(
           import.meta.dirname,
           "../../packages/protocol/src/index.ts",

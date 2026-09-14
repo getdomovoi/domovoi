@@ -26,6 +26,7 @@ import { fleetWorkerPath, fleetWorkerPolicy, rendererResource } from "./renderer
 import { DesktopStartupMetrics } from "./startup-metrics.js"
 import { DesktopNotificationController } from "./desktop-notifications.js"
 import { registerDesktopIpc, type DesktopIpcEvent } from "./desktop-ipc.js"
+import { createRelayPinFile, relayPinFileName } from "./relay-pins.js"
 import {
   ExternalTargetController,
   SafeClipboard,
@@ -303,6 +304,7 @@ ipcMain.handle("domovoi:window-decoration-set", (event, decoration: unknown) => 
 registerDesktopIpc(ipcMain, {
   fleetRoute: (machineId, budgetMs) => fleetOrigins.authorize(machineId, budgetMs),
   forgetFleetRoute: (machineId) => fleetOrigins.forget(machineId),
+  relayPins: createRelayPinFile(join(app.getPath("userData"), relayPinFileName)),
   authorized: authorizedDesktopSender,
   mainWindow: () => mainWindow,
   focusMainWindow,

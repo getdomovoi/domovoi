@@ -423,20 +423,20 @@ just collide, it changes meaning over time.
     seam is adjacent bytes with no separator. The correction list is closed.
 
 ### CC2 · StatusDot takes an invisible label
-- [ ] The label stops being visible; it does not stop being required. Meaning derives from
-      `status` and `decision`, nothing invented.
-- [ ] Any row whose title does not state its outcome gets the outcome word in the meta —
-      failures especially. Colour is never the sole carrier.
-- Own commit. Touches the atom, so it lands before `CC1`'s dot swap.
+- [x] The label stops being visible; it does not stop being required. Meaning derives from
+      `status` and `decision`, nothing invented (59b11f1c).
+- [x] Any row whose title does not state its outcome gets the outcome word in the meta —
+      failures especially. Colour is never the sole carrier (f3252e50).
+- Landed as its own pull request (#388) before the dot swap in #397, as planned.
 
 ### CC3 · Revert the Handoffs label, add the transfers filter
-- [ ] `6f2f875` renamed `handoffs` to Transfers. `handoffs` holds **provider** handoffs —
+- [x] `6f2f875` renamed `handoffs` to Transfers. `handoffs` holds **provider** handoffs —
       `server.ts:461` selects rows starting `Handed off `, written at `server.ts:5812`.
-      Revert the label to Handoffs.
-- [ ] Add the `transfers` filter now that `560eca5` records machine transfers.
-- [ ] Eight filters, drawn five leading:
+      Label reverted to Handoffs (f3252e50).
+- [x] Add the `transfers` filter now that `560eca5` records machine transfers (f3252e50).
+- [x] Eight filters, drawn five leading:
       Everything, Turns, Approvals, Checkpoints, Transfers, then Handoffs, Tools,
-      Annotations, Tests.
+      Annotations, Tests (f3252e50).
 
 ### CC4 · Vendor the v2 designs — done
 **Written while the files were absent, and left saying so after they landed.** The first two

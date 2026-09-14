@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 
 import {
   applyStoredAppearanceTheme,
+  bridgeRelayPinStorage,
   StartupError,
   WorkspaceErrorBoundary,
   WorkspaceShell,
@@ -60,6 +61,7 @@ function DesktopApp() {
       .finally(() => setRetrying(false))
   }
   const workspace = state.kind === "workspace" ? state : undefined
+  const relayPinStorage = useMemo(() => bridgeRelayPinStorage(window.domovoiDesktop), [])
   const resolveRpcEndpoint = useMemo(
     () => workspace ? desktopRpcEndpointResolver(workspace, window.domovoiDesktop) : undefined,
     [workspace],
@@ -81,6 +83,7 @@ function DesktopApp() {
           {...(resolveRpcEndpoint ? { resolveRpcEndpoint } : {})}
           localDaemon={daemonConnectionCopy(state.daemon)}
           windowBridge={window.domovoiDesktop}
+          {...(relayPinStorage ? { relayPinStorage } : {})}
         />
       </WorkspaceErrorBoundary>
     </StrictMode>
