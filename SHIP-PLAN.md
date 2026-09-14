@@ -91,28 +91,37 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 
 Parallel with Phase 0. Touches nothing the gates decide.
 
-- [x] **S1.1 [CX]** Service lifecycle per platform: launchd, systemd, Windows service, and
-      WSL's init gap. Landed as #367 (617ac46d): `apps/daemon/src/service/` carries the
-      launchd and systemd units, a Windows scheduled-task supervisor (`windows-task.ts`, stopped
-      before removal since 130500f5) and the WSL task (`wsl-task.ts`).
+- [ ] **S1.1 [CX]** Service lifecycle per platform: launchd, systemd, Windows service, and
+      WSL's init gap. Built, not accepted: #367 (617ac46d) carries the per-user LaunchAgent,
+      the per-user systemd unit, and on Windows a limited-user `ONLOGON` scheduled task
+      registered by `service/install.ts`, with `windows-task.ts` for its status and removal.
+      `docs/service-lifecycle-assessment.md` keeps the box open: WSL selection is not wired
+      into `service install`, logon acceptance is not established, the guest supervisor's
+      automatic-restart assertion failed, and complete removal acceptance is still due. Tick
+      when that document says so.
 - [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
       clearly rather than half-working. The hello refuses with
-      `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`).
-- [ ] **S1.3 [CX]** Crash recovery: an interrupted turn, a half-written worktree, an
-      orphaned transfer lease. Partly there: `service/removal-recovery.ts`,
-      `session-creation-recovery`, and `session.transferRecoverSource` for the lease. No
-      commit on `main` claims the interrupted turn or the half-written worktree, so the box
-      stays open until one does.
+      `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`); exact version parsing and
+      patch-compatible snapshots in 91b1e157, the same admission checks shared by the daemon
+      and its machine socket in 86891409.
+- [x] **S1.3 [CX]** Crash recovery: an interrupted turn, a half-written worktree, an
+      orphaned transfer lease. Interrupted turns reconcile at startup (aaf8674c), interrupted
+      and half-written session creation with it (42c4403e, #372), and transfer ownership and
+      receive leases recover on retry or release when abandoned (984a9f5a, 2cd0cdfb).
+      `docs/crash-recovery.md` states the bounds: no provider turn is replayed and no
+      uncommitted work is discarded.
 - [ ] **S1.4 [CX]** Auto-update, signed and verified. A self-updating daemon holding your
       credentials is a supply-chain target, so signature verification and reproducible
       builds ship *with* it, not after. Nothing on `main` as of 2026-09-14.
 - [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart. Landed as #374 (c8eb1a93).
-- [x] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
-      Landed in two halves. `domovoid service install` and `domovoid service status` are the
+- [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
+      Five of six landed. `domovoid service install` and `domovoid service status` are the
       daemon's (`apps/daemon/src/index.ts`). The user-facing `domovoi` binary is `apps/cli`:
       `pair` and `status` (95711761), `doctor` (83f1406d), `logs` (d81ef5c9), and
-      `skill install <path>`, which is what "skill push" became. The 2026-09-10 note that no
+      `skill install <path>`, a reviewed local copy. `skill push` is the open sixth:
+      `docs/cli-parity-decision.md` says local copying does not establish remote
+      distribution, and no push command or RPC exists on `main`. The 2026-09-10 note that no
       `domovoi` binary existed was true when written and is superseded by `apps/cli`.
 - [x] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
       lands here — it is daemon bookkeeping and it unblocks UI in Phase 3. `CX1` (4359bcf9)
@@ -221,8 +230,9 @@ The product's argument is trustworthiness. Asserting it is not shipping it.
 
 - [ ] **S7.1 [CC]** Docs: install per platform, pairing, the permission model, skills trust,
       transfer semantics, and what the relay does and does not see. Windows install docs must
-      say scheduled task, not service: that is what `S1.1` shipped (`windows-task.ts`), and
-      the word "service" there would be a promise nothing provides.
+      say scheduled task, not service: the current Windows implementation registers a
+      per-user scheduled task in `service/install.ts`, and the word "service" there would be
+      a promise nothing provides.
 - [ ] **S7.2 [CC]** The marketing site. The design system flags it as WIP and needing
       another pass.
 - [ ] **S7.3 [H]** Pricing page consistent with S0.1 and S0.3.
