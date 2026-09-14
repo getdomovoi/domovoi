@@ -9,11 +9,12 @@ application records above that codec in `packages/protocol/relay-admission/`.
 Its schemas are exported from the ordinary protocol entry without importing the
 crypto runtime. Runtime consumers import `@getdomovoi/protocol/relay-admission`.
 
-This is the daemon and client half. `https://github.com/getdomovoi/relay` owns the
-future relay server. This repository does not implement its registration,
-routing, multiplexing, deployment, or connection establishment. The carrier
-hands these endpoints one already selected logical channel. Nothing here
-advertises a relay route, dials an endpoint, or falls back to plaintext.
+This is the daemon and client admission layer. The private repository
+`https://github.com/getdomovoi/relay` owns the server. The separate
+[carrier contract](relay-carrier.md) defines registration records and multiplex
+framing outside the frozen codec. The carrier hands these endpoints one already
+selected logical channel. This admission layer does not advertise routes,
+dial endpoints, enforce relay account policy, or deploy a server.
 
 ## Pairing and custody
 
@@ -80,8 +81,10 @@ binds this context to the exchange; it is not additional key entropy. See the
    identity comes from the confirmed credential binding. `authToken` in a relay
    hello is refused; the bearer belongs only in step 3.
 
-No bearer appears in a handshake payload, carrier header, close reason, or
-plaintext control record. A failed exchange closes that logical carrier with no
+No paired-device bearer appears in a handshake payload, carrier header, close
+reason, or plaintext control record. The carrier's independently issued relay
+registration credential belongs to the relay, not this admission exchange.
+A failed exchange closes that logical carrier with no
 reason payload. Public APIs report a fixed refusal rather than propagating
 crypto, registry, callback, or carrier error text. A fresh channel requires a
 fresh IK exchange; replaying or resuming an old cipher state is unsupported.
