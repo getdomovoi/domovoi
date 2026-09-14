@@ -9,6 +9,9 @@ import { belowPattern, checkDesignRule, floorFrom, fontTokenSizes, generate, pho
 const manifest = { "x-omelette": { tokenKinds: { "--text-micro": "font", "--text-mono-xs": "font", "--text-eyebrow": "font", "--primary": "color" } } }
 const typography = ":root {\n  --text-micro: 10.5px;\n  --text-mono-xs: 10px;\n  --text-eyebrow: 9.5px;\n}\n"
 // The phone ramp is a second source, authoritative for a different scale.
+// The generator quotes the design system's own StatusDot sentence rather than
+// paraphrasing it, so the fixture carries the sentence it looks for.
+const readme = "# Fixture\n\nStatus is a `StatusDot`, not an icon: colour plus an adjacent text label, never colour alone.\n"
 const phoneRamp = ":root, .light {\n  --text-phone-body: 12.5px;\n  --text-phone-body-lh: 19px;\n  --text-phone-machine: 10px;\n}\n"
 
 test("reads only the tokens the manifest calls fonts", () => {
@@ -57,6 +60,7 @@ test("check reports staleness and names the command that fixes it", async () => 
     await mkdir(join(root, "design/design_system_domovoi/tokens"), { recursive: true })
     await writeFile(join(root, "design/design_system_domovoi/_adherence.oxlintrc.json"), JSON.stringify(manifest))
     await writeFile(join(root, "design/design_system_domovoi/tokens/typography.css"), typography)
+    await writeFile(join(root, "design/design_system_domovoi/readme.md"), readme)
     await mkdir(join(root, "packages/ui/src"), { recursive: true })
     await writeFile(join(root, "packages/ui/src/styles.css"), phoneRamp)
 
@@ -80,6 +84,7 @@ test("the generated module says where it came from and what it bans", async () =
     await mkdir(join(root, "design/design_system_domovoi/tokens"), { recursive: true })
     await writeFile(join(root, "design/design_system_domovoi/_adherence.oxlintrc.json"), JSON.stringify(manifest))
     await writeFile(join(root, "design/design_system_domovoi/tokens/typography.css"), typography)
+    await writeFile(join(root, "design/design_system_domovoi/readme.md"), readme)
     await mkdir(join(root, "packages/ui/src"), { recursive: true })
     await writeFile(join(root, "packages/ui/src/styles.css"), phoneRamp)
     const { module } = await generate(root)

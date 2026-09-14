@@ -29,8 +29,7 @@ import {
 import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { fleetMachines, transferTargets } from "./fleet-entries"
-import { type StatusMeaning } from "./status-dot"
-import { cn } from "./lib/utils"
+import { StatusDot, type StatusMeaning } from "./status-dot"
 import { machineAttachment } from "./machine-selection"
 import type { WorkspaceSurface } from "./workspace-persistence"
 import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
@@ -58,14 +57,6 @@ export type CommandSection = typeof commandSections[number]
 
 // The dot repeats what the meta line says in words, which is the rule here:
 // colour is never the only carrier of a meaning.
-const entityFill: Record<StatusMeaning, string> = {
-  online: "bg-success",
-  waiting: "bg-warning",
-  offline: "bg-destructive",
-  handoff: "bg-info",
-  idle: "bg-faint",
-}
-
 export type EntityKind = "PROJECT" | "SESSION" | "MACHINE" | "SKILL"
 
 export type WorkspaceCommand = {
@@ -430,11 +421,13 @@ export function CommandPalette({
                       }}
                     >
                       {command.kind ? (
-                        <span
-                          aria-hidden
+                        <StatusDot
+                          meaning={command.tone ?? "idle"}
+                          label={`${command.kind.toLowerCase()}, ${command.tone ?? "idle"}`}
+                          size="default"
+                          labelHidden
                           data-testid="entity-dot"
-                          data-status-dot=""
-                          className={cn("size-[7px] shrink-0 rounded-full", entityFill[command.tone ?? "idle"])}
+                          className="shrink-0"
                         />
                       ) : Icon ? <Icon /> : null}
                       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">

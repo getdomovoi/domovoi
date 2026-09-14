@@ -7,6 +7,7 @@ const repositoryRoot = resolve(scriptDirectory, "..")
 const manifestFile = "design/design_system_domovoi/_adherence.oxlintrc.json"
 const typographyFile = "design/design_system_domovoi/tokens/typography.css"
 const phoneStylesheet = "packages/ui/src/styles.css"
+const systemReadme = "design/design_system_domovoi/readme.md"
 const outputFile = "eslint.type-floor.generated.mjs"
 const regenerateCommand = "pnpm design:rule"
 
@@ -104,6 +105,20 @@ export function phoneFloorFrom(stylesheet) {
   return { floor, roles }
 }
 
+// The design system states this one outright, so the message is its sentence
+// rather than a paraphrase: reading it from the file means the rule cannot say
+// something the system does not. A selector cannot be derived from prose, but
+// the claim it enforces can be, and that is the half that drifts.
+export function statusDotSentence(readme) {
+  const line = readme.split("\n").find((candidate) => (
+    candidate.includes("StatusDot") && candidate.includes("never colour alone")
+  ))
+  if (!line) {
+    throw new Error(`${systemReadme}: no StatusDot sentence to quote; the rule would state a claim the design system does not`)
+  }
+  return line.replace(/^[-*]\s*/, "").replace(/`/g, "").trim()
+}
+
 export async function generate(root = repositoryRoot) {
   const manifest = JSON.parse(await readFile(join(root, manifestFile), "utf8"))
   const typography = await readFile(join(root, typographyFile), "utf8")
@@ -118,6 +133,7 @@ export async function generate(root = repositoryRoot) {
   const message = `Text below ${smallest}px has no token behind it on the desktop scale. Use ${roles} for a named role below ${floor}px, or ${utilities["--text-micro"]} for sans prose. Declared in ${typographyFile}.`
   const pattern = `text-\\\\[(?:${belowPattern(smallest)})px\\\\]`
   const phone = phoneFloorFrom(await readFile(join(root, phoneStylesheet), "utf8"))
+  const statusDot = statusDotSentence(await readFile(join(root, systemReadme), "utf8"))
   const phoneRoles = phone.roles.length > 1
     ? `${phone.roles.slice(0, -1).join(", ")} or ${phone.roles[phone.roles.length - 1]}`
     : phone.roles[0]
@@ -145,6 +161,23 @@ export async function generate(root = repositoryRoot) {
     `// from there rather than from the design system, which carries the desktop's`,
     `// and knows nothing about the phone's. Its floor is ${phone.floor}px with no role`,
     `// beneath it.`,
+    `// A bare coloured dot carries meaning by colour alone. The design system's`,
+    `// own sentence is the message, read from ${systemReadme} so this cannot`,
+    `// state a rule the system does not.`,
+    `//`,
+    `// It keys on data-status-dot, the marker this repository already puts on a`,
+    `// span that means a status, rather than on rounded-full styling. Styling`,
+    `// caught progress tracks, list bullets and a numbered step marker, none of`,
+    `// which carry meaning by colour. The limit is worth stating: a new raw dot`,
+    `// that does not declare itself is not reachable by a selector without`,
+    `// flagging every circle in the codebase.`,
+    `export const statusDotRules = [`,
+    `  {`,
+    `    selector: "JSXOpeningElement:has(JSXAttribute[name.name='data-status-dot'])",`,
+    `    message: ${JSON.stringify(`${statusDot} Use StatusDot, which keeps the label in the accessibility tree even when it is visually hidden.`)},`,
+    `  },`,
+    `]`,
+    ``,
     `export const phoneTypeFloorRules = [`,
     `  {`,
     `    selector: "Literal[value=/${phonePattern}/]",`,
@@ -157,7 +190,7 @@ export async function generate(root = repositoryRoot) {
     `]`,
     ``,
   ].join("\n")
-  return { module, floor, smallest, named, phone }
+  return { module, floor, smallest, named, phone, statusDot }
 }
 
 export async function writeDesignRule(root = repositoryRoot) {

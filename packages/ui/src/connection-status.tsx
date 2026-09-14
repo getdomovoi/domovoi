@@ -1,4 +1,5 @@
 import { Button } from "./components/ui/button"
+import { StatusDot } from "./status-dot"
 
 export function WorkspaceConnectionStatus(props: {
   connected: boolean
@@ -19,7 +20,7 @@ export function WorkspaceConnectionStatus(props: {
           aria-atomic="true"
           className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]"
         >
-          <span aria-hidden="true" data-status-dot="" className="size-2 shrink-0 rounded-full bg-destructive" />
+          <StatusDot meaning="offline" label="Disconnected" size="default" labelHidden className="shrink-0" />
           <span className="min-w-0 flex-1 break-words">
             This client is out of date with the daemon. {props.protocolError}
           </span>
@@ -32,7 +33,7 @@ export function WorkspaceConnectionStatus(props: {
           aria-atomic="true"
           className="flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]"
         >
-          <span aria-hidden="true" data-status-dot="" className="size-2 shrink-0 rounded-full bg-destructive" />
+          <StatusDot meaning="offline" label="Disconnected" size="default" labelHidden className="shrink-0" />
           <span className="min-w-0 flex-1 break-words">
             {props.connectionError
               ? `Reconnect failed: ${props.connectionError}`

@@ -184,6 +184,7 @@ import { AuditLogView } from "./audit-log-view"
 import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
 import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
+import { SessionListSkeleton, ThreadSkeleton } from "./loading-skeleton"
 import { WorkspaceRail } from "./workspace-rail"
 import { WorkingPlanCard } from "./working-plan"
 import { ComposerSkillChip } from "./composer-skills"
@@ -223,7 +224,7 @@ import {
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
 import type { SessionHistoryFocus } from "./session-history"
-import { StatusDot } from "./status-dot"
+import { StatusDot, type StatusMeaning } from "./status-dot"
 import {
   latestSessionHistoryRequest,
   historyWindowedAfterMerge,
@@ -382,25 +383,39 @@ export async function capturePreviewThumbnailState({
   }
 }
 
-const statusClass: Record<SessionSummary["state"], string> = {
-  active: "bg-success motion-safe:animate-pulse",
-  waiting: "bg-warning",
-  idle: "bg-faint",
-  done: "bg-faint",
-  failed: "bg-destructive",
-  archiving: "bg-warning",
-  archived: "bg-faint",
+// The states name a meaning rather than a colour now, so the palette lives in
+// StatusDot alone instead of being restated per surface.
+//
+// A status dot shows a state, never an event. A transfer is something that
+// happened to a session, not a condition it is in: after it completes the
+// session is running, idle or waiting on a gate, on the new machine. The test
+// that settles it is a session that moved and then raised a gate — it cannot be
+// both handoff-blue and gate-amber, and the gate is obviously the answer, which
+// means handoff was never a state, just a recent event wearing one's clothes.
+// Same error as calling provider handoffs "Transfers" in the filter list. A move
+// belongs in History, where events live.
+const statusMeaning: Record<SessionSummary["state"], StatusMeaning> = {
+  active: "online",
+  waiting: "waiting",
+  idle: "idle",
+  done: "idle",
+  failed: "offline",
+  archiving: "waiting",
+  archived: "idle",
   // A session mid-move is doing something; one that has moved is a recovery
   // point on this machine and reads as quiet rather than failed.
-  transferring: "bg-warning",
-  transferred: "bg-faint",
+  transferring: "waiting",
+  transferred: "idle",
   // Two machines claim this session. That is not quiet like a moved session,
   // and it is not in flight like a moving one, so it reads as a problem.
-  "ownership-conflict": "bg-destructive",
+  "ownership-conflict": "offline",
 }
 
-export function sessionStatusClass(session: Pick<SessionSummary, "state">): string {
-  return statusClass[session.state]
+// Exported so a test can prove every session state has a meaning. The map is
+// keyed on the union, so a new state fails typecheck rather than rendering no
+// dot, and this proves the table is reachable rather than only well-typed.
+export function sessionStatusMeaning(session: Pick<SessionSummary, "state">): StatusMeaning {
+  return statusMeaning[session.state]
 }
 
 export function restoreFocusAfterUpdate(
@@ -526,10 +541,12 @@ export function AppBar({
           <ChevronDownIcon data-icon="inline-end" />
         </Button>
         <Badge variant="machine">
-          <span aria-hidden="true" data-status-dot="" className={cn("size-1.5 rounded-full", connected ? "bg-success" : "bg-destructive")} />
-          <span className="sr-only">
-            {connected ? "Connected to " : "Disconnected from "}{snapshot?.machine.name ?? "daemon"}.
-          </span>
+          <StatusDot
+            meaning={connected ? "online" : "offline"}
+            label={`${connected ? "Connected to" : "Disconnected from"} ${snapshot?.machine.name ?? "daemon"}.`}
+            size="inline"
+            labelHidden
+          />
           <span className="hidden sm:inline">{snapshot?.machine.name ?? "daemon"}</span>
         </Badge>
       </div>
@@ -754,9 +771,14 @@ export function SessionRow({
       )}
     >
       <span className="flex w-full items-start gap-2">
-        <span aria-hidden="true" data-status-dot="" className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", statusClass[session.state])} />
+        <StatusDot
+          meaning={statusMeaning[session.state]}
+          label={`Status: ${session.state}`}
+          size="inline"
+          labelHidden
+          className={cn("mt-1.5", session.state === "active" && "motion-safe:animate-pulse")}
+        />
         <span className="line-clamp-2 text-[12.5px] font-medium leading-[1.35]">{session.title}</span>
-        <span className="sr-only">Status: {session.state}</span>
       </span>
       <span className="ml-3.5 flex flex-wrap items-center gap-1">
         <Badge variant="machine">{session.runtime.provider}/{session.runtime.model}</Badge>
@@ -1427,6 +1449,8 @@ export function Thread({
   onCheckpoint,
   onRestoreCheckpoint,
   restoreBusy = false,
+  pendingTransferTargetId = null,
+  onPendingTransferTargetChange,
   onPauseSession,
   onArchiveSession,
   onOpenExternal,
@@ -1475,6 +1499,9 @@ export function Thread({
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   // Set while a restore started anywhere in the shell is still running.
   restoreBusy?: boolean
+  // A transfer target named outside the thread, by the launcher.
+  pendingTransferTargetId?: string | null | undefined
+  onPendingTransferTargetChange?: ((machineId: string | null) => void) | undefined
   onPauseSession: (sessionId: string) => Promise<void>
   onArchiveSession: (sessionId: string) => Promise<void>
   onOpenExternal?: ((path: string) => Promise<void>) | undefined
@@ -1508,7 +1535,14 @@ export function Thread({
   const [skillRefusal, setSkillRefusal] = useState<TurnSkillSelectionRefusal | undefined>(undefined)
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
   const [pairingMachine, setPairingMachine] = useState(false)
-  const [transferTargetId, setTransferTargetId] = useState<string | null>(null)
+  const [ownTransferTargetId, setOwnTransferTargetId] = useState<string | null>(null)
+  // The composer's machine menu and the launcher both name a target. The shell
+  // owns it when it supplies one, so either route reaches the same dialog.
+  const transferTargetId = pendingTransferTargetId ?? ownTransferTargetId
+  const setTransferTargetId = (machineId: string | null) => {
+    setOwnTransferTargetId(machineId)
+    onPendingTransferTargetChange?.(machineId)
+  }
   const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
   const [pending, setPending] = useState(false)
   const [runtimePending, setRuntimePending] = useState(false)
@@ -2652,8 +2686,24 @@ export function HistoryPanel({
           })}
           </div>
           ) : null}
+          {/* Same pair as the audit log, and the same fix. A session before its
+              first turn has nothing narrowing its history: every category is
+              selected and the search is empty, so "change filters" names a
+              control that is already showing everything. */}
           {!loading && !error && page?.items.length === 0 ? (
-            <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia><EmptyTitle>No matching history</EmptyTitle><EmptyDescription>Change filters or search terms.</EmptyDescription></EmptyHeader></Empty>
+            <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia>
+              {categories.length === sessionHistoryCategories.length && query.trim() === "" ? (
+                <>
+                  <EmptyTitle>Nothing has happened in this session yet</EmptyTitle>
+                  <EmptyDescription>Turns, approvals and checkpoints appear here as they happen.</EmptyDescription>
+                </>
+              ) : (
+                <>
+                  <EmptyTitle>No matching history</EmptyTitle>
+                  <EmptyDescription>Change filters or search terms.</EmptyDescription>
+                </>
+              )}
+            </EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-3"><CircleStopIcon /><AlertTitle>History unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
           {historyWindowed ? <Button className="my-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={backToLatest}>Back to latest</Button> : null}
@@ -3620,16 +3670,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (attached && remote.authenticationRequired) accessSession.refuse(attached.machineId, remote.authenticationRequired)
   }, [attached, remote.authenticationRequired, accessSession])
 
-  const switchMachine = useCallback((machineId: string) => {
+  const switchMachine = useCallback((machineId: string): boolean => {
     if (machineId === homeMachineId) {
       setAttached(null)
-      return
+      return true
     }
     const machine = fleetMachines(fleet?.entries ?? []).find((candidate) => candidate.id === machineId)
-    if (!machine) return
+    if (!machine) return false
     const selected = accessSession.access(machineId)
-    if (!home.connected || !selected || !machineAttachment(machine, true).selectable) return
+    if (!home.connected || !selected || !machineAttachment(machine, true).selectable) return false
     setAttached({ machineId })
+    return true
   }, [fleet, homeMachineId, accessSession, home.connected])
   const removeClientAccess = (machineId: string) => {
     accessSession.remove(machineId)
@@ -3654,6 +3705,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [requestedSkillId, setRequestedSkillId] = useState<string>()
   const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
+  // A launch the palette asked for on a named machine. It becomes a launcher
+  // only when that machine is the one attached and its snapshot has a project.
+  const [launchIntent, setLaunchIntent] = useState<{ machineId: string } | null>(null)
   const [launcherProjectNote, setLauncherProjectNote] = useState("")
   const [notificationDelivery, setNotificationDelivery] = useState<WorkspaceNotificationDelivery | undefined>(
     () => platform?.notifications.delivery(),
@@ -4064,6 +4118,33 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     activateSession: openSessionInWorkspace,
     selectMachine: switchMachine,
     openCheckpoints,
+    // Cmd+Enter on a machine starts a session there: attach to that daemon,
+    // then open the launcher on it. The intent names the machine, and the
+    // launcher opens only once that machine's snapshot is the one on screen;
+    // a refused or abandoned attachment drops it rather than opening the form
+    // on whichever daemon is left.
+    startSessionOn: (machineId: string) => {
+      if (!switchMachine(machineId)) return
+      setLaunchIntent({ machineId })
+    },
+    // The launcher names the target. The preflight takes the decision, so this
+    // opens the transfer dialog and never moves anything itself. The intent is
+    // bound to the session and the machine it was made on: the dialog opens
+    // only once that session is the active one, and a refused activation or a
+    // switch of daemon drops the intent rather than handing it to whichever
+    // session is on screen.
+    previewTransferTo: (sessionId: string, machineId: string) => {
+      setSurface("workspace")
+      setWorkspaceError("")
+      const sourceMachineId = attached?.machineId ?? snapshot?.machine.id ?? null
+      setLauncherTransfer({ sessionId, machineId, sourceMachineId, opened: false })
+      void activateSession(sessionId).catch((cause: unknown) => {
+        setLauncherTransfer((current) => current?.sessionId === sessionId ? null : current)
+        setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
+      })
+    },
+    currentMachineId: attached?.machineId ?? snapshot?.machine.id,
+    transferEntries: attached ? remote.fleet?.entries ?? [] : fleet?.entries,
     openSkill: (skillId) => {
       setRequestedSkillId(skillId)
       setSurface("skills")
@@ -4076,6 +4157,42 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // pending operations and the dock cannot see that state, so a restore started
   // from either one has to hold the other shut until it answers.
   const [checkpointRestorePending, setCheckpointRestorePending] = useState(false)
+  // Named by the launcher, consumed by the thread's transfer dialog once the
+  // named session is the active one on the daemon it was named on.
+  // `opened` separates an intent still waiting for its session to activate
+  // from one whose dialog has been shown: leaving the session after that is
+  // leaving the dialog, so the intent goes with it rather than waiting to
+  // reappear when the session is next active.
+  const [launcherTransfer, setLauncherTransfer] = useState<{ sessionId: string; machineId: string; sourceMachineId: string | null; opened: boolean } | null>(null)
+  const launcherTransferMachineId = attached?.machineId ?? snapshot?.machine.id ?? null
+  const launcherTransferTargetId = launcherTransfer
+    && launcherTransfer.sessionId === snapshot?.activeSessionId
+    && launcherTransfer.sourceMachineId === launcherTransferMachineId
+    ? launcherTransfer.machineId
+    : null
+  const activeSessionId = snapshot?.activeSessionId ?? null
+  useEffect(() => {
+    if (!launcherTransfer) return
+    if (launcherTransfer.sourceMachineId !== launcherTransferMachineId) { setLauncherTransfer(null); return }
+    if (launcherTransfer.sessionId === activeSessionId) {
+      if (!launcherTransfer.opened) setLauncherTransfer({ ...launcherTransfer, opened: true })
+    } else if (launcherTransfer.opened) {
+      setLauncherTransfer(null)
+    }
+  }, [launcherTransfer, launcherTransferMachineId, activeSessionId])
+  useEffect(() => {
+    if (!launchIntent) return
+    const onMachine = (attached?.machineId ?? homeMachineId) === launchIntent.machineId
+    if (!onMachine) { setLaunchIntent(null); return }
+    if (!connected || !snapshot?.project) return
+    setLaunchIntent(null)
+    setLauncherMode("session")
+  }, [launchIntent, attached, homeMachineId, connected, snapshot])
+  const setLauncherTransferTargetId = (machineId: string | null) => {
+    if (machineId === null) { setLauncherTransfer(null); return }
+    const sessionId = snapshot?.activeSessionId
+    if (sessionId) setLauncherTransfer({ sessionId, machineId, sourceMachineId: launcherTransferMachineId, opened: true })
+  }
   // Both surfaces restore through this one function, so an attempt started from
   // either holds the other shut for as long as it runs.
   const restoreCheckpointGuarded = async (sessionId: string, checkpointId: string) => {
@@ -4095,6 +4212,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     })
   }
   // One dock, rendered either as the pinned panel or inside the floating sheet.
+  // Named before the snapshot exists, because the snapshot is what is being
+  // waited for. The endpoint is what this client actually knows it is reading.
+  const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
   const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} historyFocus={historyFocus} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
@@ -4477,7 +4597,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
@@ -4501,14 +4621,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           </div>
           )}
         </div> : (
+          // The design draws this as skeletons in the shape of what is coming
+          // rather than a centred sentence, so the sidebar and thread do not
+          // appear from nothing and shift the layout under a cursor. The line
+          // naming the machine stays: a shape alone would claim rows are
+          // definitely coming, and the daemon has not said so yet.
           <main className="flex min-h-0 flex-1 bg-background">
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><DomovoiMark reduced className="size-5" /></EmptyMedia>
-                <EmptyTitle asChild><h1>Connecting to the daemon</h1></EmptyTitle>
-                <EmptyDescription>Domovoi will show workspace state after the execution machine responds.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <h1 className="sr-only">Connecting to the daemon</h1>
+            <div className="flex w-[var(--shell-sidebar)] shrink-0 flex-col border-r bg-sidebar">
+              <SessionListSkeleton reading={readingLabel} />
+            </div>
+            <ThreadSkeleton reading={readingLabel} />
           </main>
         )}
         {workspaceError ? (
@@ -4554,6 +4677,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           commands={workspaceCommands}
           onOpenChange={setCommandPaletteOpen}
           restoreFocusTo={commandPaletteFocusRef.current}
+          {...(firstRunEnabled ? {
+            onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
+          } : {})}
         />
         {firstRunEnabled ? (
           <DesktopFirstRunDialog
