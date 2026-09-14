@@ -2551,6 +2551,9 @@ export function HistoryPanel({
             variant={categories.length === sessionHistoryCategories.length ? "secondary" : "ghost"}
             aria-pressed={categories.length === sessionHistoryCategories.length}
             onClick={() => {
+              // Already the state: nothing to reload, and clearing the page
+              // with the filter unchanged would leave it empty for good.
+              if (categories.length === sessionHistoryCategories.length) return
               setPage(undefined)
               setCategories(sessionHistoryCategories.map(({ value }) => value))
             }}
@@ -2591,7 +2594,10 @@ export function HistoryPanel({
                     <span className="min-w-0 flex-1 truncate text-[12px] font-medium">{sessionHistoryEntryTitle(entry)}</span>
                     <Badge variant="outline" className="shrink-0 font-machine text-mono-xs">{entry.category}</Badge>
                   </div>
-                  {detail ? <p data-testid="history-meta" className="truncate font-machine text-mono-xs text-muted-foreground">{detail}</p> : null}
+                  {/* Wraps rather than truncates: the scroll viewport's content
+                      box grows to its widest child, so a truncated line widens
+                      the whole list and the viewport hides the rest. */}
+                  {detail ? <p data-testid="history-meta" className="break-words font-machine text-mono-xs text-muted-foreground">{detail}</p> : null}
                   {body ? (
                     // The row says what happened in one line. What it produced
                     // is still here, it just stops being the row.
