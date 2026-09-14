@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest"
 import { z } from "zod"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { fixtureStartupTimeoutMs, waitForFixtureStartup } from "./test-wait-for.js"
-import { recoveryFixtureBudgets, runRecoveryPhase } from "./test-workspace-recovery.js"
+import { fixtureStartupTimeoutMs } from "./test-wait-for.js"
+import { cleanupRecoveryWriters, recoveryFixtureBudgets, runRecoveryPhase, waitForRecoveryCondition } from "./test-workspace-recovery.js"
 import { GitWorkspaceService } from "./workspace.js"
 
 const execute = promisify(execFile)
@@ -32,6 +32,7 @@ describe("worktree crash recovery", () => {
     let gitPid: number | undefined
     let holdPid: number | undefined
     let holdParentPid: number | undefined
+    const failures: unknown[] = []
     const stateOf = (pid: number | undefined) => {
       if (pid === undefined) return "unrecorded"
       try { process.kill(pid, 0); return "alive" } catch (error) {
@@ -43,11 +44,8 @@ describe("worktree crash recovery", () => {
       owner: { pid: child?.pid, state: stateOf(child?.pid) },
       git: { pid: gitPid, state: stateOf(gitPid) }, descendant: { pid: holdPid, state: stateOf(holdPid) },
       descendantParent: { pid: holdParentPid, state: stateOf(holdParentPid) } }))
-    const waitForGitExit = () => waitForFixtureStartup("owned writer exit", () => {
-      for (const pid of new Set([gitPid, holdPid, holdParentPid])) {
-        if (pid !== undefined && stateOf(pid) !== "absent") throw new Error(`Owned writer ${pid} is still alive`)
-      }
-    })
+    const waitForGitExit = (deadline: OperationDeadline) => waitForRecoveryCondition(deadline,
+      () => [gitPid, holdPid, holdParentPid].every((pid) => pid === undefined || stateOf(pid) === "absent"))
     try {
       await runRecoveryPhase("repository", sequence, budgets.phaseMs, async (deadline) => {
         const git = (args: string[]) => execute("git", args, {
@@ -76,13 +74,18 @@ describe("worktree crash recovery", () => {
         })
       })
       if (mode !== "before-git") {
-        await runRecoveryPhase("writer startup", sequence, budgets.phaseMs, () => waitForFixtureStartup("Git child holding after launch", async () => {
-          const holding = JSON.parse(await readFile(join(root, "child-ready"), "utf8")) as { pid: number; parentPid: number }
+        await runRecoveryPhase("writer startup", sequence, budgets.phaseMs, (deadline) => waitForRecoveryCondition(deadline, async () => {
+          let holding: { pid: number; parentPid: number }
+          try { holding = JSON.parse(await readFile(join(root, "child-ready"), "utf8")) as typeof holding } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) return false
+            throw error
+          }
           expect(Number.isSafeInteger(holding.pid) && holding.pid > 0).toBe(true)
           expect(Number.isSafeInteger(holding.parentPid) && holding.parentPid > 0).toBe(true)
           holdPid = holding.pid
           holdParentPid = holding.parentPid
           console.info(JSON.stringify({ phase: "descendant-ready", ...holding }))
+          return true
         }))
         const owner = JSON.parse(await readFile(join(root, ".restore-leases", "session-recovery.json"), "utf8")) as { children: number[] }
         expect(owner.children).toHaveLength(1)
@@ -106,14 +109,14 @@ describe("worktree crash recovery", () => {
         if (mode !== "before-git") {
           if (mode === "after-git-death") {
             if (stateOf(gitPid) === "alive") process.kill(gitPid!, "SIGKILL")
-            await waitForFixtureStartup("recorded Git launcher exit", () => expect(stateOf(gitPid)).toBe("absent"))
+            await waitForRecoveryCondition(deadline, () => stateOf(gitPid) === "absent")
             expect(stateOf(holdPid)).toBe("alive")
           }
           recordWriters("after-owner-death")
           await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }, deadline.signal))
             .rejects.toThrow(stateOf(gitPid) === "alive" ? `Recorded Git child ${gitPid} is still alive` : "descendant liveness")
           await writeFile(join(root, "child-release"), "finish")
-          await waitForGitExit()
+          await waitForGitExit(deadline)
           recordWriters("after-writer-release")
           await expect(successor.restoreSessionFromBundle(bundle, "session-recovery", { repositoryPath: repository }, deadline.signal))
             .rejects.toThrow("descendant liveness")
@@ -127,25 +130,29 @@ describe("worktree crash recovery", () => {
           .resolves.toMatchObject({ branch: "domovoi/session-recovery" })
         await expect(readFile(join(root, "session-recovery", "README.md"), "utf8")).resolves.toBe("preserved work\n")
       })
-    } finally {
-      sequence.clear()
-      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
-      const cleanup = OperationDeadline.start(budgets.cleanupMs)
-      try {
-        await runRecoveryPhase("cleanup", cleanup, budgets.cleanupMs, async (deadline) => {
-          if (mode !== "before-git") {
-            await writeFile(join(root, "child-release"), "finish")
-            await waitForGitExit()
-          }
-          if (exited) await beforeDeadline(exited, deadline)
-          const expired = await readFile(join(root, "child-expired"), "utf8").catch((error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return undefined
-            throw error
-          })
-          if (expired !== undefined) throw new Error(`Holding writer exhausted its fixture watchdog: ${expired}`)
-        })
-      } finally { cleanup.clear() }
+    } catch (error) {
+      failures.push(error)
+    } finally { sequence.clear() }
+
+    try {
+      await cleanupRecoveryWriters({
+        pids: () => [child?.pid, gitPid, holdPid, holdParentPid].filter((pid) => pid !== undefined),
+        isAlive: (pid) => stateOf(pid) === "alive", kill: (pid) => { process.kill(pid, "SIGKILL") }, exited,
+        release: async () => {
+          if (mode !== "before-git") await writeFile(join(root, "child-release"), "finish")
+          if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+        },
+      }, budgets.cleanupMs, budgets.reapMs)
+      const expired = await readFile(join(root, "child-expired"), "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined
+        throw error
+      })
+      if (expired !== undefined) throw new Error(`Holding writer exhausted its fixture watchdog: ${expired}`)
+    } catch (error) {
+      failures.push(error)
     }
+    if (failures.length === 1) throw failures[0]
+    if (failures.length > 1) throw new AggregateError(failures, "Recovery proof and fixture cleanup failed", { cause: failures[0] })
   }, budgets.testMs)
 })
 

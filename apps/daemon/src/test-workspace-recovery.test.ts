@@ -66,7 +66,7 @@ describe("workspace recovery fixture lifetime", () => {
         await vi.advanceTimersByTimeAsync(budgets.holderMs)
         expect(expired).not.toHaveBeenCalled()
       } else {
-        await vi.advanceTimersByTimeAsync(budgets.cleanupMs)
+        await vi.advanceTimersByTimeAsync(budgets.cleanupMs + budgets.reapMs)
         expect(expired).toHaveBeenCalledExactlyOnceWith()
         expect(vi.getTimerCount()).toBe(0)
       }
