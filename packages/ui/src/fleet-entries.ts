@@ -20,6 +20,23 @@ export function fleetMachines(entries: readonly FleetEntry[]): FleetMachine[] {
   return entries.flatMap(entryMachines)
 }
 
+// Where a session can be moved to. A move lands on a daemon, so only a machine
+// entry names one, and the machine it is already on is not a destination.
+// Every surface offering a move derives from this: two of them restating the
+// rule would drift, and the launcher and the composer must agree about what is
+// transferable.
+export function transferTargets({
+  entries,
+  transferEntries,
+  currentMachineId,
+}: {
+  entries: readonly FleetEntry[]
+  transferEntries?: readonly FleetEntry[] | undefined
+  currentMachineId: string
+}): FleetMachine[] {
+  return fleetMachines(transferEntries ?? entries).filter((machine) => machine.id !== currentMachineId)
+}
+
 export function shortMachineId(machineId: string): string {
   return `${machineId.slice(0, 16)}…`
 }
