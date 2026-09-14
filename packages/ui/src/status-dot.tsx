@@ -39,7 +39,10 @@ export function StatusDot({
 }) {
   return (
     <span className={cn("inline-flex items-center", labelHidden ? "" : "gap-2", className)}>
-      <span aria-hidden className={cn("shrink-0 rounded-full", diameter[size], fill[meaning])} />
+      {/* The forced-colors override in styles.css keys on this marker, so the
+          atom keeps it; the lint rule exempts this file, which is the one
+          place the marker belongs. */}
+      <span aria-hidden data-status-dot="" className={cn("shrink-0 rounded-full", diameter[size], fill[meaning])} />
       <span className={labelHidden ? "sr-only" : "text-[11.5px] text-muted-foreground"}>{label}</span>
     </span>
   )
