@@ -149,7 +149,7 @@ export function createDesktopWindowBridge(
       if (value !== undefined && typeof value !== "string") throw new Error("Desktop returned an invalid relay pin")
       return value
     },
-    writeRelayPin: async (key, value) => { booleanResult(await ipc.invoke("domovoi:relay-pin-write", key, value), "relay pin write") },
+    swapRelayPin: async (key, expected, replacement) => booleanResult(await ipc.invoke("domovoi:relay-pin-swap", key, expected, replacement), "relay pin swap"),
     acquireDaemon,
     reacquireDaemon: async () => daemonAcquisitionResult(await ipc.invoke("domovoi:rpc-endpoint-reconnect")),
     getRpcEndpoint: async () => {

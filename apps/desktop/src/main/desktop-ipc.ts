@@ -37,7 +37,7 @@ export type DesktopDeepLinkSink = (link: DesktopDeepLink) => void
 export type DesktopIpcDependencies = {
   fleetRoute?(machineId: string, budgetMs: number): Promise<unknown>
   forgetFleetRoute?(machineId: string): void
-  relayPins?: { read(key: string): Promise<string | undefined>; write(key: string, value: string): Promise<void> }
+  relayPins?: { read(key: string): Promise<string | undefined>; compareAndSwap(key: string, expected: string | undefined, replacement: string): Promise<boolean> }
   authorized(event: DesktopIpcEvent): boolean
   mainWindow(): DesktopIpcWindow | undefined
   focusMainWindow(): void
@@ -119,11 +119,10 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
     if (!deps.relayPins) throw new Error("Relay pins are unavailable")
     return deps.relayPins.read(key as string)
   })
-  ipcMain.handle("domovoi:relay-pin-write", async (event, key, value) => {
+  ipcMain.handle("domovoi:relay-pin-swap", (event, key, expected, replacement) => {
     daemonRequest(event)
     if (!deps.relayPins) throw new Error("Relay pins are unavailable")
-    await deps.relayPins.write(key as string, value as string)
-    return true
+    return deps.relayPins.compareAndSwap(key as string, expected as string | undefined, replacement as string)
   })
   ipcMain.handle("domovoi:capture-annotation", async (event, rect: unknown) => {
     const window = deps.authorized(event) ? deps.mainWindow() : undefined
