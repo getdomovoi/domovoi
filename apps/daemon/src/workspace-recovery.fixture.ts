@@ -1,22 +1,24 @@
 import { GitWorkspaceService } from "./workspace.js"
 import { trackRestoreCommand } from "./workspace-restore-lease.js"
 import { execFile } from "node:child_process"
-import { existsSync, writeFileSync } from "node:fs"
+import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
+import { holdRecoveryWriter } from "./test-workspace-recovery.js"
+import { validateOperationDeadlineBudget } from "./operation-deadline.js"
 
-const [root, repository, bundle, mode = "before-git"] = process.argv.slice(2)
+const [root, repository, bundle, mode = "before-git", holderBudget] = process.argv.slice(2)
 if (!root) throw new Error("Missing workspace recovery fixture root")
+const holderMs = Number(holderBudget)
+validateOperationDeadlineBudget(holderMs)
 
 if (mode === "hold-child") {
   writeFileSync(join(root, "child-ready"), JSON.stringify({ pid: process.pid, parentPid: process.ppid }))
-  const timeout = setTimeout(() => process.exit(1), 20_000)
-  const timer = setInterval(() => {
-    if (!existsSync(join(root, "child-release"))) return
-    clearTimeout(timeout)
-    clearInterval(timer)
-  }, 25)
+  holdRecoveryWriter(root, holderMs, () => {
+    writeFileSync(join(root, "child-expired"), JSON.stringify({ pid: process.pid, holderMs }))
+    process.exit(1)
+  })
 } else {
   if (!repository || !bundle || !process.send) throw new Error("Missing workspace recovery fixture input")
   const workspace = new GitWorkspaceService(root)
@@ -26,7 +28,7 @@ if (mode === "hold-child") {
       const abort = new AbortController()
       if (mode === "after-git-abort") process.once("message", () => abort.abort())
       const quote = (value: string) => `'${value.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`
-      const command = [process.execPath, "--import", import.meta.resolve("tsx"), fileURLToPath(import.meta.url), root, repository, bundle, "hold-child"]
+      const command = [process.execPath, "--import", import.meta.resolve("tsx"), fileURLToPath(import.meta.url), root, repository, bundle, "hold-child", String(holderMs)]
         .map(quote).join(" ")
       await trackRestoreCommand(() => promisify(execFile)("git", ["-C", repository, "-c", `alias.hold=!${command}`, "hold"], { signal: abort.signal, killSignal: "SIGKILL" }))
     } else {
