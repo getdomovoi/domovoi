@@ -42,7 +42,7 @@
     "@types/node": "^26.4.0",
     "@types/react": "~19.2.2",
     "@vitest/coverage-v8": "catalog:",
-    "jest": "^29.7.0",
+    "jest": "^30.5.1",
     "jest-expo": "~57.0.5",
     "tailwindcss": "^3.4.17",
     "test-renderer": "^1.2.0",
