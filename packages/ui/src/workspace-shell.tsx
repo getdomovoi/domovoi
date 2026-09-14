@@ -2575,7 +2575,12 @@ export function HistoryPanel({
         </div>
       </div>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col p-3">
+        {/* The viewport lays its content out as a table that grows to the
+            widest child, so a one-line title with nowrap would widen the whole
+            list past the viewport instead of ellipsing. w-0 with min-w-full
+            contributes no intrinsic width to that table and still fills it,
+            so the rows are bound to the viewport and truncate has an edge. */}
+        <div data-testid="history-content" className="flex w-0 min-w-full flex-col p-3">
           {page?.items.length ? (
           <div data-testid="history-rows" className="rounded-xl border">
           {page.items.map((entry) => {

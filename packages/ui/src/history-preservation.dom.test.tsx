@@ -75,3 +75,19 @@ it('wraps the meta line rather than truncating it', async () => {
   expect(meta.className).not.toMatch(/\btruncate\b/)
   expect(meta.className).toMatch(/break-words/)
 })
+
+// A nowrap title inside the viewport's table layout widened the list to 920px
+// at 400px (measured in Chromium) because the table grows to its widest child.
+// The content wrapper contributes no intrinsic width and fills the viewport,
+// which is what gives the title's ellipsis an edge to stop at.
+it('binds the list to the viewport so a long title can ellipse', async () => {
+  const item = sessionHistoryEntrySchema.parse({ ...base, category: 'approvals', decision: 'allow-once',
+    operation: 'write the billing migration and retry tests for customer invoice reconciliation before the scheduled release window',
+    checkpoint: 'checkpoint-approval-boundary-7f23abcd', client: 'desktop', connectionId: '3ff847f2-31a6-4357-ae76-5584e0e06f14' })
+  const page = sessionHistoryPageSchema.parse({ sessionId: base.sessionId, items: [item], hasMore: false })
+  render(<HistoryPanel sessionId={base.sessionId} connected onLoad={async () => page} />)
+  await act(async () => { for (let i = 0; i < 8; i++) await Promise.resolve() })
+  const content = screen.getByTestId('history-content')
+  expect(content.className).toMatch(/\bw-0\b/)
+  expect(content.className).toMatch(/\bmin-w-full\b/)
+})
