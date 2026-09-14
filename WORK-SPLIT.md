@@ -308,24 +308,24 @@ Ticked here under rule 7: Codex did the work, this file is Claude Code's, so the
 carries Codex's sha rather than a second agent's edit.
 - [x] Normalize adapter token reporting. One of the two was already fixed when this line was
       written: `claude.ts` by 33b2737 on 2026-09-07. OpenCode's `tokens.cache.read` and
-      `.write` now fold into `inputTokens` in `usage.ts` (1dd6e97).
+      `.write` now fold into `inputTokens` in `usage.ts` (4359bcf9).
 - [x] `acp.ts:296` gives `totalTokens` and `contextTokens` the same `update.used` value.
       Fixed by deleting the total rather than guessing one; the record says
-      `tokens: "unavailable"` (1dd6e97).
+      `tokens: "unavailable"` (4359bcf9).
 - [x] Capture the model at dispatch. `server.ts:6903` writes usage against
       `session.runtime.model`, and `server.ts:5835` can change it on a same-provider update,
-      so the record must keep requested model distinct from provider-reported (1dd6e97).
+      so the record must keep requested model distinct from provider-reported (4359bcf9).
 - [x] Persist accounting plus its dedup and coverage state across restart and transfer
-      (1dd6e97).
+      (4359bcf9).
 - [x] Five hazards, all in scope: duplicate events, late events, failures, restart, transfer
-      (1dd6e97).
+      (4359bcf9).
 - [x] Never infer a turn link from a timestamp or row position. OpenCode's turn id now comes
       from `info.parentID` rather than the active turn, so a late message lands on the turn
-      that produced it (1dd6e97).
+      that produced it (4359bcf9).
 - [x] Not in the original list, found by Codex reproducing an inference rather than
       inheriting it: `opencode.ts` called `normalizeProviderUsage` unguarded where
       `claude.ts` wrapped it, so a cache read above the input count threw out of `#receive`.
-      It now emits a record marked `invalid` instead (1dd6e97).
+      It now emits a record marked `invalid` instead (4359bcf9).
 - Out of scope: new turn records, ordinals, message associations. Those are `CX2`.
 - What Claude Code verified directly: the four defects are addressed in the diff, and
   `usage.test.ts`, `acp.test.ts` and `opencode.test.ts` pass, 59 tests. The accounting
@@ -334,11 +334,11 @@ carries Codex's sha rather than a second agent's edit.
 
 ### CX2 · Turn records, ordinals, message associations — 2-3 d
 Ticked under rule 7: Codex's work, Claude Code's file, so the citation carries Codex's shas.
-- [x] Durable per-turn record with an ordinal (6af4efe, 3e201c7).
+- [x] Durable per-turn record with an ordinal (e7364720, 84d90d50).
 - [x] Associate messages with turns. Two dispatch paths: `server.ts:6504` steers an active
-      turn, `server.ts:6595` appends another user message — a message is not a turn (3b2f7f1).
-- [x] Expose the history-to-turn link so a history row can name its turn (3e201c7). `CC1`'s
-      meta draws it in 28812d8.
+      turn, `server.ts:6595` appends another user message — a message is not a turn (1991666a).
+- [x] Expose the history-to-turn link so a history row can name its turn (84d90d50). `CC1`'s
+      meta draws it in f3252e50.
 - Legacy history stays unnumbered rather than defaulted, and `coverage` says how much of a
   turn the daemon actually saw, so the client can refuse to present a floor as a total.
 
@@ -349,14 +349,14 @@ Ticked under rule 7: Codex's work, Claude Code's file, so the citation carries C
       shows the first.
 
 ### CX5 · Record the session-start checkpoint — accepted and landed
-Raised 2026-09-10 while working `CC1`, accepted by Codex the same day (37e2b45, 25b94f0), and
+Raised 2026-09-10 while working `CC1`, accepted by Codex the same day (2adb1171, f9cf76bb), and
 `docs/checkpoint-reasons.md` is the contract. Codex caught a second failure in the original
 ask that Claude Code had missed: `baseCommit` is mutable, so comparing against it does not
 just collide, it changes meaning over time.
 - [x] Push a checkpoint thread item when a session worktree is created, carrying the
-      `baseCommit` that `createSessionWorkspace` already returns (25b94f0).
+      `baseCommit` that `createSessionWorkspace` already returns (f9cf76bb).
 - [x] Give the checkpoint thread item a `reason`, and make `session-start` its seventh value.
-      Landed with eight reasons and legacy rows left absent rather than defaulted (37e2b45).
+      Landed with eight reasons and legacy rows left absent rather than defaulted (2adb1171).
       The schema is `{ kind: "checkpoint", label, commit?, createdAt }` (`schema.ts:502-505`);
       the reason exists already but only inside the label prose — `forked checkpoint`,
       a user's own words, `before restore`, `before revert <path>`, `before provider
@@ -381,29 +381,29 @@ just collide, it changes meaning over time.
 ## Claude Code
 
 ### CC1 · Finish the history row — blocked on CX2 for the last part
-- [x] `<pre>` out of the row, meta on one line, body in a collapsed `details` (d1f974f).
+- [x] `<pre>` out of the row, meta on one line, body in a collapsed `details` (f3252e50).
 - [x] Checkpoint title drops the sha; title names the checkpoint, meta names the commit
-      (d1f974f).
+      (f3252e50).
 - [x] Fork wired on checkpoint rows only, with a confirm stating both halves
-      (d1f974f, 6e38abf).
-- [x] The card: `1px --border`, `--radius`, rows separated by a border (d1f974f).
-- [x] Left **42px mono time column**, pinned by `history-row.dom.test.tsx` (d1f974f).
+      (f3252e50, f3252e50).
+- [x] The card: `1px --border`, `--radius`, rows separated by a border (f3252e50).
+- [x] Left **42px mono time column**, pinned by `history-row.dom.test.tsx` (f3252e50).
 - [x] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
-      `bg-primary` on every row (d1f974f).
+      `bg-primary` on every row (f3252e50).
 - [x] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — after CX2
-      (6af4efe, 3b2f7f1, 3e201c7 by Codex; drawn in 28812d8). The row also repeats what the
+      (e7364720, 1991666a, 84d90d50 by Codex; drawn in f3252e50). The row also repeats what the
       turn says about its own completeness: pending reads `running`, unavailable says so, and
       partial is marked rather than passing its floor off as a total.
 - [x] Record execution duration as an unfilled design field, not a satisfied one:
       `sessionHistoryEntryDetail`'s field 4 names it and says why only decision latency
-      can be measured today (d1f974f).
-- [x] The session-start checkpoint gets **no** fork (37e2b45, 25b94f0 by Codex; drawn in
-      28812d8). Fork is absent rather than disabled, because a disabled control still says the
+      can be measured today (f3252e50).
+- [x] The session-start checkpoint gets **no** fork (2adb1171, f9cf76bb by Codex; drawn in
+      f3252e50). Fork is absent rather than disabled, because a disabled control still says the
       decision exists, and the meta reads `session start · nothing to revert past this`.
       Restore stays: going back to it is exactly what it is for. A legacy checkpoint carries no
       reason and is never guessed into this branch.
 - [x] Turn-row fork is **closed as a design error**, not left open as a daemon request
-      (28812d8 keeps fork checkpoint-only). fetzy's earlier "blocked on `CX2`" ruling was wrong,
+      (f3252e50 keeps fork checkpoint-only). fetzy's earlier "blocked on `CX2`" ruling was wrong,
       and so was its reasoning: the obstacle was never turn identity. Fork restores a worktree
       and turns do not each have one — most turns write nothing, so forking "from turn 8" and
       "from turn 9" lands on identical filesystem state, and `session.fork` does not replay
@@ -466,11 +466,11 @@ building them:
 - [ ] **Phone v2** — `apps/mobile/src/screens/` already has nine: approval, artifact,
       deny-explain, fleet, review, session, sessions, settings, unpaired. Design has 19
       frames. Diff the sets before writing anything.
-  - [x] The diff is done, read-only, 2026-09-10 (89cabfd). Eight frames built, eight partial,
+  - [x] The diff is done, read-only, 2026-09-10 (7f24d8c7). Eight frames built, eight partial,
         three with nothing: 09 pairing by camera, 13 and 14 attachments, 19 pinned plan sheet.
         Estimate for the rest of Phone v2 is 13-15 days, which is what `SHIP-PLAN.md`'s `S3.3`
         line costs. Full table in `~/.agents/plans/2026-09-10-domovoi-cc5-phone-v2-diff.md`.
-  - [x] No frame is blocked on Codex (02b6c7d). Checked before raising a request, and the
+  - [x] No frame is blocked on Codex (34282f89). Checked before raising a request, and the
         request was not warranted: `terminalOwnershipNotificationSchema` (`rpc.ts:918`) already
         carries `owner: { client, clientId }` for frame 04, and `annotationAnchorSchema`
         (`schema.ts:762`) already takes a `bbox` beside the selector and quote for frame 18.
@@ -486,12 +486,12 @@ building them:
     (`packages/ui/src/session-groups.ts:24,72`) have no callers outside their own test. The
     desktop already models the three groups the phone design draws, and nothing renders them.
     Belongs to `CC7` rather than Phone v2.
-- [x] **Web v2** — diffed 2026-09-10 (02b6c7d). Two of six steps built, one partial, three with
+- [x] **Web v2** — diffed 2026-09-10 (34282f89). Two of six steps built, one partial, three with
       nothing: picking a machine, carrying on without the terminal, and Design review. 6-8 days.
       The machine picker stays in `S3.2` and is **marked blocked on Phase 2** rather than moved:
       a browser cannot reach a second machine without the relay or a tailnet route, so part of
       Web v2 cannot land before the relay and Web is not a fully parallel Phase 3 surface.
-- [x] **Onboarding** — diffed 2026-09-10 (02b6c7d). Two of five steps built. 4-5 days for the
+- [x] **Onboarding** — diffed 2026-09-10 (34282f89). Two of five steps built. 4-5 days for the
       client half. One gap, and one contradiction that turned out not to exist.
   - **There was never a contradiction here. Do not re-open it.** "Install it for me" is Domovoi
     installing **its own** daemon — `Download domovoi 0.9.4 → /usr/local/bin/domovoi`, with the
@@ -505,7 +505,7 @@ building them:
     this report rather than from the file.
   - [ ] "Sign in to Domovoi Cloud" needs an account service that does not exist. `S0.1`/`S5.1`,
         not client work.
-- [x] **Skills** — diffed 2026-09-10 (02b6c7d). Nearly done: install preview, scope, trust,
+- [x] **Skills** — diffed 2026-09-10 (34282f89). Nearly done: install preview, scope, trust,
       `SKILL.md` view, fleet inventory comparison and per-turn selection all real. 3-4 days,
       almost all of it the one missing surface — "read the diff and re-review".
   - [ ] **Blocking, not a gap. Ruled 2026-09-10 by fetzy.** A changed skill drops to untrusted and
@@ -541,22 +541,22 @@ Three of this item's premises were wrong, checked before widening anything. fetz
 2026-09-10: no new role below `machine`, the sites move onto existing variants, and the phone's
 floor is **higher** than the desktop's rather than lower.
 
-- [x] **Nineteen sites, not eight** (7843da0 for nine, this commit for ten more). Four in `screens/session.tsx` (56, 86, 90, 139), two in
+- [x] **Nineteen sites, not eight** (eedb10cd for nine, this commit for ten more). Four in `screens/session.tsx` (56, 86, 90, 139), two in
       `screens/artifact.tsx` (32, 42), one each in `components/tab-bar.tsx` (56) and
       `components/ui/badge.tsx` (48) — and `screens/fleet.tsx:48` at `text-[8.5px]`, which the
       inventory missed and which is the smallest of them.
-- [x] **The three role names did not resolve in `apps/mobile`** (7843da0). The rule's message says to use
+- [x] **The three role names did not resolve in `apps/mobile`** (eedb10cd). The rule's message says to use
       `text-eyebrow`, `text-mono-xs` or `text-micro`. `apps/mobile/tailwind.config.js` has no
       `fontSize` at all — it reads only `colors`, `fontFamily` and `radius` from
       `tokens.generated.js`, and that file carries no type scale. Widening the glob would flag
       nine sites and offer three utilities that resolve to nothing in nativewind, so every fix
       it prompted would be wrong.
-- [x] **The phone's scale is deliberately not the desktop's** (7843da0)., so emitting the desktop floor
+- [x] **The phone's scale is deliberately not the desktop's** (eedb10cd)., so emitting the desktop floor
       into mobile is not the fix either. `components/ui/text.tsx:22` says why: "A phone is read
       at arm's length rather than desk distance, so the scale is tighter than the desktop's."
       Its nine `Text` variants are the phone's real role system, bottoming out at
       `machine` 10px and `note`/`label` 10.5px.
-- [x] **The design question is answered** (7843da0). does the phone have a floor, and
+- [x] **The design question is answered** (eedb10cd). does the phone have a floor, and
       what is it? Either the nine sites take an existing `Text` variant, or the phone's scale
       gains a named role below `machine`. Both are decisions about the phone's type system.
       Until one is answered, widening the glob turns a real question into nine lint errors with
