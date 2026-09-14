@@ -37,7 +37,7 @@ catalog:
   "@vitest/coverage-v8": ^4.1.11
   typescript: ^5.9.2
   vite: ^8.2.2
-  vitest: ^4.1.11
+  vitest: ^5.0.0
   zod: ^4.5.2
 
 minimumReleaseAgeExclude:
