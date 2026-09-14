@@ -255,12 +255,14 @@ export function TerminalPane({
           </Button>
         </div>
       </div>
-      {/* Three controls above go inert on disconnect. A disabled control with no
-          reason reads as broken rather than unavailable, so the reason is on
-          screen beside them. */}
-      {!connected && !closed ? (
+      {/* The controls above go inert on disconnect, Restart included once the
+          process has exited. A disabled control with no reason reads as broken
+          rather than unavailable, so the reason is on screen beside them. */}
+      {!connected ? (
         <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
-          Reconnect to the execution machine to take over, interrupt or close this terminal.
+          {closed
+            ? "Reconnect to the execution machine to restart this terminal."
+            : "Reconnect to the execution machine to take over, interrupt or close this terminal."}
         </p>
       ) : null}
       {error ? (

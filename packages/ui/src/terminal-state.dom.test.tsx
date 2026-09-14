@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { TerminalPane } from "./terminal-pane"
@@ -58,4 +58,35 @@ it("says why its controls are inert while disconnected", () => {
   pane({ connected: false })
 
   expect(screen.getByText(/Reconnect to the execution machine/)).toBeTruthy()
+})
+
+// A terminal that has exited still offers Restart, and Restart also needs the
+// connection. The reason line is about the disabled controls, not about which
+// ones they are, so it stays on screen after the process has gone.
+it("keeps saying why Restart is inert when the process has exited offline", async () => {
+  let handlers: Parameters<Parameters<typeof TerminalPane>[0]["controls"]["subscribe"]>[1] | undefined
+  const base = controls()
+  const live = {
+    ...base,
+    create: vi.fn(async () => ({
+      terminalId: "terminal-one", sessionId: "session-billing", cols: 80, rows: 24, shell: "bash",
+      cwd: "/worktrees/demo", buffer: "", owner: { client: "desktop" as const, clientId: "desktop-1" },
+    })),
+    subscribe: vi.fn((_id: string, next: typeof handlers) => { handlers = next; return () => {} }),
+  }
+  const view = (connected: boolean) => (
+    <TerminalPane
+      connected={connected}
+      controls={live as unknown as Parameters<typeof TerminalPane>[0]["controls"]}
+      machineName="mac-mini-m4"
+      sessionId="session-billing"
+    />
+  )
+  const { rerender } = render(view(true))
+  await act(async () => { await Promise.resolve() })
+  await act(async () => { handlers?.closed({ terminalId: "terminal-one", exitCode: 0 }) })
+  rerender(view(false))
+
+  expect(screen.getByRole("button", { name: /Restart/ }).hasAttribute("disabled")).toBe(true)
+  expect(screen.getByText(/Reconnect to the execution machine to restart/)).toBeTruthy()
 })
