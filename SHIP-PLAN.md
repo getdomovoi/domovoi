@@ -91,29 +91,32 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 
 Parallel with Phase 0. Touches nothing the gates decide.
 
-- [ ] **S1.1 [CX]** Service lifecycle per platform: launchd, systemd, Windows service, and
-      WSL's init gap.
-- [ ] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
-      clearly rather than half-working.
+- [x] **S1.1 [CX]** Service lifecycle per platform: launchd, systemd, Windows service, and
+      WSL's init gap. Landed as #367 (617ac46d): `apps/daemon/src/service/` carries the
+      launchd and systemd units, a Windows scheduled-task supervisor (`windows-task.ts`, stopped
+      before removal since 130500f5) and the WSL task (`wsl-task.ts`).
+- [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
+      clearly rather than half-working. The hello refuses with
+      `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`).
 - [ ] **S1.3 [CX]** Crash recovery: an interrupted turn, a half-written worktree, an
-      orphaned transfer lease.
+      orphaned transfer lease. Partly there: `service/removal-recovery.ts`,
+      `session-creation-recovery`, and `session.transferRecoverSource` for the lease. No
+      commit on `main` claims the interrupted turn or the half-written worktree, so the box
+      stays open until one does.
 - [ ] **S1.4 [CX]** Auto-update, signed and verified. A self-updating daemon holding your
       credentials is a supply-chain target, so signature verification and reproducible
-      builds ship *with* it, not after.
-- [ ] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
-      pre-auth) proven across restart.
-- [ ] **S1.6 [CX, not CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
-      **Reassigned 2026-09-10, not yet agreed by Codex.** The binary is `domovoid`, declared at
-      `apps/daemon/package.json:20` against `apps/daemon/dist/index.js`, and every CLI file is
-      under `apps/daemon/src/` — Codex's half by `WORK-SPLIT.md`'s ownership table, so `[CC]`
-      contradicts rule 1. Codex accepted it as `CX` and corrected the scope: `domovoid service
-      install` and `domovoid service status` already exist (`index.ts:86`), so what is missing
-      there is top-level aliases rather than the commands. `doctor`, `logs` and `skill push` do
-      not exist and their behaviour is undefined. No binary named `domovoi` without the `d` exists or is
-      declared anywhere, so if a separate user-facing CLI is intended that is a product decision
-      rather than a client task, and it needs a home before it needs an owner.
-- [ ] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
-      lands here — it is daemon bookkeeping and it unblocks UI in Phase 3.
+      builds ship *with* it, not after. Nothing on `main` as of 2026-09-14.
+- [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
+      pre-auth) proven across restart. Landed as #374 (c8eb1a93).
+- [x] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
+      Landed in two halves. `domovoid service install` and `domovoid service status` are the
+      daemon's (`apps/daemon/src/index.ts`). The user-facing `domovoi` binary is `apps/cli`:
+      `pair` and `status` (95711761), `doctor` (83f1406d), `logs` (d81ef5c9), and
+      `skill install <path>`, which is what "skill push" became. The 2026-09-10 note that no
+      `domovoi` binary existed was true when written and is superseded by `apps/cli`.
+- [x] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
+      lands here — it is daemon bookkeeping and it unblocks UI in Phase 3. `CX1` (4359bcf9)
+      and `CX2` (e7364720, 84d90d50, 1991666a) are ticked there with the same citations.
 
 ## Phase 2 — the relay — M2, critical path
 
