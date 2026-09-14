@@ -308,7 +308,7 @@ building them:
 - [x] The live `tokens/motion.css` annotates all seven motion tokens `@kind other`. The
       seventh, `--transition-control`, was written upstream on 2026-09-13; its value names
       `border-color` and `color`, so unannotated it classified as a colour and the generated
-      type-floor rule read a transition as one. Re-vendored in #395.
+      type-floor rule read a transition as one. Re-vendored in #395 (469edb8b).
 - [ ] Second pass, easy to lose: the classification lives in the compiled manifest, not the
       source. `design/design_system_domovoi/_adherence.oxlintrc.json` still carries
       `"--transition-control": "color"` under `x-omelette.tokenKinds`, and will until the
