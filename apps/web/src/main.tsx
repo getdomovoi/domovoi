@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client"
 import {
   applyStoredAppearanceTheme,
   DaemonCredentialPrompt,
+  localStorageRelayPinStorage,
   WorkspaceErrorBoundary,
   WorkspaceShell,
 } from "@getdomovoi/ui"
@@ -79,6 +80,7 @@ function DomovoiWeb() {
       rpcUrl={rpcUrl}
       rpcToken={session.token}
       platform={platform}
+      relayPinStorage={localStorageRelayPinStorage()}
       onChangeCredential={() => {
         clearDaemonSession(sessionStorage)
         setSession(undefined)
