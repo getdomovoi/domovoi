@@ -243,7 +243,7 @@ describe("localStorage storage", () => {
   }
 
   it("reads and writes through the Storage interface", async () => {
-    const storage = localStorageRelayPinStorage(fakeLocalStorage())
+    const storage = localStorageRelayPinStorage(fakeLocalStorage(), fakeLocks())
     const store = createRelayPinStore(storage, machineId)
     expect(await store.compareAndSwap(undefined, trusted)).toBe(true)
     expect(await store.read()).toEqual(trusted)
@@ -270,9 +270,30 @@ describe("localStorage storage", () => {
     await expect(storage.read(relayPinKey(machineId))).rejects.toThrow("denied")
   })
 
+  const fakeLocks = (held: string[] = []): LockManager => ({
+    request: (async (name: string, run: () => Promise<unknown>) => { held.push(name); return run() }) as LockManager["request"],
+    query: async () => ({}),
+  })
+
+  it("refuses a swap where the page has no Web Locks, and still reads", async () => {
+    const backing = fakeLocalStorage()
+    backing.setItem(relayPinKey(machineId), "saved")
+    const storage = localStorageRelayPinStorage(backing)
+    const original = Object.getOwnPropertyDescriptor(globalThis, "navigator")
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} })
+    try {
+      expect(await storage.read(relayPinKey(machineId))).toBe("saved")
+      await expect(storage.compareAndSwap(relayPinKey(machineId), "saved", "next")).rejects.toThrow(/no Web Locks/)
+    } finally {
+      if (original) Object.defineProperty(globalThis, "navigator", original)
+      else Reflect.deleteProperty(globalThis, "navigator")
+    }
+    expect(backing.store.get(relayPinKey(machineId))).toBe("saved")
+  })
+
   it("compares the stored bytes under the swap, so a change since the read loses", async () => {
     const backing = fakeLocalStorage()
-    const storage = localStorageRelayPinStorage(backing)
+    const storage = localStorageRelayPinStorage(backing, fakeLocks())
     const key = relayPinKey(machineId)
     expect(await storage.compareAndSwap(key, "stale", "next")).toBe(false)
     expect(backing.store.has(key)).toBe(false)
@@ -282,15 +303,16 @@ describe("localStorage storage", () => {
     expect(backing.store.get(key)).toBe("second")
   })
 
-  it("holds a Web Lock named by the key around the compare and the write when the browser has one", async () => {
+  it("holds the browser's Web Lock named by the key around the compare and the write", async () => {
     const backing = fakeLocalStorage()
     const held: string[] = []
-    const locks = { request: async (name: string, run: () => Promise<unknown>) => { held.push(name); return run() } }
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { locks } })
+    const original = Object.getOwnPropertyDescriptor(globalThis, "navigator")
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { locks: fakeLocks(held) } })
     try {
       expect(await localStorageRelayPinStorage(backing).compareAndSwap(relayPinKey(machineId), undefined, "x")).toBe(true)
     } finally {
-      Reflect.deleteProperty(globalThis, "navigator")
+      if (original) Object.defineProperty(globalThis, "navigator", original)
+      else Reflect.deleteProperty(globalThis, "navigator")
     }
     expect(held).toEqual([relayPinKey(machineId)])
   })

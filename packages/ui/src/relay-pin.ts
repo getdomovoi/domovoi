@@ -75,14 +75,20 @@ export function createRelayPinStore(storage: RelayPinStorage, machineId: string)
 // throws on access); both are reported as failures, never as "no saved pin".
 // Discovery is deferred to the first call, so a refusing getter cannot throw
 // out of a render. The compare and the write run under a Web Lock named by
-// the key, which every tab of this origin shares; where Web Locks are missing
-// a per-process lock covers the tabs this process has, which is all of them
-// in the environments that lack it (tests, workers).
-export function localStorageRelayPinStorage(storage?: Storage): RelayPinStorage {
+// the key, which every tab and worker of this origin shares. Web Locks exist
+// only in secure contexts, so a page served over plain HTTP from a host other
+// than localhost has no lock; a swap there is refused rather than run under a
+// lock that only this realm can see, and the client keeps no pin.
+export function localStorageRelayPinStorage(storage?: Storage, locks?: LockManager): RelayPinStorage {
   const resolve = (): Storage => {
     let found: Storage | undefined
     try { found = storage ?? globalThis.localStorage } catch { found = undefined }
     if (!found) throw new Error("The relay pin could not be read or saved: browser storage is unavailable.")
+    return found
+  }
+  const lock = (): LockManager => {
+    const found = locks ?? (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks
+    if (!found) throw new Error("The relay pin could not be saved: this page has no Web Locks, so a swap cannot be made exclusive across tabs.")
     return found
   }
   return {
@@ -91,23 +97,14 @@ export function localStorageRelayPinStorage(storage?: Storage): RelayPinStorage 
     },
     async compareAndSwap(key, expected, replacement) {
       const found = resolve()
-      return withLock(key, async () => {
+      const swapped: boolean = await lock().request(key, async () => {
         if ((found.getItem(key) ?? undefined) !== expected) return false
         found.setItem(key, replacement)
         return true
       })
+      return swapped
     },
   }
-}
-
-const localLocks = new Map<string, Promise<unknown>>()
-function withLock<T>(name: string, operation: () => Promise<T>): Promise<T> {
-  const locks = (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks
-  if (locks) return locks.request(name, operation) as Promise<T>
-  const tail = localLocks.get(name) ?? Promise.resolve()
-  const next = tail.then(operation, operation)
-  localLocks.set(name, next.catch(() => undefined))
-  return next
 }
 
 // The desktop's storage is the main process's file, reached over the bridge.
