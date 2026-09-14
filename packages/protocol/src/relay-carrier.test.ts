@@ -37,23 +37,40 @@ function fixture() {
   return { registration, recovery, routeId, machineId }
 }
 
+function controlRecords() {
+  const f = fixture()
+  return [
+    f.registration,
+    { kind: "connect", carrierVersion: relayCarrierVersion, routeId: f.routeId },
+    { kind: "recover", carrierVersion: relayCarrierVersion, routeId: f.routeId, machineId: f.machineId },
+    { kind: "registered", carrierVersion: relayCarrierVersion, generation: 1 },
+    { kind: "connected", carrierVersion: relayCarrierVersion },
+    { kind: "recovery", carrierVersion: relayCarrierVersion, recovery: f.recovery },
+    { kind: "open", carrierVersion: relayCarrierVersion, channelId: 1 },
+    { kind: "close", carrierVersion: relayCarrierVersion, channelId: 0xffff_ffff },
+  ]
+}
+
 describe("relay carrier control records", () => {
   it("round trips registration, connection, public recovery and channel control", () => {
-    const f = fixture()
-    const messages = [
-      f.registration,
-      { kind: "connect", carrierVersion: relayCarrierVersion, routeId: f.routeId },
-      { kind: "recover", carrierVersion: relayCarrierVersion, routeId: f.routeId, machineId: f.machineId },
-      { kind: "registered", carrierVersion: relayCarrierVersion, generation: 1 },
-      { kind: "connected", carrierVersion: relayCarrierVersion },
-      { kind: "recovery", recovery: f.recovery },
-      { kind: "open", channelId: 1 },
-      { kind: "close", channelId: 0xffff_ffff },
-    ]
-    for (const message of messages) {
+    for (const message of controlRecords()) {
       const encoded = encodeRelayCarrierControl(message)
       expect(encoded.byteLength).toBeLessThanOrEqual(maximumRelayCarrierControlBytes)
       expect(parseRelayCarrierControl(encoded)).toEqual(JSON.parse(JSON.stringify(message)))
+    }
+  })
+
+  it("requires version 1 on every control kind", () => {
+    const records = controlRecords()
+    expect(records.map((record) => record.kind).sort()).toEqual(
+      relayCarrierControlSchema.options.map((option) => option.shape.kind.value).sort(),
+    )
+    for (const record of records) {
+      const { carrierVersion, ...unversioned } = record
+      expect(carrierVersion).toBe(1)
+      expect(relayCarrierControlSchema.safeParse(unversioned).success, record.kind).toBe(false)
+      expect(relayCarrierControlSchema.safeParse({ ...record, carrierVersion: 2 }).success, record.kind).toBe(false)
+      expect(relayCarrierControlSchema.safeParse(record).success, record.kind).toBe(true)
     }
   })
 
@@ -63,8 +80,8 @@ describe("relay carrier control records", () => {
       { kind: "connect", carrierVersion: 1, routeId: f.routeId },
       { kind: "recover", carrierVersion: 1, routeId: f.routeId, machineId: f.machineId },
     ]) expect(relayCarrierGreetingSchema.safeParse(message).success).toBe(true)
-    for (const message of [{ kind: "open", channelId: 1 }, { kind: "close", channelId: 1 },
-      { kind: "connected", carrierVersion: 1 }, { kind: "recovery", recovery: f.recovery },
+    for (const message of [{ kind: "open", carrierVersion: 1, channelId: 1 }, { kind: "close", carrierVersion: 1, channelId: 1 },
+      { kind: "connected", carrierVersion: 1 }, { kind: "recovery", carrierVersion: 1, recovery: f.recovery },
     ]) expect(relayCarrierGreetingSchema.safeParse(message).success).toBe(false)
   })
 
@@ -107,16 +124,16 @@ describe("relay carrier control records", () => {
       expect(() => parseRelayCarrierControl(new Uint8Array(maximumRelayCarrierControlBytes + 1))).toThrow()
       expect(parse).not.toHaveBeenCalled()
     } finally { parse.mockRestore() }
-    const wire = encodeRelayCarrierControl({ kind: "close", channelId: 1 })
+    const wire = encodeRelayCarrierControl({ kind: "close", carrierVersion: 1, channelId: 1 })
     const padded = new Uint8Array(maximumRelayCarrierControlBytes).fill(32)
     padded.set(wire)
-    expect(parseRelayCarrierControl(padded)).toEqual({ kind: "close", channelId: 1 })
+    expect(parseRelayCarrierControl(padded)).toEqual({ kind: "close", carrierVersion: 1, channelId: 1 })
   })
 
   it("refuses invalid UTF-8, malformed JSON and non-control records", () => {
     for (const bytes of [Uint8Array.of(0x80), new Uint8Array(), new TextEncoder().encode("{"),
       new TextEncoder().encode("null"), new TextEncoder().encode("[]"),
-      new TextEncoder().encode('{"kind":"close","channelId":0}'),
+      new TextEncoder().encode('{"kind":"close","carrierVersion":1,"channelId":0}'),
     ]) expect(() => parseRelayCarrierControl(bytes)).toThrow()
     expect(() => parseRelayCarrierControl(new ArrayBuffer(4) as unknown as Uint8Array)).toThrow()
   })

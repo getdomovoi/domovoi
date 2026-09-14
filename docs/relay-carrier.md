@@ -9,9 +9,10 @@ owns the empty IK handshake, encrypted paired credential, receipt, and nine-byte
 encrypted application header.
 
 This slice defines records and parsers, not a listener or dialing policy.
-Carrier version 1 is explicit in greetings and acknowledgements. Unknown
-versions, record kinds, and extra fields refuse. Incompatible changes require
-a new carrier version. The layout is pinned in
+Every JSON control record carries `carrierVersion: 1`, including recovery,
+open and close. Missing or unsupported versions, unknown record kinds and extra
+fields are refused. Incompatible changes require a new carrier version.
+The layout is pinned in
 `packages/protocol/src/relay-carrier.test.ts`.
 
 ## Connection roles and ordering
@@ -26,7 +27,7 @@ issued, not copied from a daemon root token, paired bearer, or channel key.
 | --- | --- | --- |
 | `register` | `carrierVersion`, `routeId`, `machineId`, `generation`, `registrationCredential`, `recovery` | `registered` with the same version and generation |
 | `connect` | `carrierVersion`, `routeId` | `connected` with the same version |
-| `recover` | `carrierVersion`, `routeId`, `machineId` | `recovery` containing the publication, then close |
+| `recover` | `carrierVersion`, `routeId`, `machineId` | `recovery` with the same version and the publication, then close |
 
 `routeId` and `registrationCredential` use canonical, unpadded base64url for
 32 bytes. Registration generation is a positive safe integer for connection
@@ -37,9 +38,9 @@ authenticates registration, enforces its generation fence and account policy,
 and bounds registration attempts before publishing the route.
 
 Only a greeting is allowed first. A registered daemon may receive `open` and
-`close` records containing `channelId`; it may send `close` for its own logical
-channels. `registered` must precede every `open`. A connecting client waits for
-`connected` before starting IK. After connection selection, that client carries
+`close` records containing `carrierVersion` and `channelId`; it may send `close`
+for its own logical channels. `registered` must precede every `open`. A connecting
+client waits for `connected` before starting IK. After connection selection, that client carries
 only one logical channel. It sends and receives complete opaque binary frames
 without a multiplex header. The relay must not treat a second greeting as a
 role change. These ordering and role checks belong to adapters; schema validity

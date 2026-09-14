@@ -48,9 +48,9 @@ export const relayCarrierControlSchema = z.discriminatedUnion("kind", [
   recoveryRequestSchema,
   z.object({ kind: z.literal("registered"), carrierVersion: version, generation }).strict(),
   z.object({ kind: z.literal("connected"), carrierVersion: version }).strict(),
-  z.object({ kind: z.literal("recovery"), recovery: relayRecoveryResultSchema }).strict(),
-  z.object({ kind: z.literal("open"), channelId }).strict(),
-  z.object({ kind: z.literal("close"), channelId }).strict(),
+  z.object({ kind: z.literal("recovery"), carrierVersion: version, recovery: relayRecoveryResultSchema }).strict(),
+  z.object({ kind: z.literal("open"), carrierVersion: version, channelId }).strict(),
+  z.object({ kind: z.literal("close"), carrierVersion: version, channelId }).strict(),
 ])
 
 export type RelayCarrierGreeting = z.infer<typeof relayCarrierGreetingSchema>
