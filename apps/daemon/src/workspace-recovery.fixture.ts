@@ -18,6 +18,9 @@ if (mode === "hold-child") {
   holdRecoveryWriter(root, holderMs, () => {
     writeFileSync(join(root, "child-expired"), JSON.stringify({ pid: process.pid, holderMs }))
     process.exit(1)
+  }, () => {
+    writeFileSync(join(root, "child-forced"), JSON.stringify({ pid: process.pid }))
+    process.kill(process.pid, "SIGKILL")
   })
 } else {
   if (!repository || !bundle || !process.send) throw new Error("Missing workspace recovery fixture input")

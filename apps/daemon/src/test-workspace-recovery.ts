@@ -35,11 +35,14 @@ export async function runRecoveryPhase<T>(
   }
 }
 
-export function holdRecoveryWriter(root: string, timeoutMs: number, onExpired: () => void): () => void {
+export function holdRecoveryWriter(root: string, timeoutMs: number, onExpired: () => void, onForced: () => void): () => void {
   validateOperationDeadlineBudget(timeoutMs)
   const stop = () => { clearTimeout(timeout); clearInterval(poll) }
   const timeout = setTimeout(() => { stop(); onExpired() }, timeoutMs)
-  const poll = setInterval(() => { if (existsSync(join(root, "child-release"))) stop() }, 25)
+  const poll = setInterval(() => {
+    if (existsSync(join(root, "child-force-stop"))) { stop(); onForced() }
+    else if (existsSync(join(root, "child-release"))) stop()
+  }, 25)
   return stop
 }
 
@@ -56,7 +59,9 @@ export async function waitForRecoveryCondition(deadline: OperationDeadline, read
 type RecoveryWriters = {
   pids: () => number[]
   isAlive: (pid: number) => boolean
-  kill: (pid: number) => void
+  // Retained child handles or private fixture stop paths only. A PID probe
+  // observes liveness, never ownership: the OS can reuse an exited writer's ID.
+  forceStops: readonly (() => void)[]
   release: () => Promise<void>
   exited: Promise<unknown> | undefined
 }
@@ -80,8 +85,8 @@ export async function cleanupRecoveryWriters(writers: RecoveryWriters, cleanupMs
 
   const reap = OperationDeadline.start(reapMs)
   try {
-    for (const pid of new Set(writers.pids())) {
-      try { writers.kill(pid) } catch (error) {
+    for (const stop of writers.forceStops) {
+      try { stop() } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") failures.push(error)
       }
     }

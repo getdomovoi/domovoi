@@ -55,7 +55,7 @@ describe("workspace recovery fixture lifetime", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
     const expired = vi.fn()
     const budgets = recoveryFixtureBudgets(25_000)
-    const stop = holdRecoveryWriter(root, budgets.holderMs, expired)
+    const stop = holdRecoveryWriter(root, budgets.holderMs, expired, vi.fn())
     try {
       await vi.advanceTimersByTimeAsync(budgets.sequenceMs)
       expect(expired).not.toHaveBeenCalled()
@@ -70,6 +70,24 @@ describe("workspace recovery fixture lifetime", () => {
         expect(expired).toHaveBeenCalledExactlyOnceWith()
         expect(vi.getTimerCount()).toBe(0)
       }
+    } finally { stop(); vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it("honours its private forced-stop path before release and cancels its watchdog", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-recovery-force-"))
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
+    const expired = vi.fn()
+    const forced = vi.fn()
+    const stop = holdRecoveryWriter(root, 1_000, expired, forced)
+    try {
+      await writeFile(join(root, "child-release"), "finish")
+      await writeFile(join(root, "child-force-stop"), "stop")
+      await vi.advanceTimersByTimeAsync(25)
+      expect(forced).toHaveBeenCalledExactlyOnceWith()
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(expired).not.toHaveBeenCalled()
+      expect(forced).toHaveBeenCalledTimes(1)
     } finally { stop(); vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
   })
 })

@@ -1,4 +1,5 @@
 import { execFile, fork, type ChildProcess } from "node:child_process"
+import { writeFileSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -137,12 +138,20 @@ describe("worktree crash recovery", () => {
     try {
       await cleanupRecoveryWriters({
         pids: () => [child?.pid, gitPid, holdPid, holdParentPid].filter((pid) => pid !== undefined),
-        isAlive: (pid) => stateOf(pid) === "alive", kill: (pid) => { process.kill(pid, "SIGKILL") }, exited,
+        isAlive: (pid) => stateOf(pid) === "alive", exited,
+        forceStops: [
+          () => { if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL") },
+          () => { if (mode !== "before-git") writeFileSync(join(root, "child-force-stop"), "stop") },
+        ],
         release: async () => {
           if (mode !== "before-git") await writeFile(join(root, "child-release"), "finish")
           if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
         },
       }, budgets.cleanupMs, budgets.reapMs)
+    } catch (error) {
+      failures.push(error)
+    }
+    try {
       const expired = await readFile(join(root, "child-expired"), "utf8").catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return undefined
         throw error
