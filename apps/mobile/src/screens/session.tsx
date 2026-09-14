@@ -41,7 +41,7 @@ function Entry({ entry }: { entry: ThreadEntry }) {
     return (
       <View className="flex-row gap-2.5">
         <View className="h-[22px] w-[22px] items-center justify-center rounded-md border border-border">
-          <Text className="font-mono text-[9.5px] text-primary">◆</Text>
+          <Text className="font-mono text-machine text-primary">◆</Text>
         </View>
         <Text variant="body" className="flex-1 leading-[20px]">{entry.body}</Text>
       </View>
@@ -53,7 +53,7 @@ function Entry({ entry }: { entry: ThreadEntry }) {
       <View className="flex-1">
         <Text className="text-[11px] leading-[17px] text-info-fg">{entry.body}</Text>
         {entry.meta
-          ? <Text variant="machine" className="mt-1 text-[9px] text-faint">{entry.meta}</Text>
+          ? <Text variant="machine" className="mt-1 text-faint">{entry.meta}</Text>
           : null}
       </View>
     </View>
@@ -83,11 +83,11 @@ function PlanCard({ plan }: { plan: PlanSummary }) {
                 glyph for one, so the mark is drawn rather than typed. */}
             {row.tone === "done"
               ? <Icon name="check" tone="success" size={11} />
-              : <Text className={cn("font-mono text-[9px]", markTone[row.tone])}>{row.mark}</Text>}
+              : <Text variant="machine" className={cn(markTone[row.tone])}>{row.mark}</Text>}
           </View>
           <View className="flex-1">
             <Text className={cn("text-[12px] leading-[17px]", textTone[row.tone])}>{row.text}</Text>
-            <Text variant="machine" className="mt-[3px] text-[9px] text-faint">{row.meta}</Text>
+            <Text variant="machine" className="mt-[3px] text-faint">{row.meta}</Text>
           </View>
         </View>
       ))}
@@ -136,7 +136,7 @@ function ArtifactList({
                 opening onto an empty frame. */}
             <Text
               variant="machine"
-              className={cn("mt-[3px] text-[9px]", row.readable ? "text-faint" : "text-warn-dim")}
+              className={cn("mt-[3px]", row.readable ? "text-faint" : "text-warn-dim")}
             >
               {row.detail}
             </Text>

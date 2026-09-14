@@ -63,7 +63,7 @@ export function DenyExplainScreen({
           <Text variant="machine">{approval.machine}</Text>
         </View>
         <View className="self-start rounded-full border border-danger-border px-[7px] py-[3px]">
-          <Text className="font-mono text-[9.5px] uppercase tracking-[0.06em] text-danger-fg">
+          <Text className="font-mono text-machine uppercase tracking-[0.06em] text-danger-fg">
             Denying
           </Text>
         </View>

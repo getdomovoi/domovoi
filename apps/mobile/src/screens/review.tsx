@@ -21,7 +21,7 @@ function ReviewCard({ row, onOpen }: { row: ReviewRow, onOpen: (artifactId: stri
             <Text variant="title" className="flex-1" numberOfLines={2}>{row.title}</Text>
             {row.variantLabel ? <Badge label={row.variantLabel} tone="outline" /> : null}
           </View>
-          <Text variant="machine" className="mt-[5px] text-[9.5px] text-faint">{row.detail}</Text>
+          <Text variant="machine" className="mt-[5px] text-faint">{row.detail}</Text>
         </View>
         <Icon name="chevron-right" tone="faint" size={16} />
       </View>

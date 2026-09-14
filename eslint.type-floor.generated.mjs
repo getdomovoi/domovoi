@@ -7,10 +7,25 @@
 export const typeFloorRules = [
   {
     selector: "Literal[value=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
-    message: "Text below 9.5px has no token behind it. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose.",
+    message: "Text below 9.5px has no token behind it on the desktop scale. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose. Declared in design/design_system_domovoi/tokens/typography.css.",
   },
   {
     selector: "TemplateElement[value.raw=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
-    message: "Text below 9.5px has no token behind it. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose.",
+    message: "Text below 9.5px has no token behind it on the desktop scale. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose. Declared in design/design_system_domovoi/tokens/typography.css.",
+  },
+]
+
+// The phone's ramp is its own scale, declared in packages/ui/src/styles.css and read
+// from there rather than from the design system, which carries the desktop's
+// and knows nothing about the phone's. Its floor is 10px with no role
+// beneath it.
+export const phoneTypeFloorRules = [
+  {
+    selector: "Literal[value=/text-\\[(?:[0-9](?:\\.\\d+)?)px\\]/]",
+    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. The floor is the smallest size the design calls legible, not a platform threshold. Declared as --text-phone-* in packages/ui/src/styles.css.",
+  },
+  {
+    selector: "TemplateElement[value.raw=/text-\\[(?:[0-9](?:\\.\\d+)?)px\\]/]",
+    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. The floor is the smallest size the design calls legible, not a platform threshold. Declared as --text-phone-* in packages/ui/src/styles.css.",
   },
 ]
