@@ -7,10 +7,42 @@
 export const typeFloorRules = [
   {
     selector: "Literal[value=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
-    message: "Text below 9.5px has no token behind it. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose.",
+    message: "Text below 9.5px has no token behind it on the desktop scale. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose. Declared in design/design_system_domovoi/tokens/typography.css.",
   },
   {
     selector: "TemplateElement[value.raw=/text-\\[(?:[0-8](?:\\.\\d+)?|9(?:\\.[0-4]\\d*)?)px\\]/]",
-    message: "Text below 9.5px has no token behind it. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose.",
+    message: "Text below 9.5px has no token behind it on the desktop scale. Use text-eyebrow or text-mono-xs for a named role below 10.5px, or text-micro for sans prose. Declared in design/design_system_domovoi/tokens/typography.css.",
+  },
+]
+
+// The phone's ramp is its own scale, declared in packages/ui/src/styles.css and read
+// from there rather than from the design system, which carries the desktop's
+// and knows nothing about the phone's. Its floor is 10px with no role
+// beneath it.
+// A bare coloured dot carries meaning by colour alone. The design system's
+// own sentence is the message, read from design/design_system_domovoi/readme.md so this cannot
+// state a rule the system does not.
+//
+// It keys on data-status-dot, the marker this repository already puts on a
+// span that means a status, rather than on rounded-full styling. Styling
+// caught progress tracks, list bullets and a numbered step marker, none of
+// which carry meaning by colour. The limit is worth stating: a new raw dot
+// that does not declare itself is not reachable by a selector without
+// flagging every circle in the codebase.
+export const statusDotRules = [
+  {
+    selector: "JSXOpeningElement:has(JSXAttribute[name.name='data-status-dot'])",
+    message: "Status is a StatusDot, not an icon: colour plus an adjacent text label, never colour alone. Use StatusDot, which keeps the label in the accessibility tree even when it is visually hidden.",
+  },
+]
+
+export const phoneTypeFloorRules = [
+  {
+    selector: "Literal[value=/text-\\[(?:[0-9](?:\\.\\d+)?)px\\]/]",
+    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. The floor is the smallest size the design calls legible, not a platform threshold. Declared as --text-phone-* in packages/ui/src/styles.css.",
+  },
+  {
+    selector: "TemplateElement[value.raw=/text-\\[(?:[0-9](?:\\.\\d+)?)px\\]/]",
+    message: "Text below 10px has no token behind it on the phone scale, and nothing sits below text-machine. The floor is the smallest size the design calls legible, not a platform threshold. Declared as --text-phone-* in packages/ui/src/styles.css.",
   },
 ]

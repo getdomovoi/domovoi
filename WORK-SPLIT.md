@@ -32,8 +32,22 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    invalidates the run you read.
 5. **Never regenerate a digest in the same commit as the change it covers.** Verify against
    the previous manifest first, and say which state you verified against.
-6. **Read the reviews, not the check row.** `Review rate limited` and `Review completed`
-   both render as pass and both carry `state: success`. Only the description differs.
+6. **Read the reviews, not the check row.** Three descriptions render as pass and carry
+   `state: success`, and only one of them means anything was read:
+
+   - `Review completed` — the diff was actually reviewed.
+   - `Review rate limited` — capacity was exhausted. Nothing was read. Seen on two heads of
+     #359 and on #360 the same afternoon, because the limit is a budget shared across every
+     pull request opened that day rather than a per-pull-request fluke.
+   - `Review skipped: reviews are disabled for this base branch` — **a stacked pull request
+     gets no automated review at all.** Measured 2026-09-10: #361 through #364 target other
+     feature branches rather than `main`, and all four showed pass with nothing read. Only the
+     two units based on `main`, #359 and #360, were eligible.
+
+   The last one is the trap a stack walks into: splitting one unreviewable branch into six
+   reviewable units bought review by people and silently lost review by the bot for four of
+   them, while every row went green. CI does run on those bases, so the platform matrix is
+   real; the review is not.
 7. **The agent that owns this file ticks every box in it, including the other agent's.**
    This file sits in Claude Code's half of the tree but describes both halves, which rule 1
    did not anticipate. Codex ticking `CX1` here would put two agents in one file to record
@@ -169,6 +183,106 @@ Task ids are stable. Reference them in commits and in chat (`CX3`, `CC7`).
    standard probe for this class from here: for each shell-out, make it fail in every way it can
    and assert that the checker refuses; the shallow clone is one such failure, not the whole set.
 
+   **Citations are durable because this repository merges rather than squashes.** #354 through
+   #358 landed as merge commits and their shas survived onto `main`. A squash policy would break
+   every citation silently: the sha a tick names would exist on nobody's branch after merge, the
+   checker would keep passing on feature branches that still hold the original commit, and it
+   would be wrong about `main` — the exact shape of a check that looks green while proving
+   nothing. If the merge policy ever changes, this convention has to change with it.
+
+9. **A tick ships in the pull request that lands the commit it cites.** Found 2026-09-10 while
+   building the first stack: a plan-only branch passed every gate locally and would have failed
+   in CI, because fourteen cited shas do not exist on a fresh clone of it. The task list is
+   useful *before* the work lands — that is what it is for, and two agents coordinating for days
+   off an uncommitted plan is how one branch reached 62 commits. The ticks are only meaningful
+   *after*. So a plan-first pull request carries the tasks with no ticks it cannot satisfy, and
+   each later pull request carries the tick edits for its own commits, citing shas that are
+   present in it by construction. This extends rule 7 by one clause: the owner ticks, citing the
+   other agent's sha, **in the pull request that lands it**.
+10. **When CodeRabbit is exhausted, the other agent reviews — and it is named as a different
+   reviewer, not as CodeRabbit.** Set 2026-09-10. Codex hit the CLI's rolling three-review
+   limit mid-stack and `#362`, `#363`, `#364` stalled with no review of any kind. The standing
+   arrangement: whichever agent is blocked asks the other to review the diff, and the favour
+   runs both ways.
+
+   **The obvious implementation does not work, and the measurement is why.** Both agents drive
+   the same CLI against the same account. `coderabbit auth status` reports
+   `phetzy (david.j.fetzer@gmail.com)`; `coderabbit usage` reports organisation `getdomovoi`,
+   `Your reviews: 723`, one counter, `Period resets: 2026-09-26`. So Claude Code running
+   `/code-review` during a Codex rate limit spends Codex's own remaining slots. It is one
+   bucket, not two, and a fallback drawing on the bucket that just emptied is not a fallback.
+
+   What the blocked agent gets instead is a review by the other agent's own model — for Claude
+   Code, a read of the diff; for Codex, its own read. That reviewer is independent of the quota.
+
+   **It is less weak than first recorded, and Codex was right to challenge that.** The first
+   version of this rule said the substitute "has no repository-wide path instruction set, and the
+   `packages/protocol/**` payload-bounds rule is exactly the sort of thing it will miss". Wrong:
+   `.coderabbit.yaml:111-124` carries those instructions, in the repository, readable. The
+   substitute reviewer applies them. The rule was written from an assumption about where
+   CodeRabbit keeps its configuration, and one `sed` settled it — the same failure as every other
+   entry here, which is why it is corrected in place rather than quietly dropped.
+
+   What remains genuinely different is the reviewer, not the instructions: a different model, one
+   pass, no second opinion. Enough to justify the label below, not enough to justify the excuse.
+
+   **And on `#364` the substitute found something the CLI did not, for a structural reason worth
+   keeping.** CodeRabbit completed `ae05970..85603f9` with zero findings. The substitute review of
+   the same head reported that the decoded-UTF-8 refusal had landed at two of its three sites:
+   `skills.ts:147` and `skills.ts:354` gained it, `skill-install.ts:204` did not, so a malformed
+   skill installs successfully and is then invisible to `list()` and `read()`. Codex agreed and
+   fixed it.
+
+   The reason is not that one reviewer is sharper. `skill-install.ts` is not in that diff — 17
+   files are, and it is not among them. A reviewer reading the changed lines cannot see a site the
+   change failed to reach, because the defect is the absence of a line in a file nobody touched.
+   Asking "where else is this constant used" is a different question from "is this diff correct",
+   and only the second one is what a diff review answers.
+
+   **The same day, the same rule ran the other way, and that half belongs here too.** CodeRabbit's
+   review of `validation/backend-stack` returned one major finding in `validTurnOrdinalSql`, a SQL
+   expression the substitute review had read closely and listed under "checked and correct". A
+   stored ordinal of exactly `Number.MAX_SAFE_INTEGER` passes every clause of the guard, and
+   `begin()` then computes `MAX + 1`, which `counter.max(Number.MAX_SAFE_INTEGER)` rejects, so that
+   session can never begin another turn.
+
+   The miss was scope. The substitute verified that the guard rejects every invalid *stored* value
+   and stopped, because the guard is about stored values. The defect lives one step later, in the
+   successor: the bound that matters for allocation is one lower than the bound that matters for
+   storage. Reading a diff closely is not the same as following the value out of the expression.
+
+   So the two are not ranked, they are shaped differently, and the substitute is worth running even
+   when the CLI is available. Neither closes the other's row, and this entry is written with both
+   directions in it so it cannot be quoted as a ranking.
+
+   **Reviewing a combined branch: four rules, because the record outlives the branch.** Validating a
+   stack often means building one branch that merges every pull request head, so the gates run
+   against the tree that will actually exist. Reviewing *that* branch is useful and its record is a
+   trap, because the branch is deleted and the code lands through each pull request's own commits.
+
+   - Name it `validation/…`. The prefix carries the fact when the description is three scrolls up.
+   - Say in the record that it is validation only and will not be merged, and name the pull request
+     heads it combines. A published branch whose shas appear in a review and never reach `main`
+     reads later as either lost work or a merge that happened. Neither is true, and neither is
+     recoverable from the sha.
+   - Record every finding against the **pull request and file**, never the integration sha. A
+     finding at `abc123:47` is unaddressable the moment the branch is dropped: the review stays
+     valid while its addresses do not, which is the weakest kind of record because it still looks
+     checkable.
+   - Keep integration shas out of every `[x]` citation. `scripts/tick-citations.mjs` runs
+     `git merge-base --is-ancestor <sha> HEAD`, so such a citation passes on the machine holding
+     the branch and fails on a fresh clone — the exact failure rule 8's checker was written for.
+     Cite the per-pull-request heads, which become ancestors when they merge.
+
+   First applied 2026-09-10 to the reference combining `#362` `0b896d7`, `#363` `3167d44`, `#364`
+   `949c487` and the merged history and checkpoint slices. All three heads verified against
+   `gh pr view --json headRefOid` rather than taken from the description.
+
+   So the substitute review is recorded as what it is. Never write "reviewed" unqualified, and
+   never let a substitute close a `CodeRabbit` row. Name the reviewer, name the diff range, and
+   say the CodeRabbit review is still outstanding. Same shape as rule 6: the failure is not an
+   unreviewed diff, it is an unreviewed diff that reads as reviewed.
+
 ---
 
 ## The blocked chain
@@ -190,27 +304,70 @@ so the first landing does not read as the unblock.
 ## Codex
 
 ### CX1 · Usage accounting, dedup and coverage — 2-4 d
-- [ ] Normalize adapter token reporting. Two undercount: `claude.ts:487`, `opencode.ts:506`.
-- [ ] `acp.ts:296` gives `totalTokens` and `contextTokens` the same `update.used` value.
-- [ ] Capture the model at dispatch. `server.ts:6903` writes usage against
+Ticked here under rule 7: Codex did the work, this file is Claude Code's, so the citation
+carries Codex's sha rather than a second agent's edit.
+- [x] Normalize adapter token reporting. One of the two was already fixed when this line was
+      written: `claude.ts` by 33b2737 on 2026-09-07. OpenCode's `tokens.cache.read` and
+      `.write` now fold into `inputTokens` in `usage.ts` (4359bcf9).
+- [x] `acp.ts:296` gives `totalTokens` and `contextTokens` the same `update.used` value.
+      Fixed by deleting the total rather than guessing one; the record says
+      `tokens: "unavailable"` (4359bcf9).
+- [x] Capture the model at dispatch. `server.ts:6903` writes usage against
       `session.runtime.model`, and `server.ts:5835` can change it on a same-provider update,
-      so the record must keep requested model distinct from provider-reported.
-- [ ] Persist accounting plus its dedup and coverage state across restart and transfer.
-- [ ] Five hazards, all in scope: duplicate events, late events, failures, restart, transfer.
-- [ ] Never infer a turn link from a timestamp or row position.
+      so the record must keep requested model distinct from provider-reported (4359bcf9).
+- [x] Persist accounting plus its dedup and coverage state across restart and transfer
+      (4359bcf9).
+- [x] Five hazards, all in scope: duplicate events, late events, failures, restart, transfer
+      (4359bcf9).
+- [x] Never infer a turn link from a timestamp or row position. OpenCode's turn id now comes
+      from `info.parentID` rather than the active turn, so a late message lands on the turn
+      that produced it (4359bcf9).
+- [x] Not in the original list, found by Codex reproducing an inference rather than
+      inheriting it: `opencode.ts` called `normalizeProviderUsage` unguarded where
+      `claude.ts` wrapped it, so a cache read above the input count threw out of `#receive`.
+      It now emits a record marked `invalid` instead (4359bcf9).
 - Out of scope: new turn records, ordinals, message associations. Those are `CX2`.
+- What Claude Code verified directly: the four defects are addressed in the diff, and
+  `usage.test.ts`, `acp.test.ts` and `opencode.test.ts` pass, 59 tests. The accounting
+  persistence across restart and transfer rests on Codex's own full-suite run, not on a
+  check run here.
 
 ### CX2 · Turn records, ordinals, message associations — 2-3 d
-- [ ] Durable per-turn record with an ordinal.
-- [ ] Associate messages with turns. Two dispatch paths: `server.ts:6504` steers an active
-      turn, `server.ts:6595` appends another user message — a message is not a turn.
-- [ ] Expose the history-to-turn link so a history row can name its turn.
+Ticked under rule 7: Codex's work, Claude Code's file, so the citation carries Codex's shas.
+- [x] Durable per-turn record with an ordinal (e7364720, 84d90d50).
+- [x] Associate messages with turns. Two dispatch paths: `server.ts:6504` steers an active
+      turn, `server.ts:6595` appends another user message — a message is not a turn (1991666a).
+- [x] Expose the history-to-turn link so a history row can name its turn (84d90d50). `CC1`'s
+      meta draws it in f3252e50.
+- Legacy history stays unnumbered rather than defaulted, and `coverage` says how much of a
+  turn the daemon actually saw, so the client can refuse to present a floor as a total.
 
 ### CX3 · Approval execution duration — 1 field
 - [ ] Record how long the approved command ran, distinct from `decided in`.
       Decision latency answers "how long was the agent blocked"; execution duration answers
       "what did the approval cost". The design asks for the second and the UI currently
       shows the first.
+
+### CX5 · Record the session-start checkpoint — accepted and landed
+Raised 2026-09-10 while working `CC1`, accepted by Codex the same day (2adb1171, f9cf76bb), and
+`docs/checkpoint-reasons.md` is the contract. Codex caught a second failure in the original
+ask that Claude Code had missed: `baseCommit` is mutable, so comparing against it does not
+just collide, it changes meaning over time.
+- [x] Push a checkpoint thread item when a session worktree is created, carrying the
+      `baseCommit` that `createSessionWorkspace` already returns (f9cf76bb).
+- [x] Give the checkpoint thread item a `reason`, and make `session-start` its seventh value.
+      Landed with eight reasons and legacy rows left absent rather than defaulted (2adb1171).
+      The schema is `{ kind: "checkpoint", label, commit?, createdAt }` (`schema.ts:502-505`);
+      the reason exists already but only inside the label prose — `forked checkpoint`,
+      a user's own words, `before restore`, `before revert <path>`, `before provider
+      handoff`, `before provider recovery`, and the archive site's. Promoting it to a field
+      names a concept the daemon already has rather than adding one, and every client stops
+      reading prose to learn why a checkpoint exists.
+- Not `commit === baseCommit`. That equality is coincidental, not semantic: a checkpoint
+  taken before a revert that returns the worktree to base carries the same commit, and then
+  two rows both answer to session start.
+- Why it is worth a protocol change rather than a client heuristic: the client cannot infer
+  it from position either. History is paged, so the oldest row loaded is not the oldest row.
 
 ### CX4 · Report the manifest defect upstream
 - [ ] `_adherence.oxlintrc.json` marks `--transition-control` as `"color"`, after five
@@ -224,15 +381,46 @@ so the first landing does not read as the unblock.
 ## Claude Code
 
 ### CC1 · Finish the history row — blocked on CX2 for the last part
-- [ ] `<pre>` out of the row, meta on one line, body in a collapsed `details`.
-- [ ] Checkpoint title drops the sha; title names the checkpoint, meta names the commit.
-- [ ] Fork wired on checkpoint rows only, with a confirm stating both halves.
-- [ ] The card: `1px --border`, `--radius`, rows separated by a border. Currently a bare div.
-- [ ] Left **42px mono time column**. Time currently sits right of the title with no width.
-- [ ] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
-      `bg-primary` on every row.
-- [ ] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — **after CX2**.
-- [ ] Record execution duration as an unfilled design field, not a satisfied one.
+- [x] `<pre>` out of the row, meta on one line, body in a collapsed `details` (f3252e50).
+- [x] Checkpoint title drops the sha; title names the checkpoint, meta names the commit
+      (f3252e50).
+- [x] Fork wired on checkpoint rows only, with a confirm stating both halves
+      (f3252e50, f3252e50).
+- [x] The card: `1px --border`, `--radius`, rows separated by a border (f3252e50).
+- [x] Left **42px mono time column**, pinned by `history-row.dom.test.tsx` (f3252e50).
+- [x] Replace the raw `span` dot with `StatusDot`, coloured by outcome rather than
+      `bg-primary` on every row (f3252e50).
+- [x] Grow the turn meta to `turn 9 · sonnet-4.6 · 3 tools · 12.4k tokens` — after CX2
+      (e7364720, 1991666a, 84d90d50 by Codex; drawn in f3252e50). The row also repeats what the
+      turn says about its own completeness: pending reads `running`, unavailable says so, and
+      partial is marked rather than passing its floor off as a total.
+- [x] Record execution duration as an unfilled design field, not a satisfied one:
+      `sessionHistoryEntryDetail`'s field 4 names it and says why only decision latency
+      can be measured today (f3252e50).
+- [x] The session-start checkpoint gets **no** fork (2adb1171, f9cf76bb by Codex; drawn in
+      f3252e50). Fork is absent rather than disabled, because a disabled control still says the
+      decision exists, and the meta reads `session start · nothing to revert past this`.
+      Restore stays: going back to it is exactly what it is for. A legacy checkpoint carries no
+      reason and is never guessed into this branch.
+- [x] Turn-row fork is **closed as a design error**, not left open as a daemon request
+      (f3252e50 keeps fork checkpoint-only). fetzy's earlier "blocked on `CX2`" ruling was wrong,
+      and so was its reasoning: the obstacle was never turn identity. Fork restores a worktree
+      and turns do not each have one — most turns write nothing, so forking "from turn 8" and
+      "from turn 9" lands on identical filesystem state, and `session.fork` does not replay
+      conversation either. The affordance would promise a precision it cannot deliver, which is
+      the same failure as forking from a turn's nearest preceding checkpoint. `CX2` gave a turn
+      an identity; it did not give it a state. The design changed rather than the client:
+      Desktop V2's three turn rows are now `fork: false`, the two checkpoint rows keep
+      `fork: true`, and the reasoning sits above `historyRows` in the design file itself so the
+      drawing carries its own why. Re-vendored, `part2-logic` 133,178 to 133,451 bytes. Nothing
+      to raise with Codex: `session.fork` taking a checkpoint id is right as it stands.
+  - The export `README.md` is vendored at `design/design_handoff_domovoi_v2/designs/README.md`
+    (18dc495 for the parts, this commit for the README). Its byte table is gone rather than
+    corrected: a restated byte count goes stale on every re-export, which is the same shape as
+    an undated `[x]` or prose restating a token. What replaces it is checkable after any
+    re-export, and was checked here rather than taken on the README's word — part 1 ends
+    `</x-dc>` with zero trailing bytes, part 2 opens `\n<script` and ends `</html>\n`, and the
+    seam is adjacent bytes with no separator. The correction list is closed.
 
 ### CC2 · StatusDot takes an invisible label
 - [ ] The label stops being visible; it does not stop being required. Meaning derives from
@@ -278,10 +466,60 @@ building them:
 - [ ] **Phone v2** — `apps/mobile/src/screens/` already has nine: approval, artifact,
       deny-explain, fleet, review, session, sessions, settings, unpaired. Design has 19
       frames. Diff the sets before writing anything.
-- [ ] **Web v2** — `apps/web/src/` exists with browser platform, client kind, credential,
-      daemon pairing. Design adds the six-step flow including Design review.
-- [ ] **Onboarding** — `desktop-first-run-persistence.ts` plus first-run and recovery tests.
-- [ ] **Skills** — `skill-browser-*.tsx`, and `skills` is a real `WorkspaceSurface`.
+  - [x] The diff is done, read-only, 2026-09-10 (7f24d8c7). Eight frames built, eight partial,
+        three with nothing: 09 pairing by camera, 13 and 14 attachments, 19 pinned plan sheet.
+        Estimate for the rest of Phone v2 is 13-15 days, which is what `SHIP-PLAN.md`'s `S3.3`
+        line costs. Full table in `~/.agents/plans/2026-09-10-domovoi-cc5-phone-v2-diff.md`.
+  - [x] No frame is blocked on Codex (34282f89). Checked before raising a request, and the
+        request was not warranted: `terminalOwnershipNotificationSchema` (`rpc.ts:918`) already
+        carries `owner: { client, clientId }` for frame 04, and `annotationAnchorSchema`
+        (`schema.ts:762`) already takes a `bbox` beside the selector and quote for frame 18.
+        Both were called blocked from grepping `apps/mobile/src` without reading the protocol.
+  - Method note, both directions. `camera|BarCode|qrcode|scanner` and
+    `attachment|Picker|photo|image` each match exactly one line in `apps/mobile/src`, and both
+    matches are comments about work not done: a presence grep answered yes where the code says
+    no. The reverse cost a wrong row in the same pass — frame 01 was written up from grepping
+    `needs|Needs|group`, which missed `attention`, `approvalLead`, `waitingCount` and
+    `ApprovalLeadCard` because the concept is there under other words. `graft` found them in one
+    call. Use it for "is this concept here"; a keyword search only answers "is this string here".
+  - Found while correcting that: `groupSessions` and `sessionsNeedingYou`
+    (`packages/ui/src/session-groups.ts:24,72`) have no callers outside their own test. The
+    desktop already models the three groups the phone design draws, and nothing renders them.
+    Belongs to `CC7` rather than Phone v2.
+- [x] **Web v2** — diffed 2026-09-10 (34282f89). Two of six steps built, one partial, three with
+      nothing: picking a machine, carrying on without the terminal, and Design review. 6-8 days.
+      The machine picker stays in `S3.2` and is **marked blocked on Phase 2** rather than moved:
+      a browser cannot reach a second machine without the relay or a tailnet route, so part of
+      Web v2 cannot land before the relay and Web is not a fully parallel Phase 3 surface.
+- [x] **Onboarding** — diffed 2026-09-10 (34282f89). Two of five steps built. 4-5 days for the
+      client half. One gap, and one contradiction that turned out not to exist.
+  - **There was never a contradiction here. Do not re-open it.** "Install it for me" is Domovoi
+    installing **its own** daemon — `Download domovoi 0.9.4 → /usr/local/bin/domovoi`, with the
+    manual command and a Copy control beside it. `providerFirstRunRecovery` is about **third-party
+    agents**, and the design says the same thing it does: the aider card at
+    `Domovoi v2 Onboarding.dc.html:645` reads "Not installed here. Domovoi will not install agents
+    for you, it only runs what is already on the machine", its button is `Install guide`, and its
+    detail is `$ pipx install aider-chat` — a command to run yourself, not an action Domovoi
+    takes. Two different installers. The earlier ruling matched on the word "install" and not on
+    the subject, which is the same error as the handoffs/Transfers rename, and it was made from
+    this report rather than from the file.
+  - [ ] "Sign in to Domovoi Cloud" needs an account service that does not exist. `S0.1`/`S5.1`,
+        not client work.
+- [x] **Skills** — diffed 2026-09-10 (34282f89). Nearly done: install preview, scope, trust,
+      `SKILL.md` view, fleet inventory comparison and per-turn selection all real. 3-4 days,
+      almost all of it the one missing surface — "read the diff and re-review".
+  - [ ] **Blocking, not a gap. Ruled 2026-09-10 by fetzy.** A changed skill drops to untrusted and
+        re-approving shows nothing, so the person approves a digest rather than a change. That is
+        a consent flow that cannot state what it is asking for — the same shape as a check row
+        reading pass when nothing ran. It is load-bearing for the whole skills trust story rather
+        than polish on a 3-4 day surface, and it gates `S3.x` Skills rather than sitting inside
+        it.
+
+**All four diffs are done. `CC5`'s estimate half is complete: 26-32 days for four of Phase 3's
+nine `S3.x` items, with Tablet, Cloud, Team, cross-cutting states and accessibility uncounted.
+A whole-phase figure of 45-60 days is the honest shape. Two milestone questions are raised in
+`~/.agents/plans/2026-09-10-domovoi-cc5-remaining-diffs.md` and are fetzy's to answer: whether
+`S3.5` Tablet leaves M3, and whether M2 is phone-gates-only rather than phone-parity.**
 
 ### CC6 · The three that genuinely have no code
 - [ ] **Tablet v2** — nothing in the repo.
@@ -298,116 +536,222 @@ building them:
       failed read renders nothing and states what is still true.
 - [ ] No-results and not-searched are different answers. Never round one into the other.
 
-### CC8 · `apps/mobile`'s eight sub-floor type sites
-- [ ] Four in `screens/session.tsx`, two in `screens/artifact.tsx`, one each in
-      `components/tab-bar.tsx` and `components/ui/badge.tsx`.
-- [ ] Mechanical now: widening the lint rule's files glob is what lands it. The config
-      comment already says so.
+### CC8 · `apps/mobile`'s sub-floor type sites — closed
+Three of this item's premises were wrong, checked before widening anything. fetzy ruled
+2026-09-10: no new role below `machine`, the sites move onto existing variants, and the phone's
+floor is **higher** than the desktop's rather than lower.
+
+- [x] **Nineteen sites, not eight** (eedb10cd for nine, this commit for ten more). Four in `screens/session.tsx` (56, 86, 90, 139), two in
+      `screens/artifact.tsx` (32, 42), one each in `components/tab-bar.tsx` (56) and
+      `components/ui/badge.tsx` (48) — and `screens/fleet.tsx:48` at `text-[8.5px]`, which the
+      inventory missed and which is the smallest of them.
+- [x] **The three role names did not resolve in `apps/mobile`** (eedb10cd). The rule's message says to use
+      `text-eyebrow`, `text-mono-xs` or `text-micro`. `apps/mobile/tailwind.config.js` has no
+      `fontSize` at all — it reads only `colors`, `fontFamily` and `radius` from
+      `tokens.generated.js`, and that file carries no type scale. Widening the glob would flag
+      nine sites and offer three utilities that resolve to nothing in nativewind, so every fix
+      it prompted would be wrong.
+- [x] **The phone's scale is deliberately not the desktop's** (eedb10cd)., so emitting the desktop floor
+      into mobile is not the fix either. `components/ui/text.tsx:22` says why: "A phone is read
+      at arm's length rather than desk distance, so the scale is tighter than the desktop's."
+      Its nine `Text` variants are the phone's real role system, bottoming out at
+      `machine` 10px and `note`/`label` 10.5px.
+- [x] **The design question is answered** (eedb10cd). does the phone have a floor, and
+      what is it? Either the nine sites take an existing `Text` variant, or the phone's scale
+      gains a named role below `machine`. Both are decisions about the phone's type system.
+      Until one is answered, widening the glob turns a real question into nine lint errors with
+      no correct fix.
+- Restating the desktop's scale in raw px is the same shape the token pipeline exists to stop.
+  `scripts/mobile-tokens.mjs` derives colours and radii from `packages/ui/src/styles.css`; the
+  type scale is the one part still written out by hand on both sides.
+
+### CC9 · `--transition-control` is still a colour in the vendored manifest
+- [x] The live `tokens/motion.css` annotates all seven motion tokens `@kind other`. The
+      seventh, `--transition-control`, was written upstream on 2026-09-13; its value names
+      `border-color` and `color`, so unannotated it classified as a colour and the generated
+      type-floor rule read a transition as one. Re-vendored in #395 (6f729747).
+- [ ] Second pass, easy to lose: the classification lives in the compiled manifest, not the
+      source. `design/design_system_domovoi/_adherence.oxlintrc.json` still carries
+      `"--transition-control": "color"` under `x-omelette.tokenKinds`, and will until the
+      design app recompiles the manifest and the file is re-vendored. What does not trigger
+      that recompile, tried 2026-09-13: opening the project, and two DesignSync writes to
+      `_ds/.../tokens/motion.css` (the annotation, then a same-bytes touch), each followed by
+      a read of the live manifest. So the self-check runs inside the Claude Design app, on
+      its own edits, and this item's owner is whoever next edits the design system in the
+      app itself. Done when this reads `other`:
+      `grep -n '"--transition-control"' design/design_system_domovoi/_adherence.oxlintrc.json`
+      Then `pnpm design:revision` and `node scripts/design-rule.mjs` to regenerate the rule.
 
 ---
 
 ## Needs a decision before it can be worked
 
-### D1 · `design/` holds a fork, not a vendored copy
+### D1 · three copies of the design system, nothing keeping them in step
 `design/design_system_domovoi/readme.md` is a condensed 127-line summary in a different
 voice against upstream's ~300 lines, missing Sources, Content fundamentals, Iconography,
 Index and Caveats. It cannot be diffed against upstream, so drift in it is invisible by
 construction — which is how the stale type-floor sentence survived, and why `CC4` exists.
 
-Two ways: carry upstream verbatim and keep the summary beside it as a separate authored
-document, or accept the fork and stop calling it vendored. Not a coding task until decided.
+**That framing was too small, and 2026-09-10 showed why.** "The vendored readme is a summary,
+not a copy" describes one file and implies the remedy is to carry upstream verbatim. The actual
+shape is three independent artefacts: the live Claude Design project, the `_ds/` copy bound into
+a working session, and this repository's `design/`. Nothing moves a change from any one of them to
+either other. Carrying upstream verbatim does not fix that, because upstream is itself a snapshot
+someone else's tooling refreshes on its own schedule — vendor from the bound copy and you vendor
+a revision behind the live one, with no signal that you did.
 
-**A signed file's content can change, and I nearly recorded the opposite. Found 2026-09-11.**
-The review of this pull request found a contradiction inside the signed v2 handoff:
-`HANDOFF-V2.md:20` lists `Domovoi Phone v2.dc.html` and `:187` describes its nineteen frames,
-while the known-gaps list said "No phone surface in v2." Both cannot be true.
+Measured instance: `tokens/motion.css` gained `/* @kind other */` on six motion tokens in the
+live project. The bound `_ds/` copy had none of the six. `design/` had none of the six. The only
+reason any of that surfaced is that a person happened to open the file. No check, on any of the
+three sides, would have said a word. Re-vendored from the live project directly at
+`e4d3d11` — fifteen lines, not the one-line diff the fork framing predicts.
 
-I edited the vendored file, the gate refused it — "A signed file is never edited here" — and I
-concluded the correction had nowhere to go, on two false premises.
+Two ways, both still open: carry upstream verbatim **and** add a mechanism that says when
+upstream moved, or accept the fork and stop calling it vendored. Verbatim alone is not one of
+them. Not a coding task until decided.
 
-The first was that a signed file's content cannot change. It can. `17cf141` re-vendored
-`Domovoi Desktop V2.part2-logic.html`, a content change to a signed file with no `--accept-new`
-and the digest regenerated in the same commit, and the invariants passed. The gate refuses a *hand
-edit*; it has always allowed a re-export followed by a regenerate. That distinction is the entire
-purpose of the digest, and I read the refusal as a prohibition on the outcome rather than on the
-method.
+**Presence is not adoption, and nothing here records which is which.** A vendored file that
+nothing imports looks identical, by inspection, to one that is fully wired. Same shape as a check
+row reading pass when nothing ran, and as a grep hit being a fact about the text rather than the
+system. Under `design/design_system_domovoi/tokens/`, colours and radii are derived through
+`scripts/mobile-tokens.mjs`, typography is partly derived and partly hand-written, and
+`motion.css` reaches nothing at all — `packages/ui/src/styles.css` imports neither it nor any
+`dv-*` keyframe, so the system-wide reduced-motion collapse it declares was never in effect and a
+shimmer added on the assumption that it was would have shipped an infinite animation with no
+preference path.
 
-The second was that no upstream existed. `list_projects` returned only `design_handoff_domovoi` and
-`_brand`, and I read that as absence. It filters to design-system projects, and the source of record
-is a plain project — `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named in `design/REVISIONS.json`, the
-same project `17cf141`'s re-export came from. `get_project` reaches it and `list_files` shows
-`HANDOFF-V2.md` and `Domovoi Phone v2.dc.html` sitting in it. A filtered list answering "no" is a
-fact about the filter.
+**Next step, and it is cheap:** audit each file under `design/design_system_domovoi/tokens/` once
+— is it imported or derived anywhere, and if not, why not. Some legitimately will not apply. The
+output is **not** a check that every file must be imported; it is an inventory with a stated reason
+per unadopted file, and then a check that the inventory is complete. Seeded and shrinking, the same
+shape as the tick citations, the type-floor exemptions and `D4`.
 
-Fixed the way `17cf141` was: corrected upstream in `a3b4404e`, read back, re-vendored, regenerated.
-Four steps, no local authorship, digest intact.
+**Second instance, from the other direction, found 2026-09-10.** The phone's type ramp is
+authored in this repository (`--text-phone-*` in `packages/ui/src/styles.css`) because the design
+system carries the desktop scale and knows nothing about the phone's — even though Phone v2 is a
+designed surface and type is the design system's to own. "Not writable from here" was recorded as
+the reason and it was wrong: DesignSync writes to the live project, and did on 2026-09-10. The
+real reason is that a phone type ramp is a design decision, not a vendoring one, and it has not
+been made upstream. So the repo authors it, and `scripts/design-rule.mjs` reads
+two sources, each authoritative for its own scale. That is two derivations rather than a
+restatement, and neither ramp can drift from the other because they describe different things —
+but the phone ramp living here rather than upstream is the same fork question as `D1`, arriving as
+an addition instead of a summary.
 
-#### Changing a signed file under `design/`
+### D6 · every `verify` run depends on a third-party CDN being up
+Found 2026-09-11 when `#363` failed `verify (macos-latest)` on a comment-only commit. The
+cause was not the commit and not a flaky test:
 
-Written out here rather than left in either agent's head, because that is the failure this whole
-entry is about: knowledge held somewhere the repository cannot read, rediscovered by being
-corrected.
+    Downloading Electron binary...
+    HTTPError: Response code 500 (Internal Server Error) for
+      https://github.com/electron/electron/releases/download/v44.1.0/electron-v44.1.0-darwin-arm64.zip
+    Error: Electron failed to install correctly.
+    [ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL] @getdomovoi/desktop@0.0.1 test:launch
 
-**The source of record** is Claude Design project `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named
-"Domovoi", type `PROJECT_TYPE_PROJECT`. It is recorded as `source` in `design/REVISIONS.json`.
-`DesignSync list_projects` **does not show it** — that call filters to
-`PROJECT_TYPE_DESIGN_SYSTEM`. Use `get_project` or `list_files` with the id. The design *system* is
-a different project, `881e2b70-d39a-49b0-bc47-ef5084e64cc7`, and the `_ds/` copy bound into a
-session is a third artefact; those three are the drift this entry opens with.
+Every suite passed first — 35, 128, 5, 156 with 3 skipped, 20 and 26 files, 2,164 daemon tests
+and all 12 mobile Jest suites — and `test:launch` then failed before launching anything. Confirmed
+independently by both agents from separate log captures.
 
-**The four steps**, in order, all in one commit:
+`apps/desktop/package.json:51` pins `electron` at `44.1.0`, and `.github/workflows/ci.yml` caches
+only pnpm at line 29. Nothing caches `~/Library/Caches/electron` or its Linux and Windows
+equivalents, so **every** verify job on **every** platform fetches that binary from GitHub's
+release CDN at test time. A red that means "GitHub had a bad minute" is indistinguishable from a
+red that means the code broke, which is the same failure as a green that means nothing was read.
 
-1. Correct the file in `a3b4404e` (`finalize_plan`, then `write_files`).
-2. Read it back with `get_file` and confirm the change landed.
-3. Copy it into `design/…` — a re-vendor, never an edit of the vendored copy.
-4. `node scripts/design-revision.mjs`, then `--check` to confirm
-   `design/ matches the recorded revision`.
+Not a coding task until decided, because the fix has a shape question in it: cache the binary per
+version, vendor it, or split `test:launch` out of `verify` so a CDN fault cannot fail the gate that
+decides whether code is correct.
 
-`--accept-new=<path>` is for **additions only**. A content change needs no flag, only a matching
-regenerate. Precedents: `17cf141` and `e436a5e`.
+**The third option carries a trap, raised by Codex 2026-09-11 and worth stating with it.** Splitting
+tells the two failure kinds apart; it does not remove the network dependency. And if the split job is
+not *required*, an unavailable Electron binary stops failing the merge gate and starts being absent
+from it — a green merge with launch coverage that silently did not run. That is this entry's own
+failure class, reintroduced by its own remedy. Any split has to keep launch coverage required.
 
-This is the one place rule 5 does not apply. Regenerating a digest beside the change is normally how
-a checksum comes to verify itself; here the content came from upstream rather than from this
-repository, so the digest is recording a provenance rather than blessing an edit. The distinction is
-the method, and it is why the gate's refusal reads as absolute when it is not.
-
-**The gap, named rather than closed.** `REVISIONS.json` records `source`, and nothing verifies that
-source is still reachable. If the project were renamed, moved or removed, every future re-vendor
-would be impossible and no gate would say so — the vendored files would keep matching their recorded
-digests, and `design/ matches the recorded revision` would go on passing while the thing it points at
-was gone. Silent by construction.
-
-It is not closable from CI. Reaching the project needs a DesignSync token CI does not have, so any
-check would pass locally and skip in CI, which is the shape rejected twice already this week: a gate
-that is green for a reason unrelated to what it claims. Naming it here is the whole remedy available.
-Whoever finds `source` unreachable should edit this paragraph rather than file a bug against the
-checker.
-
-**The same finding, one layer out.** `REVISIONS.json` names a source nothing verifies is reachable;
-pull request bodies, review comments and scratch records name shas nothing verifies still exist.
-`scripts/tick-citations.mjs` covers `[x]` boxes in `ROADMAP.md` and `WORK-SPLIT.md` and nothing
-else, so a history rewrite silently invalidates every prose reference to a rewritten sha outside
-those two files. It did exactly that on 2026-09-11: the checker caught three citations in `ROADMAP.md` and two in
-`WORK-SPLIT.md`, and caught none of the shas quoted across a dozen pull request comments. One rule,
-two instances — a reference is only as good as the thing that checks it still resolves, and neither
-of these has one.
-
-**A third in the same family, and the one that costs work rather than confidence.**
-`scripts/tick-citations.mjs` validates claims of completion: it fails an `[x]` with no citation, and
-an `[x]` citing an unreachable sha. Nothing validates `[ ]`. The opposite error — work finished and
-never claimed — is invisible by construction, and it is worse in kind: a false `[x]` produces
-misplaced confidence, while a stale `[ ]` produces an agent starting work that is already done.
-`CC4` sat unticked while this very branch had vendored the files it asks for, through commits that
-are ancestors of it, and no gate could have said so because the section never claimed to be
-finished. Found by a reviewer reading the prose against the tree, which is the only thing that
-catches it. Not closable by the existing checker either: proving a `[ ]` is genuinely outstanding
-means knowing what the task meant, and that is a reading rather than a rule.
+**Recorded, not scheduled.** It cost one rerun, and it will do this again.
 
 ### D2 · Origin-generated `REVISIONS.json` — recommendation is not now
 Recorded with its flip condition: if vendoring ever comes from an artefact the repo can
 re-read at check time — a downloaded bundle with its own digest, rather than a live project
 reachable only through a tool — the caveat disappears and it becomes strictly better than
 `--accept-new`. Until then it is a trusted file in a derived file's clothes.
+
+### D4 · A disabled control that cannot say why — 56 sites, needs a rule and a pass
+Measured 2026-09-10 after the same failure appeared three times in one session: a terminal
+disconnected, a skills review with no project open, and a blocked skill, each a control that went
+inert and said nothing. fetzy's framing makes it three branches rather than two — does not apply
+here, remove it; cannot act for a reason outside the control's own context, say why; cannot act
+because of the user's adjacent state, say nothing, since "type something to send" is noise.
+
+- A first selector — any `disabled` with no `aria-describedby`, `title` or `aria-label` — fired
+  **102** times out of 124. That number says the selector asks the wrong question, not that the
+  codebase fails 102 times.
+- Scoping it to the third branch, by flagging only a `disabled` expression whose identifiers are
+  not bound by `useState`/`useReducer` in the file, gives **56 external and 56 local-only**.
+  `disabled={!input.trim()}` stops firing; `disabled={!connected}`, `disabled={!projectId}` and
+  `disabled={skill.trust.state === "blocked"}` still do.
+- `disabled={disabled}` is excluded as plumbing: the reason lives at the call site that passed it,
+  and that call site is counted there. That alone took 70 to 56.
+- The measurement script is scratch, not committed. It resolves names per file rather than per
+  component, so a component that shadows a prop name is misfiled; the error is small and in the
+  direction of over-reporting.
+
+**It is not a shrinking list everywhere, and calling it one was pattern-matching.** Measured
+2026-09-10 rather than assumed. A seeded list only converges if its files are edited routinely for
+other reasons, which is why the tick citations work — ROADMAP lines are edited constantly. Commits
+per file since 2026-08-01:
+
+| Sites | File | Commits |
+|---|---|---|
+| 22 | `workspace-shell.tsx` | **183** |
+| 8 | `fleet-view.tsx` | 13 |
+| 3 | `skill-browser.tsx` | 18 |
+| 1 | `audit-log-view.tsx` | 12 |
+| 4 | `session-evidence.tsx` | 8 |
+| 2 | `machine-switcher.tsx` | 8 |
+| 5 | `terminal-pane.tsx` | 6 |
+| 4 | `desktop-first-run.tsx` | 3 |
+| 2 | `daemon-credential-prompt.tsx` | 3 |
+| 1 | `notification-settings.tsx` | 2 |
+
+So it converges for the hot two thirds and asymptotes on a cold tail of roughly a dozen sites in
+files touched two or three times in six weeks. The honest shape is a rule that **blocks new
+violations from day one** plus a **named tail scheduled as work**, not one mechanism pretending to
+do both. Seeding without saying which sites are in which half would be a permanent list wearing a
+shrinking list's clothes.
+
+`D5` is the other half of this: 22 of the 56 are in the file that is flagged for splitting, and
+splitting it is what puts a person in every one of those call sites with the context to choose
+between the branches. `D4` after `D5`, not beside it.
+
+**Not a sweep when it is scheduled.** Ruled by fetzy 2026-09-10: land the rule as an error with
+the existing sites seeded, and let each come off as its file is touched. A bulk pass biases hard
+toward the cheap branch — adding `aria-describedby` everywhere — when a good share of these
+controls should not be rendered at all, and that ends in 56 descriptions of controls that should
+not exist. Seeded, the new violations are blocked from day one and each existing one is decided by
+someone already in that file with the context to choose between the branches.
+
+The rule wants to be a custom ESLint rule with scope analysis rather than a `no-restricted-syntax`
+selector, since the selector cannot see what is local.
+
+### D5 · Split `workspace-shell.tsx` — scheduled, not recorded
+Recording this a fifth time would be deferral dressed as agreement. It is the next piece of client
+work, ahead of `D4`, and `CC6` waits on the relay anyway. The case, with the counts as evidence:
+
+- **4,600 lines**, and it holds `Thread`, `HistoryPanel`, `RuntimeControls`, the session sidebar
+  and the shell itself.
+- `D3` is a standing complaint about `Thread`'s prop surface, raised before this session.
+- **45 of the 102** first-pass disabled sites, and **22 of the 56** scoped ones, are in this file
+  alone — more than a third either way.
+- Every cross-cutting pass this session had to touch it: the history row, the turn meta, the
+  session-start fork, both empty states, the status dot.
+- **183 commits since 2026-08-01**, the most-touched file in the repository by a wide margin. That
+  is the number that turns the case from a complaint into a schedule: every change goes through it,
+  so every change pays for its size.
+
+The prop surface is the symptom `D3` names; the size is why every unrelated change lands here.
+Splitting it is not a refactor for tidiness, it is what stops the next cross-cutting item being a
+merge conflict with the one before it.
 
 ### D3 · `Thread`'s prop surface
 Three separate flags against it, and `pendingTransferTargetId` /

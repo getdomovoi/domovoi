@@ -6,6 +6,8 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
 const manifestFile = "design/design_system_domovoi/_adherence.oxlintrc.json"
 const typographyFile = "design/design_system_domovoi/tokens/typography.css"
+const phoneStylesheet = "packages/ui/src/styles.css"
+const systemReadme = "design/design_system_domovoi/readme.md"
 const outputFile = "eslint.type-floor.generated.mjs"
 const regenerateCommand = "pnpm design:rule"
 
@@ -62,7 +64,11 @@ export function belowPattern(boundary) {
   // Number.EPSILON is the gap at 1, not at 10, so it cannot judge a scaled
   // comparison. Round-tripping the value is what actually asks whether it has
   // one decimal place.
-  if (whole > 9 || Math.round(boundary * 10) / 10 !== boundary) {
+  // The class below spans 0 to whole - 1, so a whole boundary of 10 still yields
+  // the single-digit [0-9]. A fractional one above 10 would need a two-digit
+  // literal beside it, and that stays refused: the caution here is about not
+  // emitting a pattern nobody checked, not about what a regex can express.
+  if (whole > 10 || (whole === 10 && fraction > 0) || Math.round(boundary * 10) / 10 !== boundary) {
     throw new Error(`${outputFile}: cannot express "below ${boundary}px" as a single-digit pattern; extend belowPattern before moving the floor`)
   }
   const alternatives = []
@@ -76,6 +82,43 @@ export function belowPattern(boundary) {
   return alternatives.join("|")
 }
 
+// The phone's floor, derived from its own source. styles.css is authoritative
+// for the phone ramp exactly as design/tokens/typography.css is for the
+// desktop's, and the two describe different scales rather than one restating the
+// other, so neither can drift from the other. A phone has less width, so its
+// steps are smaller; that is layout pressure and not legibility, and its floor
+// is therefore higher than the desktop's rather than lower.
+export function phoneFloorFrom(stylesheet) {
+  const sizes = new Map()
+  for (const match of stylesheet.matchAll(/--text-phone-([a-z0-9-]+)\s*:\s*([\d.]+)px\s*;/gu)) {
+    if (match[1].endsWith("-lh")) continue
+    sizes.set(match[1], Number(match[2]))
+  }
+  if (sizes.size === 0) {
+    throw new Error(`${phoneStylesheet}: no --text-phone-* roles; the phone rule would ban nothing`)
+  }
+  const floor = Math.min(...sizes.values())
+  const roles = [...sizes.entries()]
+    .filter(([, size]) => size === floor)
+    .map(([role]) => `text-${role}`)
+    .sort()
+  return { floor, roles }
+}
+
+// The design system states this one outright, so the message is its sentence
+// rather than a paraphrase: reading it from the file means the rule cannot say
+// something the system does not. A selector cannot be derived from prose, but
+// the claim it enforces can be, and that is the half that drifts.
+export function statusDotSentence(readme) {
+  const line = readme.split("\n").find((candidate) => (
+    candidate.includes("StatusDot") && candidate.includes("never colour alone")
+  ))
+  if (!line) {
+    throw new Error(`${systemReadme}: no StatusDot sentence to quote; the rule would state a claim the design system does not`)
+  }
+  return line.replace(/^[-*]\s*/, "").replace(/`/g, "").trim()
+}
+
 export async function generate(root = repositoryRoot) {
   const manifest = JSON.parse(await readFile(join(root, manifestFile), "utf8"))
   const typography = await readFile(join(root, typographyFile), "utf8")
@@ -84,8 +127,18 @@ export async function generate(root = repositoryRoot) {
   const utilities = { "--text-eyebrow": "text-eyebrow", "--text-mono-xs": "text-mono-xs", "--text-micro": "text-micro" }
   const names = named.map(({ token }) => utilities[token] ?? token)
   const roles = names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}` : names[0]
-  const message = `Text below ${smallest}px has no token behind it. Use ${roles} for a named role below ${floor}px, or ${utilities["--text-micro"]} for sans prose.`
+  // Each message names the floor it enforced and where that floor is declared.
+  // A phone failure that pointed at the desktop tokens would send someone to a
+  // ramp their file does not use.
+  const message = `Text below ${smallest}px has no token behind it on the desktop scale. Use ${roles} for a named role below ${floor}px, or ${utilities["--text-micro"]} for sans prose. Declared in ${typographyFile}.`
   const pattern = `text-\\\\[(?:${belowPattern(smallest)})px\\\\]`
+  const phone = phoneFloorFrom(await readFile(join(root, phoneStylesheet), "utf8"))
+  const statusDot = statusDotSentence(await readFile(join(root, systemReadme), "utf8"))
+  const phoneRoles = phone.roles.length > 1
+    ? `${phone.roles.slice(0, -1).join(", ")} or ${phone.roles[phone.roles.length - 1]}`
+    : phone.roles[0]
+  const phoneMessage = `Text below ${phone.floor}px has no token behind it on the phone scale, and nothing sits below ${phoneRoles}. The floor is the smallest size the design calls legible, not a platform threshold. Declared as --text-phone-* in ${phoneStylesheet}.`
+  const phonePattern = `text-\\\\[(?:${belowPattern(phone.floor)})px\\\\]`
   const module = [
     `// Generated by ${regenerateCommand}. Do not edit.`,
     `//`,
@@ -104,8 +157,40 @@ export async function generate(root = repositoryRoot) {
     `  },`,
     `]`,
     ``,
+    `// The phone's ramp is its own scale, declared in ${phoneStylesheet} and read`,
+    `// from there rather than from the design system, which carries the desktop's`,
+    `// and knows nothing about the phone's. Its floor is ${phone.floor}px with no role`,
+    `// beneath it.`,
+    `// A bare coloured dot carries meaning by colour alone. The design system's`,
+    `// own sentence is the message, read from ${systemReadme} so this cannot`,
+    `// state a rule the system does not.`,
+    `//`,
+    `// It keys on data-status-dot, the marker this repository already puts on a`,
+    `// span that means a status, rather than on rounded-full styling. Styling`,
+    `// caught progress tracks, list bullets and a numbered step marker, none of`,
+    `// which carry meaning by colour. The limit is worth stating: a new raw dot`,
+    `// that does not declare itself is not reachable by a selector without`,
+    `// flagging every circle in the codebase.`,
+    `export const statusDotRules = [`,
+    `  {`,
+    `    selector: "JSXOpeningElement:has(JSXAttribute[name.name='data-status-dot'])",`,
+    `    message: ${JSON.stringify(`${statusDot} Use StatusDot, which keeps the label in the accessibility tree even when it is visually hidden.`)},`,
+    `  },`,
+    `]`,
+    ``,
+    `export const phoneTypeFloorRules = [`,
+    `  {`,
+    `    selector: "Literal[value=/${phonePattern}/]",`,
+    `    message: ${JSON.stringify(phoneMessage)},`,
+    `  },`,
+    `  {`,
+    `    selector: "TemplateElement[value.raw=/${phonePattern}/]",`,
+    `    message: ${JSON.stringify(phoneMessage)},`,
+    `  },`,
+    `]`,
+    ``,
   ].join("\n")
-  return { module, floor, smallest, named }
+  return { module, floor, smallest, named, phone, statusDot }
 }
 
 export async function writeDesignRule(root = repositoryRoot) {
@@ -130,7 +215,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (failures.length > 0) process.exitCode = 1
     else console.log(`${outputFile} matches ${manifestFile}`)
   } else {
-    const { floor, smallest, named } = await writeDesignRule()
-    console.log(`wrote a floor of ${floor}px with ${named.length} named roles below it, banning under ${smallest}px, to ${outputFile}`)
+    const { floor, smallest, named, phone } = await writeDesignRule()
+    console.log(`wrote a desktop floor of ${floor}px with ${named.length} named roles below it, banning under ${smallest}px, and a phone floor of ${phone.floor}px with none below it, to ${outputFile}`)
   }
 }

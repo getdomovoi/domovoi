@@ -2,7 +2,7 @@ import eslint from "@eslint/js"
 import reactHooks from "eslint-plugin-react-hooks"
 import tseslint from "typescript-eslint"
 
-import { typeFloorRules } from "./eslint.type-floor.generated.mjs"
+import { phoneTypeFloorRules, statusDotRules, typeFloorRules } from "./eslint.type-floor.generated.mjs"
 
 const sourceFiles = ["apps/**/*.{ts,tsx}", "packages/**/*.{ts,tsx}"]
 const reactFiles = [
@@ -39,9 +39,9 @@ export default tseslint.config(
   },
   {
     // Scoped to packages/ui, which is the surface the floor was swept in.
-    // apps/mobile has eight of its own and is a separate pass, because it
-    // renders through nativewind against generated tokens rather than these
-    // utilities. Widening this glob is what makes that pass land.
+    // apps/mobile is a separate block below rather than a wider glob here. It
+    // renders through nativewind against a different ramp, and its floor is
+    // higher than this one, so one rule cannot serve both.
     files: ["packages/ui/**/*.{ts,tsx}"],
     rules: {
       // Generated from the design system, never hand-edited. scripts/design-rule.mjs
@@ -53,7 +53,27 @@ export default tseslint.config(
       // manifest. Its own rules are all warnings, and its raw-pixel selector matches
       // the 5px inside 9.5px, so enabling them would flag the values the design system
       // defines.
+      "no-restricted-syntax": ["error", ...typeFloorRules, ...statusDotRules],
+    },
+  },
+  {
+    // StatusDot is the one place the raw dot belongs: styles.css keys its
+    // forced-colors override on data-status-dot, and the atom is what every
+    // other file is told to use instead. The rule stays on for everything else.
+    files: ["packages/ui/src/status-dot.tsx"],
+    rules: {
       "no-restricted-syntax": ["error", ...typeFloorRules],
+    },
+  },
+  {
+    // The phone's floor is 10px and the desktop's boundary is 9.5px, so this is
+    // its own block with its own generated rule. Both are derived: the desktop's
+    // from the design system's typography tokens, the phone's from the
+    // --text-phone-* ramp in packages/ui/src/styles.css. They describe different
+    // scales rather than one restating the other.
+    files: ["apps/mobile/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": ["error", ...phoneTypeFloorRules, ...statusDotRules],
     },
   },
   {

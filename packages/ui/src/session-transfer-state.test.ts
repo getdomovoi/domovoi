@@ -4,7 +4,7 @@ import { expect, it } from "vitest"
 import {
   forkSessionBlockedReason,
   sessionIsArchiveReadOnly,
-  sessionStatusClass,
+  sessionStatusMeaning,
 } from "./workspace-shell.js"
 
 const session: SessionSummary = {
@@ -25,7 +25,7 @@ it("gives every session state a status colour", () => {
     "active", "waiting", "idle", "done", "failed",
     "archiving", "archived", "transferring", "transferred", "ownership-conflict",
   ] as const) {
-    expect(sessionStatusClass({ ...session, state })).toBeTruthy()
+    expect(sessionStatusMeaning({ ...session, state })).toBeTruthy()
   }
 })
 

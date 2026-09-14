@@ -102,15 +102,16 @@ Parallel with Phase 0. Touches nothing the gates decide.
       builds ship *with* it, not after.
 - [ ] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart.
-- [ ] **S1.6 [CC]** · `apps/cli` — the paired-client CLI, over JSON-RPC on loopback and
-      tailnet. Shipped: pair, status, doctor, logs, skill install. Not shipped: skill push,
-      which is machine-to-machine as the design draws it and waits on a daemon RPC that does
-      not exist. install and service status are not here and never were — they need the
-      profile and keychain, so they stay in domovoid. The relay route is blocked on S0.2, like
-      every other client, and that does not hold this item.
-      *History: reassigned `[CX]` 2026-09-10 on the ownership-table argument, since every CLI
-      file was under `apps/daemon/src/`. The new package removes that collision instead of
-      arbitrating it.*
+- [ ] **S1.6 [CX, not CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
+      **Reassigned 2026-09-10, not yet agreed by Codex.** The binary is `domovoid`, declared at
+      `apps/daemon/package.json:20` against `apps/daemon/dist/index.js`, and every CLI file is
+      under `apps/daemon/src/` — Codex's half by `WORK-SPLIT.md`'s ownership table, so `[CC]`
+      contradicts rule 1. Codex accepted it as `CX` and corrected the scope: `domovoid service
+      install` and `domovoid service status` already exist (`index.ts:86`), so what is missing
+      there is top-level aliases rather than the commands. `doctor`, `logs` and `skill push` do
+      not exist and their behaviour is undefined. No binary named `domovoi` without the `d` exists or is
+      declared anywhere, so if a separate user-facing CLI is intended that is a product decision
+      rather than a client task, and it needs a home before it needs an owner.
 - [ ] **S1.7 [CX]** The accounting and turn-record work from `WORK-SPLIT.md` (`CX1`, `CX2`)
       lands here — it is daemon bookkeeping and it unblocks UI in Phase 3.
 
