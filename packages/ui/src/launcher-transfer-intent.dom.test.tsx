@@ -67,3 +67,27 @@ it("does not carry the selected target into another active session", async () =>
   await settle()
   expect(sentRequests(socket, "session.transferPreview").every((request) => (request.params as { sessionId?: string } | undefined)?.sessionId === snapshot.sessions[0]!.id)).toBe(true)
 })
+
+it("opens preflight for the selected session after successful activation", async () => {
+  const { socket, snapshot, user } = await setup()
+  await pick(user, "Review chosen session")
+  await act(async () => { respond(socket, "session.activate", { ...snapshot, activeSessionId: snapshot.sessions[1]!.id }) })
+  await settle()
+  expect(sentRequests(socket, "session.transferPreview")).toHaveLength(1)
+  expect(sentRequests(socket, "session.transferPreview")[0]?.params).toMatchObject({ sessionId: snapshot.sessions[1]!.id, targetMachineId: machineId })
+})
+
+it("does not revive transfer intent when a previously active session returns", async () => {
+  const { socket, snapshot, user } = await setup()
+  await pick(user, "Review previous session")
+  await act(async () => { respond(socket, "session.activate", snapshot) })
+  await settle()
+  expect(sentRequests(socket, "session.transferPreview")).toHaveLength(1)
+  await act(async () => { notify(socket, "workspace.changed", { ...snapshot, activeSessionId: snapshot.sessions[1]!.id }) })
+  await settle()
+  expect(screen.queryByRole("dialog", { name: /Move session to Review destination/ })).toBeNull()
+  await act(async () => { notify(socket, "workspace.changed", snapshot) })
+  await settle()
+  expect(sentRequests(socket, "session.transferPreview")).toHaveLength(1)
+  expect(screen.queryByRole("dialog", { name: /Move session to Review destination/ })).toBeNull()
+})

@@ -4137,7 +4137,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setSurface("workspace")
       setWorkspaceError("")
       const sourceMachineId = attached?.machineId ?? snapshot?.machine.id ?? null
-      setLauncherTransfer({ sessionId, machineId, sourceMachineId })
+      setLauncherTransfer({ sessionId, machineId, sourceMachineId, opened: false })
       void activateSession(sessionId).catch((cause: unknown) => {
         setLauncherTransfer((current) => current?.sessionId === sessionId ? null : current)
         setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
@@ -4159,16 +4159,27 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [checkpointRestorePending, setCheckpointRestorePending] = useState(false)
   // Named by the launcher, consumed by the thread's transfer dialog once the
   // named session is the active one on the daemon it was named on.
-  const [launcherTransfer, setLauncherTransfer] = useState<{ sessionId: string; machineId: string; sourceMachineId: string | null } | null>(null)
+  // `opened` separates an intent still waiting for its session to activate
+  // from one whose dialog has been shown: leaving the session after that is
+  // leaving the dialog, so the intent goes with it rather than waiting to
+  // reappear when the session is next active.
+  const [launcherTransfer, setLauncherTransfer] = useState<{ sessionId: string; machineId: string; sourceMachineId: string | null; opened: boolean } | null>(null)
   const launcherTransferMachineId = attached?.machineId ?? snapshot?.machine.id ?? null
   const launcherTransferTargetId = launcherTransfer
     && launcherTransfer.sessionId === snapshot?.activeSessionId
     && launcherTransfer.sourceMachineId === launcherTransferMachineId
     ? launcherTransfer.machineId
     : null
+  const activeSessionId = snapshot?.activeSessionId ?? null
   useEffect(() => {
-    if (launcherTransfer && launcherTransfer.sourceMachineId !== launcherTransferMachineId) setLauncherTransfer(null)
-  }, [launcherTransfer, launcherTransferMachineId])
+    if (!launcherTransfer) return
+    if (launcherTransfer.sourceMachineId !== launcherTransferMachineId) { setLauncherTransfer(null); return }
+    if (launcherTransfer.sessionId === activeSessionId) {
+      if (!launcherTransfer.opened) setLauncherTransfer({ ...launcherTransfer, opened: true })
+    } else if (launcherTransfer.opened) {
+      setLauncherTransfer(null)
+    }
+  }, [launcherTransfer, launcherTransferMachineId, activeSessionId])
   useEffect(() => {
     if (!launchIntent) return
     const onMachine = (attached?.machineId ?? homeMachineId) === launchIntent.machineId
@@ -4180,7 +4191,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const setLauncherTransferTargetId = (machineId: string | null) => {
     if (machineId === null) { setLauncherTransfer(null); return }
     const sessionId = snapshot?.activeSessionId
-    if (sessionId) setLauncherTransfer({ sessionId, machineId, sourceMachineId: launcherTransferMachineId })
+    if (sessionId) setLauncherTransfer({ sessionId, machineId, sourceMachineId: launcherTransferMachineId, opened: true })
   }
   // Both surfaces restore through this one function, so an attempt started from
   // either holds the other shut for as long as it runs.
