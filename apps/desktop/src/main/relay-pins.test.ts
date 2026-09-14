@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createRelayPinFile, relayPinFileName, relayPinKeyPattern } from "./relay-pins.js"
 
-const synced = vi.hoisted(() => ({ refuse: false, calls: [] as string[] }))
+const synced = vi.hoisted(() => ({ refuse: false, refuseClose: false, calls: [] as string[] }))
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>()
   return {
@@ -22,6 +22,7 @@ vi.mock("node:fs/promises", async (original) => {
               return (target[name as "sync"] as () => Promise<void>).call(target)
             }
           }
+          if (name === "close" && synced.refuseClose) return async () => { throw new Error("injected close refusal") }
           const value = Reflect.get(target, name, target)
           return typeof value === "function" ? value.bind(target) : value
         },
@@ -31,7 +32,7 @@ vi.mock("node:fs/promises", async (original) => {
 })
 
 let root: string
-beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "domovoi-relay-pins-")); synced.refuse = false; synced.calls.length = 0 })
+beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "domovoi-relay-pins-")); synced.refuse = false; synced.refuseClose = false; synced.calls.length = 0 })
 afterEach(async () => { await rm(root, { recursive: true, force: true }) })
 
 const key = `domovoi.daemon.relayPin.machine-${"a".repeat(32)}`
@@ -76,6 +77,16 @@ describe("desktop relay pin file", () => {
     synced.refuse = true
     await expect(pins.compareAndSwap(key, "one", "two")).rejects.toThrow("injected file sync refusal")
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ version: 1, pins: { [key]: "one" } })
+    expect(await readdir(root)).toEqual([relayPinFileName])
+  })
+
+  it("reports the sync failure first when closing the file fails as well", async () => {
+    const pins = createRelayPinFile(join(root, relayPinFileName))
+    synced.refuse = true
+    synced.refuseClose = true
+    const outcome = await pins.compareAndSwap(key, undefined, "one").then(() => undefined, (error: unknown) => error as Error)
+    expect(outcome?.message).toBe("injected file sync refusal; closing the file also failed: injected close refusal")
+    expect((outcome?.cause as Error).message).toBe("injected close refusal")
   })
 
   it("refuses a key or value outside the shape the renderer may use", async () => {
@@ -110,9 +121,13 @@ describe("desktop relay pin file", () => {
 
   it("refuses a file holding a key or value outside the shape it writes", async () => {
     const path = join(root, relayPinFileName)
-    const bytes = JSON.stringify({ version: 1, pins: { "domovoi.other": "x", [key]: 7 } })
-    await writeFile(path, bytes)
-    await expect(createRelayPinFile(path).read(key)).rejects.toThrow(/not readable/)
-    expect(await readFile(path, "utf8")).toBe(bytes)
+    for (const pins of [{ "domovoi.other": "x" }, { [key]: 7 }, []]) {
+      const bytes = JSON.stringify({ version: 1, pins })
+      await writeFile(path, bytes)
+      const file = createRelayPinFile(path)
+      await expect(file.read(key)).rejects.toThrow(/not readable/)
+      await expect(file.compareAndSwap(key, undefined, "x")).rejects.toThrow(/not readable/)
+      expect(await readFile(path, "utf8")).toBe(bytes)
+    }
   })
 })

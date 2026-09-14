@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename } from "node:fs/promises"
+import { mkdir, open, readFile, rename, unlink, type FileHandle } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
 // The desktop keeps each daemon's relay identity pin in one JSON file under
@@ -53,7 +53,7 @@ async function load(path: string): Promise<PinFile> {
   if (typeof parsed !== "object" || parsed === null) throw unreadable(path)
   const record = parsed as { version?: unknown; pins?: unknown }
   if (record.version !== 1) throw new Error(`The relay pin file at ${path} has a version this desktop does not read. Move it aside to pair again.`)
-  if (typeof record.pins !== "object" || record.pins === null) throw unreadable(path)
+  if (typeof record.pins !== "object" || record.pins === null || Array.isArray(record.pins)) throw unreadable(path)
   const pins: Record<string, string> = {}
   for (const [key, value] of Object.entries(record.pins as Record<string, unknown>)) {
     if (!relayPinKeyPattern.test(key) || typeof value !== "string") throw unreadable(path)
@@ -64,23 +64,48 @@ async function load(path: string): Promise<PinFile> {
 
 // Publish the new bytes durably: flush the temporary file, rename it over
 // the old one, then flush the directory so the rename itself is on disk. A
-// flush that fails rejects the swap; the caller must not believe an
+// flush that fails rejects the swap, and a temporary file that never made
+// it to the rename is removed; the caller must not believe an
 // acknowledgement the disk never gave. Windows cannot open a directory for
-// fsync, and its rename is already committed on return.
+// fsync, and libuv's rename there asks for no write-through, so on Windows
+// the file's bytes are flushed but the rename's persistence across power
+// loss is not something this code can promise.
 async function publish(path: string, file: PinFile): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = join(dirname(path), `.${relayPinFileName}.${process.pid}.${Date.now()}.tmp`)
-  const handle = await open(temporary, "w", 0o600)
   try {
-    await handle.writeFile(JSON.stringify(file), "utf8")
-    await handle.sync()
-  } finally {
-    await handle.close()
+    await closing(await open(temporary, "w", 0o600), async (handle) => {
+      await handle.writeFile(JSON.stringify(file), "utf8")
+      await handle.sync()
+    })
+  } catch (error: unknown) {
+    await unlink(temporary).catch(() => undefined)
+    throw error
   }
   await rename(temporary, path)
   if (process.platform === "win32") return
-  const directory = await open(dirname(path), "r")
-  try { await directory.sync() } finally { await directory.close() }
+  await closing(await open(dirname(path), "r"), (directory) => directory.sync())
+}
+
+// Run one operation on a handle and always close it. When both fail, the
+// message names the operation's error first and the close failure second,
+// with the close failure as the cause, so the first thing that went wrong
+// is the first thing said and neither is lost.
+async function closing<T>(handle: FileHandle, operation: (handle: FileHandle) => Promise<T>): Promise<T> {
+  let result: T
+  try {
+    result = await operation(handle)
+  } catch (error: unknown) {
+    try {
+      await handle.close()
+    } catch (closeError: unknown) {
+      const primary = error instanceof Error ? error : new Error(String(error))
+      throw new Error(`${primary.message}; closing the file also failed: ${closeError instanceof Error ? closeError.message : String(closeError)}`, { cause: closeError })
+    }
+    throw error
+  }
+  await handle.close()
+  return result
 }
 
 export function createRelayPinFile(path: string): RelayPinFile {
