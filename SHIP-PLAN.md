@@ -105,9 +105,9 @@ Parallel with Phase 0. Touches nothing the gates decide.
       patch-compatible snapshots in 91b1e157, the same admission checks shared by the daemon
       and its machine socket in 86891409.
 - [x] **S1.3 [CX]** Crash recovery: an interrupted turn, a half-written worktree, an
-      orphaned transfer lease. Interrupted turns reconcile at startup (aaf8674c), interrupted
+      orphaned transfer lease. Interrupted turns reconcile at startup (00e6c678, #113), interrupted
       and half-written session creation with it (42c4403e, #372), and transfer ownership and
-      receive leases recover on retry or release when abandoned (984a9f5a, 2cd0cdfb).
+      receive leases recover on retry or release when abandoned (b5b1aa90, a6294547).
       `docs/crash-recovery.md` states the bounds: no provider turn is replayed and no
       uncommitted work is discarded.
 - [ ] **S1.4 [CX]** Auto-update, signed and verified. A self-updating daemon holding your
