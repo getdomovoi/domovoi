@@ -19,7 +19,10 @@ const dotColour: Record<SessionRow["dot"], string> = {
   quiet: "bg-faint",
 }
 
-const attentionColour: Record<"approval" | "preview", string> = {
+// Keyed by the row's own type rather than restating its two values. A third
+// kind of attention already failed at the indexed lookup below; keying the
+// table moves that failure to this declaration, where the omission is.
+const attentionColour: Record<NonNullable<SessionRow["attention"]>, string> = {
   approval: "text-warning",
   preview: "text-primary",
 }
