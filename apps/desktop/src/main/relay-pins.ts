@@ -64,12 +64,14 @@ async function load(path: string): Promise<PinFile> {
 
 // Publish the new bytes durably: flush the temporary file, rename it over
 // the old one, then flush the directory so the rename itself is on disk. A
-// flush that fails rejects the swap, and a temporary file that never made
-// it to the rename is removed; the caller must not believe an
-// acknowledgement the disk never gave. Windows cannot open a directory for
-// fsync, and libuv's rename there asks for no write-through, so on Windows
-// the file's bytes are flushed but the rename's persistence across power
-// loss is not something this code can promise.
+// flush or rename that fails rejects the swap, and the temporary file that
+// never made it to the rename is removed; the caller must not believe an
+// acknowledgement the disk never gave. Once the rename has happened the
+// published file is never deleted, whatever the directory flush says.
+// Windows cannot open a directory for fsync, and libuv's rename there asks
+// for no write-through, so on Windows the file's bytes are flushed but the
+// rename's persistence across power loss is not something this code can
+// promise.
 async function publish(path: string, file: PinFile): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
   const temporary = join(dirname(path), `.${relayPinFileName}.${process.pid}.${Date.now()}.tmp`)
@@ -78,19 +80,30 @@ async function publish(path: string, file: PinFile): Promise<void> {
       await handle.writeFile(JSON.stringify(file), "utf8")
       await handle.sync()
     })
+    await rename(temporary, path)
   } catch (error: unknown) {
-    await unlink(temporary).catch(() => undefined)
-    throw error
+    throw await discarding(temporary, error)
   }
-  await rename(temporary, path)
   if (process.platform === "win32") return
   await closing(await open(dirname(path), "r"), (directory) => directory.sync())
 }
 
-// Run one operation on a handle and always close it. When both fail, the
-// message names the operation's error first and the close failure second,
-// with the close failure as the cause, so the first thing that went wrong
-// is the first thing said and neither is lost.
+// Remove a temporary file after a failed publication. A temporary that is
+// already gone is fine; any other cleanup failure is kept beside the
+// failure that caused it, primary first.
+async function discarding(temporary: string, error: unknown): Promise<unknown> {
+  try {
+    await unlink(temporary)
+    return error
+  } catch (cleanupError: unknown) {
+    if ((cleanupError as { code?: string }).code === "ENOENT") return error
+    return both(error, cleanupError, "removing the temporary file also failed")
+  }
+}
+
+// Run one operation on a handle and always close it. When both fail, both
+// errors are kept, the operation's first, so the first thing that went
+// wrong is the first thing said and neither object is lost.
 async function closing<T>(handle: FileHandle, operation: (handle: FileHandle) => Promise<T>): Promise<T> {
   let result: T
   try {
@@ -99,13 +112,17 @@ async function closing<T>(handle: FileHandle, operation: (handle: FileHandle) =>
     try {
       await handle.close()
     } catch (closeError: unknown) {
-      const primary = error instanceof Error ? error : new Error(String(error))
-      throw new Error(`${primary.message}; closing the file also failed: ${closeError instanceof Error ? closeError.message : String(closeError)}`, { cause: closeError })
+      throw both(error, closeError, "closing the file also failed")
     }
     throw error
   }
   await handle.close()
   return result
+}
+
+function both(primary: unknown, secondary: unknown, what: string): AggregateError {
+  const message = (value: unknown) => value instanceof Error ? value.message : String(value)
+  return new AggregateError([primary, secondary], `${message(primary)}; ${what}: ${message(secondary)}`, { cause: primary })
 }
 
 export function createRelayPinFile(path: string): RelayPinFile {

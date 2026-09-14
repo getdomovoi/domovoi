@@ -7,10 +7,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRelayPinFile, relayPinFileName, relayPinKeyPattern } from "./relay-pins.js"
 
 const synced = vi.hoisted(() => ({ refuse: false, refuseClose: false, calls: [] as string[] }))
+const renamed = vi.hoisted(() => ({ refuse: false }))
+const unlinked = vi.hoisted(() => ({ refuse: false }))
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>()
   return {
     ...actual,
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      if (renamed.refuse) throw Object.assign(new Error("injected rename refusal"), { code: "EACCES" })
+      return actual.rename(...args)
+    },
+    unlink: async (...args: Parameters<typeof actual.unlink>) => {
+      if (unlinked.refuse) throw Object.assign(new Error("injected unlink refusal"), { code: "EPERM" })
+      return actual.unlink(...args)
+    },
     open: async (...args: Parameters<typeof actual.open>) => {
       const handle = await actual.open(...args)
       return new Proxy(handle, {
@@ -22,7 +32,9 @@ vi.mock("node:fs/promises", async (original) => {
               return (target[name as "sync"] as () => Promise<void>).call(target)
             }
           }
-          if (name === "close" && synced.refuseClose) return async () => { throw new Error("injected close refusal") }
+          if (name === "close" && synced.refuseClose) {
+            return async () => { await target.close(); throw new Error("injected close refusal") }
+          }
           const value = Reflect.get(target, name, target)
           return typeof value === "function" ? value.bind(target) : value
         },
@@ -32,7 +44,7 @@ vi.mock("node:fs/promises", async (original) => {
 })
 
 let root: string
-beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "domovoi-relay-pins-")); synced.refuse = false; synced.refuseClose = false; synced.calls.length = 0 })
+beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "domovoi-relay-pins-")); synced.refuse = false; synced.refuseClose = false; synced.calls.length = 0; renamed.refuse = false; unlinked.refuse = false })
 afterEach(async () => { await rm(root, { recursive: true, force: true }) })
 
 const key = `domovoi.daemon.relayPin.machine-${"a".repeat(32)}`
@@ -84,9 +96,25 @@ describe("desktop relay pin file", () => {
     const pins = createRelayPinFile(join(root, relayPinFileName))
     synced.refuse = true
     synced.refuseClose = true
-    const outcome = await pins.compareAndSwap(key, undefined, "one").then(() => undefined, (error: unknown) => error as Error)
+    const outcome = await pins.compareAndSwap(key, undefined, "one").then(() => undefined, (error: unknown) => error as AggregateError)
     expect(outcome?.message).toBe("injected file sync refusal; closing the file also failed: injected close refusal")
-    expect((outcome?.cause as Error).message).toBe("injected close refusal")
+    expect(outcome?.errors.map((error: Error) => error.message)).toEqual(["injected file sync refusal", "injected close refusal"])
+    expect(outcome?.cause).toBe(outcome?.errors[0])
+    expect(await readdir(root)).toEqual([])
+  })
+
+  it("removes the temporary file when the rename fails, and keeps a cleanup failure beside the cause", async () => {
+    const path = join(root, relayPinFileName)
+    const pins = createRelayPinFile(path)
+    await pins.compareAndSwap(key, undefined, "one")
+    renamed.refuse = true
+    await expect(pins.compareAndSwap(key, "one", "two")).rejects.toThrow("injected rename refusal")
+    expect(await readdir(root)).toEqual([relayPinFileName])
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ version: 1, pins: { [key]: "one" } })
+    unlinked.refuse = true
+    const outcome = await pins.compareAndSwap(key, "one", "two").then(() => undefined, (error: unknown) => error as AggregateError)
+    expect(outcome?.errors.map((error: Error) => error.message)).toEqual(["injected rename refusal", "injected unlink refusal"])
+    expect(outcome?.message).toBe("injected rename refusal; removing the temporary file also failed: injected unlink refusal")
   })
 
   it("refuses a key or value outside the shape the renderer may use", async () => {
