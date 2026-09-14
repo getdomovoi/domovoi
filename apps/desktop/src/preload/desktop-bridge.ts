@@ -144,6 +144,12 @@ export function createDesktopWindowBridge(
     platform,
     fleetRoute: (machineId, budgetMs) => ipc.invoke("domovoi:fleet-route", machineId, budgetMs),
     forgetFleetRoute: (machineId) => ipc.invoke("domovoi:fleet-route-forget", machineId),
+    readRelayPin: async (key) => {
+      const value = await ipc.invoke("domovoi:relay-pin-read", key)
+      if (value !== undefined && typeof value !== "string") throw new Error("Desktop returned an invalid relay pin")
+      return value
+    },
+    writeRelayPin: async (key, value) => { booleanResult(await ipc.invoke("domovoi:relay-pin-write", key, value), "relay pin write") },
     acquireDaemon,
     reacquireDaemon: async () => daemonAcquisitionResult(await ipc.invoke("domovoi:rpc-endpoint-reconnect")),
     getRpcEndpoint: async () => {

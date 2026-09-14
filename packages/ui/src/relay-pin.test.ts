@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest"
 
 import { DaemonRpcError, DomovoiRpcTimeoutError } from "./client"
 import {
+  bridgeRelayPinStorage,
   createRelayPinStore,
   localStorageRelayPinStorage,
   readRelayPin,
@@ -219,5 +220,26 @@ describe("localStorage storage", () => {
     broken.getItem = () => { throw new DOMException("denied", "SecurityError") }
     const storage = localStorageRelayPinStorage(broken)
     expect(await storage.read(relayPinKey(machineId))).toBeUndefined()
+  })
+})
+
+// The desktop's storage is a pair of bridge calls to the main process. An older
+// desktop without them yields no storage, which the shell reads as "keep no
+// pin", the same as a browser with no localStorage.
+describe("bridge storage", () => {
+  it("wraps a bridge that has both calls and refuses one that lacks either", async () => {
+    const calls: string[] = []
+    const items = new Map<string, string>()
+    const bridge = {
+      readRelayPin: async (key: string) => { calls.push(`read ${key}`); return items.get(key) },
+      writeRelayPin: async (key: string, value: string) => { calls.push(`write ${key}`); items.set(key, value) },
+    }
+    const storage = bridgeRelayPinStorage(bridge)!
+    const store = createRelayPinStore(storage, machineId)
+    expect(await store.compareAndSwap(undefined, trusted)).toBe(true)
+    expect(await store.read()).toEqual(trusted)
+    expect(calls.filter((call) => call.startsWith("write"))).toHaveLength(1)
+    expect(bridgeRelayPinStorage({ readRelayPin: bridge.readRelayPin })).toBeUndefined()
+    expect(bridgeRelayPinStorage(undefined)).toBeUndefined()
   })
 })

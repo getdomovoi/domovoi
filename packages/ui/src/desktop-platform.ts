@@ -35,6 +35,10 @@ export function workspaceWindowDecorationLabel(decoration: WorkspaceWindowDecora
 export type DesktopWindowBridge = {
   fleetRoute?(machineId: string, budgetMs: number): Promise<unknown>
   forgetFleetRoute?(machineId: string): Promise<unknown>
+  // One machine's relay pin, kept by the main process in a private file. The
+  // renderer sees keys and values, never the path.
+  readRelayPin?(key: string): Promise<string | undefined>
+  writeRelayPin?(key: string, value: string): Promise<void>
   platform: "darwin" | "linux" | "win32"
   getRpcEndpoint(): Promise<{ url: string; token: string }>
   captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{

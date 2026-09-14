@@ -95,6 +95,15 @@ export function localStorageRelayPinStorage(storage: Storage | undefined = globa
   }
 }
 
+// The desktop's storage is the main process's file, reached over the bridge.
+// A bridge without the two calls (an older desktop) means no pin is kept.
+export function bridgeRelayPinStorage(bridge: { readRelayPin?(key: string): Promise<string | undefined>; writeRelayPin?(key: string, value: string): Promise<void> } | undefined): RelayPinStorage | undefined {
+  if (!bridge?.readRelayPin || !bridge.writeRelayPin) return undefined
+  const read = bridge.readRelayPin.bind(bridge)
+  const write = bridge.writeRelayPin.bind(bridge)
+  return { read: (key) => read(key), write: (key, value) => write(key, value) }
+}
+
 export type RelayPinCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
 
 // Bring the saved pin in line with the daemon on the other end of an
