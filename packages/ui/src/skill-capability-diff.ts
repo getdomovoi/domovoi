@@ -1,4 +1,4 @@
-import type { SkillCapability, SkillEnablementReview, SkillSummary } from "@getdomovoi/protocol"
+import { compareSkillDeclaredScopes, type SkillCapability, type SkillDeclaredScopeChange, type SkillEnablementReview, type SkillSummary } from "@getdomovoi/protocol"
 
 // A skill can rewrite its whole description without becoming more dangerous, and
 // add one capability and become dangerous without changing a paragraph. So a
@@ -7,27 +7,30 @@ import type { SkillCapability, SkillEnablementReview, SkillSummary } from "@getd
 export type SkillReReviewRisk =
   | "first-review"
   | "capabilities-gained"
+  | "scope-unknown"
   | "capabilities-narrowed"
   | "instructions-only"
   | "unchanged"
 
-// Two questions this cannot answer from what the daemon stores. Named here so a
-// screen can say so rather than implying the answer is "no change".
+// Two questions this may not be able to answer from what the daemon stores.
+// Named here so a screen can say so rather than implying the answer is "no
+// change".
 //
-// `capability-scope`: the manifest is a flat list of capability ids
-// (`skillCapabilityManifestSchema`), so a capability has no scope inside it.
-// `network.connect` narrowed from one host to any, or `process.execute` from one
-// command to every command, is the same id before and after.
+// `capability-scope`: a version 2 manifest declares a scope per capability and
+// `compareSkillDeclaredScopes` tells widened from narrowed. A version 1
+// manifest on either side carries no scope, so `network.connect` from one host
+// to any host is the same id before and after and the question has no answer.
 //
-// `instruction-extent`: `skillEnablementReviewSchema` keeps a content digest and
-// not the bytes it covered, so the instruction change is a boolean. Nobody can
-// render the diff or count its lines without the reviewed revision.
+// `instruction-extent`: this summary reads the review's content digest, not the
+// bytes it covered, so the instruction change is a boolean here. The daemon
+// retains the reviewed revision; this screen does not load it yet.
 export type SkillReReviewUnanswerable = "capability-scope" | "instruction-extent"
 
 export type SkillReReviewSummary = {
   risk: SkillReReviewRisk
   gained: readonly SkillCapability[]
   lost: readonly SkillCapability[]
+  scopes: readonly SkillDeclaredScopeChange[]
   instructionsChanged: boolean
   headline: string
   unanswerable: readonly SkillReReviewUnanswerable[]
@@ -77,6 +80,7 @@ export function skillReReviewSummary(
       risk: "first-review",
       gained: [],
       lost: [],
+      scopes: [],
       instructionsChanged: false,
       headline: "First review: no previous declaration was recorded, so approve it as new",
       unanswerable: ["capability-scope"],
@@ -84,29 +88,59 @@ export function skillReReviewSummary(
   }
   const gained = missingFrom(skill.manifest.capabilities, review.manifest.capabilities)
   const lost = missingFrom(review.manifest.capabilities, skill.manifest.capabilities)
+  const comparison = compareSkillDeclaredScopes(review.manifest, skill.manifest)
+  const scopes = comparison.state === "known" ? comparison.changes : []
+  const widened = scopes.filter((change) => change.gained).map((change) => change.capability).sort(byRisk)
+  const narrowed = scopes.filter((change) => !change.gained).map((change) => change.capability).sort(byRisk)
   const instructionsChanged = review.contentDigest !== skill.contentDigest
-  const unanswerable: SkillReReviewUnanswerable[] = ["capability-scope"]
+  const unanswerable: SkillReReviewUnanswerable[] = []
+  if (comparison.state === "unknown") unanswerable.push("capability-scope")
   if (instructionsChanged) unanswerable.push("instruction-extent")
 
-  // A capability given up never offsets one taken. Both at once is a gain, and
-  // the headline says the gain, because averaging them reads as reassurance.
-  if (gained.length > 0) {
+  // A capability given up never offsets one taken, and a scope that widened is
+  // a capability taken whatever its id says. Both at once is a gain, and the
+  // headline says the gain, because averaging them reads as reassurance.
+  if (gained.length > 0 || widened.length > 0) {
+    const parts = []
+    if (gained.length > 0) parts.push(`Asks for ${named(gained)}, which it did not have before`)
+    if (widened.length > 0) parts.push(`${gained.length > 0 ? "widens" : "Widens"} ${named(widened)}`)
     return {
       risk: "capabilities-gained",
       gained,
       lost,
+      scopes,
       instructionsChanged,
-      headline: `Asks for ${named(gained)}, which it did not have before`,
+      headline: parts.join(", and "),
       unanswerable,
     }
   }
-  if (lost.length > 0) {
+  // No id was gained, and whether a scope was is a question with no answer
+  // because exactly one side declares scopes. That is not a clean result, so it
+  // is not allowed to read like one. Two legacy declarations have no scopes to
+  // compare on either side; the limit is stated and the ids decide.
+  const legacyMixed = (review.manifest.version === 1) !== (skill.manifest.version === 1)
+  if (legacyMixed) {
+    return {
+      risk: "scope-unknown",
+      gained,
+      lost,
+      scopes,
+      instructionsChanged,
+      headline: "Capability scopes cannot be compared: one side is a legacy declaration, so review its scopes as new",
+      unanswerable,
+    }
+  }
+  if (lost.length > 0 || narrowed.length > 0) {
+    const parts = []
+    if (lost.length > 0) parts.push(`Gives up ${named(lost)}`)
+    if (narrowed.length > 0) parts.push(`${lost.length > 0 ? "narrows" : "Narrows"} ${named(narrowed)}`)
     return {
       risk: "capabilities-narrowed",
       gained,
       lost,
+      scopes,
       instructionsChanged,
-      headline: `Gives up ${named(lost)} and asks for nothing new`,
+      headline: `${parts.join(", and ")} and asks for nothing new`,
       unanswerable,
     }
   }
@@ -118,6 +152,7 @@ export function skillReReviewSummary(
       risk: "instructions-only",
       gained,
       lost,
+      scopes,
       instructionsChanged,
       headline: "No capability change, instructions only",
       unanswerable,
@@ -127,6 +162,7 @@ export function skillReReviewSummary(
     risk: "unchanged",
     gained,
     lost,
+    scopes,
     instructionsChanged,
     headline: "Nothing has changed since the review",
     unanswerable,

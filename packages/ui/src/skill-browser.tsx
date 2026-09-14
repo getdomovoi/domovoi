@@ -739,6 +739,11 @@ export function SkillBrowser({
                   {reReview.gained.map((capability) => <li key={capability}>{capability}</li>)}
                 </ul>
               ) : null}
+              {reReview.scopes.length > 0 ? (
+                <ul className="m-0 list-disc pl-4 text-[11.5px]">
+                  {reReview.scopes.map((change) => <li key={change.capability}>{change.capability} {change.change}</li>)}
+                </ul>
+              ) : null}
               {reReview.lost.length > 0 ? (
                 <p className="m-0 text-[11.5px] text-muted-foreground">Gives up {reReview.lost.join(", ")}</p>
               ) : null}
@@ -747,8 +752,8 @@ export function SkillBrowser({
               <p className="m-0 text-[11px] text-faint">
                 This cannot answer {reReview.unanswerable.map((limit) => (
                   limit === "capability-scope"
-                    ? "whether a capability's scope widened, because a manifest carries no scope"
-                    : "how much of the instructions changed, because the reviewed text was not kept"
+                    ? "whether a capability's scope widened, because a legacy declaration carries no scope"
+                    : "how much of the instructions changed, because this summary does not load the reviewed text"
                 )).join(", or ")}.
               </p>
             </div>

@@ -155,3 +155,76 @@ describe("skill re-review summary", () => {
     expect(summary.unanswerable).toEqual(["capability-scope", "instruction-extent"])
   })
 })
+
+// Scopes exist now. A capability whose id is unchanged can still widen from one
+// host to every host, and that is a gain; a legacy declaration on either side
+// means the scope question has no answer, which is not the same as "no change".
+const scoped = (
+  scopes: Array<{ capability: SkillSummary["manifest"]["capabilities"][number]; scope: unknown }>,
+  contentDigest = `sha256:${"a".repeat(64)}`,
+) => ({ version: 2 as const, capabilities: scopes.map((entry) => entry.capability), scopes, contentDigest })
+
+const withManifest = <T extends SkillEnablementReview | SkillSummary>(base: T, manifest: unknown, contentDigest: string): T =>
+  ({ ...base, manifest, contentDigest } as T)
+
+const oneHost = { capability: "network.connect" as const, scope: { kind: "hosts" as const, hosts: ["api.example.com"] } }
+const anyHost = { capability: "network.connect" as const, scope: { kind: "all" as const } }
+const preview = { capability: "preview.render" as const, scope: { kind: "all" as const } }
+
+describe("skill re-review summary with scopes", () => {
+  it("treats a widened scope as a gain even when the capability ids match", () => {
+    const before = scoped([oneHost])
+    const after = scoped([anyHost], changed)
+    const summary = skillReReviewSummary(
+      withManifest(review(["network.connect"]), { version: 2, capabilities: before.capabilities, scopes: before.scopes }, before.contentDigest),
+      withManifest(skill(["network.connect"]), { version: 2, capabilities: after.capabilities, scopes: after.scopes }, after.contentDigest),
+    )
+
+    expect(summary.risk).toBe("capabilities-gained")
+    expect(summary.scopes.map((change) => [change.capability, change.change])).toEqual([["network.connect", "widened"]])
+    expect(summary.headline).toMatch(/Widens network\.connect/)
+    expect(summary.unanswerable).not.toContain("capability-scope")
+  })
+
+  it("does not let a dropped capability hide a widened one", () => {
+    const before = scoped([oneHost, preview])
+    const after = scoped([anyHost], changed)
+    const summary = skillReReviewSummary(
+      withManifest(review(["network.connect", "preview.render"]), { version: 2, capabilities: before.capabilities, scopes: before.scopes }, before.contentDigest),
+      withManifest(skill(["network.connect"]), { version: 2, capabilities: after.capabilities, scopes: after.scopes }, after.contentDigest),
+    )
+
+    expect(summary.risk).toBe("capabilities-gained")
+    expect(summary.lost).toEqual(["preview.render"])
+  })
+
+  it("calls a legacy declaration on either side unanswerable rather than clean", () => {
+    const after = scoped([anyHost])
+    const legacyBefore = skillReReviewSummary(
+      review(["network.connect"]),
+      withManifest(skill(["network.connect"]), { version: 2, capabilities: after.capabilities, scopes: after.scopes }, after.contentDigest),
+    )
+    expect(legacyBefore.risk).toBe("scope-unknown")
+    expect(legacyBefore.unanswerable).toContain("capability-scope")
+
+    const before = scoped([oneHost])
+    const legacyAfter = skillReReviewSummary(
+      withManifest(review(["network.connect"]), { version: 2, capabilities: before.capabilities, scopes: before.scopes }, before.contentDigest),
+      skill(["network.connect"]),
+    )
+    expect(legacyAfter.risk).toBe("scope-unknown")
+    expect(legacyAfter.headline).toMatch(/cannot be compared/)
+  })
+
+  it("reads a narrowed scope as giving something up", () => {
+    const before = scoped([anyHost])
+    const after = scoped([oneHost])
+    const summary = skillReReviewSummary(
+      withManifest(review(["network.connect"]), { version: 2, capabilities: before.capabilities, scopes: before.scopes }, before.contentDigest),
+      withManifest(skill(["network.connect"]), { version: 2, capabilities: after.capabilities, scopes: after.scopes }, after.contentDigest),
+    )
+
+    expect(summary.risk).toBe("capabilities-narrowed")
+    expect(summary.scopes.map((change) => change.change)).toEqual(["narrowed"])
+  })
+})
