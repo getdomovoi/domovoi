@@ -228,3 +228,41 @@ describe("skill re-review summary with scopes", () => {
     expect(summary.scopes.map((change) => change.change)).toEqual(["narrowed"])
   })
 })
+
+describe("skill re-review summary wording", () => {
+  it("says a scope changed, not widened, when the new scope is disjoint", () => {
+    const before = scoped([oneHost])
+    const other = { capability: "network.connect" as const, scope: { kind: "hosts" as const, hosts: ["other.example.com"] } }
+    const after = scoped([other], changed)
+    const summary = skillReReviewSummary(
+      withManifest(review(["network.connect"]), { version: 2, capabilities: before.capabilities, scopes: before.scopes }, before.contentDigest),
+      withManifest(skill(["network.connect"]), { version: 2, capabilities: after.capabilities, scopes: after.scopes }, after.contentDigest),
+    )
+
+    expect(summary.risk).toBe("capabilities-gained")
+    expect(summary.headline).toMatch(/Changes the scope of network\.connect/)
+    expect(summary.headline).not.toMatch(/Widens/)
+  })
+
+  it("does not call a first review of a scoped manifest a legacy declaration", () => {
+    const after = scoped([anyHost])
+    const summary = skillReReviewSummary(
+      undefined,
+      withManifest(skill(["network.connect"]), { version: 2, capabilities: after.capabilities, scopes: after.scopes }, after.contentDigest),
+    )
+
+    expect(summary.risk).toBe("first-review")
+    expect(summary.unanswerable).toEqual([])
+  })
+
+  it("has nothing it cannot answer for an unchanged scoped review", () => {
+    const before = scoped([anyHost])
+    const summary = skillReReviewSummary(
+      withManifest(review(["network.connect"]), { version: 2, capabilities: before.capabilities, scopes: before.scopes }, before.contentDigest),
+      withManifest(skill(["network.connect"]), { version: 2, capabilities: before.capabilities, scopes: before.scopes }, before.contentDigest),
+    )
+
+    expect(summary.risk).toBe("unchanged")
+    expect(summary.unanswerable).toEqual([])
+  })
+})

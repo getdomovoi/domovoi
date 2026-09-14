@@ -83,14 +83,19 @@ export function skillReReviewSummary(
       scopes: [],
       instructionsChanged: false,
       headline: "First review: no previous declaration was recorded, so approve it as new",
-      unanswerable: ["capability-scope"],
+      // The headline already says there is nothing to compare against; naming
+      // a scope limit here would claim a legacy declaration that may not exist.
+      unanswerable: [],
     }
   }
   const gained = missingFrom(skill.manifest.capabilities, review.manifest.capabilities)
   const lost = missingFrom(review.manifest.capabilities, skill.manifest.capabilities)
   const comparison = compareSkillDeclaredScopes(review.manifest, skill.manifest)
   const scopes = comparison.state === "known" ? comparison.changes : []
-  const widened = scopes.filter((change) => change.gained).map((change) => change.capability).sort(byRisk)
+  // A disjoint replacement gains and loses at once. It is a gain for the risk,
+  // and the wording says the scope changed rather than claiming it only grew.
+  const widened = scopes.filter((change) => change.change === "widened").map((change) => change.capability).sort(byRisk)
+  const replaced = scopes.filter((change) => change.change === "changed").map((change) => change.capability).sort(byRisk)
   const narrowed = scopes.filter((change) => !change.gained).map((change) => change.capability).sort(byRisk)
   const instructionsChanged = review.contentDigest !== skill.contentDigest
   const unanswerable: SkillReReviewUnanswerable[] = []
@@ -100,10 +105,11 @@ export function skillReReviewSummary(
   // A capability given up never offsets one taken, and a scope that widened is
   // a capability taken whatever its id says. Both at once is a gain, and the
   // headline says the gain, because averaging them reads as reassurance.
-  if (gained.length > 0 || widened.length > 0) {
+  if (gained.length > 0 || widened.length > 0 || replaced.length > 0) {
     const parts = []
     if (gained.length > 0) parts.push(`Asks for ${named(gained)}, which it did not have before`)
-    if (widened.length > 0) parts.push(`${gained.length > 0 ? "widens" : "Widens"} ${named(widened)}`)
+    if (widened.length > 0) parts.push(`${parts.length > 0 ? "widens" : "Widens"} ${named(widened)}`)
+    if (replaced.length > 0) parts.push(`${parts.length > 0 ? "changes" : "Changes"} the scope of ${named(replaced)}`)
     return {
       risk: "capabilities-gained",
       gained,

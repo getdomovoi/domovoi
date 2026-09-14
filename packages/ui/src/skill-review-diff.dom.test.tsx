@@ -114,3 +114,15 @@ it("names the risk on the pane rather than only calling the review stale", async
 
   expect(screen.getByText("Asks for secrets.read, which it did not have before")).toBeTruthy()
 })
+
+// A scoped manifest reviewed and unchanged has nothing the summary cannot
+// answer, and a limits sentence with nothing in it reads as a broken one.
+it("says nothing about limits when there are none", async () => {
+  const manifest = { version: 2 as const, capabilities: ["network.connect" as const], scopes: [{ capability: "network.connect" as const, scope: { kind: "all" as const } }] }
+  const dialog = await openReview({
+    skills: [skill({ manifest, contentDigest: reviewedDigest })],
+    enablements: [{ ...review(["network.connect"]), manifest } as SkillEnablementReview],
+  })
+
+  expect(dialog.textContent ?? "").not.toContain("This cannot answer")
+})

@@ -749,13 +749,13 @@ export function SkillBrowser({
               ) : null}
               {/* A summary that shows capabilities and stays silent about its
                   limits implies the answer to both is "no change". */}
-              <p className="m-0 text-[11px] text-faint">
+              {reReview.unanswerable.length > 0 ? <p className="m-0 text-[11px] text-faint">
                 This cannot answer {reReview.unanswerable.map((limit) => (
                   limit === "capability-scope"
                     ? "whether a capability's scope widened, because a legacy declaration carries no scope"
                     : "how much of the instructions changed, because this summary does not load the reviewed text"
                 )).join(", or ")}.
-              </p>
+              </p> : null}
             </div>
           ) : null}
           {selected ? <div className="flex flex-col gap-2 font-machine text-[10.5px]"><code className="break-all">{selected.contentDigest}</code><span>{selected.manifest.capabilities.join(", ") || "No declared capabilities"}</span></div> : null}
