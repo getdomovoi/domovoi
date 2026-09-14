@@ -266,6 +266,36 @@ export function fontFaces(themeBlock) {
   return faces
 }
 
+// The phone's own ramp, not the desktop's scaled down. Both are declared in
+// styles.css beside each other, and reading the phone's here means text.tsx
+// stops restating nine sizes that a pipeline already exists to carry. A role
+// with a matching -lh becomes a [size, lineHeight] pair, which is the shape
+// Tailwind's fontSize takes, so one key carries both.
+export function phoneTypeScale(rootProperties) {
+  const sizes = {}
+  const heights = {}
+  for (const [name, value] of Object.entries(rootProperties)) {
+    const lineHeight = /^text-phone-(.+)-lh$/.exec(name)
+    if (lineHeight) {
+      heights[lineHeight[1]] = value.trim()
+      continue
+    }
+    const size = /^text-phone-(.+)$/.exec(name)
+    if (size) sizes[size[1]] = value.trim()
+  }
+  if (Object.keys(sizes).length === 0) {
+    throw new Error(`${sourceFile} declares no --text-phone-* roles`)
+  }
+  for (const role of Object.keys(heights)) {
+    if (!sizes[role]) throw new Error(`--text-phone-${role}-lh has no --text-phone-${role}`)
+  }
+  const scale = {}
+  for (const role of Object.keys(sizes).sort()) {
+    scale[role] = heights[role] ? [sizes[role], heights[role]] : sizes[role]
+  }
+  return scale
+}
+
 export function parseTokens(css) {
   const blocks = topLevelBlocks(css)
   const find = (selector) => {
@@ -286,6 +316,7 @@ export function parseTokens(css) {
     shadows: { light: shadowScale(light), dark: shadowScale(darkAll) },
     outOfGamut: { light: outOfGamutNames(light), dark: outOfGamutNames(dark) },
     radius: radiusScale(theme, light),
+    phoneType: phoneTypeScale(lightOwn),
     fonts: fontFaces(theme),
   }
 }
@@ -335,6 +366,12 @@ export function renderModule(tokens) {
     ...objectLines(tokens.radius, "  "),
     "}",
     "",
+    "const fontSize = {",
+    ...Object.entries(tokens.phoneType).map(([role, value]) => (
+      `  ${JSON.stringify(role)}: ${JSON.stringify(value)},`
+    )),
+    "}",
+    "",
     "const fonts = [",
     ...tokens.fonts.map((face) => `  ${JSON.stringify(face)},`),
     "]",
@@ -364,7 +401,7 @@ export function renderModule(tokens) {
     '  return color.slice(0, 7) + alpha.toString(16).padStart(2, "0")',
     "}",
     "",
-    "module.exports = { colors, radius, fonts, fontFamily, shadows, outOfGamut, alphaSteps, withAlpha }",
+    "module.exports = { colors, radius, fontSize, fonts, fontFamily, shadows, outOfGamut, alphaSteps, withAlpha }",
     "",
   ].join("\n")
 }
@@ -402,6 +439,13 @@ export function renderTypes(tokens) {
     "}",
     "export declare const radius: {",
     ...typeLines(tokens.radius, "  "),
+    "}",
+    "export declare const fontSize: {",
+    ...Object.entries(tokens.phoneType).map(([role, value]) => (
+      Array.isArray(value)
+        ? `  readonly ${key(role)}: readonly [${literal(value[0])}, ${literal(value[1])}]`
+        : `  readonly ${key(role)}: ${literal(value)}`
+    )),
     "}",
     "export interface Shadow {",
     "  readonly shadowColor: string",
@@ -493,6 +537,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   } else {
     const tokens = await writeMobileTokens()
     const count = Object.keys(tokens.colors.dark).length
-    console.log(`wrote ${count} colours, ${Object.keys(tokens.radius).length} radii, ${tokens.fonts.length} faces to ${moduleFile}`)
+    console.log(`wrote ${count} colours, ${Object.keys(tokens.radius).length} radii, ${Object.keys(tokens.phoneType).length} type roles, ${tokens.fonts.length} faces to ${moduleFile}`)
   }
 }

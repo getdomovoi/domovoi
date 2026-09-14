@@ -370,12 +370,27 @@ export function AuditLogView({
 
           <section className="mt-5" aria-label="Audit entries">
             {page?.entries.map((entry) => <AuditEntryRow key={entry.id} entry={entry} />)}
+            {/* Not-searched and no-results are different answers. Telling
+                someone to change a filter they never set does not merely fail to
+                distinguish the two: it hands them the one instruction that
+                cannot help, because there is nothing narrowing the list. */}
             {!loading && !error && page?.entries.length === 0 ? (
               <Empty className="min-h-52 border">
                 <EmptyHeader>
                   <EmptyMedia variant="icon"><SearchIcon /></EmptyMedia>
-                  <EmptyTitle>No matching audit entries</EmptyTitle>
-                  <EmptyDescription>Change search terms, action, or outcome.</EmptyDescription>
+                  {Object.keys(filters).length === 0 ? (
+                    <>
+                      <EmptyTitle>This machine has recorded nothing yet</EmptyTitle>
+                      <EmptyDescription>
+                        Approvals, sessions and terminals are written here as they happen.
+                      </EmptyDescription>
+                    </>
+                  ) : (
+                    <>
+                      <EmptyTitle>No matching audit entries</EmptyTitle>
+                      <EmptyDescription>Change search terms, action, or outcome.</EmptyDescription>
+                    </>
+                  )}
                 </EmptyHeader>
               </Empty>
             ) : null}

@@ -139,6 +139,10 @@ describe("SessionEvidenceContent", () => {
     expect(failed).toContain("Evidence unavailable")
     expect(failed).toContain("Git evidence could not be read")
     expect(empty).toContain("No working changes")
-    expect(empty).toContain("No observed test runs")
+    // The scope is a clause rather than an adjective. "Observed" carries the
+    // real limit — witnessed, not exhaustive — but one word cannot hold it for a
+    // reader who has no reason to unpack it.
+    expect(empty).toContain("No test runs observed since this session started")
+    expect(empty).toContain("what it witnessed, not what was run")
   })
 })

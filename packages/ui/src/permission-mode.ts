@@ -24,7 +24,16 @@ export const permissionModes = [
   },
 ] as const satisfies readonly { id: PermissionMode; label: string; meaning: string; note: string }[]
 
+// `satisfies` proves every entry's id is a real mode. It does not prove the list
+// carries every mode, and the lookup below asserts non-null, so a fourth mode
+// added upstream would read as undefined at runtime rather than failing here.
+// This closes that: the type is `never` unless the list covers the union, so the
+// assignment stops compiling the moment it does not.
+type UncoveredPermissionMode = Exclude<PermissionMode, (typeof permissionModes)[number]["id"]>
+const permissionModesAreExhaustive: [UncoveredPermissionMode] extends [never] ? true : never = true
+
 export function permissionModeLabel(mode: PermissionMode, auto: boolean): string {
+  void permissionModesAreExhaustive
   const named = permissionModes.find((entry) => entry.id === mode)!
   return auto ? `${named.label} · auto` : named.label
 }
