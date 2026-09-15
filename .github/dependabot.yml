@@ -20,6 +20,24 @@ updates:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
     groups:
+      # Expo SDK 57 resolves these versions itself, and a bare bump breaks
+      # jest-expo's preset (react-native 0.87.1 dropped
+      # @react-native/assets-registry, measured 2026-09-14). They travel as
+      # one PR so `pnpm --filter @getdomovoi/mobile deps:check` can refuse
+      # the set together; security updates stay eligible, which an ignore
+      # rule would have suppressed.
+      expo-sdk:
+        patterns:
+          - expo
+          - "expo-*"
+          - jest-expo
+          - jest
+          - react-native
+          - "@react-native/*"
+          - react-native-reanimated
+          - react-native-safe-area-context
+          - react-native-svg
+          - react-native-worklets
       production-minor-and-patch:
         dependency-type: production
         update-types:
