@@ -1,10 +1,16 @@
 import { generateKeyPairSync, sign } from "node:crypto"
+import { createHash } from "node:crypto"
 
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   canonicalUpdateJson,
+  fetchUpdateMetadata,
   selectUpdateTarget,
+  updateFetchTimeoutMs,
+  updateInactivityTimeoutMs,
+  maximumUpdateMetadataBytes,
+  verifyUpdateChain,
   verifyUpdateMetadata,
   verifyUpdateRoot,
 } from "./update-verification.js"
@@ -37,6 +43,15 @@ function makeFixture() {
 }
 
 describe("daemon update verification", () => {
+  afterEach(() => vi.useRealTimers())
+
+  function signedEnvelope(signed: Record<string, unknown>, fixture: ReturnType<typeof makeFixture>) {
+    return {
+      signed,
+      signatures: [{ keyid: fixture.keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(signed)), fixture.key.pair.privateKey).toString("base64") }],
+    }
+  }
+
   it("verifies a root signature over canonical signed bytes", () => {
     const fixture = makeFixture()
     expect(verifyUpdateRoot(fixture.root, fixture.root).signed.version).toBe(1)
@@ -80,4 +95,34 @@ describe("daemon update verification", () => {
     const buildMetadata = { ...valid, signed: { ...valid.signed, targets: { "getdomovoi-daemon-1.2.0+build.tgz": buildTarget } } }
     expect(selectUpdateTarget(buildMetadata, "stable", "1.2.0")).toBeUndefined()
   })
+
+  it("verifies the complete chain against the exact served JSON bytes", () => {
+    const fixture = makeFixture()
+    const target = { length: 10, hashes: { sha256: "a".repeat(64) }, custom: { schemaVersion: 1 as const, version: "1.2.0", channel: "stable" as const, sourceCommit: "a".repeat(40), runtimeLockDigest: `sha256:${"b".repeat(64)}` } }
+    const targets = signedEnvelope({ _type: "targets", spec_version: "1.0.31", version: 3, expires: "2027-01-01T00:00:00.000Z", targets: { "getdomovoi-daemon-1.2.0.tgz": target } }, fixture)
+    const targetsBytes = Buffer.from(JSON.stringify(targets))
+    const snapshot = signedEnvelope({ _type: "snapshot", spec_version: "1.0.31", version: 2, expires: "2027-01-01T00:00:00.000Z", meta: { "targets.json": { version: 3, length: targetsBytes.length, hashes: { sha256: Buffer.from(awaitableDigest(targetsBytes), "hex").toString("hex") } } } }, fixture)
+    const snapshotBytes = Buffer.from(JSON.stringify(snapshot))
+    const timestamp = signedEnvelope({ _type: "timestamp", spec_version: "1.0.31", version: 4, expires: "2027-01-01T00:00:00.000Z", meta: { "snapshot.json": { version: 2, length: snapshotBytes.length, hashes: { sha256: awaitableDigest(snapshotBytes) } } } }, fixture)
+    const values = { root: fixture.root, timestamp, snapshot, targets, raw: { "snapshot.json": snapshotBytes, "targets.json": targetsBytes } }
+    expect(verifyUpdateChain(values, fixture.root, Date.parse("2026-09-15T00:00:00.000Z")).signed.version).toBe(1)
+    const changed = Uint8Array.from(snapshotBytes); changed[0] = changed[0] === 123 ? 124 : 123
+    expect(() => verifyUpdateChain({ ...values, raw: { ...values.raw, "snapshot.json": changed } }, fixture.root, Date.parse("2026-09-15T00:00:00.000Z"))).toThrow("does not bind the snapshot bytes")
+  })
+
+  it("refuses oversized and stalled metadata streams", async () => {
+    const oversizedFetcher = vi.fn(async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(maximumUpdateMetadataBytes + 1)); controller.close() } }), { status: 200 }))
+    await expect(fetchUpdateMetadata("https://updates.example.test/", oversizedFetcher)).rejects.toThrow("byte limit")
+
+    vi.useFakeTimers()
+    const stalledFetcher = vi.fn(async () => new Response(new ReadableStream(), { status: 200 }))
+    const pending = expect(fetchUpdateMetadata("https://updates.example.test/", stalledFetcher)).rejects.toThrow("timed out")
+    await vi.advanceTimersByTimeAsync(updateInactivityTimeoutMs + 1)
+    await pending
+    expect(updateFetchTimeoutMs).toBeGreaterThan(updateInactivityTimeoutMs)
+  })
 })
+
+function awaitableDigest(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex")
+}

@@ -164,17 +164,22 @@ async function readMetadata(response: Response): Promise<{ value: unknown, bytes
   let total = 0
   try {
     while (true) {
-      const result = await Promise.race([
-        reader.read(),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new UpdateVerificationError("Update metadata read timed out")), updateInactivityTimeoutMs)),
-      ])
-      if (result.done) break
-      total += result.value.byteLength
-      if (total > maximumUpdateMetadataBytes) {
-        await reader.cancel()
-        throw new UpdateVerificationError("Update metadata exceeds its byte limit")
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const result = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new UpdateVerificationError("Update metadata read timed out")), updateInactivityTimeoutMs) }),
+        ])
+        if (result.done) break
+        total += result.value.byteLength
+        if (total > maximumUpdateMetadataBytes) {
+          await reader.cancel()
+          throw new UpdateVerificationError("Update metadata exceeds its byte limit")
+        }
+        chunks.push(result.value)
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
       }
-      chunks.push(result.value)
     }
   } finally {
     reader.releaseLock()
@@ -196,12 +201,13 @@ export async function fetchUpdateMetadata(baseUrl: string, fetcher: typeof fetch
   const timer = setTimeout(() => controller.abort(), updateFetchTimeoutMs)
   try {
     const names = ["root.json", "timestamp.json", "snapshot.json", "targets.json"] as const
-    const entries = await Promise.all(names.map(async (name) => {
+    const entries: Array<readonly [string, { value: unknown, bytes: Uint8Array }]> = []
+    for (const name of names) {
       const url = new URL(name, base)
       if (url.origin !== base.origin) throw new UpdateVerificationError("Update metadata redirect changed origin")
       const response = await fetcher(url, { signal: controller.signal, redirect: "error" })
-      return [name, await readMetadata(response)] as const
-    }))
+      entries.push([name, await readMetadata(response)])
+    }
     const raw = Object.fromEntries(entries.map(([name, document]) => [name, document.bytes]))
     return { ...Object.fromEntries(entries.map(([name, document]) => [name, document.value])), raw }
   } catch (error) {
