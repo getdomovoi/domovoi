@@ -48,7 +48,7 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
     if (
       command.redacted
       || operation.redacted
-      || (rule.status === "active" && executionContainsSecret(rule.execution))
+      || ((rule.status === "active" || rule.inactiveReason === "revoked") && executionContainsSecret(rule.execution))
     ) return []
     return [{ ...rule, command: command.value, operation: operation.value }]
   })
