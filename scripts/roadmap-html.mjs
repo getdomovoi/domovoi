@@ -4,8 +4,8 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, "..")
-const markdownFile = "ROADMAP.md"
-const htmlFile = "ROADMAP.html"
+const markdownFile = "SHIP-PLAN.md"
+const htmlFile = "SHIP-PLAN.html"
 const regenerateCommand = "pnpm roadmap:html"
 const headingLine = /^(#{1,6})\s+(.+?)\s*$/
 const listItemLine = /^(\s*)(?:[-*+]|(\d+)\.)\s+(.*)$/

@@ -132,9 +132,9 @@ and diffs live in memory from the daemon's snapshot and are gone when the app re
 
 - One daemon at a time. Settings holds one address and one token.
 - No pairing flow on the phone. It takes the daemon credential; it cannot claim a pairing code
-  (`ROADMAP.md`, Goal 3).
+  (`SHIP-PLAN.md`, `S3.3`: pairing by camera is first).
 - Fleet lists the machines paired with the daemon and their health. Use and Terminal on a remote
-  machine are not admitted yet on any client (`ROADMAP.md`, "Admit a client to an enrolled remote
+  machine are not admitted yet on any client (`SHIP-PLAN.md`, "Admit a client to an enrolled remote
   daemon").
 - No terminal on the phone. A terminal artifact is listed with a note that it is watched on the
   desktop (`apps/mobile/src/artifact-rows.ts`). A preview needs a signed fetch the phone cannot

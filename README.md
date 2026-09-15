@@ -109,7 +109,8 @@ Alpha performance limits and the local/CI budget command are documented in
 
 Open product decisions are tracked in
 [`design/design_handoff_domovoi/OPEN-QUESTIONS.md`](design/design_handoff_domovoi/OPEN-QUESTIONS.md).
-The ranked delivery plan is tracked in [`ROADMAP.md`](ROADMAP.md). Agent-facing conventions and
+The one delivery plan is [`SHIP-PLAN.md`](SHIP-PLAN.md); the working rules the agents hold each
+other to are in [`docs/working-rules.md`](docs/working-rules.md). Agent-facing conventions and
 the verified command set are summarized in [`AGENTS.md`](AGENTS.md).
 
 ## Licensing
