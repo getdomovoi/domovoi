@@ -167,6 +167,7 @@ export async function createProductionDaemonWithDependencies(
     deadline.throwIfExpired()
     const wsl = dependencies.wslFacts(environment)
     const daemon = dependencies.createDaemon({
+      updates: { homeDirectory, lease: ownedLease },
       localOwner: { secret, identity },
       host: config.host,
       port: config.port,

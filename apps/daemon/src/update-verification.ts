@@ -72,7 +72,7 @@ function metadataDigest(bytes: Uint8Array): { length: number, sha256: string } {
   return { length: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }
 }
 
-function compareVersions(left: string, right: string): number {
+export function compareVersions(left: string, right: string): number {
   const parse = (value: string) => {
     const [withoutBuild] = value.split("+", 2)
     const [core, prerelease] = withoutBuild!.split("-", 2)
