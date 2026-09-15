@@ -53,6 +53,7 @@ import type {
   SessionTransferPreview,
   SessionTransferPreviewParams,
   SessionUsage,
+  SessionTurn,
   UsageWindow,
   UsageWindowParams,
   TurnSkillSelection,
@@ -198,6 +199,7 @@ import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
+import { UsageChip } from "./usage-chip.js"
 import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, provesNothingRan, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
@@ -1357,6 +1359,8 @@ export function Thread({
   onReleaseSession,
   externalEditor = "system",
   usage = null,
+  usageToday = null,
+  loadLatestTurn,
   onOpenSkills,
   skillNames,
   skillCatalog,
@@ -1418,6 +1422,8 @@ export function Thread({
   }) => Promise<unknown>) | undefined
   externalEditor?: DesktopExternalEditor | undefined
   usage?: SessionUsage | null | undefined
+  usageToday?: UsageWindow | null | undefined
+  loadLatestTurn?: (() => Promise<SessionTurn | undefined>) | undefined
   onOpenSkills?: (() => void) | undefined
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
@@ -1714,7 +1720,6 @@ export function Thread({
             <span>{active.changedFiles} files</span>
             <span className="text-success">{active.testsPassed} pass</span>
             {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
-            <SessionUsageSummary usage={usage} />
           </div>
         </div>
         {archiveReadOnly ? (
@@ -1944,7 +1949,11 @@ export function Thread({
               {active.activeTurnId ? <Button variant="ghost" size="sm" disabled={pending || !connected} onClick={() => void pauseSession()}><CircleStopIcon data-icon="inline-start" />Stop</Button> : null}
               <ArchiveSessionAction disabled={pending || !connected} onArchive={() => void archiveSession()} />
             </div>
-            <div className="ml-auto flex items-center gap-2"><span role="status" className="font-machine text-mono-xs text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
+            <div className="ml-auto flex items-center gap-2">
+              {/* v2's usage chip belongs to the composer, at the right of its
+                  action row. The sidebar reorganisation moves the row with it. */}
+              <UsageChip usage={usage} today={usageToday} loadLatestTurn={loadLatestTurn} />
+              <span role="status" className="font-machine text-mono-xs text-faint">{providerRestartRequired ? "Restart the provider before sending" : "Ctrl/⌘ + Enter send"}</span><Button variant="ghost" size="icon-sm" aria-label="Expand prompt editor" onClick={() => setPromptEditorOpen(true)}><Maximize2Icon /></Button><Button size="icon-sm" aria-label="Send message" disabled={!prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><SendIcon /></Button></div>
           </div>
         </div>
         <PromptEditorDialog
@@ -4062,6 +4071,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
+  const loadLatestTurn = useCallback(async (): Promise<SessionTurn | undefined> => {
+    const sessionId = snapshot?.activeSessionId
+    if (!sessionId) return undefined
+    const page = await loadSessionHistory(sessionId, { categories: ["messages"], limit: 1 })
+    return page.items[0]?.turn
+  }, [loadSessionHistory, snapshot?.activeSessionId])
   // Restore ownership sits here, above both surfaces. The thread guards its own
   // pending operations and the dock cannot see that state, so a restore started
   // from either one has to hold the other shut until it answers.
@@ -4506,7 +4521,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
