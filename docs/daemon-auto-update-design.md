@@ -67,6 +67,14 @@ signature composition. Selecting a library version must verify its declared
 engine floor against Domovoi's `>=22.13.0` floor and record the exact package
 version used for that decision.
 
+The first discovery implementation records a temporary deviation from this
+library requirement. It uses a small Ed25519 verifier and TUF-shaped parser while
+the dependency choice is reviewed. Adoption must check the declared library
+floor against Node `>=22.13.0`; the current focused tests cover root thresholds,
+expiry, and target rollback refusal. Chain binding is enforced by the verifier
+and requires the served metadata bytes. This
+deviation must be removed or explicitly accepted before S1.4 activation ships.
+
 Maintainer decisions:
 
 1. Root threshold and holders. Recommendation: 2 of 3 offline keys held in

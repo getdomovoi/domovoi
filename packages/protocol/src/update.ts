@@ -154,5 +154,9 @@ export const updateActivateParamsSchema = z.object({
 export const updateActivateResultSchema = updateStatusSchema
 
 export type UpdateStatus = z.infer<typeof updateStatusSchema>
+export type UpdateRootMetadata = z.infer<typeof updateRootMetadataSchema>
+export type UpdateTargetsMetadata = z.infer<typeof updateTargetsMetadataSchema>
+export type UpdateSnapshotMetadata = z.infer<typeof updateSnapshotMetadataSchema>
+export type UpdateTimestampMetadata = z.infer<typeof updateTimestampMetadataSchema>
 export type UpdateCheckParams = z.infer<typeof updateCheckParamsSchema>
 export type UpdateActivateParams = z.infer<typeof updateActivateParamsSchema>
