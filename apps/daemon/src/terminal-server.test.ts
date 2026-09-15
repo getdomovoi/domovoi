@@ -459,7 +459,11 @@ describe("terminal RPC", () => {
     snapshot.approvals = []
     const activateTurns = deferLiveTurns(snapshot)
     let listener: ((event: AgentEvent) => void) | undefined
-    const never = () => new Promise<void>(() => {})
+    // The interrupt refuses outright rather than hanging into a 10 ms agent
+    // budget: the budget was the test's only clock, and on a loaded runner
+    // it expired inside the recovery checkpoint instead, reporting
+    // "Provider recovery checkpoint timed out" where the reset failure was
+    // due. A refusal reaches the same fallback with no timer in the path.
     let failedThreadStopAttempts = 0
     const agent = {
       connect: vi.fn(async () => {}),
@@ -483,7 +487,8 @@ describe("terminal RPC", () => {
         if (failedThreadStopAttempts === 2) throw new Error("provider still running")
       }),
       startTurn: vi.fn(async () => "new-turn"),
-      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(never),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => { throw new Error("interrupt refused") }),
       resolveApproval: vi.fn(),
       onEvent: vi.fn((next: (event: AgentEvent) => void) => {
         listener = next
@@ -501,7 +506,6 @@ describe("terminal RPC", () => {
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agent,
       workspaceService,
-      agentTimeoutMs: 10,
     })
     running.push(daemon)
     const address = await daemon.start()

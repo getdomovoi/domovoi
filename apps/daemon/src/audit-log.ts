@@ -67,6 +67,14 @@ export class SqliteAuditLog implements AuditLog {
   #database: DatabaseSync
   #maximumEntries: number
   #maximumPreAuthEntries: number
+  // Rows per retention class, counted once at open and kept current by this
+  // writer, so an append under the cap does not walk the class's index to
+  // learn there is nothing to prune. The count only decides whether to look;
+  // the prune itself deletes by position in the index, so a count left high
+  // by a caller's rolled-back transaction deletes nothing and is recounted.
+  #retained = new Map<"activity" | "pre-auth", number>()
+  #insert: StatementSync | undefined
+  #prune: StatementSync | undefined
 
   constructor(database: DatabaseSync, options: SqliteAuditLogOptions = {}) {
     this.#database = database
@@ -131,17 +139,20 @@ export class SqliteAuditLog implements AuditLog {
       ...(input.detail === undefined ? {} : { detail: sanitizeAuditText(input.detail, 4_096) }),
     })
 
+    const maximum = retention === "pre-auth" ? this.#maximumPreAuthEntries : this.#maximumEntries
+    const retained = this.#retainedCount(retention)
     // A quarantine must become durable with its receipt, not before it.
     // A savepoint nests under the caller's transaction when one exists;
     // otherwise RELEASE commits this append and its retention pruning.
     this.#database.exec("SAVEPOINT domovoi_audit_append")
     try {
-      this.#database.prepare(`
+      this.#insert ??= this.#database.prepare(`
         INSERT INTO audit_log (
           id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
           action, outcome, session_id, project_id, target, detail, retention_class
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      `)
+      this.#insert.run(
         entry.id,
         entry.occurredAt,
         entry.actor.kind,
@@ -158,24 +169,36 @@ export class SqliteAuditLog implements AuditLog {
       )
       // Sequence numbers are shared by both classes and may have gaps. Prune
       // by the retained row count within this class, never by MAX(sequence).
-      this.#database.prepare(`
-        DELETE FROM audit_log
-        WHERE retention_class = ? AND sequence <= (
-          SELECT sequence FROM audit_log WHERE retention_class = ?
-          ORDER BY sequence DESC LIMIT 1 OFFSET ?
-        )
-      `).run(
-        retention,
-        retention,
-        retention === "pre-auth" ? this.#maximumPreAuthEntries : this.#maximumEntries,
-      )
+      let pruned = 0
+      if (retained + 1 > maximum) {
+        this.#prune ??= this.#database.prepare(`
+          DELETE FROM audit_log
+          WHERE retention_class = ? AND sequence <= (
+            SELECT sequence FROM audit_log WHERE retention_class = ?
+            ORDER BY sequence DESC LIMIT 1 OFFSET ?
+          )
+        `)
+        pruned = Number(this.#prune.run(retention, retention, maximum).changes)
+      }
       this.#database.exec("RELEASE domovoi_audit_append")
+      if (retained + 1 > maximum && pruned === 0) this.#retained.delete(retention)
+      else this.#retained.set(retention, Math.min(retained + 1, maximum))
     } catch (error) {
       this.#database.exec("ROLLBACK TO domovoi_audit_append")
       this.#database.exec("RELEASE domovoi_audit_append")
       throw error
     }
     return entry
+  }
+
+  #retainedCount(retention: "activity" | "pre-auth"): number {
+    const known = this.#retained.get(retention)
+    if (known !== undefined) return known
+    const row = this.#database.prepare(
+      "SELECT COUNT(*) AS count FROM audit_log WHERE retention_class = ?",
+    ).get(retention) as { count: number }
+    this.#retained.set(retention, row.count)
+    return row.count
   }
 
   query(params: Partial<AuditQueryParams> = {}, signal?: AbortSignal): AuditQueryPage {
