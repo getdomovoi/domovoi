@@ -161,6 +161,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@getdomovoi/credential-store':
+        specifier: workspace:*
+        version: link:../../packages/credential-store
       '@getdomovoi/daemon':
         specifier: workspace:*
         version: link:../daemon
