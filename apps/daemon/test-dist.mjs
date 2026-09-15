@@ -7,6 +7,8 @@ import { join } from "node:path"
 const publicApi = await import("./dist/public.js")
 const { createProductionDaemon } = publicApi
 const internal = await import("./dist/server.js")
+const bootstrap = await import("./dist/bootstrap-install.js")
+assert.equal(typeof bootstrap.install, "function")
 
 // Published entry points cannot bypass production assembly. The internal path
 // remains as a package-artifact compatibility surface, not a construction API.

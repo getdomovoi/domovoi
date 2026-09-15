@@ -7,6 +7,7 @@ export default defineConfig({
     server: "src/internal.ts",
     "workspace-redaction": "src/workspace-redaction.ts",
     "machine-keyring-worker": "src/machine-keyring-worker.ts",
+    "bootstrap-install": "src/bootstrap-install.ts",
   },
   format: ["esm"],
   platform: "node",

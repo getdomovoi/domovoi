@@ -1,9 +1,11 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { z } from "zod"
+import { publishFileDurably } from "@getdomovoi/credential-store"
 
 import { assertProfileLeaseHeld, type ProfileLease } from "./profile-lease.js"
+import { install as shippedBootstrapInstall } from "./bootstrap-install.js"
 
 export type TrustedUpdateMetadata = {
   format: 1
@@ -26,12 +28,7 @@ export type BootstrapInstall = (options: {
 
 /** The production seam is the reviewed bootstrap installer, not a second extractor. */
 export const bootstrapInstall: BootstrapInstall = async (options) => {
-  // The installer is an executable workspace script and is intentionally loaded
-  // at runtime so the daemon bundle does not duplicate its extraction logic.
-  const module = await import(new URL("../../../scripts/bootstrap-install.mjs", import.meta.url).href) as {
-    installBootstrapDaemon(options: Parameters<BootstrapInstall>[0]): ReturnType<BootstrapInstall>
-  }
-  return module.installBootstrapDaemon(options)
+  return shippedBootstrapInstall(options)
 }
 
 export type VerifiedUpdateTarget = {
@@ -101,9 +98,7 @@ export async function persistTrustedUpdateMetadata(
   const temporary = `${metadataPath(homeDirectory)}.${process.pid}.${randomUUID()}.tmp`
   try {
     await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600, flag: "wx", flush: true })
-    await rename(temporary, metadataPath(homeDirectory))
-    const handle = await open(directory, "r")
-    try { await handle.sync() } finally { await handle.close() }
+    await publishFileDurably(temporary, metadataPath(homeDirectory))
     return next
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => {})
