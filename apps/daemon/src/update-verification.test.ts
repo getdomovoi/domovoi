@@ -42,6 +42,9 @@ describe("daemon update verification", () => {
     expect(verifyUpdateRoot(fixture.root, fixture.root).signed.version).toBe(1)
     const altered = { ...fixture.root, signed: { ...fixture.root.signed, version: 2 } }
     expect(() => verifyUpdateRoot(altered, fixture.root)).toThrow(/threshold/)
+    const sameVersionSigned = { ...fixture.root.signed, expires: "2028-01-01T00:00:00.000Z" }
+    const sameVersion = { signed: sameVersionSigned, signatures: [{ keyid: fixture.keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(sameVersionSigned)), fixture.key.pair.privateKey).toString("base64") }] }
+    expect(() => verifyUpdateRoot(sameVersion, fixture.root)).toThrow(/existing version/)
   })
 
   it("requires the delegated threshold for targets", () => {
@@ -49,6 +52,9 @@ describe("daemon update verification", () => {
     const signed = { _type: "targets" as const, spec_version: "1.0.31", version: 1, expires: "2027-01-01T00:00:00.000Z", targets: {} }
     const envelope = { signed, signatures: [{ keyid: fixture.keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(signed)), fixture.key.pair.privateKey).toString("base64") }] }
     expect(verifyUpdateMetadata("targets", envelope, fixture.root)).toMatchObject({ signed: { _type: "targets" } })
+    const expiredSigned = { ...signed, expires: "2020-01-01T00:00:00.000Z" }
+    const expiredEnvelope = { signed: expiredSigned, signatures: [{ keyid: fixture.keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(expiredSigned)), fixture.key.pair.privateKey).toString("base64") }] }
+    expect(() => verifyUpdateMetadata("targets", expiredEnvelope, fixture.root)).toThrow(/expired/)
   })
 
   it("selects the highest channel target and rejects malformed names", () => {
@@ -68,5 +74,6 @@ describe("daemon update verification", () => {
     expect(() => selectUpdateTarget(targets, "stable", "1.0.0")).toThrow()
     const valid = { ...targets, signed: { ...targets.signed, targets: { "getdomovoi-daemon-1.2.0.tgz": targets.signed.targets["getdomovoi-daemon-1.2.0.tgz"] } } }
     expect(selectUpdateTarget(valid, "stable", "1.0.0")).toEqual({ name: "getdomovoi-daemon-1.2.0.tgz", version: "1.2.0", sourceCommit: "a".repeat(40) })
+    expect(selectUpdateTarget(valid, "stable", "2.0.0")).toBeUndefined()
   })
 })

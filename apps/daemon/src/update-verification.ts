@@ -1,4 +1,4 @@
-import { createPublicKey, verify as verifySignature } from "node:crypto"
+import { createHash, createPublicKey, verify as verifySignature } from "node:crypto"
 
 import {
   type UpdateChannel,
@@ -14,6 +14,7 @@ import {
 
 export const maximumUpdateMetadataBytes = 1_048_576
 export const updateFetchTimeoutMs = 30_000
+export const updateInactivityTimeoutMs = 10_000
 
 export class UpdateVerificationError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -34,7 +35,7 @@ export function canonicalUpdateJson(value: unknown): string {
 
 function publicKey(value: string): ReturnType<typeof createPublicKey> {
   const raw = Buffer.from(value, "base64")
-  if (raw.length !== 32) throw new UpdateVerificationError("Update signing key is not an Ed25519 key")
+  if (raw.length !== 32 || raw.toString("base64") !== value) throw new UpdateVerificationError("Update signing key is not a canonical Ed25519 key")
   const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), raw])
   return createPublicKey({ key: spki, format: "der", type: "spki" })
 }
@@ -51,7 +52,9 @@ function verifyRoleSignatures(role: UpdateRoleName, envelope: { signed: unknown,
     if (!key) continue
     let ok = false
     try {
-      ok = verifySignature(null, payload, publicKey(key.keyval.public), Buffer.from(signature.sig, "base64"))
+      const signatureBytes = Buffer.from(signature.sig, "base64")
+      ok = signatureBytes.length === 64 && signatureBytes.toString("base64") === signature.sig
+        && verifySignature(null, payload, publicKey(key.keyval.public), signatureBytes)
     } catch {
       ok = false
     }
@@ -60,10 +63,49 @@ function verifyRoleSignatures(role: UpdateRoleName, envelope: { signed: unknown,
   if (valid.size < delegation.threshold) throw new UpdateVerificationError(`Update role ${role} did not meet its signature threshold`)
 }
 
+function assertFresh(expires: string, now: number): void {
+  if (Date.parse(expires) <= now) throw new UpdateVerificationError("Update metadata is expired")
+}
+
+function metadataDigest(value: unknown): { length: number, sha256: string } {
+  const bytes = Buffer.from(canonicalUpdateJson(value), "utf8")
+  return { length: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }
+}
+
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string) => {
+    const [core, prerelease] = value.split("-", 2)
+    return { core: core!.split(".").map(Number), prerelease: prerelease?.split(".") }
+  }
+  const a = parse(left); const b = parse(right)
+  for (let index = 0; index < 3; index++) if (a.core[index]! !== b.core[index]!) return a.core[index]! > b.core[index]! ? 1 : -1
+  if (!a.prerelease && !b.prerelease) return 0
+  if (!a.prerelease) return 1
+  if (!b.prerelease) return -1
+  for (let index = 0; index < Math.max(a.prerelease.length, b.prerelease.length); index++) {
+    const leftPart = a.prerelease[index]; const rightPart = b.prerelease[index]
+    if (leftPart === undefined) return -1
+    if (rightPart === undefined) return 1
+    if (leftPart === rightPart) continue
+    const leftNumber = /^\d+$/.test(leftPart) ? Number(leftPart) : undefined
+    const rightNumber = /^\d+$/.test(rightPart) ? Number(rightPart) : undefined
+    if (leftNumber !== undefined && rightNumber !== undefined) return leftNumber > rightNumber ? 1 : -1
+    if (leftNumber !== undefined) return -1
+    if (rightNumber !== undefined) return 1
+    return leftPart > rightPart ? 1 : -1
+  }
+  return 0
+}
+
 export function verifyUpdateRoot(value: unknown, trustedRoot: UpdateRootMetadata): UpdateRootMetadata {
   const envelope = updateRootMetadataSchema.parse(value)
   verifyRoleSignatures("root", envelope, trustedRoot)
   if (envelope.signed.version < trustedRoot.signed.version) throw new UpdateVerificationError("Update root metadata rolls back its version")
+  if (envelope.signed.version === trustedRoot.signed.version
+    && canonicalUpdateJson(envelope.signed) !== canonicalUpdateJson(trustedRoot.signed)) {
+    throw new UpdateVerificationError("Update root metadata changed at an existing version")
+  }
+  verifyRoleSignatures("root", envelope, envelope)
   return envelope
 }
 
@@ -72,7 +114,29 @@ export function verifyUpdateMetadata(role: Exclude<UpdateRoleName, "root">, valu
     ? updateTargetsMetadataSchema.parse(value)
     : role === "snapshot" ? updateSnapshotMetadataSchema.parse(value) : updateTimestampMetadataSchema.parse(value)
   verifyRoleSignatures(role, envelope, root)
+  assertFresh(envelope.signed.expires, Date.now())
   return envelope
+}
+
+export function verifyUpdateChain(values: { root: unknown, timestamp: unknown, snapshot: unknown, targets: unknown }, trustedRoot: UpdateRootMetadata, now = Date.now()): UpdateRootMetadata {
+  const root = verifyUpdateRoot(values.root, trustedRoot)
+  assertFresh(root.signed.expires, now)
+  const timestamp = updateTimestampMetadataSchema.parse(values.timestamp)
+  const snapshot = updateSnapshotMetadataSchema.parse(values.snapshot)
+  const targets = updateTargetsMetadataSchema.parse(values.targets)
+  for (const metadata of [timestamp, snapshot, targets]) assertFresh(metadata.signed.expires, now)
+  verifyRoleSignatures("timestamp", timestamp, root)
+  verifyRoleSignatures("snapshot", snapshot, root)
+  verifyRoleSignatures("targets", targets, root)
+  const snapshotMeta = timestamp.signed.meta["snapshot.json"]
+  const targetsMeta = snapshot.signed.meta["targets.json"]
+  if (!snapshotMeta || snapshotMeta.version !== snapshot.signed.version) throw new UpdateVerificationError("Timestamp does not bind the snapshot version")
+  if (!targetsMeta || targetsMeta.version !== targets.signed.version) throw new UpdateVerificationError("Snapshot does not bind the targets version")
+  const snapshotDigest = metadataDigest(snapshot)
+  const targetsDigest = metadataDigest(targets)
+  if (snapshotMeta.length !== snapshotDigest.length || snapshotMeta.hashes.sha256 !== snapshotDigest.sha256) throw new UpdateVerificationError("Timestamp does not bind the snapshot bytes")
+  if (targetsMeta.length !== targetsDigest.length || targetsMeta.hashes.sha256 !== targetsDigest.sha256) throw new UpdateVerificationError("Snapshot does not bind the targets bytes")
+  return root
 }
 
 export function selectUpdateTarget(value: unknown, channel: UpdateChannel, currentVersion: string): { name: string, version: string, sourceCommit: string } | undefined {
@@ -80,8 +144,8 @@ export function selectUpdateTarget(value: unknown, channel: UpdateChannel, curre
   const candidates = Object.entries(metadata.signed.targets)
     .filter(([name, target]) => target.custom.channel === channel && updateTargetNameSchema.safeParse(name).success)
     .filter(([, target]) => updateVersionSchema.safeParse(target.custom.version).success)
-    .filter(([, target]) => target.custom.version !== currentVersion)
-    .sort(([, left], [, right]) => left.custom.version.localeCompare(right.custom.version, undefined, { numeric: true }))
+    .filter(([, target]) => compareVersions(target.custom.version, currentVersion) > 0)
+    .sort(([, left], [, right]) => compareVersions(left.custom.version, right.custom.version))
   const selected = candidates.at(-1)
   if (!selected) return undefined
   return { name: selected[0], version: selected[1].custom.version, sourceCommit: selected[1].custom.sourceCommit }
@@ -89,7 +153,10 @@ export function selectUpdateTarget(value: unknown, channel: UpdateChannel, curre
 
 async function readMetadata(response: Response): Promise<unknown> {
   if (!response.ok) throw new UpdateVerificationError(`Update metadata request failed with HTTP ${response.status}`)
-  const bytes = new Uint8Array(await response.arrayBuffer())
+  const bytes = new Uint8Array(await Promise.race([
+    response.arrayBuffer(),
+    new Promise<ArrayBuffer>((_, reject) => setTimeout(() => reject(new UpdateVerificationError("Update metadata read timed out")), updateInactivityTimeoutMs)),
+  ]))
   if (bytes.byteLength > maximumUpdateMetadataBytes) throw new UpdateVerificationError("Update metadata exceeds its byte limit")
   try {
     return JSON.parse(new TextDecoder().decode(bytes))
