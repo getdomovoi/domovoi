@@ -93,3 +93,16 @@ it("reports a throwing native credential read as unavailable, never absent", asy
     expect(failure).not.toBeUndefined()
   }, { DOMOVOI_TEST_KEYRING_THROW_GET: "1" })
 }, budget + 11_000)
+
+it("keeps an operation-only repair failure distinct across the worker port", async () => {
+  await fixture(async ({ client, deadline }) => {
+    await client.save(machineId, credential, deadline)
+    const failure = await client.repairIndex(machineId, machineCredentialDigest(machineId, credential), deadline).then(
+      () => undefined,
+      (error: unknown) => error as Error,
+    )
+    expect(failure).toBeInstanceOf(MachineCredentialUnavailableError)
+    expect(failure?.message).toBe("OS keychain is unavailable on this machine")
+    expect(failure?.message).not.toMatch(/Unlock it|pairing has changed/)
+  }, { DOMOVOI_TEST_KEYRING_REPAIR_MISMATCH: "1" })
+}, budget + 11_000)

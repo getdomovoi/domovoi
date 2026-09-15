@@ -38,7 +38,9 @@ port.on("message", ({ id, request, cancelled, expiresAt }: {
     port.postMessage({
       id,
       ok: false,
-      ...(error instanceof MachineCredentialUnavailableError ? { reason: "keychain-unavailable" } : {}),
+      ...(error instanceof MachineCredentialUnavailableError && error.reason === "keychain"
+        ? { reason: "keychain-unavailable" }
+        : {}),
     })
   }
 })

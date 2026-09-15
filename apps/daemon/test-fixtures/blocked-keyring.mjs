@@ -7,6 +7,7 @@ import { isMainThread, Worker } from "node:worker_threads"
 
 const load = Module._load
 const entries = new Map()
+const reads = new Map()
 const control = process.env.DOMOVOI_TEST_KEYRING_DIRECTORY
 if (!control) throw new Error("Missing isolated keyring control directory")
 const record = (kind, account) => appendFileSync(join(control, "events"), `${JSON.stringify({ kind, account, isMainThread })}\n`)
@@ -44,6 +45,11 @@ class Entry {
   getPassword() {
     record("get", this.account)
     if (process.env.DOMOVOI_TEST_KEYRING_THROW_GET === "1") throw new Error("keychain is locked")
+    const count = (reads.get(this.account) ?? 0) + 1
+    reads.set(this.account, count)
+    if (process.env.DOMOVOI_TEST_KEYRING_REPAIR_MISMATCH === "1" && this.account.startsWith("machine-") && count > 1) {
+      return "z".repeat(43)
+    }
     return entries.get(this.account) ?? null
   }
   setPassword(secret) { record("set", this.account); entries.set(this.account, secret) }

@@ -17,7 +17,7 @@ export interface MachineKeyring {
 }
 
 export class MachineCredentialUnavailableError extends Error {
-  constructor(reason: "operation" | "keychain" = "operation", options?: ErrorOptions) {
+  constructor(readonly reason: "operation" | "keychain" = "operation", options?: ErrorOptions) {
     super(reason === "keychain"
       ? "The OS keychain could not be read. Unlock it and run this again; nothing about this machine's pairing has changed."
       : "OS keychain is unavailable on this machine", options)
