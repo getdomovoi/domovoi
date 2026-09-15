@@ -264,17 +264,21 @@ td { color: var(--ink2); }
 <ul>
 <li>[x] <strong>S0.1 [H] The open-core line.</strong> Which capabilities are Apache 2.0 and which are paid. Hard to reverse once published. <strong>Resolved 2026-09-12: B (c158a4df).</strong> The payload claim rests on client-side encryption with a reviewed composition, so closing the relay server costs the claim nothing. Record in <code>S0.2-RELAY-CRYPTO.md</code> §9. B's tier boundary is metered relay consumption, and the meter lives in the relay server. That is why the server stays closed (<code>S0.6</code>): an open server has no enforcement point, the same argument that moved enforcement off the Apache-2.0 daemon in <code>S0.4</code>, one layer up. The two decisions depend on each other.
 </li>
-<li>[ ] <strong>S0.2 [H] Relay crypto design, written and reviewed.</strong> &quot;Carries encrypted payloads it cannot read&quot; is the product's central claim. Key exchange, forward secrecy, what the relay sees in the clear (it must see routing metadata), rotation, and recovery when a device is lost. Cannot be retrofitted. *Agents may draft: threat model, two or three candidate designs with tradeoffs, and what each implies for device loss.* **Design ruled 2026-09-12: suite A, <code>Noise_IK_25519_ChaChaPoly_SHA256</code>, our own composition reviewed (R-A); <code>S0.2-RELAY-CRYPTO.md</code> §9, final.** Stays open until the review lands: budget line $25k to $50k estimated (§7a), quote pending the <code>S0.7</code> firm conversation.
+<li>[ ] <strong>S0.2 [H] Relay crypto design, written and reviewed.</strong> &quot;Carries encrypted payloads it cannot read&quot; is the product's central claim. Key exchange, forward secrecy, what the relay sees in the clear (it must see routing metadata), rotation, and recovery when a device is lost. Cannot be retrofitted. *Agents may draft: threat model, two or three candidate designs with tradeoffs, and what each implies for device loss.* **Design ruled 2026-09-12: suite A, <code>Noise_IK_25519_ChaChaPoly_SHA256</code>, our own composition reviewed (R-A); <code>S0.2-RELAY-CRYPTO.md</code> §9, final.** Stays open until the review lands: budget line $25k to $50k estimated (§7a), quote pending the <code>S0.7</code> firm conversation. The review is external work: its record is a dated engagement letter and a dated report, named here when they exist; until then the state is not started, not an unticked box.
 </li>
 <li>[ ] <strong>S0.3 [H] What the relay retains.</strong> Billing by machine requires knowing which machines were active and for how long. &quot;Payloads unreadable&quot; and &quot;nothing recorded&quot; are different claims. State both halves publicly.
 </li>
 <li>[ ] <strong>S0.4 [H] How tier enforcement is trusted.</strong> Free is JSON-RPC only and the *daemon* refuses the terminal, so the daemon must learn its tier and verify it. Signed tier claims the daemon checks, or the refusal is advisory and the paywall is decorative.
 </li>
-<li>[ ] <strong>S0.5 [H] The four open product decisions</strong> in <code>HANDOFF-NOTES.md</code>: transfer to an offline target, what the handoff UI may promise, skill install trust, guest browser session scope.
+<li>[ ] <strong>S0.5 [H] The four open product decisions.</strong> External work: the record is a date and an artefact, not a box. <code>HANDOFF-NOTES.md</code> is a file in the Claude Design project, not in this repository, so the four are restated here. 1. Transfer to an offline target: not started, no artefact. 2. What the handoff UI may promise: not started, no artefact.
+<ol>
+<li>Skill install trust: ruled 2026-09-10 by the maintainer, &quot;a changed skill drops to untrusted&quot;, recorded under &quot;From the work split: client items&quot; below. 4. Guest browser session scope: not started, no artefact.
+</li>
+</ol>
 </li>
 <li>[x] <strong>S0.6 [H] Where the relay lives.</strong> Follows S0.1. Until it is answered, the relay has no directory and Phase 2 cannot be scaffolded — <code>apps/relay</code> in this monorepo and a separate private repo are different answers about what ships open. **Resolved 2026-09-12 (c158a4df): separate private repository for the relay server; <code>packages/protocol/relay/</code> keeps the wire format and the client side open.** Created 2026-09-13 as <code>github.com/getdomovoi/relay</code>. <strong>The relay is hosted only, permanently.</strong> Not a preference: the tier meter lives in the server, so an open server has no enforcement point, and hosting is what funds the project. Trust is unaffected: payload unreadability is a property of the open clients under suite A; the metadata claim rests on <code>S6.1</code>'s audit. Self-hosting, if ever, is a paid licence of the same code with the meter intact, never a source release.
 </li>
-<li>[ ] <strong>S0.7 [H] Start the long-lead clock.</strong> Apple Developer enrolment, Windows code-signing certificate, and a first conversation with an audit firm. Weeks of calendar, zero engineering.
+<li>[ ] <strong>S0.7 [H] Start the long-lead clock.</strong> Apple Developer enrolment, Windows code-signing certificate, and a first conversation with an audit firm. Weeks of calendar, zero engineering. External work, recorded by date and artefact: Apple enrolment, not started, no artefact in the repository; Windows certificate, not started, no artefact; audit firm conversation, the maintainer reported it as sent to firms on 2026-09-14 in the design project's <code>github.md</code>, no artefact in this repository. When one exists, name it here (an enrolment id, an order reference, a dated quote).
 </li>
 </ul>
 <h2 id="phase-1-the-daemon-becomes-an-installed-service-m1">Phase 1 — the daemon becomes an installed service — M1</h2>
@@ -286,7 +290,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] <strong>S1.3 [CX]</strong> Crash recovery: an interrupted turn, a half-written worktree, an orphaned transfer lease. Interrupted turns reconcile at startup (00e6c678, #113), interrupted and half-written session creation with it (42c4403e, #372), and transfer ownership and receive leases recover on retry or release when abandoned (b5b1aa90, a6294547). <code>docs/crash-recovery.md</code> states the bounds: no provider turn is replayed and no uncommitted work is discarded.
 </li>
-<li>[ ] <strong>S1.4 [CX]</strong> Auto-update, signed and verified. A self-updating daemon holding your credentials is a supply-chain target, so signature verification and reproducible builds ship *with* it, not after. Nothing on <code>main</code> as of 2026-09-14.
+<li>[ ] <strong>S1.4 [CX]</strong> Auto-update, signed and verified. A self-updating daemon holding your credentials is a supply-chain target, so signature verification and reproducible builds ship *with* it, not after. On <code>main</code> as of 2026-09-15: the design with the maintainer's four decisions (#411, 9539ba01), the protocol contract (#421, 2b21f855), discovery and verification (#422, 800de19e), staging and the bundled installer (#425, ef914793). All three code slices had zero callers when they merged: no <code>update.*</code> handler dispatches them and no scheduler runs them, so as of this line the feature is built and unreachable. The handlers are the next slice. Two records so they are not rediscovered. Deviation: the verifier in <code>apps/daemon/src/update-verification.ts</code> is a hand-rolled TUF client where the design requires a conforming library; recorded in <code>docs/daemon-auto-update-design.md</code>, to be removed or explicitly accepted before activation ships. Ownership: reproducible builds are named here and in <code>S4.6</code>; <code>S4.6</code> owns the two-clean-build comparison and its release record, and this item consumes it as an activation precondition. Not fixed here.
 </li>
 <li>[x] <strong>S1.5 [CX]</strong> Log rotation, and the count-based audit retention (10k activity, 1k pre-auth) proven across restart. Landed as #374 (c8eb1a93).
 </li>
@@ -1128,7 +1132,7 @@ td { color: var(--ink2); }
 <ul>
 <li>[ ] <strong>S3.0 [CC + H]</strong> The check before the build. Can a paired phone attach to a desktop session over the tailnet route right now, and what breaks? Pair a real phone to a real daemon, attach to a session, answer a gate, and report a yes or a defect list. This path is designed and drawn and has never been run; its answer decides how much of the remaining mobile work matters. No feature code for the phone before this reports.
 </li>
-<li>[ ] <strong>S3.1 [CC]</strong> Desktop: the remaining surfaces. The work-split items under &quot;From the work split: client items&quot; below are its detail; the history row, StatusDot rule, empty states, skeletons and launcher landed as #386 to #401 (41e675ab).
+<li>[ ] <strong>S3.1 [CC]</strong> Desktop: the remaining surfaces. What is on <code>main</code> is the v1 layout with v2's corrections: the fourteen slices #386 to #401 (41e675ab) landed the history row and turn meta, StatusDot label, empty states, skeletons, terminal primary action and launcher entity rows. The v2 layout itself is not on <code>main</code>. Measured 2026-09-15 against <code>design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2</code>: the dock has seven tabs (<code>session</code>, <code>plan</code>, <code>changes</code>, <code>preview</code>, <code>terminal</code>, <code>history</code>, <code>comments</code>) against v2's eight (Plan, Changes, Preview, Terminal, History, Checkpoints, Rules, Comments), so no Checkpoints tab, no Rules tab, and a v1 Session tab still present; no usage chip; no plan edit strip with the queued-edit notice; no model popover with discovery and rediscover; no sidebar reorganisation of the session controls. Present: the queued composer, the titlebar stop control, fork from a history row. The work-split items under &quot;From the work split: client items&quot; below are the rest of the detail. The v2 layout is its own body of work and is scoped after the maintainer has used v1.
 </li>
 <li>[ ] <strong>S3.2 [CC]</strong> Web: the six-step flow over loopback and the tailnet, with capability-refused real rather than drawn. Over the relay once Phase 2 lands.
 </li>
@@ -1343,7 +1347,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] <strong>S4.5 [CC]</strong> TestFlight, and an internal desktop update channel.
 </li>
-<li>[ ] <strong>S4.6 [CX]</strong> Release provenance: SBOM, reproducible builds, published digests.
+<li>[ ] <strong>S4.6 [CX]</strong> Release provenance: SBOM, reproducible builds, published digests. Owns the reproducible build: two clean builds from one commit, byte-compared before publication, with the comparison in the release record (<code>S1.4</code>'s design names the shape). <code>S1.4</code> consumes it. SBOM and <code>SHA256SUMS</code> exist in <code>scripts/release-artifacts.mjs</code> (b2e58881); the comparison does not, and no artefact has been published to attach any of it to.
 </li>
 </ul>
 <h3 id="from-the-roadmap-package-and-release-the-open-core-goal-4">From the roadmap: package and release the open core (Goal 4)</h3>
@@ -1485,7 +1489,7 @@ td { color: var(--ink2); }
 <h2 id="phase-6-security-proof-and-operations-m3">Phase 6 — security proof and operations — M3</h2>
 <p>The product's argument is trustworthiness. Asserting it is not shipping it.</p>
 <ul>
-<li>[ ] <strong>S6.1 [H]</strong> Third-party audit of the relay and the crypto design. Publish the result. Book in Phase 0.
+<li>[ ] <strong>S6.1 [H]</strong> Third-party audit of the relay and the crypto design. Publish the result. Book in Phase 0. External work, recorded by date and artefact: see <code>S0.2</code>; not started as of 2026-09-15, no engagement letter in the repository.
 </li>
 <li>[ ] <strong>S6.2 [H]</strong> Threat model and a vulnerability disclosure policy.
 </li>
