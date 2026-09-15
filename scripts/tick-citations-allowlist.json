@@ -1,8 +1,8 @@
 {
   "recordedOn": "2026-09-10",
-  "note": "Ticks that predate the citation rule. This list only shrinks: a tick that gains a citation is pruned, and nothing is ever added.",
+  "note": "Ticks that predate the citation rule. This list only shrinks: a tick that gains a citation is pruned, and nothing is ever added. Re-keyed from ROADMAP.md to SHIP-PLAN.md on 2026-09-14 when the roadmap folded into the plan; the entries are the same ticks, moved verbatim.",
   "exempt": {
-    "ROADMAP.md": [
+    "SHIP-PLAN.md": [
       "pnpm TypeScript monorepo with protocol, daemon, shared UI, Electron, and web packages",
       "versioned Zod schemas over WebSocket JSON-RPC",
       "daemon-owned SQLite workspace state and restart persistence",

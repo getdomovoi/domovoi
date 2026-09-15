@@ -21,7 +21,7 @@ const pruneCommand = "pnpm ticks:prune"
 // are the ticks that predate this rule; the list only ever shrinks, because a
 // tick that gains a citation and keeps its exemption is a second untracked
 // claim rather than a tidy one.
-export const citedFiles = ["ROADMAP.md", "WORK-SPLIT.md", "SHIP-PLAN.md"]
+export const citedFiles = ["SHIP-PLAN.md", "docs/working-rules.md"]
 
 // Every bullet Markdown allows, not the two this file happened to use. A "+"
 // bullet or an ordered "1." item collected no tick at all, so it passed uncited

@@ -123,12 +123,13 @@ reviewed no-release decision. Generated version PRs are exempt only while they c
 changelogs and consumed metadata, not source or dependencies. Separately,
 `pnpm release:invariants` fails when package versions drift apart, the built protocol's
 `buildVersion` differs from its manifest (rebuild after versioning), a workflow references an
-action by a mutable tag, `ROADMAP.html` is stale relative to `ROADMAP.md`, or the phone's
+action by a mutable tag, `SHIP-PLAN.html` is stale relative to `SHIP-PLAN.md`, or the phone's
 generated design tokens are stale relative to `packages/ui/src/styles.css`.
 
-`ROADMAP.md` is the reviewed roadmap source. `ROADMAP.html` is generated from it by
-`scripts/roadmap-html.mjs`; run `pnpm roadmap:html` after editing the Markdown and commit both
-files together.
+`SHIP-PLAN.md` is the one plan and the reviewed source. `SHIP-PLAN.html` is generated from it
+by `scripts/roadmap-html.mjs`; run `pnpm roadmap:html` after editing the Markdown and commit
+both files together. Every `[x]` in it and in `docs/working-rules.md` cites a commit that is an
+ancestor of the branch; `scripts/tick-citations.mjs` enforces that.
 
 `apps/mobile/src/theme/tokens.generated.js` and its `.d.ts` are generated from
 `packages/ui/src/styles.css` by `scripts/mobile-tokens.mjs`: the oklch colours as sRGB hex,

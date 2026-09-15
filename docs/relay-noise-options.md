@@ -241,7 +241,7 @@ an early encrypted bearer or command is therefore not equivalent to post-handsha
 
 ## Relationship to skill signature authority
 
-This decision is independent of [unresolved decision 2](../ROADMAP.md#unresolved-product-decisions).
+This decision is independent of [unresolved decision 2](../SHIP-PLAN.md#unresolved-product-decisions).
 Skill signatures already use Ed25519 over a domain-separated content-digest message, verified
 against a local trust file. Decision 2 concerns who supplies trusted signers, who holds signing
 keys, and how signers are revoked. Relay IK authenticates paired endpoints with DH keys and a
