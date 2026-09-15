@@ -8,6 +8,14 @@ export {
 
 export type { DaemonErrorEntry, DaemonErrorSink } from "./server.js"
 export { verifyLocalFleetClientRoute } from "./local-client-route.js"
+export {
+  canonicalUpdateJson,
+  fetchUpdateMetadata,
+  selectUpdateTarget,
+  UpdateVerificationError,
+  verifyUpdateMetadata,
+  verifyUpdateRoot,
+} from "./update-verification.js"
 export { adoptRelayProfileSuccessor, prepareRelayProfileSuccessor, verifyRelayProfileSuccessor } from "./relay-provisioning.js"
 export type { RelayProfileRecoveryOptions } from "./relay-provisioning.js"
 export {
