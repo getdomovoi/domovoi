@@ -1,6 +1,6 @@
 import type { RpcParams, SessionHistoryPage, SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 import { ChartLineIcon } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { Button } from "./components/ui/button"
 import {
@@ -121,16 +121,28 @@ export function UsageChip({
   usage: SessionUsage | null
   today: UsageWindow | null | undefined
   // The latest turn record lives in session history, not on the snapshot, so
-  // the chip asks for it when it opens rather than keeping every turn.
-  loadLatestTurn?: (() => Promise<SessionTurn | undefined>) | undefined
+  // the chip asks for it when it opens rather than keeping every turn. Each
+  // open gets its own signal; closing or reopening aborts the read in flight,
+  // and a read that is no longer current cannot overwrite a newer one.
+  loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
 }) {
   const [turn, setTurn] = useState<SessionTurn>()
+  const readRef = useRef<AbortController | null>(null)
+  useEffect(() => () => readRef.current?.abort(), [])
   if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
   const rows = usageChipRows({ usage, turn, today })
   return (
     <DropdownMenu onOpenChange={(open) => {
+      readRef.current?.abort()
+      readRef.current = null
       if (!open || !loadLatestTurn) return
-      void loadLatestTurn().then(setTurn, () => setTurn(undefined))
+      const read = new AbortController()
+      readRef.current = read
+      const current = () => readRef.current === read && !read.signal.aborted
+      loadLatestTurn(read.signal).then(
+        (latest) => { if (current()) setTurn(latest) },
+        () => { if (current()) setTurn(undefined) },
+      )
     }}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" aria-label="Usage" className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">

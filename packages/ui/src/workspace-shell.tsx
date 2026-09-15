@@ -1423,7 +1423,7 @@ export function Thread({
   externalEditor?: DesktopExternalEditor | undefined
   usage?: SessionUsage | null | undefined
   usageToday?: UsageWindow | null | undefined
-  loadLatestTurn?: (() => Promise<SessionTurn | undefined>) | undefined
+  loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
   onOpenSkills?: (() => void) | undefined
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
@@ -4071,9 +4071,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageSessionId = snapshot?.activeSessionId ?? null
   const usageFetchKey = sessionUsageFetchKey(snapshot)
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
-  const loadLatestTurn = useCallback(async (): Promise<SessionTurn | undefined> => {
+  const loadLatestTurn = useCallback(async (signal: AbortSignal): Promise<SessionTurn | undefined> => {
     const sessionId = snapshot?.activeSessionId
-    return sessionId ? latestTurnFromHistory(loadSessionHistory, sessionId) : undefined
+    return sessionId ? latestTurnFromHistory(loadSessionHistory, sessionId, signal) : undefined
   }, [loadSessionHistory, snapshot?.activeSessionId])
   // Restore ownership sits here, above both surfaces. The thread guards its own
   // pending operations and the dock cannot see that state, so a restore started
