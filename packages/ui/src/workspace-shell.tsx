@@ -9,6 +9,7 @@ import {
   FileDiffIcon,
   FileTextIcon,
   FolderOpenIcon,
+  GitCommitHorizontalIcon,
   HistoryIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -195,6 +196,8 @@ import { PlanStrip } from "./plan-strip"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
+import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
+import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, provesNothingRan, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
@@ -1233,117 +1236,6 @@ export function CheckpointThreadItem({
       ) : null}
     </div>
   )
-}
-
-// One control for restoring a checkpoint, wherever it is offered. The thread
-// and the history pane both reach a destructive action, so they share the
-// confirmation copy and the blocked rule rather than drifting apart.
-export function CheckpointRestore({
-  checkpointId,
-  label,
-  disabled,
-  onRestore,
-}: {
-  checkpointId: string
-  label: string
-  disabled: boolean
-  onRestore: (checkpointId: string) => void
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-micro">
-          Restore worktree
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Restore this checkpoint?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Domovoi checkpoints the current worktree first, then restores {label}. The
-            current state remains available as a recovery checkpoint.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <CheckpointRestoreAction checkpointId={checkpointId} disabled={disabled} onRestore={onRestore} />
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-// The existing fork starts a fresh provider thread and gives the candidate a
-// checkpoint and a system note; it does not replay the source conversation
-// (apps/daemon/src/server.ts:6272 and :6324). The label alone promises more
-// than that, so the confirm ships both halves the way a provider handoff does:
-// what travels, and what does not.
-export function CheckpointFork({
-  checkpointId,
-  label,
-  disabled,
-  onFork,
-}: {
-  checkpointId: string
-  label: string
-  disabled: boolean
-  onFork: (checkpointId: string) => void
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button variant="ghost" size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-micro">
-          Fork from here
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Fork from this checkpoint?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Domovoi starts a new session in a separate worktree at {label}, and records
-            the source checkpoint in its history. The conversation is not replayed:
-            the new session begins with a note naming where it came from, not with
-            this thread behind it.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction disabled={disabled} onClick={() => onFork(checkpointId)}>
-            Fork session
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-export function CheckpointRestoreAction({
-  checkpointId,
-  disabled,
-  onRestore,
-}: {
-  checkpointId: string
-  disabled: boolean
-  onRestore: (checkpointId: string) => void
-}) {
-  return (
-    <AlertDialogAction
-      disabled={disabled}
-      onClick={() => {
-        if (!disabled) onRestore(checkpointId)
-      }}
-    >
-      Restore worktree
-    </AlertDialogAction>
-  )
-}
-
-export function checkpointRestoreBlocked(pending: boolean, archiveReadOnly: boolean): boolean {
-  return pending || archiveReadOnly
-}
-
-export function checkpointBlockedReason(activeTurnId: string | undefined): string | undefined {
-  return activeTurnId ? "Stop the active turn before creating a checkpoint" : undefined
 }
 
 export const archiveSessionDescription = "Domovoi creates a final checkpoint, stops provider and terminal resources, and removes the isolated session worktree. Durable history, checkpoint refs, artifact and annotation records, audit refs, and the archive branch are retained. The source checkout's branch, HEAD, status, and files remain unchanged."
@@ -2513,9 +2405,9 @@ export function HistoryPanel({
     })
   }, [connected, filterKey, historyRefresh, onLoad, sessionId])
 
-  // Checkpoints is a view of this pane rather than a pane of its own, so the
-  // affordance that names it arrives here as a focus request and narrows the
-  // filters to the one category it names.
+  // A focus request narrows the filters to the one category it names. The
+  // Checkpoints affordances open their own tab now; the mechanism stays for any
+  // caller that wants History narrowed rather than the checkpoints pane.
   const appliedFocusRef = useRef<number | null>(null)
   useEffect(() => {
     if (!focus || appliedFocusRef.current === focus.requestId) return
@@ -2719,6 +2611,8 @@ export function HistoryPanel({
   )
 }
 
+export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
+
 export function ArtifactDock({
   snapshot,
   onCollapse,
@@ -2738,7 +2632,6 @@ export function ArtifactDock({
   onCreateAnnotation,
   onLoadSessionHistory,
   onRestoreCheckpoint,
-  historyFocus,
   worktreeName,
   onForkCheckpoint,
   restoreBusy = false,
@@ -2797,7 +2690,6 @@ export function ArtifactDock({
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
   onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
-  historyFocus?: SessionHistoryFocus | undefined
   worktreeName?: string | undefined
   onForkCheckpoint?: ((checkpointId: string) => void) | undefined
   restoreBusy?: boolean
@@ -3127,14 +3019,15 @@ export function ArtifactDock({
         <div className="flex h-11 items-center border-b px-2">
           <TabsList variant="line" className="min-w-0 flex-1 justify-start overflow-x-auto">
             <TabsTrigger value="plan"><FileTextIcon />Plan</TabsTrigger>
-            <TabsTrigger value="changes"><FileDiffIcon />Changes</TabsTrigger>
             <TabsTrigger value="preview"><CodeXmlIcon />Preview</TabsTrigger>
+            <TabsTrigger value="changes"><FileDiffIcon />Changes</TabsTrigger>
+            <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
+            <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
+            <TabsTrigger value="checkpoints"><GitCommitHorizontalIcon />Checkpoints</TabsTrigger>
             <TabsTrigger value="comments">
               <MessageSquareTextIcon />Comments
               {openAnnotations.length ? <Badge variant="outline" className="px-1 font-machine text-mono-xs">{openAnnotations.length}</Badge> : null}
             </TabsTrigger>
-            <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
-            <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
             <TabsTrigger value="session"><BotIcon />Session</TabsTrigger>
           </TabsList>
           <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
@@ -3303,13 +3196,27 @@ export function ArtifactDock({
             connected={connected}
             onLoad={onLoadSessionHistory}
             onRestoreCheckpoint={onRestoreCheckpoint}
-            focus={historyFocus}
             worktreeName={worktreeName}
             onForkCheckpoint={onForkCheckpoint}
             // An archived session and a running turn hold this shut, and so
             // does a restore already in flight. The in-flight half has to come
             // from the shell: the dock cannot see the thread's own pending
             // state, and a snapshot arrives too late to stop a second click.
+            restoreBlocked={
+              restoreBusy
+              || sessionIsArchiveReadOnly(activeSession(snapshot))
+              || Boolean(activeSession(snapshot)?.activeTurnId)
+            }
+          />
+        </TabsContent>
+        <TabsContent value="checkpoints" className="min-h-0">
+          <CheckpointsPanel
+            sessionId={snapshot.activeSessionId}
+            connected={connected}
+            revision={latestCheckpointRevision(snapshot, snapshot.activeSessionId)}
+            onLoad={onLoadSessionHistory}
+            onRestoreCheckpoint={onRestoreCheckpoint}
+            onForkCheckpoint={onForkCheckpoint}
             restoreBlocked={
               restoreBusy
               || sessionIsArchiveReadOnly(activeSession(snapshot))
@@ -3803,7 +3710,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skillsRefresh, setSkillsRefresh] = useState(0)
   const [activeSessionUsage, setActiveSessionUsage] = useState<SessionUsage | null>(null)
   const [dockTab, setDockTab] = useState<string>(clientKind === "desktop" ? "changes" : "preview")
-  const [historyFocus, setHistoryFocus] = useState<SessionHistoryFocus>()
   // Held above the pin and unpin swaps, each of which removes the control that
   // was focused. The sheet cannot capture this for itself.
   const dockOpenerRef = useRef<Element | null>(null)
@@ -3827,13 +3733,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       requestId: `fork-${globalThis.crypto.randomUUID()}`,
     })
   }
+  // The v2 sheet gives checkpoints a tab of their own, so the affordances that
+  // name Checkpoints open that tab. History keeps its category focus for the
+  // filters it still narrows by.
   const openCheckpoints = () => {
     setSurface("workspace")
-    openDockTab("history")
-    setHistoryFocus((current) => ({
-      category: "checkpoints",
-      requestId: (current?.requestId ?? 0) + 1,
-    }))
+    openDockTab("checkpoints")
   }
   const activeWorkspacePath = snapshot?.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
@@ -4219,7 +4124,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
   const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} historyFocus={historyFocus} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
