@@ -75,5 +75,9 @@ describe("daemon update verification", () => {
     const valid = { ...targets, signed: { ...targets.signed, targets: { "getdomovoi-daemon-1.2.0.tgz": targets.signed.targets["getdomovoi-daemon-1.2.0.tgz"] } } }
     expect(selectUpdateTarget(valid, "stable", "1.0.0")).toEqual({ name: "getdomovoi-daemon-1.2.0.tgz", version: "1.2.0", sourceCommit: "a".repeat(40) })
     expect(selectUpdateTarget(valid, "stable", "2.0.0")).toBeUndefined()
+    const baseTarget = valid.signed.targets["getdomovoi-daemon-1.2.0.tgz"]!
+    const buildTarget = { ...baseTarget, custom: { ...baseTarget.custom, version: "1.2.0+build" } }
+    const buildMetadata = { ...valid, signed: { ...valid.signed, targets: { "getdomovoi-daemon-1.2.0+build.tgz": buildTarget } } }
+    expect(selectUpdateTarget(buildMetadata, "stable", "1.2.0")).toBeUndefined()
   })
 })
