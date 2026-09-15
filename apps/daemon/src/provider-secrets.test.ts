@@ -28,13 +28,13 @@ describe("ProviderSecretManager", () => {
     ])
     expect(loadBinding).toHaveBeenCalledOnce()
     expect(() => manager.set("openai", "secret-fragment")).toThrow(
-      new ProviderSecretUnavailableError("OS keychain is unavailable on this machine"),
+      new ProviderSecretUnavailableError(),
     )
     expect(() => manager.delete("openai")).toThrow(
-      new ProviderSecretUnavailableError("OS keychain is unavailable on this machine"),
+      new ProviderSecretUnavailableError(),
     )
     expect(() => manager.forExecution("openai")).toThrow(
-      new ProviderSecretUnavailableError("OS keychain is unavailable on this machine"),
+      new ProviderSecretUnavailableError(),
     )
   })
 
@@ -84,6 +84,32 @@ describe("ProviderSecretManager", () => {
       { provider: "openrouter", state: "unavailable", source: "keychain" },
     ])
     expect(() => manager.set("openai", "secret")).toThrow(ProviderSecretUnavailableError)
+  })
+
+  it("keeps a throwing native binding distinct from a missing provider key", () => {
+    const locked = new Error("keychain is locked")
+    class Entry {
+      getPassword(): string | null { throw locked }
+      setPassword(): void { throw locked }
+      deletePassword(): boolean { throw locked }
+    }
+    const manager = new ProviderSecretManager(new NativeProviderKeyring(() => ({ Entry })))
+
+    expect(manager.status()).toEqual([
+      { provider: "anthropic", state: "unavailable", source: "keychain" },
+      { provider: "openai", state: "unavailable", source: "keychain" },
+      { provider: "openrouter", state: "unavailable", source: "keychain" },
+    ])
+    for (const operation of [
+      () => manager.forExecution("openai"),
+      () => manager.set("openai", "secret"),
+      () => manager.delete("openai"),
+    ]) {
+      const failure = (() => { try { operation(); return undefined } catch (error) { return error as Error } })()
+      expect(failure).toBeInstanceOf(ProviderSecretUnavailableError)
+      expect(failure?.message).toMatch(/Unlock it.*secret is unchanged/)
+      expect(failure?.cause).toBe(locked)
+    }
   })
 
   it("allows secret reads only through the execution-only method", () => {

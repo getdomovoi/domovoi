@@ -158,13 +158,17 @@ export class MachineCredentialWorker implements AsyncMachineCredentials {
     if (!entry || !value || typeof value !== "object" || !("id" in value) || value.id !== entry.id) { this.#fail(); return }
     try {
       entry.deadline.throwIfExpired()
-      if (!("ok" in value) || value.ok !== true || !("result" in value)) throw new MachineCredentialUnavailableError()
+      if (!("ok" in value) || value.ok !== true || !("result" in value)) {
+        throw new MachineCredentialUnavailableError(
+          "reason" in value && value.reason === "keychain-unavailable" ? "keychain" : "operation",
+        )
+      }
       const result = entry.kind === "machines" ? machineIdSchema.array().parse(value.result)
         : entry.kind === "forMachine" ? credentialSchema.optional().parse(value.result)
           : entry.kind === "repairIndex" || entry.kind === "forgetIfMatching" ? value.result : undefined
       if ((entry.kind === "repairIndex" || entry.kind === "forgetIfMatching") && typeof result !== "boolean") throw new MachineCredentialUnavailableError()
       if (!entry.settled) { this.#detach(entry); entry.resolve(result) }
-    } catch { this.#refuse(entry) }
+    } catch (error) { this.#refuse(entry, error) }
     this.#active = undefined
     this.#pump()
   }
@@ -176,10 +180,12 @@ export class MachineCredentialWorker implements AsyncMachineCredentials {
     entry.deadline.clear()
   }
 
-  #refuse(entry: Pending): void {
+  #refuse(entry: Pending, error?: unknown): void {
     if (entry.settled) return
     this.#detach(entry)
-    entry.reject(new MachineCredentialUnavailableError())
+    entry.reject(error instanceof MachineCredentialUnavailableError
+      ? error
+      : new MachineCredentialUnavailableError())
   }
 
   #fail(): void {

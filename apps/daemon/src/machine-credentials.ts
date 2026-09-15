@@ -17,10 +17,18 @@ export interface MachineKeyring {
 }
 
 export class MachineCredentialUnavailableError extends Error {
-  constructor() {
-    super("OS keychain is unavailable on this machine")
+  constructor(reason: "operation" | "keychain" = "operation", options?: ErrorOptions) {
+    super(reason === "keychain"
+      ? "The OS keychain could not be read. Unlock it and run this again; nothing about this machine's pairing has changed."
+      : "OS keychain is unavailable on this machine", options)
     this.name = "MachineCredentialUnavailableError"
   }
+}
+
+function unavailableMachineCredential(error: unknown): MachineCredentialUnavailableError {
+  if (error instanceof MachineCredentialUnavailableError) return error
+  const cause = error instanceof Error ? error : new Error(String(error))
+  return new MachineCredentialUnavailableError("keychain", { cause })
 }
 
 export interface MachineCredentials {
@@ -53,8 +61,8 @@ export class MachineCredentialStore implements MachineCredentials {
     let stored: string | undefined
     try {
       stored = this.#keyring.get(indexAccount)
-    } catch {
-      throw new MachineCredentialUnavailableError()
+    } catch (error) {
+      throw unavailableMachineCredential(error)
     }
     if (!stored) return []
     try {
@@ -74,8 +82,8 @@ export class MachineCredentialStore implements MachineCredentials {
   #writeIndex(machineIds: string[]): void {
     try {
       this.#keyring.set(indexAccount, JSON.stringify([...new Set(machineIds)].sort()))
-    } catch {
-      throw new MachineCredentialUnavailableError()
+    } catch (error) {
+      throw unavailableMachineCredential(error)
     }
   }
 
@@ -84,8 +92,8 @@ export class MachineCredentialStore implements MachineCredentials {
     if (!credentialSchema.safeParse(credential).success) throw new Error("Machine credential is malformed")
     try {
       this.#keyring.set(machineId, credential)
-    } catch {
-      throw new MachineCredentialUnavailableError()
+    } catch (error) {
+      throw unavailableMachineCredential(error)
     }
     this.#writeIndex([...this.#index(), machineId])
   }
@@ -94,8 +102,8 @@ export class MachineCredentialStore implements MachineCredentials {
     requireMachineId(machineId)
     try {
       return this.#keyring.get(machineId)
-    } catch {
-      throw new MachineCredentialUnavailableError()
+    } catch (error) {
+      throw unavailableMachineCredential(error)
     }
   }
 
@@ -103,8 +111,8 @@ export class MachineCredentialStore implements MachineCredentials {
     requireMachineId(machineId)
     try {
       this.#keyring.delete(machineId)
-    } catch {
-      throw new MachineCredentialUnavailableError()
+    } catch (error) {
+      throw unavailableMachineCredential(error)
     }
     this.#writeIndex(this.#index().filter((held) => held !== machineId))
   }

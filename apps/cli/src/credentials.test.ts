@@ -4,7 +4,7 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { CredentialStoreError, openCredentialStore, type PairedDaemon, type Keyring } from "./credentials.js"
+import { CredentialStoreError, CredentialStoreUnavailableError, openCredentialStore, type PairedDaemon, type Keyring } from "./credentials.js"
 
 const paired: PairedDaemon = {
   endpoint: "ws://127.0.0.1:47831/rpc",
@@ -49,6 +49,17 @@ describe("credential store", () => {
     expect(keyring.entries.size).toBe(1)
     expect(await store.load(paired.endpoint)).toEqual(paired)
     await expect(stat(join(home, "credentials.json"))).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
+  it("passes a keychain that stopped answering through as unavailable, never as not paired", async () => {
+    const keyring = memoryKeyring()
+    const home = await directory()
+    const store = await openCredentialStore({ keyring, home, warn: () => {} })
+    await store.save(paired)
+    keyring.get = async () => { throw new CredentialStoreUnavailableError("The OS keychain could not be read (locked). Unlock it and run this again; nothing about this machine's pairing has changed.") }
+    const failure = await store.load(paired.endpoint).then((value) => value, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(CredentialStoreUnavailableError)
+    expect(failure).not.toBeUndefined()
   })
 
   it("refuses rather than silently writing a dotfile when no keyring exists", async () => {
