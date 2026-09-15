@@ -6599,6 +6599,7 @@ describe("DomovoiDaemon", () => {
     expect(execution.state).toBe("resolved")
     snapshot.approvalRules.push({
       id: "rule-test-digest",
+      useCount: 0,
       projectId: snapshot.project!.id,
       operation: "Run tests",
       command: "pnpm test",
@@ -6608,6 +6609,7 @@ describe("DomovoiDaemon", () => {
       createdAt: new Date().toISOString(),
     }, {
       id: "legacy-rule-test-digest",
+      useCount: 0,
       projectId: snapshot.project!.id,
       operation: "Run tests",
       command: "pnpm test",
@@ -10419,6 +10421,7 @@ describe("DomovoiDaemon", () => {
     const skillInstallCommand = "/usr/bin/bash -lc 'pnpm dlx skills add getdomovoi/design-studio'"
     snapshot.approvalRules.push({
       id: "rule-skill-install",
+      useCount: 0,
       projectId: snapshot.project!.id,
       operation: "Install skill",
       command: skillInstallCommand,
@@ -10593,6 +10596,7 @@ describe("DomovoiDaemon", () => {
     expect(execution.state).toBe("resolved")
     snapshot.approvalRules.push({
       id: "rule-edit",
+      useCount: 0,
       projectId: snapshot.project!.id,
       operation: "Edit a file",
       command: "Edit",

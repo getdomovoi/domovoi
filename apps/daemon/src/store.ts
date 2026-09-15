@@ -194,10 +194,9 @@ function migrateStoredWorkspace(value: unknown): {
   }
   const migrated = structuredClone(value)
   let repaired = false
-  // Enrollment changes RPCs and the separate fleet table, not workspace state.
-  // Do not quarantine a valid local workspace just because its wire version is
-  // old. Only this reviewed predecessor is migrated; full validation still runs.
-  if (typeof migrated.protocolVersion === "string" && /^0\.3\.\d+$/.test(migrated.protocolVersion)) {
+  // These reviewed predecessors retain their state. Rules from 0.6 gain a zero
+  // use count below; full validation still runs before any migrated write.
+  if (typeof migrated.protocolVersion === "string" && /^0\.(?:3|6)\.\d+$/.test(migrated.protocolVersion)) {
     migrated.protocolVersion = protocolVersion
     repaired = true
   }
@@ -212,6 +211,10 @@ function migrateStoredWorkspace(value: unknown): {
   if (Array.isArray(migrated.approvalRules)) {
     for (const rule of migrated.approvalRules) {
       if (!isRecord(rule)) continue
+      if (rule.useCount === undefined) {
+        rule.useCount = 0
+        repaired = true
+      }
       const legacyTextOnly = rule.status === undefined
       const unsupportedRecord = rule.status === "active"
         && !resolvedExecutionSchema.safeParse(rule.execution).success

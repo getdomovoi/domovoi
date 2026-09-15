@@ -6,6 +6,7 @@ import { Separator } from "@/components/ui/separator"
 type InactiveRule = Extract<ApprovalRule, { status: "inactive" }>
 
 const inactiveReasonCopy: Record<InactiveRule["inactiveReason"], string> = {
+  revoked: "This approval was revoked. It no longer pre-approves requests.",
   "legacy-text-only": "This approval matched command text only. It was deactivated and needs explicit reapproval.",
   "unsupported-record-version": "This approval was recorded in a format this daemon no longer reads. It needs explicit reapproval.",
 }
