@@ -1,4 +1,4 @@
-import type { SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
+import type { RpcParams, SessionHistoryPage, SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 import { ChartLineIcon } from "lucide-react"
 import { useState } from "react"
 
@@ -69,8 +69,39 @@ function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefin
   return {
     label: "Today",
     value: `${formatTokenCount(today.totalTokens)} tokens · ${cost}`,
-    note: `${turns} in ${sessions} · Domovoi's count, not the provider's limit`,
+    note: [`${turns} in ${sessions}`, "Domovoi's count, not the provider's limit", sessionUsageCostNote(today)]
+      .filter((part) => part !== undefined).join(" · "),
   }
+}
+
+// The newest history entry is not always a turn: a system receipt such as
+// "Worktree restored" is a message with no turn behind it. The walk reads a
+// few bounded pages back from the end until it meets an entry that carries a
+// turn, and gives up after a fixed number of pages rather than reading a
+// session's whole history for one row.
+export const latestTurnPageLimit = 10
+export const latestTurnPageCount = 3
+
+export async function latestTurnFromHistory(
+  load: (
+    sessionId: string,
+    options?: Omit<RpcParams<"session.history">, "sessionId">,
+    requestOptions?: { signal?: AbortSignal },
+  ) => Promise<SessionHistoryPage>,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionTurn | undefined> {
+  let before: string | undefined
+  for (let pages = 0; pages < latestTurnPageCount; pages += 1) {
+    const page = await load(sessionId, { categories: ["messages"], limit: latestTurnPageLimit, ...(before ? { before } : {}) }, { ...(signal ? { signal } : {}) })
+    for (let index = page.items.length - 1; index >= 0; index -= 1) {
+      const turn = page.items[index]!.turn
+      if (turn) return turn
+    }
+    if (!page.hasMore || !page.nextCursor) return undefined
+    before = page.nextCursor
+  }
+  return undefined
 }
 
 export function usageChipRows(input: {

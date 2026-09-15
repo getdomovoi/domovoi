@@ -199,7 +199,7 @@ import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
-import { UsageChip } from "./usage-chip.js"
+import { UsageChip, latestTurnFromHistory } from "./usage-chip.js"
 import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, provesNothingRan, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
@@ -4073,9 +4073,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const usageToday = useUsageToday(connected, usageWindowFetchKey(snapshot), usageWindow)
   const loadLatestTurn = useCallback(async (): Promise<SessionTurn | undefined> => {
     const sessionId = snapshot?.activeSessionId
-    if (!sessionId) return undefined
-    const page = await loadSessionHistory(sessionId, { categories: ["messages"], limit: 1 })
-    return page.items[0]?.turn
+    return sessionId ? latestTurnFromHistory(loadSessionHistory, sessionId) : undefined
   }, [loadSessionHistory, snapshot?.activeSessionId])
   // Restore ownership sits here, above both surfaces. The thread guards its own
   // pending operations and the dock cannot see that state, so a restore started

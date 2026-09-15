@@ -1,7 +1,7 @@
-import type { SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
+import type { SessionHistoryPage, SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { usageChipRows, usageChipText } from "./usage-chip"
+import { latestTurnFromHistory, usageChipRows, usageChipText } from "./usage-chip"
 
 const usage: SessionUsage = {
   sessionId: "session-billing",
@@ -46,5 +46,35 @@ describe("usage chip", () => {
     expect(rows.map((row) => row.label)).toEqual(["This session"])
     const partial = usageChipRows({ usage: { ...usage, reportedCostTurns: 5, unavailableCostTurns: 4 }, turn: undefined, today: null })
     expect(partial[0]?.note).toBe("4 turns reported no cost, so this total is partial.")
+  })
+
+  it("says when today's cost is partial instead of showing it as complete", () => {
+    const rows = usageChipRows({ usage, turn: undefined, today: { ...today, reportedCostTurns: 1, unavailableCostTurns: 26 } })
+    expect(rows.at(-1)).toMatchObject({
+      label: "Today",
+      value: "120k tokens · $1.12",
+      note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · 26 turns reported no cost, so this total is partial.",
+    })
+  })
+
+  it("walks past a system receipt to the newest entry that carries a turn", async () => {
+    type Load = Parameters<typeof latestTurnFromHistory>[0]
+    const receipt: SessionHistoryPage["items"][number] = { id: "thread:receipt", sourceId: "receipt", sessionId: "session-billing", createdAt: "2026-09-15T14:09:00+00:00", category: "messages" as const, role: "system" as const, body: "Worktree restored" }
+    const message: SessionHistoryPage["items"][number] = { id: "thread:assistant-9", sourceId: "assistant-9", sessionId: "session-billing", createdAt: "2026-09-15T14:08:00+00:00", category: "messages" as const, role: "assistant" as const, body: "Done", turnId: "turn-9", turn }
+    const calls: unknown[] = []
+    const load: Load = async (_sessionId, options) => {
+      calls.push(options)
+      return options?.before
+        ? { sessionId: "session-billing", hasMore: false, items: [message] }
+        : { sessionId: "session-billing", hasMore: true, nextCursor: "thread:receipt", items: [receipt] }
+    }
+    expect(await latestTurnFromHistory(load, "session-billing")).toEqual(turn)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toMatchObject({ before: "thread:receipt" })
+
+    let pages = 0
+    const endless: Load = async () => { pages += 1; return { sessionId: "session-billing", hasMore: true, nextCursor: `thread:${pages}`, items: [receipt] } }
+    expect(await latestTurnFromHistory(endless, "session-billing")).toBeUndefined()
+    expect(pages).toBe(3)
   })
 })
