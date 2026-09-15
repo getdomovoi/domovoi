@@ -6,6 +6,14 @@ import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import {
+  updateActivateParamsSchema,
+  updateActivateResultSchema,
+  updateCheckParamsSchema,
+  updateCheckResultSchema,
+  updateStatusParamsSchema,
+  updateStatusResultSchema,
+} from "./update.js"
 
 import {
   sessionTransferParamsSchema,
@@ -1402,6 +1410,9 @@ export const rpcMethods = {
     params: runtimeDiscoverParamsSchema,
     result: runtimeDiscoverResultSchema,
   },
+  "update.status": { params: updateStatusParamsSchema, result: updateStatusResultSchema },
+  "update.check": { params: updateCheckParamsSchema, result: updateCheckResultSchema },
+  "update.activate": { params: updateActivateParamsSchema, result: updateActivateResultSchema },
   "provider.refresh": {
     params: z.object({ client: clientKindSchema }).strict(),
     result: workspaceSnapshotSchema,
@@ -1508,7 +1519,10 @@ export const rpcMethodMutations = {
   "skill.installPreview": "read-only",
   "runtime.models": "read-only",
   "runtime.discover": "read-only",
+  "update.status": "read-only",
   "provider.secret.list": "read-only",
+  "update.check": "mutating",
+  "update.activate": "mutating",
   "device.pair": "mutating",
   "device.claim": "mutating",
   "device.confirmClaim": "mutating",
