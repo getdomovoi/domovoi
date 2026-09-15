@@ -91,6 +91,10 @@ const contracts = [
       "dist/public.d.ts",
       "dist/server.js",
       "dist/server.d.ts",
+      // The bootstrap installer ships inside the daemon so an installed
+      // runtime can stage its own update without the repository's scripts.
+      "dist/bootstrap-install.js",
+      "dist/bootstrap-install.d.ts",
       "runtime/lock.json",
       "runtime/package.json",
       "runtime/protocol.tgz",
