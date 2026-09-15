@@ -41,7 +41,11 @@ class Entry {
       Atomics.wait(sleeper, 0, 0, Math.min(20, until - performance.now()))
     }
   }
-  getPassword() { record("get", this.account); return entries.get(this.account) ?? null }
+  getPassword() {
+    record("get", this.account)
+    if (process.env.DOMOVOI_TEST_KEYRING_THROW_GET === "1") throw new Error("keychain is locked")
+    return entries.get(this.account) ?? null
+  }
   setPassword(secret) { record("set", this.account); entries.set(this.account, secret) }
   deletePassword() { record("delete", this.account); return entries.delete(this.account) }
 }

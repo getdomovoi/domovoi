@@ -145,7 +145,7 @@ describe("MachineCredentialStore", () => {
     })
 
     expect(() => store.save(machineId, credential)).toThrow(MachineCredentialUnavailableError)
-    expect(() => store.forMachine(machineId)).toThrow("OS keychain is unavailable on this machine")
+    expect(() => store.forMachine(machineId)).toThrow(/Unlock it.*pairing has changed/)
   })
 
   it("never puts a credential in an error", () => {
