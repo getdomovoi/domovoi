@@ -29,11 +29,12 @@ async function scratchRepository(t, roadmap, workSplit = "") {
   git("commit", "--quiet", "--allow-empty", "-m", "root")
   const cited = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
   await mkdir(join(root, "scripts"), { recursive: true })
+  await mkdir(join(root, "docs"), { recursive: true })
   // The fixtures are written before the sha exists, so they name it CITED and
   // the real one is substituted here.
   const withSha = (text) => text.replaceAll("CITED", cited)
-  await writeFile(join(root, "ROADMAP.md"), withSha(roadmap))
-  await writeFile(join(root, "WORK-SPLIT.md"), withSha(workSplit))
+  await writeFile(join(root, "SHIP-PLAN.md"), withSha(roadmap))
+  await writeFile(join(root, "docs/working-rules.md"), withSha(workSplit))
   return { root, cited }
 }
 
@@ -124,9 +125,10 @@ test("fails in a shallow clone rather than passing a citation it cannot check", 
   // the shallow check itself.
   const head = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
   await mkdir(join(root, "scripts"), { recursive: true })
+  await mkdir(join(root, "docs"), { recursive: true })
   await writeFile(join(root, "scripts", "tick-citations-allowlist.json"), `${JSON.stringify({ exempt: {} })}\n`)
-  await writeFile(join(root, "ROADMAP.md"), `# roadmap\n\n- [x] Cited work (${head})\n`)
-  await writeFile(join(root, "WORK-SPLIT.md"), "")
+  await writeFile(join(root, "SHIP-PLAN.md"), `# roadmap\n\n- [x] Cited work (${head})\n`)
+  await writeFile(join(root, "docs/working-rules.md"), "")
 
   const result = await checkTickCitations(root)
 
@@ -140,9 +142,10 @@ test("fails when git cannot answer at all rather than passing", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "domovoi-ticks-nogit-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, "scripts"), { recursive: true })
+  await mkdir(join(root, "docs"), { recursive: true })
   await writeFile(join(root, "scripts", "tick-citations-allowlist.json"), `${JSON.stringify({ exempt: {} })}\n`)
-  await writeFile(join(root, "ROADMAP.md"), "# roadmap\n\n- [x] Cited work (1b683d6)\n")
-  await writeFile(join(root, "WORK-SPLIT.md"), "")
+  await writeFile(join(root, "SHIP-PLAN.md"), "# roadmap\n\n- [x] Cited work (1b683d6)\n")
+  await writeFile(join(root, "docs/working-rules.md"), "")
 
   const result = await checkTickCitations(root)
 
@@ -164,7 +167,7 @@ test("fails an uncited tick and names where it is", async (t) => {
 
   assert.equal(result.ok, false)
   assert.equal(result.failures.length, 1)
-  assert.match(result.failures[0], /^ROADMAP\.md:4: \[x\] with no commit citation/)
+  assert.match(result.failures[0], /^SHIP-PLAN\.md:4: \[x\] with no commit citation/)
 })
 
 test("passes when every tick cites, in both files", async (t) => {
@@ -186,7 +189,7 @@ test("exempts a seeded tick and stops exempting it once it cites", async (t) => 
   assert.equal(seeded, 1)
   assert.equal((await checkTickCitations(root)).ok, true)
 
-  await writeFile(join(root, "ROADMAP.md"), `- [x] Older work with no citation (${cited})\n`)
+  await writeFile(join(root, "SHIP-PLAN.md"), `- [x] Older work with no citation (${cited})\n`)
   const graduated = await checkTickCitations(root)
 
   assert.equal(graduated.ok, false)
@@ -201,7 +204,7 @@ test("pruning drops an exemption that has been cited and keeps one that has not"
     "- [x] Still waiting",
   ].join("\n"))
   await seedAllowlist(root)
-  await writeFile(join(root, "ROADMAP.md"), [
+  await writeFile(join(root, "SHIP-PLAN.md"), [
     `- [x] Cited since seeding (${cited})`,
     "- [x] Still waiting",
   ].join("\n"))
@@ -212,7 +215,7 @@ test("pruning drops an exemption that has been cited and keeps one that has not"
   assert.equal(remaining, 1)
   assert.equal((await checkTickCitations(root)).ok, true)
   const stored = JSON.parse(await readFile(join(root, "scripts", "tick-citations-allowlist.json"), "utf8"))
-  assert.deepEqual(stored.exempt["ROADMAP.md"], ["Still waiting"])
+  assert.deepEqual(stored.exempt["SHIP-PLAN.md"], ["Still waiting"])
 })
 
 // Seeding twice would re-exempt everything the list had shed, which is the same
@@ -239,7 +242,8 @@ test("fails when it cannot check reachability rather than passing", async (t) =>
   const root = await mkdtemp(join(tmpdir(), "domovoi-ticks-shallow-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, "scripts"), { recursive: true })
-  await writeFile(join(root, "ROADMAP.md"), "- [x] Cited work (1b683d6)\n")
+  await mkdir(join(root, "docs"), { recursive: true })
+  await writeFile(join(root, "SHIP-PLAN.md"), "- [x] Cited work (1b683d6)\n")
   await writeFile(join(root, "scripts", "tick-citations-allowlist.json"), `${JSON.stringify({ exempt: {} })}\n`)
 
   // Not a git repository at all, which is the same answer as a shallow one:
