@@ -134,6 +134,12 @@ describe("AnnotationVisualContextService", () => {
     const root = await mkdtemp(join(tmpdir(), "domovoi-crops-"))
     roots.push(root)
     let race = true
+    // The service defers a retention pass to setImmediate after each store.
+    // Left to the event loop, the racing service's pass can run while the
+    // failing service below is between its write and its prune, remove the
+    // older crop first, and leave the failing prune nothing to refuse. The
+    // test owns the schedule so the pass runs where the assertion needs it.
+    const deferred: Array<() => Promise<void>> = []
     const racing = new AnnotationVisualContextService({
       root,
       maximumFileCount: 1,
@@ -145,6 +151,7 @@ describe("AnnotationVisualContextService", () => {
           throw Object.assign(new Error("gone"), { code: "ENOENT" })
         }
       },
+      scheduleRetentionReconciliation: (task) => { deferred.push(task) },
     })
     await racing.storeUpload({ artifactRevision: 1, mimeType: "image/png", bytes: png, width: 8, height: 8 })
     await expect(racing.storeUpload({
@@ -154,6 +161,7 @@ describe("AnnotationVisualContextService", () => {
       width: 8,
       height: 8,
     })).resolves.toMatchObject({ status: "available" })
+    for (const task of deferred.splice(0)) await task()
 
     const failing = new AnnotationVisualContextService({
       root,

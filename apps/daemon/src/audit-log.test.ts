@@ -175,6 +175,28 @@ describe("SqliteAuditLog", () => {
     database.close()
   })
 
+  it("keeps every row when a caller's rollback leaves its row count high", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database, { maximumEntries: 3 })
+    const ids = () => database.prepare("SELECT id FROM audit_log ORDER BY sequence").all().map((row) => row.id)
+    const append = (id: string) => audit.append({
+      id, actor: { kind: "daemon", component: "workspace" }, action: "workspace.get", outcome: "succeeded",
+    })
+    append("kept-1")
+    append("kept-2")
+    database.exec("BEGIN")
+    append("rolled-back-1")
+    append("rolled-back-2")
+    expect(ids()).toEqual(["kept-2", "rolled-back-1", "rolled-back-2"])
+    database.exec("ROLLBACK")
+    expect(ids()).toEqual(["kept-1", "kept-2"])
+    append("kept-3")
+    expect(ids()).toEqual(["kept-1", "kept-2", "kept-3"])
+    append("kept-4")
+    expect(ids()).toEqual(["kept-2", "kept-3", "kept-4"])
+    database.close()
+  })
+
   it("holds exactly the retention bound after every append past it", () => {
     const database = new DatabaseSync(":memory:")
     const audit = new SqliteAuditLog(database, { maximumEntries: 5 })

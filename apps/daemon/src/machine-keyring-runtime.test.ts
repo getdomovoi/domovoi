@@ -6,7 +6,7 @@ import { Worker } from "node:worker_threads"
 import { expect, it } from "vitest"
 
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
-import { machineCredentialDigest } from "./machine-credentials.js"
+import { MachineCredentialUnavailableError, machineCredentialDigest } from "./machine-credentials.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { withinServiceDeadline } from "./service/deadline.js"
 import { waitForDaemon } from "./test-wait-for.js"
@@ -16,11 +16,14 @@ const budget = process.platform === "win32" ? 20_000 : 10_000
 const machineId = `machine-${"a".repeat(32)}`
 const credential = "k".repeat(43)
 
-async function fixture(run: (input: { client: MachineCredentialWorker; directory: string; deadline: OperationDeadline }) => Promise<void>) {
+async function fixture(
+  run: (input: { client: MachineCredentialWorker; directory: string; deadline: OperationDeadline }) => Promise<void>,
+  environment: NodeJS.ProcessEnv = {},
+) {
   const deadline = OperationDeadline.start(budget)
   const directory = await mkdtemp(join(tmpdir(), "domovoi-keyring-worker-"))
   const client = new MachineCredentialWorker(() => new Worker(new URL("../dist/machine-keyring-worker.js", import.meta.url), {
-    env: { ...process.env, DOMOVOI_TEST_KEYRING_DIRECTORY: directory },
+    env: { ...process.env, ...environment, DOMOVOI_TEST_KEYRING_DIRECTORY: directory },
     execArgv: ["--import", new URL("../test-fixtures/blocked-keyring.mjs", import.meta.url).href],
   }))
   try { await withinServiceDeadline(deadline, () => run({ client, directory, deadline })) }
@@ -77,4 +80,29 @@ it("cancels before the next native step without overtaking a held constructor", 
       expect(events.some((event) => event.kind === "set")).toBe(false)
     } finally { operation.clear() }
   })
+}, budget + 11_000)
+
+it("reports a throwing native credential read as unavailable, never absent", async () => {
+  await fixture(async ({ client, deadline }) => {
+    const failure = await client.forMachine(machineId, deadline).then(
+      () => undefined,
+      (error: unknown) => error as Error,
+    )
+    expect(failure).toBeInstanceOf(MachineCredentialUnavailableError)
+    expect(failure?.message).toMatch(/Unlock it.*pairing has changed/)
+    expect(failure).not.toBeUndefined()
+  }, { DOMOVOI_TEST_KEYRING_THROW_GET: "1" })
+}, budget + 11_000)
+
+it("keeps an operation-only repair failure distinct across the worker port", async () => {
+  await fixture(async ({ client, deadline }) => {
+    await client.save(machineId, credential, deadline)
+    const failure = await client.repairIndex(machineId, machineCredentialDigest(machineId, credential), deadline).then(
+      () => undefined,
+      (error: unknown) => error as Error,
+    )
+    expect(failure).toBeInstanceOf(MachineCredentialUnavailableError)
+    expect(failure?.message).toBe("OS keychain is unavailable on this machine")
+    expect(failure?.message).not.toMatch(/Unlock it|pairing has changed/)
+  }, { DOMOVOI_TEST_KEYRING_REPAIR_MISMATCH: "1" })
 }, budget + 11_000)

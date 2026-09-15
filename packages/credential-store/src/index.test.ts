@@ -4,7 +4,7 @@ import { join, resolve } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { nativeKeyring, openCredentialBackend, readPrivateFile, writePrivateFile, type Keyring } from "./index.js"
+import { CredentialStoreError, CredentialStoreUnavailableError, nativeKeyring, openCredentialBackend, readPrivateFile, writePrivateFile, type Keyring } from "./index.js"
 
 vi.mock("node:fs/promises", async (original) => ({
   ...await original<typeof import("node:fs/promises")>(),
@@ -253,6 +253,33 @@ describe("credential custody", () => {
     await ring.delete("account")
     expect(await ring.get("account")).toBeUndefined()
     expect(accounts.every((account) => account.startsWith("fixture-service:"))).toBe(true)
+  })
+
+  // A keychain that answers "locked" is not a keychain with nothing in it.
+  // Absent means pair this machine; unavailable means unlock the store and
+  // nothing about the pairing has changed. The two never share an answer.
+  it("reports a keychain that cannot be read as unavailable, never as absent", async () => {
+    const values = new Map<string, string>([["account", "value"]])
+    let locked = false
+    class Entry {
+      constructor(_service: string, private account: string) {}
+      getPassword() { if (locked) throw new Error("The specified item could not be found in the keychain (locked)"); return values.get(this.account) ?? null }
+      setPassword(value: string) { if (locked) throw new Error("locked"); values.set(this.account, value) }
+      deletePassword() { if (locked) throw new Error("locked"); return values.delete(this.account) }
+    }
+    const ring = nativeKeyring({ service: "fixture-service", probeAccount: "probe", load: async () => ({ Entry }) })
+    expect(await ring.get("missing")).toBeUndefined()
+    expect(await ring.get("account")).toBe("value")
+    locked = true
+    const failure = await ring.get("account").then(() => undefined, (error: unknown) => error as Error)
+    expect(failure).toBeInstanceOf(CredentialStoreUnavailableError)
+    expect(failure).toBeInstanceOf(CredentialStoreError)
+    expect(failure?.message).toMatch(/could not be read.*Unlock it/)
+    expect(failure?.message).not.toMatch(/Not paired|domovoi pair|pair this/i)
+    expect((failure?.cause as Error).message).toContain("locked")
+    await expect(ring.set("account", "next")).rejects.toBeInstanceOf(CredentialStoreUnavailableError)
+    await expect(ring.delete("account")).rejects.toBeInstanceOf(CredentialStoreUnavailableError)
+    expect(values.get("account")).toBe("value")
   })
 
   it("refuses native module load failure without a fallback", async () => {
