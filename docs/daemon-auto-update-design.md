@@ -1,7 +1,8 @@
 # Daemon auto-update design
 
-Status: design for S1.4. Signing authority and key custody require the S0.7/S4.1
-maintainer decision before implementation can claim a production trust root.
+Status: design for S1.4. Signing authority and key custody decisions were made
+by the maintainer on 2026-09-14. Discovery, verification, and staging may start;
+the activation matrix and reproducible-build comparison remain required.
 
 ## Scope and current baseline
 
@@ -228,11 +229,49 @@ tests must prove restart and rollback on each supported service manager.
 
 ## Stop point
 
-Choose the signing authority, root threshold and custody before implementation
-adds production trust bytes or signing workflow permissions. Artifact discovery,
-verification, and staging may then be implemented and reviewed independently of
-platform activation. The final S1.4 tick requires both the reproducible-build
-comparison and the native activation matrix.
+The signing authority, root threshold and custody decisions are made and recorded
+below. Artifact discovery, verification, and staging may now be implemented and
+reviewed independently of platform activation. The final S1.4 tick requires both
+the reproducible-build comparison and the native activation matrix.
+
+## Maintainer decisions, resolved 2026-09-14
+
+1. **Root threshold and holders: 2 of 3 offline keys.** All three holders are the
+   maintainer today, so the threshold buys loss tolerance now and compromise tolerance
+   once a second holder exists. A second holder is added by root rotation, not by a new
+   root, so no installed daemon has to be re-rooted for it.
+
+2. **Online role custody: a protected GitHub environment, not repository secrets.**
+   Targets, snapshot and timestamp keys live in an environment with required review and
+   the shortest practical expiry. A protected environment is a GitHub setting, and a
+   setting is invisible in a diff, the same class as a required check that nobody made
+   required. So the configuration is recorded here, beside the design, and it carries a
+   check: a workflow run triggered by a pull request must not be able to reach the
+   signing keys. Verified once by attempting it from a pull request run and recording
+   the refusal, not inferred from the settings page. The record names the environment,
+   the reviewers, the expiry, and the run id of the refused attempt.
+
+3. **Root ceremony: the initial root digest is published beside the bootstrap archive
+   digest, on a page the installer did not fetch from the package.** The failure this
+   prevents: an installer that trusts the package it just fetched validates an
+   attacker's package as readily as ours, because the embedded root came from the same
+   source as the bytes it is meant to check. A digest is only worth publishing if it is
+   checkable from somewhere the installer did not get from that source. The installer
+   docs therefore say compare both digests before running, with the exact commands, or
+   the published digest is decoration. The ceremony record names the date, the holders,
+   the root digest and where it was published.
+
+4. **Recovery, written before implementation.** An online role key lost or suspected
+   compromised: the root threshold signs a new root that rotates that role, and new
+   targets, snapshot and timestamp metadata are published under the new key; clients
+   follow the rotation by the TUF workflow. A root holder lost: the remaining two sign a
+   root rotation that removes the lost key and adds a replacement holder. Two root keys
+   lost: the fleet is re-rooted by a new install, which is the case the threshold exists
+   to make unlikely and the docs must say so plainly.
+
+Signed off by the maintainer on 2026-09-14. Implementation of discovery, verification
+and staging may start; the activation matrix and the reproducible-build comparison remain
+the tick's other half.
 
 References:
 
