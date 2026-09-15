@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, stat, unlink, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { type Keyring } from "@getdomovoi/credential-store"
+import { CredentialStoreUnavailableError, nativeKeyring, type Keyring } from "@getdomovoi/credential-store"
 import { relayPublicKeyFromPrivateKey, relaySuccessorSigningBytes } from "@getdomovoi/protocol/relay-admission"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -72,6 +72,34 @@ describe("relay channel provisioning", () => {
     provisioned!.privateKey.fill(0)
     vi.mocked(dependencies.keyring.available).mockResolvedValue(false)
     await expect(loadOrProvisionRelayChannel(input, dependencies)).rejects.toThrow("locked")
+    expect(dependencies.generateKey).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports a native keyring read refusal as unavailable, never as a missing relay key", async () => {
+    const { input, dependencies } = await fixture()
+    const values = new Map<string, string>()
+    let locked = false
+    class Entry {
+      constructor(_service: string, private readonly account: string) {}
+      getPassword(): string | null {
+        if (locked && this.account !== "probe") throw new Error("keychain is locked")
+        return values.get(this.account) ?? null
+      }
+      setPassword(value: string): void { values.set(this.account, value) }
+      deletePassword(): boolean { return values.delete(this.account) }
+    }
+    const keyring = nativeKeyring({ service: "relay-test", probeAccount: "probe", load: async () => ({ Entry }) })
+    const first = await loadOrProvisionRelayChannel(input, { ...dependencies, keyring })
+    first!.privateKey.fill(0)
+    locked = true
+
+    const failure = await loadOrProvisionRelayChannel(input, { ...dependencies, keyring }).then(
+      () => undefined,
+      (error: unknown) => error as Error,
+    )
+    expect(failure).toBeInstanceOf(CredentialStoreUnavailableError)
+    expect(failure?.message).toMatch(/Unlock it.*pairing has changed/)
+    expect(failure?.message).not.toMatch(/missing|not provisioned/i)
     expect(dependencies.generateKey).toHaveBeenCalledTimes(1)
   })
 

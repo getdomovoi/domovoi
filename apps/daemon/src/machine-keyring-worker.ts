@@ -1,6 +1,10 @@
 import { parentPort } from "node:worker_threads"
 
-import { MachineCredentialStore, NativeMachineKeyring } from "./machine-credentials.js"
+import {
+  MachineCredentialStore,
+  MachineCredentialUnavailableError,
+  NativeMachineKeyring,
+} from "./machine-credentials.js"
 
 if (!parentPort) throw new Error("The keyring worker needs its private parent port")
 const port = parentPort
@@ -29,8 +33,14 @@ port.on("message", ({ id, request, cancelled, expiresAt }: {
             : request.kind === "forgetIfMatching" ? store.forgetIfMatching(request.machineId, request.expectedDigest) : store.machines()
     checkpoint()
     port.postMessage({ id, ok: true, result })
-  } catch {
+  } catch (error) {
     // Neither native messages nor keychain bytes appear in failure replies.
-    port.postMessage({ id, ok: false })
+    port.postMessage({
+      id,
+      ok: false,
+      ...(error instanceof MachineCredentialUnavailableError && error.reason === "keychain"
+        ? { reason: "keychain-unavailable" }
+        : {}),
+    })
   }
 })

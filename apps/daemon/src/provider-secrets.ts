@@ -15,7 +15,20 @@ export interface ProviderKeyring {
   delete(account: string): unknown
 }
 
-export class ProviderSecretUnavailableError extends Error {}
+const providerSecretUnavailableMessage = "The OS keychain could not be read. Unlock it and run this again; the provider secret is unchanged."
+
+export class ProviderSecretUnavailableError extends Error {
+  constructor(message = providerSecretUnavailableMessage, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "ProviderSecretUnavailableError"
+  }
+}
+
+function unavailableProviderSecret(error: unknown): ProviderSecretUnavailableError {
+  if (error instanceof ProviderSecretUnavailableError) return error
+  const cause = error instanceof Error ? error : new Error(String(error))
+  return new ProviderSecretUnavailableError(providerSecretUnavailableMessage, { cause })
+}
 
 export class ProviderSecretManager {
   readonly #keyring: ProviderKeyring
@@ -43,8 +56,8 @@ export class ProviderSecretManager {
     if (!secret.trim()) throw new Error("Provider key cannot be empty")
     try {
       this.#keyring.set(supported, secret)
-    } catch {
-      throw new ProviderSecretUnavailableError("OS keychain is unavailable on this machine")
+    } catch (error) {
+      throw unavailableProviderSecret(error)
     }
   }
 
@@ -52,8 +65,8 @@ export class ProviderSecretManager {
     const supported = requireProvider(provider)
     try {
       this.#keyring.delete(supported)
-    } catch {
-      throw new ProviderSecretUnavailableError("OS keychain is unavailable on this machine")
+    } catch (error) {
+      throw unavailableProviderSecret(error)
     }
   }
 
@@ -61,8 +74,8 @@ export class ProviderSecretManager {
     const supported = requireProvider(provider)
     try {
       return this.#keyring.get(supported)
-    } catch {
-      throw new ProviderSecretUnavailableError("OS keychain is unavailable on this machine")
+    } catch (error) {
+      throw unavailableProviderSecret(error)
     }
   }
 }

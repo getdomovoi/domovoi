@@ -12,6 +12,19 @@ import layout from "./wire-layout.json"
 const empty = new Uint8Array()
 const bytes = (base64: string) => new Uint8Array(Buffer.from(base64, "base64"))
 const payload = (record: { repeatByte: number; length: number }) => new Uint8Array(record.length).fill(record.repeatByte)
+// A 65,535-byte frame compared with toEqual walks every element through the
+// matcher, which is most of this file's run time and what a loaded runner
+// turns into a timeout. The assertion is one byte compare; on a mismatch the
+// index is the useful fact.
+const firstDifference = (actual: Uint8Array, expected: Uint8Array): number => {
+  if (Buffer.compare(actual, expected) === 0) return -1
+  const shared = Math.min(actual.length, expected.length)
+  for (let index = 0; index < shared; index += 1) if (actual[index] !== expected[index]) return index
+  return shared
+}
+const expectBytes = (actual: Uint8Array, expected: Uint8Array, what: string) => {
+  expect(firstDifference(actual, expected), `${what} differs (lengths ${actual.length} and ${expected.length}); first difference at byte`).toBe(-1)
+}
 
 describe("frozen relay frame layout", () => {
   it("pins message 1: ephemeral 0..32, encrypted static 32..80, payload from 80, overhead 96", () => {
@@ -62,7 +75,7 @@ for (const [backend, factory] of [["noble", createNoiseIk], ["Node comparison", 
           const clear = payload(message.payload)
           const expected = bytes(message.ciphertextBase64)
           const actual = new Uint8Array(index < 2 ? sender.writeHandshake(clear) : sender.encrypt(clear))
-          expect(actual).toEqual(expected)
+          expectBytes(actual, expected, `${connection.name} message ${index}`)
           expect(actual.length).toBeLessThanOrEqual(layout.maximumFrameBytes)
           if (index < 2) {
             const fields = index === 0 ? layout.message1 : layout.message2
@@ -78,7 +91,7 @@ for (const [backend, factory] of [["noble", createNoiseIk], ["Node comparison", 
           } else {
             expect(actual.length - clear.length).toBe(layout.tagBytes)
           }
-          expect(new Uint8Array(index < 2 ? receiver.readHandshake(expected) : receiver.decrypt(expected))).toEqual(clear)
+          expectBytes(new Uint8Array(index < 2 ? receiver.readHandshake(expected) : receiver.decrypt(expected)), clear, `${connection.name} message ${index} decrypted`)
         }
         for (const peer of [initiator, responder]) expect(peer.handshakeHash()).toEqual(fromHex(connection.handshakeHash))
         expect(initiator.remoteStaticKey()).toEqual(fromHex(keys.responderPublic))
