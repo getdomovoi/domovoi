@@ -1172,8 +1172,10 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       entity rows. The v2 layout itself is not on `main`. Measured 2026-09-15 against
       `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2`: the dock has seven tabs
       (`session`, `plan`, `changes`, `preview`, `terminal`, `history`, `comments`) against v2's
-      eight (Plan, Changes, Preview, Terminal, History, Checkpoints, Rules, Comments), so no
-      Checkpoints tab, no Rules tab, and a v1 Session tab still present; no usage chip; no plan
+      seven (Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules; `sheetTabList`
+      in part2-logic), so no Checkpoints tab, no Rules tab, a v1 Session tab still present, and
+      Comments as a tab where v2 reaches comments from inside Preview (`goComments`); no usage
+      chip; no plan
       edit strip with the queued-edit notice; no model popover with discovery and rediscover;
       no sidebar reorganisation of the session controls. Present: the queued composer, the
       titlebar stop control, fork from a history row. The work-split items under "From the work
