@@ -1,5 +1,7 @@
-import { mkdir, open, readFile, rename, unlink, type FileHandle } from "node:fs/promises"
+import { mkdir, open, readFile, unlink, type FileHandle } from "node:fs/promises"
 import { dirname, join } from "node:path"
+
+import { publishFileDurably } from "@getdomovoi/credential-store"
 
 // The desktop keeps each daemon's relay identity pin in one JSON file under
 // userData, beside the window decoration. It is the main process's file: the
@@ -62,14 +64,14 @@ async function load(path: string): Promise<PinFile> {
   return { version: 1, pins }
 }
 
-// Publish the new bytes durably: flush the temporary file, rename it over
-// the old one, then flush the directory so the rename itself is on disk. A
-// flush or rename that fails rejects the swap, and the temporary file that
-// never made it to the rename is removed; the caller must not believe an
-// acknowledgement the disk never gave. Once the rename has happened the
-// published file is never deleted, whatever the directory flush says.
-// Windows cannot open a directory for fsync, and libuv's rename there asks
-// for no write-through, so on Windows the file's bytes are flushed but the
+// Publish the new bytes durably: flush the temporary file, then hand it to
+// publishFileDurably, which renames it over the old one and flushes the
+// directory so the rename itself is on disk. A flush or rename that fails
+// rejects the swap, and the temporary file that never made it to the rename
+// is removed; the caller must not believe an acknowledgement the disk never
+// gave. Once the rename has happened the published file is never deleted,
+// whatever the directory flush says. On Windows the helper flushes the
+// file's bytes only: libuv's rename there asks for no write-through, so the
 // rename's persistence across power loss is not something this code can
 // promise.
 async function publish(path: string, file: PinFile): Promise<void> {
@@ -80,12 +82,10 @@ async function publish(path: string, file: PinFile): Promise<void> {
       await handle.writeFile(JSON.stringify(file), "utf8")
       await handle.sync()
     })
-    await rename(temporary, path)
+    await publishFileDurably(temporary, path)
   } catch (error: unknown) {
     throw await discarding(temporary, error)
   }
-  if (process.platform === "win32") return
-  await closing(await open(dirname(path), "r"), (directory) => directory.sync())
 }
 
 // Remove a temporary file after a failed publication. A temporary that is

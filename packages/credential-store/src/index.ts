@@ -97,6 +97,17 @@ async function syncDirectory(path: string): Promise<void> {
   try { await handle.sync() } catch (error) { failure = { error }; throw error } finally { await closeFile(handle, failure) }
 }
 
+// Publish a fully written, already flushed staging file at its final path and
+// make the rename itself durable. rename alone is atomic for readers and not
+// for power loss: the directory entry lives in the directory, and the
+// directory has to be flushed too. Every whole-file replace in the repository
+// goes through here; eslint refuses a bare rename import elsewhere so the
+// second half cannot be forgotten again.
+export async function publishFileDurably(staging: string, path: string): Promise<void> {
+  await rename(staging, path)
+  await syncDirectory(dirname(path))
+}
+
 export async function writePrivateFile(path: string, content: string, options: {
   maximumBytes?: number
   publish?: typeof rename

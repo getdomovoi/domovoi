@@ -1,4 +1,5 @@
-import { mkdir, open, rename, unlink } from "node:fs/promises"
+import { mkdir, open, unlink } from "node:fs/promises"
+import type { rename } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
 import {
