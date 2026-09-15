@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
+import { z } from "zod"
 
 import { assertProfileLeaseHeld, type ProfileLease } from "./profile-lease.js"
 
@@ -23,6 +24,33 @@ export type BootstrapInstall = (options: {
   expectedSha256: string
 }) => Promise<{ version: string, path: string, sha256: string }>
 
+/** The production seam is the reviewed bootstrap installer, not a second extractor. */
+export const bootstrapInstall: BootstrapInstall = async (options) => {
+  // The installer is an executable workspace script and is intentionally loaded
+  // at runtime so the daemon bundle does not duplicate its extraction logic.
+  const module = await import(new URL("../../../scripts/bootstrap-install.mjs", import.meta.url).href) as {
+    installBootstrapDaemon(options: Parameters<BootstrapInstall>[0]): ReturnType<BootstrapInstall>
+  }
+  return module.installBootstrapDaemon(options)
+}
+
+export type VerifiedUpdateTarget = {
+  name: string
+  version: string
+  sha256: string
+  channel: "stable" | "beta"
+  sourceCommit: string
+  runtimeLockDigest: string
+}
+
+const trustedUpdateMetadataSchema = z.object({
+  format: z.literal(1),
+  rootVersion: z.number().int().nonnegative(), rootDigest: z.string(),
+  timestampVersion: z.number().int().nonnegative(), timestampDigest: z.string(),
+  snapshotVersion: z.number().int().nonnegative(), snapshotDigest: z.string(),
+  targetsVersion: z.number().int().nonnegative(), targetsDigest: z.string(),
+}).strict()
+
 const emptyMetadata: TrustedUpdateMetadata = {
   format: 1,
   rootVersion: 0,
@@ -41,7 +69,7 @@ function metadataPath(homeDirectory: string): string {
 
 export async function readTrustedUpdateMetadata(homeDirectory: string): Promise<TrustedUpdateMetadata> {
   try {
-    return JSON.parse(await readFile(metadataPath(homeDirectory), "utf8")) as TrustedUpdateMetadata
+    return trustedUpdateMetadataSchema.parse(JSON.parse(await readFile(metadataPath(homeDirectory), "utf8")))
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return emptyMetadata
     throw error
@@ -74,6 +102,8 @@ export async function persistTrustedUpdateMetadata(
   try {
     await writeFile(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600, flag: "wx", flush: true })
     await rename(temporary, metadataPath(homeDirectory))
+    const handle = await open(directory, "r")
+    try { await handle.sync() } finally { await handle.close() }
     return next
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => {})
@@ -84,20 +114,21 @@ export async function persistTrustedUpdateMetadata(
 export async function stageVerifiedUpdate(options: {
   homeDirectory: string
   lease: ProfileLease
-  install: BootstrapInstall
-  version: string
+  install?: BootstrapInstall
+  target: VerifiedUpdateTarget
   baseUrl: string
-  expectedSha256: string
   runtimeRoot?: string
 }): Promise<{ version: string, path: string, sha256: string }> {
   assertProfileLeaseHeld(options.lease)
   const destination = options.runtimeRoot ?? join(options.homeDirectory, ".domovoi", "runtimes")
-  const result = await options.install({
-    version: options.version,
+  const result = await (options.install ?? bootstrapInstall)({
+    version: options.target.version,
     baseUrl: options.baseUrl,
     destination,
-    expectedSha256: options.expectedSha256,
+    expectedSha256: options.target.sha256,
   })
-  if (result.version !== options.version) throw new Error("Bootstrap staged an unexpected update version")
+  if (result.version !== options.target.version || result.sha256 !== options.target.sha256) {
+    throw new Error("Bootstrap staged bytes that did not match the verified update target")
+  }
   return result
 }
