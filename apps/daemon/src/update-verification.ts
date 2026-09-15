@@ -50,14 +50,15 @@ function verifyRoleSignatures(role: UpdateRoleName, envelope: { signed: unknown,
     if (!keys.has(signature.keyid) || valid.has(signature.keyid)) continue
     const key = root.signed.keys[signature.keyid]
     if (!key) continue
-    let ok = false
-    try {
-      const signatureBytes = Buffer.from(signature.sig, "base64")
-      ok = signatureBytes.length === 64 && signatureBytes.toString("base64") === signature.sig
-        && verifySignature(null, payload, publicKey(key.keyval.public), signatureBytes)
-    } catch {
-      ok = false
-    }
+    const ok = (() => {
+      try {
+        const signatureBytes = Buffer.from(signature.sig, "base64")
+        return signatureBytes.length === 64 && signatureBytes.toString("base64") === signature.sig
+          && verifySignature(null, payload, publicKey(key.keyval.public), signatureBytes)
+      } catch {
+        return false
+      }
+    })()
     if (ok) valid.add(signature.keyid)
   }
   if (valid.size < delegation.threshold) throw new UpdateVerificationError(`Update role ${role} did not meet its signature threshold`)
