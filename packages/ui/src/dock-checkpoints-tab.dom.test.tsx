@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
+import { checkpointsIntro } from "./checkpoints-panel"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
@@ -34,6 +35,6 @@ describe("the dock's Checkpoints tab", () => {
     await settle()
     const requests = sentRequests(socket, "session.history")
     expect(requests.at(-1)?.params).toMatchObject({ categories: ["checkpoints"] })
-    expect(screen.getByText("Every approved write takes one first. Reverting rewinds the worktree and the thread together.")).toBeTruthy()
+    expect(screen.getByText(checkpointsIntro)).toBeTruthy()
   })
 })

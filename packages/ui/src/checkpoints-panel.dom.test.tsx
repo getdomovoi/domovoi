@@ -12,23 +12,14 @@ const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
 
-// Newest first, the way the design lists them; the session-start checkpoint is
-// the oldest and the only one that offers Reset instead of Revert, and no Fork.
-function page(): SessionHistoryPage {
+// The daemon pages history oldest first, so the session-start checkpoint comes
+// first here and the panel has to turn the page round. The session start is the
+// only row that offers Reset instead of Revert, and no Fork.
+function page(overrides: Partial<SessionHistoryPage> = {}): SessionHistoryPage {
   return {
     sessionId: "session-billing",
     hasMore: false,
     items: [
-      {
-        id: "thread:ckpt-7f24",
-        sourceId: "ckpt-7f24",
-        sessionId: "session-billing",
-        createdAt: "2026-09-08T14:06:00.000Z",
-        category: "checkpoints",
-        reason: "manual",
-        label: "Before the migration ran",
-        commit: "a".repeat(40),
-      },
       {
         id: "thread:ckpt-0000",
         sourceId: "ckpt-0000",
@@ -39,7 +30,31 @@ function page(): SessionHistoryPage {
         label: "Worktree created off main at 8f3c1de",
         commit: "b".repeat(40),
       },
+      {
+        id: "thread:ckpt-7f24",
+        sourceId: "ckpt-7f24",
+        sessionId: "session-billing",
+        createdAt: "2026-09-08T14:06:00.000Z",
+        category: "checkpoints",
+        reason: "manual",
+        label: "Before the migration ran",
+        commit: "a".repeat(40),
+      },
     ],
+    ...overrides,
+  }
+}
+
+function recovery(): SessionHistoryPage["items"][number] {
+  return {
+    id: "thread:ckpt-9c01",
+    sourceId: "ckpt-9c01",
+    sessionId: "session-billing",
+    createdAt: "2026-09-08T14:09:00.000Z",
+    category: "checkpoints",
+    reason: "before-restore",
+    label: "Before restore",
+    commit: "c".repeat(40),
   }
 }
 
@@ -109,4 +124,61 @@ it("holds Revert and Fork shut while a restore is blocked", async () => {
   const [latest] = screen.getAllByTestId("checkpoint-row")
   expect((within(latest!).getByRole("button", { name: "Revert" }) as HTMLButtonElement).disabled).toBe(true)
   expect((within(latest!).getByRole("button", { name: "Fork" }) as HTMLButtonElement).disabled).toBe(true)
+})
+
+it("loads older checkpoints below the page and keeps the session start reachable", async () => {
+  const older = page({ hasMore: false })
+  const latest = page({
+    hasMore: true,
+    nextCursor: "thread:ckpt-7f24",
+    items: [page().items[1]!, recovery()],
+  })
+  const onLoad = vi.fn(async (_sessionId: string, options?: { before?: string }) => options?.before ? older : latest)
+  render(panel(onLoad as unknown as Load))
+  await settle()
+  expect(screen.getAllByTestId("checkpoint-row").map((row) => within(row).getByTestId("checkpoint-meta").textContent))
+    .toEqual(["14:09 · before a restore", "14:06 · manual"])
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Load older" }))
+  await settle()
+  expect(onLoad).toHaveBeenLastCalledWith(
+    "session-billing",
+    expect.objectContaining({ categories: ["checkpoints"], before: "thread:ckpt-7f24" }),
+    expect.anything(),
+  )
+  const rows = screen.getAllByTestId("checkpoint-row")
+  expect(rows.map((row) => within(row).getByTestId("checkpoint-meta").textContent))
+    .toEqual(["14:09 · before a restore", "14:06 · manual", "14:02 · session start"])
+  expect(within(rows[2]!).getByRole("button", { name: "Reset" })).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Load older" })).toBeNull()
+})
+
+it("reloads when the session records a new checkpoint while the tab is open", async () => {
+  let items = page().items
+  const onLoad = vi.fn(async () => page({ items }))
+  const view = render(panel(onLoad, { revision: "thread:ckpt-7f24" }))
+  await settle()
+  expect(screen.getAllByTestId("checkpoint-row")).toHaveLength(2)
+
+  items = [...items, recovery()]
+  view.rerender(panel(onLoad, { revision: "thread:ckpt-9c01" }))
+  await settle()
+  expect(onLoad).toHaveBeenCalledTimes(2)
+  const rows = screen.getAllByTestId("checkpoint-row")
+  expect(rows).toHaveLength(3)
+  expect(within(rows[0]!).getByText("ckpt-9c01")).toBeTruthy()
+})
+
+it("names the newest checkpoint item the snapshot holds for the session", async () => {
+  const { latestCheckpointRevision } = await import("./checkpoints-panel")
+  const snapshot = {
+    thread: [
+      { id: "thread-1", sessionId: "session-billing", kind: "checkpoint" },
+      { id: "thread-2", sessionId: "session-other", kind: "checkpoint" },
+      { id: "thread-3", sessionId: "session-billing", kind: "user" },
+    ],
+  } as unknown as Parameters<typeof latestCheckpointRevision>[0]
+  expect(latestCheckpointRevision(snapshot, "session-billing")).toBe("thread-1")
+  expect(latestCheckpointRevision(snapshot, "session-none")).toBeUndefined()
+  expect(latestCheckpointRevision(snapshot, null)).toBeUndefined()
 })

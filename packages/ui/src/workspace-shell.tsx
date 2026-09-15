@@ -197,7 +197,7 @@ import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
 import { withAuto, withPermissionMode } from "./permission-mode"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
-import { CheckpointsPanel } from "./checkpoints-panel.js"
+import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import { deliveryLabel, failedAttempt, heldAfter, holdAllAfterStop, provesNothingRan, releasableQueues, setQueue, submitFromComposer, type FailedAttempt, type QueuedMessage, type SessionQueues } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
@@ -3213,6 +3213,7 @@ export function ArtifactDock({
           <CheckpointsPanel
             sessionId={snapshot.activeSessionId}
             connected={connected}
+            revision={latestCheckpointRevision(snapshot, snapshot.activeSessionId)}
             onLoad={onLoadSessionHistory}
             onRestoreCheckpoint={onRestoreCheckpoint}
             onForkCheckpoint={onForkCheckpoint}
