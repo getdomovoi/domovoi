@@ -18,6 +18,16 @@ export class CredentialStoreError extends Error {
   }
 }
 
+// The keychain exists but did not answer: locked, denied, or a backend
+// fault. Not the same answer as "no credential": absent means pair this
+// machine, unavailable means unlock the store and the pairing is unchanged.
+export class CredentialStoreUnavailableError extends CredentialStoreError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "CredentialStoreUnavailableError"
+  }
+}
+
 type FileOptions = { maximumBytes?: number; checkOnly?: boolean }
 const symlinkError = (path: string) => new CredentialStoreError(`${path} is a symlink. A credential file must be a regular file you own.`)
 const sizeError = (path: string, maximum: number) => new CredentialStoreError(`${path} exceeds the credential file limit of ${maximum} bytes.`)
@@ -151,11 +161,12 @@ export async function openCredentialBackend(options: {
   throw new CredentialStoreError(options.unavailable(options.keyring.cause?.()))
 }
 
-type NativeModule = { Entry: new(service: string, account: string) => {
+type NativeEntry = {
   getPassword(): string | null
   setPassword(secret: string): void
   deletePassword(): unknown
-} }
+}
+type NativeModule = { Entry: new(service: string, account: string) => NativeEntry }
 
 export function nativeKeyring(options: { service: string; probeAccount: string; load?: () => Promise<NativeModule> }): Keyring {
   let loading: Promise<NativeModule> | undefined
@@ -163,6 +174,19 @@ export function nativeKeyring(options: { service: string; probeAccount: string; 
   const entry = async (account: string) => {
     const module = await (loading ??= (options.load ?? (() => import("@napi-rs/keyring")))())
     return new module.Entry(options.service, account)
+  }
+  // A null from the binding is the only "no credential". Anything the binding
+  // throws is the store refusing to answer, and is reported as that, with the
+  // binding's own error kept as the cause. A binding that fails to load is
+  // not wrapped: that is no backend at all, which openCredentialBackend names.
+  const answering = async <T>(account: string, operation: (item: NativeEntry) => T): Promise<T> => {
+    const item = await entry(account)
+    try {
+      return operation(item)
+    } catch (error) {
+      const cause = error instanceof Error ? error : new Error(String(error))
+      throw new CredentialStoreUnavailableError(`The OS keychain could not be read (${cause.message}). Unlock it and run this again; nothing about this machine's pairing has changed.`, { cause })
+    }
   }
   return {
     async available() {
@@ -172,8 +196,8 @@ export function nativeKeyring(options: { service: string; probeAccount: string; 
       }
     },
     cause: () => failure,
-    async get(account) { return (await entry(account)).getPassword() ?? undefined },
-    async set(account, secret) { (await entry(account)).setPassword(secret) },
-    async delete(account) { (await entry(account)).deletePassword() },
+    get: (account) => answering(account, (item) => item.getPassword() ?? undefined),
+    set: (account, secret) => answering(account, (item) => { item.setPassword(secret) }),
+    delete: (account) => answering(account, (item) => { item.deletePassword() }),
   }
 }

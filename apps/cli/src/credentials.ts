@@ -8,7 +8,7 @@ import {
 import { relayClientPinSchema } from "@getdomovoi/protocol"
 import { z } from "zod"
 
-export { CredentialStoreError, type Keyring } from "@getdomovoi/credential-store"
+export { CredentialStoreError, CredentialStoreUnavailableError, type Keyring } from "@getdomovoi/credential-store"
 
 // One record per paired daemon. The endpoint is the key: a CLI on one machine
 // may be paired with several daemons, and each pairing is its own device.
