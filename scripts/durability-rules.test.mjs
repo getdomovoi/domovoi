@@ -5,9 +5,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
+import { fileURLToPath } from "node:url"
+
 import { ESLint } from "eslint"
 
-const eslint = new ESLint({ cwd: new URL("..", import.meta.url).pathname })
+// fileURLToPath, not .pathname: on Windows the pathname is /D:/a/... and
+// ESLint resolves no config from it, which is how this test went red there.
+const eslint = new ESLint({ cwd: fileURLToPath(new URL("..", import.meta.url)) })
 const messages = async (code, filePath) => {
   const [result] = await eslint.lintText(code, { filePath })
   return result.messages.map((message) => message.ruleId + ": " + message.message)
