@@ -9,6 +9,10 @@ export type GroupedSession = {
   title: string
   meaning: StatusMeaning
   note: string
+  // What the row's menu may offer: Stop only while a turn runs, and nothing
+  // that changes a session already on its way out.
+  running: boolean
+  archiving: boolean
 }
 
 export type SessionGroup = {
@@ -30,25 +34,27 @@ export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
   for (const session of snapshot.sessions) {
     if (session.state === "archived") continue
     const waiting = gated.has(session.id)
+    const flags = { running: Boolean(session.activeTurnId), archiving: session.state === "archiving" }
     if (session.activeTurnId) {
       running.push({
         id: session.id,
         title: session.title,
         meaning: waiting ? "waiting" : "online",
         note: waiting ? "waiting on you" : "running",
+        ...flags,
       })
       continue
     }
     if (waiting) {
-      needsYou.push({ id: session.id, title: session.title, meaning: "waiting", note: "waiting on you" })
+      needsYou.push({ id: session.id, title: session.title, meaning: "waiting", note: "waiting on you", ...flags })
       continue
     }
     if (session.state === "failed") {
-      needsYou.push({ id: session.id, title: session.title, meaning: "offline", note: "failed" })
+      needsYou.push({ id: session.id, title: session.title, meaning: "offline", note: "failed", ...flags })
       continue
     }
     if (session.state === "ownership-conflict") {
-      needsYou.push({ id: session.id, title: session.title, meaning: "offline", note: "ownership conflict" })
+      needsYou.push({ id: session.id, title: session.title, meaning: "offline", note: "ownership conflict", ...flags })
       continue
     }
     quiet.push({
@@ -58,7 +64,8 @@ export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
       // quiet here; where the work went is what the note is for, and colour is
       // not asked to carry a thing that happened.
       meaning: "idle",
-      note: session.state === "transferred" ? "moved to another machine" : "idle",
+      note: session.state === "transferred" ? "moved to another machine" : session.state === "archiving" ? "archiving" : "idle",
+      ...flags,
     })
   }
 

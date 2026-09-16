@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import type { FleetEntry, FleetHealth, FleetMachine } from "@getdomovoi/protocol"
 
 import {
@@ -104,6 +104,7 @@ export function MachineSwitcher({
   onTransferSession,
   admittedMachines = new Set<string>(),
   transferEntries,
+  openRequest,
 }: {
   entries: FleetEntry[]
   currentMachineId: string
@@ -113,14 +114,24 @@ export function MachineSwitcher({
   onTransferSession?: ((machineId: string) => void) | undefined
   admittedMachines?: ReadonlySet<string> | undefined
   transferEntries?: FleetEntry[] | undefined
+  // A counter another surface bumps to open this menu, the way the sessions
+  // drawer's "Move to another machine" lands the person on the target list.
+  openRequest?: number | undefined
 }) {
+  const [open, setOpen] = useState(false)
+  const seenRequest = useRef(openRequest)
+  useEffect(() => {
+    if (openRequest === undefined || openRequest === seenRequest.current) return
+    seenRequest.current = openRequest
+    setOpen(true)
+  }, [openRequest])
   const machines = fleetMachines(entries)
   const current = machines.find((machine) => machine.id === currentMachineId)
   const others = entries.filter((entry) => entry.kind !== "machine" || entry.machine.id !== currentMachineId)
   const targets = transferTargets({ entries, transferEntries, currentMachineId })
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
