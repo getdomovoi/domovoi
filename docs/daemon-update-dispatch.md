@@ -21,12 +21,13 @@ must supply these fields, using `storedUpdatePolicySchema`:
 - `metadataBaseUrl`: HTTPS directory containing the four signed metadata files.
 - `artifactBaseUrl`: HTTPS release base consumed by the existing bootstrap installer.
 - `trustedRoot`: the independently provisioned root metadata envelope.
-- `automaticChecks`: whether stored installer policy authorizes background checks.
+- `automaticChecks`: reserved installer authorization for a future scheduler.
 
 URLs cannot contain credentials, query strings or fragments. RPC parameters cannot
-set these URLs, replace the trusted root or enable automatic checks. The internal
-`checkFromStoredPolicy` entry uses the same check operation and re-reads that policy.
-This slice adds neither an installer policy writer nor a periodic scheduler.
+set these URLs, replace the trusted root or enable automatic checks. This slice
+adds neither an installer policy writer nor a periodic scheduler. The unused
+background-check entry was removed; stored authorization has no caller until
+the scheduler slice implements and tests that boundary.
 
 ## State and persistence
 
@@ -35,7 +36,13 @@ runs `verifyUpdateChain`, refuses replay or same-version changed bytes, selects 
 channel target, and stages it through `stageVerifiedUpdate`. Metadata persistence
 runs only after successful staging, or after a verified no-update result. Pending
 state is published only after that persistence succeeds. Neither failed staging
-nor failed persistence authorizes activation.
+nor failed persistence authorizes activation of the checked target. A failed
+refresh retains the previous verified pending target and reports its version
+alongside the failure in `deferred` state. While checking, the schema omits pending
+fields but the previous verified target remains held internally. Re-staging that
+same runtime clears its pending authority
+before touching its bytes; it must succeed and persist again to become pending.
+A successful check replaces pending state, including clearing it on no update.
 
 Concurrent checks for the same channel share one operation. A competing channel
 receives `busy`. Status remains readable during a check. Shutdown waits for the

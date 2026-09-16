@@ -10,6 +10,7 @@ import { WebSocket } from "ws"
 import { DaemonUpdates, storedUpdatePolicySchema } from "./update-dispatch.js"
 import { claimProfile, type ProfileLease } from "./profile-lease.js"
 import { canonicalUpdateJson } from "./update-verification.js"
+import * as verification from "./update-verification.js"
 import { persistTrustedUpdateMetadata, readTrustedUpdateMetadata } from "./update-state.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { DomovoiDaemon } from "./server.js"
@@ -67,6 +68,24 @@ async function setup(repository = signedRepository(), automaticChecks = false) {
 }
 
 describe("daemon update operation", () => {
+  it.each(["expired", "signature", "replay", "target-mismatch"] as const)("uses typed %s independent of verifier wording", async (reason) => {
+    const { updates } = await setup()
+    vi.spyOn(verification, "verifyUpdateChain").mockImplementationOnce(() => {
+      throw new verification.UpdateVerificationError(reason, "changed human wording")
+    })
+    expect(await updates.check()).toMatchObject({ state: "failed", refusal: { reason } })
+  })
+
+  it("keeps the verified pending target through a failed refresh", async () => {
+    const { updates, repository } = await setup()
+    await updates.check()
+    repository.fetcher.mockRejectedValueOnce(new Error("offline"))
+    const checking = updates.check({ channel: "beta" })
+    expect(updates.status()).toMatchObject({ state: "checking" })
+    expect(await checking).toMatchObject({ state: "deferred", channel: "stable", pendingVersion: "1.2.3", refusal: { reason: "network" } })
+    expect(updates.activate({ version: "1.2.3" })).toMatchObject({ state: "deferred", pendingVersion: "1.2.3", refusal: { reason: "policy" } })
+  })
+
   it("dispatches signed staging and activation refusals over an authenticated socket", async () => {
     const { options, homeDirectory } = await setup()
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", updates: options })
@@ -204,6 +223,15 @@ describe("daemon update operation", () => {
     expect(updates.activate()).toMatchObject({ refusal: { reason: "policy" } })
   })
 
+  it("revokes pending authority when re-staging that same runtime fails", async () => {
+    const { updates, install } = await setup()
+    await updates.check()
+    install.mockRejectedValueOnce(new Error("staging failed"))
+    expect(await updates.check()).toMatchObject({ state: "failed", refusal: { reason: "target-mismatch" } })
+    expect(updates.status().pendingVersion).toBeUndefined()
+    expect(updates.activate()).toMatchObject({ state: "failed", refusal: { reason: "policy" } })
+  })
+
   it("does not publish pending if metadata persistence fails after staging", async () => {
     const { updates, install, homeDirectory, lease } = await setup()
     install.mockImplementationOnce(async (options) => {
@@ -215,14 +243,6 @@ describe("daemon update operation", () => {
     expect(updates.activate()).toMatchObject({ refusal: { reason: "policy" } })
   })
 
-  it("requires stored installer authorization for background checks", async () => {
-    const { updates, repository, policy, policyPath } = await setup()
-    expect(await updates.checkFromStoredPolicy()).toMatchObject({ refusal: { reason: "policy" } })
-    expect(repository.fetcher).not.toHaveBeenCalled()
-    await writeFile(policyPath, JSON.stringify({ ...policy, automaticChecks: true }))
-    expect(await updates.checkFromStoredPolicy()).toMatchObject({ state: "pending" })
-  })
-
   it("refuses unavailable network, malformed policy and corrupt trusted state", async () => {
     const { updates, options, repository, policy, policyPath, homeDirectory, install } = await setup()
     repository.fetcher.mockRejectedValueOnce(new Error("secret URL"))
@@ -230,7 +250,6 @@ describe("daemon update operation", () => {
     await writeFile(policyPath, "{}")
     expect(new DaemonUpdates(options).status()).toMatchObject({ refusal: { reason: "policy" } })
     expect(await updates.check()).toMatchObject({ refusal: { reason: "policy" } })
-    expect(await updates.checkFromStoredPolicy()).toMatchObject({ refusal: { reason: "policy" } })
     await writeFile(policyPath, JSON.stringify(policy))
     await writeFile(join(homeDirectory, ".domovoi", "update-metadata.json"), "{}")
     expect(await updates.check()).toMatchObject({ refusal: { reason: "policy" } })

@@ -64,10 +64,15 @@ function readPolicy(homeDirectory: string) {
 function verificationRefusal(error: unknown): Refusal {
   if (error instanceof UpdateRefusal) return error.refusal
   if (error instanceof UpdateVerificationError) {
-    if (/expired/.test(error.message)) return { reason: "expired", message: "Signed update metadata has expired." }
-    if (/threshold|signing key/.test(error.message)) return { reason: "signature", message: "Update metadata signature verification failed." }
-    if (/rolls back|existing version/.test(error.message)) return { reason: "replay", message: "Update metadata conflicts with previously trusted metadata." }
-    if (/does not bind|missing served bytes/.test(error.message)) return { reason: "target-mismatch", message: "Signed metadata does not bind the served update metadata." }
+    const messages = {
+      expired: "Signed update metadata has expired.",
+      signature: "Update metadata signature verification failed.",
+      replay: "Update metadata conflicts with previously trusted metadata.",
+      "target-mismatch": "Signed metadata does not bind the served update metadata.",
+      "malformed-metadata": "Update metadata could not be verified.",
+      network: "Update metadata could not be fetched within its limits.",
+    } satisfies Record<UpdateVerificationError["reason"], string>
+    return { reason: error.reason, message: messages[error.reason] }
   }
   return { reason: "malformed-metadata", message: "Update metadata could not be verified." }
 }
@@ -101,23 +106,12 @@ export class DaemonUpdates {
       }
       return this.#checking
     }
-    this.#pending = undefined
     this.#status = {
       channel: params.channel ?? this.#status.channel, currentVersion: buildVersion,
       state: "checking", lastCheckAt: new Date().toISOString(),
     }
     this.#checking = this.#check().finally(() => { this.#checking = undefined })
     return this.#checking
-  }
-
-  checkFromStoredPolicy(): Promise<UpdateStatus> {
-    try {
-      const policy = this.#options && readPolicy(this.#options.homeDirectory)
-      if (!policy?.automaticChecks) return Promise.resolve(this.#refused({ reason: "policy", message: "Stored installer policy does not authorize automatic checks." }))
-      return this.check({ channel: policy.channel })
-    } catch {
-      return Promise.resolve(this.#refused({ reason: "policy", message: "Stored update policy is invalid or inaccessible." }))
-    }
   }
 
   activate(params: UpdateActivateParams = {}): UpdateStatus {
@@ -145,8 +139,10 @@ export class DaemonUpdates {
   }
 
   #fail(refusal: Refusal): UpdateStatus {
-    this.#pending = undefined
-    this.#status = this.#refused(refusal)
+    this.#status = {
+      ...this.#refused(refusal),
+      ...(this.#pending ? { state: "deferred", channel: this.#pending.channel, pendingVersion: this.#pending.version, pendingSourceCommit: this.#pending.sourceCommit } : {}),
+    }
     return this.status()
   }
 
@@ -197,13 +193,18 @@ export class DaemonUpdates {
         }
       } catch (error) { return this.#fail(verificationRefusal(error)) }
       failure = { reason: "target-mismatch", message: "The verified update could not be staged successfully." }
-      if (target) await stageVerifiedUpdate({ ...options, target, baseUrl: policy.artifactBaseUrl })
-      failure = { reason: "policy", message: "Verified update metadata could not be persisted; no update is pending." }
+      if (target) {
+        // Re-staging the same runtime can affect its bytes, so its previous
+        // pending authority must be re-earned by staging and persistence.
+        if (target.version === this.#pending?.version) this.#pending = undefined
+        await stageVerifiedUpdate({ ...options, target, baseUrl: policy.artifactBaseUrl })
+      }
+      failure = { reason: "policy", message: "Verified update metadata could not be persisted; the checked target is not pending." }
       await persistTrustedUpdateMetadata(options.homeDirectory, options.lease, next)
       this.#pending = target
       this.#status = target
         ? { ...this.#status, state: "pending", pendingVersion: target.version, pendingSourceCommit: target.sourceCommit }
-        : { ...this.#status, state: "idle" }
+        : { channel: this.#status.channel, currentVersion: buildVersion, state: "idle", lastCheckAt: this.#status.lastCheckAt }
       return this.status()
     } catch (error) {
       return this.#fail(error instanceof UpdateRefusal ? error.refusal : failure)
