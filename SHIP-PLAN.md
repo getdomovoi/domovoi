@@ -132,16 +132,22 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
       what each implies for device loss.*
       **Design ruled 2026-09-12: suite A, `Noise_IK_25519_ChaChaPoly_SHA256`, our own
       composition reviewed (R-A); `S0.2-RELAY-CRYPTO.md` §9, final.** Stays open until the review lands: budget line $25k to $50k
-      estimated (§7a), quote pending the `S0.7` firm conversation.
+      estimated (§7a), quote pending the `S0.7` firm conversation. The review is external
+      work: its record is a dated engagement letter and a dated report, named here when they
+      exist; until then the state is not started, not an unticked box.
 - [ ] **S0.3 [H] What the relay retains.** Billing by machine requires knowing which
       machines were active and for how long. "Payloads unreadable" and "nothing recorded"
       are different claims. State both halves publicly.
 - [ ] **S0.4 [H] How tier enforcement is trusted.** Free is JSON-RPC only and the *daemon*
       refuses the terminal, so the daemon must learn its tier and verify it. Signed tier
       claims the daemon checks, or the refusal is advisory and the paywall is decorative.
-- [ ] **S0.5 [H] The four open product decisions** in `HANDOFF-NOTES.md`: transfer to an
-      offline target, what the handoff UI may promise, skill install trust, guest browser
-      session scope.
+- [ ] **S0.5 [H] The four open product decisions.** External work: the record is a date and
+      an artefact, not a box. `HANDOFF-NOTES.md` is a file in the Claude Design project, not in
+      this repository, so the four are restated here. 1. Transfer to an offline target:
+      not started, no artefact. 2. What the handoff UI may promise: not started, no artefact.
+      3. Skill install trust: ruled 2026-09-10 by the maintainer, "a changed skill drops to
+      untrusted", recorded under "From the work split: client items" below. 4. Guest browser
+      session scope: not started, no artefact.
 - [x] **S0.6 [H] Where the relay lives.** Follows S0.1. Until it is answered, the relay has
       no directory and Phase 2 cannot be scaffolded — `apps/relay` in this monorepo and a
       separate private repo are different answers about what ships open. **Resolved
@@ -154,7 +160,11 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
       paid licence of the same code with the meter intact, never a source release.
 - [ ] **S0.7 [H] Start the long-lead clock.** Apple Developer enrolment, Windows
       code-signing certificate, and a first conversation with an audit firm. Weeks of
-      calendar, zero engineering.
+      calendar, zero engineering. External work, recorded by date and artefact: Apple
+      enrolment, not started, no artefact in the repository; Windows certificate, not started,
+      no artefact; audit firm conversation, the maintainer reported it as sent to firms on
+      2026-09-14 in the design project's `github.md`, no artefact in this repository. When one
+      exists, name it here (an enrolment id, an order reference, a dated quote).
 
 ## Phase 1 — the daemon becomes an installed service — M1
 
@@ -181,7 +191,18 @@ Parallel with Phase 0. Touches nothing the gates decide.
       uncommitted work is discarded.
 - [ ] **S1.4 [CX]** Auto-update, signed and verified. A self-updating daemon holding your
       credentials is a supply-chain target, so signature verification and reproducible
-      builds ship *with* it, not after. Nothing on `main` as of 2026-09-14.
+      builds ship *with* it, not after. On `main` as of 2026-09-15: the design with the
+      maintainer's four decisions (#411, 9539ba01), the protocol contract (#421, 2b21f855),
+      discovery and verification (#422, 800de19e), staging and the bundled installer (#425,
+      ef914793). All three code slices had zero callers when they merged: no `update.*`
+      handler dispatches them and no scheduler runs them, so as of this line the feature is
+      built and unreachable. The handlers are the next slice.
+      Two records so they are not rediscovered. Deviation: the verifier in
+      `apps/daemon/src/update-verification.ts` is a hand-rolled TUF client where the design
+      requires a conforming library; recorded in `docs/daemon-auto-update-design.md`, to be
+      removed or explicitly accepted before activation ships. Ownership: reproducible builds
+      are named here and in `S4.6`; `S4.6` owns the two-clean-build comparison and its release
+      record, and this item consumes it as an activation precondition. Not fixed here.
 - [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart. Landed as #374 (c8eb1a93).
 - [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
@@ -1145,9 +1166,21 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       daemon, attach to a session, answer a gate, and report a yes or a defect list. This
       path is designed and drawn and has never been run; its answer decides how much of the
       remaining mobile work matters. No feature code for the phone before this reports.
-- [ ] **S3.1 [CC]** Desktop: the remaining surfaces. The work-split items under
-      "From the work split: client items" below are its detail; the history row, StatusDot
-      rule, empty states, skeletons and launcher landed as #386 to #401 (41e675ab).
+- [ ] **S3.1 [CC]** Desktop: the remaining surfaces. What is on `main` is the v1 layout with
+      v2's corrections: the fourteen slices #386 to #401 (41e675ab) landed the history row and
+      turn meta, StatusDot label, empty states, skeletons, terminal primary action and launcher
+      entity rows. The v2 layout itself is not on `main`. Measured 2026-09-15 against
+      `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2`: the dock has seven tabs
+      (`session`, `plan`, `changes`, `preview`, `terminal`, `history`, `comments`) against v2's
+      seven (Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules; `sheetTabList`
+      in part2-logic), so no Checkpoints tab, no Rules tab, a v1 Session tab still present, and
+      Comments as a tab where v2 reaches comments from inside Preview (`goComments`); no usage
+      chip; no plan
+      edit strip with the queued-edit notice; no model popover with discovery and rediscover;
+      no sidebar reorganisation of the session controls. Present: the queued composer, the
+      titlebar stop control, fork from a history row. The work-split items under "From the work
+      split: client items" below are the rest of the detail. The v2 layout is its own body of
+      work and is scoped after the maintainer has used v1.
 - [ ] **S3.2 [CC]** Web: the six-step flow over loopback and the tailnet, with
       capability-refused real rather than drawn. Over the relay once Phase 2 lands.
 - [ ] **S3.3 [CC]** Mobile: 19 designed frames against nine existing screens. In order:
@@ -1433,7 +1466,12 @@ floor is **higher** than the desktop's rather than lower.
 - [ ] **S4.4 [H]** App Store and Play Store listings, review, and privacy disclosures that
       match the architecture exactly rather than approximately.
 - [ ] **S4.5 [CC]** TestFlight, and an internal desktop update channel.
-- [ ] **S4.6 [CX]** Release provenance: SBOM, reproducible builds, published digests.
+- [ ] **S4.6 [CX]** Release provenance: SBOM, reproducible builds, published digests. Owns
+      the reproducible build: two clean builds from one commit, byte-compared before
+      publication, with the comparison in the release record (`S1.4`'s design names the
+      shape). `S1.4` consumes it. SBOM and `SHA256SUMS` exist in `scripts/release-artifacts.mjs`
+      (b2e58881); the comparison does not, and no artefact has been published to attach any of
+      it to.
 
 ### From the roadmap: package and release the open core (Goal 4)
 
@@ -1570,7 +1608,8 @@ before any public package or application publish.
 The product's argument is trustworthiness. Asserting it is not shipping it.
 
 - [ ] **S6.1 [H]** Third-party audit of the relay and the crypto design. Publish the result.
-      Book in Phase 0.
+      Book in Phase 0. External work, recorded by date and artefact: see `S0.2`; not started
+      as of 2026-09-15, no engagement letter in the repository.
 - [ ] **S6.2 [H]** Threat model and a vulnerability disclosure policy.
 - [ ] **S6.3 [CX]** Observability that cannot leak session content: an error taxonomy
       carrying codes, routes and timings, never payloads. The tension is real — you cannot

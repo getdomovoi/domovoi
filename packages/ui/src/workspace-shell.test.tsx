@@ -189,14 +189,14 @@ describe("RuntimeControls", () => {
         runtime={runtime}
         providers={providers}
         pending
-        forkCheckpointId="thread-checkpoint"
         onChange={vi.fn()}
-        onFork={vi.fn()}
         onListModels={vi.fn(async () => [])}
       />,
     )
 
-    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(6)
+    // Think, the three mode toggles and Auto. The model chip locks itself in
+    // the composer now; model-popover.dom.test.tsx covers it.
+    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(5)
   })
 
   it("keeps switch-here distinct from a durable checkpoint fork", () => {
