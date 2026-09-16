@@ -14,6 +14,8 @@ import {
   isRefusedWithoutPersistence,
   maximumJsonValueDepth,
   persistenceRecoveryRpcMethods,
+  phoneAndTabletPromise,
+  phoneAndTabletRpcMethods,
   projectSwitchConfirmationErrorCode,
   projectSwitchConfirmationSchema,
   rpcMethodMutations,
@@ -1226,5 +1228,22 @@ describe("hello version compatibility", () => {
       authToken: "n".repeat(43),
     }
     expect(helloParamsSchema.safeParse(bad).success).toBe(false)
+  })
+})
+
+describe("phone and tablet credential scope", () => {
+  it("names only registered methods and keeps file and machine reach out", () => {
+    for (const method of phoneAndTabletRpcMethods) expect(Object.hasOwn(rpcMethods, method), method).toBe(true)
+    for (const method of [
+      "terminal.create", "terminal.input", "terminal.claim", "session.revertFile", "checkpoint.restore",
+      "skill.read", "skill.install", "audit.export", "device.pair", "device.revoke",
+      "device.rotate", "device.rename", "device.issueCode", "device.list", "fleet.enroll", "fleet.forget",
+      "session.transfer", "provider.secret.list",
+    ] as const) expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
+  })
+
+  it("carries the four lines of the pairing card", () => {
+    expect(phoneAndTabletPromise).toHaveLength(4)
+    expect(phoneAndTabletPromise[3]).toBe("It cannot pull the repository down. Files stay here.")
   })
 })

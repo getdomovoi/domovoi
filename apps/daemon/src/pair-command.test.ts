@@ -1,3 +1,4 @@
+import { phoneAndTabletPromise } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
 import { CliDeadlineError } from "./cli-rpc.js"
@@ -31,6 +32,19 @@ describe("runPairCommand", () => {
     expect(io.out.join("")).toContain("n".repeat(43))
     expect(io.out.join("")).toContain("session sends, approvals and terminals")
     expect(io.out.join("")).toContain("Revoke")
+  })
+
+  it("prints the pairing card's promise for a phone, not the desktop grant", async () => {
+    const io = recorder()
+    const grantClient = vi.fn(async () => ({ token: "p".repeat(43), device: {
+      id: `device-${"b".repeat(32)}`, label: "iPhone", pairedAt: "2026-09-06T12:00:00Z",
+      binding: { kind: "client" as const, client: "phone" as const },
+    } }))
+    expect(await runPairCommand(["pair", "--client", "phone", "--label", "iPhone"], { ...io, issue: vi.fn(async () => issued), grantClient })).toBe(0)
+    const out = io.out.join("")
+    expect(out).toContain("A paired phone can:")
+    for (const line of phoneAndTabletPromise) expect(out).toContain(line)
+    expect(out).not.toContain("terminals.")
   })
 
   it("rejects invalid client grants before contacting the daemon", async () => {

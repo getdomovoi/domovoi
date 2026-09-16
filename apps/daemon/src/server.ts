@@ -28,6 +28,7 @@ import {
   type TransferReceipt,
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
+  phoneAndTabletRpcMethods,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
   terminalOutputBatchDelayMilliseconds,
@@ -3561,6 +3562,19 @@ export class DomovoiDaemon {
       this.#authenticatedClients.delete(socket)
       this.#appendPreAuthAudit("authentication")
       this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
+      return
+    }
+    // A phone or tablet credential is the promise on the pairing card and
+    // nothing more. The refusal comes before parameter parsing so that no
+    // shape of request reaches a handler the card did not name.
+    const handheld = this.#deviceCredentials.get(socket)?.verified
+    if (handheld?.binding.kind === "client" && (handheld.binding.client === "phone" || handheld.binding.client === "tablet") && !phoneAndTabletRpcMethods.has(method)) {
+      this.#error(
+        socket,
+        request.id,
+        daemonAuthenticationErrorCode,
+        "A phone or tablet credential may only watch sessions, answer gates, and start, stop or steer sessions",
+      )
       return
     }
     const paramsResult = rpcMethods[method].params.safeParse(request.params ?? {})

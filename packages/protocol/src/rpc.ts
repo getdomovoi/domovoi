@@ -1588,6 +1588,59 @@ export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
   return !(persistenceRecoveryRpcMethods as readonly RpcMethod[]).includes(method)
 }
 
+// What a phone or tablet credential may do, read against the promise on the
+// pairing card, "Phone and tablet": "Watch every session, including terminal output and diffs", "Answer
+// gates, with the same three decisions", "Start and stop sessions, and steer
+// one mid-run", "It cannot pull the repository down. Files stay here." Every
+// method outside this set is refused to those credentials. Terminal output
+// is broadcast to every client, so watching a terminal needs no method here;
+// terminal.input would be a shell on the machine and stays out.
+export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
+  // Watch.
+  "system.hello",
+  "device.current",
+  "workspace.get",
+  "session.history",
+  "session.evidence",
+  "session.usage",
+  "usage.window",
+  "audit.query",
+  "artifact.authorize",
+  "runtime.models",
+  "runtime.discover",
+  "permission.hardGates",
+  // Sessions live on machines, so watching them means seeing the fleet.
+  "fleet.list",
+  // Answer gates.
+  "approval.resolve",
+  // Start, stop and steer. project.open names a directory already on the
+  // machine so a session can be created there; it moves no files to the phone.
+  "project.open",
+  "session.create",
+  "session.fork",
+  "session.activate",
+  "session.pause",
+  "session.send",
+  "session.setRuntime",
+  "system.pauseAll",
+  "system.emergencyStop",
+  "plan.edit",
+  "plan.discardEdit",
+  "annotation.create",
+  "annotation.reply",
+  "annotation.setStatus",
+  // The composer offers skills by name; their files stay on the machine
+  // (skill.read is not here).
+  "skill.list",
+])
+
+export const phoneAndTabletPromise = [
+  "Watch every session, including terminal output and diffs",
+  "Answer gates, with the same three decisions",
+  "Start and stop sessions, and steer one mid-run",
+  "It cannot pull the repository down. Files stay here.",
+] as const
+
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>
 export type RpcRequest = z.infer<typeof rpcRequestSchema>
