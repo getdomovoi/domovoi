@@ -1,47 +1,11 @@
-import { act, cleanup, render, renderHook, screen } from "@testing-library/react"
+import { act, cleanup, renderHook } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import type { SessionUsage, UsageWindow, UsageWindowParams } from "@getdomovoi/protocol"
+import type { UsageWindow, UsageWindowParams } from "@getdomovoi/protocol"
 
-import { SessionUsageFooter, useUsageToday } from "./workspace-shell.js"
+import { useUsageToday } from "./workspace-shell.js"
 
 afterEach(cleanup)
-
-function usage(overrides: Partial<SessionUsage> = {}): SessionUsage {
-  return {
-    sessionId: "session-1",
-    inputTokens: 900,
-    cachedInputTokens: 100,
-    outputTokens: 300,
-    reasoningTokens: 0,
-    totalTokens: 1200,
-    costMicros: 4500,
-    currency: "USD",
-    reportedCostTurns: 3,
-    unavailableCostTurns: 0,
-    byRuntime: [{
-      provider: "codex",
-      model: "gpt-5.6-sol",
-      inputTokens: 900,
-      cachedInputTokens: 100,
-      outputTokens: 300,
-      reasoningTokens: 0,
-      totalTokens: 1200,
-      costMicros: 4500,
-      currency: "USD",
-      turns: 3,
-    }],
-    ...overrides,
-  }
-}
-
-
-
-
-
-
-
-
 
 function usageToday(overrides: Partial<UsageWindow> = {}): UsageWindow {
   return {
@@ -93,26 +57,4 @@ it("refreshes the today readout at local midnight and stops on unmount", async (
   } finally {
     vi.useRealTimers()
   }
-})
-
-it("puts cost and context in the inspector footer", () => {
-  render(<SessionUsageFooter usage={usage({ contextTokens: 128_000, contextWindowTokens: 200_000 })} />)
-
-  const footer = screen.getByRole("status", { name: "Session cost and context" })
-  expect(footer.textContent).toContain("128k ctx")
-  expect(footer.textContent).toContain("$0.00")
-  expect(screen.getByTitle("128k of 200k context tokens")).toBeTruthy()
-})
-
-it("shows cost alone until a provider reports the context window", () => {
-  render(<SessionUsageFooter usage={usage()} />)
-
-  const footer = screen.getByRole("status", { name: "Session cost and context" })
-  expect(footer.textContent).not.toContain("ctx")
-})
-
-it("stays out of the footer entirely when no turn has been recorded", () => {
-  render(<SessionUsageFooter usage={null} />)
-
-  expect(screen.queryByRole("status", { name: "Session cost and context" })).toBeNull()
 })

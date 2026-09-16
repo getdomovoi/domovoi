@@ -168,10 +168,7 @@ import {
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import {
-  sessionContextReadout,
-  sessionContextShare,
   sessionUsageFetchKey,
-  sessionUsageReportedCost,
   usageTodayRefreshDelayMs,
   usageTodayWindow,
   usageWindowFetchKey,
@@ -619,25 +616,6 @@ export function useUsageToday(
   return usage
 }
 
-export function SessionUsageFooter({ usage }: { usage: SessionUsage | null }) {
-  if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
-  const cost = sessionUsageReportedCost(usage)
-  const context = sessionContextReadout(usage)
-  const share = sessionContextShare(usage)
-
-  return (
-    <div className="flex shrink-0 items-center gap-2 border-t px-3 py-2.5">
-      <span
-        role="status"
-        aria-label="Session cost and context"
-        className="flex-1 font-machine text-[10px] text-faint"
-      >
-        {cost ?? "cost unavailable"}
-        {context ? <> · <span {...(share ? { title: share } : {})}>{context}</span></> : null}
-      </span>
-    </div>
-  )
-}
 
 
 function outcomeCount(count: number, singular: string, plural: string): string {
@@ -2355,7 +2333,6 @@ export function ArtifactDock({
   onCollapse,
   collapseButtonRef,
   defaultTab,
-  usage,
   onEditPlan,
   onDiscardPlanEdit,
   tab,
@@ -2384,7 +2361,6 @@ export function ArtifactDock({
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
   previewRefusal?: string | undefined
-  usage?: SessionUsage | null | undefined
   onEditPlan?: ((edit: {
     basedOnStructureRevision: number
     baseSteps: { id: string, text: string }[]
@@ -3031,7 +3007,6 @@ export function ArtifactDock({
           ) : null}
         </TabsContent>
       </Tabs>
-      <SessionUsageFooter usage={usage ?? null} />
       <Dialog
         open={!archiveReadOnly && selection !== null}
         onOpenChange={(open) => {
@@ -3979,7 +3954,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
   const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 

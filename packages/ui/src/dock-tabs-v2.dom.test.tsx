@@ -125,4 +125,14 @@ it("keeps Revoke live in the Rules tab while an archived session is selected", a
   const rows = screen.getAllByTestId("rule-row")
   expect(rows.length).toBeGreaterThan(0)
   expect((within(rows[0]!).getByRole("button", { name: "Revoke" }) as HTMLButtonElement).disabled).toBe(false)
+
+})
+
+// v2 has one usage surface, the chip in the composer. The dock draws no
+// cost-and-context footer of its own.
+it("carries no usage footer", async () => {
+  render(<WorkspaceShell />)
+  await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+  await settle()
+  expect(screen.queryByRole("status", { name: "Session cost and context" })).toBeNull()
 })
