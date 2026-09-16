@@ -148,7 +148,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./comp
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { DaemonRpcError, ProjectSwitchConfirmationError } from "./client"
-import { SessionsDrawer } from "./sessions-drawer"
+import { SessionsDrawerColumn, SessionsDrawerTrigger, type SessionRowAction } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
 import { FleetAccessSession } from "./fleet-access-session"
@@ -1366,6 +1366,7 @@ export function Thread({
   onEditPlan,
   onDiscardPlanEdit,
   onOpenPlanPreview,
+  machineMenuRequest,
   onOpenSkills,
   skillNames,
   skillCatalog,
@@ -1436,6 +1437,9 @@ export function Thread({
   onEditPlan?: ((sessionId: string, edit: WorkingPlanEdit) => Promise<void>) | undefined
   onDiscardPlanEdit?: ((sessionId: string, editId: string) => Promise<void>) | undefined
   onOpenPlanPreview?: (() => void) | undefined
+  // Bumped by the sessions drawer's "Move to another machine" so the composer's
+  // machine menu opens on the session it just activated.
+  machineMenuRequest?: number | undefined
   onOpenSkills?: (() => void) | undefined
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
@@ -1944,6 +1948,7 @@ export function Thread({
               ) : null}
               <MachineSwitcher
                 entries={entries}
+                openRequest={machineMenuRequest}
                 transferEntries={transferFleet}
                 admittedMachines={admittedMachines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
@@ -3544,6 +3549,29 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   const shellRef = useRef<HTMLDivElement>(null)
   const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [machineMenuRequest, setMachineMenuRequest] = useState(0)
+  // The drawer's row menu acts on any session, not only the open one. Stop
+  // holds that session's queued message the way the composer's Stop does, so
+  // the queue does not leave at the boundary the stop itself created. Fork
+  // and Move need the person to choose a checkpoint or a machine, so they
+  // open that session and land on the list; Archive goes straight through.
+  const sessionRowAction = (action: SessionRowAction, sessionId: string) => {
+    if (action === "stop") {
+      setQueues((current) => {
+        const queued = current[sessionId]
+        return queued ? setQueue(current, sessionId, heldAfter(queued, "Held because this session was stopped. Send it when you want it to run.")) : current
+      })
+      void pauseSession(sessionId).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be stopped"))
+      return
+    }
+    if (action === "archive") {
+      void archiveSession(sessionId).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be archived"))
+      return
+    }
+    openSessionInWorkspace(sessionId)
+    if (action === "fork") openDockTab("checkpoints")
+    else setMachineMenuRequest((current) => current + 1)
+  }
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockExpandButtonRef = useRef<HTMLButtonElement>(null)
   const dockUnpinButtonRef = useRef<HTMLButtonElement>(null)
@@ -4315,7 +4343,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawer snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} onActivate={openSessionInWorkspace} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onOpenProviderSettings={() => setSurface("providers")} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
@@ -4332,6 +4360,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         </div> : null}
         {snapshot ? <div className="flex min-h-0 flex-1">
           <WorkspaceRail surface={surface} dockTab={dockTab} machineName={snapshot.machine.name} onSelectSurface={setSurface} onSelectDockTab={openDockTab} />
+          {/* v2's drawer is a column beside whatever surface is open, so a
+              session can be reached from Settings or the audit log too. */}
+          <SessionsDrawerColumn
+            snapshot={snapshot}
+            open={sessionsOpen}
+            onActivate={openSessionInWorkspace}
+            onAction={sessionRowAction}
+            onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()}
+            onOpenProviderSettings={() => setSurface("providers")}
+          />
           {surface === "providers" ? (
           <SettingsShell
             providers={snapshot.machine.providers}
@@ -4449,7 +4487,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (

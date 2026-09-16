@@ -53,7 +53,8 @@ it("opens the chosen session's thread, whichever surface the drawer was used fro
 
   await user.click(screen.getByRole("button", { name: /^Sessions \d/ }))
   const other = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId)!
-  await user.click(screen.getByRole("button", { name: new RegExp(other.title.slice(0, 24)) }))
+  // The row button is named by the title; the row's menu is "Actions for …".
+  await user.click(screen.getByRole("button", { name: new RegExp(`^${other.title.slice(0, 24)}`) }))
   await settle()
 
   // The surface switch alone is not the fix. Without the activation the daemon
@@ -76,4 +77,43 @@ it("opens the chosen session's thread, whichever surface the drawer was used fro
 
   expect(screen.getByPlaceholderText(composer)).toBeTruthy()
   expect(screen.getByText("The audit thread is open")).toBeTruthy()
+})
+
+// The drawer is a column beside the thread. Its row menu reaches the daemon
+// for the session the row names, not the one that happens to be open.
+it("stops and archives a session from its row, and forks by opening its checkpoints", async () => {
+  const user = userEvent.setup()
+  const base = workspaceSnapshot()
+  const snapshot = workspaceSnapshot({
+    sessions: base.sessions.map((session, index) => index === 0 ? { ...session, state: "active" as const, activeTurnId: "turn-1" } : session),
+  })
+  render(<WorkspaceShell />)
+  const socket = harness.socket(0)
+  await act(async () => { completeHandshake(socket, snapshot) })
+  await settle()
+
+  await user.click(screen.getByRole("button", { name: /^Sessions \d/ }))
+  expect(screen.getByRole("complementary", { name: "Sessions" })).toBeTruthy()
+  const running = snapshot.sessions[0]!
+  await user.click(screen.getByRole("button", { name: `Actions for ${running.title}` }))
+  await user.click(screen.getByRole("menuitem", { name: "Stop the agent" }))
+  expect(pendingRequest(socket, "session.pause").params).toMatchObject({ sessionId: running.id })
+  await act(async () => { respond(socket, "session.pause", snapshot) })
+  await settle()
+
+  const other = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId && !session.activeTurnId)!
+  await user.click(screen.getByRole("button", { name: `Actions for ${other.title}` }))
+  await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
+  expect(pendingRequest(socket, "session.archive").params).toMatchObject({ sessionId: other.id })
+  await act(async () => { respond(socket, "session.archive", snapshot) })
+  await settle()
+
+  await user.click(screen.getByRole("button", { name: `Actions for ${other.title}` }))
+  await user.click(screen.getByRole("menuitem", { name: "Fork from a checkpoint" }))
+  expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
+  await act(async () => { respond(socket, "session.activate", workspaceSnapshot({ activeSessionId: other.id })) })
+  await settle()
+  expect(screen.getByRole("tab", { name: "Checkpoints" }).getAttribute("aria-selected")).toBe("true")
+  // Still open: picking a session or an action does not close the column.
+  expect(screen.getByRole("complementary", { name: "Sessions" })).toBeTruthy()
 })

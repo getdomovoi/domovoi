@@ -49,29 +49,66 @@ it("says why each session is where it is, in words", async () => {
   const user = userEvent.setup()
   render(<Harness onActivate={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
-  expect(screen.getByText("running")).toBeTruthy()
-  expect(screen.getByText("failed")).toBeTruthy()
-  expect(screen.getByText("idle")).toBeTruthy()
+  expect(screen.getByText(/· running$/)).toBeTruthy()
+  expect(screen.getByText(/· failed$/)).toBeTruthy()
+  expect(screen.getByText(/· idle$/)).toBeTruthy()
 })
 
-it("activates a session and closes itself", async () => {
+// v2's drawer is a column beside the thread, not a popover: picking a session
+// keeps it open, and only its own button closes it.
+it("activates a session and stays open", async () => {
   const user = userEvent.setup()
   const onActivate = vi.fn()
   render(<Harness onActivate={onActivate} />)
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
   await user.click(screen.getByRole("button", { name: /Port the CLI auth flow/ }))
   expect(onActivate).toHaveBeenCalledWith("s2")
-  expect(screen.queryByText("Port the CLI auth flow")).toBeNull()
+  expect(screen.getByText("Port the CLI auth flow")).toBeTruthy()
 })
 
-it("closes on Escape without activating anything", async () => {
+it("names the machine beside each session's state", async () => {
   const user = userEvent.setup()
-  const onActivate = vi.fn()
-  render(<Harness onActivate={onActivate} />)
+  render(<Harness onActivate={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
-  await user.keyboard("{Escape}")
-  expect(screen.queryByRole("region", { name: "RUNNING" })).toBeNull()
-  expect(onActivate).not.toHaveBeenCalled()
+  expect(screen.getByText(`${demoWorkspace.machine.name} · running`)).toBeTruthy()
+})
+
+it("folds a group away and back, keeping its count on the header", async () => {
+  const user = userEvent.setup()
+  render(<Harness onActivate={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: /Sessions/ }))
+  const header = screen.getByRole("button", { name: /RUNNING/ })
+  expect(header.textContent).toContain("1")
+  await user.click(header)
+  expect(screen.queryByText("Migrate billing webhooks")).toBeNull()
+  expect(header.getAttribute("aria-expanded")).toBe("false")
+  await user.click(header)
+  expect(screen.getByText("Migrate billing webhooks")).toBeTruthy()
+})
+
+// Each row carries the session's own actions. Stop is only offered while a
+// turn runs; the protocol has no worktree delete, so none is drawn.
+it("offers each session's actions from its row, stop only while it runs", async () => {
+  const user = userEvent.setup()
+  const onAction = vi.fn()
+  function WithActions() {
+    const [open, setOpen] = useState(true)
+    return <SessionsDrawer snapshot={snapshotWith()} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onAction={onAction} />
+  }
+  render(<WithActions />)
+  await user.click(screen.getByRole("button", { name: "Actions for Migrate billing webhooks" }))
+  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "Stop the agent", "Fork from a checkpoint", "Move to another machine", "Archive session",
+  ])
+  await user.click(screen.getByRole("menuitem", { name: "Stop the agent" }))
+  expect(onAction).toHaveBeenCalledWith("stop", "s1")
+
+  await user.click(screen.getByRole("button", { name: "Actions for Document the replay table" }))
+  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "Fork from a checkpoint", "Move to another machine", "Archive session",
+  ])
+  await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
+  expect(onAction).toHaveBeenCalledWith("archive", "s3")
 })
 
 it("keeps its actions reachable when the list is long", async () => {
@@ -94,9 +131,9 @@ it("keeps its actions reachable when the list is long", async () => {
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
 
   // Measured in a real browser at 1280x800: 43 sessions rendered 2440px tall
-  // with no cap and no scroll, putting New session 1679px below the fold.
-  const surface = screen.getByRole("group", { name: "Sessions" })
-  expect(surface.className).toContain("max-h-[70vh]")
+  // with no cap and no scroll, putting New session 1679px below the fold. The
+  // column scrolls its list and keeps its actions in a footer outside it.
+  const surface = screen.getByRole("complementary", { name: "Sessions" })
   const scroller = surface.querySelector(".overflow-y-auto")
   expect(scroller).not.toBeNull()
   const action = screen.getByRole("button", { name: "New session" })
@@ -107,9 +144,9 @@ it("closes again when its own trigger is clicked", async () => {
   const user = userEvent.setup()
   render(<Harness onActivate={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: /^Sessions / }))
-  expect(screen.getByRole("group", { name: "Sessions" })).toBeTruthy()
+  expect(screen.getByRole("complementary", { name: "Sessions" })).toBeTruthy()
   await user.click(screen.getByRole("button", { name: /^Hide sessions / }))
-  expect(screen.queryByRole("group", { name: "Sessions" })).toBeNull()
+  expect(screen.queryByRole("complementary", { name: "Sessions" })).toBeNull()
 })
 
 // Both sessions are idle and identical apart from their id, so nothing but
