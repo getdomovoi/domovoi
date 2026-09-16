@@ -26,7 +26,9 @@ async function panel(items: ReturnType<typeof checkpoint>[]) {
       onForkCheckpoint={vi.fn()}
     />,
   )
-  await new Promise((resolve) => setTimeout(resolve, 0))
+  // The load runs through the request controller and a few promise hops; a
+  // fixed wait raced it on a loaded Windows runner. Wait for the row itself.
+  await screen.findByTestId("history-row")
 }
 
 // CX5 typed the reason a checkpoint exists. The session-start row is the base
