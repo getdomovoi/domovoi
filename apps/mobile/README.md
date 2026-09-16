@@ -103,6 +103,11 @@ code as text for a phone that cannot scan. The code works once and only mints a 
 photograph of the symbol after it is spent opens nothing (`apps/daemon/src/pair-command.ts`,
 `apps/daemon/src/qr-terminal.ts`).
 
+It lasts three minutes (`pairingCodeTtlMs`). Run the command again for a fresh one; the daemon
+keeps one open pairing, so a new code stops the old one and nothing has to be restarted. A scan
+the phone could not read never reaches the daemon and costs the code nothing; five wrong codes
+close the pairing.
+
 The text the QR holds is `domovoi-pair:1:` followed by base64url JSON, validated by
 `pairingPayloadSchema` in `packages/protocol/src/pairing-payload.ts`: it carries the address and
 the code, never a credential, and the address must be `wss://`, or `ws://` on loopback only, the

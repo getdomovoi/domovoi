@@ -129,3 +129,28 @@ describe("a pairing code shown for a machine", () => {
     expect(errorMessage(redeemed)).toBe("Pairing was refused")
   })
 })
+
+describe("showing a second code", () => {
+  it("replaces the first without restarting the daemon, and the first stops working", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    daemons.push(daemon)
+    await daemon.start()
+    const owner = await ownerOf(daemon)
+
+    const first = ((await call(owner, "device.issueCode", { targetClient: "phone" })).result as { code: string }).code
+    const second = ((await call(owner, "device.issueCode", { targetClient: "phone" })).result as { code: string }).code
+    expect(second).not.toBe(first)
+
+    // A scan that never reached the daemon costs nothing, but a code the
+    // operator replaced is gone: only the one on screen pairs.
+    const stale = await connect(daemon)
+    const refused = await call(stale, "device.redeemCode", { code: first, label: "iPhone", protocolVersion })
+    expect(refused).toHaveProperty("error")
+    expect(errorMessage(refused)).toBe("Pairing was refused")
+
+    const phone = await connect(daemon)
+    const redeemed = await call(phone, "device.redeemCode", { code: second, label: "iPhone", protocolVersion })
+    expect(redeemed).not.toHaveProperty("error")
+    expect((redeemed.result as { device: { binding: unknown } }).device.binding).toEqual({ kind: "client", client: "phone" })
+  })
+})

@@ -64,7 +64,12 @@ export async function runPairCommand(
     // or absent. It is what the device's paste field reads, so the two paths
     // are the same pairing and not one of them a different arrangement.
     dependencies.stdout(`\nCannot scan it? Paste this on the device:\n${payload}\n`)
+    const minutes = Math.round(pairingCodeTtlMs / 60_000)
     dependencies.stdout(`\nIt works once, and only for a ${client.data}. Showing it again pairs nothing.\n`)
+    // Standing next to a phone, the two things worth knowing are how long this
+    // has and that running the command again is free. Without the second line
+    // a code that dies mid-scan reads as a dead end.
+    dependencies.stdout(`It lasts ${minutes} minutes. Run this again for a fresh one, which stops the old code.\n`)
     if (address.loopback) {
       dependencies.stdout(`This daemon answers on ${address.url}, which only this machine can reach. A phone on your network needs the daemon on an address it can dial.\n`)
     }

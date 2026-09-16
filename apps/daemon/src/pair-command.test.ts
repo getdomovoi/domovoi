@@ -35,6 +35,7 @@ describe("runPairCommand", () => {
     // The pasteable text is the same pairing the symbol carries.
     expect(out).toContain(`Paste this on the device:\n${drawn![0]!.replace(/^<qr>|<\/qr>\n?$/g, "")}`)
     expect(out).toContain("It works once, and only for a phone.")
+    expect(out).toContain("It lasts 3 minutes. Run this again for a fresh one, which stops the old code.")
     expect(out).toContain("A paired phone can:")
     for (const line of phoneAndTabletPromise) expect(out).toContain(line.text)
     // The unbuilt line is marked, not silently listed beside the kept ones.
