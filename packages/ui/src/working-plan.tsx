@@ -4,9 +4,9 @@ import { useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "./lib/utils"
+import { PlanStepEditor, type WorkingPlanDraftStep, type WorkingPlanEdit } from "./plan-step-editor.js"
 
 function stepMark(step: WorkingPlanStep, index: number): string {
   return step.status === "completed" ? "✓" : String(index + 1)
@@ -25,7 +25,7 @@ function pendingEditCopy(edit: PendingWorkingPlanEdit): string {
     : `Your edit did not apply because the plan changed underneath it. Submitted from ${edit.submittedBy.client}.`
 }
 
-export type WorkingPlanDraftStep = { id?: string, text: string }
+export type { WorkingPlanDraftStep }
 
 export function WorkingPlanCard({
   plan,
@@ -37,18 +37,10 @@ export function WorkingPlanCard({
   plan: WorkingPlan | undefined
   running: boolean
   readOnly?: boolean | undefined
-  onEditPlan?: ((edit: {
-    basedOnStructureRevision: number
-    baseSteps: { id: string, text: string }[]
-    draftSteps: WorkingPlanDraftStep[]
-  }) => Promise<void>) | undefined
+  onEditPlan?: ((edit: WorkingPlanEdit) => Promise<void>) | undefined
   onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
 }) {
-  const [edit, setEdit] = useState<{
-    baseline: { structureRevision: number, steps: { id: string, text: string }[] }
-    draft: WorkingPlanDraftStep[]
-  } | null>(null)
-  const [saving, setSaving] = useState(false)
+  const [edit, setEdit] = useState<{ structureRevision: number, steps: { id: string, text: string }[] } | null>(null)
   const [discarding, setDiscarding] = useState(false)
   const [editError, setEditError] = useState("")
   if (!plan) return null
@@ -57,28 +49,6 @@ export function WorkingPlanCard({
   const editing = edit !== null
   const canEdit = Boolean(onEditPlan) && !readOnly
   const canDiscard = Boolean(onDiscardEdit) && !readOnly
-  const setDraft = (next: WorkingPlanDraftStep[] | null) => {
-    setEdit((current) => next === null || !current ? null : { ...current, draft: next })
-  }
-  const save = () => {
-    if (!edit || !onEditPlan) return
-    setEditError("")
-    setSaving(true)
-    void onEditPlan({
-      basedOnStructureRevision: edit.baseline.structureRevision,
-      baseSteps: edit.baseline.steps,
-      draftSteps: edit.draft.map((step) => step.id === undefined ? { text: step.text } : { id: step.id, text: step.text }),
-    }).then(
-      () => {
-        setSaving(false)
-        setEdit(null)
-      },
-      (cause: unknown) => {
-        setSaving(false)
-        setEditError(cause instanceof Error ? cause.message : "The plan edit was refused")
-      },
-    )
-  }
 
   return (
     <section aria-label="Working plan" className="rounded-xl border bg-card">
@@ -89,50 +59,12 @@ export function WorkingPlanCard({
         <span className="font-machine text-[9.5px] text-faint">revision {plan.revision}</span>
       </div>
 
-      {edit ? (
-        <div className="flex flex-col gap-2 px-3 py-3">
-          {edit.draft.map((step, index) => (
-            <div key={step.id ?? `new-${index}`} className="flex items-center gap-1.5">
-              <Input
-                aria-label={`Step ${index + 1}`}
-                value={step.text}
-                onChange={(event) => setDraft(edit.draft.map((candidate, position) => (
-                  position === index ? { ...candidate, text: event.target.value } : candidate
-                )))}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Move step ${index + 1} up`}
-                disabled={index === 0}
-                onClick={() => setDraft(edit.draft.map((candidate, position) => (
-                  position === index - 1 ? edit.draft[index]! : position === index ? edit.draft[index - 1]! : candidate
-                )))}
-              >
-                ↑
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Remove step ${index + 1}`}
-                onClick={() => setDraft(edit.draft.filter((_, position) => position !== index))}
-              >
-                ×
-              </Button>
-            </div>
-          ))}
-          {editError ? (
-            <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">
-              {editError} Your steps are still here.
-            </p>
-          ) : null}
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={saving} onClick={() => setDraft([...edit.draft, { text: "" }])}>Add step</Button>
-            <span className="flex-1" />
-            <Button variant="ghost" size="sm" disabled={saving} onClick={() => { setEditError(""); setEdit(null) }}>Cancel</Button>
-            <Button variant="secondary" size="sm" disabled={saving} onClick={save}>Save plan</Button>
-          </div>
-        </div>
+      {edit && onEditPlan ? (
+        <PlanStepEditor
+          baseline={edit}
+          onSave={(next) => onEditPlan(next).then(() => setEdit(null))}
+          onCancel={() => { setEditError(""); setEdit(null) }}
+        />
       ) : stepCount === 0 ? (
         <p className="m-0 px-3.5 py-3 text-[11.5px] leading-relaxed text-muted-foreground">
           No steps yet. The agent adds them as it plans, and you can write the first one yourself.
@@ -220,10 +152,7 @@ export function WorkingPlanCard({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setEdit({
-              baseline: { structureRevision: plan.structureRevision, steps: baseSteps },
-              draft: baseSteps,
-            })}
+            onClick={() => setEdit({ structureRevision: plan.structureRevision, steps: baseSteps })}
           >
             Edit plan
           </Button>

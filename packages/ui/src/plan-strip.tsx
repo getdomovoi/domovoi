@@ -1,8 +1,9 @@
-import type { WorkingPlan, WorkingPlanStep } from "@getdomovoi/protocol"
+import type { PendingWorkingPlanEdit, WorkingPlan, WorkingPlanStep } from "@getdomovoi/protocol"
 import { ChevronDownIcon } from "lucide-react"
 import { useState } from "react"
 
 import { Chip } from "./chip"
+import { PlanStepEditor, type WorkingPlanEdit } from "./plan-step-editor.js"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { cn } from "./lib/utils"
 
@@ -25,45 +26,98 @@ function stepState(step: WorkingPlanStep): { label: string, meaning: StatusMeani
   return { label: "next", meaning: "idle" }
 }
 
+// The queued notice names the step the edit touches, the way the design's
+// copy does ("Your edit to step 4 is queued"). The first step whose text or
+// position differs between the base and the draft is that step; an edit that
+// only adds or removes steps, or changes several, is named as a whole.
+export function queuedEditStep(edit: PendingWorkingPlanEdit): number | undefined {
+  const changed = edit.draftSteps.flatMap((step, index) => {
+    const base = edit.baseSteps[index]
+    return base && base.id === step.id && base.text === step.text ? [] : [index]
+  })
+  if (edit.baseSteps.length !== edit.draftSteps.length) return undefined
+  return changed.length === 1 ? changed[0]! + 1 : undefined
+}
+
+export function queuedEditCopy(edit: PendingWorkingPlanEdit): string {
+  if (edit.status !== "queued") return "Your edit did not apply, because the plan changed underneath it."
+  const step = queuedEditStep(edit)
+  return `${step === undefined ? "Your edit" : `Your edit to step ${step}`} is queued. It applies at the next turn boundary, not to the turn in flight.`
+}
+
 export function PlanStrip({
   plan,
   onOpenPreview,
+  onEditPlan,
   onDiscardEdit,
+  readOnly = false,
   className,
 }: {
   plan: WorkingPlan | undefined
   onOpenPreview?: () => void
-  onDiscardEdit?: (editId: string) => void
+  onEditPlan?: ((edit: WorkingPlanEdit) => Promise<void>) | undefined
+  onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
+  // A viewer of an archived or borrowed session sees the plan and cannot
+  // change it; the design draws Edit dimmed for that viewer, not absent.
+  readOnly?: boolean
   className?: string
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [edit, setEdit] = useState<{ structureRevision: number, steps: { id: string, text: string }[] } | null>(null)
+  const [discarding, setDiscarding] = useState(false)
+  const [discardError, setDiscardError] = useState("")
   if (!plan || plan.steps.length === 0) return null
   const current = currentPlanStep(plan)
   if (!current) return null
   const state = stepState(current.step)
+  const startEdit = () => {
+    setEdit({ structureRevision: plan.structureRevision, steps: plan.steps.map((step) => ({ id: step.id, text: step.text })) })
+    setExpanded(true)
+  }
 
   return (
     <section aria-label="Working plan" className={cn("overflow-hidden rounded-xl border border-border bg-card", className)}>
       {plan.pendingEdit ? (
         <div className="flex items-center gap-2 border-b border-info-border bg-info-background px-3 py-2">
           <span className="text-[12px] text-info-foreground">
-            {plan.pendingEdit.status === "queued"
-              ? "Your edit is queued. It applies at the next turn boundary, not to the turn in flight."
-              : "Your edit did not apply, because the plan changed underneath it."}
+            {queuedEditCopy(plan.pendingEdit)}
           </span>
           {onDiscardEdit ? (
             <button
               type="button"
-              className="ml-auto text-[11px] text-info-dim"
-              onClick={() => onDiscardEdit(plan.pendingEdit!.id)}
+              className="ml-auto text-[11px] text-info-dim disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={readOnly || discarding}
+              onClick={() => {
+                const editId = plan.pendingEdit!.id
+                setDiscardError("")
+                setDiscarding(true)
+                onDiscardEdit(editId).then(
+                  () => setDiscarding(false),
+                  (cause: unknown) => {
+                    setDiscarding(false)
+                    setDiscardError(cause instanceof Error ? cause.message : "The edit could not be discarded")
+                  },
+                )
+              }}
             >
-              Discard
+              {discarding ? "Discarding" : "Discard"}
             </button>
           ) : null}
         </div>
       ) : null}
+      {discardError ? (
+        <p role="alert" className="m-0 border-b border-border px-3 py-1.5 text-[11px] leading-relaxed text-destructive">
+          {discardError} The queued edit is still here.
+        </p>
+      ) : null}
 
-      {expanded ? (
+      {edit && onEditPlan ? (
+        <PlanStepEditor
+          baseline={edit}
+          onSave={(next) => onEditPlan(next).then(() => setEdit(null))}
+          onCancel={() => setEdit(null)}
+        />
+      ) : expanded ? (
         <ol className="m-0 flex list-none flex-col p-0">
           {plan.steps.map((step, index) => (
             <li key={step.id} className="flex items-start gap-3 border-b border-border px-3 py-2">
@@ -78,6 +132,7 @@ export function PlanStrip({
       ) : null}
 
       <div className="flex items-center gap-2 px-3 py-2">
+        <StatusDot meaning={state.meaning} label={state.label} size="inline" labelHidden />
         <span className="font-mono text-[10.5px] text-strong">
           Step {current.index + 1} of {plan.steps.length}
         </span>
@@ -85,6 +140,18 @@ export function PlanStrip({
         <Chip size="badge" tone={state.meaning === "waiting" ? "warning" : "neutral"}>
           {state.label}
         </Chip>
+        {onEditPlan ? (
+          <button
+            type="button"
+            aria-label="Edit the plan"
+            className="text-[11px] text-muted-foreground disabled:cursor-not-allowed disabled:opacity-45"
+            disabled={readOnly || edit !== null}
+            {...(readOnly ? { title: "This session is read-only here, so its plan cannot be edited from this view." } : {})}
+            onClick={startEdit}
+          >
+            Edit
+          </button>
+        ) : null}
         {onOpenPreview ? (
           <button type="button" className="text-[11px] text-primary" onClick={onOpenPreview}>
             Plan preview
