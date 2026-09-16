@@ -80,25 +80,55 @@ pnpm --filter @getdomovoi/daemon start
 The daemon binds exactly the host you give it (`apps/daemon/src/server.ts`). In the phone, dial
 the name on the certificate: `wss://<domain>:47831/rpc`.
 
-### The pairing token
+### Pairing
 
-Every daemon requires a credential. The phone sends the token you enter in its greeting, and the
-daemon accepts it when it is the daemon's own credential or a device credential paired for a phone
-(`#credentialAccepted` in `apps/daemon/src/server.ts`). The phone has no pairing-code flow, so use
-the daemon's own credential:
+Every daemon requires a credential. The phone sends the token in its greeting, and the daemon
+accepts it when it is the daemon's own credential or a device credential paired for a phone
+(`#credentialAccepted` in `apps/daemon/src/server.ts`). Mint a phone-scoped one on the machine:
 
-- With `DOMOVOI_AUTH_TOKEN` unset, `domovoid` creates it at `~/.domovoi/daemon.token` and prints
-  `domovoid credential stored at <path>` on start. The file holds one line. Copy it.
-- With `DOMOVOI_AUTH_TOKEN` set, that value is the token.
+```bash
+domovoid pair --client phone --label "iPhone"
+```
 
-It is a 43-character base64url string (`apps/daemon/src/config.ts`). It can do anything on that
-machine, and Settings says so above the field. `domovoid pair` prints a pairing code for other
-clients; the phone cannot claim one.
+It prints a 43-character credential that can send work, answer gates and open terminals on that
+machine, and nothing else (`apps/daemon/src/pair-command.ts`). Revoke it in the daemon's Devices
+list when the phone is done.
+
+#### By camera
+
+The phone reads a QR that carries the daemon's address and that credential. The text the QR holds
+is `domovoi-pair:1:` followed by base64url JSON, validated by `pairingPayloadSchema` in
+`packages/protocol/src/pairing-payload.ts`: the address must be `wss://`, or `ws://` on loopback
+only, the same rule the daemon applies to its own listener. Make the code on the machine:
+
+```bash
+node scripts/pairing-payload.mjs wss://<the machine's tailnet DNS name>:47831/rpc <credential> "<label>"
+```
+
+It prints the text and, when `qrencode` is installed (`brew install qrencode`), draws it in the
+terminal. On the phone: Settings, Scan a pairing code, point the camera at it. The phone names the
+machine and asks once before it connects; the credential is written to the keychain and never shown.
+A phone that has refused the camera pastes the same text into the field under the scanner.
+
+Not built yet: `domovoid pair --client` does not print this text itself, and the desktop does not
+draw the QR. Both are the emitter half; the phone half is what this section describes.
+
+#### By hand
+
+Enter the address and the credential in Settings. The daemon's own credential also works: with
+`DOMOVOI_AUTH_TOKEN` unset, `domovoid` creates it at `~/.domovoi/daemon.token` and prints
+`domovoid credential stored at <path>` on start; with it set, that value is the token. That
+credential can do anything on the machine, and Settings says so above the field. Prefer the
+phone-scoped one.
+
+The one-time code `domovoid pair` prints without `--client` is for pairing another machine
+(`device.claim` takes the claiming machine's id); the phone does not claim it.
 
 ## Settings
 
 Open the Settings tab (`apps/mobile/src/screens/settings.tsx`):
 
+- Scan a pairing code: opens the camera. See [By camera](#by-camera).
 - Daemon address: the WebSocket URL from above.
 - Pairing token: masked while you type. No text on the screen repeats it.
 - Connect: trims both fields, saves them, and opens the connection (`apps/mobile/src/app.tsx`).
