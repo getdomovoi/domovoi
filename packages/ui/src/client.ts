@@ -34,6 +34,7 @@ import {
   type FleetSnapshot,
   type AuditQueryPage,
   type AuditQueryParams,
+  type HardGateCategory,
   type ProviderModel,
   type RuntimeDiscoverResult,
   type ProjectSwitchConfirmation,
@@ -559,6 +560,14 @@ export class DomovoiClient extends EventTarget {
       decision,
       ...(explanation ? { explanation } : {}),
     })
+  }
+
+  revokeApprovalRule(ruleId: string): Promise<WorkspaceSnapshot> {
+    return this.request("approvalRule.revoke", { ruleId, client: this.kind })
+  }
+
+  listHardGates(): Promise<HardGateCategory[]> {
+    return this.request("permission.hardGates", {}).then((result) => result.categories)
   }
 
   setRuntime(sessionId: string, runtime: Runtime): Promise<WorkspaceSnapshot> {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
@@ -301,6 +301,18 @@ export function useWorkspace(
     },
     [updateSnapshotFrom],
   )
+
+  const revokeApprovalRule = useCallback(async (ruleId: string) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    updateSnapshotFrom(client, await client.revokeApprovalRule(ruleId))
+  }, [updateSnapshotFrom])
+
+  const listHardGates = useCallback(async (): Promise<HardGateCategory[]> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.listHardGates()
+  }, [])
 
   const setRuntime = useCallback(async (sessionId: string, runtime: Runtime) => {
     const client = clientRef.current
@@ -859,6 +871,8 @@ export function useWorkspace(
     resizeTerminal,
     replyToAnnotation,
     resolveApproval,
+    revokeApprovalRule,
+    listHardGates,
     sendMessage,
     sessionUsage,
     usageWindow,

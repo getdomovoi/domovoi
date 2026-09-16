@@ -2,10 +2,12 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
+import { rulesIntro } from "./rules-panel"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
   installFakeWebSocket,
+  sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -25,8 +27,19 @@ describe("the dock's tab list", () => {
     await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
     await settle()
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Plan", "Preview", "Changes", "Terminal", "History", "Checkpoints",
+      "Plan", "Preview", "Changes", "Terminal", "History", "Checkpoints", "Rules",
     ])
+  })
+
+  it("opens Rules on the project's standing rules and asks the daemon for its hard gates", async () => {
+    render(<WorkspaceShell />)
+    const socket = harness.socket(0)
+    await act(async () => { completeHandshake(socket, workspaceSnapshot()) })
+    await settle()
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Rules" }))
+    await settle()
+    expect(screen.getByText(rulesIntro)).toBeTruthy()
+    expect(sentRequests(socket, "permission.hardGates")).toHaveLength(1)
   })
 
   // v2 labels the block "COMMENTS ON VARIANT B" and its logic filters by the

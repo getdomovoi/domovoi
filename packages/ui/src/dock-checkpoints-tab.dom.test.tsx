@@ -19,7 +19,7 @@ afterEach(() => { cleanup(); harness.uninstall() })
 const settle = () => act(async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve() })
 
 // The v2 sheet lists Plan, Preview, Changes, Terminal, History, Checkpoints,
-// Rules. Rules waits on its own slice. What this pins is the v2 order of the
+// Rules. What this pins is the v2 order of the
 // tabs that exist and that Checkpoints is a tab of its own, not History narrowed.
 describe("the dock's Checkpoints tab", () => {
   it("sits in v2's order and loads only the checkpoints category when opened", async () => {
