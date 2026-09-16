@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -54,6 +54,7 @@ import type {
   SessionTransferPreviewParams,
   SessionUsage,
   SessionTurn,
+  RuntimeDiscoverResult,
   UsageWindow,
   UsageWindowParams,
   TurnSkillSelection,
@@ -119,9 +120,6 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Input } from "./components/ui/input"
@@ -194,6 +192,7 @@ import { ComposerSkillChip } from "./composer-skills"
 import { MachineSheet } from "./machine-sheet"
 import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
+import { ModelPopover } from "./model-popover.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
@@ -220,13 +219,11 @@ import {
   type DesktopFirstRunState,
 } from "./desktop-first-run-persistence"
 import {
-  providerHandoffDescription,
   preferredSessionProvider,
   providerCanStartSession,
   providerDisplayName,
   providerStatusLabel,
   reasoningOptionsFor,
-  requiresProviderHandoff,
   selectRuntimeModel,
 } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
@@ -1362,6 +1359,7 @@ export function Thread({
   usage = null,
   usageToday = null,
   loadLatestTurn,
+  onDiscoverRuntime,
   onEditPlan,
   onDiscardPlanEdit,
   onOpenPlanPreview,
@@ -1428,6 +1426,8 @@ export function Thread({
   usage?: SessionUsage | null | undefined
   usageToday?: UsageWindow | null | undefined
   loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
+  // "Ask the agents again" in the model chip runs runtime.discover per harness.
+  onDiscoverRuntime?: ((provider: string) => Promise<RuntimeDiscoverResult>) | undefined
   // The strip above the composer edits and discards through the same RPCs
   // the Plan preview card uses; the preview link opens that dock tab.
   onEditPlan?: ((sessionId: string, edit: WorkingPlanEdit) => Promise<void>) | undefined
@@ -1755,10 +1755,7 @@ export function Thread({
               runtime={active.runtime}
               providers={snapshot.machine.providers}
               pending={runtimePending}
-              {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
-              {...(forkReason ? { forkBlockedReason: forkReason } : {})}
               onChange={(runtime) => void updateRuntime(runtime)}
-              onFork={forkRuntime}
               onListModels={onListModels}
             />
             {active.workspacePath && onOpenExternal ? (
@@ -1917,6 +1914,20 @@ export function Thread({
           />
           <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {/* v2's model chip leads the composer's action row and opens the
+                  flat, searchable list of what every harness here reports. */}
+              <ModelPopover
+                runtime={active.runtime}
+                providers={snapshot.machine.providers}
+                machineName={snapshot.machine.name}
+                pending={runtimePending}
+                {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
+                {...(forkReason ? { forkBlockedReason: forkReason } : {})}
+                onListModels={onListModels}
+                onDiscoverRuntime={onDiscoverRuntime}
+                onChange={(runtime) => void updateRuntime(runtime)}
+                onFork={forkRuntime}
+              />
               {onOpenSkills ? (
                 <ComposerSkillChip
                   snapshot={snapshot}
@@ -2116,39 +2127,7 @@ export function forkSessionBlockedReason(
   return undefined
 }
 
-export function providerHandoffChoices(pending: boolean, forkBlockedReason: string | undefined) {
-  return [
-    { label: "Switch here", variant: "outline" as const, disabled: pending },
-    {
-      label: "Fork session",
-      variant: "default" as const,
-      disabled: pending || Boolean(forkBlockedReason),
-    },
-  ] as const
-}
-
-export type ProviderChoice = {
-  model: ProviderModel
-  requestId: string
-}
-
-export function openProviderChoice(
-  runtime: Runtime,
-  model: ProviderModel,
-  createRequestId: () => string = () => crypto.randomUUID(),
-): ProviderChoice | undefined {
-  if (runtime.provider === model.provider && runtime.model === model.id) return undefined
-  return { model, requestId: createRequestId() }
-}
-
-export function forkProviderChoice(
-  runtime: Runtime,
-  choice: ProviderChoice,
-  checkpointId: string,
-  onFork: (runtime: Runtime, checkpointId: string, requestId: string) => Promise<void>,
-): Promise<void> {
-  return onFork(selectRuntimeModel(runtime, choice.model), checkpointId, choice.requestId)
-}
+export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type ProviderChoice } from "./provider-choice-dialog.js"
 
 export function normalizePermissionMode(runtime: Runtime, permissionMode: PermissionMode): Runtime {
   return withPermissionMode(runtime, permissionMode)
@@ -2158,144 +2137,44 @@ export function RuntimeControls({
   runtime,
   providers,
   pending,
-  forkCheckpointId,
-  forkBlockedReason,
   onChange,
-  onFork,
   onListModels,
 }: {
   runtime: Runtime
   providers: readonly ProviderRuntime[]
   pending: boolean
-  forkCheckpointId?: string
-  forkBlockedReason?: string
   onChange: (runtime: Runtime) => void
-  onFork: (runtime: Runtime, checkpointId: string, requestId: string) => Promise<void>
   onListModels: (provider: string) => Promise<ProviderModel[]>
 }) {
-  const [modelCatalogs, setModelCatalogs] = useState<Record<string, ProviderModel[]>>({})
-  const [modelsPending, setModelsPending] = useState<Record<string, boolean>>({})
-  const [modelsError, setModelsError] = useState<Record<string, string>>({})
-  const [providerChoice, setProviderChoice] = useState<ProviderChoice>()
-  const [choicePending, setChoicePending] = useState(false)
-  const handoffModel = providerChoice?.model
-  const models = modelCatalogs[runtime.provider] ?? []
+  // The model itself is chosen from the composer's chip now, where v2 puts
+  // it. These controls keep the reasoning effort, the permission mode and
+  // Auto until their own slices move them; the current model's catalog is
+  // still read so the reasoning options can be its own.
+  const [models, setModels] = useState<ProviderModel[]>([])
   const selectedModel = models.find(
     (model) => model.provider === runtime.provider && model.id === runtime.model,
   )
   const reasoningOptions = reasoningOptionsFor(selectedModel)
   const reasoningUnavailable = selectedModel === undefined || reasoningOptions.length === 0
-  const availableProviders = providers.filter(providerCanStartSession)
-  const actionPending = pending || choicePending
-  const handoffChoices = providerHandoffChoices(actionPending, forkBlockedReason)
-
-  const loadModels = (provider: string) => {
-    if (modelCatalogs[provider] || modelsPending[provider]) return
-    setModelsPending((current) => ({ ...current, [provider]: true }))
-    setModelsError((current) => ({ ...current, [provider]: "" }))
-    void onListModels(provider).then(
-      (nextModels) => setModelCatalogs((current) => ({ ...current, [provider]: nextModels })),
-      (cause: unknown) => {
-        setModelsError((current) => ({
-          ...current,
-          [provider]: cause instanceof Error ? cause.message : "Models could not be loaded",
-        }))
-      },
-    ).finally(() => setModelsPending((current) => ({ ...current, [provider]: false })))
-  }
+  const providerReady = providers.some((provider) => provider.id === runtime.provider && providerCanStartSession(provider))
 
   useEffect(() => {
     let active = true
-    setModelsPending((current) => ({ ...current, [runtime.provider]: true }))
-    setModelsError((current) => ({ ...current, [runtime.provider]: "" }))
+    setModels([])
     void onListModels(runtime.provider).then(
-      (nextModels) => {
-        if (active) setModelCatalogs((current) => ({ ...current, [runtime.provider]: nextModels }))
-      },
-      (cause: unknown) => {
-        if (active) {
-          setModelsError((current) => ({
-            ...current,
-            [runtime.provider]: cause instanceof Error ? cause.message : "Models could not be loaded",
-          }))
-        }
-      },
-    ).finally(() => {
-      if (active) setModelsPending((current) => ({ ...current, [runtime.provider]: false }))
-    })
+      (nextModels) => { if (active) setModels(nextModels) },
+      () => { if (active) setModels([]) },
+    )
     return () => { active = false }
   }, [onListModels, runtime.provider])
-
-  const chooseModel = (model: ProviderModel) => {
-    setProviderChoice(openProviderChoice(runtime, model))
-  }
-
-  const submitForkChoice = async (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.preventDefault()
-    if (!providerChoice || !forkCheckpointId || forkBlockedReason || actionPending) return
-    setChoicePending(true)
-    try {
-      await forkProviderChoice(runtime, providerChoice, forkCheckpointId, onFork)
-      setProviderChoice(undefined)
-    } catch {
-      // The parent surfaces the RPC error. Keep this attempt and request ID open for retry.
-    } finally {
-      setChoicePending(false)
-    }
-  }
 
   const setMode = (permissionMode: string) => {
     if (permissionMode) onChange(normalizePermissionMode(runtime, permissionMode as PermissionMode))
   }
+
   return (
-    <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm" disabled={pending}><BotIcon data-icon="inline-start" />{runtime.provider} / {runtime.model}<ChevronDownIcon data-icon="inline-end" /></Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-64">
-          <DropdownMenuLabel>Provider and model</DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          {availableProviders.map((provider) => {
-            const providerModels = modelCatalogs[provider.id] ?? []
-            return (
-              <DropdownMenuSub
-                key={provider.id}
-                onOpenChange={(open) => { if (open) loadModels(provider.id) }}
-              >
-                <DropdownMenuSubTrigger disabled={pending}>
-                  {provider.id === runtime.provider ? <CheckIcon /> : <BotIcon />}
-                  {providerDisplayName(provider.id)}
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="max-h-80 w-80 overflow-y-auto">
-                  <DropdownMenuLabel>{providerDisplayName(provider.id)} models</DropdownMenuLabel>
-                  <DropdownMenuGroup>
-                    {modelsPending[provider.id] ? <DropdownMenuItem disabled>Loading installed models</DropdownMenuItem> : null}
-                    {modelsError[provider.id] ? <DropdownMenuItem disabled className="whitespace-normal text-destructive">{modelsError[provider.id]}</DropdownMenuItem> : null}
-                    {!modelsPending[provider.id] && !modelsError[provider.id] && providerModels.length === 0
-                      ? <DropdownMenuItem disabled>No models reported</DropdownMenuItem>
-                      : null}
-                    {providerModels.map((model) => (
-                      <DropdownMenuItem
-                        key={`${model.provider}:${model.id}`}
-                        disabled={pending}
-                        onSelect={() => chooseModel(model)}
-                      >
-                        {model.id === runtime.model && model.provider === runtime.provider ? <CheckIcon /> : null}
-                        <span className="flex min-w-0 flex-col">
-                          <span className="truncate">{model.displayName}</span>
-                          <span className="truncate font-machine text-mono-xs text-faint">{model.id}</span>
-                        </span>
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            )
-          })}
-          {availableProviders.length === 0 ? <DropdownMenuItem disabled>No session providers are ready</DropdownMenuItem> : null}
-        </DropdownMenuContent>
-      </DropdownMenu>
+    <div className="flex flex-wrap items-center gap-1.5">
+      {!providerReady ? <Badge variant="outline" className="text-warning">{providerDisplayName(runtime.provider)} not ready</Badge> : null}
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={pending || reasoningUnavailable}>Think: {runtime.reasoning}<ChevronDownIcon data-icon="inline-end" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">
@@ -2306,52 +2185,6 @@ export function RuntimeControls({
         <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
       </ToggleGroup>
       <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-micro text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange(withAuto(runtime, auto))} />Auto</label>
-      <AlertDialog
-        open={providerChoice !== undefined}
-        onOpenChange={(open) => {
-          if (!open && !actionPending) setProviderChoice(undefined)
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Switch here or fork session?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {handoffModel
-                ? requiresProviderHandoff(runtime, handoffModel)
-                  ? providerHandoffDescription(
-                      providerDisplayName(handoffModel.provider),
-                      handoffModel.displayName,
-                    )
-                  : `Switch here changes this session to ${handoffModel.displayName}.`
-                : null}
-              {handoffModel
-                ? ` Fork session starts ${providerDisplayName(handoffModel.provider)} / ${handoffModel.displayName} in a separate worktree from the latest durable checkpoint. Domovoi records the source, checkpoint, provider/model, and requesting client in its history.`
-                : null}
-              {forkBlockedReason ? ` Fork unavailable: ${forkBlockedReason}.` : null}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={actionPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant={handoffChoices[0].variant}
-              disabled={handoffChoices[0].disabled}
-              onClick={() => {
-                if (handoffModel) onChange(selectRuntimeModel(runtime, handoffModel))
-              }}
-            >
-              {handoffChoices[0].label}
-            </AlertDialogAction>
-            <AlertDialogAction
-              variant={handoffChoices[1].variant}
-              disabled={handoffChoices[1].disabled}
-              title={forkBlockedReason}
-              onClick={(event) => void submitForkChoice(event)}
-            >
-              {handoffChoices[1].label}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }
@@ -3557,6 +3390,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     getSkillInventory,
     createTerminal,
     listModels,
+    discoverRuntime,
     listProviderSecrets,
     listSkills,
     exportAudit,
@@ -4540,7 +4374,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onArchiveSession={archiveSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} externalEditor={externalEditor} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSkills={() => setSurface("skills")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} {...(windowBridge && !attached ? { onOpenExternal: (path: string) => openDesktopPath(windowBridge, path, externalEditor) } : {})} /></ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (

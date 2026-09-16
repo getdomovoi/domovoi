@@ -35,6 +35,7 @@ import {
   type AuditQueryPage,
   type AuditQueryParams,
   type ProviderModel,
+  type RuntimeDiscoverResult,
   type ProjectSwitchConfirmation,
   type RpcMethod,
   type RpcParams,
@@ -793,6 +794,10 @@ export class DomovoiClient extends EventTarget {
 
   listModels(provider: string): Promise<ProviderModel[]> {
     return this.request("runtime.models", { provider, client: this.kind })
+  }
+
+  discoverRuntime(provider: string): Promise<RuntimeDiscoverResult> {
+    return this.request("runtime.discover", { provider, client: this.kind })
   }
 
   refreshProviders(): Promise<WorkspaceSnapshot> {
