@@ -104,12 +104,26 @@ export async function latestTurnFromHistory(
   return undefined
 }
 
+// A session with no recorded turns has nothing to say for itself, but the day
+// may: a fresh session on a busy day still shows today's count. The session
+// rows are left out rather than drawn as zeros.
+export function sessionHasUsage(usage: SessionUsage | null | undefined): usage is SessionUsage {
+  return Boolean(usage && (usage.totalTokens > 0 || usage.byRuntime.length > 0))
+}
+
+export function usageChipTriggerText(usage: SessionUsage | null | undefined, today: UsageWindow | null | undefined): string | undefined {
+  if (sessionHasUsage(usage)) return usageChipText(usage)
+  if (today && today.turns > 0) return `${formatTokenCount(today.totalTokens)} today`
+  return undefined
+}
+
 export function usageChipRows(input: {
-  usage: SessionUsage
+  usage: SessionUsage | null | undefined
   turn: SessionTurn | undefined
   today: UsageWindow | null | undefined
 }): UsageChipRow[] {
-  return [turnRow(input.turn), sessionRow(input.usage), contextRow(input.usage), todayRow(input.today)]
+  const session = sessionHasUsage(input.usage) ? [turnRow(input.turn), sessionRow(input.usage), contextRow(input.usage)] : []
+  return [...session, todayRow(input.today)]
     .filter((row): row is UsageChipRow => row !== undefined)
 }
 
@@ -129,13 +143,14 @@ export function UsageChip({
   const [turn, setTurn] = useState<SessionTurn>()
   const readRef = useRef<AbortController | null>(null)
   useEffect(() => () => readRef.current?.abort(), [])
-  if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
+  const text = usageChipTriggerText(usage, today)
+  if (!text) return null
   const rows = usageChipRows({ usage, turn, today })
   return (
     <DropdownMenu onOpenChange={(open) => {
       readRef.current?.abort()
       readRef.current = null
-      if (!open || !loadLatestTurn) return
+      if (!open || !loadLatestTurn || !sessionHasUsage(usage)) return
       const read = new AbortController()
       readRef.current = read
       const current = () => readRef.current === read && !read.signal.aborted
@@ -147,7 +162,7 @@ export function UsageChip({
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" aria-label="Usage" className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
           <ChartLineIcon data-icon="inline-start" className="text-muted-foreground" />
-          {usageChipText(usage)}
+          {text}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-[320px] p-0">
