@@ -1655,6 +1655,11 @@ export const phoneAndTabletPromise = [
   "It cannot pull the repository down. Files stay here.",
 ] as const
 
+// The first line of that promise is not built yet. Every surface that shows
+// the promise shows this beside it, from here, so the machine's card and the
+// phone's screen cannot come to say different things about the same limit.
+export const phoneAndTabletPromiseGap = "This phone does not show terminal output yet. Everything else in that list works."
+
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>
 export type RpcRequest = z.infer<typeof rpcRequestSchema>

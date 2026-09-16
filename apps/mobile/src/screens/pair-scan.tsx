@@ -1,4 +1,4 @@
-import { decodePairingPayload, phoneAndTabletPromise, type PairingPayload } from "@getdomovoi/protocol"
+import { decodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type PairingPayload } from "@getdomovoi/protocol"
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
 import { useCallback, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
@@ -89,9 +89,9 @@ export function PairScanScreen({
             <Text variant="label">A paired phone can</Text>
             {phoneAndTabletPromise.map((line) => <Text key={line} variant="note">{line}</Text>)}
             {/* The first line is the machine's word, and this app does not
-                keep all of it yet. Saying so here is better than letting the
-                list read as delivered. */}
-            <Text variant="note">This phone does not show terminal output yet. Everything else in that list works.</Text>
+                keep all of it yet. The text comes from the protocol so this
+                screen and the machine's pairing card say the same thing. */}
+            <Text variant="note">{phoneAndTabletPromiseGap}</Text>
             <Text variant="note">
               That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
             </Text>
