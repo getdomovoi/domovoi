@@ -29,15 +29,46 @@ describe("the dock's tab list", () => {
     ])
   })
 
-  it("draws the comments under the preview, counted, with the open ones first in line", async () => {
+  // v2 labels the block "COMMENTS ON VARIANT B" and its logic filters by the
+  // selected document. A comment on the plan belongs under the plan, and a
+  // comment on another variant shows when that variant is selected.
+  it("scopes the comments under the preview to the selected variant, and the plan's to the plan", async () => {
+    const snapshot = workspaceSnapshot()
+    const first = snapshot.artifacts.find((artifact) => artifact.id === "artifact-preview")!
+    snapshot.artifacts = [
+      ...snapshot.artifacts.filter((artifact) => artifact.id !== "artifact-preview"),
+      { ...first, id: "variant-a", title: "Variant A", path: "design-studio/replay/a.html", mimeType: "text/html", variant: { id: "a", groupId: "design-studio/replay", label: "Variant A", order: 0 } },
+      { ...first, id: "variant-b", title: "Variant B", path: "design-studio/replay/b.html", mimeType: "text/html", variant: { id: "b", groupId: "design-studio/replay", label: "Variant B", order: 1 } },
+    ]
+    const base = snapshot.annotations[0]!
+    snapshot.annotations = [
+      { ...base, id: "on-a", artifactId: "variant-a", body: "Tighten the header on A.", thread: [] },
+      { ...base, id: "on-b", artifactId: "variant-b", body: "B loses the status column.", thread: [] },
+      { ...base, id: "on-plan", artifactId: "artifact-plan", body: "Run the migration on staging first.", thread: [] },
+    ]
     render(<WorkspaceShell />)
-    await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+    await act(async () => { completeHandshake(harness.socket(0), snapshot) })
     await settle()
-    await userEvent.setup().click(screen.getByRole("tab", { name: "Preview" }))
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("tab", { name: "Preview" }))
     await settle()
-    const comments = screen.getByRole("region", { name: "Comments on this preview" })
-    expect(within(comments).getByText("COMMENTS")).toBeTruthy()
-    expect(within(comments).getByText(/\d+ open/)).toBeTruthy()
-    expect(within(comments).getByText("Run this migration on the WSL staging machine first.")).toBeTruthy()
+    let comments = screen.getByRole("region", { name: "Comments on this preview" })
+    expect(within(comments).getByText(/COMMENTS ON VARIANT B/)).toBeTruthy()
+    expect(within(comments).getByText("1 open")).toBeTruthy()
+    expect(within(comments).getByText("B loses the status column.")).toBeTruthy()
+    expect(within(comments).queryByText("Tighten the header on A.")).toBeNull()
+    expect(within(comments).queryByText("Run the migration on staging first.")).toBeNull()
+
+    await user.click(screen.getByRole("button", { name: /Variant A/ }))
+    await settle()
+    comments = screen.getByRole("region", { name: "Comments on this preview" })
+    expect(within(comments).getByText(/COMMENTS ON VARIANT A/)).toBeTruthy()
+    expect(within(comments).getByText("Tighten the header on A.")).toBeTruthy()
+    expect(within(comments).queryByText("B loses the status column.")).toBeNull()
+
+    await user.click(screen.getByRole("tab", { name: "Plan" }))
+    await settle()
+    const planComments = screen.getByRole("region", { name: "Comments on the plan" })
+    expect(within(planComments).getByText("Run the migration on staging first.")).toBeTruthy()
   })
 })
