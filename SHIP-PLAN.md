@@ -1132,17 +1132,58 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
 - [ ] **S2.8 [CX]** Load and soak with sessions held open for days, which is the real usage
       shape.
 - [ ] **S2.9 [CX]** Tier claim verification in the daemon, per S0.4.
-- [ ] **S2.10 [CX]** Restart continuity on the single-node authority. The relay is a
-      deliberately single-process authority (`docs/server-boundary.md`), so every restart
-      drops every session and loses the billable time between the last settlement and the
-      restart. Nobody owns this. Before deployment: state the loss in the product copy, bound
-      it with settlement frequency, or make the authority restartable without dropping
-      sessions. Recorded 2026-09-14 so it is not rediscovered.
+- [ ] **S2.10 [CX, then H]** Restart continuity on the single-node authority. A launch gate,
+      not an operational detail. What the relay does today, read 2026-09-16 from
+      `getdomovoi/relay` `docs/registration-and-usage.md` at `2ec1e24`: the authority is one
+      process holding an exclusive SQLite ownership lock, so there is one of it; on startup every
+      interval left open becomes `interrupted` at its last durable observation, and "unobserved
+      time before the crash and downtime are not charged" is stated as a metering limit. So every
+      restart, planned or not, ends every relayed session, and the time between a route's last
+      `sweep()` observation and the restart is never billed. The loss per route per restart is
+      bounded above by one sweep interval plus the downtime, and by nothing else; the sweep
+      interval is the network adapter's choice and the adapter is not written (`S2.2`). Nobody
+      owns the client side either: what a daemon or phone does when the relay drops it is the
+      carrier adapter's reconnect behaviour, also unwritten. Gate, before any hosted deployment,
+      all three: (1) the sweep interval fixed and published as a number, so the unbilled window
+      is a stated figure and not "small"; (2) product copy that says a relay restart ends relayed
+      sessions and what the client does next, written where the transport list is shown; (3) a
+      restart drill on the deployed shape, N routes connected, restart, measured: seconds to
+      first reconnect, seconds to last, milliseconds unbilled, and the daemon's own session
+      state after it (the worktree and thread live on the machine and must be untouched). A
+      restartable authority that keeps sessions is the other answer; it contradicts the
+      single-process design in `docs/server-boundary.md` and is not chosen here. Recorded
+      2026-09-14, written out 2026-09-16.
 - [ ] **S2.11 [CX, then H]** Backup and retention of the SQLite ledger that holds the billing
-      records. The ledger is the only stateful thing the relay owns and nobody owns its backup,
-      its restore drill or its retention period (`docs/registration-and-usage.md` states
-      retention, nothing implements it). `S6.6` names the account and machine registry; this
-      is the meter's own store and it is separate. Recorded 2026-09-14.
+      records. A launch gate. What exists, same source and commit: the ledger is the usage
+      database plus a separate ownership database, "the service directory and SQLite sidecars
+      must stay together", local filesystem only, "not a shared-filesystem or multi-replica
+      authority"; usage export reads settled intervals after a caller-supplied settlement
+      sequence, ordered, at most 1,000 a page (`src/authority.mjs` `usage()`), and that
+      sequence is an ordering, not a receipt: nothing persists that a consumer took a page,
+      so the store has no record of what was read out; and "retention and archival of these
+      billing records remain an operational policy, not silent eviction". The store holds
+      more than intervals: accounts with enabled and machine-cap fields, routes with machine
+      and account bindings and a credential digest, and account and machine ids on every
+      interval (`src/authority.mjs` schema). So: one copy of the meter and of the relay's own
+      authorization records, on one disk, with no backup, no restore drill, no retention period,
+      no purge, and no acknowledgement of export. Losing the disk loses every interval not yet
+      taken downstream, and nothing today can say which those are. Gate,
+      before any hosted deployment: (1) an owner named, the person and the runbook; (2) a
+      backup that copies a consistent database without taking the ownership
+      lock, the SQLite online backup API or WAL streaming against a second connection, on a
+      schedule with a stated recovery point, and the exclusive-lock behaviour checked against
+      it rather than assumed; (3) a restore drill run once on the deployed shape, restoring
+      to a fresh directory and starting the authority against it, with the last settled
+      interval and the acknowledgement below compared before and after; (4) a durable,
+      account-scoped export acknowledgement written after the downstream commit, backed up and
+      restored with the ledger, because a settlement sequence or a returned page authorises
+      nothing; (5) a retention period written as a number, a purge that removes only intervals
+      older than it and acknowledged under (4), and an archive of what it removes if billing
+      disputes need it; (6) the hosted account and device registry in `S6.6` stays a separate
+      store; the relay keeps the authorization and metering records it already holds, accounts,
+      routes, credential digests and interval attribution, and does not grow into that
+      registry. Recorded 2026-09-14, written out 2026-09-16, corrected 2026-09-16 against
+      `src/authority.mjs` at `2ec1e24`.
 
 ### From the roadmap: account and transport services (Goal 3, hosted half)
 
@@ -1629,8 +1670,9 @@ The product's argument is trustworthiness. Asserting it is not shipping it.
 - [ ] **S6.4 [H]** Status page, on-call rotation, incident comms template.
 - [ ] **S6.5 [H]** ToS, privacy policy and a team DPA that match the architecture rather
       than the marketing.
-- [ ] **S6.6 [CX]** Backup and restore for the only stateful thing you own: the account and
-      machine registry.
+- [ ] **S6.6 [CX]** Backup and restore for the account and machine registry. It was called
+      the only stateful thing you own; the relay's billing ledger is the other, and it has its
+      own gate at `S2.11`. The two stores stay separate.
 
 ## Phase 7 — docs, site, launch — M3
 
