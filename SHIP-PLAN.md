@@ -1153,6 +1153,9 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
       restartable authority that keeps sessions is the other answer; it contradicts the
       single-process design in `docs/server-boundary.md` and is not chosen here. Recorded
       2026-09-14, written out 2026-09-16.
+      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/fd2d515f99fbf9dd6bbad60a0d34cca7a1de4a34/docs/restart-and-ledger-recovery.md),
+      S2.10 section, proposed in [relay #2](https://github.com/getdomovoi/relay/pull/2).
+      Chosen approach, costs, exclusions and numbered measurements; not implementation evidence.
 - [ ] **S2.11 [CX, then H]** Backup and retention of the SQLite ledger that holds the billing
       records. A launch gate. What exists, same source and commit: the ledger is the usage
       database plus a separate ownership database, "the service directory and SQLite sidecars
@@ -1184,6 +1187,9 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
       routes, credential digests and interval attribution, and does not grow into that
       registry. Recorded 2026-09-14, written out 2026-09-16, corrected 2026-09-16 against
       `src/authority.mjs` at `2ec1e24`.
+      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/fd2d515f99fbf9dd6bbad60a0d34cca7a1de4a34/docs/restart-and-ledger-recovery.md),
+      S2.11 section, proposed in [relay #2](https://github.com/getdomovoi/relay/pull/2).
+      Operational owner: fetzy. The design and owner assignment do not close the launch gate.
 
 ### From the roadmap: account and transport services (Goal 3, hosted half)
 
