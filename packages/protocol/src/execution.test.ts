@@ -172,7 +172,25 @@ describe("standing approval execution state", () => {
     command: "pnpm test",
     createdBy: "desktop",
     createdAt: "2026-09-03T18:00:00.000Z",
+    useCount: 0,
   } as const
+
+  it("requires a bounded use count and preserves attributed revocation", () => {
+    const revoked = {
+      ...commonRule, useCount: 3, status: "inactive", inactiveReason: "revoked",
+      execution: resolved, inactivatedAt: "2026-09-15T18:00:00.000Z",
+      inactivatedBy: "cli", inactivatedByConnectionId: "e8bf6725-2d14-4444-8df9-b3f5ab51a9c2",
+    }
+    expect(approvalRuleSchema.safeParse(revoked).success).toBe(true)
+    for (const useCount of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(approvalRuleSchema.safeParse({ ...revoked, useCount }).success).toBe(false)
+    }
+    for (const field of ["inactivatedBy", "inactivatedByConnectionId", "inactivatedAt", "execution"]) {
+      const missing = { ...revoked } as Record<string, unknown>
+      delete missing[field]
+      expect(approvalRuleSchema.safeParse(missing).success).toBe(false)
+    }
+  })
 
   it("requires active rules to carry their resolved execution", () => {
     const active = { ...commonRule, status: "active", execution: resolved } as const
@@ -248,6 +266,12 @@ describe("standing approval execution state", () => {
       reason: "legacy-text-only",
       inactiveRuleIds: [inactive.id],
     }
+    expect(workspaceSnapshotSchema.safeParse(snapshot).success).toBe(true)
+
+    snapshot.approvalRules = [inactive, { ...active, status: "inactive", inactiveReason: "revoked",
+      inactivatedAt: "2026-09-15T18:00:00.000Z", inactivatedBy: "cli",
+      inactivatedByConnectionId: "e8bf6725-2d14-4444-8df9-b3f5ab51a9c2",
+    }]
     expect(workspaceSnapshotSchema.safeParse(snapshot).success).toBe(true)
 
     snapshot.approvals[0]!.reapproval.inactiveRuleIds = ["rule-missing"]

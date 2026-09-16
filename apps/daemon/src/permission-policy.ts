@@ -1,4 +1,4 @@
-import type { ApprovalRisk, ExecutionResolution, Runtime } from "@getdomovoi/protocol"
+import type { ApprovalRisk, ExecutionResolution, HardGateCategory, Runtime } from "@getdomovoi/protocol"
 
 export type PermissionDecision = {
   action: "allow" | "review"
@@ -26,21 +26,37 @@ const secretFilePattern = new RegExp(
   "i",
 )
 
-const hardGatePatterns = [
-  /\b(?:sudo|doas|pkexec)\b/i,
-  /\b(?:rm|rmdir|shred|mkfs|chmod|chown)\b/i,
-  /\b(?:git\s+(?:clean|reset\s+--hard)|git\s+push\b[^\n]*\s--force(?:-with-lease)?\b|git\s+branch\s+-D\b)/i,
-  /\b(?:deploy|release|publish)\b/i,
-  /\bterraform\s+(?:apply|destroy)\b/i,
-  /\b(?:kubectl\s+(?:apply|delete|patch)|helm\s+(?:upgrade|uninstall))\b/i,
-  /\b(?:drop|truncate)\s+(?:database|schema|table)\b/i,
-  /\b(?:migrate|migration)\b/i,
-  secretFilePattern,
-  /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
-  /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
-  /\b(?:curl|wget|ssh|scp|sftp)\b/i,
-  /\bexternal[_ -]?directory\b/i,
-] as const
+const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: readonly RegExp[] }> = {
+  "privileged-operations": { label: "privilege escalation and file permission changes", patterns: [
+    /\b(?:sudo|doas|pkexec)\b/i,
+    /\b(?:chmod|chown)\b/i,
+  ] },
+  "destructive-operations": { label: "delete files, drop, truncate or force-push", patterns: [
+    /\b(?:rm|rmdir|shred|mkfs)\b/i,
+    /\b(?:git\s+(?:clean|reset\s+--hard)|git\s+push\b[^\n]*\s--force(?:-with-lease)?\b|git\s+branch\s+-D\b)/i,
+    /\b(?:drop|truncate)\s+(?:database|schema|table)\b/i,
+  ] },
+  deployment: { label: "deploy, release or publish", patterns: [/\b(?:deploy|release|publish)\b/i] },
+  infrastructure: { label: "apply, change or destroy infrastructure", patterns: [
+    /\bterraform\s+(?:apply|destroy)\b/i,
+    /\b(?:kubectl\s+(?:apply|delete|patch)|helm\s+(?:upgrade|uninstall))\b/i,
+  ] },
+  "database-migrations": { label: "database migrations", patterns: [/\b(?:migrate|migration)\b/i] },
+  credentials: { label: "read credentials, private keys or environment secrets", patterns: [
+    secretFilePattern,
+    /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
+    /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
+  ] },
+  network: { label: "network calls through curl, wget, SSH or file transfer tools", patterns: [/\b(?:curl|wget|ssh|scp|sftp)\b/i] },
+  "outside-project": { label: "access outside the project directory", patterns: [/\bexternal[_ -]?directory\b/i] },
+  "skill-installation": { label: "installing skills", patterns: [] },
+}
+const hardGatePatterns = Object.values(hardGateGroups).flatMap(({ patterns }) => patterns)
+
+export function permissionHardGates(): { categories: HardGateCategory[] } {
+  return { categories: (Object.keys(hardGateGroups) as HardGateCategory["id"][])
+    .map((id) => ({ id, label: hardGateGroups[id].label })) }
+}
 
 const fileToolCommands = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 

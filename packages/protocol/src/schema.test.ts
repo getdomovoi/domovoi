@@ -69,8 +69,8 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
-  it("uses a breaking minor for the transfers history variant", () => {
-    expect(protocolVersion).toBe("0.6.0")
+  it("uses a breaking minor for counted and revoked approval rules", () => {
+    expect(protocolVersion).toBe("0.7.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
   })
 
@@ -1494,6 +1494,7 @@ describe("workspace protocol", () => {
       snapshot.approvalRules.push({
         id: "rule-build",
         projectId: "project-missing",
+        useCount: 0,
         operation: "command",
         command: "pnpm test",
         createdBy: "desktop",
@@ -1541,6 +1542,7 @@ describe("workspace protocol", () => {
       const rule = {
         id: "rule-build",
         projectId: snapshot.project!.id,
+        useCount: 0,
         operation: "command",
         command: "pnpm test",
         createdBy: "desktop" as const,

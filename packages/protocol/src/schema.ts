@@ -478,6 +478,7 @@ const approvalRuleCommonFields = {
   createdByConnectionId: connectionIdSchema.optional(),
   createdByClientId: clientIdentityIdSchema.optional(),
   createdAt: dateTimeSchema,
+  useCount: z.number().int().nonnegative().safe().default(0),
 } as const
 
 export const approvalRuleSchema = z.discriminatedUnion("status", [
@@ -486,13 +487,25 @@ export const approvalRuleSchema = z.discriminatedUnion("status", [
     status: z.literal("active"),
     execution: resolvedExecutionSchema,
   }).strict(),
-  z.object({
-    ...approvalRuleCommonFields,
-    status: z.literal("inactive"),
-    inactiveReason: z.enum(["legacy-text-only", "unsupported-record-version"]),
-    inactivatedAt: dateTimeSchema,
-    replacedByRuleId: z.string().min(1).optional(),
-  }).strict(),
+  z.discriminatedUnion("inactiveReason", [
+    z.object({
+      ...approvalRuleCommonFields,
+      status: z.literal("inactive"),
+      inactiveReason: z.enum(["legacy-text-only", "unsupported-record-version"]),
+      inactivatedAt: dateTimeSchema,
+      replacedByRuleId: z.string().min(1).optional(),
+    }).strict(),
+    z.object({
+      ...approvalRuleCommonFields,
+      status: z.literal("inactive"),
+      inactiveReason: z.literal("revoked"),
+      execution: resolvedExecutionSchema,
+      inactivatedAt: dateTimeSchema,
+      inactivatedBy: clientKindSchema,
+      inactivatedByConnectionId: connectionIdSchema,
+      inactivatedByClientId: clientIdentityIdSchema.optional(),
+    }).strict(),
+  ]),
 ])
 
 export const threadItemSchema = z.discriminatedUnion("kind", [
@@ -1031,12 +1044,12 @@ export const workspaceSnapshotSchema = z.object({
         path: ["approvalRules", index, "projectId"],
       })
     }
-    if (rule.status === "inactive" && rule.replacedByRuleId !== undefined) {
+    if (rule.status === "inactive" && rule.inactiveReason !== "revoked" && rule.replacedByRuleId !== undefined) {
       const replacement = approvalRulesById.get(rule.replacedByRuleId)
-      if (replacement?.status !== "active" || replacement.projectId !== rule.projectId) {
+      if (!replacement || (replacement.status !== "active" && replacement.inactiveReason !== "revoked") || replacement.projectId !== rule.projectId) {
         context.addIssue({
           code: "custom",
-          message: "Inactive rule replacement must reference an active rule in the same project",
+          message: "Inactive rule replacement must reference an active or revoked rule in the same project",
           path: ["approvalRules", index, "replacedByRuleId"],
         })
       }

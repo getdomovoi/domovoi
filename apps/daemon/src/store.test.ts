@@ -24,6 +24,35 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("migrates protocol 0.6 rule counts without retiring active rules", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-rule-count-migration-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seeded = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    await seeded.close()
+    const old = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    old.protocolVersion = "0.6.0"
+    old.approvalRules = [{
+      id: "rule-before-counts", projectId: demoWorkspace.project!.id,
+      operation: "Run tests", command: "pnpm test", status: "active",
+      execution: demoWorkspace.approvals[0]!.execution,
+      createdBy: "desktop", createdAt: "2026-09-01T00:00:00.000Z",
+    }]
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(old))
+    database.close()
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    expect(reopened.load()).toMatchObject({ protocolVersion, approvalRules: [expect.objectContaining({
+      id: "rule-before-counts", status: "active", useCount: 0,
+    })] })
+    await reopened.close()
+    const again = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    try {
+      expect(again.load().approvalRules[0]).toMatchObject({ status: "active", useCount: 0 })
+      expect(again.auditLog.query({ action: "approval-rule.inactivated" }).entries).toEqual([])
+    } finally { await again.close() }
+  })
+
   it("reopens persisted minute-precision state and pairing timestamps without quarantine", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-timestamp-compat-"))
     scratchDirectories.push(scratch)
@@ -258,6 +287,7 @@ describe("SqliteWorkspaceStore", () => {
     changed.approvals[0]!.execution = secretExecution
     changed.approvalRules.push({
       id: "rule-secret",
+      useCount: 0,
       projectId: changed.project!.id,
       operation: "Run tests",
       command: "pnpm test",
@@ -324,6 +354,7 @@ describe("SqliteWorkspaceStore", () => {
     changed.approvals[0]!.operation = "Authorization: Bearer async-reason-secret"
     changed.approvalRules.push({
       id: "async-rule-secret",
+      useCount: 0,
       projectId: changed.project!.id,
       operation: "Deploy with secret",
       command: "deploy --api-key async-rule-secret",
@@ -662,6 +693,7 @@ describe("SqliteWorkspaceStore", () => {
     }
     changed.approvalRules.push({
       id: "rule-1",
+      useCount: 0,
       projectId: changed.project!.id,
       operation: "Run tests",
       command: "pnpm test",
@@ -677,6 +709,7 @@ describe("SqliteWorkspaceStore", () => {
     })
     changed.approvalRules.push({
       id: "legacy-rule-client-id",
+      useCount: 0,
       projectId: changed.project!.id,
       operation: "Run legacy tests",
       command: "pnpm test:legacy",
