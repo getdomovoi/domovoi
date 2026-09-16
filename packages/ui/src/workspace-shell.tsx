@@ -2888,11 +2888,6 @@ export function ArtifactDock({
             <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
             <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
             <TabsTrigger value="checkpoints"><GitCommitHorizontalIcon />Checkpoints</TabsTrigger>
-            <TabsTrigger value="comments">
-              <MessageSquareTextIcon />Comments
-              {openAnnotations.length ? <Badge variant="outline" className="px-1 font-machine text-mono-xs">{openAnnotations.length}</Badge> : null}
-            </TabsTrigger>
-            <TabsTrigger value="session"><BotIcon />Session</TabsTrigger>
           </TabsList>
           <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
         </div>
@@ -2984,6 +2979,21 @@ export function ArtifactDock({
               <EmptyHeader><EmptyMedia variant="icon"><CodeXmlIcon /></EmptyMedia><EmptyTitle>No preview yet</EmptyTitle><EmptyDescription>HTML artifacts created by the agent appear here.</EmptyDescription></EmptyHeader>
             </Empty>
           )}
+          {/* v2 draws the comments on a variant under the preview frame, not
+              as a tab of their own; the count names how many are still open. */}
+          <section aria-label="Comments on this preview" className="mx-auto mt-4 flex max-w-[640px] flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-eyebrow tracking-[.13em] text-faint">COMMENTS</span>
+              <span className="font-machine text-mono-xs text-faint">{openAnnotations.length} open · {annotations.length} in all</span>
+            </div>
+            <AnnotationComments
+              annotations={annotations}
+              anchorResolutions={anchorResolutions}
+              readOnly={archiveReadOnly}
+              onReply={onReplyToAnnotation}
+              onSetStatus={onSetAnnotationStatus}
+            />
+          </section>
         </TabsContent>
         <TabsContent value="plan" className="min-h-0">
           {workingPlan ? (
@@ -3025,15 +3035,6 @@ export function ArtifactDock({
             sessionId={snapshot.activeSessionId}
             onLoad={onLoadSessionEvidence}
             onRevertFile={onRevertSessionFile}
-          />
-        </TabsContent>
-        <TabsContent value="comments" className="min-h-0">
-          <AnnotationComments
-            annotations={annotations}
-            anchorResolutions={anchorResolutions}
-            readOnly={archiveReadOnly}
-            onReply={onReplyToAnnotation}
-            onSetStatus={onSetAnnotationStatus}
           />
         </TabsContent>
         <TabsContent value="terminal" className="min-h-0 bg-code">
@@ -3088,7 +3089,6 @@ export function ArtifactDock({
             }
           />
         </TabsContent>
-        <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
       <SessionUsageFooter usage={usage ?? null} />
       <Dialog
@@ -3319,7 +3319,8 @@ export function AnnotationComments({
 }
 
 function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
-  const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
+  // One icon per dock tab, in the tab list's order.
+  const items = [FileTextIcon, CodeXmlIcon, FileDiffIcon, TerminalSquareIcon, HistoryIcon, GitCommitHorizontalIcon]
   return (
     <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
