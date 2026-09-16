@@ -1,14 +1,17 @@
 import { z } from "zod"
 
-import { credentialSchema } from "./identifiers.js"
+import { pairingCodeSchema } from "./devices.js"
 import { utf16MaxLength } from "./validation.js"
 
-// What a pairing QR carries: the daemon's WebSocket address and a credential
-// minted for one client kind by `domovoid pair --client`. The text is a fixed
-// prefix and base64url JSON, so a scanner reading some other code can say it
-// is not a Domovoi pairing code rather than try to dial it. The address must
-// be TLS unless it is loopback, the same rule the daemon applies to its own
-// listener, so a payload cannot talk a phone into a plaintext tailnet dial.
+// What a pairing QR carries: the daemon's WebSocket address and a single-use
+// code issued by `domovoid pair --client` for one client kind. It carries a
+// code and never a credential, so the QR on a screen is spent the moment one
+// device redeems it and a photograph of it afterwards opens nothing. The text
+// is a fixed prefix and base64url JSON, so a scanner reading some other code
+// can say it is not a Domovoi pairing code rather than try to dial it. The
+// address must be TLS unless it is loopback, the same rule the daemon applies
+// to its own listener, so a payload cannot talk a phone into a plaintext
+// tailnet dial.
 export const pairingPayloadPrefix = "domovoi-pair:1:"
 
 // The longest text a valid payload encodes. The field bounds count UTF-16
@@ -34,7 +37,7 @@ export const pairingUrlSchema = z.string().check(utf16MaxLength(512)).refine((va
 export const pairingPayloadSchema = z.object({
   v: z.literal(1),
   url: pairingUrlSchema,
-  token: credentialSchema,
+  code: pairingCodeSchema,
   label: z.string().trim().min(1).check(utf16MaxLength(128)).optional(),
 }).strict()
 
@@ -75,7 +78,7 @@ export function decodePairingPayload(text: string): PairingPayload {
   if (!result.success) {
     const issue = result.error.issues[0]
     const field = issue?.path[0]
-    throw new Error(field === "token" ? "The pairing code carries no valid credential" : field === "url" ? "The pairing code carries no usable daemon address" : "The pairing code is not in a shape this app reads")
+    throw new Error(field === "code" ? "The pairing code carries no code the machine would take" : field === "url" ? "The pairing code carries no usable daemon address" : "The pairing code is not in a shape this app reads")
   }
   return result.data
 }

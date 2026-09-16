@@ -29,7 +29,13 @@
       "import": "./dist/server.js"
     }
   },
-  "files": ["dist/*.js", "dist/*.d.ts", "runtime/lock.json", "runtime/package.json", "runtime/protocol.tgz"],
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts",
+    "runtime/lock.json",
+    "runtime/package.json",
+    "runtime/protocol.tgz"
+  ],
   "scripts": {
     "prepack": "node ../../scripts/prepare-daemon-runtime.mjs",
     "prebuild": "pnpm --filter @getdomovoi/credential-store build",
@@ -53,6 +59,7 @@
     "@opencode-ai/sdk": "^1.18.29",
     "node-pty": "1.2.0-beta.15",
     "parse5": "^8.0.1",
+    "qrcode-generator": "2.0.4",
     "ws": "^8.18.3",
     "yaml": "^2.9.0",
     "zod": "catalog:"

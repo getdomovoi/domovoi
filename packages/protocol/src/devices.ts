@@ -199,9 +199,25 @@ export const deviceConfirmClaimParamsSchema = z.object({
 
 export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSchema }).strict()
 
+// A code issued for a client kind mints that kind and no other. The kind is
+// recorded with the code rather than asked of the claimer, so a code shown for
+// a phone cannot be spent into a desktop credential by a claimer that says so.
+export const deviceIssueCodeParamsSchema = z.object({
+  targetClient: clientKindSchema.optional(),
+}).strict()
+
 export const deviceIssueCodeResultSchema = z.object({
   code: pairingCodeSchema,
   expiresAt: offsetDateTimeSchema,
+}).strict()
+
+// Redeeming is one step, unlike a machine claim: a client stores its
+// credential before it answers anything, so there is nothing to confirm
+// afterwards. A lost reply costs the code, and the machine shows another.
+export const deviceRedeemCodeParamsSchema = z.object({
+  code: pairingCodeSchema,
+  label: deviceLabelSchema,
+  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
 }).strict()
 
 export const machineCredentialSchema = credentialSchema
