@@ -95,6 +95,7 @@ import {
   type RuntimeDiscoverResult, type RuntimeDiscoveryRefusalReason,
 } from "@getdomovoi/protocol"
 import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
+import { DaemonUpdates, type DaemonUpdateOptions } from "./update-dispatch.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
@@ -811,6 +812,7 @@ export const localMachineCapabilities = [
 ] as const satisfies readonly MachineCapability[]
 
 export type DaemonServerOptions = {
+  updates?: DaemonUpdateOptions
   localOwner?: { secret: LocalOwnerSecret; identity: LocalOwnerIdentity }
   host?: string
   port?: number
@@ -991,6 +993,7 @@ export class DomovoiDaemon {
   #errorSink: DaemonErrorSink
   #tls: TlsMaterial | undefined
   #localOwner: DaemonServerOptions["localOwner"]
+  #updates: DaemonUpdates
   #advertiseHost: string | undefined
   #tailnetHost: string | undefined
   #wsl: MachineWslFacts | undefined
@@ -1055,6 +1058,7 @@ export class DomovoiDaemon {
     this.#errorSink = options.errorSink ?? ((entry) => console.error(entry.context, entry.detail))
     this.#tls = options.tls
     this.#localOwner = options.localOwner
+    this.#updates = new DaemonUpdates(options.updates)
     this.#advertiseHost = options.advertiseHost
     this.#tailnetHost = options.tailnetHost
     this.#wsl = options.wsl
@@ -1496,13 +1500,14 @@ export class DomovoiDaemon {
     this.#stopping = true
     this.#runtimeDiscoveryAbort.abort(new Error("Daemon stopping"))
     const fleetStopped = this.#fleetEnrollment.stop()
+    const updatesStopped = this.#updates.stop()
     if (this.#transferReconciliationTimer) {
       clearTimeout(this.#transferReconciliationTimer)
       this.#transferReconciliationTimer = undefined
     }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
-    const stopping = this.#finishStop(fleetStopped)
+    const stopping = this.#finishStop(Promise.all([fleetStopped, updatesStopped]).then(() => {}))
     this.#stopPromise = stopping
     return stopping
   }
@@ -3147,6 +3152,9 @@ export class DomovoiDaemon {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
         || request.method === "permission.hardGates"
+        || request.method === "update.status"
+        || request.method === "update.check"
+        || request.method === "update.activate"
         || request.method === "relay.recovery"
         || request.method === "runtime.discover"
         || request.method === "provider.refresh"
@@ -3911,6 +3919,20 @@ export class DomovoiDaemon {
         }
         // Retry durability even when a previous failed write already revoked it in memory.
         changed = true
+      }
+      if (method === "update.status" || method === "update.check" || method === "update.activate") {
+        const peer = this.#socketSources.get(socket)
+        const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
+        if (!loopback || socket instanceof DaemonRelaySocket || authenticatedActor?.kind !== "client"
+          || this.#deviceCredentials.has(socket)) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "Updates require a loopback local-owner connection")
+          return
+        }
+        const result = method === "update.status" ? this.#updates.status()
+          : method === "update.check" ? await this.#updates.check(paramsResult.data as RpcParams<"update.check">)
+            : this.#updates.activate(paramsResult.data as RpcParams<"update.activate">)
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        return
       }
       if (method === "device.current") {
         const verified = this.#deviceCredentials.get(socket)?.verified
