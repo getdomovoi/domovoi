@@ -6,9 +6,11 @@ import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
+  fail,
   installFakeWebSocket,
   pendingRequest,
   respond,
+  sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -102,8 +104,16 @@ it("stops and archives a session from its row, and forks by opening its checkpoi
   await settle()
 
   const other = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId && !session.activeTurnId)!
+  // Archive asks first, with the row's session named, and Cancel sends nothing.
   await user.click(screen.getByRole("button", { name: `Actions for ${other.title}` }))
   await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
+  expect(screen.getByRole("alertdialog").textContent).toContain(other.title)
+  expect(sentRequests(socket, "session.archive")).toHaveLength(0)
+  await user.click(screen.getByRole("button", { name: "Cancel" }))
+  expect(sentRequests(socket, "session.archive")).toHaveLength(0)
+  await user.click(screen.getByRole("button", { name: `Actions for ${other.title}` }))
+  await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
+  await user.click(screen.getByRole("button", { name: "Archive session" }))
   expect(pendingRequest(socket, "session.archive").params).toMatchObject({ sessionId: other.id })
   await act(async () => { respond(socket, "session.archive", snapshot) })
   await settle()
@@ -116,4 +126,33 @@ it("stops and archives a session from its row, and forks by opening its checkpoi
   expect(screen.getByRole("tab", { name: "Checkpoints" }).getAttribute("aria-selected")).toBe("true")
   // Still open: picking a session or an action does not close the column.
   expect(screen.getByRole("complementary", { name: "Sessions" })).toBeTruthy()
+})
+
+// Move needs the machine menu on the row's session. Activation is a round
+// trip and the thread remounts on it, so the menu opens only once the
+// snapshot shows that session active; a refused activation opens nothing.
+it("opens the machine menu on the moved session only after it is active, and not after a refusal", async () => {
+  const user = userEvent.setup()
+  const snapshot = workspaceSnapshot()
+  render(<WorkspaceShell />)
+  const socket = harness.socket(0)
+  await act(async () => { completeHandshake(socket, snapshot) })
+  await settle()
+  await user.click(screen.getByRole("button", { name: /^Sessions \d/ }))
+  const other = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId)!
+
+  await user.click(screen.getByRole("button", { name: `Actions for ${other.title}` }))
+  await user.click(screen.getByRole("menuitem", { name: "Move to another machine" }))
+  expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
+  expect(screen.queryByRole("menu")).toBeNull()
+  await act(async () => { fail(socket, "session.activate", { code: -32000, message: "Session is archived" }) })
+  await settle()
+  expect(screen.queryByRole("menu")).toBeNull()
+
+  await user.click(screen.getByRole("button", { name: `Actions for ${other.title}` }))
+  await user.click(screen.getByRole("menuitem", { name: "Move to another machine" }))
+  await act(async () => { respond(socket, "session.activate", workspaceSnapshot({ activeSessionId: other.id })) })
+  await settle()
+  const menu = await screen.findByRole("menu")
+  expect(menu.textContent).toContain("Machines")
 })

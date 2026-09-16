@@ -3549,29 +3549,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   const shellRef = useRef<HTMLDivElement>(null)
   const [sessionsOpen, setSessionsOpen] = useState(false)
-  const [machineMenuRequest, setMachineMenuRequest] = useState(0)
-  // The drawer's row menu acts on any session, not only the open one. Stop
-  // holds that session's queued message the way the composer's Stop does, so
-  // the queue does not leave at the boundary the stop itself created. Fork
-  // and Move need the person to choose a checkpoint or a machine, so they
-  // open that session and land on the list; Archive goes straight through.
-  const sessionRowAction = (action: SessionRowAction, sessionId: string) => {
-    if (action === "stop") {
-      setQueues((current) => {
-        const queued = current[sessionId]
-        return queued ? setQueue(current, sessionId, heldAfter(queued, "Held because this session was stopped. Send it when you want it to run.")) : current
-      })
-      void pauseSession(sessionId).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be stopped"))
-      return
-    }
-    if (action === "archive") {
-      void archiveSession(sessionId).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be archived"))
-      return
-    }
-    openSessionInWorkspace(sessionId)
-    if (action === "fork") openDockTab("checkpoints")
-    else setMachineMenuRequest((current) => current + 1)
-  }
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockExpandButtonRef = useRef<HTMLButtonElement>(null)
   const dockUnpinButtonRef = useRef<HTMLButtonElement>(null)
@@ -3738,6 +3715,48 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setSurface("workspace")
     activateVisibleSession(sessionId)
   }
+  const [machineMenuRequest, setMachineMenuRequest] = useState(0)
+  // Fork and Move need the person to choose a checkpoint or a machine on the
+  // session the row names. Activation is a round trip and the thread remounts
+  // on it, so the destination is held as an intent scoped to that session and
+  // opened only once the snapshot says that session is active; a refusal or a
+  // machine change drops it rather than opening controls on the wrong thread.
+  const [rowIntent, setRowIntent] = useState<{ action: "fork" | "move", sessionId: string } | null>(null)
+  const [archiveTarget, setArchiveTarget] = useState<string | null>(null)
+  const sessionRowAction = (action: SessionRowAction, sessionId: string) => {
+    if (action === "stop") {
+      // Stop holds that session's queued message the way the composer's Stop
+      // does, so the queue does not leave at the boundary the stop created.
+      setQueues((current) => {
+        const queued = current[sessionId]
+        return queued ? setQueue(current, sessionId, heldAfter(queued, "Held because this session was stopped. Send it when you want it to run.")) : current
+      })
+      void pauseSession(sessionId).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be stopped"))
+      return
+    }
+    if (action === "archive") {
+      // Archiving stops the session's resources and removes its worktree; the
+      // row asks first, with the same words the composer's Archive uses.
+      setArchiveTarget(sessionId)
+      return
+    }
+    setRowIntent({ action, sessionId })
+    setSurface("workspace")
+    if (snapshot?.activeSessionId !== sessionId) activateVisibleSession(sessionId)
+  }
+  useEffect(() => {
+    if (!rowIntent || snapshot?.activeSessionId !== rowIntent.sessionId) return
+    if (rowIntent.action === "fork") openDockTab("checkpoints")
+    else setMachineMenuRequest((current) => current + 1)
+    setRowIntent(null)
+    // openDockTab is a plain function on the shell; the intent and the active
+    // session are what decide whether this runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowIntent, snapshot?.activeSessionId])
+  useEffect(() => {
+    if (workspaceError || attached !== null) setRowIntent(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceError, attached?.machineId])
   const reconnectDaemon = () => {
     setConnectionError("")
     void reconnect().catch((cause: unknown) => {
@@ -4370,6 +4389,27 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()}
             onOpenProviderSettings={() => setSurface("providers")}
           />
+          <AlertDialog open={archiveTarget !== null} onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Archive {snapshot.sessions.find((session) => session.id === archiveTarget)?.title ?? "this session"}?</AlertDialogTitle>
+                <AlertDialogDescription>{archiveSessionDescription}</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={() => {
+                    const target = archiveTarget
+                    setArchiveTarget(null)
+                    if (target) void archiveSession(target).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be archived"))
+                  }}
+                >
+                  Archive session
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
           {surface === "providers" ? (
           <SettingsShell
             providers={snapshot.machine.providers}
