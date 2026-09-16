@@ -1,7 +1,7 @@
 import type { SessionHistoryPage, SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { latestTurnFromHistory, usageChipRows, usageChipText } from "./usage-chip"
+import { latestTurnFromHistory, usageChipRows, usageChipText, usageChipTriggerText } from "./usage-chip"
 
 const usage: SessionUsage = {
   sessionId: "session-billing",
@@ -76,5 +76,16 @@ describe("usage chip", () => {
     const endless: Load = async () => { pages += 1; return { sessionId: "session-billing", hasMore: true, nextCursor: `thread:${pages}`, items: [receipt] } }
     expect(await latestTurnFromHistory(endless, "session-billing")).toBeUndefined()
     expect(pages).toBe(3)
+  })
+
+  // A fresh session on a busy day: nothing to say for the session, so the
+  // chip stands on today's count alone and draws no session rows as zeros.
+  it("stands on today's count when the session has no recorded usage", () => {
+    const empty: SessionUsage = { ...usage, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, costMicros: 0, reportedCostTurns: 0, byRuntime: [] }
+    expect(usageChipTriggerText(empty, today)).toBe("120k today")
+    expect(usageChipTriggerText(null, today)).toBe("120k today")
+    expect(usageChipTriggerText(null, { ...today, turns: 0 })).toBeUndefined()
+    expect(usageChipRows({ usage: empty, turn, today }).map((row) => row.label)).toEqual(["Today"])
+    expect(usageChipTriggerText(usage, today)).toBe("42.1k · $0.38")
   })
 })

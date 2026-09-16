@@ -47,3 +47,14 @@ it("aborts a superseded read and keeps the newest open's turn", async () => {
   expect(screen.getByText("2,000 in · 1 out")).toBeTruthy()
   expect(screen.queryByText("1,000 in · 1 out")).toBeNull()
 })
+
+it("shows today's count for a session with no usage of its own, and asks for no turn", async () => {
+  const loadLatestTurn = vi.fn(async () => undefined)
+  render(<UsageChip usage={null} today={{ inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 20_000, reasoningTokens: 0, totalTokens: 120_000, costMicros: 1_120_000, currency: "USD", sessions: 3, turns: 27, reportedCostTurns: 27, unavailableCostTurns: 0 }} loadLatestTurn={loadLatestTurn} />)
+  const chip = screen.getByRole("button", { name: "Usage" })
+  expect(chip.textContent).toContain("120k today")
+  await userEvent.setup().click(chip)
+  expect(screen.getAllByTestId("usage-row")).toHaveLength(1)
+  expect(screen.getByText("TODAY")).toBeTruthy()
+  expect(loadLatestTurn).not.toHaveBeenCalled()
+})
