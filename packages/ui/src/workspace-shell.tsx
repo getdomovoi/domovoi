@@ -10,6 +10,7 @@ import {
   FileTextIcon,
   FolderOpenIcon,
   GitCommitHorizontalIcon,
+  ShieldCheckIcon,
   HistoryIcon,
   DownloadIcon,
   ExternalLinkIcon,
@@ -54,6 +55,7 @@ import type {
   SessionTransferPreviewParams,
   SessionUsage,
   SessionTurn,
+  HardGateCategory,
   RuntimeDiscoverResult,
   UsageWindow,
   UsageWindowParams,
@@ -192,6 +194,7 @@ import { ComposerSkillChip } from "./composer-skills"
 import { MachineSheet } from "./machine-sheet"
 import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
+import { RulesPanel } from "./rules-panel.js"
 import { ModelPopover } from "./model-popover.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity } from "./thread-activity-groups"
@@ -2498,6 +2501,8 @@ export function ArtifactDock({
   onRestoreCheckpoint,
   worktreeName,
   onForkCheckpoint,
+  onRevokeApprovalRule,
+  onLoadHardGates,
   restoreBusy = false,
   onLoadSessionEvidence,
   onRevertSessionFile,
@@ -2557,6 +2562,10 @@ export function ArtifactDock({
   worktreeName?: string | undefined
   onForkCheckpoint?: ((checkpointId: string) => void) | undefined
   restoreBusy?: boolean
+  // The Rules tab revokes through approvalRule.revoke and reads the daemon's
+  // hard-gate categories rather than carrying a copy of the policy.
+  onRevokeApprovalRule?: ((ruleId: string) => Promise<void>) | undefined
+  onLoadHardGates?: (() => Promise<HardGateCategory[]>) | undefined
 }) {
   const plan = latestArtifactForActiveSession(snapshot, "plan")
   const workingPlan = snapshot.workingPlans.find(
@@ -2914,6 +2923,7 @@ export function ArtifactDock({
             <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
             <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
             <TabsTrigger value="checkpoints"><GitCommitHorizontalIcon />Checkpoints</TabsTrigger>
+            <TabsTrigger value="rules"><ShieldCheckIcon />Rules</TabsTrigger>
           </TabsList>
           <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
         </div>
@@ -3134,6 +3144,21 @@ export function ArtifactDock({
               || Boolean(activeSession(snapshot)?.activeTurnId)
             }
           />
+        </TabsContent>
+        <TabsContent value="rules" className="min-h-0">
+          {/* Rules are the project's, not the session's: an archived session
+              selected in the thread does not take away the right to revoke a
+              rule. The protocol has no watch-only client, so nothing dims
+              Revoke here; a refusal comes back from the daemon and is shown. */}
+          {onRevokeApprovalRule && onLoadHardGates ? (
+            <RulesPanel
+              rules={snapshot.approvalRules.filter((rule) => rule.projectId === snapshot.project?.id)}
+              projectName={snapshot.project?.name ?? "this project"}
+              machineName={snapshot.machine.name}
+              onRevoke={onRevokeApprovalRule}
+              onLoadHardGates={onLoadHardGates}
+            />
+          ) : null}
         </TabsContent>
       </Tabs>
       <SessionUsageFooter usage={usage ?? null} />
@@ -3366,7 +3391,7 @@ export function AnnotationComments({
 
 function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
   // One icon per dock tab, in the tab list's order.
-  const items = [FileTextIcon, CodeXmlIcon, FileDiffIcon, TerminalSquareIcon, HistoryIcon, GitCommitHorizontalIcon]
+  const items = [FileTextIcon, CodeXmlIcon, FileDiffIcon, TerminalSquareIcon, HistoryIcon, GitCommitHorizontalIcon, ShieldCheckIcon]
   return (
     <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
@@ -3438,6 +3463,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     getSkillInventory,
     createTerminal,
     listModels,
+    revokeApprovalRule,
+    listHardGates,
     discoverRuntime,
     listProviderSecrets,
     listSkills,
@@ -4040,7 +4067,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
   const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 

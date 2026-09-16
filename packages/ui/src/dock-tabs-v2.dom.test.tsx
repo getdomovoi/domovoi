@@ -2,10 +2,12 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
+import { rulesIntro } from "./rules-panel"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
   installFakeWebSocket,
+  sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -25,8 +27,19 @@ describe("the dock's tab list", () => {
     await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
     await settle()
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Plan", "Preview", "Changes", "Terminal", "History", "Checkpoints",
+      "Plan", "Preview", "Changes", "Terminal", "History", "Checkpoints", "Rules",
     ])
+  })
+
+  it("opens Rules on the project's standing rules and asks the daemon for its hard gates", async () => {
+    render(<WorkspaceShell />)
+    const socket = harness.socket(0)
+    await act(async () => { completeHandshake(socket, workspaceSnapshot()) })
+    await settle()
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Rules" }))
+    await settle()
+    expect(screen.getByText(rulesIntro)).toBeTruthy()
+    expect(sentRequests(socket, "permission.hardGates")).toHaveLength(1)
   })
 
   // v2 labels the block "COMMENTS ON VARIANT B" and its logic filters by the
@@ -85,4 +98,31 @@ describe("the dock's tab list", () => {
     const planComments = screen.getByRole("region", { name: "Comments on the plan" })
     expect(within(planComments).getByText("Run this migration on the WSL staging machine first.")).toBeTruthy()
   })
+})
+
+// The rule belongs to the project. Selecting an archived session must not
+// dim Revoke for the whole project's standing rules.
+it("keeps Revoke live in the Rules tab while an archived session is selected", async () => {
+  const base = workspaceSnapshot()
+  const snapshot = workspaceSnapshot({
+    sessions: base.sessions.map((session) => session.id === base.activeSessionId
+      ? { ...session, state: "archived" as const, archiveRequestedAt: "2026-09-10T00:00:00.000Z", archiveCheckpoint: "c".repeat(40), archivedAt: "2026-09-10T00:01:00.000Z" }
+      : session),
+    approvalRules: [{
+      id: "rule-tests", useCount: 4, projectId: base.project!.id, operation: "shell", command: "pnpm test",
+      createdBy: "desktop", createdAt: "2026-09-03T10:00:00.000Z", status: "active",
+      execution: {
+        state: "resolved", digest: `sha256:${"a".repeat(64)}`,
+        record: { version: 1, cwd: ".", kind: "shell", coverage: "command-and-script-text", entries: [{ id: 0, source: { kind: "request" }, parts: [{ operator: null, argv: ["pnpm", "test"], expandsTo: [] }] }] },
+      },
+    }],
+  })
+  render(<WorkspaceShell />)
+  await act(async () => { completeHandshake(harness.socket(0), snapshot) })
+  await settle()
+  await userEvent.setup().click(screen.getByRole("tab", { name: "Rules" }))
+  await settle()
+  const rows = screen.getAllByTestId("rule-row")
+  expect(rows.length).toBeGreaterThan(0)
+  expect((within(rows[0]!).getByRole("button", { name: "Revoke" }) as HTMLButtonElement).disabled).toBe(false)
 })
