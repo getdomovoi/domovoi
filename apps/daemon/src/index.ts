@@ -5,6 +5,7 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { isLoopbackHost, pairingAddressFor } from "./pairing-address.js"
 import { renderQrToTerminal } from "./qr-terminal.js"
 import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
@@ -42,21 +43,8 @@ async function requestPairingCode(
   }) as DeviceIssueCodeResult
 }
 
-// The address a scanned code dials is this daemon's own listener. A phone
-// reaches it over TLS, so a daemon without TLS has nothing to put in a code
-// unless it is loopback, where the only reachable client is on this machine.
-function pairingAddressFor(config: CliRpcTarget & { host: string; port: number }): { url: string; label?: string; loopback: boolean } | undefined {
-  const loopback = isLoopbackListener(config.host)
-  if (!config.tls && !loopback) return undefined
-  const scheme = config.tls ? "wss" : "ws"
-  const host = config.host.includes(":") ? `[${config.host}]` : config.host
-  return { url: `${scheme}://${host}:${config.port}/rpc`, label: hostname(), loopback }
-}
-
-const loopbackListeners = new Set(["127.0.0.1", "::1", "localhost"])
-
 function isLoopbackListener(host: string): boolean {
-  return loopbackListeners.has(host)
+  return isLoopbackHost(host)
 }
 
 async function requestProjectOpen(
@@ -242,7 +230,7 @@ async function main() {
     const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
     process.exitCode = await runPairCommand(args, {
       issue: (targetClient) => requestPairingCode(config, token, targetClient),
-      pairingAddress: () => pairingAddressFor(config),
+      pairingAddress: () => pairingAddressFor(config, (path) => readFileSync(path, "utf8")),
       renderCode: (payload) => renderQrToTerminal(payload),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),

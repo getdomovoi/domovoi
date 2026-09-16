@@ -55,12 +55,16 @@ describe("runPairCommand", () => {
     expect(io.out.join("")).toContain("which only this machine can reach")
   })
 
-  it("refuses to draw a code when the daemon has no address a phone can reach", async () => {
+  it("says why there is no code to scan rather than drawing one that fails at TLS", async () => {
     const io = recorder()
-    const unreachable = { ...io, issue: vi.fn(async () => issued), pairingAddress: () => undefined }
+    const unreachable = {
+      ...io,
+      issue: vi.fn(async () => issued),
+      pairingAddress: () => ({ problem: "This daemon's certificate names no host a device could dial." }),
+    }
     expect(await runPairCommand(["pair", "--client", "phone", "--label", "iPhone"], unreachable)).toBe(1)
     expect(io.out.join("")).toContain(issued.code)
-    expect(io.err.join("")).toContain("no address a phone can reach")
+    expect(io.err.join("")).toContain("names no host a device could dial")
     expect(io.out.join("")).not.toContain("<qr>")
   })
 

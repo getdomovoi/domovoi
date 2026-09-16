@@ -77,8 +77,11 @@ DOMOVOI_TLS_KEY_PATH=<path to the .key> \
 pnpm --filter @getdomovoi/daemon start
 ```
 
-The daemon binds exactly the host you give it (`apps/daemon/src/server.ts`). In the phone, dial
-the name on the certificate: `wss://<domain>:47831/rpc`.
+The daemon binds exactly the host you give it (`apps/daemon/src/server.ts`), which is not the
+address a phone dials: the certificate is issued for the DNS name. `domovoid pair --client` reads
+the name out of the certificate it is serving and puts that in the pairing code, so the address the
+code carries is one the phone can verify (`apps/daemon/src/pairing-address.ts`). A certificate that
+names no host, or more than one, is refused rather than guessed at.
 
 ### Pairing
 

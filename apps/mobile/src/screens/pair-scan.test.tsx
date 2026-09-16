@@ -6,9 +6,10 @@ import { useEffect } from "react"
 
 import { PairScanScreen, readPairingScan, type PairScanner } from "./pair-scan"
 import type { PairingPayload } from "@getdomovoi/protocol"
+import type { PairedCredential } from "../lib/redeem-pairing-code"
 
 const payload = { v: 1 as const, url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", code: "hearth-quiet-ember-42", label: "djs-macbook-pro-1" }
-const credential = { url: payload.url, token: "t".repeat(43) }
+const credential: PairedCredential = { url: payload.url, token: "t".repeat(43) }
 
 // A fake camera: after it mounts, it reports the text a QR would carry, the
 // way the real one reports a frame.
@@ -66,7 +67,7 @@ describe("pairing by camera", () => {
 
   it("spends the code for a credential and never shows the credential", async () => {
     const onPaired = jest.fn()
-    const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<typeof credential>>(async () => credential)
+    const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<PairedCredential>>(async () => credential)
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
     )
@@ -78,7 +79,7 @@ describe("pairing by camera", () => {
 
   it("says what to do when the machine refuses a spent code, and keeps the phone unpaired", async () => {
     const onPaired = jest.fn()
-    const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<typeof credential>>(async () => { throw new Error("The machine would not take this code. It may already have been used. Show a fresh one and scan again.") })
+    const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<PairedCredential>>(async () => { throw new Error("The machine would not take this code. It may already have been used. Show a fresh one and scan again.") })
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
     )
@@ -87,4 +88,29 @@ describe("pairing by camera", () => {
     expect(onPaired).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: "Pair with this machine" })).toBeTruthy()
   })
+
+  it("does not pair when the machine answers after the person cancelled", async () => {
+    const onPaired = jest.fn()
+    const onCancel = jest.fn()
+    let finish: (value: PairedCredential) => void = () => {}
+    const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<PairedCredential>>(
+      () => new Promise((resolve) => { finish = resolve }),
+    )
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={onCancel} redeem={redeem} deviceName="iPhone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Cancel" }))
+    expect(onCancel).toHaveBeenCalled()
+    // The code is spent on the machine either way; what must not happen is
+    // this phone taking a credential the person walked away from.
+    finish(credential)
+    await Promise.resolve()
+    expect(onPaired).not.toHaveBeenCalled()
+  })
+
+  // The same guard covers the screen being unmounted, through the effect
+  // cleanup in pair-scan.tsx. That path is not covered here: this preset
+  // (RNTL 14 on React 19) does not run effect cleanups on unmount, so a test
+  // for it would pass without exercising the guard.
 })

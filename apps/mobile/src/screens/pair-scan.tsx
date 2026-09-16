@@ -1,6 +1,6 @@
 import { decodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type PairingPayload } from "@getdomovoi/protocol"
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
-import { useCallback, useState, type ComponentType } from "react"
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
 
 import { redeemPairingCode, type PairedCredential } from "../lib/redeem-pairing-code"
@@ -75,6 +75,12 @@ export function PairScanScreen({
   const [name, setName] = useState(deviceName)
   const [pairing, setPairing] = useState(false)
   const [refusal, setRefusal] = useState("")
+  // A redemption already in flight cannot be recalled, and the code is spent
+  // either way. What must not happen is a late success pairing the phone after
+  // the person cancelled or left, which would overwrite a pairing they made
+  // since. Each attempt carries a number, and only the current one is heard.
+  const attempt = useRef(0)
+  useEffect(() => () => { attempt.current += 1 }, [])
   // One handler for the camera's lifetime: a camera reports frames on its own
   // schedule, and a new function each render would re-arm it each time.
   const onScanned = useCallback((text: string) => setRead(readPairingScan(text)), [])
@@ -127,16 +133,19 @@ export function PairScanScreen({
                 if (pairing) return
                 setPairing(true)
                 setRefusal("")
+                attempt.current += 1
+                const mine = attempt.current
                 redeem(found, name).then(
-                  (credential) => onPaired(credential),
+                  (credential) => { if (attempt.current === mine) onPaired(credential) },
                   (cause: unknown) => {
+                    if (attempt.current !== mine) return
                     setPairing(false)
                     setRefusal(cause instanceof Error ? cause.message : "Pairing did not finish.")
                   },
                 )
               }}
             />
-            <Button title="Scan again" variant="ghost" shape="block" disabled={pairing} onPress={() => { setRead(undefined); setPasted(""); setRefusal("") }} />
+            <Button title="Scan again" variant="ghost" shape="block" disabled={pairing} onPress={() => { attempt.current += 1; setRead(undefined); setPasted(""); setRefusal("") }} />
           </Card>
         ) : cameraReady && !cameraRefused ? (
           <View className="h-[300px] overflow-hidden rounded-xl border border-border">
@@ -175,7 +184,7 @@ export function PairScanScreen({
             />
           </Card>
         )}
-        <Button title="Cancel" variant="ghost" shape="block" onPress={onCancel} />
+        <Button title="Cancel" variant="ghost" shape="block" onPress={() => { attempt.current += 1; onCancel() }} />
       </PageScroller>
     </View>
   )
