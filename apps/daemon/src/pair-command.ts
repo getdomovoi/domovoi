@@ -1,11 +1,15 @@
-import { clientKindSchema, devicePairResultSchema, deviceRenameLabelSchema, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult, type DevicePairResult } from "@getdomovoi/protocol"
+import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
 
 export type PairCommandDependencies = {
-  issue: () => Promise<DeviceIssueCodeResult>
-  grantClient: (input: { targetClient: ClientKind; label: string }) => Promise<DevicePairResult>
+  issue: (targetClient?: ClientKind) => Promise<DeviceIssueCodeResult>
+  // The address a scanned code dials, which is the daemon's own listener and
+  // not anything the operator retypes. Undefined when the daemon answers
+  // nowhere a phone could reach.
+  pairingAddress: () => { url: string; label?: string; loopback: boolean } | undefined
+  renderCode: (payload: string) => string
   stdout: (text: string) => void
   stderr: (text: string) => void
 }
@@ -21,30 +25,51 @@ export async function runPairCommand(
     const client = clientKindSchema.safeParse(args[2])
     const label = deviceRenameLabelSchema.safeParse(args[4])
     if (!client.success || !label.success) { dependencies.stderr(usage); return 1 }
+    let issued: DeviceIssueCodeResult
     try {
-      const granted = devicePairResultSchema.parse(await dependencies.grantClient({ targetClient: client.data, label: label.data }))
-      if (granted.device.binding.kind !== "client" || granted.device.binding.client !== client.data) {
-        throw new Error("The daemon returned a different credential kind")
-      }
-      if (client.data === "phone" || client.data === "tablet") {
-        // The same four lines the pairing card shows; the daemon refuses
-        // everything outside them.
-        dependencies.stdout(`A paired ${client.data} can:\n`)
-        for (const line of phoneAndTabletPromise) dependencies.stdout(`  ${line}\n`)
-        dependencies.stdout("Keep the credential private.\n")
-      } else {
-        dependencies.stdout(`This ${client.data} credential grants session sends, approvals and terminals.\n`)
-        dependencies.stdout("It cannot change paired devices or enroll more machines. Keep it private.\n")
-      }
-      dependencies.stdout(`Client credential: ${granted.token}\n`)
-      dependencies.stdout(`Use it only with a ${client.data} client connecting to this daemon.\n`)
-      dependencies.stdout(`Revoke device ${granted.device.id} in this daemon's Devices list when it is no longer needed.\n`)
-      return 0
+      issued = await dependencies.issue(client.data)
     } catch (error) {
       dependencies.stderr(error instanceof CliDeadlineError ? `${error.message}\n`
-        : "Could not grant a client credential. Use this daemon's own credential and an updated daemon. Check its Devices list before retrying if the reply was lost.\n")
+        : "Could not ask the daemon for a pairing code. Use this daemon's own credential and an updated daemon.\n")
       return 1
     }
+
+    if (client.data === "phone" || client.data === "tablet") {
+      // The same four lines the machine's pairing card shows, and the same
+      // note about the one it does not keep yet, so a headless machine and a
+      // desktop say the same thing about the device being paired.
+      dependencies.stdout(`A paired ${client.data} can:\n`)
+      for (const line of phoneAndTabletPromise) dependencies.stdout(`  ${line}\n`)
+      dependencies.stdout(`${phoneAndTabletPromiseGap}\n\n`)
+    }
+
+    const address = dependencies.pairingAddress()
+    if (address === undefined) {
+      // Without an address a code cannot be drawn, only spoken, and a phone
+      // has nowhere to send it. Say which is missing rather than drawing a
+      // symbol that dials nothing.
+      dependencies.stdout(`Pairing code: ${issued.code}\n`)
+      dependencies.stderr("This daemon has no address a phone can reach, so there is no code to scan. Give it a DNS name with a certificate, then run this again.\n")
+      return 1
+    }
+    const payload = encodePairingPayload({
+      v: 1,
+      url: address.url,
+      code: issued.code,
+      ...(address.label === undefined ? {} : { label: address.label }),
+    })
+    dependencies.stdout("Pairing code (scan it from the device):\n\n")
+    dependencies.stdout(dependencies.renderCode(payload))
+    // The same text the symbol carries, for a device whose camera is refused
+    // or absent. It is what the device's paste field reads, so the two paths
+    // are the same pairing and not one of them a different arrangement.
+    dependencies.stdout(`\nCannot scan it? Paste this on the device:\n${payload}\n`)
+    dependencies.stdout(`\nIt works once, and only for a ${client.data}. Showing it again pairs nothing.\n`)
+    if (address.loopback) {
+      dependencies.stdout(`This daemon answers on ${address.url}, which only this machine can reach. A phone on your network needs the daemon on an address it can dial.\n`)
+    }
+    dependencies.stdout(`The device appears in this daemon's Devices list once it pairs. Revoke it there when it is no longer needed.\n`)
+    return 0
   }
   if (args.length > 1) {
     dependencies.stderr(usage)

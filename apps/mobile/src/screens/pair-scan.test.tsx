@@ -5,8 +5,10 @@ import { PermissionStatus, type PermissionResponse } from "expo-camera"
 import { useEffect } from "react"
 
 import { PairScanScreen, readPairingScan, type PairScanner } from "./pair-scan"
+import type { PairingPayload } from "@getdomovoi/protocol"
 
-const payload = { v: 1 as const, url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", token: "t".repeat(43), label: "djs-macbook-pro-1" }
+const payload = { v: 1 as const, url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", code: "hearth-quiet-ember-42", label: "djs-macbook-pro-1" }
+const credential = { url: payload.url, token: "t".repeat(43) }
 
 // A fake camera: after it mounts, it reports the text a QR would carry, the
 // way the real one reports a frame.
@@ -30,21 +32,21 @@ describe("pairing by camera", () => {
   it("pairs from a scanned code and names the machine before connecting", async () => {
     const onPaired = jest.fn()
     await render(
-      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} />,
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
     )
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
-    expect(screen.queryByText(payload.token)).toBeNull()
+    expect(screen.queryByText(credential.token)).toBeNull()
     // The phone checks shape, not scope; the promise is conditional.
     for (const line of phoneAndTabletPromise) expect(screen.getByText(line)).toBeTruthy()
     expect(screen.getByText(phoneAndTabletPromiseGap)).toBeTruthy()
     expect(screen.getByText(/cannot tell that credential from the machine's own/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
-    expect(onPaired).toHaveBeenCalledWith(payload)
+    expect(onPaired).toHaveBeenCalledWith(credential)
   })
 
   it("says what a wrong code is and keeps scanning", async () => {
     await render(
-      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} />,
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
     )
     expect(screen.getByText("This is not a Domovoi pairing code")).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Pair with this machine" })).toBeNull()
@@ -53,12 +55,36 @@ describe("pairing by camera", () => {
   it("offers the pasted code when the camera is refused, and reads it the same way", async () => {
     const onPaired = jest.fn()
     await render(
-      <PairScanScreen permission={denied} requestPermission={jest.fn(async () => denied)} Scanner={scannerWith("")} onPaired={onPaired} onCancel={jest.fn()} />,
+      <PairScanScreen permission={denied} requestPermission={jest.fn(async () => denied)} Scanner={scannerWith("")} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
     )
     expect(screen.getByText("Camera refused")).toBeTruthy()
     await fireEvent.changeText(screen.getByLabelText("Pairing code"), encodePairingPayload(payload))
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
-    expect(onPaired).toHaveBeenCalledWith(payload)
+    expect(onPaired).toHaveBeenCalledWith(credential)
+  })
+
+  it("spends the code for a credential and never shows the credential", async () => {
+    const onPaired = jest.fn()
+    const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<typeof credential>>(async () => credential)
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    expect(redeem).toHaveBeenCalledWith(payload, "iPhone")
+    expect(onPaired).toHaveBeenCalledWith(credential)
+    expect(screen.queryByText(credential.token)).toBeNull()
+  })
+
+  it("says what to do when the machine refuses a spent code, and keeps the phone unpaired", async () => {
+    const onPaired = jest.fn()
+    const redeem = jest.fn<(payload: PairingPayload, label: string) => Promise<typeof credential>>(async () => { throw new Error("The machine would not take this code. It may already have been used. Show a fresh one and scan again.") })
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    expect(screen.getByText(/may already have been used/)).toBeTruthy()
+    expect(onPaired).not.toHaveBeenCalled()
+    expect(screen.getByRole("button", { name: "Pair with this machine" })).toBeTruthy()
   })
 })

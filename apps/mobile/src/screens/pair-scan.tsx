@@ -3,6 +3,7 @@ import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-
 import { useCallback, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
 
+import { redeemPairingCode, type PairedCredential } from "../lib/redeem-pairing-code"
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
@@ -52,19 +53,28 @@ export function PairScanScreen({
   Scanner = CameraScanner,
   onPaired,
   onCancel,
+  redeem = redeemPairingCode,
+  deviceName = "",
   bottomInset = 0,
 }: {
   permission: PermissionResponse | null
   requestPermission: () => Promise<PermissionResponse>
   Scanner?: PairScanner
-  onPaired: (payload: PairingPayload) => void
+  onPaired: (credential: PairedCredential) => void
+  // Injected so a test can spend a code without a daemon.
+  redeem?: (payload: PairingPayload, label: string) => Promise<PairedCredential>
   onCancel: () => void
   // What the floating tab bar covers, so Cancel and the paste field sit
   // above it and the keyboard can push the field into view.
   bottomInset?: number
+  // What the machine's device list will call this phone.
+  deviceName?: string
 }) {
   const [read, setRead] = useState<PairScanResult>()
   const [pasted, setPasted] = useState("")
+  const [name, setName] = useState(deviceName)
+  const [pairing, setPairing] = useState(false)
+  const [refusal, setRefusal] = useState("")
   // One handler for the camera's lifetime: a camera reports frames on its own
   // schedule, and a new function each render would re-arm it each time.
   const onScanned = useCallback((text: string) => setRead(readPairingScan(text)), [])
@@ -95,8 +105,38 @@ export function PairScanScreen({
             <Text variant="note">
               That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
             </Text>
-            <Button title="Pair with this machine" variant="primary" shape="block" onPress={() => onPaired(found)} />
-            <Button title="Scan again" variant="ghost" shape="block" onPress={() => { setRead(undefined); setPasted("") }} />
+            <Text variant="label">Name this phone</Text>
+            <TextInput
+              accessibilityLabel="Phone name"
+              value={name}
+              onChangeText={setName}
+              autoCorrect={false}
+              placeholder="iPhone"
+              placeholderTextColor={colors.dark.faint}
+              selectionColor={colors.dark.primary}
+              editable={!pairing}
+              className="min-h-tap rounded-md border border-border bg-code px-3 text-[13px] text-foreground"
+            />
+            {refusal ? <Text className="px-1 font-sans-medium text-[11.5px] text-destructive">{refusal}</Text> : null}
+            <Button
+              title={pairing ? "Pairing…" : "Pair with this machine"}
+              variant="primary"
+              shape="block"
+              disabled={pairing}
+              onPress={() => {
+                if (pairing) return
+                setPairing(true)
+                setRefusal("")
+                redeem(found, name).then(
+                  (credential) => onPaired(credential),
+                  (cause: unknown) => {
+                    setPairing(false)
+                    setRefusal(cause instanceof Error ? cause.message : "Pairing did not finish.")
+                  },
+                )
+              }}
+            />
+            <Button title="Scan again" variant="ghost" shape="block" disabled={pairing} onPress={() => { setRead(undefined); setPasted(""); setRefusal("") }} />
           </Card>
         ) : cameraReady && !cameraRefused ? (
           <View className="h-[300px] overflow-hidden rounded-xl border border-border">
