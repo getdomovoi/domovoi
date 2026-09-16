@@ -554,13 +554,12 @@ export function App() {
             <PairScanScreen
               permission={cameraPermission}
               requestPermission={requestCameraPermission}
-              onPaired={(payload) => {
-                const next = { url: payload.url, token: payload.token }
-                setUrl(next.url)
-                setToken(next.token)
+              onPaired={(credential) => {
+                setUrl(credential.url)
+                setToken(credential.token)
                 setScanning(false)
-                setConnectTo(next)
-                void saveCredential(next)
+                setConnectTo(credential)
+                void saveCredential(credential)
               }}
               onCancel={() => setScanning(false)}
               bottomInset={tabFootprint}

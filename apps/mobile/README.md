@@ -77,41 +77,51 @@ DOMOVOI_TLS_KEY_PATH=<path to the .key> \
 pnpm --filter @getdomovoi/daemon start
 ```
 
-The daemon binds exactly the host you give it (`apps/daemon/src/server.ts`). In the phone, dial
-the name on the certificate: `wss://<domain>:47831/rpc`.
+The daemon binds exactly the host you give it (`apps/daemon/src/server.ts`), which is not the
+address a phone dials: the certificate is issued for the DNS name. `domovoid pair --client` reads
+the name out of the certificate it is serving and puts that in the pairing code, so the address the
+code carries is one the phone can verify (`apps/daemon/src/pairing-address.ts`). A certificate that
+names no host, or more than one, is refused rather than guessed at.
 
 ### Pairing
 
 Every daemon requires a credential. The phone sends the token in its greeting, and the daemon
 accepts it when it is the daemon's own credential or a device credential paired for a phone
-(`#credentialAccepted` in `apps/daemon/src/server.ts`). Mint a phone-scoped one on the machine:
+(`#credentialAccepted` in `apps/daemon/src/server.ts`). The phone never carries a credential it
+was handed by a person: it earns one by spending a pairing code.
+
+#### By camera
+
+On the machine:
 
 ```bash
 domovoid pair --client phone --label "iPhone"
 ```
 
-It prints a 43-character credential that can send work, answer gates and open terminals on that
-machine, and nothing else (`apps/daemon/src/pair-command.ts`). Revoke it in the daemon's Devices
-list when the phone is done.
+It prints the pairing card's grant list, marking the line the daemon does not keep yet, draws the code as a QR in the terminal, and prints the same
+code as text for a phone that cannot scan. The code works once and only mints a phone, so a
+photograph of the symbol after it is spent opens nothing (`apps/daemon/src/pair-command.ts`,
+`apps/daemon/src/qr-terminal.ts`).
 
-#### By camera
+It lasts three minutes (`pairingCodeTtlMs`). Run the command again for a fresh one; the daemon
+keeps one open pairing, so a new code stops the old one and nothing has to be restarted. A scan
+the phone could not read never reaches the daemon and costs the code nothing; five wrong codes
+close the pairing.
 
-The phone reads a QR that carries the daemon's address and that credential. The text the QR holds
-is `domovoi-pair:1:` followed by base64url JSON, validated by `pairingPayloadSchema` in
-`packages/protocol/src/pairing-payload.ts`: the address must be `wss://`, or `ws://` on loopback
-only, the same rule the daemon applies to its own listener. Make the code on the machine:
+The text the QR holds is `domovoi-pair:1:` followed by base64url JSON, validated by
+`pairingPayloadSchema` in `packages/protocol/src/pairing-payload.ts`: it carries the address and
+the code, never a credential, and the address must be `wss://`, or `ws://` on loopback only, the
+same rule the daemon applies to its own listener. A daemon reachable at neither prints the code and
+says it has no address a phone can dial rather than drawing a symbol that goes nowhere.
 
-```bash
-node scripts/pairing-payload.mjs wss://<the machine's tailnet DNS name>:47831/rpc <credential> "<label>"
-```
+On the phone: Settings, Scan a pairing code, point the camera at it. The phone names the machine,
+shows the same grant list and asks once. Pairing calls `device.redeemCode`, which spends the
+code and returns the credential; it is written to the keychain and never shown
+(`apps/mobile/src/lib/redeem-pairing-code.ts`). A phone that has refused the camera pastes the same
+text into the field under the scanner. Every refusal from the daemon reads the same, so a spent,
+expired or wrong code all say to show a fresh one.
 
-It prints the text and, when `qrencode` is installed (`brew install qrencode`), draws it in the
-terminal. On the phone: Settings, Scan a pairing code, point the camera at it. The phone names the
-machine and asks once before it connects; the credential is written to the keychain and never shown.
-A phone that has refused the camera pastes the same text into the field under the scanner.
-
-Not built yet: `domovoid pair --client` does not print this text itself, and the desktop does not
-draw the QR. Both are the emitter half; the phone half is what this section describes.
+Revoke the phone in the daemon's Devices list when it is done.
 
 #### By hand
 
@@ -121,8 +131,9 @@ Enter the address and the credential in Settings. The daemon's own credential al
 credential can do anything on the machine, and Settings says so above the field. Prefer the
 phone-scoped one.
 
-The one-time code `domovoid pair` prints without `--client` is for pairing another machine
-(`device.claim` takes the claiming machine's id); the phone does not claim it.
+The code `domovoid pair` prints without `--client` is for pairing another machine (`device.claim`
+takes the claiming machine's id). A phone cannot spend it and a machine cannot spend a phone's: the
+kind is fixed when the code is issued.
 
 ## Settings
 

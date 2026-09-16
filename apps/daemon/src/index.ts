@@ -5,6 +5,8 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { isLoopbackHost, pairingAddressFor } from "./pairing-address.js"
+import { renderQrToTerminal } from "./qr-terminal.js"
 import { runProfileCommand } from "./profile-command.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { exitAfterStderr } from "./flushed-exit.js"
@@ -21,7 +23,7 @@ import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
 import { discoverWslMachines } from "./wsl-discovery.js"
 import { runWslCommand } from "./wsl-command.js"
-import { devicePairResultSchema, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -33,16 +35,16 @@ import { readServiceConfiguration, serviceEnvironment, type ServiceConfiguration
 async function requestPairingCode(
   config: CliRpcTarget,
   token: string,
+  targetClient?: ClientKind,
 ): Promise<DeviceIssueCodeResult> {
   return await callDaemon({
-    target: config, token, method: "device.issueCode", params: {},
+    target: config, token, method: "device.issueCode",
+    params: targetClient === undefined ? {} : { targetClient },
   }) as DeviceIssueCodeResult
 }
 
-const loopbackListeners = new Set(["127.0.0.1", "::1", "localhost"])
-
 function isLoopbackListener(host: string): boolean {
-  return loopbackListeners.has(host)
+  return isLoopbackHost(host)
 }
 
 async function requestProjectOpen(
@@ -227,10 +229,9 @@ async function main() {
     const config = parseDaemonEnvironment(process.env, homedir())
     const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
     process.exitCode = await runPairCommand(args, {
-      issue: () => requestPairingCode(config, token),
-      grantClient: async (params) => devicePairResultSchema.parse(await callDaemon({
-        target: config, token, method: "device.pair", params: { ...params, client: "cli" },
-      })),
+      issue: (targetClient) => requestPairingCode(config, token, targetClient),
+      pairingAddress: () => pairingAddressFor(config, (path) => readFileSync(path, "utf8")),
+      renderCode: (payload) => renderQrToTerminal(payload),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

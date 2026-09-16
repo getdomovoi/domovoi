@@ -1,8 +1,9 @@
-import { decodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type PairingPayload } from "@getdomovoi/protocol"
+import { decodePairingPayload, phoneAndTabletPromise, type PairingPayload } from "@getdomovoi/protocol"
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
-import { useCallback, useState, type ComponentType } from "react"
+import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
 
+import { redeemPairingCode, type PairedCredential } from "../lib/redeem-pairing-code"
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
@@ -52,19 +53,34 @@ export function PairScanScreen({
   Scanner = CameraScanner,
   onPaired,
   onCancel,
+  redeem = redeemPairingCode,
+  deviceName = "",
   bottomInset = 0,
 }: {
   permission: PermissionResponse | null
   requestPermission: () => Promise<PermissionResponse>
   Scanner?: PairScanner
-  onPaired: (payload: PairingPayload) => void
+  onPaired: (credential: PairedCredential) => void
+  // Injected so a test can spend a code without a daemon.
+  redeem?: (payload: PairingPayload, label: string) => Promise<PairedCredential>
   onCancel: () => void
   // What the floating tab bar covers, so Cancel and the paste field sit
   // above it and the keyboard can push the field into view.
   bottomInset?: number
+  // What the machine's device list will call this phone.
+  deviceName?: string
 }) {
   const [read, setRead] = useState<PairScanResult>()
   const [pasted, setPasted] = useState("")
+  const [name, setName] = useState(deviceName)
+  const [pairing, setPairing] = useState(false)
+  const [refusal, setRefusal] = useState("")
+  // A redemption already in flight cannot be recalled, and the code is spent
+  // either way. What must not happen is a late success pairing the phone after
+  // the person cancelled or left, which would overwrite a pairing they made
+  // since. Each attempt carries a number, and only the current one is heard.
+  const attempt = useRef(0)
+  useEffect(() => () => { attempt.current += 1 }, [])
   // One handler for the camera's lifetime: a camera reports frames on its own
   // schedule, and a new function each render would re-arm it each time.
   const onScanned = useCallback((text: string) => setRead(readPairingScan(text)), [])
@@ -87,16 +103,54 @@ export function PairScanScreen({
                 daemon's own credential has the same shape and can do anything
                 on that machine. The promise is conditional and says so. */}
             <Text variant="label">A paired phone can</Text>
-            {phoneAndTabletPromise.map((line) => <Text key={line} variant="note">{line}</Text>)}
-            {/* The first line is the machine's word, and this app does not
-                keep all of it yet. The text comes from the protocol so this
-                screen and the machine's pairing card say the same thing. */}
-            <Text variant="note">{phoneAndTabletPromiseGap}</Text>
+            {/* The card's own list, including the line it does not keep yet,
+                read from the protocol so this screen and the machine's card
+                cannot come to say different things. */}
+            {phoneAndTabletPromise.map((line) => (
+              <Text
+                key={line.text}
+                variant="note"
+                className={line.tone === "unbuilt" ? "text-warning" : undefined}
+              >{line.text}</Text>
+            ))}
             <Text variant="note">
               That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
             </Text>
-            <Button title="Pair with this machine" variant="primary" shape="block" onPress={() => onPaired(found)} />
-            <Button title="Scan again" variant="ghost" shape="block" onPress={() => { setRead(undefined); setPasted("") }} />
+            <Text variant="label">Name this phone</Text>
+            <TextInput
+              accessibilityLabel="Phone name"
+              value={name}
+              onChangeText={setName}
+              autoCorrect={false}
+              placeholder="iPhone"
+              placeholderTextColor={colors.dark.faint}
+              selectionColor={colors.dark.primary}
+              editable={!pairing}
+              className="min-h-tap rounded-md border border-border bg-code px-3 text-[13px] text-foreground"
+            />
+            {refusal ? <Text className="px-1 font-sans-medium text-[11.5px] text-destructive">{refusal}</Text> : null}
+            <Button
+              title={pairing ? "Pairing…" : "Pair with this machine"}
+              variant="primary"
+              shape="block"
+              disabled={pairing}
+              onPress={() => {
+                if (pairing) return
+                setPairing(true)
+                setRefusal("")
+                attempt.current += 1
+                const mine = attempt.current
+                redeem(found, name).then(
+                  (credential) => { if (attempt.current === mine) onPaired(credential) },
+                  (cause: unknown) => {
+                    if (attempt.current !== mine) return
+                    setPairing(false)
+                    setRefusal(cause instanceof Error ? cause.message : "Pairing did not finish.")
+                  },
+                )
+              }}
+            />
+            <Button title="Scan again" variant="ghost" shape="block" disabled={pairing} onPress={() => { attempt.current += 1; setRead(undefined); setPasted(""); setRefusal("") }} />
           </Card>
         ) : cameraReady && !cameraRefused ? (
           <View className="h-[300px] overflow-hidden rounded-xl border border-border">
@@ -135,7 +189,7 @@ export function PairScanScreen({
             />
           </Card>
         )}
-        <Button title="Cancel" variant="ghost" shape="block" onPress={onCancel} />
+        <Button title="Cancel" variant="ghost" shape="block" onPress={() => { attempt.current += 1; onCancel() }} />
       </PageScroller>
     </View>
   )
