@@ -1,0 +1,56 @@
+import { X509Certificate } from "node:crypto"
+
+// Where a scanned code tells a device to dial. This is not the address the
+// daemon binds: the documented tailnet setup binds an IPv4 address and serves
+// a certificate issued for the machine's DNS name, and a phone that dials the
+// address rather than the name fails TLS before it sends anything. The name
+// comes from the certificate the daemon is already serving, so what the code
+// says and what the phone can verify are the same fact.
+
+export type PairingAddress = { url: string; label?: string; loopback: boolean }
+export type PairingAddressProblem = { problem: string }
+
+const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"])
+
+export function isLoopbackHost(host: string): boolean {
+  return loopbackHosts.has(host)
+}
+
+export function certificateHostNames(certificate: string): string[] {
+  let parsed: X509Certificate
+  try { parsed = new X509Certificate(certificate) } catch { return [] }
+  const names = (parsed.subjectAltName ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.startsWith("DNS:"))
+    .map((entry) => entry.slice("DNS:".length))
+  // A wildcard certificate names no single host a code could carry.
+  return names.filter((name) => name.length > 0 && !name.startsWith("*"))
+}
+
+export function pairingAddressFor(
+  config: { host: string; port: number; tls?: { certPath: string } | undefined },
+  read: (path: string) => string,
+): PairingAddress | PairingAddressProblem {
+  if (config.tls === undefined) {
+    if (!isLoopbackHost(config.host)) {
+      return { problem: "This daemon serves no certificate, so a device has no address it can verify. Give it a DNS name with a certificate, then run this again." }
+    }
+    const host = config.host.includes(":") ? `[${config.host}]` : config.host
+    return { url: `ws://${host}:${config.port}/rpc`, loopback: true }
+  }
+
+  let certificate: string
+  try { certificate = read(config.tls.certPath) } catch {
+    return { problem: `This daemon's certificate could not be read at ${config.tls.certPath}, so there is no name to put in a pairing code.` }
+  }
+  const names = certificateHostNames(certificate)
+  if (names.length === 0) {
+    return { problem: "This daemon's certificate names no host a device could dial. Issue one for the machine's DNS name, then run this again." }
+  }
+  if (names.length > 1) {
+    // Picking one would be a guess about which name the device can resolve.
+    return { problem: `This daemon's certificate names more than one host (${names.join(", ")}), so which one a device should dial is not this command's to choose.` }
+  }
+  return { url: `wss://${names[0]!}:${config.port}/rpc`, label: names[0]!, loopback: false }
+}

@@ -1,14 +1,13 @@
 import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
+import type { PairingAddress, PairingAddressProblem } from "./pairing-address.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
 
 export type PairCommandDependencies = {
   issue: (targetClient?: ClientKind) => Promise<DeviceIssueCodeResult>
-  // The address a scanned code dials, which is the daemon's own listener and
-  // not anything the operator retypes. Undefined when the daemon answers
-  // nowhere a phone could reach.
-  pairingAddress: () => { url: string; label?: string; loopback: boolean } | undefined
+  // The address a scanned code tells a device to dial, or why there is none.
+  pairingAddress: () => PairingAddress | PairingAddressProblem
   renderCode: (payload: string) => string
   stdout: (text: string) => void
   stderr: (text: string) => void
@@ -44,12 +43,11 @@ export async function runPairCommand(
     }
 
     const address = dependencies.pairingAddress()
-    if (address === undefined) {
-      // Without an address a code cannot be drawn, only spoken, and a phone
-      // has nowhere to send it. Say which is missing rather than drawing a
-      // symbol that dials nothing.
+    if ("problem" in address) {
+      // A symbol carrying an address the device cannot verify fails at TLS
+      // with nothing to read, so say what is missing instead of drawing one.
       dependencies.stdout(`Pairing code: ${issued.code}\n`)
-      dependencies.stderr("This daemon has no address a phone can reach, so there is no code to scan. Give it a DNS name with a certificate, then run this again.\n")
+      dependencies.stderr(`${address.problem}\n`)
       return 1
     }
     const payload = encodePairingPayload({
