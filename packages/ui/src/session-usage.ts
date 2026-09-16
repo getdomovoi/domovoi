@@ -12,7 +12,7 @@ export type UsageTodayTotals = Pick<
 
 function compact(value: number, divisor: number, suffix: string): string {
   const scaled = value / divisor
-  const digits = scaled < 10 ? 1 : 0
+  const digits = scaled < 100 ? 1 : 0
   return `${Number(scaled.toFixed(digits))}${suffix}`
 }
 
