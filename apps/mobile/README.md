@@ -98,7 +98,7 @@ On the machine:
 domovoid pair --client phone --label "iPhone"
 ```
 
-It prints what a paired phone may do, draws the code as a QR in the terminal, and prints the same
+It prints the pairing card's grant list, marking the line the daemon does not keep yet, draws the code as a QR in the terminal, and prints the same
 code as text for a phone that cannot scan. The code works once and only mints a phone, so a
 photograph of the symbol after it is spent opens nothing (`apps/daemon/src/pair-command.ts`,
 `apps/daemon/src/qr-terminal.ts`).
@@ -110,7 +110,7 @@ same rule the daemon applies to its own listener. A daemon reachable at neither 
 says it has no address a phone can dial rather than drawing a symbol that goes nowhere.
 
 On the phone: Settings, Scan a pairing code, point the camera at it. The phone names the machine,
-shows what a paired phone may do and asks once. Pairing calls `device.redeemCode`, which spends the
+shows the same grant list and asks once. Pairing calls `device.redeemCode`, which spends the
 code and returns the credential; it is written to the keychain and never shown
 (`apps/mobile/src/lib/redeem-pairing-code.ts`). A phone that has refused the camera pastes the same
 text into the field under the scanner. Every refusal from the daemon reads the same, so a spent,

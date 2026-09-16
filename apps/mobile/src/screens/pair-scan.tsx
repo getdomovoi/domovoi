@@ -1,4 +1,4 @@
-import { decodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type PairingPayload } from "@getdomovoi/protocol"
+import { decodePairingPayload, phoneAndTabletPromise, type PairingPayload } from "@getdomovoi/protocol"
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
@@ -103,11 +103,16 @@ export function PairScanScreen({
                 daemon's own credential has the same shape and can do anything
                 on that machine. The promise is conditional and says so. */}
             <Text variant="label">A paired phone can</Text>
-            {phoneAndTabletPromise.map((line) => <Text key={line} variant="note">{line}</Text>)}
-            {/* The first line is the machine's word, and this app does not
-                keep all of it yet. The text comes from the protocol so this
-                screen and the machine's pairing card say the same thing. */}
-            <Text variant="note">{phoneAndTabletPromiseGap}</Text>
+            {/* The card's own list, including the line it does not keep yet,
+                read from the protocol so this screen and the machine's card
+                cannot come to say different things. */}
+            {phoneAndTabletPromise.map((line) => (
+              <Text
+                key={line.text}
+                variant="note"
+                className={line.tone === "unbuilt" ? "text-warning" : undefined}
+              >{line.text}</Text>
+            ))}
             <Text variant="note">
               That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
             </Text>

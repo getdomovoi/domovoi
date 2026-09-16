@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { encodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap } from "@getdomovoi/protocol"
+import { encodePairingPayload, phoneAndTabletPromise } from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { PermissionStatus, type PermissionResponse } from "expo-camera"
 import { useEffect } from "react"
@@ -38,8 +38,7 @@ describe("pairing by camera", () => {
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
     expect(screen.queryByText(credential.token)).toBeNull()
     // The phone checks shape, not scope; the promise is conditional.
-    for (const line of phoneAndTabletPromise) expect(screen.getByText(line)).toBeTruthy()
-    expect(screen.getByText(phoneAndTabletPromiseGap)).toBeTruthy()
+    for (const line of phoneAndTabletPromise) expect(screen.getByText(line.text)).toBeTruthy()
     expect(screen.getByText(/cannot tell that credential from the machine's own/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     expect(onPaired).toHaveBeenCalledWith(credential)

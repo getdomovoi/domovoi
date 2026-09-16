@@ -1,4 +1,4 @@
-import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
 import type { PairingAddress, PairingAddressProblem } from "./pairing-address.js"
@@ -34,12 +34,14 @@ export async function runPairCommand(
     }
 
     if (client.data === "phone" || client.data === "tablet") {
-      // The same four lines the machine's pairing card shows, and the same
-      // note about the one it does not keep yet, so a headless machine and a
+      // The machine's pairing card, in a terminal. A line the daemon does not
+      // yet keep is marked rather than dropped, so a headless machine and a
       // desktop say the same thing about the device being paired.
       dependencies.stdout(`A paired ${client.data} can:\n`)
-      for (const line of phoneAndTabletPromise) dependencies.stdout(`  ${line}\n`)
-      dependencies.stdout(`${phoneAndTabletPromiseGap}\n\n`)
+      for (const line of phoneAndTabletPromise) {
+        dependencies.stdout(`  ${line.tone === "unbuilt" ? "!" : line.tone === "limit" ? "-" : "+"} ${line.text}\n`)
+      }
+      dependencies.stdout("\n")
     }
 
     const address = dependencies.pairingAddress()

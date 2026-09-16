@@ -1652,17 +1652,19 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   "skill.list",
 ])
 
+// The pairing card's grant list, verbatim from step 10 of the v2 desktop
+// design, in the order and on the ramps it draws them. The unbuilt line is one
+// of the grants rather than a note correcting them, because a drawing that
+// needs a footnote to stop being wrong is a drawing that should have said it.
+// Every surface showing the list reads it from here, so the machine's card,
+// the CLI and the phone cannot come to say different things.
 export const phoneAndTabletPromise = [
-  "Watch every session, including terminal output and diffs",
-  "Answer gates, with the same three decisions",
-  "Start and stop sessions, and steer one mid-run",
-  "It cannot pull the repository down. Files stay here.",
-] as const
-
-// The first line of that promise is not built yet. Every surface that shows
-// the promise shows this beside it, from here, so the machine's card and the
-// phone's screen cannot come to say different things about the same limit.
-export const phoneAndTabletPromiseGap = "This phone does not show terminal output yet. Everything else in that list works."
+  { text: "Watch every session and its diffs", tone: "granted" },
+  { text: "Answer gates, with the same three decisions", tone: "granted" },
+  { text: "Start and stop sessions, and steer one mid-run", tone: "granted" },
+  { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+  { text: "It cannot pull the repository down. Files stay here.", tone: "limit" },
+] as const satisfies readonly { text: string, tone: "granted" | "unbuilt" | "limit" }[]
 
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>

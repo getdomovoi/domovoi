@@ -1242,8 +1242,13 @@ describe("phone and tablet credential scope", () => {
     ] as const) expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
   })
 
-  it("carries the four lines of the pairing card", () => {
-    expect(phoneAndTabletPromise).toHaveLength(4)
-    expect(phoneAndTabletPromise[3]).toBe("It cannot pull the repository down. Files stay here.")
+  it("carries the pairing card's list", () => {
+    // The card's list as step 10 draws it: the limit last, and the line the
+    // daemon does not keep yet marked rather than dropped.
+    expect(phoneAndTabletPromise).toHaveLength(5)
+    expect(phoneAndTabletPromise.at(-1)).toEqual({ text: "It cannot pull the repository down. Files stay here.", tone: "limit" })
+    expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
+      { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+    ])
   })
 })

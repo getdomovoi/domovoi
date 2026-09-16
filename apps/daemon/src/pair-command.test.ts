@@ -1,4 +1,4 @@
-import { decodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap } from "@getdomovoi/protocol"
+import { decodePairingPayload, phoneAndTabletPromise } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
 import { CliDeadlineError } from "./cli-rpc.js"
@@ -36,8 +36,9 @@ describe("runPairCommand", () => {
     expect(out).toContain(`Paste this on the device:\n${drawn![0]!.replace(/^<qr>|<\/qr>\n?$/g, "")}`)
     expect(out).toContain("It works once, and only for a phone.")
     expect(out).toContain("A paired phone can:")
-    for (const line of phoneAndTabletPromise) expect(out).toContain(line)
-    expect(out).toContain(phoneAndTabletPromiseGap)
+    for (const line of phoneAndTabletPromise) expect(out).toContain(line.text)
+    // The unbuilt line is marked, not silently listed beside the kept ones.
+    expect(out).toContain("! Terminal output is not on a phone yet.")
   })
 
   it("does not print the promise for a client that is not carried by hand", async () => {
