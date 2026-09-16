@@ -11,12 +11,15 @@ import { utf16MaxLength } from "./validation.js"
 // listener, so a payload cannot talk a phone into a plaintext tailnet dial.
 export const pairingPayloadPrefix = "domovoi-pair:1:"
 
-// The longest text a valid payload encodes: the prefix, then base64url of the
-// JSON for a 512-character address, a 43-character credential and a
-// 128-character label, is under 1,100 characters. The paste field runs the
-// decoder on every keystroke, so the bound is checked on the text before any
-// base64 or JSON work touches it.
-export const maximumPairingPayloadLength = 2048
+// The longest text a valid payload encodes. The field bounds count UTF-16
+// units; JSON escapes a control unit as six bytes and UTF-8 spends up to three
+// on a unit, so the worst case is every unit of a 512-unit address and a
+// 128-unit label a control character: about 5,160 characters after base64url
+// and the prefix (measured, see the test). The paste field runs the decoder on
+// every keystroke, so the bound is checked on the text before any base64 or
+// JSON work touches it, and the encoder refuses to emit past it so the two
+// sides agree on what a pairing code can be.
+export const maximumPairingPayloadLength = 6144
 
 const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]"])
 
@@ -53,7 +56,9 @@ function fromBase64Url(text: string): string {
 }
 
 export function encodePairingPayload(payload: PairingPayload): string {
-  return `${pairingPayloadPrefix}${toBase64Url(JSON.stringify(pairingPayloadSchema.parse(payload)))}`
+  const text = `${pairingPayloadPrefix}${toBase64Url(JSON.stringify(pairingPayloadSchema.parse(payload)))}`
+  if (text.length > maximumPairingPayloadLength) throw new Error("The pairing payload encodes past the envelope a scanner reads")
+  return text
 }
 
 export function decodePairingPayload(text: string): PairingPayload {

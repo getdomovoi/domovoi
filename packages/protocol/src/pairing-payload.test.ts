@@ -26,8 +26,19 @@ describe("pairing payload", () => {
   })
 
   it("refuses text past the envelope before decoding any of it", () => {
-    const longest = encodePairingPayload({ ...payload, url: `wss://${"h".repeat(480)}:47831/rpc`, label: "l".repeat(128) })
+    // The worst case the field bounds admit: every unit a control character,
+    // which JSON escapes to six bytes; the URL parser drops them from the
+    // parsed address but the raw string is what the JSON carries.
+    const control = String.fromCharCode(1)
+    const worst = { ...payload, url: `wss://h/${control.repeat(500)}`, label: control.repeat(128) }
+    const longest = encodePairingPayload(worst)
+    expect(longest.length).toBeGreaterThan(5000)
     expect(longest.length).toBeLessThan(maximumPairingPayloadLength)
+    expect(decodePairingPayload(longest)).toEqual(worst)
+    const cjk = { ...payload, url: `wss://example.test/${"界".repeat(490)}`, label: "界".repeat(128) }
+    expect(decodePairingPayload(encodePairingPayload(cjk))).toEqual(cjk)
+    const emoji = { ...payload, url: `wss://example.test/${"😀".repeat(245)}`, label: "😀".repeat(64) }
+    expect(decodePairingPayload(encodePairingPayload(emoji))).toEqual(emoji)
     const padded = `${pairingPayloadPrefix}${"A".repeat(maximumPairingPayloadLength)}`
     const started = performance.now()
     expect(() => decodePairingPayload(padded)).toThrow(/too long/)
