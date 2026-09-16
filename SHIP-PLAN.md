@@ -1159,13 +1159,13 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
       restartable authority that keeps sessions is the other answer; it contradicts the
       single-process design in `docs/server-boundary.md` and is not chosen here. Recorded
       2026-09-14, written out 2026-09-16.
-      Framing correction, 2026-09-16: Claude withdrew the earlier "unbilled" wording.
+      Framing correction, 2026-09-16: the earlier "unbilled" wording was withdrawn.
       It survived into this gate and the relay design and wrongly implied a usage-based price.
       Machines are priced per seat; this meter supports entitlement and abuse control, not
       invoice lines. The loss is a gap in the observed-time record. Bounded deployed results
       keep their error ranges, and exact deterministic tests cover crashes between observation
       and settlement and during settlement, including commit-before-acknowledgement.
-      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/feba10a6142a61fe025aeee20cf0733d4eb7052a/docs/restart-and-ledger-recovery.md),
+      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/f41500c4de14851184f99b74140d4422affbc015/docs/restart-and-ledger-recovery.md),
       S2.10 section, proposed in [relay #2](https://github.com/getdomovoi/relay/pull/2).
       Chosen approach, costs, exclusions and numbered measurements; not implementation evidence.
 - [ ] **S2.11 [CX, then H]** Backup and retention of the SQLite ledger that holds connected-time
@@ -1200,7 +1200,7 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
       routes, credential digests and interval attribution, and does not grow into that
       registry. Recorded 2026-09-14, written out 2026-09-16, corrected 2026-09-16 against
       `src/authority.mjs` at `2ec1e24`.
-      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/feba10a6142a61fe025aeee20cf0733d4eb7052a/docs/restart-and-ledger-recovery.md),
+      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/f41500c4de14851184f99b74140d4422affbc015/docs/restart-and-ledger-recovery.md),
       S2.11 section, proposed in [relay #2](https://github.com/getdomovoi/relay/pull/2).
       Operational owner: fetzy. The design and owner assignment do not close the launch gate.
 
