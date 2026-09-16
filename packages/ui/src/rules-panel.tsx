@@ -52,7 +52,9 @@ export function RulesPanel({
   onLoadHardGates: () => Promise<HardGateCategory[]>
 }) {
   const [gates, setGates] = useState<Gates>({ status: "loading" })
-  const [pending, setPending] = useState<string>()
+  // One id per request in flight: two rows can be revoking at once, and one
+  // settling must not free or clear the other.
+  const [pending, setPending] = useState<ReadonlySet<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
   const active = rules.filter((rule): rule is ActiveRule => rule.status === "active")
   const retired = rules.length - active.length
@@ -66,14 +68,15 @@ export function RulesPanel({
     return () => { live = false }
   }, [onLoadHardGates])
 
+  const settle = (ruleId: string) => setPending((current) => { const next = new Set(current); next.delete(ruleId); return next })
   const revoke = (ruleId: string) => {
-    setPending(ruleId)
+    setPending((current) => new Set(current).add(ruleId))
     setErrors((current) => ({ ...current, [ruleId]: "" }))
     onRevoke(ruleId).then(
-      () => setPending(undefined),
+      () => settle(ruleId),
       (cause: unknown) => {
-        setPending(undefined)
-        setErrors((current) => ({ ...current, [ruleId]: cause instanceof Error ? cause.message : "The rule could not be revoked" }))
+        settle(ruleId)
+        setErrors((current) => ({ ...current, [ruleId]: cause instanceof Error ? cause.message : "The revoke did not complete" }))
       },
     )
   }
@@ -98,17 +101,22 @@ export function RulesPanel({
                   <span className="shrink-0 font-machine text-mono-xs text-faint">{ruleUsedLabel(rule.useCount)}</span>
                   <button
                     type="button"
-                    disabled={readOnly || pending === rule.id}
+                    disabled={readOnly || pending.has(rule.id)}
                     {...(readOnly ? { title: "This session is read-only here, so its rules cannot be changed from this view." } : {})}
                     onClick={() => revoke(rule.id)}
                     className="shrink-0 rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground hover:border-danger-border hover:bg-danger-background hover:text-danger-foreground disabled:cursor-not-allowed disabled:opacity-45"
                   >
-                    {pending === rule.id ? "Revoking" : "Revoke"}
+                    {pending.has(rule.id) ? "Revoking" : "Revoke"}
                   </button>
                 </div>
                 {errors[rule.id] ? (
+                  // An error does not say what happened to the rule: the daemon
+                  // revokes in memory before the durable write, and a dropped
+                  // reply can follow a write that landed. The row stays until
+                  // the snapshot says otherwise, and Revoke again is the same
+                  // request, which the daemon treats as a retry.
                   <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">
-                    {errors[rule.id]} The rule still stands.
+                    {errors[rule.id]} Whether the rule was revoked is not confirmed; the row shows what the daemon last reported. Revoke again repeats the same request.
                   </p>
                 ) : null}
               </div>

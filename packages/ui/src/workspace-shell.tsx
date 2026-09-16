@@ -3146,12 +3146,15 @@ export function ArtifactDock({
           />
         </TabsContent>
         <TabsContent value="rules" className="min-h-0">
+          {/* Rules are the project's, not the session's: an archived session
+              selected in the thread does not take away the right to revoke a
+              rule. The protocol has no watch-only client, so nothing dims
+              Revoke here; a refusal comes back from the daemon and is shown. */}
           {onRevokeApprovalRule && onLoadHardGates ? (
             <RulesPanel
               rules={snapshot.approvalRules.filter((rule) => rule.projectId === snapshot.project?.id)}
               projectName={snapshot.project?.name ?? "this project"}
               machineName={snapshot.machine.name}
-              readOnly={archiveReadOnly}
               onRevoke={onRevokeApprovalRule}
               onLoadHardGates={onLoadHardGates}
             />

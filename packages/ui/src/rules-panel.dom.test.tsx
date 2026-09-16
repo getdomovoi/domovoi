@@ -66,7 +66,7 @@ it("lists the standing rules with scope and use count, and the daemon's never-co
   ])
 })
 
-it("revokes a rule in one click and waits on the daemon before the row can be pressed again", async () => {
+it("revokes a rule in one click, says the outcome is unconfirmed on an error, and lets you repeat the request", async () => {
   const user = userEvent.setup()
   const onRevoke = vi.fn<(ruleId: string) => Promise<void>>().mockRejectedValueOnce(new Error("Daemon connection is not open")).mockResolvedValueOnce(undefined)
   render(panel({ onRevoke }))
@@ -74,9 +74,33 @@ it("revokes a rule in one click and waits on the daemon before the row can be pr
   const [first] = screen.getAllByTestId("rule-row")
   await user.click(within(first!).getByRole("button", { name: "Revoke" }))
   expect(onRevoke).toHaveBeenCalledWith("rule-tests")
-  expect(await within(first!).findByRole("alert")).toBeTruthy()
+  const alert = await within(first!).findByRole("alert")
+  expect(alert.textContent).toMatch(/Daemon connection is not open/)
+  expect(alert.textContent).toMatch(/not confirmed/)
+  expect(alert.textContent).not.toMatch(/still stands/)
   await user.click(within(first!).getByRole("button", { name: "Revoke" }))
   expect(onRevoke).toHaveBeenCalledTimes(2)
+})
+
+// Two rows can be revoking at once. Each holds its own button shut until its
+// own request settles, whichever order the daemon answers in.
+it("keeps each revoking row shut until its own request settles", async () => {
+  const user = userEvent.setup()
+  const settlers: Record<string, () => void> = {}
+  const onRevoke = vi.fn((ruleId: string) => new Promise<void>((resolve) => { settlers[ruleId] = resolve }))
+  render(panel({ onRevoke }))
+  await settle()
+  const [first, second] = screen.getAllByTestId("rule-row")
+  await user.click(within(first!).getByRole("button", { name: "Revoke" }))
+  await user.click(within(second!).getByRole("button", { name: "Revoke" }))
+  const button = (row: HTMLElement) => within(row).getByRole("button", { name: /Revok/ }) as HTMLButtonElement
+  expect(button(first!).disabled).toBe(true)
+  expect(button(second!).disabled).toBe(true)
+  await act(async () => { settlers["rule-migrate"]!() })
+  expect(button(first!).disabled).toBe(true)
+  expect(button(second!).disabled).toBe(false)
+  await act(async () => { settlers["rule-tests"]!() })
+  expect(button(first!).disabled).toBe(false)
 })
 
 it("holds Revoke shut for a read-only viewer and says why", async () => {

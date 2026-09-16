@@ -99,3 +99,30 @@ describe("the dock's tab list", () => {
     expect(within(planComments).getByText("Run this migration on the WSL staging machine first.")).toBeTruthy()
   })
 })
+
+// The rule belongs to the project. Selecting an archived session must not
+// dim Revoke for the whole project's standing rules.
+it("keeps Revoke live in the Rules tab while an archived session is selected", async () => {
+  const base = workspaceSnapshot()
+  const snapshot = workspaceSnapshot({
+    sessions: base.sessions.map((session) => session.id === base.activeSessionId
+      ? { ...session, state: "archived" as const, archiveRequestedAt: "2026-09-10T00:00:00.000Z", archiveCheckpoint: "c".repeat(40), archivedAt: "2026-09-10T00:01:00.000Z" }
+      : session),
+    approvalRules: [{
+      id: "rule-tests", useCount: 4, projectId: base.project!.id, operation: "shell", command: "pnpm test",
+      createdBy: "desktop", createdAt: "2026-09-03T10:00:00.000Z", status: "active",
+      execution: {
+        state: "resolved", digest: `sha256:${"a".repeat(64)}`,
+        record: { version: 1, cwd: ".", kind: "shell", coverage: "command-and-script-text", entries: [{ id: 0, source: { kind: "request" }, parts: [{ operator: null, argv: ["pnpm", "test"], expandsTo: [] }] }] },
+      },
+    }],
+  })
+  render(<WorkspaceShell />)
+  await act(async () => { completeHandshake(harness.socket(0), snapshot) })
+  await settle()
+  await userEvent.setup().click(screen.getByRole("tab", { name: "Rules" }))
+  await settle()
+  const rows = screen.getAllByTestId("rule-row")
+  expect(rows.length).toBeGreaterThan(0)
+  expect((within(rows[0]!).getByRole("button", { name: "Revoke" }) as HTMLButtonElement).disabled).toBe(false)
+})
