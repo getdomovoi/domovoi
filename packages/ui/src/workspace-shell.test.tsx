@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, RuntimeControls, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -75,14 +75,6 @@ describe("PreviewVariantThumbnail", () => {
   })
 })
 
-const providers: ProviderRuntime[] = [
-  {
-    id: "codex",
-    command: "codex",
-    status: "ready",
-    sessionCapable: true,
-  },
-]
 
 it("names settings navigation for the surface it opens", () => {
   expect(providerSettingsNavigationLabel).toBe("Provider settings")
@@ -132,7 +124,7 @@ it("keys the project half of a skill refresh to the facts the catalog follows", 
   expect(skillProjectRefreshKey(closed)).toBe(skillProjectRefreshKey(null))
 })
 
-describe("RuntimeControls", () => {
+describe("Thread", () => {
   it("displays an approval receipt's server-issued connection identifier", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.thread.push({
@@ -169,6 +161,20 @@ describe("RuntimeControls", () => {
     expect(rendered[0]?.id).toBe("rendered-5")
   })
 
+  // v2 puts the mode beside the model in the composer's action row, not in
+  // the thread header; Think, undrawn in v2, sits beside it as a plain chip.
+  it("draws mode and Think in the composer's action row and not in the header", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const markup = renderToStaticMarkup(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected onResolve={vi.fn(async () => {})} onSetRuntime={vi.fn(async () => {})} onForkSession={vi.fn(async () => {})} onListModels={vi.fn(async () => [])} onNewSession={vi.fn()} onSend={vi.fn(async () => {})} onCheckpoint={vi.fn(async () => {})} onRestoreCheckpoint={vi.fn(async () => {})} onPauseSession={vi.fn(async () => {})} onArchiveSession={vi.fn(async () => {})} />)
+    const actions = markup.slice(markup.indexOf("data-workspace-composer-actions"))
+    expect(actions).toMatch(/aria-label="Mode: (Plan|Ask|Build)/)
+    expect(actions).toMatch(/aria-label="Think: /)
+    const header = markup.slice(0, markup.indexOf("data-workspace-composer-actions"))
+    expect(header).not.toMatch(/aria-label="Mode: /)
+    expect(header).not.toContain("Think: ")
+    expect(header).not.toContain("Auto, no gate")
+  })
+
   it("renders safe Markdown in user, assistant, and system thread bodies", () => {
     const snapshot = structuredClone(demoWorkspace)
     const sessionId = snapshot.activeSessionId!
@@ -182,21 +188,6 @@ describe("RuntimeControls", () => {
     expect(markup).toContain("<h2")
     expect(markup).toContain("font-machine")
     expect(markup).not.toContain("<script")
-  })
-  it("locks every runtime input while an update is pending", () => {
-    const markup = renderToStaticMarkup(
-      <RuntimeControls
-        runtime={runtime}
-        providers={providers}
-        pending
-        onChange={vi.fn()}
-        onListModels={vi.fn(async () => [])}
-      />,
-    )
-
-    // Think, the three mode toggles and Auto. The model chip locks itself in
-    // the composer now; model-popover.dom.test.tsx covers it.
-    expect(markup.match(/disabled=""/g)?.length).toBeGreaterThanOrEqual(5)
   })
 
   it("keeps switch-here distinct from a durable checkpoint fork", () => {
@@ -265,6 +256,25 @@ describe("RuntimeControls", () => {
 })
 
 describe("AppBar", () => {
+  // v2 has one usage surface, the chip in the composer. The app bar carries
+  // no token or cost readout of its own.
+  it("carries no usage readout", () => {
+    const markup = renderToStaticMarkup(
+      <AppBar
+        snapshot={structuredClone(demoWorkspace)}
+        connected
+        emergencyStopPending={false}
+        emergencyStopOutcome={null}
+        emergencyStopError={null}
+        onOpenProject={vi.fn()}
+        onPauseAll={vi.fn()}
+      />,
+    )
+    expect(markup).not.toContain("Usage today")
+    expect(markup).not.toMatch(/\d(\.\d)?k tokens/)
+    expect(markup).not.toContain("cost unavailable")
+  })
+
   it("keeps pause-all available while connected without an active turn", () => {
     const snapshot = structuredClone(demoWorkspace)
     for (const session of snapshot.sessions) delete session.activeTurnId

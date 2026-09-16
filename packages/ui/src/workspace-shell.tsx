@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -121,7 +121,6 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Input } from "./components/ui/input"
@@ -135,7 +134,6 @@ import {
 import { ScrollArea, ScrollBar } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
-import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
@@ -170,14 +168,10 @@ import {
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import {
-  formatTokenCount,
   sessionContextReadout,
   sessionContextShare,
-  sessionUsageCostNote,
   sessionUsageFetchKey,
   sessionUsageReportedCost,
-  usageTodayDetail,
-  usageTodayReadout,
   usageTodayRefreshDelayMs,
   usageTodayWindow,
   usageWindowFetchKey,
@@ -196,10 +190,11 @@ import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { RulesPanel } from "./rules-panel.js"
 import { ModelPopover } from "./model-popover.js"
+import { ModeChip, ThinkChip, type ReasoningCatalog } from "./mode-chip.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
-import { withAuto, withPermissionMode } from "./permission-mode"
+import { withPermissionMode } from "./permission-mode"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import { UsageChip, latestTurnFromHistory } from "./usage-chip.js"
@@ -510,8 +505,6 @@ export function AppBar({
   onPauseAll,
   onOpenCommands,
   commandShortcut,
-  usage,
-  usageToday,
   sessionsDrawer,
 }: {
   snapshot: WorkspaceSnapshot | null
@@ -526,8 +519,6 @@ export function AppBar({
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
   sessionsDrawer?: ReactNode | undefined
-  usage?: SessionUsage | null | undefined
-  usageToday?: UsageWindow | null | undefined
 }) {
   const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
@@ -561,7 +552,6 @@ export function AppBar({
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
-        <SessionUsageSummary usage={usage ?? null} />
         {onOpenCommands ? (
           <Button variant="ghost" size="sm" aria-label="Open command palette" onClick={onOpenCommands}>
             <SearchIcon data-icon="inline-start" />
@@ -591,39 +581,12 @@ export function AppBar({
             {emergencyStopMessage}
           </span>
         ) : null}
-        <UsageTodayReadout usage={usageToday ?? null} />
       </div>
       {ownsDecoration && bridge ? <WindowControls bridge={bridge} /> : null}
     </header>
   )
 }
 
-export function UsageTodayReadout({ usage }: { usage: UsageWindow | null }) {
-  const id = useId()
-  const readout = usage ? usageTodayReadout(usage) : undefined
-  if (!usage || !readout) return null
-  const labelId = `${id}-label`
-  const valueId = `${id}-value`
-  return (
-    <span role="status" aria-labelledby={`${labelId} ${valueId}`} className="font-machine text-[10.5px] text-faint">
-      <span id={labelId} className="sr-only">Usage today</span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            id={valueId}
-            className="rounded-[4px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
-          >
-            {readout}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[42ch] text-[11.5px] leading-relaxed">
-          {usageTodayDetail(usage)}
-        </TooltipContent>
-      </Tooltip>
-    </span>
-  )
-}
 
 export function useUsageToday(
   connected: boolean,
@@ -676,67 +639,6 @@ export function SessionUsageFooter({ usage }: { usage: SessionUsage | null }) {
   )
 }
 
-export function SessionUsageSummary({ usage }: { usage: SessionUsage | null }) {
-  if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
-  const cost = sessionUsageReportedCost(usage)
-  const note = sessionUsageCostNote(usage)
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="font-machine text-[10px] text-faint">
-          {formatTokenCount(usage.totalTokens)} tokens
-          <span aria-hidden="true">·</span>
-          {cost ?? "cost unavailable"}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[320px]">
-        <DropdownMenuLabel>Session usage</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Input</span>
-            <span className="font-machine">{formatTokenCount(usage.inputTokens)}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Cached input</span>
-            <span className="font-machine">{formatTokenCount(usage.cachedInputTokens)}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Output</span>
-            <span className="font-machine">{formatTokenCount(usage.outputTokens)}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Reasoning</span>
-            <span className="font-machine">{formatTokenCount(usage.reasoningTokens)}</span>
-          </div>
-        </div>
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>By provider and model</DropdownMenuLabel>
-        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
-          {usage.byRuntime.length === 0 ? (
-            <span className="text-muted-foreground">No recorded turns yet.</span>
-          ) : usage.byRuntime.map((runtime) => (
-            <div key={`${runtime.provider}/${runtime.model}`} className="flex items-start justify-between gap-3">
-              <span className="flex min-w-0 flex-col">
-                <span className="font-medium">{providerDisplayName(runtime.provider)}</span>
-                <span className="truncate font-machine text-[9.5px] text-faint">{runtime.model}</span>
-              </span>
-              <span className="flex shrink-0 flex-col items-end font-machine text-[9.5px]">
-                <span>{formatTokenCount(runtime.totalTokens)} tokens</span>
-                <span className="text-faint">{runtime.turns === 1 ? "1 turn" : `${runtime.turns} turns`}</span>
-              </span>
-            </div>
-          ))}
-        </div>
-        {note ? <>
-          <DropdownMenuSeparator />
-          <p className="m-0 px-2 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">{note}</p>
-        </> : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
 
 function outcomeCount(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`
@@ -1469,6 +1371,22 @@ export function Thread({
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
   const [desktopError, setDesktopError] = useState("")
+  // The Think chip offers what the current model reports. The catalog is read
+  // once per provider change; a read that fails leaves the chip shut with its
+  // reason rather than offering a guess. Hooks sit above the no-session return.
+  const activeProvider = active?.runtime.provider
+  const [catalog, setCatalog] = useState<{ status: "loading" } | { status: "ready", models: ProviderModel[] } | { status: "failed", message: string }>({ status: "loading" })
+  const [catalogAttempt, setCatalogAttempt] = useState(0)
+  useEffect(() => {
+    if (!activeProvider) return
+    let live = true
+    setCatalog({ status: "loading" })
+    void onListModels(activeProvider).then(
+      (models) => { if (live) setCatalog({ status: "ready", models }) },
+      (cause: unknown) => { if (live) setCatalog({ status: "failed", message: cause instanceof Error ? cause.message : "Models could not be loaded" }) },
+    )
+    return () => { live = false }
+  }, [onListModels, activeProvider, catalogAttempt])
   if (!active) {
     const hasProject = snapshot.project !== null
     return (
@@ -1504,6 +1422,10 @@ export function Thread({
   const transferTarget = transferTargetId
     ? machines.find((machine) => machine.id === transferTargetId)
     : undefined
+  const reasoningCatalog: ReasoningCatalog = catalog.status === "ready"
+    ? { status: "ready", options: reasoningOptionsFor(catalog.models.find((model) => model.provider === active.runtime.provider && model.id === active.runtime.model)) }
+    : catalog
+  const providerReady = snapshot.machine.providers.some((provider) => provider.id === active.runtime.provider && providerCanStartSession(provider))
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
@@ -1758,13 +1680,6 @@ export function Thread({
           </Badge>
         ) : (
           <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
-            <RuntimeControls
-              runtime={active.runtime}
-              providers={snapshot.machine.providers}
-              pending={runtimePending}
-              onChange={(runtime) => void updateRuntime(runtime)}
-              onListModels={onListModels}
-            />
             {active.workspacePath && onOpenExternal ? (
               <Button variant="outline" size="sm" onClick={() => void openExternal()}>
                 <ExternalLinkIcon data-icon="inline-start" />
@@ -1936,6 +1851,11 @@ export function Thread({
                 onChange={(runtime) => void updateRuntime(runtime)}
                 onFork={forkRuntime}
               />
+              {/* v2's mode chip sits beside the model. Think has no drawing in
+                  v2; the runtime carries it, so it stays as a plain chip here. */}
+              <ModeChip runtime={active.runtime} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
+              <ThinkChip runtime={active.runtime} catalog={reasoningCatalog} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} onRetry={() => setCatalogAttempt((attempt) => attempt + 1)} />
+              {!providerReady ? <Badge variant="outline" className="text-warning">{providerDisplayName(active.runtime.provider)} not ready</Badge> : null}
               {onOpenSkills ? (
                 <ComposerSkillChip
                   snapshot={snapshot}
@@ -2142,61 +2062,6 @@ export function normalizePermissionMode(runtime: Runtime, permissionMode: Permis
   return withPermissionMode(runtime, permissionMode)
 }
 
-export function RuntimeControls({
-  runtime,
-  providers,
-  pending,
-  onChange,
-  onListModels,
-}: {
-  runtime: Runtime
-  providers: readonly ProviderRuntime[]
-  pending: boolean
-  onChange: (runtime: Runtime) => void
-  onListModels: (provider: string) => Promise<ProviderModel[]>
-}) {
-  // The model itself is chosen from the composer's chip now, where v2 puts
-  // it. These controls keep the reasoning effort, the permission mode and
-  // Auto until their own slices move them; the current model's catalog is
-  // still read so the reasoning options can be its own.
-  const [models, setModels] = useState<ProviderModel[]>([])
-  const selectedModel = models.find(
-    (model) => model.provider === runtime.provider && model.id === runtime.model,
-  )
-  const reasoningOptions = reasoningOptionsFor(selectedModel)
-  const reasoningUnavailable = selectedModel === undefined || reasoningOptions.length === 0
-  const providerReady = providers.some((provider) => provider.id === runtime.provider && providerCanStartSession(provider))
-
-  useEffect(() => {
-    let active = true
-    setModels([])
-    void onListModels(runtime.provider).then(
-      (nextModels) => { if (active) setModels(nextModels) },
-      () => { if (active) setModels([]) },
-    )
-    return () => { active = false }
-  }, [onListModels, runtime.provider])
-
-  const setMode = (permissionMode: string) => {
-    if (permissionMode) onChange(normalizePermissionMode(runtime, permissionMode as PermissionMode))
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {!providerReady ? <Badge variant="outline" className="text-warning">{providerDisplayName(runtime.provider)} not ready</Badge> : null}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={pending || reasoningUnavailable}>Think: {runtime.reasoning}<ChevronDownIcon data-icon="inline-end" /></Button></DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuGroup>{reasoningOptions.map((reasoning) => <DropdownMenuItem key={reasoning} disabled={pending} onSelect={() => onChange({ ...runtime, reasoning })}>{reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}</DropdownMenuItem>)}</DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <ToggleGroup type="single" value={runtime.permissionMode} disabled={pending} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
-        <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
-      </ToggleGroup>
-      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-micro text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange(withAuto(runtime, auto))} />Auto</label>
-    </div>
-  )
-}
 
 export function HistoryPanel({
   sessionId,
@@ -4362,7 +4227,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
