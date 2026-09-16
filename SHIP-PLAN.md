@@ -1166,21 +1166,32 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       daemon, attach to a session, answer a gate, and report a yes or a defect list. This
       path is designed and drawn and has never been run; its answer decides how much of the
       remaining mobile work matters. No feature code for the phone before this reports.
-- [ ] **S3.1 [CC]** Desktop: the remaining surfaces. What is on `main` is the v1 layout with
-      v2's corrections: the fourteen slices #386 to #401 (41e675ab) landed the history row and
-      turn meta, StatusDot label, empty states, skeletons, terminal primary action and launcher
-      entity rows. The v2 layout itself is not on `main`. Measured 2026-09-15 against
-      `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2`: the dock has seven tabs
-      (`session`, `plan`, `changes`, `preview`, `terminal`, `history`, `comments`) against v2's
-      seven (Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules; `sheetTabList`
-      in part2-logic), so no Checkpoints tab, no Rules tab, a v1 Session tab still present, and
-      Comments as a tab where v2 reaches comments from inside Preview (`goComments`); no usage
-      chip; no plan
-      edit strip with the queued-edit notice; no model popover with discovery and rediscover;
-      no sidebar reorganisation of the session controls. Present: the queued composer, the
-      titlebar stop control, fork from a history row. The work-split items under "From the work
-      split: client items" below are the rest of the detail. The v2 layout is its own body of
-      work and is scoped after the maintainer has used v1.
+- [x] **S3.1 [CC]** Desktop: the 2026-09-15 audit's v2 gap list is closed on `main`, and
+      that is the whole of this claim; v2 is not landed. Each gap went in as its own slice,
+      built to the v2 arrangement and sitting in the v1 chrome: Checkpoints tab (e535558c,
+      #427), usage chip in the composer (1f50a698, #429), plan edit strip with the queued-edit
+      notice (2cda8329, #432), model popover with discovery and rediscover (91589000, #433),
+      Session tab removed and Comments drawn under the preview (951fa879, #435), Rules tab on
+      the Rules protocol (e4783bf7, #436, on 9d94da3e, #431), sessions drawer as a column with
+      row actions (3a84912f, #437). The dock's tab list is v2's seven. What is still v1 chrome,
+      and is S3.10: the thread header carries Think, the mode toggle and Auto where v2 puts them
+      on the composer; the app bar carries a usage readout and the dock a usage footer where v2
+      has the one chip. Deviations each PR body states: no step file scope in the protocol, the
+      provider's rate window not observable (today's count instead), no deferred harness change
+      (the daemon refuses one during a turn), no worktree-delete RPC, no per-session durations,
+      the design system's 240px sidebar token over the template's 268px, hard-gate chips from
+      `permission.hardGates` rather than the design's prose. Measured 2026-09-16 against
+      `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2` and the dock, composer and
+      drawer sources named in those PRs. Earlier: #386 to #401 (41e675ab) landed v2's
+      corrections to the v1 layout. The work-split items under "From the work split: client
+      items" below are the rest of the detail.
+- [ ] **S3.10 [CC]** Desktop chrome: move the three v1 leftovers to where v2 draws them, so the
+      surface looks like the design rather than containing its parts. (a) Think, the mode
+      toggle and Auto leave the thread header for the composer's action row beside the model
+      chip (`permChipStyle`, part1-template line 948). (b) The app bar's usage readout goes;
+      the chip is the one usage surface. (c) The dock's usage footer goes for the same reason.
+      One PR each, each body stating what moved and what the design draws that the protocol
+      cannot; no new RPCs expected.
 - [ ] **S3.2 [CC]** Web: the six-step flow over loopback and the tailnet, with
       capability-refused real rather than drawn. Over the relay once Phase 2 lands.
 - [ ] **S3.3 [CC]** Mobile: 19 designed frames against nine existing screens. In order:

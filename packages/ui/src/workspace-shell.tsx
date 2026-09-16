@@ -134,7 +134,6 @@ import {
 import { ScrollArea, ScrollBar } from "./components/ui/scroll-area"
 import { Separator } from "./components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
-import { Switch } from "./components/ui/switch"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
@@ -191,10 +190,11 @@ import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { RulesPanel } from "./rules-panel.js"
 import { ModelPopover } from "./model-popover.js"
+import { ModeChip, ThinkChip, type ReasoningCatalog } from "./mode-chip.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
-import { withAuto, withPermissionMode } from "./permission-mode"
+import { withPermissionMode } from "./permission-mode"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import { UsageChip, latestTurnFromHistory } from "./usage-chip.js"
@@ -1371,6 +1371,22 @@ export function Thread({
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
   const [desktopError, setDesktopError] = useState("")
+  // The Think chip offers what the current model reports. The catalog is read
+  // once per provider change; a read that fails leaves the chip shut with its
+  // reason rather than offering a guess. Hooks sit above the no-session return.
+  const activeProvider = active?.runtime.provider
+  const [catalog, setCatalog] = useState<{ status: "loading" } | { status: "ready", models: ProviderModel[] } | { status: "failed", message: string }>({ status: "loading" })
+  const [catalogAttempt, setCatalogAttempt] = useState(0)
+  useEffect(() => {
+    if (!activeProvider) return
+    let live = true
+    setCatalog({ status: "loading" })
+    void onListModels(activeProvider).then(
+      (models) => { if (live) setCatalog({ status: "ready", models }) },
+      (cause: unknown) => { if (live) setCatalog({ status: "failed", message: cause instanceof Error ? cause.message : "Models could not be loaded" }) },
+    )
+    return () => { live = false }
+  }, [onListModels, activeProvider, catalogAttempt])
   if (!active) {
     const hasProject = snapshot.project !== null
     return (
@@ -1406,6 +1422,10 @@ export function Thread({
   const transferTarget = transferTargetId
     ? machines.find((machine) => machine.id === transferTargetId)
     : undefined
+  const reasoningCatalog: ReasoningCatalog = catalog.status === "ready"
+    ? { status: "ready", options: reasoningOptionsFor(catalog.models.find((model) => model.provider === active.runtime.provider && model.id === active.runtime.model)) }
+    : catalog
+  const providerReady = snapshot.machine.providers.some((provider) => provider.id === active.runtime.provider && providerCanStartSession(provider))
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
@@ -1660,13 +1680,6 @@ export function Thread({
           </Badge>
         ) : (
           <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
-            <RuntimeControls
-              runtime={active.runtime}
-              providers={snapshot.machine.providers}
-              pending={runtimePending}
-              onChange={(runtime) => void updateRuntime(runtime)}
-              onListModels={onListModels}
-            />
             {active.workspacePath && onOpenExternal ? (
               <Button variant="outline" size="sm" onClick={() => void openExternal()}>
                 <ExternalLinkIcon data-icon="inline-start" />
@@ -1838,6 +1851,11 @@ export function Thread({
                 onChange={(runtime) => void updateRuntime(runtime)}
                 onFork={forkRuntime}
               />
+              {/* v2's mode chip sits beside the model. Think has no drawing in
+                  v2; the runtime carries it, so it stays as a plain chip here. */}
+              <ModeChip runtime={active.runtime} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
+              <ThinkChip runtime={active.runtime} catalog={reasoningCatalog} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} onRetry={() => setCatalogAttempt((attempt) => attempt + 1)} />
+              {!providerReady ? <Badge variant="outline" className="text-warning">{providerDisplayName(active.runtime.provider)} not ready</Badge> : null}
               {onOpenSkills ? (
                 <ComposerSkillChip
                   snapshot={snapshot}
@@ -2044,61 +2062,6 @@ export function normalizePermissionMode(runtime: Runtime, permissionMode: Permis
   return withPermissionMode(runtime, permissionMode)
 }
 
-export function RuntimeControls({
-  runtime,
-  providers,
-  pending,
-  onChange,
-  onListModels,
-}: {
-  runtime: Runtime
-  providers: readonly ProviderRuntime[]
-  pending: boolean
-  onChange: (runtime: Runtime) => void
-  onListModels: (provider: string) => Promise<ProviderModel[]>
-}) {
-  // The model itself is chosen from the composer's chip now, where v2 puts
-  // it. These controls keep the reasoning effort, the permission mode and
-  // Auto until their own slices move them; the current model's catalog is
-  // still read so the reasoning options can be its own.
-  const [models, setModels] = useState<ProviderModel[]>([])
-  const selectedModel = models.find(
-    (model) => model.provider === runtime.provider && model.id === runtime.model,
-  )
-  const reasoningOptions = reasoningOptionsFor(selectedModel)
-  const reasoningUnavailable = selectedModel === undefined || reasoningOptions.length === 0
-  const providerReady = providers.some((provider) => provider.id === runtime.provider && providerCanStartSession(provider))
-
-  useEffect(() => {
-    let active = true
-    setModels([])
-    void onListModels(runtime.provider).then(
-      (nextModels) => { if (active) setModels(nextModels) },
-      () => { if (active) setModels([]) },
-    )
-    return () => { active = false }
-  }, [onListModels, runtime.provider])
-
-  const setMode = (permissionMode: string) => {
-    if (permissionMode) onChange(normalizePermissionMode(runtime, permissionMode as PermissionMode))
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {!providerReady ? <Badge variant="outline" className="text-warning">{providerDisplayName(runtime.provider)} not ready</Badge> : null}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild><Button variant="outline" size="sm" disabled={pending || reasoningUnavailable}>Think: {runtime.reasoning}<ChevronDownIcon data-icon="inline-end" /></Button></DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuGroup>{reasoningOptions.map((reasoning) => <DropdownMenuItem key={reasoning} disabled={pending} onSelect={() => onChange({ ...runtime, reasoning })}>{reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}</DropdownMenuItem>)}</DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <ToggleGroup type="single" value={runtime.permissionMode} disabled={pending} onValueChange={setMode} variant="outline" size="sm" spacing={0} aria-label="Permission mode">
-        <ToggleGroupItem value="ask">Ask</ToggleGroupItem><ToggleGroupItem value="plan">Plan</ToggleGroupItem><ToggleGroupItem value="build">Build</ToggleGroupItem>
-      </ToggleGroup>
-      <label className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-micro text-muted-foreground"><Switch size="sm" checked={runtime.auto} disabled={pending || runtime.permissionMode !== "build"} onCheckedChange={(auto) => onChange(withAuto(runtime, auto))} />Auto</label>
-    </div>
-  )
-}
 
 export function HistoryPanel({
   sessionId,
