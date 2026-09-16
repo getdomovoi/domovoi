@@ -1157,23 +1157,33 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
       records. A launch gate. What exists, same source and commit: the ledger is the usage
       database plus a separate ownership database, "the service directory and SQLite sidecars
       must stay together", local filesystem only, "not a shared-filesystem or multi-replica
-      authority"; usage export reads settled intervals behind an append-only settlement cursor;
-      and "retention and archival of these billing records remain an operational policy, not
-      silent eviction". So: one copy of the meter, on one disk, with no backup, no restore
-      drill, no retention period and no purge, and the export cursor as the only thing that
-      says what has already been read out. Losing the disk loses every unsettled interval and
-      every settled one not yet exported; nothing today says how far back that is. Gate,
+      authority"; usage export reads settled intervals after a caller-supplied settlement
+      sequence, ordered, at most 1,000 a page (`src/authority.mjs` `usage()`), and that
+      sequence is an ordering, not a receipt: nothing persists that a consumer took a page,
+      so the store has no record of what was read out; and "retention and archival of these
+      billing records remain an operational policy, not silent eviction". The store holds
+      more than intervals: accounts with enabled and machine-cap fields, routes with machine
+      and account bindings and a credential digest, and account and machine ids on every
+      interval (`src/authority.mjs` schema). So: one copy of the meter and of the relay's own
+      authorization records, on one disk, with no backup, no restore drill, no retention period,
+      no purge, and no acknowledgement of export. Losing the disk loses every interval not yet
+      taken downstream, and nothing today can say which those are. Gate,
       before any hosted deployment: (1) an owner named, the person and the runbook; (2) a
       backup that copies a consistent database without taking the ownership
       lock, the SQLite online backup API or WAL streaming against a second connection, on a
       schedule with a stated recovery point, and the exclusive-lock behaviour checked against
       it rather than assumed; (3) a restore drill run once on the deployed shape, restoring
-      to a fresh directory and starting the authority against it, with the export cursor and
-      the last settled interval compared before and after; (4) a retention period written as a
-      number, a purge that removes only intervals older than it that have been exported past
-      the cursor, and an archive of what it removes if billing disputes need it; (5) the
-      registry in `S6.6` stays separate, and this store never gains account or device data.
-      Recorded 2026-09-14, written out 2026-09-16.
+      to a fresh directory and starting the authority against it, with the last settled
+      interval and the acknowledgement below compared before and after; (4) a durable,
+      account-scoped export acknowledgement written after the downstream commit, backed up and
+      restored with the ledger, because a settlement sequence or a returned page authorises
+      nothing; (5) a retention period written as a number, a purge that removes only intervals
+      older than it and acknowledged under (4), and an archive of what it removes if billing
+      disputes need it; (6) the hosted account and device registry in `S6.6` stays a separate
+      store; the relay keeps the authorization and metering records it already holds, accounts,
+      routes, credential digests and interval attribution, and does not grow into that
+      registry. Recorded 2026-09-14, written out 2026-09-16, corrected 2026-09-16 against
+      `src/authority.mjs` at `2ec1e24`.
 
 ### From the roadmap: account and transport services (Goal 3, hosted half)
 
