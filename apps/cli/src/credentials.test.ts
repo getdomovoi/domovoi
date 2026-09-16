@@ -4,7 +4,7 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { CredentialStoreError, CredentialStoreUnavailableError, openCredentialStore, type PairedDaemon, type Keyring } from "./credentials.js"
+import { CredentialStoreError, CredentialStoreUnavailableError, lockIsHeld, openCredentialStore, type PairedDaemon, type Keyring } from "./credentials.js"
 
 const paired: PairedDaemon = {
   endpoint: "ws://127.0.0.1:47831/rpc",
@@ -178,4 +178,16 @@ describe("credential file boundary", () => {
     await expect(openCredentialStore({ keyring: locked, home, warn: () => {} }))
       .rejects.toThrow(/passphrase you entered is not correct/)
   })
+})
+
+// Windows answers EPERM or EBUSY, not EEXIST, when an open races the holder's
+// unlink of the lock file. Both mean "wait", the way EEXIST does; any other
+// failure is the caller's to see.
+it("waits on the lock for the codes Windows uses while a delete is pending", () => {
+  for (const code of ["EEXIST", "EPERM", "EBUSY"]) {
+    expect(lockIsHeld(Object.assign(new Error(code), { code }))).toBe(true)
+  }
+  expect(lockIsHeld(Object.assign(new Error("EACCES"), { code: "EACCES" }))).toBe(false)
+  expect(lockIsHeld(new Error("no code"))).toBe(false)
+  expect(lockIsHeld(undefined)).toBe(false)
 })

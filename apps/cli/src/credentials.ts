@@ -113,6 +113,16 @@ function keyringStore(keyring: Keyring, lockPath: string): CredentialStore {
 // An exclusive lock file beside the credential file. Creation is atomic
 // (O_EXCL), so two processes cannot both hold it; a holder that died leaves
 // a file that a later caller treats as stale after the wait limit and says so.
+//
+// EEXIST is the lock being held. Windows answers EPERM or EBUSY instead when
+// the open races the holder's unlink of the same file, while the delete is
+// still pending; that is the lock being released, so the caller waits for it
+// the same way.
+export function lockIsHeld(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === "EEXIST" || code === "EPERM" || code === "EBUSY"
+}
+
 async function withFileLock<T>(lockPath: string, operation: () => Promise<T>): Promise<T> {
   await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 })
   const deadline = Date.now() + 10_000
@@ -121,7 +131,7 @@ async function withFileLock<T>(lockPath: string, operation: () => Promise<T>): P
     try {
       handle = await open(lockPath, "wx", 0o600)
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      if (!lockIsHeld(error)) throw error
       if (Date.now() > deadline) throw new CredentialStoreError(`${lockPath} is held by another process, or was left behind by one that died. Remove it if no other domovoi is running.`)
       await new Promise((resolve) => setTimeout(resolve, 20))
       continue

@@ -41,6 +41,8 @@ describe("session usage formatting", () => {
     expect(formatTokenCount(900)).toBe("900")
     expect(formatTokenCount(1_200)).toBe("1.2k")
     expect(formatTokenCount(12_000)).toBe("12k")
+    expect(formatTokenCount(42_140)).toBe("42.1k")
+    expect(formatTokenCount(124_000)).toBe("124k")
     expect(formatTokenCount(1_250_000)).toBe("1.3M")
   })
 
