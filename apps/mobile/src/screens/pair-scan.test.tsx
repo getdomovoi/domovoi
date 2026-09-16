@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { encodePairingPayload, phoneAndTabletPromise } from "@getdomovoi/protocol"
-import { fireEvent, render, screen } from "@testing-library/react-native"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react-native"
 import { PermissionStatus, type PermissionResponse } from "expo-camera"
 import { useEffect } from "react"
 
@@ -41,7 +41,7 @@ describe("pairing by camera", () => {
     for (const line of phoneAndTabletPromise) expect(screen.getByText(line.text)).toBeTruthy()
     expect(screen.getByText(/cannot tell that credential from the machine's own/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
-    expect(onPaired).toHaveBeenCalledWith(credential)
+    await waitFor(() => expect(onPaired).toHaveBeenCalledWith(credential))
   })
 
   it("says what a wrong code is and keeps scanning", async () => {
@@ -61,7 +61,7 @@ describe("pairing by camera", () => {
     await fireEvent.changeText(screen.getByLabelText("Pairing code"), encodePairingPayload(payload))
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
-    expect(onPaired).toHaveBeenCalledWith(credential)
+    await waitFor(() => expect(onPaired).toHaveBeenCalledWith(credential))
   })
 
   it("spends the code for a credential and never shows the credential", async () => {
@@ -71,8 +71,8 @@ describe("pairing by camera", () => {
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
     )
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(onPaired).toHaveBeenCalledWith(credential))
     expect(redeem).toHaveBeenCalledWith(payload, "iPhone")
-    expect(onPaired).toHaveBeenCalledWith(credential)
     expect(screen.queryByText(credential.token)).toBeNull()
   })
 
@@ -83,7 +83,7 @@ describe("pairing by camera", () => {
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={redeem} deviceName="iPhone" />,
     )
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
-    expect(screen.getByText(/may already have been used/)).toBeTruthy()
+    await waitFor(() => expect(screen.getByText(/may already have been used/)).toBeTruthy())
     expect(onPaired).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: "Pair with this machine" })).toBeTruthy()
   })
