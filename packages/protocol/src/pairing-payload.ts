@@ -11,6 +11,13 @@ import { utf16MaxLength } from "./validation.js"
 // listener, so a payload cannot talk a phone into a plaintext tailnet dial.
 export const pairingPayloadPrefix = "domovoi-pair:1:"
 
+// The longest text a valid payload encodes: the prefix, then base64url of the
+// JSON for a 512-character address, a 43-character credential and a
+// 128-character label, is under 1,100 characters. The paste field runs the
+// decoder on every keystroke, so the bound is checked on the text before any
+// base64 or JSON work touches it.
+export const maximumPairingPayloadLength = 2048
+
 const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]"])
 
 export const pairingUrlSchema = z.string().check(utf16MaxLength(512)).refine((value) => {
@@ -50,6 +57,7 @@ export function encodePairingPayload(payload: PairingPayload): string {
 }
 
 export function decodePairingPayload(text: string): PairingPayload {
+  if (text.length > maximumPairingPayloadLength) throw new Error("This is too long to be a Domovoi pairing code")
   const trimmed = text.trim()
   if (!trimmed.startsWith(pairingPayloadPrefix)) throw new Error("This is not a Domovoi pairing code")
   let parsed: unknown

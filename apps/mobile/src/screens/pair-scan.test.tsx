@@ -34,6 +34,9 @@ describe("pairing by camera", () => {
     )
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
     expect(screen.queryByText(payload.token)).toBeNull()
+    // The phone checks shape, not scope; the promise is conditional.
+    expect(screen.getByText(/If this is the credential the machine minted/)).toBeTruthy()
+    expect(screen.getByText(/cannot tell that from the machine's own credential/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     expect(onPaired).toHaveBeenCalledWith(payload)
   })

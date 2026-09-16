@@ -563,6 +563,7 @@ export function App() {
                 void saveCredential(next)
               }}
               onCancel={() => setScanning(false)}
+              bottomInset={tabFootprint}
             />
           ) : tab === "settings" ? (
             <SettingsScreen

@@ -18,7 +18,9 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Domovoi reads the pairing code on a machine's screen. Nothing is recorded."
+          "cameraPermission": "Domovoi reads the pairing code on a machine's screen. Nothing is recorded.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
         }
       ]
     ]
