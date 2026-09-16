@@ -1,4 +1,4 @@
-import { clientKindSchema, devicePairResultSchema, deviceRenameLabelSchema, type ClientKind, type DeviceIssueCodeResult, type DevicePairResult } from "@getdomovoi/protocol"
+import { clientKindSchema, devicePairResultSchema, deviceRenameLabelSchema, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult, type DevicePairResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
@@ -26,8 +26,16 @@ export async function runPairCommand(
       if (granted.device.binding.kind !== "client" || granted.device.binding.client !== client.data) {
         throw new Error("The daemon returned a different credential kind")
       }
-      dependencies.stdout(`This ${client.data} credential grants session sends, approvals and terminals.\n`)
-      dependencies.stdout("It cannot change paired devices or enroll more machines. Keep it private.\n")
+      if (client.data === "phone" || client.data === "tablet") {
+        // The same four lines the pairing card shows; the daemon refuses
+        // everything outside them.
+        dependencies.stdout(`A paired ${client.data} can:\n`)
+        for (const line of phoneAndTabletPromise) dependencies.stdout(`  ${line}\n`)
+        dependencies.stdout("Keep the credential private.\n")
+      } else {
+        dependencies.stdout(`This ${client.data} credential grants session sends, approvals and terminals.\n`)
+        dependencies.stdout("It cannot change paired devices or enroll more machines. Keep it private.\n")
+      }
       dependencies.stdout(`Client credential: ${granted.token}\n`)
       dependencies.stdout(`Use it only with a ${client.data} client connecting to this daemon.\n`)
       dependencies.stdout(`Revoke device ${granted.device.id} in this daemon's Devices list when it is no longer needed.\n`)

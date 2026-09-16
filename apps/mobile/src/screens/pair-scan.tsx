@@ -1,4 +1,4 @@
-import { decodePairingPayload, type PairingPayload } from "@getdomovoi/protocol"
+import { decodePairingPayload, phoneAndTabletPromise, phoneAndTabletPromiseGap, type PairingPayload } from "@getdomovoi/protocol"
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
 import { useCallback, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
@@ -86,8 +86,14 @@ export function PairScanScreen({
             {/* The phone can check the credential's shape, not its scope: a
                 daemon's own credential has the same shape and can do anything
                 on that machine. The promise is conditional and says so. */}
+            <Text variant="label">A paired phone can</Text>
+            {phoneAndTabletPromise.map((line) => <Text key={line} variant="note">{line}</Text>)}
+            {/* The first line is the machine's word, and this app does not
+                keep all of it yet. The text comes from the protocol so this
+                screen and the machine's pairing card say the same thing. */}
+            <Text variant="note">{phoneAndTabletPromiseGap}</Text>
             <Text variant="note">
-              If this is the credential the machine minted with domovoid pair --client phone, it lets this phone send work, answer gates and open terminals there, and nothing else. The phone cannot tell that from the machine's own credential, which can do anything on that machine. Either way it stays in this phone's keychain.
+              That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
             </Text>
             <Button title="Pair with this machine" variant="primary" shape="block" onPress={() => onPaired(found)} />
             <Button title="Scan again" variant="ghost" shape="block" onPress={() => { setRead(undefined); setPasted("") }} />

@@ -1588,6 +1588,78 @@ export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
   return !(persistenceRecoveryRpcMethods as readonly RpcMethod[]).includes(method)
 }
 
+// What a phone or tablet credential may do, read against the promise on the
+// pairing card, "Phone and tablet": "Watch every session, including terminal
+// output and diffs", "Answer gates, with the same three decisions", "Start
+// and stop sessions, and steer one mid-run", "It cannot pull the repository
+// down. Files stay here." Every method outside this set is refused to those
+// credentials.
+//
+// Two limits of that fourth line, so it is not read as more than it is. It
+// removes Domovoi's own file reach from a handheld: no terminal, no skill
+// contents, no audit export, no revert. It does not constrain what a provider
+// does when steered, because steering is the third line: a phone that can
+// prompt a session can ask the agent to move files, exactly as a desktop can.
+// The line says Domovoi does not carry the repository to the phone, not that
+// a phone holds no influence over a machine that already has it.
+//
+// The first line is not fully built. Live terminal output is broadcast to
+// every client and so needs no method here, but existing output and terminal
+// metadata are returned only by terminal.create, which also spawns a shell
+// and stays out. A handheld joining a running terminal sees what arrives
+// next, not what came before. A read-only attach path would close that; until
+// it exists the phone's pairing screen says so.
+export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
+  // Watch.
+  "system.hello",
+  "device.current",
+  "workspace.get",
+  "session.history",
+  "session.evidence",
+  "session.usage",
+  "usage.window",
+  "audit.query",
+  "artifact.authorize",
+  "runtime.models",
+  "runtime.discover",
+  "permission.hardGates",
+  // Sessions live on machines, so watching them means seeing the fleet.
+  "fleet.list",
+  // Answer gates.
+  "approval.resolve",
+  // Start, stop and steer. project.open names a directory already on the
+  // machine so a session can be created there; it moves no files to the phone.
+  "project.open",
+  "session.create",
+  "session.fork",
+  "session.activate",
+  "session.pause",
+  "session.send",
+  "session.setRuntime",
+  "system.pauseAll",
+  "system.emergencyStop",
+  "plan.edit",
+  "plan.discardEdit",
+  "annotation.create",
+  "annotation.reply",
+  "annotation.setStatus",
+  // The composer offers skills by name; their files stay on the machine
+  // (skill.read is not here).
+  "skill.list",
+])
+
+export const phoneAndTabletPromise = [
+  "Watch every session, including terminal output and diffs",
+  "Answer gates, with the same three decisions",
+  "Start and stop sessions, and steer one mid-run",
+  "It cannot pull the repository down. Files stay here.",
+] as const
+
+// The first line of that promise is not built yet. Every surface that shows
+// the promise shows this beside it, from here, so the machine's card and the
+// phone's screen cannot come to say different things about the same limit.
+export const phoneAndTabletPromiseGap = "This phone does not show terminal output yet. Everything else in that list works."
+
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>
 export type RpcRequest = z.infer<typeof rpcRequestSchema>
