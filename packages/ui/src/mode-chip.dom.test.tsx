@@ -48,9 +48,27 @@ it("offers Auto only in Build, clears it on leaving Build, and says why elsewher
 })
 
 it("locks the chips while a runtime update is pending", () => {
-  render(<><ModeChip runtime={runtime} pending onSetRuntime={vi.fn()} /><ThinkChip runtime={runtime} options={["low", "medium", "high"]} pending onSetRuntime={vi.fn()} /></>)
+  render(<><ModeChip runtime={runtime} pending onSetRuntime={vi.fn()} /><ThinkChip runtime={runtime} catalog={{ status: "ready", options: ["low", "medium", "high"] }} pending onSetRuntime={vi.fn()} /></>)
   expect((screen.getByRole("button", { name: /^Mode: Build/ }) as HTMLButtonElement).disabled).toBe(true)
   expect((screen.getByRole("button", { name: /^Think: medium/ }) as HTMLButtonElement).disabled).toBe(true)
+})
+
+// An update can start while the surface is open (toggling Auto starts one).
+// The rows then hold too: a pick by mouse or keyboard goes nowhere upstream,
+// so the row says so and sends nothing rather than dropping the choice.
+it("holds the open mode rows while an update is pending, by mouse and by keyboard", async () => {
+  const user = userEvent.setup()
+  const onSetRuntime = vi.fn()
+  const view = render(<ModeChip runtime={runtime} pending={false} onSetRuntime={onSetRuntime} />)
+  await user.click(screen.getByRole("button", { name: /^Mode: Build/ }))
+  view.rerender(<ModeChip runtime={runtime} pending onSetRuntime={onSetRuntime} />)
+  const ask = screen.getByRole("option", { name: "Ask" })
+  expect(ask.getAttribute("aria-disabled")).toBe("true")
+  await user.click(ask)
+  ask.focus()
+  await user.keyboard("{Enter}")
+  expect(onSetRuntime).not.toHaveBeenCalled()
+  expect(screen.getByText("MODE FOR THE NEXT TURN")).toBeTruthy()
 })
 
 // v2 draws no reasoning control. The runtime has one, so it stays reachable
@@ -58,12 +76,34 @@ it("locks the chips while a runtime update is pending", () => {
 it("changes the reasoning effort from a plain chip, or says the model reports none", async () => {
   const user = userEvent.setup()
   const onSetRuntime = vi.fn()
-  const view = render(<ThinkChip runtime={runtime} options={["low", "medium", "high"]} pending={false} onSetRuntime={onSetRuntime} />)
+  const view = render(<ThinkChip runtime={runtime} catalog={{ status: "ready", options: ["low", "medium", "high"] }} pending={false} onSetRuntime={onSetRuntime} />)
   await user.click(screen.getByRole("button", { name: /^Think: medium/ }))
   await user.click(screen.getByRole("menuitem", { name: "high" }))
   expect(onSetRuntime).toHaveBeenCalledWith({ ...runtime, reasoning: "high" })
-  view.rerender(<ThinkChip runtime={runtime} options={[]} pending={false} onSetRuntime={onSetRuntime} />)
+  view.rerender(<ThinkChip runtime={runtime} catalog={{ status: "ready", options: [] }} pending={false} onSetRuntime={onSetRuntime} />)
   const chip = screen.getByRole("button", { name: /^Think: medium/ }) as HTMLButtonElement
   expect(chip.disabled).toBe(true)
   expect(chip.title).toMatch(/reports no reasoning/)
+})
+
+// "No efforts" is a claim only a finished read may make. A read still
+// running or one that failed says that instead, and a failed one can be
+// asked again from the chip.
+it("says a read is running or failed rather than claiming the model reports none", async () => {
+  const user = userEvent.setup()
+  const onRetry = vi.fn()
+  const view = render(<ThinkChip runtime={runtime} catalog={{ status: "loading" }} pending={false} onSetRuntime={vi.fn()} onRetry={onRetry} />)
+  let chip = screen.getByRole("button", { name: /^Think: medium/ }) as HTMLButtonElement
+  expect(chip.disabled).toBe(true)
+  expect(chip.title).toMatch(/Reading which reasoning efforts/)
+  expect(chip.title).not.toMatch(/reports no reasoning/)
+
+  view.rerender(<ThinkChip runtime={runtime} catalog={{ status: "failed", message: "Daemon connection is not open" }} pending={false} onSetRuntime={vi.fn()} onRetry={onRetry} />)
+  chip = screen.getByRole("button", { name: /^Think: medium/ }) as HTMLButtonElement
+  expect(chip.disabled).toBe(false)
+  expect(chip.title).toMatch(/could not be read: Daemon connection is not open/)
+  await user.click(chip)
+  expect(screen.getByText("Daemon connection is not open")).toBeTruthy()
+  await user.click(screen.getByRole("menuitem", { name: "Read the model list again" }))
+  expect(onRetry).toHaveBeenCalledTimes(1)
 })

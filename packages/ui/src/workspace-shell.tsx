@@ -195,7 +195,7 @@ import { ApprovalReceipt } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { RulesPanel } from "./rules-panel.js"
 import { ModelPopover } from "./model-popover.js"
-import { ModeChip, ThinkChip } from "./mode-chip.js"
+import { ModeChip, ThinkChip, type ReasoningCatalog } from "./mode-chip.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
@@ -1473,17 +1473,18 @@ export function Thread({
   // once per provider change; a read that fails leaves the chip shut with its
   // reason rather than offering a guess. Hooks sit above the no-session return.
   const activeProvider = active?.runtime.provider
-  const [catalog, setCatalog] = useState<ProviderModel[]>([])
+  const [catalog, setCatalog] = useState<{ status: "loading" } | { status: "ready", models: ProviderModel[] } | { status: "failed", message: string }>({ status: "loading" })
+  const [catalogAttempt, setCatalogAttempt] = useState(0)
   useEffect(() => {
     if (!activeProvider) return
     let live = true
-    setCatalog([])
+    setCatalog({ status: "loading" })
     void onListModels(activeProvider).then(
-      (models) => { if (live) setCatalog(models) },
-      () => { if (live) setCatalog([]) },
+      (models) => { if (live) setCatalog({ status: "ready", models }) },
+      (cause: unknown) => { if (live) setCatalog({ status: "failed", message: cause instanceof Error ? cause.message : "Models could not be loaded" }) },
     )
     return () => { live = false }
-  }, [onListModels, activeProvider])
+  }, [onListModels, activeProvider, catalogAttempt])
   if (!active) {
     const hasProject = snapshot.project !== null
     return (
@@ -1519,7 +1520,9 @@ export function Thread({
   const transferTarget = transferTargetId
     ? machines.find((machine) => machine.id === transferTargetId)
     : undefined
-  const reasoningOptions = reasoningOptionsFor(catalog.find((model) => model.provider === active.runtime.provider && model.id === active.runtime.model))
+  const reasoningCatalog: ReasoningCatalog = catalog.status === "ready"
+    ? { status: "ready", options: reasoningOptionsFor(catalog.models.find((model) => model.provider === active.runtime.provider && model.id === active.runtime.model)) }
+    : catalog
   const providerReady = snapshot.machine.providers.some((provider) => provider.id === active.runtime.provider && providerCanStartSession(provider))
 
   const checkpointReason = checkpointBlockedReason(active.activeTurnId)
@@ -1949,7 +1952,7 @@ export function Thread({
               {/* v2's mode chip sits beside the model. Think has no drawing in
                   v2; the runtime carries it, so it stays as a plain chip here. */}
               <ModeChip runtime={active.runtime} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
-              <ThinkChip runtime={active.runtime} options={reasoningOptions} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
+              <ThinkChip runtime={active.runtime} catalog={reasoningCatalog} pending={runtimePending} onSetRuntime={(runtime) => void updateRuntime(runtime)} onRetry={() => setCatalogAttempt((attempt) => attempt + 1)} />
               {!providerReady ? <Badge variant="outline" className="text-warning">{providerDisplayName(active.runtime.provider)} not ready</Badge> : null}
               {onOpenSkills ? (
                 <ComposerSkillChip

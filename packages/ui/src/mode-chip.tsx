@@ -63,16 +63,25 @@ export function ModeChip({
         <div role="listbox" aria-label="Permission modes">
           {permissionModes.map((mode) => {
             const selected = mode.id === runtime.permissionMode
+            // An update in flight holds the rows too, not only the trigger: a
+            // pick made now would be dropped by the pending guard upstream,
+            // and a row that looks live while its choice goes nowhere lies.
+            const pick = () => {
+              if (pending) return
+              onSetRuntime(withPermissionMode(runtime, mode.id as PermissionMode))
+              setOpen(false)
+            }
             return (
               <div
                 key={mode.id}
                 role="option"
                 aria-label={mode.label}
                 aria-selected={selected}
+                aria-disabled={pending || undefined}
                 tabIndex={0}
-                onClick={() => { onSetRuntime(withPermissionMode(runtime, mode.id as PermissionMode)); setOpen(false) }}
-                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSetRuntime(withPermissionMode(runtime, mode.id as PermissionMode)); setOpen(false) } }}
-                className={cn("flex cursor-pointer items-start gap-2.5 border-t px-3 py-2.5 first:border-t-0", selected && "bg-accent")}
+                onClick={pick}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pick() } }}
+                className={cn("flex items-start gap-2.5 border-t px-3 py-2.5 first:border-t-0", selected && "bg-accent", pending ? "cursor-not-allowed opacity-45" : "cursor-pointer")}
               >
                 <StatusDot meaning={mode.meaning as StatusMeaning} label={mode.label} size="inline" labelHidden className="mt-1" />
                 <div className="min-w-0 flex-1">
@@ -106,28 +115,46 @@ export function ModeChip({
   )
 }
 
+// What the Think chip knows about the model's efforts. "None" is a claim the
+// chip may only make after a read that answered; a read still running or one
+// that failed says that instead.
+export type ReasoningCatalog =
+  | { status: "loading" }
+  | { status: "ready", options: readonly string[] }
+  | { status: "failed", message: string }
+
 // v2 draws no reasoning control. The runtime carries one and the model
 // reports which efforts it takes, so the chip stays, plain, beside the mode.
 export function ThinkChip({
   runtime,
-  options,
+  catalog,
   pending,
   onSetRuntime,
+  onRetry,
 }: {
   runtime: Runtime
-  options: readonly string[]
+  catalog: ReasoningCatalog
   pending: boolean
   onSetRuntime: (runtime: Runtime) => void
+  onRetry?: (() => void) | undefined
 }) {
-  const none = options.length === 0
+  const options = catalog.status === "ready" ? catalog.options : []
+  const none = catalog.status === "ready" && options.length === 0
+  const title = catalog.status === "loading"
+    ? "Reading which reasoning efforts this model reports."
+    : catalog.status === "failed"
+      ? `The model list could not be read: ${catalog.message}`
+      : none
+        ? "This model reports no reasoning efforts to choose from."
+        : undefined
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           aria-label={`Think: ${runtime.reasoning}`}
-          disabled={pending || none}
-          {...(none ? { title: "This model reports no reasoning efforts to choose from." } : {})}
+          disabled={pending || catalog.status === "loading" || none}
+          {...(title ? { title } : {})}
           className="flex items-center gap-1.5 rounded-full px-2.5 py-[5px] font-machine text-mono-xs text-muted-foreground disabled:cursor-not-allowed disabled:opacity-45"
         >
           Think: {runtime.reasoning}
@@ -135,7 +162,12 @@ export function ThinkChip({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
-        {options.map((reasoning) => (
+        {catalog.status === "failed" ? (
+          <>
+            <p className="m-0 max-w-[32ch] px-2 py-1.5 text-[11px] leading-snug text-destructive">{catalog.message}</p>
+            {onRetry ? <DropdownMenuItem onSelect={onRetry}>Read the model list again</DropdownMenuItem> : null}
+          </>
+        ) : options.map((reasoning) => (
           <DropdownMenuItem key={reasoning} disabled={pending} onSelect={() => onSetRuntime({ ...runtime, reasoning })}>
             {reasoning === runtime.reasoning ? <CheckIcon /> : null}{reasoning}
           </DropdownMenuItem>
