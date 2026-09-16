@@ -72,8 +72,9 @@ it("routes fleet and skills to the surfaces that own them", async () => {
   expect(props.onOpenSkills).toHaveBeenCalledTimes(1)
 })
 
-const activeRule: ApprovalRule = {
+const activeRule: Extract<ApprovalRule, { status: "active" }> = {
   id: "rule-1",
+  useCount: 0,
   projectId: "project-1",
   operation: "shell",
   command: "pnpm test",
@@ -95,6 +96,7 @@ const activeRule: ApprovalRule = {
 
 const legacyRule: ApprovalRule = {
   id: "rule-2",
+  useCount: 0,
   projectId: "project-1",
   operation: "shell",
   command: "pnpm build",

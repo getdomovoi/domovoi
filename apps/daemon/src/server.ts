@@ -181,7 +181,7 @@ import {
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
-import { permissionDecisionFor } from "./permission-policy.js"
+import { permissionDecisionFor, permissionHardGates } from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
@@ -1668,7 +1668,7 @@ export class DomovoiDaemon {
       ? { ...authenticatedActor, connectionId }
       : authenticatedActor ?? { kind: "daemon", component: "rpc" }
     const sessionId = this.#auditSessionId(values)
-    const target = ["artifactId", "approvalId", "terminalId", "checkpointId", "annotationId", "deviceId", "machineId"]
+    const target = ["artifactId", "approvalId", "ruleId", "terminalId", "checkpointId", "annotationId", "deviceId", "machineId"]
       .map((key) => values[key])
       .find((value): value is string => typeof value === "string")
       ?? ((method === "skill.setEnabled" || method === "skill.review")
@@ -3145,6 +3145,7 @@ export class DomovoiDaemon {
     try {
       const request = JSON.parse(raw) as { method?: unknown }
       return request.method === "runtime.models"
+        || request.method === "permission.hardGates"
         || request.method === "relay.recovery"
         || request.method === "runtime.discover"
         || request.method === "provider.refresh"
@@ -3823,6 +3824,37 @@ export class DomovoiDaemon {
     try {
       let changed = false
       let alreadyPersisted = false
+      if (method === "permission.hardGates") {
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(permissionHardGates()) })
+        return
+      }
+      if (method === "approvalRule.revoke") {
+        const params = paramsResult.data as RpcParams<"approvalRule.revoke">
+        const connectionId = this.#connectionIds.get(socket)
+        if (authenticatedActor?.kind !== "client" || !connectionId) {
+          this.#error(socket, request.id, invalidParams, "Rule revocation requires an authenticated connection identity")
+          return
+        }
+        const index = this.#snapshot.approvalRules.findIndex((rule) => rule.id === params.ruleId)
+        const rule = this.#snapshot.approvalRules[index]
+        if (!rule || rule.projectId !== this.#snapshot.project?.id) {
+          this.#error(socket, request.id, invalidParams, "Approval rule does not exist in the open project")
+          return
+        }
+        if (rule.status === "inactive" && rule.inactiveReason !== "revoked") {
+          this.#error(socket, request.id, invalidParams, "Only active approval rules can be revoked")
+          return
+        }
+        if (rule.status === "active") {
+          this.#snapshot.approvalRules[index] = {
+            ...rule, status: "inactive", inactiveReason: "revoked", inactivatedAt: new Date().toISOString(),
+            inactivatedBy: authenticatedActor.client, inactivatedByConnectionId: connectionId,
+            ...(authenticatedActor.clientId ? { inactivatedByClientId: authenticatedActor.clientId } : {}),
+          }
+        }
+        // Retry durability even when a previous failed write already revoked it in memory.
+        changed = true
+      }
       if (method === "device.current") {
         const verified = this.#deviceCredentials.get(socket)?.verified
         const result = verified?.binding.kind === "client"
@@ -5896,12 +5928,13 @@ export class DomovoiDaemon {
             createdBy: actor.client,
             createdByConnectionId: connectionId,
             createdAt: new Date().toISOString(),
+            useCount: 0,
           })
           for (const inactiveRuleId of approval.reapproval?.inactiveRuleIds ?? []) {
             const inactive = this.#snapshot.approvalRules.find(
               (rule) => rule.id === inactiveRuleId && rule.status === "inactive",
             )
-            if (inactive?.status === "inactive") inactive.replacedByRuleId = ruleId
+            if (inactive?.status === "inactive" && inactive.inactiveReason !== "revoked") inactive.replacedByRuleId = ruleId
           }
         }
         const decidedAt = new Date().toISOString()
@@ -7387,6 +7420,7 @@ export class DomovoiDaemon {
         (rule) => !containsSecret
           && execution.state === "resolved"
           && rule.status === "active"
+          && rule.useCount < Number.MAX_SAFE_INTEGER
           && rule.projectId === project.id
           && rule.execution.digest === execution.digest,
       )
@@ -7403,7 +7437,7 @@ export class DomovoiDaemon {
       // a decision in the audit log that was never made.
       const autoResolved = !this.#persistenceUnavailable
         && !containsSecret
-        && (decision.action === "allow" || (decision.risk === "normal" && matchingRule))
+        && decision.action === "allow"
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
         action: "provider.approval-requested",
@@ -7428,6 +7462,26 @@ export class DomovoiDaemon {
       if (!containsSecret && decision.action === "allow") {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else if (decision.risk === "normal" && matchingRule) {
+        matchingRule.useCount += 1
+        try {
+          await this.#persistSnapshot()
+        } catch (error) {
+          matchingRule.useCount -= 1
+          this.#appendAudit({
+            actor: { kind: "daemon", component: "approval-rules" },
+            action: "approval-rule.used", outcome: "denied", target: matchingRule.id,
+            sessionId: session.id, projectId: project.id,
+            detail: "Use count could not be persisted",
+          })
+          this.#agents.require(provider).resolveApproval(event.requestId, "deny")
+          this.#reportError("Standing rule use could not be persisted", error)
+          return
+        }
+        this.#appendAudit({
+          actor: { kind: "daemon", component: "approval-rules" },
+          action: "approval-rule.used", outcome: "succeeded", target: matchingRule.id,
+          sessionId: session.id, projectId: project.id,
+        })
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else {
         const approval: WorkspaceSnapshot["approvals"][number] = {

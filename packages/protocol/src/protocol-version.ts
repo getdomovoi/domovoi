@@ -2,9 +2,9 @@ import { z } from "zod"
 
 import { utf16MaxLength } from "./validation.js"
 
-// Wire compatibility is separate from the executable's buildVersion. 0.6 adds
-// transfer history that older clients cannot parse; credentials stay valid.
-export const protocolVersion = "0.6.0" as const
+// Wire compatibility is separate from the executable's buildVersion. 0.7 adds
+// rule use counts and attributed revocation that older clients cannot parse.
+export const protocolVersion = "0.7.0" as const
 export const maximumProtocolVersionLength = 64
 
 // Absolute end: $ alone also matches before a final newline in JavaScript.

@@ -5,6 +5,7 @@ import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-re
 import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
+import { approvalRuleRevokeParamsSchema, permissionHardGatesParamsSchema, permissionHardGatesResultSchema } from "./rules.js"
 import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import {
   updateActivateParamsSchema,
@@ -1453,6 +1454,8 @@ export const rpcMethods = {
     params: approvalResolveParamsSchema,
     result: workspaceSnapshotSchema,
   },
+  "approvalRule.revoke": { params: approvalRuleRevokeParamsSchema, result: workspaceSnapshotSchema },
+  "permission.hardGates": { params: permissionHardGatesParamsSchema, result: permissionHardGatesResultSchema },
   "session.setRuntime": {
     params: sessionSetRuntimeParamsSchema,
     result: workspaceSnapshotSchema,
@@ -1552,6 +1555,8 @@ export const rpcMethodMutations = {
   "plan.edit": "mutating",
   "plan.discardEdit": "mutating",
   "approval.resolve": "mutating",
+  "approvalRule.revoke": "mutating",
+  "permission.hardGates": "read-only",
   "session.setRuntime": "mutating",
   "session.restartProviderThread": "mutating",
   "project.open": "mutating",
