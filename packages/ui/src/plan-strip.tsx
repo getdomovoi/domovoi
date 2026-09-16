@@ -56,7 +56,7 @@ export function PlanStrip({
   plan: WorkingPlan | undefined
   onOpenPreview?: () => void
   onEditPlan?: ((edit: WorkingPlanEdit) => Promise<void>) | undefined
-  onDiscardEdit?: (editId: string) => void
+  onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
   // A viewer of an archived or borrowed session sees the plan and cannot
   // change it; the design draws Edit dimmed for that viewer, not absent.
   readOnly?: boolean
@@ -64,6 +64,8 @@ export function PlanStrip({
 }) {
   const [expanded, setExpanded] = useState(false)
   const [edit, setEdit] = useState<{ structureRevision: number, steps: { id: string, text: string }[] } | null>(null)
+  const [discarding, setDiscarding] = useState(false)
+  const [discardError, setDiscardError] = useState("")
   if (!plan || plan.steps.length === 0) return null
   const current = currentPlanStep(plan)
   if (!current) return null
@@ -83,13 +85,30 @@ export function PlanStrip({
           {onDiscardEdit ? (
             <button
               type="button"
-              className="ml-auto text-[11px] text-info-dim"
-              onClick={() => onDiscardEdit(plan.pendingEdit!.id)}
+              className="ml-auto text-[11px] text-info-dim disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={readOnly || discarding}
+              onClick={() => {
+                const editId = plan.pendingEdit!.id
+                setDiscardError("")
+                setDiscarding(true)
+                onDiscardEdit(editId).then(
+                  () => setDiscarding(false),
+                  (cause: unknown) => {
+                    setDiscarding(false)
+                    setDiscardError(cause instanceof Error ? cause.message : "The edit could not be discarded")
+                  },
+                )
+              }}
             >
-              Discard
+              {discarding ? "Discarding" : "Discard"}
             </button>
           ) : null}
         </div>
+      ) : null}
+      {discardError ? (
+        <p role="alert" className="m-0 border-b border-border px-3 py-1.5 text-[11px] leading-relaxed text-destructive">
+          {discardError} The queued edit is still here.
+        </p>
       ) : null}
 
       {edit && onEditPlan ? (

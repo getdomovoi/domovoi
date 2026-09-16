@@ -1506,6 +1506,20 @@ export function Thread({
   ).at(-1)
   const forkReason = forkSessionBlockedReason(active, forkCheckpoint)
 
+  // The strip sits above the composer for a session you can drive, and above
+  // the read-only notice for one you can only watch; the plan stays readable
+  // either way, and only Edit and Discard shut.
+  const planStrip = (
+    <PlanStrip
+      plan={snapshot.workingPlans.find((candidate) => candidate.sessionId === active.id)}
+      readOnly={archiveReadOnly}
+      {...(onEditPlan ? { onEditPlan: (edit: WorkingPlanEdit) => onEditPlan(active.id, edit) } : {})}
+      {...(onDiscardPlanEdit ? { onDiscardEdit: (editId: string) => onDiscardPlanEdit(active.id, editId) } : {})}
+      {...(onOpenPlanPreview ? { onOpenPreview: onOpenPlanPreview } : {})}
+      className="mx-auto mb-2 max-w-[var(--shell-thread)]"
+    />
+  )
+
   const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }) => {
     setPending(true)
     setSendError("")
@@ -1827,6 +1841,7 @@ export function Thread({
       </ScrollArea>
       {archiveReadOnly ? (
         <div className="px-5 py-3">
+          {planStrip}
           {recoveryError ? (
             <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]">
               <CircleStopIcon />
@@ -1846,14 +1861,7 @@ export function Thread({
         {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
-        <PlanStrip
-          plan={snapshot.workingPlans.find((candidate) => candidate.sessionId === active.id)}
-          readOnly={archiveReadOnly}
-          {...(onEditPlan ? { onEditPlan: (edit: WorkingPlanEdit) => onEditPlan(active.id, edit) } : {})}
-          {...(onDiscardPlanEdit ? { onDiscardEdit: (editId: string) => { void onDiscardPlanEdit(active.id, editId) } } : {})}
-          {...(onOpenPlanPreview ? { onOpenPreview: onOpenPlanPreview } : {})}
-          className="mx-auto mb-2 max-w-[var(--shell-thread)]"
-        />
+        {planStrip}
         <div className="mx-auto flex max-w-[var(--shell-thread)] flex-col gap-2 rounded-xl border bg-card p-3">
           {(failures ?? []).filter((attempt) => attempt.sessionId === active.id).map((attempt) => (
             <div key={attempt.id} className="flex items-center gap-2 rounded-lg border border-danger-border bg-danger-background px-3 py-2">

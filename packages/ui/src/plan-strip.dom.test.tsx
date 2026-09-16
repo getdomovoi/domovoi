@@ -71,7 +71,7 @@ it("says a queued edit applies at the next turn boundary, not to the turn in fli
 
 it("says plainly when an edit did not apply", async () => {
   const user = userEvent.setup()
-  const onDiscardEdit = vi.fn()
+  const onDiscardEdit = vi.fn(async () => {})
   render(<PlanStrip plan={planWith(steps, {
     id: "edit-2",
     basedOnStructureRevision: 1,
@@ -160,4 +160,34 @@ it("names one changed step only, never a guess for an added, removed or multi-st
   expect(queuedEditStep(edit([...base, { id: "s4", text: "Ship it" }]))).toBeUndefined()
   expect(queuedEditStep(edit([base[0]!, base[2]!]))).toBeUndefined()
   expect(queuedEditStep(edit([{ id: "s1", text: "A" }, { id: "s2", text: "B" }, base[2]!]))).toBeUndefined()
+})
+
+it("keeps the queued edit and says why when a discard is refused, then lets you try again", async () => {
+  const user = userEvent.setup()
+  const onDiscardEdit = vi.fn<(editId: string) => Promise<void>>()
+    .mockRejectedValueOnce(new Error("Daemon connection is not open"))
+    .mockResolvedValueOnce(undefined)
+  render(<PlanStrip plan={planWith(steps, {
+    id: "edit-4", basedOnStructureRevision: 2,
+    baseSteps: [{ id: "s1", text: "Read the webhook handler" }],
+    draftSteps: [{ id: "s1", text: "Read it again" }],
+    status: "queued", submittedAt: "2026-09-08T09:11:00.000Z", submittedBy: { client: "desktop", connectionId: "conn-1" },
+  })} onDiscardEdit={onDiscardEdit} />)
+  await user.click(screen.getByRole("button", { name: "Discard" }))
+  expect(await screen.findByRole("alert")).toBeTruthy()
+  expect(screen.getByRole("alert").textContent).toMatch(/Daemon connection is not open/)
+  expect((screen.getByRole("button", { name: "Discard" }) as HTMLButtonElement).disabled).toBe(false)
+  await user.click(screen.getByRole("button", { name: "Discard" }))
+  expect(onDiscardEdit).toHaveBeenCalledTimes(2)
+  expect(screen.queryByRole("alert")).toBeNull()
+})
+
+it("holds Discard shut for a read-only viewer too", () => {
+  render(<PlanStrip plan={planWith(steps, {
+    id: "edit-5", basedOnStructureRevision: 2,
+    baseSteps: [{ id: "s1", text: "Read the webhook handler" }],
+    draftSteps: [{ id: "s1", text: "Read it again" }],
+    status: "queued", submittedAt: "2026-09-08T09:11:00.000Z", submittedBy: { client: "desktop", connectionId: "conn-1" },
+  })} onDiscardEdit={vi.fn(async () => {})} readOnly />)
+  expect((screen.getByRole("button", { name: "Discard" }) as HTMLButtonElement).disabled).toBe(true)
 })
