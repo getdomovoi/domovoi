@@ -1,6 +1,6 @@
 {
   "name": "@getdomovoi/protocol",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Typed wire protocol shared by Domovoi daemons and clients.",
   "keywords": ["domovoi", "protocol", "json-rpc", "schema", "zod"],
   "type": "module",
