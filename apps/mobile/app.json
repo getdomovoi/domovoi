@@ -6,7 +6,21 @@
     "scheme": "domovoi",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "ios": { "supportsTablet": true, "bundleIdentifier": "com.getdomovoi.domovoi" },
-    "android": { "package": "com.getdomovoi.domovoi", "edgeToEdgeEnabled": true }
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.getdomovoi.domovoi"
+    },
+    "android": {
+      "package": "com.getdomovoi.domovoi",
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Domovoi reads the pairing code on a machine's screen. Nothing is recorded."
+        }
+      ]
+    ]
   }
 }

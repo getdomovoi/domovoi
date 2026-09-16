@@ -37,6 +37,7 @@ export function SettingsScreen({
   onChangeToken,
   onConnect,
   onForget,
+  onScanPairingCode,
   paired,
   bottomInset,
 }: {
@@ -48,6 +49,9 @@ export function SettingsScreen({
   onChangeToken: (value: string) => void
   onConnect: () => void
   onForget: () => void
+  // Pairing by camera: the phone reads the address and a client credential
+  // from the code the machine shows, instead of typing both.
+  onScanPairingCode?: (() => void) | undefined
   // Whether this phone has a daemon to talk to at all. Device settings work
   // either way; the machine-scoped ones do not exist until one is paired.
   paired: boolean
@@ -93,6 +97,9 @@ export function SettingsScreen({
         </View>
 
         <Card className="gap-3">
+          {onScanPairingCode ? (
+            <Button title="Scan a pairing code" variant="primary" shape="block" onPress={onScanPairingCode} />
+          ) : null}
           <View className="gap-1.5">
             <Text variant="label">Daemon address</Text>
             <TextInput
