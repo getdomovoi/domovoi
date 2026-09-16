@@ -2573,7 +2573,18 @@ export function ArtifactDock({
   )
   const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
   const annotations = useMemo(() => annotationsForActiveSession(snapshot), [snapshot])
-  const openAnnotations = annotations.filter((annotation) => annotation.status === "open")
+  // Comments belong to the artifact they were left on. The preview shows the
+  // selected variant's, another variant's show when it is selected, the plan
+  // shows the plan's, and whatever is on none of those is listed under the
+  // preview in its own labelled block so nothing is lost.
+  const previewComments = annotations.filter((annotation) => preview !== undefined && annotation.artifactId === preview.id)
+  const planComments = annotations.filter((annotation) => plan !== undefined && annotation.artifactId === plan.id)
+  const variantIds = new Set(previewVariants.map((artifact) => artifact.id))
+  const otherComments = annotations.filter((annotation) => !variantIds.has(annotation.artifactId) && annotation.artifactId !== plan?.id)
+  const commentCount = (rows: readonly Annotation[]) => {
+    const open = rows.filter((annotation) => annotation.status === "open").length
+    return open === rows.length ? `${open} open` : `${open} open · ${rows.length} in all`
+  }
   const archiveReadOnly = sessionIsArchiveReadOnly(snapshot.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   ))
@@ -2877,6 +2888,21 @@ export function ArtifactDock({
     }
   }
 
+  const planCommentsBlock = planComments.length ? (
+    <section aria-label="Comments on the plan" className="mt-4 flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-eyebrow tracking-[.13em] text-faint">COMMENTS ON THE PLAN</span>
+        <span className="font-machine text-mono-xs text-faint">{commentCount(planComments)}</span>
+      </div>
+      <AnnotationComments
+        annotations={planComments}
+        anchorResolutions={anchorResolutions}
+        readOnly={archiveReadOnly}
+        onReply={onReplyToAnnotation}
+        onSetStatus={onSetAnnotationStatus}
+      />
+    </section>
+  ) : null
   return (
     <aside aria-label="Session artifacts" data-workspace-panel="dock" className="flex h-full min-w-0 flex-col bg-sidebar">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full gap-0">
@@ -2888,11 +2914,6 @@ export function ArtifactDock({
             <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
             <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
             <TabsTrigger value="checkpoints"><GitCommitHorizontalIcon />Checkpoints</TabsTrigger>
-            <TabsTrigger value="comments">
-              <MessageSquareTextIcon />Comments
-              {openAnnotations.length ? <Badge variant="outline" className="px-1 font-machine text-mono-xs">{openAnnotations.length}</Badge> : null}
-            </TabsTrigger>
-            <TabsTrigger value="session"><BotIcon />Session</TabsTrigger>
           </TabsList>
           <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
         </div>
@@ -2984,6 +3005,36 @@ export function ArtifactDock({
               <EmptyHeader><EmptyMedia variant="icon"><CodeXmlIcon /></EmptyMedia><EmptyTitle>No preview yet</EmptyTitle><EmptyDescription>HTML artifacts created by the agent appear here.</EmptyDescription></EmptyHeader>
             </Empty>
           )}
+          {/* v2 draws the comments on a variant under the preview frame, not
+              as a tab of their own; the count names how many are still open. */}
+          <section aria-label="Comments on this preview" className="mx-auto mt-4 flex max-w-[640px] flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-eyebrow tracking-[.13em] text-faint">{preview?.variant ? `COMMENTS ON ${preview.variant.label.toUpperCase()}` : "COMMENTS ON THIS PREVIEW"}</span>
+              <span className="font-machine text-mono-xs text-faint">{commentCount(previewComments)}</span>
+            </div>
+            <AnnotationComments
+              annotations={previewComments}
+              anchorResolutions={anchorResolutions}
+              readOnly={archiveReadOnly}
+              onReply={onReplyToAnnotation}
+              onSetStatus={onSetAnnotationStatus}
+            />
+            {otherComments.length ? (
+              <div className="mt-2 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-eyebrow tracking-[.13em] text-faint">COMMENTS ON OTHER ARTIFACTS</span>
+                  <span className="font-machine text-mono-xs text-faint">{commentCount(otherComments)}</span>
+                </div>
+                <AnnotationComments
+                  annotations={otherComments}
+                  anchorResolutions={anchorResolutions}
+                  readOnly={archiveReadOnly}
+                  onReply={onReplyToAnnotation}
+                  onSetStatus={onSetAnnotationStatus}
+                />
+              </div>
+            ) : null}
+          </section>
         </TabsContent>
         <TabsContent value="plan" className="min-h-0">
           {workingPlan ? (
@@ -2996,6 +3047,7 @@ export function ArtifactDock({
                   {...(onEditPlan ? { onEditPlan } : {})}
                   {...(onDiscardPlanEdit ? { onDiscardEdit: onDiscardPlanEdit } : {})}
                 />
+                {planCommentsBlock}
               </div>
             </ScrollArea>
           ) : plan?.content ? (
@@ -3006,16 +3058,20 @@ export function ArtifactDock({
                   <p className="mt-1 font-machine text-mono-xs text-faint">revision {plan.revision}</p>
                 </div>
                 <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={() => setActiveTab("preview")} />
+                {planCommentsBlock}
               </article>
             </ScrollArea>
           ) : (
-            <Empty className="min-h-full border-0">
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
-                <EmptyTitle>No plan content yet</EmptyTitle>
-                <EmptyDescription>Plan updates from the active agent appear here.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <ScrollArea className="h-full">
+              <Empty className="min-h-48 border-0">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
+                  <EmptyTitle>No plan content yet</EmptyTitle>
+                  <EmptyDescription>Plan updates from the active agent appear here.</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+              {planCommentsBlock ? <div className="px-3 pb-3">{planCommentsBlock}</div> : null}
+            </ScrollArea>
           )}
         </TabsContent>
         <TabsContent value="changes" className="min-h-0">
@@ -3025,15 +3081,6 @@ export function ArtifactDock({
             sessionId={snapshot.activeSessionId}
             onLoad={onLoadSessionEvidence}
             onRevertFile={onRevertSessionFile}
-          />
-        </TabsContent>
-        <TabsContent value="comments" className="min-h-0">
-          <AnnotationComments
-            annotations={annotations}
-            anchorResolutions={anchorResolutions}
-            readOnly={archiveReadOnly}
-            onReply={onReplyToAnnotation}
-            onSetStatus={onSetAnnotationStatus}
           />
         </TabsContent>
         <TabsContent value="terminal" className="min-h-0 bg-code">
@@ -3088,7 +3135,6 @@ export function ArtifactDock({
             }
           />
         </TabsContent>
-        <TabsContent value="session" className="p-4 font-machine text-[11px] text-muted-foreground">{snapshot.machine.name}<br />{snapshot.project?.path ?? "No project open"}</TabsContent>
       </Tabs>
       <SessionUsageFooter usage={usage ?? null} />
       <Dialog
@@ -3319,7 +3365,8 @@ export function AnnotationComments({
 }
 
 function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
-  const items = [FileDiffIcon, CodeXmlIcon, MessageSquareTextIcon, TerminalSquareIcon, HistoryIcon]
+  // One icon per dock tab, in the tab list's order.
+  const items = [FileTextIcon, CodeXmlIcon, FileDiffIcon, TerminalSquareIcon, HistoryIcon, GitCommitHorizontalIcon]
   return (
     <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
       <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
