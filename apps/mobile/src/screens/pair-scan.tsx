@@ -88,6 +88,10 @@ export function PairScanScreen({
                 on that machine. The promise is conditional and says so. */}
             <Text variant="label">A paired phone can</Text>
             {phoneAndTabletPromise.map((line) => <Text key={line} variant="note">{line}</Text>)}
+            {/* The first line is the machine's word, and this app does not
+                keep all of it yet. Saying so here is better than letting the
+                list read as delivered. */}
+            <Text variant="note">This phone does not show terminal output yet. Everything else in that list works.</Text>
             <Text variant="note">
               That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
             </Text>

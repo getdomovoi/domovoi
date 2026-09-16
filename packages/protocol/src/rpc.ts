@@ -1589,12 +1589,26 @@ export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
 }
 
 // What a phone or tablet credential may do, read against the promise on the
-// pairing card, "Phone and tablet": "Watch every session, including terminal output and diffs", "Answer
-// gates, with the same three decisions", "Start and stop sessions, and steer
-// one mid-run", "It cannot pull the repository down. Files stay here." Every
-// method outside this set is refused to those credentials. Terminal output
-// is broadcast to every client, so watching a terminal needs no method here;
-// terminal.input would be a shell on the machine and stays out.
+// pairing card, "Phone and tablet": "Watch every session, including terminal
+// output and diffs", "Answer gates, with the same three decisions", "Start
+// and stop sessions, and steer one mid-run", "It cannot pull the repository
+// down. Files stay here." Every method outside this set is refused to those
+// credentials.
+//
+// Two limits of that fourth line, so it is not read as more than it is. It
+// removes Domovoi's own file reach from a handheld: no terminal, no skill
+// contents, no audit export, no revert. It does not constrain what a provider
+// does when steered, because steering is the third line: a phone that can
+// prompt a session can ask the agent to move files, exactly as a desktop can.
+// The line says Domovoi does not carry the repository to the phone, not that
+// a phone holds no influence over a machine that already has it.
+//
+// The first line is not fully built. Live terminal output is broadcast to
+// every client and so needs no method here, but existing output and terminal
+// metadata are returned only by terminal.create, which also spawns a shell
+// and stays out. A handheld joining a running terminal sees what arrives
+// next, not what came before. A read-only attach path would close that; until
+// it exists the phone's pairing screen says so.
 export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   // Watch.
   "system.hello",

@@ -36,6 +36,7 @@ describe("pairing by camera", () => {
     expect(screen.queryByText(payload.token)).toBeNull()
     // The phone checks shape, not scope; the promise is conditional.
     for (const line of phoneAndTabletPromise) expect(screen.getByText(line)).toBeTruthy()
+    expect(screen.getByText(/does not show terminal output yet/)).toBeTruthy()
     expect(screen.getByText(/cannot tell that credential from the machine's own/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     expect(onPaired).toHaveBeenCalledWith(payload)
