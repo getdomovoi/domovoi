@@ -120,8 +120,9 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
 - [x] **S0.1 [H] The open-core line.** Which capabilities are Apache 2.0 and which are paid.
       Hard to reverse once published. **Resolved 2026-09-12: B (c158a4df).** The payload claim rests on
       client-side encryption with a reviewed composition, so closing the relay server costs the
-      claim nothing. Record in `S0.2-RELAY-CRYPTO.md` §9. B's tier boundary is metered relay consumption,
-      and the meter lives in the relay server. That is why the server stays closed (`S0.6`): an
+      claim nothing. Record in `S0.2-RELAY-CRYPTO.md` §9. B's tier boundary is per-seat machine
+      entitlement; the relay's connected-time meter supports entitlement and abuse control,
+      not consumption-based invoice lines. That is why the server stays closed (`S0.6`): an
       open server has no enforcement point, the same argument that moved enforcement off the
       Apache-2.0 daemon in `S0.4`, one layer up. The two decisions depend on each other.
 - [ ] **S0.2 [H] Relay crypto design, written and reviewed.** "Carries encrypted payloads it
@@ -135,8 +136,9 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
       estimated (§7a), quote pending the `S0.7` firm conversation. The review is external
       work: its record is a dated engagement letter and a dated report, named here when they
       exist; until then the state is not started, not an unticked box.
-- [ ] **S0.3 [H] What the relay retains.** Billing by machine requires knowing which
-      machines were active and for how long. "Payloads unreadable" and "nothing recorded"
+- [ ] **S0.3 [H] What the relay retains.** Entitlement, abuse control and audit require
+      records of which machines were connected and for how long, not usage-based invoices.
+      Machines are priced per seat. "Payloads unreadable" and "nothing recorded"
       are different claims. State both halves publicly.
 - [ ] **S0.4 [H] How tier enforcement is trusted.** Free is JSON-RPC only and the *daemon*
       refuses the terminal, so the daemon must learn its tier and verify it. Signed tier
@@ -1122,8 +1124,10 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
 - [ ] **S2.3 [CX]** NAT traversal and fallback. Tailscale covers the tailnet case; the relay
       covers the rest.
 - [ ] **S2.4 [CX]** Degraded and queued behaviour under real packet loss, not just as drawn.
-- [ ] **S2.5 [CX]** Metering: machine-hours, emitted so billing can reconcile it and a user
-      can audit it. The meter exists in the forwarding core as settlement-ordered
+- [ ] **S2.5 [CX]** Metering: connected machine-hours for entitlement and abuse control,
+      emitted so records can be reconciled and audited. Machines are priced per seat, not by
+      observed duration; byte counters are never silently substituted for machine-hours.
+      The meter exists in the forwarding core as settlement-ordered
       machine-time export (`getdomovoi/relay` `docs/registration-and-usage.md`); what is
       open is the account-issued registration credential and the tier meter in front of it.
 - [ ] **S2.6 [CX]** Abuse controls. A relay forwarding arbitrary encrypted bytes between
@@ -1136,32 +1140,44 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
       not an operational detail. What the relay does today, read 2026-09-16 from
       `getdomovoi/relay` `docs/registration-and-usage.md` at `2ec1e24`: the authority is one
       process holding an exclusive SQLite ownership lock, so there is one of it; on startup every
-      interval left open becomes `interrupted` at its last durable observation, and "unobserved
-      time before the crash and downtime are not charged" is stated as a metering limit. So every
+      interval left open becomes `interrupted` at its last durable observation. Connected time
+      after that observation is missing from the durable record; downtime is not connected time. So every
       restart, planned or not, ends every relayed session, and the time between a route's last
-      `sweep()` observation and the restart is never billed. The loss per route per restart is
-      bounded above by one sweep interval plus the downtime, and by nothing else; the sweep
+      `sweep()` observation and the restart is a record-continuity gap, not lost revenue.
+      Measure the actual observation gap and downtime separately; a configured sweep interval
+      alone does not establish a hard upper bound under process or disk stalls. The sweep
       interval is the network adapter's choice and the adapter is not written (`S2.2`). Nobody
       owns the client side either: what a daemon or phone does when the relay drops it is the
       carrier adapter's reconnect behaviour, also unwritten. Gate, before any hosted deployment,
-      all three: (1) the sweep interval fixed and published as a number, so the unbilled window
+      all three: (1) the sweep interval fixed and published as a number, so the observation-gap budget
       is a stated figure and not "small"; (2) product copy that says a relay restart ends relayed
       sessions and what the client does next, written where the transport list is shown; (3) a
       restart drill on the deployed shape, N routes connected, restart, measured: seconds to
-      first reconnect, seconds to last, milliseconds unbilled, and the daemon's own session
+      first reconnect, seconds to last, missing connected-time milliseconds with the error
+      bound alongside each result, and the daemon's own session
       state after it (the worktree and thread live on the machine and must be untouched). A
       restartable authority that keeps sessions is the other answer; it contradicts the
       single-process design in `docs/server-boundary.md` and is not chosen here. Recorded
       2026-09-14, written out 2026-09-16.
-- [ ] **S2.11 [CX, then H]** Backup and retention of the SQLite ledger that holds the billing
+      Framing correction, 2026-09-16: the earlier "unbilled" wording was withdrawn.
+      It survived into this gate and the relay design and wrongly implied a usage-based price.
+      Machines are priced per seat; this meter supports entitlement and abuse control, not
+      invoice lines. The loss is a gap in the observed-time record. Bounded deployed results
+      keep their error ranges, and exact deterministic tests cover crashes between observation
+      and settlement and during settlement, including commit-before-acknowledgement.
+      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/f41500c4de14851184f99b74140d4422affbc015/docs/restart-and-ledger-recovery.md),
+      S2.10 section, proposed in [relay #2](https://github.com/getdomovoi/relay/pull/2).
+      Chosen approach, costs, exclusions and numbered measurements; not implementation evidence.
+- [ ] **S2.11 [CX, then H]** Backup and retention of the SQLite ledger that holds connected-time
       records. A launch gate. What exists, same source and commit: the ledger is the usage
       database plus a separate ownership database, "the service directory and SQLite sidecars
       must stay together", local filesystem only, "not a shared-filesystem or multi-replica
       authority"; usage export reads settled intervals after a caller-supplied settlement
       sequence, ordered, at most 1,000 a page (`src/authority.mjs` `usage()`), and that
       sequence is an ordering, not a receipt: nothing persists that a consumer took a page,
-      so the store has no record of what was read out; and "retention and archival of these
-      billing records remain an operational policy, not silent eviction". The store holds
+      so the store has no record of what was read out. Retention and archival remain an
+      operational policy, not silent eviction; the original source's billing framing is
+      superseded by the dated S2.10 correction above. The store holds
       more than intervals: accounts with enabled and machine-cap fields, routes with machine
       and account bindings and a credential digest, and account and machine ids on every
       interval (`src/authority.mjs` schema). So: one copy of the meter and of the relay's own
@@ -1178,12 +1194,15 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
       account-scoped export acknowledgement written after the downstream commit, backed up and
       restored with the ledger, because a settlement sequence or a returned page authorises
       nothing; (5) a retention period written as a number, a purge that removes only intervals
-      older than it and acknowledged under (4), and an archive of what it removes if billing
+      older than it and acknowledged under (4), and an archive of what it removes if entitlement
       disputes need it; (6) the hosted account and device registry in `S6.6` stays a separate
       store; the relay keeps the authorization and metering records it already holds, accounts,
       routes, credential digests and interval attribution, and does not grow into that
       registry. Recorded 2026-09-14, written out 2026-09-16, corrected 2026-09-16 against
       `src/authority.mjs` at `2ec1e24`.
+      Design answer: [relay restart and ledger recovery](https://github.com/getdomovoi/relay/blob/f41500c4de14851184f99b74140d4422affbc015/docs/restart-and-ledger-recovery.md),
+      S2.11 section, proposed in [relay #2](https://github.com/getdomovoi/relay/pull/2).
+      Operational owner: fetzy. The design and owner assignment do not close the launch gate.
 
 ### From the roadmap: account and transport services (Goal 3, hosted half)
 
@@ -1646,8 +1665,9 @@ before any public package or application publish.
 - [ ] **S5.1 [H]** Payment provider, tax handling, invoicing, dunning.
 - [ ] **S5.2 [CX]** Account and org model: seats, machine grants, and the rule that a seat
       reaches nothing until the org grants it a machine.
-- [ ] **S5.3 [CX]** Metered billing reconciled against relay usage, with a user-visible
-      breakdown.
+- [ ] **S5.3 [CX]** Per-seat billing reconciled against seat entitlements, with a user-visible
+      breakdown. Relay connected-time reporting remains separate, for entitlement and abuse
+      control, not invoice lines; corrected by the 2026-09-16 framing record at S2.10.
 - [ ] **S5.4 [CX]** Org policy enforcement, including that an unreachable machine keeps
       enforcing the last policy it received.
 - [ ] **S5.5 [CX]** Cross-person history: records decisions, carries no prompt, diff or
@@ -1671,7 +1691,7 @@ The product's argument is trustworthiness. Asserting it is not shipping it.
 - [ ] **S6.5 [H]** ToS, privacy policy and a team DPA that match the architecture rather
       than the marketing.
 - [ ] **S6.6 [CX]** Backup and restore for the account and machine registry. It was called
-      the only stateful thing you own; the relay's billing ledger is the other, and it has its
+      the only stateful thing you own; the relay's connected-time ledger is the other, and it has its
       own gate at `S2.11`. The two stores stay separate.
 
 ## Phase 7 — docs, site, launch — M3
