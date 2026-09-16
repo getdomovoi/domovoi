@@ -256,6 +256,25 @@ describe("Thread", () => {
 })
 
 describe("AppBar", () => {
+  // v2 has one usage surface, the chip in the composer. The app bar carries
+  // no token or cost readout of its own.
+  it("carries no usage readout", () => {
+    const markup = renderToStaticMarkup(
+      <AppBar
+        snapshot={structuredClone(demoWorkspace)}
+        connected
+        emergencyStopPending={false}
+        emergencyStopOutcome={null}
+        emergencyStopError={null}
+        onOpenProject={vi.fn()}
+        onPauseAll={vi.fn()}
+      />,
+    )
+    expect(markup).not.toContain("Usage today")
+    expect(markup).not.toMatch(/\d(\.\d)?k tokens/)
+    expect(markup).not.toContain("cost unavailable")
+  })
+
   it("keeps pause-all available while connected without an active turn", () => {
     const snapshot = structuredClone(demoWorkspace)
     for (const session of snapshot.sessions) delete session.activeTurnId

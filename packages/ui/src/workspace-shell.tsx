@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode, type RefObject } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode, type RefObject } from "react"
 import {
   ArchiveIcon,
   BotIcon,
@@ -121,7 +121,6 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Input } from "./components/ui/input"
@@ -169,14 +168,7 @@ import {
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import {
-  formatTokenCount,
-  sessionContextReadout,
-  sessionContextShare,
-  sessionUsageCostNote,
   sessionUsageFetchKey,
-  sessionUsageReportedCost,
-  usageTodayDetail,
-  usageTodayReadout,
   usageTodayRefreshDelayMs,
   usageTodayWindow,
   usageWindowFetchKey,
@@ -510,8 +502,6 @@ export function AppBar({
   onPauseAll,
   onOpenCommands,
   commandShortcut,
-  usage,
-  usageToday,
   sessionsDrawer,
 }: {
   snapshot: WorkspaceSnapshot | null
@@ -526,8 +516,6 @@ export function AppBar({
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
   sessionsDrawer?: ReactNode | undefined
-  usage?: SessionUsage | null | undefined
-  usageToday?: UsageWindow | null | undefined
 }) {
   const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
@@ -561,7 +549,6 @@ export function AppBar({
         </Badge>
       </div>
       <div className="electron-no-drag flex items-center gap-2">
-        <SessionUsageSummary usage={usage ?? null} />
         {onOpenCommands ? (
           <Button variant="ghost" size="sm" aria-label="Open command palette" onClick={onOpenCommands}>
             <SearchIcon data-icon="inline-start" />
@@ -591,39 +578,12 @@ export function AppBar({
             {emergencyStopMessage}
           </span>
         ) : null}
-        <UsageTodayReadout usage={usageToday ?? null} />
       </div>
       {ownsDecoration && bridge ? <WindowControls bridge={bridge} /> : null}
     </header>
   )
 }
 
-export function UsageTodayReadout({ usage }: { usage: UsageWindow | null }) {
-  const id = useId()
-  const readout = usage ? usageTodayReadout(usage) : undefined
-  if (!usage || !readout) return null
-  const labelId = `${id}-label`
-  const valueId = `${id}-value`
-  return (
-    <span role="status" aria-labelledby={`${labelId} ${valueId}`} className="font-machine text-[10.5px] text-faint">
-      <span id={labelId} className="sr-only">Usage today</span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            id={valueId}
-            className="rounded-[4px] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
-          >
-            {readout}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[42ch] text-[11.5px] leading-relaxed">
-          {usageTodayDetail(usage)}
-        </TooltipContent>
-      </Tooltip>
-    </span>
-  )
-}
 
 export function useUsageToday(
   connected: boolean,
@@ -656,87 +616,7 @@ export function useUsageToday(
   return usage
 }
 
-export function SessionUsageFooter({ usage }: { usage: SessionUsage | null }) {
-  if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
-  const cost = sessionUsageReportedCost(usage)
-  const context = sessionContextReadout(usage)
-  const share = sessionContextShare(usage)
 
-  return (
-    <div className="flex shrink-0 items-center gap-2 border-t px-3 py-2.5">
-      <span
-        role="status"
-        aria-label="Session cost and context"
-        className="flex-1 font-machine text-[10px] text-faint"
-      >
-        {cost ?? "cost unavailable"}
-        {context ? <> · <span {...(share ? { title: share } : {})}>{context}</span></> : null}
-      </span>
-    </div>
-  )
-}
-
-export function SessionUsageSummary({ usage }: { usage: SessionUsage | null }) {
-  if (!usage || (usage.totalTokens === 0 && usage.byRuntime.length === 0)) return null
-  const cost = sessionUsageReportedCost(usage)
-  const note = sessionUsageCostNote(usage)
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="font-machine text-[10px] text-faint">
-          {formatTokenCount(usage.totalTokens)} tokens
-          <span aria-hidden="true">·</span>
-          {cost ?? "cost unavailable"}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[320px]">
-        <DropdownMenuLabel>Session usage</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Input</span>
-            <span className="font-machine">{formatTokenCount(usage.inputTokens)}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Cached input</span>
-            <span className="font-machine">{formatTokenCount(usage.cachedInputTokens)}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Output</span>
-            <span className="font-machine">{formatTokenCount(usage.outputTokens)}</span>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Reasoning</span>
-            <span className="font-machine">{formatTokenCount(usage.reasoningTokens)}</span>
-          </div>
-        </div>
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>By provider and model</DropdownMenuLabel>
-        <div className="flex flex-col gap-2 px-2 py-1.5 text-[11px]">
-          {usage.byRuntime.length === 0 ? (
-            <span className="text-muted-foreground">No recorded turns yet.</span>
-          ) : usage.byRuntime.map((runtime) => (
-            <div key={`${runtime.provider}/${runtime.model}`} className="flex items-start justify-between gap-3">
-              <span className="flex min-w-0 flex-col">
-                <span className="font-medium">{providerDisplayName(runtime.provider)}</span>
-                <span className="truncate font-machine text-[9.5px] text-faint">{runtime.model}</span>
-              </span>
-              <span className="flex shrink-0 flex-col items-end font-machine text-[9.5px]">
-                <span>{formatTokenCount(runtime.totalTokens)} tokens</span>
-                <span className="text-faint">{runtime.turns === 1 ? "1 turn" : `${runtime.turns} turns`}</span>
-              </span>
-            </div>
-          ))}
-        </div>
-        {note ? <>
-          <DropdownMenuSeparator />
-          <p className="m-0 px-2 py-1.5 text-[10.5px] leading-relaxed text-muted-foreground">{note}</p>
-        </> : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
 
 function outcomeCount(count: number, singular: string, plural: string): string {
   return `${count} ${count === 1 ? singular : plural}`
@@ -2453,7 +2333,6 @@ export function ArtifactDock({
   onCollapse,
   collapseButtonRef,
   defaultTab,
-  usage,
   onEditPlan,
   onDiscardPlanEdit,
   tab,
@@ -2482,7 +2361,6 @@ export function ArtifactDock({
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
   previewRefusal?: string | undefined
-  usage?: SessionUsage | null | undefined
   onEditPlan?: ((edit: {
     basedOnStructureRevision: number
     baseSteps: { id: string, text: string }[]
@@ -3129,7 +3007,6 @@ export function ArtifactDock({
           ) : null}
         </TabsContent>
       </Tabs>
-      <SessionUsageFooter usage={usage ?? null} />
       <Dialog
         open={!archiveReadOnly && selection !== null}
         onOpenChange={(open) => {
@@ -4077,7 +3954,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
   const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} usage={activeSessionUsage} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = snapshot ? <ArtifactDock snapshot={snapshot} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = `drawer.${dockCollapsed ? "rail" : "dock"}`
   const defaultLayout = layouts[layoutKey]
 
@@ -4325,7 +4202,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} usage={activeSessionUsage} usageToday={usageToday} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
