@@ -3062,13 +3062,16 @@ export function ArtifactDock({
               </article>
             </ScrollArea>
           ) : (
-            <Empty className="min-h-full border-0">
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
-                <EmptyTitle>No plan content yet</EmptyTitle>
-                <EmptyDescription>Plan updates from the active agent appear here.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <ScrollArea className="h-full">
+              <Empty className="min-h-48 border-0">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
+                  <EmptyTitle>No plan content yet</EmptyTitle>
+                  <EmptyDescription>Plan updates from the active agent appear here.</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+              {planCommentsBlock ? <div className="px-3 pb-3">{planCommentsBlock}</div> : null}
+            </ScrollArea>
           )}
         </TabsContent>
         <TabsContent value="changes" className="min-h-0">

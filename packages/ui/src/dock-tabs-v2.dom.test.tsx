@@ -71,4 +71,18 @@ describe("the dock's tab list", () => {
     const planComments = screen.getByRole("region", { name: "Comments on the plan" })
     expect(within(planComments).getByText("Run the migration on staging first.")).toBeTruthy()
   })
+
+  it("keeps the plan's comments reachable when the plan has no content to show", async () => {
+    const snapshot = workspaceSnapshot()
+    snapshot.workingPlans = []
+    snapshot.artifacts = snapshot.artifacts.map((artifact) => artifact.id === "artifact-plan" ? { ...artifact, content: undefined } : artifact)
+    render(<WorkspaceShell />)
+    await act(async () => { completeHandshake(harness.socket(0), snapshot) })
+    await settle()
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Plan" }))
+    await settle()
+    expect(screen.getByText("No plan content yet")).toBeTruthy()
+    const planComments = screen.getByRole("region", { name: "Comments on the plan" })
+    expect(within(planComments).getByText("Run this migration on the WSL staging machine first.")).toBeTruthy()
+  })
 })
