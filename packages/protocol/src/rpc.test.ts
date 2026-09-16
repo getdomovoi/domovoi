@@ -14,6 +14,8 @@ import {
   isRefusedWithoutPersistence,
   maximumJsonValueDepth,
   persistenceRecoveryRpcMethods,
+  phoneAndTabletPromise,
+  phoneAndTabletRpcMethods,
   projectSwitchConfirmationErrorCode,
   projectSwitchConfirmationSchema,
   rpcMethodMutations,
@@ -1226,5 +1228,27 @@ describe("hello version compatibility", () => {
       authToken: "n".repeat(43),
     }
     expect(helloParamsSchema.safeParse(bad).success).toBe(false)
+  })
+})
+
+describe("phone and tablet credential scope", () => {
+  it("names only registered methods and keeps file and machine reach out", () => {
+    for (const method of phoneAndTabletRpcMethods) expect(Object.hasOwn(rpcMethods, method), method).toBe(true)
+    for (const method of [
+      "terminal.create", "terminal.input", "terminal.claim", "session.revertFile", "checkpoint.restore",
+      "skill.read", "skill.install", "audit.export", "device.pair", "device.revoke",
+      "device.rotate", "device.rename", "device.issueCode", "device.list", "fleet.enroll", "fleet.forget",
+      "session.transfer", "provider.secret.list",
+    ] as const) expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
+  })
+
+  it("carries the pairing card's list", () => {
+    // The card's list as step 10 draws it: the limit last, and the line the
+    // daemon does not keep yet marked rather than dropped.
+    expect(phoneAndTabletPromise).toHaveLength(5)
+    expect(phoneAndTabletPromise.at(-1)).toEqual({ text: "It cannot pull the repository down. Files stay here.", tone: "limit" })
+    expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
+      { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+    ])
   })
 })

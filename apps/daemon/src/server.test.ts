@@ -3810,8 +3810,8 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({ port: 0, store, authToken: testAuthToken("correct-horse-battery-staple") })
     running.push(daemon)
     const paired = store.devices.pair({
-      label: "studio-phone",
-      binding: { kind: "client", client: "phone" },
+      label: "studio-desktop",
+      binding: { kind: "client", client: "desktop" },
     })
     const connect = async () => {
       const { socket, call } = await unauthenticatedSocket(daemon)
@@ -3834,7 +3834,7 @@ describe("DomovoiDaemon", () => {
 
     const accepted = await connect()
     await expect(accepted.call(1, "system.hello", {
-      client: "phone",
+      client: "desktop",
       clientId: "spoofed-client-id",
       clientVersion: "0.0.1",
       protocolVersion,
@@ -3848,7 +3848,7 @@ describe("DomovoiDaemon", () => {
     const entry = store.auditLog.query({ action: "device.list" }).entries[0]
     expect(entry?.actor).toMatchObject({
       kind: "client",
-      client: "phone",
+      client: "desktop",
       clientId: paired.device.id,
       connectionId: expect.any(String),
     })

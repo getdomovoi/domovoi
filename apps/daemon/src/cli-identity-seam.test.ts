@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
+import { decodePairingPayload, protocolVersion } from "@getdomovoi/protocol"
+
 import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceService } from "./workspace.js"
 import { DomovoiClient } from "../../../packages/ui/src/client.js"
@@ -95,20 +97,48 @@ async function runCli(daemon: DomovoiDaemon, args: readonly string[]) {
   })
 }
 
+async function redeem(url: string, code: string, label: string): Promise<Record<string, unknown>> {
+  const socket = new WebSocket(url)
+  try {
+    await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+    return await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("redeem deadline expired")), 5_000)
+      socket.once("message", (data) => {
+        clearTimeout(timer)
+        resolve(JSON.parse(String(data)) as Record<string, unknown>)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "device.redeemCode", params: { code, label, protocolVersion } }))
+    })
+  } finally { socket.terminate() }
+}
+
 describe("domovoid CLI connection identity", () => {
-  it("grants a desktop credential through the binary and admits that client over a real socket", async () => {
+  it("shows a code through the binary that a device spends for a credential it can connect with", async () => {
     const daemon = await startDaemon()
     const result = await runCli(daemon, ["pair", "--client", "desktop", "--label", "Operator desktop"])
     expect(result).toMatchObject({ exitCode: 0, stderr: "" })
-    const token = /Client credential: (\S+)/u.exec(result.stdout)?.[1]
-    const deviceId = /Revoke device (device-[0-9a-f]{32})/u.exec(result.stdout)?.[1]
-    expect(token).toBeDefined()
-    expect(deviceId).toBeDefined()
-    expect(result.stdout).toContain("session sends, approvals and terminals")
+
+    // Nothing a person can read off the screen is a credential: the drawn
+    // symbol and the typed line both carry the same single-use code.
+    const drawn = /domovoi-pair:1:[A-Za-z0-9_-]+/u.exec(result.stdout)?.[0]
+    expect(drawn).toBeDefined()
+    const payload = decodePairingPayload(drawn!)
+    const pasted = /Paste this on the device:\n(domovoi-pair:1:[A-Za-z0-9_-]+)/u.exec(result.stdout)?.[1]
+    expect(pasted).toBe(drawn)
     expect(result.stdout).not.toContain(daemon.authToken)
-    const client = new DomovoiClient(`ws://${daemon.address!.host}:${daemon.address!.port}/rpc`, "desktop", {
-      budgets: { connectMs: 5_000, requestMs: 5_000 }, authToken: token!,
-      admission: { machineId, deviceId: deviceId! },
+    expect(result.stdout).toContain("It works once, and only for a desktop.")
+    // This daemon answers on loopback, so the code says so rather than
+    // pretending a phone elsewhere could dial it.
+    expect(result.stdout).toContain("which only this machine can reach")
+    expect(payload.url).toBe(`ws://${daemon.address!.host}:${daemon.address!.port}/rpc`)
+
+    const redeemed = await redeem(payload.url, payload.code, "Operator desktop")
+    const token = (redeemed.result as { token: string }).token
+    const deviceId = (redeemed.result as { device: { id: string } }).device.id
+
+    const client = new DomovoiClient(payload.url, "desktop", {
+      budgets: { connectMs: 5_000, requestMs: 5_000 }, authToken: token,
+      admission: { machineId, deviceId },
     })
     try {
       await client.connect()
@@ -116,7 +146,11 @@ describe("domovoid CLI connection identity", () => {
         kind: "client", machineId, deviceId, client: "desktop",
       })
     } finally { client.disconnect() }
-  }, 15_000)
+
+    // The same code a second time pairs nothing.
+    const again = await redeem(payload.url, payload.code, "another desktop")
+    expect(again).toHaveProperty("error")
+  }, 20_000)
 
   it("pairs through a real daemon socket", async () => {
     const received = vi.spyOn(WebSocket.prototype, "emit")

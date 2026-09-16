@@ -230,7 +230,7 @@ class Component extends DCLogic {
       { id: "fleet", num: "8", label: "Fleet", note: "Reached from the machine chip. Offline machines stay listed, dimmed, with the reason." },
       { id: "handoff", num: "9", label: "Handoff", note: "Pre-flight checks the target before the move, and the payload warning is a decision, not a notice." },
       { id: "audit", num: "9b", label: "Audit log", note: "The machine's own record of decisions. It names verified devices, it is pruned by count, and it never leaves the machine." },
-      { id: "settings", num: "10", label: "Settings and pairing", note: "One scrolling column, no nav. Pairing is a QR plus a code, and it states exactly what the phone may do." },
+      { id: "settings", num: "10", label: "Settings and pairing", note: "One scrolling column, no nav. Pairing is a QR plus a code, and it states exactly what the phone may do. The first grant is drawn but not built: a phone shows no terminal output yet, so it is a target rather than a description of main. The daemon enforces the rest." },
       { id: "offline", num: "11", label: "Daemon lost", note: "The banner names the machine and the transport, and says what was not rolled back." }
     ];
     const activeStep = st.slashOpen ? "slash"
@@ -414,9 +414,10 @@ class Component extends DCLogic {
       pairCode: "DVOI-4K7Q-91XZ",
       pairExpiry: "code expires in 4m 12s",
       pairGrants: [
-        { text: "Watch every session, including terminal output and diffs", k: "success" },
+        { text: "Watch every session and its diffs", k: "success" },
         { text: "Answer gates, with the same three decisions", k: "success" },
         { text: "Start and stop sessions, and steer one mid-run", k: "success" },
+        { text: "Terminal output is not on a phone yet. Everything else here works.", k: "warning" },
         { text: "It cannot pull the repository down. Files stay here.", k: "info" }
       ].map(g => ({ text: g.text, dot: this.dot("var(--" + g.k + ")", 6) + " margin-top: 6px;" })),
       pairedDevices: [

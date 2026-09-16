@@ -1,16 +1,16 @@
 import { once } from "node:events"
 
-import { protocolVersion } from "@getdomovoi/protocol"
+import { phoneAndTabletRpcMethods, protocolVersion, rpcMethods, type RpcMethod } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { DomovoiDaemon } from "./server.js"
 
-// `domovoid pair --client phone` prints "This phone credential grants session
-// sends, approvals and terminals. It cannot change paired devices or enroll
-// more machines." This test is that sentence checked against the daemon,
-// so the scope a scanned pairing code claims is one the daemon enforces and
-// not one the CLI copy asserts.
+// The pairing card promises what a phone may do: watch sessions, answer
+// gates, start, stop and steer sessions, and never pull files down. This test
+// is that promise checked against the daemon for every registered method, so
+// the scope a scanned pairing code claims is one the daemon enforces and not
+// one the card's copy asserts.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -66,7 +66,7 @@ function errorMessage(reply: Record<string, unknown>): string {
 }
 
 describe("a phone-scoped credential", () => {
-  it("is refused for every device, fleet and code operation, and still reads and identifies itself", async () => {
+  it("is refused for every method outside the pairing card, and still reads and identifies itself", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     daemons.push(daemon)
     await daemon.start()
@@ -85,23 +85,32 @@ describe("a phone-scoped credential", () => {
     expect(await call(phone, "workspace.get", {})).not.toHaveProperty("error")
     const current = await call(phone, "device.current", {})
     expect(current.result).toMatchObject({ kind: "client", client: "phone", deviceId: device.id })
-    expect(await call(phone, "device.list", {})).not.toHaveProperty("error")
 
-    // What it must never do: mint, withdraw or rename devices, issue pairing
-    // codes, or change the fleet. Each refusal names the daemon credential.
-    const refused = [
-      ["device.pair", { label: "another", client: "phone" }],
-      ["device.pair", { label: "another", client: "phone", targetClient: "phone" }],
-      ["device.revoke", { deviceId: device.id, client: "phone" }],
-      ["device.rotate", { deviceId: device.id, client: "phone" }],
-      ["device.rename", { deviceId: device.id, label: "renamed" }],
-      ["device.issueCode", {}],
-      ["fleet.forget", { machineId: `machine-${"a".repeat(32)}`, client: "phone" }],
-    ] as const
-    for (const [method, params] of refused) {
-      const reply = await call(phone, method, params as Record<string, unknown>)
+    // Everything the card did not name is refused before its parameters are
+    // read, so no request shape reaches those handlers.
+    const refusal = /A phone or tablet credential may only watch sessions, answer gates, and start, stop or steer sessions/
+    // relay.recovery is answered before authentication for every socket and
+    // carries no session, file or device capability, so it is not a grant this
+    // credential holds.
+    const refused = (Object.keys(rpcMethods) as RpcMethod[])
+      .filter((method) => !phoneAndTabletRpcMethods.has(method) && method !== "relay.recovery")
+    expect(refused).toEqual(expect.arrayContaining([
+      "terminal.create", "terminal.input", "terminal.claim", "session.revertFile", "checkpoint.restore",
+      "skill.install", "audit.export", "device.pair", "device.revoke", "device.rotate",
+      "device.rename", "device.issueCode", "device.list", "fleet.enroll", "fleet.forget", "session.transfer",
+    ]))
+    for (const method of refused) {
+      const reply = await call(phone, method, {})
       expect(reply, method).toHaveProperty("error")
-      expect(errorMessage(reply), method).toMatch(/requires the daemon credential/)
+      expect(errorMessage(reply), method).toMatch(refusal)
+    }
+    // What the card names is never turned away for being a phone. A request
+    // with empty parameters may still fail its own checks; that failure is
+    // not the scope refusal.
+    for (const method of phoneAndTabletRpcMethods) {
+      if (method === "system.hello") continue
+      const reply = await call(phone, method, {})
+      expect(errorMessage(reply), method).not.toMatch(refusal)
     }
 
     // The refusals changed nothing: the owner still sees one phone, active.

@@ -28,6 +28,7 @@ import {
   type TransferReceipt,
   daemonShuttingDownErrorCode,
   isRefusedWithoutPersistence,
+  phoneAndTabletRpcMethods,
   demoWorkspace,
   maximumTerminalOutputChunkCharacters,
   terminalOutputBatchDelayMilliseconds,
@@ -3543,12 +3544,13 @@ export class DomovoiDaemon {
     }
     if (socket instanceof DaemonRelaySocket && (
       method === "device.pair" || method === "device.claim" || method === "device.confirmClaim"
+      || method === "device.redeemCode"
       || method === "device.issueCode" || method === "artifact.authorize"
     )) {
       this.#error(socket, request.id, invalidParams, "This method requires a direct connection")
       return
     }
-    if (method === "device.claim" && !this.#pairingClaimAdmission.admit(this.#socketSources.get(socket))) {
+    if ((method === "device.claim" || method === "device.redeemCode") && !this.#pairingClaimAdmission.admit(this.#socketSources.get(socket))) {
       // Admission precedes shape, version and code checks. Incompatible claims
       // cost admission, not code guesses; exhausted sources get this uniform
       // refusal even for an incompatible version or a valid unspent code.
@@ -3561,6 +3563,19 @@ export class DomovoiDaemon {
       this.#authenticatedClients.delete(socket)
       this.#appendPreAuthAudit("authentication")
       this.#rejectAuthentication(socket, request.id, "Daemon authentication failed")
+      return
+    }
+    // A phone or tablet credential is the promise on the pairing card and
+    // nothing more. The refusal comes before parameter parsing so that no
+    // shape of request reaches a handler the card did not name.
+    const handheld = this.#deviceCredentials.get(socket)?.verified
+    if (handheld?.binding.kind === "client" && (handheld.binding.client === "phone" || handheld.binding.client === "tablet") && !phoneAndTabletRpcMethods.has(method)) {
+      this.#error(
+        socket,
+        request.id,
+        daemonAuthenticationErrorCode,
+        "A phone or tablet credential may only watch sessions, answer gates, and start, stop or steer sessions",
+      )
       return
     }
     const paramsResult = rpcMethods[method].params.safeParse(request.params ?? {})
@@ -3661,6 +3676,48 @@ export class DomovoiDaemon {
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
+    } else if (method === "device.redeemCode") {
+      const params = paramsResult.data as RpcParams<"device.redeemCode">
+      const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
+      if (compatibility !== "compatible") {
+        // Checked before the code is spent, so an old client does not burn the
+        // code the machine is showing and leave the operator reissuing.
+        this.#error(socket, request.id, protocolVersionMismatchErrorCode,
+          "Client and daemon protocol versions are incompatible",
+          { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
+        return
+      }
+      if (!this.#pairing) {
+        this.#error(socket, request.id, internalError, "Device pairing is unavailable")
+        return
+      }
+      try {
+        const paired = this.#pairing.redeem(params.code, { label: params.label }, Date.now())
+        this.#appendAudit({
+          actor: { kind: "daemon", component: "rpc" },
+          action: "device.redeemCode",
+          outcome: "succeeded",
+          target: paired.device.id,
+        })
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse(paired),
+        })
+      } catch (error) {
+        if (error instanceof DeviceLimitReachedError) {
+          this.#appendPreAuthAudit("pairing", "The paired device limit is reached")
+          this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
+          return
+        }
+        if (!(error instanceof PairingCodeError)) throw error
+        // The same uniform refusal a machine claim gets, for the same reason:
+        // whoever is spending codes must not learn from the answer whether one
+        // exists, was spent, expired, or was shown for another kind of device.
+        this.#appendPreAuthAudit("pairing", error.message)
+        this.#error(socket, request.id, daemonAuthenticationErrorCode, "Pairing was refused")
+      }
+      return
     } else if (method === "device.claim") {
       // The code grants only a short-lived confirmation capability. No normal
       // machine authentication is possible until the source confirms storage.
@@ -5043,7 +5100,9 @@ export class DomovoiDaemon {
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(this.#pairing.issue(Date.now())),
+          result: rpcMethods[method].result.parse(
+            this.#pairing.issue(Date.now(), (paramsResult.data as RpcParams<"device.issueCode">).targetClient),
+          ),
         })
         return
       }

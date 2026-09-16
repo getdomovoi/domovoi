@@ -33,6 +33,7 @@ import { ReviewScreen } from "./screens/review"
 import { annotationRows, reviewRows } from "./review-rows"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
+import { PairScanScreen, usePairCameraPermission } from "./screens/pair-scan"
 import { SettingsScreen } from "./screens/settings"
 import { UnpairedScreen } from "./screens/unpaired"
 import { promptProblem, sessionDetail } from "./session-detail"
@@ -51,6 +52,8 @@ export function App() {
   const [url, setUrl] = useState("")
   const [token, setToken] = useState("")
   const [connectTo, setConnectTo] = useState<{ url: string, token: string } | undefined>(undefined)
+  const [scanning, setScanning] = useState(false)
+  const [cameraPermission, requestCameraPermission] = usePairCameraPermission()
   const [restoring, setRestoring] = useState(true)
   const [openApprovalId, setOpenApprovalId] = useState<string | undefined>(undefined)
   const [openSessionId, setOpenSessionId] = useState<string | undefined>(undefined)
@@ -547,7 +550,21 @@ export function App() {
             />
             )
           ) : null}
-          {tab === "settings" ? (
+          {tab === "settings" && scanning ? (
+            <PairScanScreen
+              permission={cameraPermission}
+              requestPermission={requestCameraPermission}
+              onPaired={(credential) => {
+                setUrl(credential.url)
+                setToken(credential.token)
+                setScanning(false)
+                setConnectTo(credential)
+                void saveCredential(credential)
+              }}
+              onCancel={() => setScanning(false)}
+              bottomInset={tabFootprint}
+            />
+          ) : tab === "settings" ? (
             <SettingsScreen
               url={url}
               token={token}
@@ -566,6 +583,7 @@ export function App() {
                 setToken("")
                 void clearCredential()
               }}
+              onScanPairingCode={() => setScanning(true)}
               paired={!unpaired}
               bottomInset={tabFootprint}
             />

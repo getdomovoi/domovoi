@@ -77,28 +77,69 @@ DOMOVOI_TLS_KEY_PATH=<path to the .key> \
 pnpm --filter @getdomovoi/daemon start
 ```
 
-The daemon binds exactly the host you give it (`apps/daemon/src/server.ts`). In the phone, dial
-the name on the certificate: `wss://<domain>:47831/rpc`.
+The daemon binds exactly the host you give it (`apps/daemon/src/server.ts`), which is not the
+address a phone dials: the certificate is issued for the DNS name. `domovoid pair --client` reads
+the name out of the certificate it is serving and puts that in the pairing code, so the address the
+code carries is one the phone can verify (`apps/daemon/src/pairing-address.ts`). A certificate that
+names no host, or more than one, is refused rather than guessed at.
 
-### The pairing token
+### Pairing
 
-Every daemon requires a credential. The phone sends the token you enter in its greeting, and the
-daemon accepts it when it is the daemon's own credential or a device credential paired for a phone
-(`#credentialAccepted` in `apps/daemon/src/server.ts`). The phone has no pairing-code flow, so use
-the daemon's own credential:
+Every daemon requires a credential. The phone sends the token in its greeting, and the daemon
+accepts it when it is the daemon's own credential or a device credential paired for a phone
+(`#credentialAccepted` in `apps/daemon/src/server.ts`). The phone never carries a credential it
+was handed by a person: it earns one by spending a pairing code.
 
-- With `DOMOVOI_AUTH_TOKEN` unset, `domovoid` creates it at `~/.domovoi/daemon.token` and prints
-  `domovoid credential stored at <path>` on start. The file holds one line. Copy it.
-- With `DOMOVOI_AUTH_TOKEN` set, that value is the token.
+#### By camera
 
-It is a 43-character base64url string (`apps/daemon/src/config.ts`). It can do anything on that
-machine, and Settings says so above the field. `domovoid pair` prints a pairing code for other
-clients; the phone cannot claim one.
+On the machine:
+
+```bash
+domovoid pair --client phone --label "iPhone"
+```
+
+It prints the pairing card's grant list, marking the line the daemon does not keep yet, draws the code as a QR in the terminal, and prints the same
+code as text for a phone that cannot scan. The code works once and only mints a phone, so a
+photograph of the symbol after it is spent opens nothing (`apps/daemon/src/pair-command.ts`,
+`apps/daemon/src/qr-terminal.ts`).
+
+It lasts three minutes (`pairingCodeTtlMs`). Run the command again for a fresh one; the daemon
+keeps one open pairing, so a new code stops the old one and nothing has to be restarted. A scan
+the phone could not read never reaches the daemon and costs the code nothing; five wrong codes
+close the pairing.
+
+The text the QR holds is `domovoi-pair:1:` followed by base64url JSON, validated by
+`pairingPayloadSchema` in `packages/protocol/src/pairing-payload.ts`: it carries the address and
+the code, never a credential, and the address must be `wss://`, or `ws://` on loopback only, the
+same rule the daemon applies to its own listener. A daemon reachable at neither prints the code and
+says it has no address a phone can dial rather than drawing a symbol that goes nowhere.
+
+On the phone: Settings, Scan a pairing code, point the camera at it. The phone names the machine,
+shows the same grant list and asks once. Pairing calls `device.redeemCode`, which spends the
+code and returns the credential; it is written to the keychain and never shown
+(`apps/mobile/src/lib/redeem-pairing-code.ts`). A phone that has refused the camera pastes the same
+text into the field under the scanner. Every refusal from the daemon reads the same, so a spent,
+expired or wrong code all say to show a fresh one.
+
+Revoke the phone in the daemon's Devices list when it is done.
+
+#### By hand
+
+Enter the address and the credential in Settings. The daemon's own credential also works: with
+`DOMOVOI_AUTH_TOKEN` unset, `domovoid` creates it at `~/.domovoi/daemon.token` and prints
+`domovoid credential stored at <path>` on start; with it set, that value is the token. That
+credential can do anything on the machine, and Settings says so above the field. Prefer the
+phone-scoped one.
+
+The code `domovoid pair` prints without `--client` is for pairing another machine (`device.claim`
+takes the claiming machine's id). A phone cannot spend it and a machine cannot spend a phone's: the
+kind is fixed when the code is issued.
 
 ## Settings
 
 Open the Settings tab (`apps/mobile/src/screens/settings.tsx`):
 
+- Scan a pairing code: opens the camera. See [By camera](#by-camera).
 - Daemon address: the WebSocket URL from above.
 - Pairing token: masked while you type. No text on the screen repeats it.
 - Connect: trims both fields, saves them, and opens the connection (`apps/mobile/src/app.tsx`).

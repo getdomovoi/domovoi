@@ -70,10 +70,12 @@ import {
   deviceClaimResultSchema,
   deviceConfirmClaimParamsSchema,
   deviceConfirmClaimResultSchema,
+  deviceIssueCodeParamsSchema,
   deviceIssueCodeResultSchema,
   deviceListParamsSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
+  deviceRedeemCodeParamsSchema,
   deviceRenameParamsSchema,
   deviceRenameResultSchema,
   deviceRevokeParamsSchema,
@@ -1289,7 +1291,8 @@ export const rpcMethods = {
   // yet. Check protocol compatibility before consuming its one-time code.
   "device.claim": { params: deviceClaimParamsSchema, result: deviceClaimResultSchema },
   "device.confirmClaim": { params: deviceConfirmClaimParamsSchema, result: deviceConfirmClaimResultSchema },
-  "device.issueCode": { params: deviceListParamsSchema, result: deviceIssueCodeResultSchema },
+  "device.issueCode": { params: deviceIssueCodeParamsSchema, result: deviceIssueCodeResultSchema },
+  "device.redeemCode": { params: deviceRedeemCodeParamsSchema, result: devicePairResultSchema },
   "session.transfer": {
     params: sessionTransferParamsSchema,
     result: sessionTransferResultSchema,
@@ -1530,6 +1533,7 @@ export const rpcMethodMutations = {
   "device.claim": "mutating",
   "device.confirmClaim": "mutating",
   "device.issueCode": "mutating",
+  "device.redeemCode": "mutating",
   "fleet.enroll": "mutating",
   "fleet.forget": "mutating",
   "device.revoke": "mutating",
@@ -1587,6 +1591,80 @@ export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
   if (!isMutatingRpcMethod(method)) return false
   return !(persistenceRecoveryRpcMethods as readonly RpcMethod[]).includes(method)
 }
+
+// What a phone or tablet credential may do, read against the promise on the
+// pairing card, "Phone and tablet": "Watch every session, including terminal
+// output and diffs", "Answer gates, with the same three decisions", "Start
+// and stop sessions, and steer one mid-run", "It cannot pull the repository
+// down. Files stay here." Every method outside this set is refused to those
+// credentials.
+//
+// Two limits of that fourth line, so it is not read as more than it is. It
+// removes Domovoi's own file reach from a handheld: no terminal, no skill
+// contents, no audit export, no revert. It does not constrain what a provider
+// does when steered, because steering is the third line: a phone that can
+// prompt a session can ask the agent to move files, exactly as a desktop can.
+// The line says Domovoi does not carry the repository to the phone, not that
+// a phone holds no influence over a machine that already has it.
+//
+// The first line is not fully built. Live terminal output is broadcast to
+// every client and so needs no method here, but existing output and terminal
+// metadata are returned only by terminal.create, which also spawns a shell
+// and stays out. A handheld joining a running terminal sees what arrives
+// next, not what came before. A read-only attach path would close that; until
+// it exists the phone's pairing screen says so.
+export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
+  // Watch.
+  "system.hello",
+  "device.current",
+  "workspace.get",
+  "session.history",
+  "session.evidence",
+  "session.usage",
+  "usage.window",
+  "audit.query",
+  "artifact.authorize",
+  "runtime.models",
+  "runtime.discover",
+  "permission.hardGates",
+  // Sessions live on machines, so watching them means seeing the fleet.
+  "fleet.list",
+  // Answer gates.
+  "approval.resolve",
+  // Start, stop and steer. project.open names a directory already on the
+  // machine so a session can be created there; it moves no files to the phone.
+  "project.open",
+  "session.create",
+  "session.fork",
+  "session.activate",
+  "session.pause",
+  "session.send",
+  "session.setRuntime",
+  "system.pauseAll",
+  "system.emergencyStop",
+  "plan.edit",
+  "plan.discardEdit",
+  "annotation.create",
+  "annotation.reply",
+  "annotation.setStatus",
+  // The composer offers skills by name; their files stay on the machine
+  // (skill.read is not here).
+  "skill.list",
+])
+
+// The pairing card's grant list, verbatim from step 10 of the v2 desktop
+// design, in the order and on the ramps it draws them. The unbuilt line is one
+// of the grants rather than a note correcting them, because a drawing that
+// needs a footnote to stop being wrong is a drawing that should have said it.
+// Every surface showing the list reads it from here, so the machine's card,
+// the CLI and the phone cannot come to say different things.
+export const phoneAndTabletPromise = [
+  { text: "Watch every session and its diffs", tone: "granted" },
+  { text: "Answer gates, with the same three decisions", tone: "granted" },
+  { text: "Start and stop sessions, and steer one mid-run", tone: "granted" },
+  { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+  { text: "It cannot pull the repository down. Files stay here.", tone: "limit" },
+] as const satisfies readonly { text: string, tone: "granted" | "unbuilt" | "limit" }[]
 
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>
