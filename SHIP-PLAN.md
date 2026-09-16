@@ -136,8 +136,9 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
       estimated (§7a), quote pending the `S0.7` firm conversation. The review is external
       work: its record is a dated engagement letter and a dated report, named here when they
       exist; until then the state is not started, not an unticked box.
-- [ ] **S0.3 [H] What the relay retains.** Billing by machine requires knowing which
-      machines were active and for how long. "Payloads unreadable" and "nothing recorded"
+- [ ] **S0.3 [H] What the relay retains.** Entitlement, abuse control and audit require
+      records of which machines were connected and for how long, not usage-based invoices.
+      Machines are priced per seat. "Payloads unreadable" and "nothing recorded"
       are different claims. State both halves publicly.
 - [ ] **S0.4 [H] How tier enforcement is trusted.** Free is JSON-RPC only and the *daemon*
       refuses the terminal, so the daemon must learn its tier and verify it. Signed tier
@@ -1664,8 +1665,9 @@ before any public package or application publish.
 - [ ] **S5.1 [H]** Payment provider, tax handling, invoicing, dunning.
 - [ ] **S5.2 [CX]** Account and org model: seats, machine grants, and the rule that a seat
       reaches nothing until the org grants it a machine.
-- [ ] **S5.3 [CX]** Metered billing reconciled against relay usage, with a user-visible
-      breakdown.
+- [ ] **S5.3 [CX]** Per-seat billing reconciled against seat entitlements, with a user-visible
+      breakdown. Relay connected-time reporting remains separate, for entitlement and abuse
+      control, not invoice lines; corrected by the 2026-09-16 framing record at S2.10.
 - [ ] **S5.4 [CX]** Org policy enforcement, including that an unreachable machine keeps
       enforcing the last policy it received.
 - [ ] **S5.5 [CX]** Cross-person history: records decisions, carries no prompt, diff or

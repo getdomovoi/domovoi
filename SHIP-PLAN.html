@@ -266,7 +266,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] <strong>S0.2 [H] Relay crypto design, written and reviewed.</strong> &quot;Carries encrypted payloads it cannot read&quot; is the product's central claim. Key exchange, forward secrecy, what the relay sees in the clear (it must see routing metadata), rotation, and recovery when a device is lost. Cannot be retrofitted. *Agents may draft: threat model, two or three candidate designs with tradeoffs, and what each implies for device loss.* **Design ruled 2026-09-12: suite A, <code>Noise_IK_25519_ChaChaPoly_SHA256</code>, our own composition reviewed (R-A); <code>S0.2-RELAY-CRYPTO.md</code> §9, final.** Stays open until the review lands: budget line $25k to $50k estimated (§7a), quote pending the <code>S0.7</code> firm conversation. The review is external work: its record is a dated engagement letter and a dated report, named here when they exist; until then the state is not started, not an unticked box.
 </li>
-<li>[ ] <strong>S0.3 [H] What the relay retains.</strong> Billing by machine requires knowing which machines were active and for how long. &quot;Payloads unreadable&quot; and &quot;nothing recorded&quot; are different claims. State both halves publicly.
+<li>[ ] <strong>S0.3 [H] What the relay retains.</strong> Entitlement, abuse control and audit require records of which machines were connected and for how long, not usage-based invoices. Machines are priced per seat. &quot;Payloads unreadable&quot; and &quot;nothing recorded&quot; are different claims. State both halves publicly.
 </li>
 <li>[ ] <strong>S0.4 [H] How tier enforcement is trusted.</strong> Free is JSON-RPC only and the *daemon* refuses the terminal, so the daemon must learn its tier and verify it. Signed tier claims the daemon checks, or the refusal is advisory and the paywall is decorative.
 </li>
@@ -1479,7 +1479,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] <strong>S5.2 [CX]</strong> Account and org model: seats, machine grants, and the rule that a seat reaches nothing until the org grants it a machine.
 </li>
-<li>[ ] <strong>S5.3 [CX]</strong> Metered billing reconciled against relay usage, with a user-visible breakdown.
+<li>[ ] <strong>S5.3 [CX]</strong> Per-seat billing reconciled against seat entitlements, with a user-visible breakdown. Relay connected-time reporting remains separate, for entitlement and abuse control, not invoice lines; corrected by the 2026-09-16 framing record at S2.10.
 </li>
 <li>[ ] <strong>S5.4 [CX]</strong> Org policy enforcement, including that an unreachable machine keeps enforcing the last policy it received.
 </li>
