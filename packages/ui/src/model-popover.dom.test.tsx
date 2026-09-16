@@ -80,13 +80,15 @@ it("asks the agents again through discovery and shows what each one reported", a
   const user = userEvent.setup()
   const onDiscoverRuntime = vi.fn(async (provider: string): Promise<RuntimeDiscoverResult> => provider === "codex"
     ? { machineId: "machine-1", provider, status: "unavailable", reason: "auth-required", action: "sign-in", retryable: true, message: "Sign in to codex on this machine." }
-    : { machineId: "machine-1", provider, status: "ready", models: [...catalogs.claude!, model("claude", "claude-haiku-4.1", "Fast and cheap.")], defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true })
+    : provider === "aider"
+      ? { machineId: "machine-1", provider, status: "unavailable", reason: "missing", action: "install", retryable: false, message: "aider is not installed." }
+      : { machineId: "machine-1", provider, status: "ready", models: [...catalogs.claude!, model("claude", "claude-haiku-4.1", "Fast and cheap.")], defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true })
   render(popover({ onDiscoverRuntime }))
   await user.click(screen.getByRole("button", { name: /claude-sonnet-4\.6/ }))
   await settle()
   await user.click(screen.getByRole("button", { name: "Ask the agents again" }))
   await settle()
-  expect(onDiscoverRuntime.mock.calls.map(([provider]) => provider).sort()).toEqual(["claude", "codex"])
+  expect(onDiscoverRuntime.mock.calls.map(([provider]) => provider).sort()).toEqual(["aider", "claude", "codex"])
   const labels = screen.getAllByRole("option").map((row) => row.getAttribute("aria-label"))
   expect(labels).toContain("claude-haiku-4.1, claude")
   expect(labels).toContain("codex")
@@ -105,12 +107,51 @@ it("asks before changing to another model, and switches here on that answer", as
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", model: "gpt-5.3-codex" }))
 })
 
-it("says a change lands at the next safe turn boundary", async () => {
+// The daemon applies a same-harness model change from the next turn and
+// refuses a harness change while a turn runs ("Stop the active turn before
+// changing providers"). The footer says that, not the design's promise of a
+// deferred change, and Switch here is held shut for the case the daemon
+// refuses.
+it("states what the daemon does with a change, and holds a harness switch shut during a turn", async () => {
   const user = userEvent.setup()
-  render(popover())
+  const onChange = vi.fn()
+  render(popover({ onChange, turnRunning: true }))
   await user.click(screen.getByRole("button", { name: /claude-sonnet-4\.6/ }))
   await settle()
-  expect(screen.getByText(/A change lands at the next safe turn boundary/)).toBeTruthy()
+  expect(screen.getByText(/applies from the next turn/)).toBeTruthy()
+  expect(screen.getByText(/needs the running turn stopped first/)).toBeTruthy()
+  await user.click(screen.getByRole("option", { name: "gpt-5.3-codex, codex" }))
+  const switchHere = screen.getByRole("button", { name: "Switch here" }) as HTMLButtonElement
+  expect(switchHere.disabled).toBe(true)
+  expect(switchHere.title).toMatch(/Stop the active turn/)
+  await user.click(screen.getByRole("button", { name: "Cancel" }))
+  // The dialog sits outside the surface, so answering it closed the chip.
+  await user.click(screen.getByRole("button", { name: /claude-sonnet-4\.6/ }))
+  await settle()
+  await user.click(screen.getByRole("option", { name: "claude-opus-4.2, claude" }))
+  await user.click(screen.getByRole("button", { name: "Switch here" }))
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude", model: "claude-opus-4.2" }))
+})
+
+it("asks every harness again, so one that needed a sign-in can come back with models", async () => {
+  const user = userEvent.setup()
+  const signedOut: ProviderRuntime[] = [
+    providers[0]!,
+    { id: "codex", command: "codex", status: "auth-required", sessionCapable: true },
+    providers[2]!,
+  ]
+  const onDiscoverRuntime = vi.fn(async (provider: string): Promise<RuntimeDiscoverResult> => provider === "aider"
+    ? { machineId: "machine-1", provider, status: "unavailable", reason: "missing", action: "install", retryable: false, message: "aider is not installed." }
+    : { machineId: "machine-1", provider, status: "ready", models: catalogs[provider]!, defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true })
+  render(popover({ providers: signedOut, onDiscoverRuntime }))
+  await user.click(screen.getByRole("button", { name: /claude-sonnet-4\.6/ }))
+  await settle()
+  expect(screen.getByText(/codex needs a sign-in on mac-mini-m4/)).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Ask the agents again" }))
+  await settle()
+  expect(onDiscoverRuntime.mock.calls.map(([provider]) => provider).sort()).toEqual(["aider", "claude", "codex"])
+  expect(screen.getAllByRole("option").map((row) => row.getAttribute("aria-label"))).toContain("gpt-5.3-codex, codex")
+  expect(screen.getByText("aider is not installed.")).toBeTruthy()
 })
 
 it("counts matches against everything reported", () => {

@@ -1921,6 +1921,7 @@ export function Thread({
                 providers={snapshot.machine.providers}
                 machineName={snapshot.machine.name}
                 pending={runtimePending}
+                turnRunning={Boolean(active.activeTurnId)}
                 {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
                 {...(forkReason ? { forkBlockedReason: forkReason } : {})}
                 onListModels={onListModels}

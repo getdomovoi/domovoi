@@ -55,6 +55,7 @@ export function ProviderChoiceDialog({
   runtime,
   model,
   pending,
+  switchBlockedReason,
   forkCheckpointId,
   forkBlockedReason,
   onClose,
@@ -64,6 +65,9 @@ export function ProviderChoiceDialog({
   runtime: Runtime
   model: ProviderModel | undefined
   pending: boolean
+  // The daemon refuses a harness change while a turn runs; the button says
+  // so instead of sending a request that comes back refused.
+  switchBlockedReason?: string | undefined
   forkCheckpointId?: string | undefined
   forkBlockedReason?: string | undefined
   onClose: () => void
@@ -109,6 +113,7 @@ export function ProviderChoiceDialog({
             {choice
               ? ` Fork session starts ${providerDisplayName(choice.model.provider)} / ${choice.model.displayName} in a separate worktree from the latest durable checkpoint. Domovoi records the source, checkpoint, provider/model, and requesting client in its history.`
               : null}
+            {switchBlockedReason ? ` ${switchBlockedReason}` : null}
             {forkBlockedReason ? ` Fork unavailable: ${forkBlockedReason}.` : null}
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -116,7 +121,8 @@ export function ProviderChoiceDialog({
           <AlertDialogCancel disabled={actionPending}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant={choices[0].variant}
-            disabled={choices[0].disabled}
+            disabled={choices[0].disabled || Boolean(switchBlockedReason)}
+            title={switchBlockedReason}
             onClick={() => { if (choice) onSwitch(choice.model) }}
           >
             {choices[0].label}

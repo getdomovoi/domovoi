@@ -13,6 +13,14 @@ import { cn } from "./lib/utils"
 // the harness that cannot run here still listed and dimmed with the reason.
 // "Ask the agents again" runs discovery, which is the daemon asking each
 // harness for its models afresh rather than reading what it reported before.
+//
+// The design's footer promises a change that lands at the next safe turn
+// boundary. The daemon does less: a same-harness model change takes effect
+// from the next turn, and a harness change replaces the provider thread and
+// is refused while a turn runs ("Stop the active turn before changing
+// providers"). The footer states that, and Switch here is held shut for the
+// case the daemon would refuse. The deferred harness change is a recorded
+// handoff gap, not something this chip pretends to do.
 
 type Catalog =
   | { status: "loading" }
@@ -34,6 +42,7 @@ export function ModelPopover({
   providers,
   machineName,
   pending,
+  turnRunning = false,
   forkCheckpointId,
   forkBlockedReason,
   onListModels,
@@ -45,6 +54,7 @@ export function ModelPopover({
   providers: readonly ProviderRuntime[]
   machineName: string
   pending: boolean
+  turnRunning?: boolean | undefined
   forkCheckpointId?: string | undefined
   forkBlockedReason?: string | undefined
   onListModels: (provider: string) => Promise<ProviderModel[]>
@@ -66,14 +76,16 @@ export function ModelPopover({
   const providersRef = useRef(providers)
   providersRef.current = providers
 
-  const startable = providers.filter(providerCanStartSession)
   const listed = providers.filter((provider) => provider.sessionCapable)
 
   // Each open reads the catalogs afresh; a reply from an earlier open or an
-  // earlier "ask again" is dropped rather than overwriting a newer one.
-  const load = (read: (provider: string) => Promise<Catalog>) => {
+  // earlier "ask again" is dropped rather than overwriting a newer one. A
+  // plain open reads only the harnesses the snapshot says can start; asking
+  // again probes every harness, because the one that needed a sign-in or an
+  // install is the one whose answer may have changed.
+  const load = (read: (provider: string) => Promise<Catalog>, every = false) => {
     const current = ++generation.current
-    const targets = providersRef.current.filter(providerCanStartSession)
+    const targets = providersRef.current.filter((provider) => provider.sessionCapable && (every || providerCanStartSession(provider)))
     setCatalogs(Object.fromEntries(targets.map((provider) => [provider.id, { status: "loading" }])))
     return Promise.all(targets.map((provider) => read(provider.id).then(
       (catalog) => { if (generation.current === current) setCatalogs((previous) => ({ ...previous, [provider.id]: catalog })) },
@@ -98,16 +110,20 @@ export function ModelPopover({
     void load(async (provider) => {
       const result = await onDiscoverRuntime(provider)
       return result.status === "ready" ? { status: "ready", models: result.models } : { status: "unavailable", note: result.message }
-    }).finally(() => setAsking(false))
+    }, true).finally(() => setAsking(false))
   }
 
   type Row =
     | { kind: "model", model: ProviderModel, current: boolean }
     | { kind: "harness", provider: string, note: string }
+  // A fresh answer from the harness outranks the snapshot's status: a harness
+  // signed in since the snapshot shows its models until the snapshot catches up.
   const rows: Row[] = listed.flatMap((provider): Row[] => {
-    if (!providerCanStartSession(provider)) return [{ kind: "harness", provider: provider.id, note: unavailableNote(provider, machineName) }]
     const catalog = catalogs[provider.id]
-    if (!catalog || catalog.status === "loading") return []
+    if (!catalog) {
+      return providerCanStartSession(provider) ? [] : [{ kind: "harness", provider: provider.id, note: unavailableNote(provider, machineName) }]
+    }
+    if (catalog.status === "loading") return []
     if (catalog.status === "unavailable") return [{ kind: "harness", provider: provider.id, note: catalog.note }]
     return catalog.models.map((model) => ({
       kind: "model", model, current: model.provider === runtime.provider && model.id === runtime.model,
@@ -123,7 +139,7 @@ export function ModelPopover({
     return text.toLowerCase().includes(needle)
   })
   const matches = shown.filter((row) => row.kind === "model").length
-  const loading = startable.some((provider) => catalogs[provider.id]?.status === "loading")
+  const loading = listed.some((provider) => catalogs[provider.id]?.status === "loading")
 
   const pick = (model: ProviderModel) => {
     if (model.provider === runtime.provider && model.id === runtime.model) { setOpen(false); return }
@@ -227,7 +243,7 @@ export function ModelPopover({
           ))}
         </div>
         <p className="m-0 border-t px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground">
-          A change lands at the next safe turn boundary. The thread, the plan and the worktree stay; a different harness starts a fresh provider thread from them.
+          A model change on the same harness applies from the next turn. A different harness starts a fresh provider thread from the thread, the plan and the worktree, and needs the running turn stopped first.
         </p>
         <div className="flex items-center gap-2 border-t px-3 py-2">
           <span className="font-machine text-mono-xs text-faint">{modelCountText(matches, total, listed.length)}</span>
@@ -243,6 +259,7 @@ export function ModelPopover({
         runtime={runtime}
         model={choice}
         pending={pending}
+        {...(turnRunning && choice && choice.provider !== runtime.provider ? { switchBlockedReason: "Stop the active turn before changing harness." } : {})}
         forkCheckpointId={forkCheckpointId}
         forkBlockedReason={forkBlockedReason}
         onClose={() => setChoice(undefined)}
