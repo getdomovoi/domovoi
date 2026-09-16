@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { PlanStrip, currentPlanStep } from "./plan-strip"
+import { PlanStrip, currentPlanStep, queuedEditStep } from "./plan-strip"
 
 afterEach(cleanup)
 
@@ -92,4 +92,72 @@ it("claims no file scope for a step, because the protocol carries none", () => {
   // files field on purpose: paths inferred from later tool calls would be
   // post-hoc evidence presented as plan intent.
   expect(container.textContent).not.toMatch(/\.ts\b|\.tsx\b|src\//)
+})
+
+// v2 puts Edit on the strip itself. Editing happens in the expanded strip
+// with the same step editor the Plan preview uses, against the structure
+// revision the person was looking at.
+it("edits the plan in the strip and submits against the revision it saw", async () => {
+  const user = userEvent.setup()
+  const onEditPlan = vi.fn(async () => {})
+  render(<PlanStrip plan={planWith(steps)} onEditPlan={onEditPlan} />)
+  await user.click(screen.getByRole("button", { name: "Edit the plan" }))
+  const third = screen.getByRole("textbox", { name: "Step 3" })
+  await user.clear(third)
+  await user.type(third, "Backfill the replay log from the journal")
+  await user.click(screen.getByRole("button", { name: "Save plan" }))
+  expect(onEditPlan).toHaveBeenCalledWith({
+    basedOnStructureRevision: 2,
+    baseSteps: steps.map(({ id, text }) => ({ id, text })),
+    draftSteps: [
+      { id: "s1", text: "Read the webhook handler" },
+      { id: "s2", text: "Add the idempotency table" },
+      { id: "s3", text: "Backfill the replay log from the journal" },
+    ],
+  })
+  expect(screen.queryByRole("textbox", { name: "Step 3" })).toBeNull()
+})
+
+it("holds Edit shut for a viewer who cannot change the plan, and says why", () => {
+  render(<PlanStrip plan={planWith(steps)} onEditPlan={vi.fn(async () => {})} readOnly />)
+  const edit = screen.getByRole("button", { name: "Edit the plan" }) as HTMLButtonElement
+  expect(edit.disabled).toBe(true)
+  expect(edit.title).toMatch(/read-only/i)
+})
+
+it("names the step a queued edit changes", () => {
+  render(<PlanStrip plan={planWith(steps, {
+    id: "edit-3",
+    basedOnStructureRevision: 2,
+    baseSteps: steps.map(({ id, text }) => ({ id, text })),
+    draftSteps: [
+      { id: "s1", text: "Read the webhook handler" },
+      { id: "s2", text: "Add the idempotency table" },
+      { id: "s3", text: "Backfill the replay log from the journal" },
+    ],
+    status: "queued",
+    submittedAt: "2026-09-08T09:11:00.000Z",
+    submittedBy: { client: "desktop", connectionId: "conn-1" },
+  })} />)
+  expect(screen.getByText(/Your edit to step 3 is queued\./)).toBeTruthy()
+})
+
+it("opens the plan preview from the strip", async () => {
+  const user = userEvent.setup()
+  const onOpenPreview = vi.fn()
+  render(<PlanStrip plan={planWith(steps)} onOpenPreview={onOpenPreview} />)
+  await user.click(screen.getByRole("button", { name: "Plan preview" }))
+  expect(onOpenPreview).toHaveBeenCalledTimes(1)
+})
+
+it("names one changed step only, never a guess for an added, removed or multi-step edit", () => {
+  const base = steps.map(({ id, text }) => ({ id, text }))
+  const edit = (draftSteps: { id: string, text: string }[]) => ({
+    id: "e", basedOnStructureRevision: 2, baseSteps: base, draftSteps, status: "queued" as const,
+    submittedAt: "2026-09-08T09:11:00.000Z", submittedBy: { client: "desktop" as const, connectionId: "conn-1" },
+  })
+  expect(queuedEditStep(edit([base[0]!, { id: "s2", text: "Add the table" }, base[2]!]))).toBe(2)
+  expect(queuedEditStep(edit([...base, { id: "s4", text: "Ship it" }]))).toBeUndefined()
+  expect(queuedEditStep(edit([base[0]!, base[2]!]))).toBeUndefined()
+  expect(queuedEditStep(edit([{ id: "s1", text: "A" }, { id: "s2", text: "B" }, base[2]!]))).toBeUndefined()
 })
