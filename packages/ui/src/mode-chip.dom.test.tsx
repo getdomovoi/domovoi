@@ -107,3 +107,21 @@ it("says a read is running or failed rather than claiming the model reports none
   await user.click(screen.getByRole("menuitem", { name: "Read the model list again" }))
   expect(onRetry).toHaveBeenCalledTimes(1)
 })
+
+// The mode list sits at the bottom of the composer and opens upward. Rendered
+// in place it was cut off by an ancestor and lost its first rows, so Plan and
+// Ask could not be picked on a real screen while every test here passed: jsdom
+// has no layout, so clipping is invisible to it. What a test can hold is the
+// structural cause, which is that the surface renders outside the composer
+// subtree rather than inside it.
+it("renders the mode list outside the composer subtree, where nothing can clip it", async () => {
+  const user = userEvent.setup()
+  const composer = document.createElement("div")
+  document.body.appendChild(composer)
+  render(<ModeChip runtime={runtime} pending={false} onSetRuntime={vi.fn()} />, { container: composer })
+
+  await user.click(screen.getByRole("button", { name: /^Mode: Build/ }))
+  const plan = screen.getByRole("option", { name: "Plan" })
+  expect(composer.contains(plan)).toBe(false)
+  expect(document.body.contains(plan)).toBe(true)
+})
