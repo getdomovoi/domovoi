@@ -108,8 +108,8 @@ it.runIf(process.platform === "win32" && required)(
       expect(await cli("status")).toContain("guest daemon running")
       expect(await cli("remove")).toContain("Removed the Domovoi WSL service")
       installed = false
-      const removed = await effects.capture(task.inspect.command, task.inspect.args, deadline)
-      expect(removed).toMatchObject({ code: 0 })
+      const removed = await effects.capture(windowsPowerShellPath(), task.inspect.args, deadline)
+      expect(removed, removed.stderr).toMatchObject({ code: 0 })
       expect(removed.stdout.trim()).toBe("domovoi-task:missing")
       const preserved = await guest([node, "-e", [
         "const fs = require('node:fs'), home = process.argv[1], profile = process.argv[2];",
