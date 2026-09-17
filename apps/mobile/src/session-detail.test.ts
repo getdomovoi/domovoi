@@ -80,9 +80,54 @@ describe("threadEntries", () => {
       id: "t-receipt",
       voice: "note",
       body: "Denied: Apply a production database migration",
-      meta: "phone · ckpt_7f21",
+      meta: "decided from phone · ckpt_7f21",
     })
     expect(entries[1]?.meta).toBe("command · failed")
+  })
+})
+
+describe("threadEntries receipt", () => {
+  it("names the outcome, who decided, the credential, the checkpoint and how long it took", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm -w prisma migrate deploy",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      clientId: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8",
+      decisionDurationMs: 38_400,
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries[0]?.body).toBe("Allowed once: pnpm -w prisma migrate deploy")
+    expect(entries[0]?.meta).toBe(
+      "decided from phone · credential device-fcbd4c3f99c7294586f0c5ca22f9cdf8 · 8f3c1de · in 38s",
+    )
+  })
+
+  it("keeps the explanation with the decision and the facts with the record", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "deny-explain",
+      operation: "rm -rf node_modules",
+      checkpoint: "unavailable",
+      client: "web",
+      explanation: "Not on the release branch.",
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries[0]?.body).toBe("Denied with an explanation: rm -rf node_modules\nNot on the release branch.")
+    expect(entries[0]?.meta).toBe("decided from web · no checkpoint")
   })
 })
 
