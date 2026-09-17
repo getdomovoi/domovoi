@@ -20,7 +20,7 @@ async function fixture() {
   const configuration = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: profileDirectory }, {
     homeDirectory: home, workingDirectory: home, platform: process.platform,
   })
-  const target = { home, platform: process.platform, uid: 1000, execPath: join(home, "domovoid"), configuration }
+  const target = { home, platform: process.platform, uid: 1000, user: "domovoi-test", execPath: join(home, "domovoid"), configuration }
   const effects = { ...nodeServiceEffects({ userHomeDirectory: home }), run: vi.fn(async () => {}),
     capture: vi.fn(async (_command: string, args: string[]) => ({ code: 0,
       stdout: process.platform === "win32"
