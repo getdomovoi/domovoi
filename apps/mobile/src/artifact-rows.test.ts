@@ -7,6 +7,7 @@ import {
   diffLines,
   findArtifact,
   maximumRenderedArtifactLines,
+  previewVariants,
 } from "./artifact-rows"
 
 function workspace(): WorkspaceSnapshot {
@@ -41,11 +42,11 @@ describe("artifactRows", () => {
     expect(rows.find((row) => row.type === "preview")?.readable).toBe(false)
   })
 
-  it("says a preview needs a fetch the phone cannot make, rather than showing an empty frame", () => {
+  it("says a preview is fetched with a grant, rather than showing an empty frame", () => {
     const preview = artifactRows(workspace(), "session-billing")
       .find((row) => row.type === "preview")
 
-    expect(preview?.detail).toContain("signed fetch")
+    expect(preview?.detail).toContain("signed grant")
   })
 
   it("keeps variants of one preview together and in the order the daemon gave them", () => {
@@ -71,7 +72,7 @@ describe("artifactBody", () => {
 
     expect(artifactBody(preview)).toEqual({
       readable: false,
-      reason: "A preview needs a signed fetch this phone cannot make yet.",
+      reason: "A preview is fetched from the machine with a signed grant.",
     })
   })
 
@@ -124,5 +125,32 @@ describe("findArtifact", () => {
   it("returns nothing for an artifact this snapshot does not have", () => {
     expect(findArtifact(workspace(), "artifact-missing")).toBeUndefined()
     expect(findArtifact(workspace(), "artifact-plan")?.id).toBe("artifact-plan")
+  })
+})
+
+describe("previewVariants", () => {
+  it("lists the group in the daemon's order, this render included", () => {
+    const snapshot = workspace()
+    const mine = snapshot.artifacts.find((artifact) => artifact.type === "preview")
+    if (!mine) throw new Error("fixture needs a preview")
+    mine.variant = { id: "b", groupId: "g", label: "B", order: 1 }
+    snapshot.artifacts.push(
+      { ...mine, id: "artifact-preview-c", variant: { id: "c", groupId: "g", label: "C", order: 2 } },
+      { ...mine, id: "artifact-preview-a", variant: { id: "a", groupId: "g", label: "A", order: 0 } },
+      { ...mine, id: "artifact-other", variant: { id: "x", groupId: "other", label: "X", order: 0 } },
+    )
+
+    expect(previewVariants(snapshot, mine.id)).toEqual([
+      { id: "artifact-preview-a", label: "A" },
+      { id: mine.id, label: "B" },
+      { id: "artifact-preview-c", label: "C" },
+    ])
+  })
+
+  it("gives a render with no group no tabs", () => {
+    const snapshot = workspace()
+    const mine = snapshot.artifacts.find((artifact) => artifact.type === "preview")
+    if (!mine) throw new Error("fixture needs a preview")
+    expect(previewVariants(snapshot, mine.id)).toEqual([])
   })
 })

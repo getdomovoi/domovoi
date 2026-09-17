@@ -3,6 +3,7 @@ import { View } from "react-native"
 import { StatusBar } from "expo-status-bar"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
+  artifactAuthorizeResultSchema,
   enabledSkillsMissingFromCatalog,
   selectableTurnSkills,
   skillSummariesSchema,
@@ -13,7 +14,8 @@ import {
   type SkillSummary,
 } from "@getdomovoi/protocol"
 
-import { artifactRows, findArtifact } from "./artifact-rows"
+import { artifactRows, findArtifact, previewVariants } from "./artifact-rows"
+import { artifactUrlFor } from "./artifact-url"
 import { connectionNotice } from "./connection-notice"
 import { ConfirmSheet } from "./components/confirm-sheet"
 import { ShellNotice } from "./components/shell-notice"
@@ -26,7 +28,7 @@ import { connectedMachineActivity } from "./machine-activity"
 import { planForSession, planStepEdit, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
-import { ArtifactScreen } from "./screens/artifact"
+import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
 import { fleetLoader } from "./fleet-load"
 import { FleetScreen } from "./screens/fleet"
 import { ReviewScreen } from "./screens/review"
@@ -176,6 +178,45 @@ export function App() {
     () => snapshot && openArtifactId ? annotationRows(snapshot, openArtifactId) : [],
     [openArtifactId, snapshot],
   )
+
+  const openVariants = useMemo(
+    () => snapshot && openArtifactId ? previewVariants(snapshot, openArtifactId) : [],
+    [openArtifactId, snapshot],
+  )
+
+  // A preview's render is fetched with a grant the daemon signs for one
+  // artifact at one revision. Asked for when the preview opens and again when
+  // its revision moves; what came back, or why nothing did, is what the screen
+  // shows. The grant answers to the artifact it was asked for, so a reply that
+  // lands after the person moved on is dropped rather than shown under the
+  // wrong title.
+  const [previewRender, setPreviewRender] = useState<PreviewRender | undefined>(undefined)
+  const openPreviewId = openArtifact?.type === "preview" ? openArtifact.id : undefined
+  const openPreviewRevision = openArtifact?.type === "preview" ? openArtifact.revision : undefined
+  const openPreviewSessionId = openArtifact?.type === "preview" ? openArtifact.sessionId : undefined
+  useEffect(() => {
+    if (!openPreviewId || openPreviewRevision === undefined || !openPreviewSessionId) {
+      setPreviewRender(undefined)
+      return
+    }
+    let current = true
+    setPreviewRender({ state: "pending" })
+    void (async () => {
+      try {
+        const access = artifactAuthorizeResultSchema.parse(await call("artifact.authorize", {
+          sessionId: openPreviewSessionId,
+          artifactId: openPreviewId,
+          revision: openPreviewRevision,
+          purpose: "preview",
+          client: clientKind,
+        }))
+        if (current) setPreviewRender({ state: "ready", url: artifactUrlFor(url, access) })
+      } catch (cause) {
+        if (current) setPreviewRender({ state: "failed", reason: cause instanceof Error ? cause.message : "The daemon refused the grant" })
+      }
+    })()
+    return () => { current = false }
+  }, [call, openPreviewId, openPreviewRevision, openPreviewSessionId, url])
 
   // Every artifact the workspace holds, whichever session made it, because the
   // Review tab is opened to answer what is outstanding rather than to walk back
@@ -406,7 +447,10 @@ export function App() {
           <ArtifactScreen
             artifact={openArtifact}
             comments={openArtifactComments}
+            render={previewRender}
+            variants={openVariants}
             onBack={() => setOpenArtifactId(undefined)}
+            onOpenVariant={setOpenArtifactId}
           />
         </SafeAreaView>
       </SafeAreaProvider>
