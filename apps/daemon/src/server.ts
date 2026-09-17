@@ -304,6 +304,24 @@ function skillInstallAuditDetail(values: Record<string, unknown>): string {
   return `scope=${String(values.scope ?? "")} sourceDigest=${String(values.sourceDigest ?? "")} source=${String(source ?? "")}`
 }
 
+// A browser attaches Origin itself and a page cannot forge it, which is the
+// whole value of checking it: a site the user visits must not be able to drive
+// their daemon. Any other client picks its own Origin or sends none, so the
+// list was never protecting anything from them, and it cannot hold a phone:
+// React Native sends the address it dialled, which differs per machine and per
+// route. A request whose Origin names this same daemon is same-origin, so it
+// came from something dialling this daemon directly rather than from a page
+// somewhere else, and the comparison is against the Host this very request
+// carried rather than against what the daemon believes it is reachable as.
+function namesThisDaemon(origin: string, host: string | undefined): boolean {
+  if (!host) return false
+  try {
+    return new URL(origin).host === host
+  } catch {
+    return false
+  }
+}
+
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
   "runtime.models",
@@ -1418,8 +1436,9 @@ export class DomovoiDaemon {
       response.end(JSON.stringify({ error: "not_found" }))
     })
 
-    const verifyClient: VerifyClientCallbackSync = ({ origin }) =>
-      !this.#stopping && !this.#stopped && (!origin || this.allowedOrigins.has(origin))
+    const verifyClient: VerifyClientCallbackSync = ({ origin, req }) =>
+      !this.#stopping && !this.#stopped
+      && (!origin || this.allowedOrigins.has(origin) || namesThisDaemon(origin, req.headers.host))
 
     this.#websocket = new WebSocketServer({
       server: this.#http,
