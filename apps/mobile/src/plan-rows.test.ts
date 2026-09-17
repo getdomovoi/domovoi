@@ -1,7 +1,7 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { planForSession, planStepEdit, planStrip, planSummary, revisedLabel } from "./plan-rows"
+import { planForSession, planStepEdit, planStrip, planSummary, revisedLabel, unpinnedAfter } from "./plan-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -115,5 +115,22 @@ describe("planStrip", () => {
     for (const step of plan.steps) step.status = step.status === "in-progress" ? "pending" : step.status
 
     expect(planStrip(planSummary(plan))).toBe("2 of 4 done")
+  })
+})
+
+describe("unpinnedAfter", () => {
+  it("remembers an unpin for one session only, and forgets it on pin", () => {
+    const afterA = unpinnedAfter(new Set(), "session-a", false)
+    expect(afterA.has("session-a")).toBe(true)
+    expect(afterA.has("session-b")).toBe(false)
+
+    const afterPin = unpinnedAfter(afterA, "session-a", true)
+    expect(afterPin.has("session-a")).toBe(false)
+  })
+
+  it("leaves the set it was given alone", () => {
+    const before = new Set(["session-a"])
+    unpinnedAfter(before, "session-b", false)
+    expect([...before]).toEqual(["session-a"])
   })
 })
