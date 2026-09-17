@@ -48,6 +48,28 @@ const decisionLabels: Record<ApprovalDecision, string> = {
   "deny-explain": "Denied with an explanation",
 }
 
+type Receipt = Extract<ThreadItem, { kind: "receipt" }>
+
+// Only a full commit SHA is safe to shorten. Anything else the daemon puts
+// here is a name, and half a name is a different name.
+function shortReference(reference: string): string {
+  return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
+}
+
+// A decision is worth nothing if you cannot see what it did. The record names
+// who decided, the credential the audit row holds rather than the label the
+// person gave the device, the checkpoint it can be measured against, and how
+// long the decision took.
+function receiptFacts(receipt: Receipt): string {
+  const facts = [
+    `decided from ${receipt.client}`,
+    receipt.clientId ? `credential ${receipt.clientId}` : undefined,
+    receipt.checkpoint === "unavailable" ? "no checkpoint" : shortReference(receipt.checkpoint),
+    receipt.decisionDurationMs === undefined ? undefined : `in ${Math.round(receipt.decisionDurationMs / 1_000)}s`,
+  ]
+  return facts.filter((fact): fact is string => fact !== undefined).join(" · ")
+}
+
 function entryFor(item: ThreadItem): ThreadEntry {
   switch (item.kind) {
     case "user":
@@ -67,8 +89,11 @@ function entryFor(item: ThreadItem): ThreadEntry {
       return {
         id: item.id,
         voice: "note",
-        body: `${decisionLabels[item.decision]}: ${item.operation}`,
-        meta: item.explanation ?? `${item.client} · ${item.checkpoint}`,
+        // The explanation is part of the decision; the record is the facts.
+        body: item.explanation
+          ? `${decisionLabels[item.decision]}: ${item.operation}\n${item.explanation}`
+          : `${decisionLabels[item.decision]}: ${item.operation}`,
+        meta: receiptFacts(item),
       }
     case "tool":
       return {
