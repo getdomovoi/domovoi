@@ -11,6 +11,8 @@ export function artifactUrlFor(rpcUrl: string, access: ArtifactAccess): string {
     session: access.sessionId,
     revision: String(access.revision),
     purpose: access.purpose,
+    ...(access.bridgeChannel ? { bridge: access.bridgeChannel } : {}),
+    ...(access.parentOrigin ? { parentOrigin: access.parentOrigin } : {}),
     expires: String(access.expiresAt),
     signature: access.signature,
   }).toString()
