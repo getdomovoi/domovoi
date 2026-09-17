@@ -44,10 +44,9 @@ export type AgentPermissionCapabilities = Readonly<{
 export type AgentCapabilities = Readonly<{ vision: boolean }>
 
 export type AgentVisualContext = {
-  annotationId: string
   mimeType: "image/png" | "image/jpeg" | "image/webp"
   bytes: Uint8Array
-}
+} & ({ annotationId: string; attachmentIndex?: never } | { attachmentIndex: number; annotationId?: never })
 
 export interface AgentAdapter {
   readonly permissionCapabilities?: AgentPermissionCapabilities

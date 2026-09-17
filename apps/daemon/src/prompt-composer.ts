@@ -292,7 +292,7 @@ export async function composeProviderPrompt(
       return {
         prompt,
         visualContexts: annotationVisuals.visualContexts.filter(
-          (context) => deliveredAnnotationIds.has(context.annotationId),
+          (context) => context.annotationId !== undefined && deliveredAnnotationIds.has(context.annotationId),
         ),
         providerPromptDelivery,
       }

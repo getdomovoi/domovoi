@@ -618,7 +618,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
-  it("sends declared visual context as bounded image content", async () => {
+  it.each([{ annotationId: "annotation-1" }, { attachmentIndex: 0 }])("sends declared visual context as bounded image content: %j", async (source) => {
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
@@ -629,7 +629,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       prompt: "Review this annotation",
       runtime: runtime("build"),
       visualContexts: [{
-        annotationId: "annotation-1",
+        ...source,
         mimeType: "image/png",
         bytes: new Uint8Array([137, 80, 78, 71]),
       }],

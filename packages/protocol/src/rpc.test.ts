@@ -472,6 +472,15 @@ describe("authenticated client identity", () => {
     expect(rpcMethods["system.hello"].result.parse(demoWorkspace).connectionId).toBeUndefined()
   })
 
+  it("advertises optional session image attachment support", () => {
+    const schema = rpcMethods["system.hello"].result
+    expect(schema.parse(demoWorkspace).sessionImageAttachments).toBeUndefined()
+    for (const supported of [true, false]) {
+      expect(schema.parse({ ...demoWorkspace, sessionImageAttachments: supported }).sessionImageAttachments).toBe(supported)
+    }
+    expect(schema.safeParse({ ...demoWorkspace, sessionImageAttachments: "true" }).success).toBe(false)
+  })
+
   it("carries the protocol version in the handshake", () => {
     // A hello with no version is a client from before the field existed and is
     // accepted; the daemon treats it as speaking this protocol version.

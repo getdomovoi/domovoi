@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { imageUploadSchema, maximumSessionAttachments } from "./image-upload.js"
 
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
@@ -92,7 +93,6 @@ import {
 } from "./fleet-enrollment.js"
 import {
   annotationStatusSchema,
-  canonicalBase64DecodedByteLength,
   commitShaSchema,
   credentialSchema,
   forkRequestIdSchema,
@@ -839,6 +839,7 @@ export const helloParamsSchema = z.discriminatedUnion("client", [
 
 export const systemHelloResultSchema = workspaceSnapshotSchema.extend({
   connectionId: connectionIdSchema.optional(),
+  sessionImageAttachments: z.boolean().optional(),
 })
 
 export const artifactAccessPurposeSchema = z.enum(["preview", "print", "download"])
@@ -1078,7 +1079,8 @@ export const sessionSendParamsSchema = z.object({
   prompt: z.string().trim().min(1).check(utf16MaxLength(maximumSessionPromptCharacters)),
   client: clientKindSchema,
   skillSelection: turnSkillSelectionSchema.optional(),
-})
+  attachments: z.array(imageUploadSchema).max(maximumSessionAttachments).optional(),
+}).strict()
 
 export const checkpointCreateParamsSchema = z.object({
   sessionId: z.string().min(1),
@@ -1171,17 +1173,9 @@ export const annotationCreateParamsSchema = z.object({
   anchor: annotationAnchorSchema,
   body: z.string().trim().min(1).check(utf16MaxLength(8_192)),
   visualContextUpload: z.object({
+    ...imageUploadSchema.shape,
     artifactRevision: z.number().int().positive(),
     mimeType: z.literal("image/png"),
-    width: z.number().int().positive().max(2048),
-    height: z.number().int().positive().max(2048),
-    data: z.string().min(4).check(utf16MaxLength(2_000_000)).refine(
-      (value) => {
-        const decodedBytes = canonicalBase64DecodedByteLength(value)
-        return decodedBytes !== undefined && decodedBytes <= 1_500_000
-      },
-      { message: "Visual context data must be canonical bounded Base64" },
-    ),
   }).optional(),
   client: clientKindSchema,
 })
