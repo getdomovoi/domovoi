@@ -167,7 +167,8 @@ export function ModelPopover({
         onClose={() => setOpen(false)}
         label="Models on this machine"
         trigger={trigger}
-        className="bottom-[calc(100%+8px)] top-auto w-[330px] p-0"
+        placement="above"
+        className="w-[330px] p-0"
       >
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <SearchIcon className="size-3.5 shrink-0 text-faint" />
