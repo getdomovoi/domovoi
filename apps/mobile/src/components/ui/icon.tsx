@@ -3,9 +3,12 @@ import Ban from "lucide-react-native/icons/ban"
 import Check from "lucide-react-native/icons/check"
 import ChevronLeft from "lucide-react-native/icons/chevron-left"
 import ChevronRight from "lucide-react-native/icons/chevron-right"
+import ChevronUp from "lucide-react-native/icons/chevron-up"
 import Eye from "lucide-react-native/icons/eye"
 import Layers from "lucide-react-native/icons/layers"
+import ListChecks from "lucide-react-native/icons/list-checks"
 import Pencil from "lucide-react-native/icons/pencil"
+import Pin from "lucide-react-native/icons/pin"
 import Plus from "lucide-react-native/icons/plus"
 import RotateCw from "lucide-react-native/icons/rotate-cw"
 import Server from "lucide-react-native/icons/server"
@@ -24,9 +27,12 @@ const glyphs = {
   check: Check,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
+  "chevron-up": ChevronUp,
   eye: Eye,
   layers: Layers,
+  "list-checks": ListChecks,
   pencil: Pencil,
+  pin: Pin,
   plus: Plus,
   "rotate-cw": RotateCw,
   server: Server,

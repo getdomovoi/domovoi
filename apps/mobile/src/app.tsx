@@ -70,6 +70,11 @@ export function App() {
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [sendProblem, setSendProblem] = useState("")
+  // The plan starts pinned: the design leads the thread with a strip saying
+  // where the machine is, and the whole plan is one tap away. Unpinning
+  // collapses it into the thread. Held here, not in the screen, so leaving
+  // and coming back finds it where it was.
+  const [planPinned, setPlanPinned] = useState(true)
   // A turn costs money, and two taps land in the same frame before the sending
   // state has re-rendered anything. The latch is read and set synchronously, so
   // the second tap has nothing left to do.
@@ -512,6 +517,8 @@ export function App() {
             onSend={() => void sendMessage(openSession.id)}
             onOpenSkills={() => setSkillsOpen(true)}
             onEditStep={(stepId, text) => editPlanStep(openSession.id, stepId, text)}
+            planPinned={planPinned}
+            onPinPlan={setPlanPinned}
           />
           <SkillSheet
             open={skillsOpen}

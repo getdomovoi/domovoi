@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { KeyboardAvoidingView, Platform, Pressable, TextInput, View } from "react-native"
+import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { AgentMarkdown } from "../components/agent-markdown"
@@ -12,7 +12,7 @@ import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
 import type { ArtifactRow } from "../artifact-rows"
-import type { PlanRow, PlanSummary } from "../plan-rows"
+import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
 import { colors } from "../theme/tokens.generated"
 
@@ -100,9 +100,14 @@ function StepEditor({ row, index, saving, onSave, onCancel }: {
   )
 }
 
-function PlanCard({ plan, onEditStep }: {
+function PlanCard({ plan, onEditStep, onPin, headed = true }: {
   plan: PlanSummary
   onEditStep: ((stepId: string, text: string) => Promise<void>) | undefined
+  // Present on the card in the thread, absent in the sheet: pinning is how the
+  // plan leaves the thread, and the sheet is where it comes back from.
+  onPin: (() => void) | undefined
+  // The sheet carries its own title and revision line above the card.
+  headed?: boolean
 }) {
   // Editing is a mode the person enters, so a tap on a step in the ordinary
   // reading of the plan does nothing surprising.
@@ -122,11 +127,13 @@ function PlanCard({ plan, onEditStep }: {
   }
   return (
     <Card flush>
-      <View className="flex-row items-center gap-2 border-b border-border px-3 py-2.5">
-        <Text variant="section" className="flex-1">Working plan</Text>
-        <Text variant="machine">{plan.progress}</Text>
-        {plan.revised ? <Text variant="machine" className="text-faint">{plan.revised}</Text> : null}
-      </View>
+      {headed ? (
+        <View className="flex-row items-center gap-2 border-b border-border px-3 py-2.5">
+          <Text variant="section" className="flex-1">Working plan</Text>
+          <Text variant="machine">{plan.progress}</Text>
+          {plan.revised ? <Text variant="machine" className="text-faint">{plan.revised}</Text> : null}
+        </View>
+      ) : null}
       {plan.rows.map((row, index) => {
         const body = (
           <View className="flex-row items-start gap-2.5">
@@ -191,16 +198,75 @@ function PlanCard({ plan, onEditStep }: {
           <Text variant="note">
             Editing a step here applies at the next turn boundary, not to the turn in flight.
           </Text>
-          <View className="flex-row">
+          <View className="flex-row gap-2">
             <Button
               title={editing ? "Done editing" : "Edit a step"}
               onPress={() => { setEditing(!editing); setOpenStep(undefined) }}
               disabled={saving}
             />
+            {onPin ? <Button title="Pin" accessibilityLabel="Pin the plan" onPress={onPin} disabled={saving} /> : null}
           </View>
         </View>
       ) : null}
+      {!onEditStep && onPin ? (
+        <View className="flex-row border-t border-border px-3 py-2.5">
+          <Button title="Pin" accessibilityLabel="Pin the plan" onPress={onPin} />
+        </View>
+      ) : null}
     </Card>
+  )
+}
+
+// The strip that stands in for the plan while it is pinned: one line saying
+// where the machine is. Tapping it lifts the whole plan as a sheet, and the
+// thread stays behind, so the person has not left the conversation.
+function PlanStrip({ plan, onOpen }: { plan: PlanSummary, onOpen: () => void }) {
+  const line = planStrip(plan)
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={line}
+      onPress={onOpen}
+      className="flex-row items-center gap-2.5 rounded-xl border border-border bg-card px-3.5 py-2.5 active:opacity-70"
+    >
+      <Icon name="list-checks" tone="primary" size={15} />
+      <Text className="flex-1 text-[12px] text-strong" numberOfLines={1}>{line}</Text>
+      {plan.pendingEdit ? <Text variant="machine" className="text-warning">edit {plan.pendingEdit}</Text> : null}
+      <Icon name="chevron-up" tone="faint" size={14} />
+    </Pressable>
+  )
+}
+
+function PlanSheet({ plan, open, onClose, onUnpin, onEditStep }: {
+  plan: PlanSummary
+  open: boolean
+  onClose: () => void
+  onUnpin: () => void
+  onEditStep: ((stepId: string, text: string) => Promise<void>) | undefined
+}) {
+  return (
+    <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable className="flex-1 bg-desk/80" accessibilityLabel="Close the plan" onPress={onClose} />
+      <View className="max-h-[80%] gap-3 rounded-t-2xl border-t border-border bg-background p-4 pb-8">
+        <View className="items-center">
+          <View className="h-1 w-[38px] rounded-full bg-muted" />
+        </View>
+        <View className="flex-row items-center gap-2.5 px-1">
+          <Icon name="pin" tone="warning" size={15} />
+          <Text variant="nav" className="flex-1">The plan</Text>
+          {plan.revised ? <Text variant="machine" className="text-faint">{plan.revised}</Text> : null}
+        </View>
+        <PageScroller contentContainerClassName="gap-3">
+          <PlanCard plan={plan} onEditStep={onEditStep} onPin={undefined} headed={false} />
+          <Text variant="note" className="px-1">
+            Pinned stays pinned across screens. Unpin and it collapses back into the thread.
+          </Text>
+          <View className="flex-row gap-2">
+            <Button title="Unpin" onPress={onUnpin} className="flex-1" />
+          </View>
+        </PageScroller>
+      </View>
+    </Modal>
   )
 }
 
@@ -266,6 +332,8 @@ export function SessionScreen({
   onSend,
   onOpenSkills,
   onEditStep,
+  planPinned,
+  onPinPlan,
 }: {
   detail: SessionDetail
   artifacts: ArtifactRow[]
@@ -285,7 +353,12 @@ export function SessionScreen({
   // Absent when the phone has no way to send an edit, in which case the plan
   // is read-only and says nothing about editing.
   onEditStep?: ((stepId: string, text: string) => Promise<void>) | undefined
+  // Held by the app rather than this screen, so the pin survives leaving and
+  // coming back. Pinned stays pinned across screens.
+  planPinned: boolean
+  onPinPlan: (pinned: boolean) => void
 }) {
+  const [planOpen, setPlanOpen] = useState(false)
   // The composer floats over the thread, so the thread pads by what the
   // composer reports covering rather than by a guess at its height.
   const [composerFootprint, setComposerFootprint] = useState(0)
@@ -340,7 +413,8 @@ export function SessionScreen({
           </PressableCard>
         ) : null}
 
-        {plan ? <PlanCard plan={plan} onEditStep={onEditStep} /> : null}
+        {plan && planPinned ? <PlanStrip plan={plan} onOpen={() => setPlanOpen(true)} /> : null}
+        {plan && !planPinned ? <PlanCard plan={plan} onEditStep={onEditStep} onPin={() => onPinPlan(true)} /> : null}
 
         {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
 
@@ -370,6 +444,16 @@ export function SessionScreen({
           />
         </Card>
       </PageScroller>
+
+      {plan && planPinned ? (
+        <PlanSheet
+          plan={plan}
+          open={planOpen}
+          onClose={() => setPlanOpen(false)}
+          onUnpin={() => { setPlanOpen(false); onPinPlan(false) }}
+          onEditStep={onEditStep}
+        />
+      ) : null}
 
       <Composer
         draft={draft}

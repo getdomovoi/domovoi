@@ -37,6 +37,8 @@ async function draw() {
         onChangeDraft={jest.fn<(draft: string) => void>()}
         onSend={jest.fn<() => void>()}
         onOpenSkills={jest.fn<() => void>()}
+        planPinned={false}
+        onPinPlan={jest.fn<(pinned: boolean) => void>()}
       />
     </SafeAreaProvider>,
   )
