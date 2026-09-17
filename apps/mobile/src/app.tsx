@@ -25,7 +25,7 @@ import { clearCredential, loadCredential, saveCredential } from "./lib/credentia
 import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
-import { planForSession, planSummary } from "./plan-rows"
+import { planForSession, planStepEdit, planSummary } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
@@ -334,6 +334,23 @@ export function App() {
     }
   }
 
+  // The edit is built against the plan in the snapshot the phone holds now.
+  // The daemon answers with a receipt that says whether it applied, queued or
+  // conflicted, and the next snapshot carries the plan's own account of it.
+  const editPlanStep = async (sessionId: string, stepId: string, text: string) => {
+    const plan = snapshot ? planForSession(snapshot, sessionId) : undefined
+    if (!plan) return
+    const edit = planStepEdit(plan, stepId, text)
+    await call("plan.edit", {
+      sessionId,
+      basedOnStructureRevision: edit.basedOnStructureRevision,
+      baseSteps: edit.baseSteps,
+      draftSteps: edit.draftSteps,
+      ...(edit.replacesPendingEditId ? { replacesPendingEditId: edit.replacesPendingEditId } : {}),
+      client: clientKind,
+    })
+  }
+
   const pauseSession = async (sessionId: string) => {
     setPausing(true)
     try {
@@ -470,6 +487,7 @@ export function App() {
             }}
             onSend={() => void sendMessage(openSession.id)}
             onOpenSkills={() => setSkillsOpen(true)}
+            onEditStep={(stepId, text) => editPlanStep(openSession.id, stepId, text)}
           />
           <SkillSheet
             open={skillsOpen}

@@ -5,6 +5,7 @@ import ChevronLeft from "lucide-react-native/icons/chevron-left"
 import ChevronRight from "lucide-react-native/icons/chevron-right"
 import Eye from "lucide-react-native/icons/eye"
 import Layers from "lucide-react-native/icons/layers"
+import Pencil from "lucide-react-native/icons/pencil"
 import Plus from "lucide-react-native/icons/plus"
 import RotateCw from "lucide-react-native/icons/rotate-cw"
 import Server from "lucide-react-native/icons/server"
@@ -25,6 +26,7 @@ const glyphs = {
   "chevron-right": ChevronRight,
   eye: Eye,
   layers: Layers,
+  pencil: Pencil,
   plus: Plus,
   "rotate-cw": RotateCw,
   server: Server,
