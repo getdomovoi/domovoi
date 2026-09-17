@@ -90,3 +90,16 @@ export function planSummary(plan: WorkingPlan): PlanSummary {
     revised: revisedLabel(plan.updatedAt),
   }
 }
+
+// One line for the strip that sits above the thread while the plan is
+// pinned: the step the machine is on, or the one a person is holding up,
+// or how far along the plan is when nothing is running. Tapping the strip
+// lifts the whole plan; the strip only has to say why you would.
+export function planStrip(plan: PlanSummary): string {
+  const total = plan.rows.length
+  const blocked = plan.rows.findIndex((row) => row.tone === "blocked")
+  if (blocked >= 0) return `Step ${blocked + 1} of ${total} · waiting on you · ${plan.rows[blocked]!.text}`
+  const running = plan.rows.findIndex((row) => row.tone === "running")
+  if (running >= 0) return `Step ${running + 1} of ${total} · ${plan.rows[running]!.text}`
+  return `${plan.progress} done`
+}

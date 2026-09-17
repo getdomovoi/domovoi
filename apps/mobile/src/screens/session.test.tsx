@@ -38,6 +38,8 @@ async function draw(overrides: Partial<Parameters<typeof SessionScreen>[0]> = {}
     onSend: jest.fn<() => void>(),
     onOpenSkills: jest.fn<() => void>(),
     onEditStep: jest.fn<(stepId: string, text: string) => Promise<void>>(async () => {}),
+    planPinned: false,
+    onPinPlan: jest.fn<(pinned: boolean) => void>(),
     ...overrides,
   }
   await render(
@@ -89,5 +91,54 @@ describe("SessionScreen plan", () => {
 
     expect(screen.queryByRole("button", { name: "Edit a step" })).toBeNull()
     expect(screen.queryByText(/applies at the next turn boundary/)).toBeNull()
+  })
+
+  it("pins the plan from the card, so it follows the person across screens", async () => {
+    const { props } = await draw()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Pin the plan" }))
+
+    expect(props.onPinPlan).toHaveBeenCalledWith(true)
+  })
+})
+
+describe("SessionScreen pinned plan", () => {
+  it("draws a strip above the thread instead of the card, naming the step in progress", async () => {
+    await draw({ planPinned: true })
+
+    expect(screen.getByRole("button", { name: /^Step 3 of 4 · / })).toBeOnTheScreen()
+    expect(screen.queryByText("Working plan")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Edit a step" })).toBeNull()
+  })
+
+  it("lifts the whole plan as a sheet when the strip is tapped, thread still behind it", async () => {
+    const { props, plan } = await draw({ planPinned: true })
+
+    await fireEvent.press(screen.getByRole("button", { name: /^Step 3 of 4 · / }))
+
+    expect(screen.getByText("The plan")).toBeOnTheScreen()
+    expect(screen.getByText(/^revised \d\d:\d\d$/)).toBeOnTheScreen()
+    for (const step of plan.steps) expect(screen.getByText(step.text)).toBeOnTheScreen()
+    expect(screen.getByText("Pinned stays pinned across screens. Unpin and it collapses back into the thread.")).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Edit a step" })).toBeOnTheScreen()
+    // The conversation is still there under the sheet.
+    expect(screen.getByLabelText("Reply to this session")).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Unpin" }))
+    expect(props.onPinPlan).toHaveBeenCalledWith(false)
+  })
+
+  it("edits a step from the sheet with the same sender", async () => {
+    const { props, plan } = await draw({ planPinned: true })
+    const target = plan.steps[3]
+    if (!target) throw new Error("fixture needs four steps")
+
+    await fireEvent.press(screen.getByRole("button", { name: /^Step 3 of 4 · / }))
+    await fireEvent.press(screen.getByRole("button", { name: "Edit a step" }))
+    await fireEvent.press(screen.getByRole("button", { name: `Edit step 4: ${target.text}` }))
+    await fireEvent.changeText(screen.getByLabelText("Step 4"), "Cover expiry in replay.spec.ts")
+    await fireEvent.press(screen.getByRole("button", { name: "Save step" }))
+
+    expect(props.onEditStep).toHaveBeenCalledWith(target.id, "Cover expiry in replay.spec.ts")
   })
 })

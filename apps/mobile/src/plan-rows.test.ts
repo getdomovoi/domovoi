@@ -1,7 +1,7 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { planForSession, planStepEdit, planSummary, revisedLabel } from "./plan-rows"
+import { planForSession, planStepEdit, planStrip, planSummary, revisedLabel } from "./plan-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -93,5 +93,27 @@ describe("planSummary header", () => {
     plan.updatedAt = new Date(2026, 8, 16, 14, 6).toISOString()
 
     expect(planSummary(plan).revised).toBe("revised 14:06")
+  })
+})
+
+describe("planStrip", () => {
+  it("names the step in progress and its place in the plan", () => {
+    expect(planStrip(planSummary(billingPlan(workspace())))).toBe("Step 3 of 4 · Apply the migration on this machine's dev database")
+  })
+
+  it("names the step waiting on a person when one is", () => {
+    const plan = billingPlan(workspace())
+    const step = plan.steps[3]
+    if (!step) throw new Error("fixture needs four steps")
+    step.blocker = { kind: "approval", approvalId: "approval-migrate" }
+
+    expect(planStrip(planSummary(plan))).toBe("Step 4 of 4 · waiting on you · Rewrite replay.spec.ts to assert exactly-once delivery")
+  })
+
+  it("counts what is done when nothing is running", () => {
+    const plan = billingPlan(workspace())
+    for (const step of plan.steps) step.status = step.status === "in-progress" ? "pending" : step.status
+
+    expect(planStrip(planSummary(plan))).toBe("2 of 4 done")
   })
 })
