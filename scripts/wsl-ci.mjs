@@ -82,6 +82,7 @@ const requiredWslProofs = [
 // task, so it runs alone after the transport proofs have finished with the
 // distro, in its own Vitest invocation, and is judged on its own name list.
 export const requiredWslServiceProofs = [
+  "installs and removes the WSL guest supervisor through the daemon CLI",
   "propagates guest failure, restarts it, and removes only its WSL task",
 ]
 

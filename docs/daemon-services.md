@@ -1,6 +1,37 @@
 # Daemon service configuration
 
 `domovoid service install` installs a per-user systemd unit, launchd agent, or Windows logon task.
+
+Inside WSL 2 with Windows interop enabled, the command instead registers the
+decided Windows-logon task running the guest supervisor. The distribution comes
+from `WSL_DISTRO_NAME`, the Linux user from the invoking process, and the runtime
+and entry point are absolute paths. PowerShell discovery ignores PATH. The fixed
+`/usr/bin/wslpath` helper translates
+`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` to its mounted guest
+path, normally `/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe`.
+An explicit `DOMOVOI_WINDOWS_POWERSHELL` override must be an absolute guest path.
+Both paths must name an existing regular file before execution; the reported
+SystemRoot must then translate back to the same PowerShell path before any task
+or registration is created. The override is an operator-selected executable,
+not executable authentication. The default trusts the system-managed Windows
+mount, not a project PATH entry. Missing interop, a missing/non-regular file or
+a mismatched SystemRoot refuses installation, without falling back to systemd
+or editing distro init.
+
+The guest's per-user `service.json` retains the WSL launch inputs and selected
+profile. Status and removal use that saved registration even without the shell's
+WSL/profile overrides. Removal disables the owned task, proves the guest loop and
+children stopped with retries cancelled, then deletes the task and registration.
+Profile data and supervisor history remain. Missing guest identity or failed stop
+proof retains the registration; a missing task alone never authorizes recovery.
+Remove an existing registration before reinstalling. Interrupted installation can
+require operator reconciliation if no supervisor identity was ever recorded.
+
+This is Windows user logon, not Windows boot supervision. The guest loop is not
+self-restarting after distro or loop loss. Native Windows crash policy and Linux
+lingering are unchanged. A demand-start fixture does not establish real logon
+acceptance; that remains open in the lifecycle assessment.
+
 It captures the current daemon configuration before asking the service manager to start anything.
 Close other daemon owners, including Desktop, before starting the service, then reopen Desktop to
 attach. See [local daemon ownership](local-daemon-ownership.md) for the attachment contract.

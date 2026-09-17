@@ -54,7 +54,8 @@ describe("WSL service fixture deadline", () => {
   it("uses the phase environment in the actual native test registration", () => {
     const registrations: number[] = []
     registerNativeProof("200000", registrations)
-    expect(registrations).toEqual([181_000])
+    expect(registrations).toEqual([46_666, 134_334])
+    expect(registrations.reduce((sum, timeout) => sum + timeout, 0)).toBe(181_000)
   })
 
   it("refuses an insufficient environment budget before registering the native test", () => {

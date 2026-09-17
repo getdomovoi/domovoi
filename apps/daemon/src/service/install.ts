@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto"
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix } from "node:path"
 import { userInfo } from "node:os"
+import { installedWslTask } from "./wsl-registration.js"
+import { runWslServiceCommand } from "./wsl-install.js"
+import { stopGuestSupervisor } from "./supervisor-command.js"
 
 import type { DaemonEnvironment } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
@@ -51,6 +54,8 @@ export type ServiceTarget = {
 export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
+  readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
+  stopSupervisor?: (path: string, deadline: OperationDeadline) => Promise<unknown>
   claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
@@ -169,6 +174,11 @@ export function servicePlan({
   // The configured home owns the per-user registration. The daemon profile
   // is explicit saved configuration, not a replacement provider HOME.
   if (home !== configuration.homeDirectory) throw new Error("The service configuration must belong to the installing user home")
+  if (configuration.wsl) {
+    if (platform !== "linux" || !configuration.registrationId) throw new Error("WSL service requires a guest registration")
+    const task = installedWslTask(configuration.wsl, configuration.registrationId, configurationFile.path)
+    return { kind: "task", configuration: configurationFile, commands: [task.register, task.start] }
+  }
   const serviceArgs = ["--service-config", configurationFile.path]
   const program = runtime === undefined ? execPath : runtime
   const args = runtime === undefined ? serviceArgs : [execPath, ...serviceArgs]
@@ -546,6 +556,13 @@ export async function runServiceCommand(
   }
 
   try {
+    const savedWsl = dependencies.platform === "linux"
+      && dependencies.readConfiguration?.(assertHome(dependencies.home), "linux")?.wsl !== undefined
+    const installingFromWsl = verb === "install" && (dependencies.environment?.WSL_DISTRO_NAME !== undefined
+      || dependencies.environment?.WSL_INTEROP !== undefined)
+    if (dependencies.platform === "linux" && (savedWsl || installingFromWsl)) {
+      return await serviceOperation(dependencies, (deadline) => runWslServiceCommand(verb, dependencies, deadline))
+    }
     if (verb === "install") {
       const configuration = createServiceConfiguration(dependencies.environment ?? {}, {
         platform: dependencies.platform,
@@ -594,6 +611,11 @@ export async function runServiceCommand(
 
 export function nodeServiceEffects(options: { userHomeDirectory?: string } = {}): ServiceEffects {
   return {
+    readConfiguration: (home, platform) => {
+      try { return parseServiceConfiguration(readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024)) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
+    },
+    stopSupervisor: stopGuestSupervisor,
     // Manager names are per OS user, not per caller-selected HOME or profile.
     // An alternate shell HOME must not create a second lock for the same job.
     // The override isolates tests from the operator's actual service lock.

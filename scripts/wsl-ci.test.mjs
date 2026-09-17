@@ -231,7 +231,7 @@ test("provisions exactly one distro, requires it in the test process, then remov
   assert.deepEqual(calls.at(-1).args, ["--unregister", distribution])
   assert.deepEqual(result.phases.map(({ name }) => name), ["provision", "guest runtime", "native proofs", "service proofs", "cleanup"])
   assert.equal(result.tests, 15)
-  assert.equal(result.serviceTests, 1)
+  assert.equal(result.serviceTests, 2)
 })
 
 // The WSL supervisor test stops and restarts the guest daemon and its task, so

@@ -12,6 +12,8 @@ import { nodeServiceEffects, type ServiceCommand } from "./install.js"
 import { supervisorRecordSchema, type SupervisorRecord } from "./supervisor-record.js"
 import { removeWindowsTask, windowsPowerShellPath } from "./windows-task.js"
 import { wslTaskPlan } from "./wsl-task.js"
+import { installedWslTask } from "./wsl-registration.js"
+import { parseServiceConfiguration } from "./configuration.js"
 import { captureWslTaskAction, wslTaskActionProbe } from "./wsl-task-action-probe.js"
 import { observeWslTaskReadiness, wslGuestReadinessSnapshotScript, wslTaskFixtureBudgets } from "./wsl-task-test-support.js"
 
@@ -20,7 +22,8 @@ const daemon = "/opt/domovoi-ci-daemon/dist/index.js"
 const distribution = process.env["DOMOVOI_WSL_REQUIRED_DISTRIBUTION"]
 const required = process.env["DOMOVOI_WSL_NATIVE_SERVICE"] === "1"
 const budget = wslTaskFixtureBudgets(required ? process.env["DOMOVOI_WSL_NATIVE_SERVICE_BUDGET_MS"] : undefined)
-const lifecycleBudget = budget.lifecycle
+const cliTestBudget = Math.min(75_000, Math.floor(budget.lifecycle / 3))
+const lifecycleBudget = budget.lifecycle - cliTestBudget
 const cleanupBudget = budget.cleanup
 const literal = (value: string) => "'" + value.replaceAll("'", "''") + "'"
 
@@ -58,6 +61,75 @@ const observer = [
 ].join("\n")
 
 type GuestIdentity = { pid: number; start: string }
+
+it.runIf(process.platform === "win32" && required)(
+  "installs and removes the WSL guest supervisor through the daemon CLI",
+  async () => {
+    expect(distribution).toMatch(/^domovoi-ci-[0-9a-f-]{36}$/)
+    const home = "/tmp/domovoi-wsl-install-" + randomUUID()
+    const profile = home + "/profile"
+    const linuxUser = "domovoi-cli-test"
+    const wsl = win32.join(process.env.SystemRoot!, "System32", "wsl.exe")
+    const effects = nodeServiceEffects()
+    const deadline = OperationDeadline.start(cliTestBudget - 25_000)
+    const guest = async (args: string[], active = deadline, user = linuxUser) => {
+      const result = await effects.capture(wsl, ["--distribution", distribution!, "--user", user, "--exec", ...args], active)
+      if (result.code !== 0) throw new Error("Guest CLI fixture command failed: " + result.stderr)
+      return result.stdout.trim()
+    }
+    const cli = (verb: string, active = deadline) => guest(["/usr/bin/env", "HOME=" + home,
+      "DOMOVOI_PROFILE_DIR=" + profile, "DOMOVOI_PORT=0", node, daemon, "service", verb], active)
+    let installed = false
+    let failure: unknown
+    try {
+      await guest(["/usr/sbin/useradd", "--create-home", "--home-dir", home, "--shell", "/bin/sh", linuxUser], deadline, "root")
+      // Both runner artifact roots are private to root. This disposable guest
+      // shares only those code directories with the non-root acceptance user.
+      await guest([node, "-e", "for (const path of ['/opt/domovoi-ci-node', '/opt/domovoi-ci-daemon']) require('node:fs').chmodSync(path, 0o755)"], deadline, "root")
+      installed = true
+      expect(await cli("install")).toContain("Installed the Domovoi WSL guest supervisor")
+      const configurationText = await guest([node, "-e", "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", home + "/.domovoi/service.json"])
+      const configuration = parseServiceConfiguration(configurationText)
+      expect(configuration).toMatchObject({ homeDirectory: home, profileDirectory: profile,
+        wsl: { distribution, linuxUser, executable: node, args: [daemon] } })
+      const task = installedWslTask(configuration.wsl!, configuration.registrationId!, home + "/.domovoi/service.json")
+      const readyScript = [
+        "const fs = require('node:fs');",
+        "try { const r = JSON.parse(fs.readFileSync(process.argv[1] + '/local-owner.json', 'utf8')); process.stdout.write(r.state); }",
+        "catch (e) { if (e.code !== 'ENOENT') throw e; }",
+      ].join("\n")
+      // Status probes the guest record, not just Task Scheduler's running flag.
+      for (;;) {
+        deadline.throwIfExpired()
+        if (await guest([node, "-e", readyScript, profile]) === "ready") break
+        await delay(100, undefined, { signal: deadline.signal })
+      }
+      // The daemon, not just the supervisor, must publish its real owner record.
+      expect(await cli("status")).toContain("guest daemon running")
+      expect(await cli("remove")).toContain("Removed the Domovoi WSL service")
+      installed = false
+      const removed = await effects.capture(windowsPowerShellPath(), task.inspect.args, deadline)
+      expect(removed, removed.stderr).toMatchObject({ code: 0 })
+      expect(removed.stdout.trim()).toBe("domovoi-task:missing")
+      const preserved = await guest([node, "-e", [
+        "const fs = require('node:fs'), home = process.argv[1], profile = process.argv[2];",
+        "process.stdout.write(JSON.stringify({ configuration: fs.existsSync(home + '/.domovoi/service.json'),",
+        " profile: fs.existsSync(profile), supervisor: JSON.parse(fs.readFileSync(profile + '/supervisor.json', 'utf8')).state }));",
+      ].join("\n"), home, profile])
+      expect(JSON.parse(preserved)).toEqual({ configuration: false, profile: true, supervisor: "stopped" })
+    } catch (error) { failure = error } finally {
+      deadline.clear()
+      if (installed) {
+        const cleanup = OperationDeadline.start(20_000)
+        try { await cli("remove", cleanup) }
+        catch (error) { failure = failure === undefined ? error : new AggregateError([failure, error], "WSL CLI proof and cleanup failed") }
+        finally { cleanup.clear() }
+      }
+      // The enclosing runner owns and unregisters this UUID-only distro.
+    }
+    if (failure !== undefined) throw failure
+  }, cliTestBudget,
+)
 
 it.runIf(process.platform === "win32" && required)(
   "propagates guest failure, restarts it, and removes only its WSL task",
@@ -536,5 +608,5 @@ it.runIf(process.platform === "win32" && required)(
     }
     if (failure !== undefined) throw failure
   },
-  budget.test,
+  budget.test - cliTestBudget,
 )
