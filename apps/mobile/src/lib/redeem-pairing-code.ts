@@ -13,6 +13,23 @@ export type PairedCredential = { url: string; token: string }
 
 const redeemDeadlineMs = 10_000
 
+// React Native reports socket failures as an event carrying a message, and web
+// reports an event carrying nothing. Both shapes are read without trusting
+// either to be present.
+function socketDetail(event: unknown): string {
+  if (typeof event !== "object" || event === null) return ""
+  const held = event as { message?: unknown }
+  return typeof held.message === "string" ? held.message : ""
+}
+
+function closeDetail(event: unknown): string {
+  if (typeof event !== "object" || event === null) return ""
+  const held = event as { code?: unknown, reason?: unknown }
+  const code = typeof held.code === "number" ? String(held.code) : ""
+  const reason = typeof held.reason === "string" && held.reason ? held.reason : ""
+  return [code, reason].filter(Boolean).join(": ")
+}
+
 export class PairingRefusedError extends Error {
   constructor(message: string) {
     super(message)
@@ -71,7 +88,23 @@ export function redeemPairingCode(
       }
       settle(() => resolve({ url: payload.url, token: parsed.data.token }))
     }
-    socket.onerror = () => settle(() => reject(new PairingRefusedError("This phone could not reach the machine at that address.")))
-    socket.onclose = () => settle(() => reject(new PairingRefusedError("The machine closed the connection before pairing finished.")))
+    // A socket that fails says "could not reach" for a name that will not
+    // resolve, a route that is blocked and a certificate that was rejected
+    // alike. Standing next to a phone that is the least useful thing it could
+    // say, so whatever the platform reports is carried through rather than
+    // replaced by a guess.
+    socket.onerror = (event: unknown) => settle(() => reject(new PairingRefusedError(
+      socketDetail(event)
+        ? `This phone could not open a connection to the machine. The phone reported: ${socketDetail(event)}`
+        : "This phone could not open a connection to the machine, and gave no reason.",
+    )))
+    socket.onclose = (event: unknown) => {
+      const closed = closeDetail(event)
+      settle(() => reject(new PairingRefusedError(
+        closed
+          ? `The machine closed the connection before pairing finished (${closed}).`
+          : "The machine closed the connection before pairing finished.",
+      )))
+    }
   })
 }

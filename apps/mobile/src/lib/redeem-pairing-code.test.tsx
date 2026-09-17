@@ -12,8 +12,8 @@ function fakeSocket() {
     sent,
     onopen: null as (() => void) | null,
     onmessage: null as ((event: { data: string }) => void) | null,
-    onerror: null as (() => void) | null,
-    onclose: null as (() => void) | null,
+    onerror: null as ((event: never) => void) | null,
+    onclose: null as ((event: never) => void) | null,
     closed: false,
     send: (text: string) => { sent.push(text) },
     close: () => { socket.closed = true },
@@ -38,6 +38,27 @@ describe("spending a pairing code", () => {
     } }) })
     await expect(pending).resolves.toEqual({ url: payload.url, token: "t".repeat(43) })
     expect(socket.closed).toBe(true)
+  })
+
+  it("carries the platform's own reason when the socket fails", async () => {
+    const socket = fakeSocket()
+    const pending = redeemPairingCode(payload, "iPhone", () => socket as unknown as WebSocket)
+    socket.onerror!({ message: "The certificate for this server is invalid" } as never)
+    await expect(pending).rejects.toThrow(/The phone reported: The certificate for this server is invalid/)
+  })
+
+  it("says so plainly when the platform gives no reason", async () => {
+    const socket = fakeSocket()
+    const pending = redeemPairingCode(payload, "iPhone", () => socket as unknown as WebSocket)
+    socket.onerror!({} as never)
+    await expect(pending).rejects.toThrow(/gave no reason/)
+  })
+
+  it("carries a close code and reason", async () => {
+    const socket = fakeSocket()
+    const pending = redeemPairingCode(payload, "iPhone", () => socket as unknown as WebSocket)
+    socket.onclose!({ code: 1006, reason: "abnormal closure" } as never)
+    await expect(pending).rejects.toThrow(/\(1006: abnormal closure\)/)
   })
 
   it("turns the machine's uniform refusal into what to do next", async () => {
