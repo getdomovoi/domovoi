@@ -1268,6 +1268,22 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       cannot; no new RPCs expected.
 - [ ] **S3.2 [CC]** Web: the six-step flow over loopback and the tailnet, with
       capability-refused real rather than drawn. Over the relay once Phase 2 lands.
+  - [x] Step 3, what a browser tab can and cannot do, measured against the browser rather
+        than drawn (ad121ceb, #471). Seen in a real browser 2026-09-17: headless Brave over
+        CDP against a daemon from `ad121ceb`, pairing, the panel and `Open project` all real.
+  - [ ] Step 6, Design review, unchecked: the shell is shared with the desktop, so it should
+        run over loopback with `parentOrigin` on the `:5178` allow-list, but a session needs a
+        signed-in provider, the sign-in is Keychain-bound to the real `HOME`, and the daemon
+        infers its profile from `HOME`. So the check either runs against the live profile or
+        not at all. fetzy chose not at all until the daemon takes a profile directory it is
+        told (`DOMOVOI_PROFILE_DIR`), which makes any such run reproducible by someone who is
+        not the user at their own machine. Ask 3 in
+        `~/.agents/plans/2026-09-17-domovoi-daemon-asks.md`, handed to Codex.
+  - [ ] Over the tailnet there is no web app to reach: vite serves loopback only. Decided
+        2026-09-17: the daemon serves the built web app under the certificate the phone
+        already trusts, as a separate artifact beside the daemon rather than compiled in, so a
+        web regression is not a daemon release. Ask 4 in the same file, after Phase 1's own
+        items. Steps 1 and 5 are relay states and wait on Phase 2.
 - [ ] **S3.3 [CC]** Mobile: 19 designed frames against nine existing screens. In order:
       pairing by camera first, which is in the not-built list and is the thing standing
       between a phone and a daemon; then the gate path end to end on a real device.
