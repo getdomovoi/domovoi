@@ -1297,13 +1297,16 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         text, order, roles and wiring against protocol fixtures. None of it has been seen
         on a device since the `S3.0` run; the WebView render, the bridge under the
         render's opaque origin, and the keyboard offset are `unverified` there.
-  - [ ] Frames 04, 13 and 14 wait on the protocol, not on the phone. Read-only terminal
-        attach and `session.send` carrying bytes; options with consequences in
-        `~/.agents/plans/2026-09-17-domovoi-phone-protocol-asks.md`, recommendation B for
-        attachments (images only, the annotation bound reused) and A for the terminal
-        (a watch method, after Phase 1). Three affordances the phone credential refuses
-        left the design instead (b6116b7e, #465): revert, take the shell, build on a
-        variant. A phone answers what a machine proposed.
+  - [x] Frames 13 and 14, attachments. Decided 2026-09-17 as images only, the annotation
+        bound reused (`~/.agents/plans/2026-09-17-domovoi-phone-protocol-asks.md`);
+        the bound went into the drawing first (22304e4d, #472); protocol half
+        `session.send.attachments` with `system.hello.sessionImageAttachments` (0c88e11a,
+        #474); phone half, picker and camera, queue of two, the size line, the daemon's
+        refusal shown as it states it (cac2e63d, #475). Not seen on a device.
+  - [ ] Frame 04 waits on `terminal.watch`, decided as option A after Phase 1's own items,
+        in the same file. Three affordances the phone credential refuses left the design
+        instead (b6116b7e, #465): revert, take the shell, build on a variant. A phone
+        answers what a machine proposed.
 - [ ] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
       tailnet a closed app cannot be woken. Two options, consequences stated, no choice made:
       (a) the product says plainly that you open the app to see a waiting gate; the phone is a
