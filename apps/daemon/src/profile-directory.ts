@@ -2,6 +2,8 @@ import { realpathSync } from "node:fs"
 import { posix, resolve, win32 } from "node:path"
 
 // Strings retain the existing home-based API; an explicit profile is never HOME.
+// Trade: a home string silently selects its default profile. New profile-aware
+// callers must pass the object form; audit callers when adding profile paths.
 export type ProfileLocation = string | { profileDirectory: string }
 
 export function profileLocation(home: string, directory?: string): ProfileLocation {
