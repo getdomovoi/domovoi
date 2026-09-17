@@ -10,7 +10,7 @@ import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
-import { approvalLead, sessionRows, type ApprovalLead, type SessionRow } from "../session-rows"
+import { approvalLead, sessionGroups, waitingCount, type ApprovalLead, type SessionGroup, type SessionRow } from "../session-rows"
 import { colors } from "../theme/tokens.generated"
 
 const dotColour: Record<SessionRow["dot"], string> = {
@@ -53,6 +53,19 @@ function ApprovalLeadCard({ lead, onOpen }: {
       </Text>
       <Text variant="note" className="mt-[5px] text-warn-dim">{lead.context}</Text>
     </PressableCard>
+  )
+}
+
+// A heading is a label and a count, the way the design draws it. The count is
+// the group's own size, so a heading never says more than the cards under it.
+function GroupHeading({ group }: { group: SessionGroup }) {
+  return (
+    <View className="mt-1 flex-row items-center px-1">
+      <Text className="flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint">
+        {group.label}
+      </Text>
+      <Text variant="machine" className="text-faint">{group.rows.length}</Text>
+    </View>
   )
 }
 
@@ -113,13 +126,19 @@ export function SessionsScreen({
   // last row is only readable if the scroller pads by what the bar reports.
   bottomInset: number
 }) {
-  const rows = sessionRows(snapshot)
+  const groups = sessionGroups(snapshot)
   const lead = approvalLead(snapshot, now)
+  const needed = waitingCount(snapshot)
   const running = snapshot.sessions.filter((session) => session.state === "active").length
   // The handoff says "none running" rather than "0 running". A zero reads as a
   // measurement that failed; the word reads as a fleet that is simply idle.
   const runningLabel = running === 0 ? "none running" : `${running} running`
-  const empty = rows.length === 0 && !lead
+  // Leads with how many want a person, because that is what the phone is for.
+  // Says nothing when nobody does: a zero here would read as a measurement.
+  const countLabel = machineCount === undefined
+    ? runningLabel
+    : `${machineCount} machine${machineCount === 1 ? "" : "s"} · ${runningLabel}`
+  const empty = groups.length === 0 && !lead
 
   return (
     <View className="flex-1 bg-background">
@@ -127,9 +146,7 @@ export function SessionsScreen({
         <View className="flex-1">
           <Text variant="heading">Sessions</Text>
           <Text variant="meta" className="mt-[3px]">
-            {machineCount === undefined
-              ? runningLabel
-              : `${machineCount} machine${machineCount === 1 ? "" : "s"} · ${runningLabel}`}
+            {needed > 0 ? `${needed} need you · ${countLabel}` : countLabel}
           </Text>
         </View>
         <Button title="Pause all" onPress={onPauseAll} />
@@ -168,7 +185,12 @@ export function SessionsScreen({
           </View>
         ) : null}
 
-        {rows.map((row) => <SessionCard key={row.id} row={row} onOpen={onOpenSession} />)}
+        {groups.map((group) => (
+          <View key={group.id} className="gap-[9px]">
+            <GroupHeading group={group} />
+            {group.rows.map((row) => <SessionCard key={row.id} row={row} onOpen={onOpenSession} />)}
+          </View>
+        ))}
       </PageScroller>
     </View>
   )
