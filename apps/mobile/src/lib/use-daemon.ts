@@ -24,6 +24,9 @@ export function useDaemon(
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | undefined>(undefined)
   const [status, setStatus] = useState<DaemonStatus>("closed")
   const [fault, setFault] = useState<ConnectionFault | undefined>(undefined)
+  // Only a hello that said true. Missing or false means this daemon strips
+  // the field and a text-only success would pass for an image delivery.
+  const [imageAttachments, setImageAttachments] = useState(false)
   const connection = useRef<DaemonConnection | undefined>(undefined)
   const attempt = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -63,6 +66,7 @@ export function useDaemon(
         // identity is pinned or a distrusted pin is recovered; it never
         // decides the connection.
         onHello: (next) => {
+          setImageAttachments(next.sessionImageAttachments === true)
           void reconcileRelayPin({
             store: openRelayPinStore(next.machine.id),
             machineId: next.machine.id,
@@ -74,7 +78,11 @@ export function useDaemon(
         onDelta: (delta: WorkspaceDelta) =>
           setSnapshot((current) => current ? applyWorkspaceDelta(current, delta) : current),
         onFleet: (entries) => fleetSink.current(entries),
-        onStatus: setStatus,
+        onStatus: (next) => {
+          // A closed or reconnecting connection has not said what it can do.
+          if (next !== "open") setImageAttachments(false)
+          setStatus(next)
+        },
         onError: (cause) => {
           const next = connectionFault(cause)
           setFault(next)
@@ -141,5 +149,5 @@ export function useDaemon(
   // still wrong however many times it is asked.
   const reconnect = useCallback(() => reopen.current?.(), [])
 
-  return { snapshot, status, fault, call, refresh, reconnect }
+  return { snapshot, status, fault, call, refresh, reconnect, imageAttachments }
 }

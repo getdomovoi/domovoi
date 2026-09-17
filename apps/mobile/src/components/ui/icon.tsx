@@ -1,10 +1,12 @@
 import ArrowUp from "lucide-react-native/icons/arrow-up"
 import Ban from "lucide-react-native/icons/ban"
+import Camera from "lucide-react-native/icons/camera"
 import Check from "lucide-react-native/icons/check"
 import ChevronLeft from "lucide-react-native/icons/chevron-left"
 import ChevronRight from "lucide-react-native/icons/chevron-right"
 import ChevronUp from "lucide-react-native/icons/chevron-up"
 import Eye from "lucide-react-native/icons/eye"
+import Image from "lucide-react-native/icons/image"
 import Layers from "lucide-react-native/icons/layers"
 import ListChecks from "lucide-react-native/icons/list-checks"
 import Pencil from "lucide-react-native/icons/pencil"
@@ -14,6 +16,7 @@ import RotateCw from "lucide-react-native/icons/rotate-cw"
 import Server from "lucide-react-native/icons/server"
 import Settings from "lucide-react-native/icons/settings"
 import Unplug from "lucide-react-native/icons/unplug"
+import X from "lucide-react-native/icons/x"
 
 import { colors } from "../../theme/tokens.generated"
 
@@ -24,11 +27,13 @@ import { colors } from "../../theme/tokens.generated"
 const glyphs = {
   "arrow-up": ArrowUp,
   ban: Ban,
+  camera: Camera,
   check: Check,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
   "chevron-up": ChevronUp,
   eye: Eye,
+  image: Image,
   layers: Layers,
   "list-checks": ListChecks,
   pencil: Pencil,
@@ -38,6 +43,7 @@ const glyphs = {
   server: Server,
   settings: Settings,
   unplug: Unplug,
+  x: X,
 }
 
 export type IconName = keyof typeof glyphs

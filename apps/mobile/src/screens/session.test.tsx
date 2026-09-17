@@ -40,6 +40,14 @@ async function draw(overrides: Partial<Parameters<typeof SessionScreen>[0]> = {}
     onEditStep: jest.fn<(stepId: string, text: string) => Promise<void>>(async () => {}),
     planPinned: false,
     onPinPlan: jest.fn<(pinned: boolean) => void>(),
+    machine: "mac-mini-m4",
+    attachments: [],
+    attachmentSummary: undefined,
+    attachmentsAllowed: true,
+    attachProblem: "",
+    onPickLibrary: jest.fn<() => void>(),
+    onTakePhoto: jest.fn<() => void>(),
+    onRemoveAttachment: jest.fn<(index: number) => void>(),
     ...overrides,
   }
   await render(

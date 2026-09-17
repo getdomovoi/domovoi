@@ -22,6 +22,13 @@
           "microphonePermission": false,
           "recordAudioAndroid": false
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Domovoi sends a photo you choose to the machine with your next message. It is not kept on this phone.",
+          "cameraPermission": "Domovoi sends a photo you take to the machine with your next message. It is not kept on this phone."
+        }
       ]
     ]
   }

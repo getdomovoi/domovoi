@@ -1,5 +1,6 @@
 import { Pressable, TextInput, View } from "react-native"
 
+import type { Attachment } from "../attachments"
 import { cn } from "../lib/cn"
 import { FloatingBar } from "./floating-bar"
 import { colors } from "../theme/tokens.generated"
@@ -13,9 +14,14 @@ export function Composer({
   sending,
   problem,
   skillLabel,
+  attachments,
+  attachmentSummary,
+  attachmentsAllowed,
   onChangeDraft,
   onSend,
   onOpenSkills,
+  onOpenAttach,
+  onRemoveAttachment,
   onFootprint,
 }: {
   draft: string
@@ -26,14 +32,26 @@ export function Composer({
   sending: boolean
   problem: string
   skillLabel: string
+  // Frame 14: what the turn will carry, each removable, with the size line
+  // under them saying where the bytes go and the bound they were held to.
+  attachments: readonly Attachment[]
+  attachmentSummary: string | undefined
+  // False when the daemon's hello did not say it takes images. The plus is
+  // absent then rather than present and refusing.
+  attachmentsAllowed: boolean
   onChangeDraft: (draft: string) => void
   onSend: () => void
   onOpenSkills: () => void
+  onOpenAttach: () => void
+  onRemoveAttachment: (index: number) => void
   // The thread scrolls underneath the composer, so it has to be told what the
   // composer covers or the newest turn is unreadable.
   onFootprint?: (footprint: number) => void
 }) {
   const blocked = !readiness.can
+  // The daemon takes images beside a prompt, never instead of one: an image
+  // with no words is a turn that says nothing about what it is for.
+  const wordless = attachments.length > 0 && draft.trim().length === 0
   const canSend = readiness.can && !sending && draft.trim().length > 0
 
   return (
@@ -60,7 +78,41 @@ export function Composer({
         </Pressable>
       ) : null}
 
+      {attachments.length > 0 ? (
+        <View className="gap-1.5">
+          {attachments.map((attachment, index) => (
+            <View key={`${index}-${attachment.name}`} className="flex-row items-center gap-2 rounded-lg border border-border bg-code px-2.5 py-1.5">
+              <Icon name="image" tone="primary" size={14} />
+              <Text variant="machine" className="flex-1 text-strong" numberOfLines={1}>{attachment.name}</Text>
+              <Text variant="machine" className="text-faint">{`${(attachment.bytes / 1_000_000).toFixed(1)} MB`}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${attachment.name}`}
+                onPress={() => onRemoveAttachment(index)}
+                disabled={sending}
+                className="min-h-[28px] min-w-[28px] items-center justify-center active:opacity-70"
+              >
+                <Icon name="x" tone="faint" size={14} />
+              </Pressable>
+            </View>
+          ))}
+          {attachmentSummary ? <Text variant="note">{attachmentSummary}</Text> : null}
+          {wordless ? <Text variant="note" className="text-warning">Say what the image is for; a turn needs words.</Text> : null}
+        </View>
+      ) : null}
+
       <View className="flex-row items-end gap-2.5">
+        {!blocked && attachmentsAllowed ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Attach an image"
+            onPress={onOpenAttach}
+            disabled={sending}
+            className="min-h-tap min-w-tap items-center justify-center rounded-full active:opacity-70"
+          >
+            <Icon name="plus" tone="muted" size={18} />
+          </Pressable>
+        ) : null}
         <TextInput
           multiline
           editable={!blocked && !sending}
