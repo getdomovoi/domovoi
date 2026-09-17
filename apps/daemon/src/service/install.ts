@@ -8,12 +8,14 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { claimProfile, type ProfileLease } from "../profile-lease.js"
 import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
 import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
-import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
+import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
 import { readWindowsTaskState, removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
+import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 
 const serviceName = "domovoid"
 const unitFile = `${serviceName}.service`
@@ -50,7 +52,8 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
   claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
-  claimProfile: (homeDirectory: string) => ProfileLease
+  claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
+  registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
   removalSnapshot: typeof readServiceRemovalSnapshot
   writeRemovalReceipt: typeof writeLocalOwnerRemovalReceipt
   write: (path: string, contents: string, deadline: OperationDeadline) => Promise<void>
@@ -163,8 +166,8 @@ export function servicePlan({
     path: serviceConfigurationPath(configuration.homeDirectory, platform),
     contents: serializeServiceConfiguration(configuration),
   }
-  // The configured home owns both the unit and daemon state. It cannot be
-  // overridden by another field in the install target.
+  // The configured home owns the per-user registration. The daemon profile
+  // is explicit saved configuration, not a replacement provider HOME.
   if (home !== configuration.homeDirectory) throw new Error("The service configuration must belong to the installing user home")
   const serviceArgs = ["--service-config", configurationFile.path]
   const program = runtime === undefined ? execPath : runtime
@@ -314,16 +317,20 @@ async function serviceOperation<T>(effects: Pick<ServiceEffects, "claimServiceOp
 // with a unit or configuration that is not there.
 async function installWithDeadline(
   target: ServiceTarget,
-  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove">,
+  effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "registeredProfile">,
   deadline: OperationDeadline,
 ): Promise<ServicePlan> {
   // Reinstalling is a new supervisor decision, not reuse of an old recovery
   // authorization. Assign the identity here, even if the caller supplied one.
   const plan = servicePlan({ ...target, configuration: { ...target.configuration, registrationId: randomUUID() } })
   deadline.throwIfExpired()
-  const lease = effects.claimProfile(target.configuration.homeDirectory)
+  const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
+  const previous = effects.registeredProfile?.(target.configuration.homeDirectory, target.platform)
+  const leases: ProfileLease[] = []
   try {
-    await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(target.configuration.homeDirectory), deadline))
+    if (previous && !sameProfileDirectory(previous, profile)) leases.push(effects.claimProfile(previous))
+    leases.push(effects.claimProfile(profile))
+    await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
     await withinServiceDeadline(deadline, () => effects.write(plan.configuration.path, plan.configuration.contents, deadline))
     if (plan.kind === "file") await withinServiceDeadline(deadline, () => effects.write(plan.path, plan.contents, deadline))
     deadline.throwIfExpired()
@@ -331,13 +338,13 @@ async function installWithDeadline(
     // Timed-out filesystem work may still settle. Retain the lease until this
     // CLI process exits in that case. Otherwise the saved service config now
     // prevents Desktop fallback, so release before asking the manager to start.
-    if (!deadline.signal.aborted) lease.release()
+    if (!deadline.signal.aborted) for (const lease of leases) lease.release()
   }
   for (const { command, args } of plan.commands) await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
   return plan
 }
 
-export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "claimServiceOperation">): Promise<ServicePlan> {
+export function installService(target: ServiceTarget, effects: Pick<ServiceEffects, "write" | "run" | "claimProfile" | "remove" | "claimServiceOperation" | "registeredProfile">): Promise<ServicePlan> {
   return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline))
 }
 
@@ -383,7 +390,8 @@ async function removeWithDeadline(
     }
   }
   deadline.throwIfExpired()
-  const lease = effects.claimProfile(home)
+  const profile = profileLocation(home, before.profileDirectory)
+  const lease = effects.claimProfile(profile)
   try {
     const recovery = serviceRemovalRecovery(before, effects.removalSnapshot(home, target.platform), managerStopped)
     const files = [
@@ -396,7 +404,7 @@ async function removeWithDeadline(
       }
     }
     deadline.throwIfExpired()
-    if (recovery.kind === "receipt") effects.writeRemovalReceipt(home, lease, serviceRemovalReceipt(recovery, target.platform), deadline)
+    if (recovery.kind === "receipt") effects.writeRemovalReceipt(profile, lease, serviceRemovalReceipt(recovery, target.platform), deadline)
     return {
       ...plan,
       profileRecovery: recovery.kind === "receipt" ? "recorded" : recovery.kind,
@@ -591,6 +599,13 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     // The override isolates tests from the operator's actual service lock.
     claimServiceOperation: () => claimServiceOperation(options.userHomeDirectory ?? userInfo().homedir),
     claimProfile,
+    registeredProfile: (home, platform) => {
+      let text: string
+      try { text = readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
+      const saved = parseServiceConfiguration(text)
+      return profileLocation(saved.homeDirectory, saved.profileDirectory)
+    },
     removalSnapshot: readServiceRemovalSnapshot,
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
     supervisorStatus: async (home) => readGuestSupervisorStatus(home),

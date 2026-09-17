@@ -178,6 +178,7 @@ import type { ProviderDetection, ProviderProbe } from "./providers.js"
 import { SkillInstallError, SkillSourceError } from "./skill-install.js"
 import type { SkillReviews } from "./skill-reviews.js"
 import { skillTrustPath as defaultSkillTrustPath } from "./skill-signing.js"
+import { configuredProfileDirectory } from "./profile-directory.js"
 import { FileSkillCatalog, SkillNotFoundError, skillRoots, type SkillCatalog } from "./skills.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -877,6 +878,7 @@ export type DaemonServerOptions = {
   skillCatalog?: SkillCatalog
   skillReviews?: SkillReviews
   skillTrustPath?: string
+  profileDirectory?: string
   errorSink?: DaemonErrorSink
   auditLog?: AuditLog
   artifactWatcherFactory?: SessionArtifactWatcherFactory
@@ -1013,6 +1015,7 @@ export class DomovoiDaemon {
   #skillCatalog: SkillCatalog | undefined
   #skillReviews: SkillReviews | undefined
   #skillTrustPath: string
+  #profileDirectory: string
   #fileSkillCatalog: { projectPath: string | undefined; catalog: FileSkillCatalog } | undefined
   #workspaceAbort = new AbortController()
   #emergencyBlockedThreads = new Set<string>()
@@ -1158,7 +1161,8 @@ export class DomovoiDaemon {
       reachable: true,
       providers: [],
     })
-    const statePath = options.statePath ?? join(homedir(), ".domovoi", "state.sqlite")
+    this.#profileDirectory = configuredProfileDirectory(options.profileDirectory, homedir())
+    const statePath = options.statePath ?? join(this.#profileDirectory, "state.sqlite")
     // In-memory state has no directory to keep transfer packages beside, so
     // this daemon makes one. It owns that tree and removes it when it stops;
     // a temporary directory nobody reclaims is a leak on every run.
@@ -1238,7 +1242,7 @@ export class DomovoiDaemon {
       },
     )
     this.#workspaceService = options.workspaceService ?? new GitWorkspaceService(
-      options.worktreeRoot ?? join(homedir(), ".domovoi", "worktrees"),
+      options.worktreeRoot ?? join(this.#profileDirectory, "worktrees"),
     )
     this.#agentTimeoutMs = options.agentTimeoutMs ?? 30_000
     this.#authToken = authToken
@@ -1249,7 +1253,7 @@ export class DomovoiDaemon {
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
     this.#skillCatalog = options.skillCatalog
     this.#skillReviews = options.skillReviews ?? this.#store.skillReviews
-    this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath(homedir())
+    this.#skillTrustPath = options.skillTrustPath ?? defaultSkillTrustPath({ profileDirectory: this.#profileDirectory })
     this.#artifactWatcherFactory = options.artifactWatcherFactory
       ?? ((watcherOptions) => new ArtifactWatcher(watcherOptions))
     this.#unsubscribeAgents = this.#agents.entries().map(([provider, agent]) =>
@@ -3220,7 +3224,7 @@ export class DomovoiDaemon {
     if (!this.#fileSkillCatalog || this.#fileSkillCatalog.projectPath !== projectPath) {
       this.#fileSkillCatalog = {
         projectPath,
-        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath), this.#skillReviews, {
+        catalog: new FileSkillCatalog(skillRoots(homedir(), projectPath, this.#profileDirectory), this.#skillReviews, {
           trustPath: this.#skillTrustPath,
           report: (detail) => this.#errorSink({ context: "skill-trust", detail }),
         }),

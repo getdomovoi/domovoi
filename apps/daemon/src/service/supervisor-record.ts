@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "../profile-directory.js"
 import { randomUUID } from "node:crypto"
 import { lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
@@ -64,8 +65,8 @@ export function isCrash(exit: SupervisorExit | null): boolean {
   return exit?.kind === "crash" || exit?.kind === "launch-failed"
 }
 
-export const supervisorRecordPath = (home: string): string => join(home, ".domovoi", "supervisor.json")
-export const supervisorStopPath = (home: string): string => join(home, ".domovoi", "supervisor-stop.json")
+export const supervisorRecordPath = (home: ProfileLocation): string => join(profileDirectory(home), "supervisor.json")
+export const supervisorStopPath = (home: ProfileLocation): string => join(profileDirectory(home), "supervisor-stop.json")
 export const supervisorStopSchema = z.object({
   version: z.literal(1), supervisorId: z.uuid(), registrationId: z.uuid(), loop: guestProcessIdentitySchema,
 }).strict()
@@ -78,13 +79,13 @@ function assertPrivate(path: string, directory: boolean): void {
   }
 }
 
-export function prepareSupervisorDirectory(home: string): void {
-  const directory = join(home, ".domovoi")
+export function prepareSupervisorDirectory(home: ProfileLocation): void {
+  const directory = profileDirectory(home)
   mkdirSync(directory, { mode: 0o700, recursive: true })
   assertPrivate(directory, true)
 }
 
-function publish(home: string, path: string, value: unknown): void {
+function publish(home: ProfileLocation, path: string, value: unknown): void {
   const text = JSON.stringify(value) + "\n"
   if (Buffer.byteLength(text) > maximumRecordBytes) throw new Error("Supervisor record exceeds its byte limit")
   prepareSupervisorDirectory(home)
@@ -106,13 +107,13 @@ function publish(home: string, path: string, value: unknown): void {
   if (failure !== undefined) throw failure
 }
 
-export function writeSupervisorRecord(home: string, record: SupervisorRecord): void {
+export function writeSupervisorRecord(home: ProfileLocation, record: SupervisorRecord): void {
   publish(home, supervisorRecordPath(home), supervisorRecordSchema.parse(record))
 }
 
-export function readSupervisorRecord(home: string): SupervisorRecord | undefined {
+export function readSupervisorRecord(home: ProfileLocation): SupervisorRecord | undefined {
   try {
-    assertPrivate(join(home, ".domovoi"), true)
+    assertPrivate(profileDirectory(home), true)
     return supervisorRecordSchema.parse(JSON.parse(readLocalProfileFile(supervisorRecordPath(home), maximumRecordBytes)))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
@@ -121,12 +122,12 @@ export function readSupervisorRecord(home: string): SupervisorRecord | undefined
   }
 }
 
-export function writeSupervisorStopRequest(home: string, record: SupervisorRecord): void {
+export function writeSupervisorStopRequest(home: ProfileLocation, record: SupervisorRecord): void {
   publish(home, supervisorStopPath(home), supervisorStopSchema.parse({ version: 1,
     supervisorId: record.supervisorId, registrationId: record.registrationId, loop: record.loop }))
 }
 
-export function readSupervisorStopRequest(home: string): z.infer<typeof supervisorStopSchema> | undefined {
+export function readSupervisorStopRequest(home: ProfileLocation): z.infer<typeof supervisorStopSchema> | undefined {
   try { return supervisorStopSchema.parse(JSON.parse(readLocalProfileFile(supervisorStopPath(home), 4096))) }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined

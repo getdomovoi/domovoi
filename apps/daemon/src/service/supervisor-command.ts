@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import { lstatSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { profileDirectory, profileLocation, type ProfileLocation } from "../profile-directory.js"
 import { setTimeout as delay } from "node:timers/promises"
 
 import { claimExclusiveFileLease, type FileLease } from "../file-lease.js"
@@ -50,7 +51,7 @@ function assertRecordConfiguration(record: SupervisorRecord, configuration: Serv
 
 function boundRecord(path: string): SupervisorRecord | undefined {
   const configuration = configurationAt(path)
-  const record = readSupervisorRecord(configuration.homeDirectory)
+  const record = readSupervisorRecord(profileLocation(configuration.homeDirectory, configuration.profileDirectory))
   if (record) assertRecordConfiguration(record, configuration)
   return record
 }
@@ -65,9 +66,9 @@ function lastExit(record: SupervisorRecord): string {
 
 class GuestSupervisorBusyError extends Error {}
 
-function claimGuestSupervisorLease(home: string): FileLease {
+function claimGuestSupervisorLease(home: ProfileLocation): FileLease {
   prepareSupervisorDirectory(home)
-  const path = join(home, ".domovoi/supervisor-lease.sqlite")
+  const path = join(profileDirectory(home), "supervisor-lease.sqlite")
   try {
     const info = lstatSync(path)
     if (!info.isFile() || info.nlink !== 1 || (process.platform !== "win32"
@@ -90,13 +91,18 @@ async function releaseGuestSupervisorLease<T>(lease: FileLease, outcome: Promise
 }
 
 export function readGuestSupervisorStatus(home: string, alive = guestProcessAlive, bootId = guestBootId): ServiceStatus | undefined {
+  let configuration: ServiceConfiguration | undefined
+  try { configuration = configurationAt(join(home, ".domovoi/service.json")) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  const profile = profileLocation(home, configuration?.profileDirectory)
   let present = true
-  try { lstatSync(supervisorRecordPath(home)) } catch (error) {
+  try { lstatSync(supervisorRecordPath(profile)) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     present = false
   }
   if (!present) {
-    try { lstatSync(join(home, ".domovoi/supervisor-lease.sqlite")) } catch (error) {
+    try { lstatSync(join(profileDirectory(profile), "supervisor-lease.sqlite")) } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
       throw error
     }
@@ -106,11 +112,7 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
   // that evidence without declaring supervision absent or querying systemd.
   // Only a missing configuration is tolerated; malformed or mismatched data
   // still refuses. Startup and shutdown continue to require the binding.
-  let configuration: ServiceConfiguration | undefined
-  try { configuration = configurationAt(join(home, ".domovoi/service.json")) } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-  }
-  const record = readSupervisorRecord(home)
+  const record = readSupervisorRecord(profile)
   if (!record) throw new Error("Supervisor record disappeared during status")
   if (configuration) assertRecordConfiguration(record, configuration)
   const loopAlive = alive(record.loop)
@@ -141,7 +143,7 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
   const configuration = configurationAt(path)
   const initial = boundRecord(path)
   if (!initial) throw new Error("Supervisor shutdown requires its recorded identity")
-  writeSupervisorStopRequest(configuration.homeDirectory, initial)
+  writeSupervisorStopRequest(profileLocation(configuration.homeDirectory, configuration.profileDirectory), initial)
   const proof = (): SupervisorRecord | undefined => {
     const current = boundRecord(path)
     if (!current || current.supervisorId !== initial.supervisorId || !sameProcess(current.loop, initial.loop)) {
@@ -157,7 +159,7 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
     deadline.throwIfExpired()
     if (proof() !== undefined) {
       let lease: FileLease | undefined
-      try { lease = claimGuestSupervisorLease(configuration.homeDirectory) } catch (error) {
+      try { lease = claimGuestSupervisorLease(profileLocation(configuration.homeDirectory, configuration.profileDirectory)) } catch (error) {
         if (!(error instanceof GuestSupervisorBusyError)) throw error
       }
       if (lease) {
@@ -176,7 +178,7 @@ export async function stopGuestSupervisor(path: string, deadline: OperationDeadl
 export async function runGuestSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<SupervisorRecord> {
   if (process.platform !== "linux") throw new Error("The guest supervisor requires Linux process birth identities")
   const configuration = configurationAt(path)
-  const home = configuration.homeDirectory
+  const home = profileLocation(configuration.homeDirectory, configuration.profileDirectory)
   const lease = claimGuestSupervisorLease(home)
   const controller = new AbortController()
   const stop = () => controller.abort()
@@ -208,7 +210,7 @@ export async function runGuestSupervisor(path: string, entry: { executable: stri
       configurationDigest: supervisorConfigurationDigest(configuration), signal: controller.signal }, {
       now: () => new Date(),
       write: (record) => { writeSupervisorRecord(home, record); latest = record },
-      launch: () => launchGuestChild(entry.executable, entry.args, { environment: { ...process.env, HOME: home } }),
+      launch: () => launchGuestChild(entry.executable, entry.args, { environment: { ...process.env, HOME: configuration.homeDirectory } }),
       wait: async (ms, signal) => { await delay(ms, undefined, { signal }) },
     })
     if (observationFailure !== undefined) {

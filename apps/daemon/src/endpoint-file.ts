@@ -1,8 +1,9 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 
 export type PublishEndpointInput = {
-  home: string
+  home: ProfileLocation
   host: string
   port: number
   token: string
@@ -14,12 +15,11 @@ export type PublishedEndpoint = {
   token: string
 }
 
-const directoryName = ".domovoi"
 const fileName = "endpoint.json"
 const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"])
 
-export function endpointFilePath(home: string): string {
-  return join(home, directoryName, fileName)
+export function endpointFilePath(home: ProfileLocation): string {
+  return join(profileDirectory(home), fileName)
 }
 
 // The endpoint file exists so a daemon on the other side of the WSL boundary can
@@ -34,7 +34,7 @@ export async function publishEndpointFile(input: PublishEndpointInput): Promise<
     throw new Error("an endpoint with no credential would authenticate nothing")
   }
 
-  const directory = join(input.home, directoryName)
+  const directory = profileDirectory(input.home)
   await mkdir(directory, { recursive: true })
   if (process.platform !== "win32") await chmod(directory, 0o700)
 
@@ -60,7 +60,7 @@ export async function publishEndpointFile(input: PublishEndpointInput): Promise<
 // there is nothing to take away, and a file holding someone else's endpoint is
 // left exactly where it is.
 export async function removeEndpointFile(
-  home: string,
+  home: ProfileLocation,
   published?: PublishedEndpoint,
 ): Promise<void> {
   if (!published) return

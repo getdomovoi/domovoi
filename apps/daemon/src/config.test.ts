@@ -64,6 +64,7 @@ describe("parseDaemonEnvironment", () => {
   })
   it("returns bounded local defaults", () => {
     expect(parseDaemonEnvironment({}, "/home/tester")).toEqual({
+      profileDirectory: join("/home/tester", ".domovoi"),
       host: "127.0.0.1",
       port: 47831,
       credentialPath: join("/home/tester", ".domovoi", "daemon.token"),

@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import { randomUUID } from "node:crypto"
 import { closeSync, constants, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
@@ -31,11 +32,11 @@ export const localOwnerRemovalReceiptSchema = z.object({
 export type LocalOwnerRemovalReceipt = z.infer<typeof localOwnerRemovalReceiptSchema>
 const maximumReceiptBytes = 4_096
 
-export function localOwnerRemovalReceiptPath(homeDirectory: string): string {
-  return join(homeDirectory, ".domovoi", "local-owner-removal.json")
+export function localOwnerRemovalReceiptPath(homeDirectory: ProfileLocation): string {
+  return join(profileDirectory(homeDirectory), "local-owner-removal.json")
 }
 
-export function readLocalOwnerRemovalReceipt(homeDirectory: string): LocalOwnerRemovalReceipt | undefined {
+export function readLocalOwnerRemovalReceipt(homeDirectory: ProfileLocation): LocalOwnerRemovalReceipt | undefined {
   const path = localOwnerRemovalReceiptPath(homeDirectory)
   try {
     return localOwnerRemovalReceiptSchema.parse(JSON.parse(readLocalProfileFile(path, maximumReceiptBytes)))
@@ -48,7 +49,7 @@ export function readLocalOwnerRemovalReceipt(homeDirectory: string): LocalOwnerR
 }
 
 export function writeLocalOwnerRemovalReceipt(
-  homeDirectory: string, lease: ProfileLease, receipt: LocalOwnerRemovalReceipt,
+  homeDirectory: ProfileLocation, lease: ProfileLease, receipt: LocalOwnerRemovalReceipt,
   deadline: OperationDeadline,
 ): void {
   deadline.throwIfExpired()
@@ -101,7 +102,7 @@ export function writeLocalOwnerRemovalReceipt(
 }
 
 export function retireRemovedLocalOwner(
-  homeDirectory: string, lease: ProfileLease, record: Exclude<LocalOwnerRecord, { state: "none" }>,
+  homeDirectory: ProfileLocation, lease: ProfileLease, record: Exclude<LocalOwnerRecord, { state: "none" }>,
   deadline: OperationDeadline,
 ): boolean {
   deadline.throwIfExpired()

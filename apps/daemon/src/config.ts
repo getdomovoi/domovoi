@@ -4,6 +4,7 @@ import { credentialSchema } from "@getdomovoi/protocol"
 import { relayIdentityPublicKeyIsValid } from "@getdomovoi/protocol/relay-admission"
 
 import { configuredSshTunnelsSchema, isLoopbackHost, maximumSshConfigurationBytes, tailnetHostSchema, type ConfiguredSshTunnel } from "./transport-config.js"
+import { configuredProfileDirectory } from "./profile-directory.js"
 
 export type DaemonEnvironment = Readonly<Record<string, string | undefined>>
 
@@ -13,6 +14,7 @@ export type DaemonTlsMaterial = {
 }
 
 export type DaemonEnvironmentConfig = {
+  profileDirectory?: string
   host: string
   port: number
   tls?: DaemonTlsMaterial
@@ -41,6 +43,7 @@ export function parseDaemonEnvironment(
   environment: DaemonEnvironment,
   homeDirectory: string,
 ): DaemonEnvironmentConfig {
+  const profileDirectory = configuredProfileDirectory(environment.DOMOVOI_PROFILE_DIR, homeDirectory)
   const host = parseHost(environment.DOMOVOI_HOST)
   const port = parsePort(environment.DOMOVOI_PORT)
   const allowRemoteTransport = parseRemoteTransport(environment.DOMOVOI_ALLOW_REMOTE_TRANSPORT)
@@ -62,11 +65,12 @@ export function parseDaemonEnvironment(
   const credentialPath = parseCredentialPath(
     environment.DOMOVOI_CREDENTIAL_PATH,
     homeDirectory,
+    profileDirectory,
   )
   const machineIdentityPath = parseStatePath(
     environment.DOMOVOI_MACHINE_IDENTITY_PATH,
     "DOMOVOI_MACHINE_IDENTITY_PATH",
-    join(homeDirectory, ".domovoi", "machine.json"),
+    join(profileDirectory, "machine.json"),
   )
   const advertiseHost = environment.DOMOVOI_ADVERTISE_HOST === undefined
     ? undefined
@@ -88,6 +92,7 @@ export function parseDaemonEnvironment(
   }
 
   return {
+    profileDirectory,
     host,
     port,
     ...(tls ? { tls } : {}),
@@ -159,11 +164,11 @@ function parseTlsMaterial(
   }
 }
 
-function parseCredentialPath(value: string | undefined, homeDirectory: string): string {
+function parseCredentialPath(value: string | undefined, homeDirectory: string, profile = join(homeDirectory, ".domovoi")): string {
   return parseStatePath(
     value,
     "DOMOVOI_CREDENTIAL_PATH",
-    join(homeDirectory, ".domovoi", "daemon.token"),
+    join(profile, "daemon.token"),
   )
 }
 

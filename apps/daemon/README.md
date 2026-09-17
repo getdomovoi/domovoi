@@ -40,6 +40,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | --- | --- |
 | `DOMOVOI_HOST` | Listener host |
 | `DOMOVOI_PORT` | Listener port; `0` selects an ephemeral port published in the owner record |
+| `DOMOVOI_PROFILE_DIR` | Absolute profile directory, default `~/.domovoi` |
 | `DOMOVOI_AUTH_TOKEN` | Bearer token required by RPC requests |
 | `DOMOVOI_CREDENTIAL_PATH` | Generated daemon credential file path |
 | `DOMOVOI_MACHINE_IDENTITY_PATH` | Stable machine identity file path |
@@ -52,13 +53,28 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
-reuses a high-entropy credential at `~/.domovoi/daemon.token`. On POSIX, private state files are
+reuses a high-entropy credential at `<profile>/daemon.token`. On POSIX, private state files are
 `0600` inside a `0700` state directory and permissive files are repaired on startup. On Windows,
-state lives under `.domovoi` in the user profile directory and no additional ACL restriction is
+the default profile is `.domovoi` in the user directory and no additional ACL restriction is
 applied yet. Remote
 listeners also require `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and
 `DOMOVOI_TLS_KEY_PATH`, which must be set together. The daemon terminates TLS itself and refuses
 to start a plaintext non-loopback listener.
+
+`DOMOVOI_PROFILE_DIR` selects the state database, profile lease, owner records, credentials,
+machine identity, logs, worktrees, Domovoi user skills and trust, update state, and endpoint
+publication together. It must be an absolute path without NUL or line breaks, at most 4096
+characters. Existing profiles are not migrated. Explicit `DOMOVOI_CREDENTIAL_PATH` and
+`DOMOVOI_MACHINE_IDENTITY_PATH` still override their individual files.
+
+Provider CLIs retain the real `HOME` and existing sign-ins. A profile isolates Domovoi state,
+not provider accounts or provider-global configuration. For a separate local run, set
+`DOMOVOI_PROFILE_DIR=/absolute/scratch/profile DOMOVOI_PORT=0` before starting the daemon.
+Choose a different port or `0` for each concurrent daemon; profile selection does not allocate
+a fixed port. The per-user service registration and service-operation lock stay outside the
+selected profile; see [service configuration](../../docs/daemon-services.md).
+Windows-to-WSL automatic discovery still selects the distro's default profile; custom guest
+profiles require an explicitly configured connection instead of that discovery path.
 
 The bearer token protects RPC access. Health checks remain public. Preview documents require their
 own short-lived signed capabilities on every listener, loopback included; each capability is scoped
