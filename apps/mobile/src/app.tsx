@@ -16,6 +16,7 @@ import {
 
 import { artifactRows, findArtifact, previewVariants } from "./artifact-rows"
 import { artifactUrlFor } from "./artifact-url"
+import { previewChannel, previewParentOrigin, type PreviewSelection } from "./preview-bridge"
 import { connectionNotice } from "./connection-notice"
 import { ConfirmSheet } from "./components/confirm-sheet"
 import { ShellNotice } from "./components/shell-notice"
@@ -208,14 +209,20 @@ export function App() {
     setPreviewRender({ state: "pending" })
     void (async () => {
       try {
+        // The bridge is asked for with the grant: the daemon injects it into
+        // the render for this channel. The render's origin is opaque under
+        // its sandbox, so the parent it answers to is "null".
+        const channel = previewChannel()
         const access = artifactAuthorizeResultSchema.parse(await call("artifact.authorize", {
           sessionId: openPreviewSessionId,
           artifactId: openPreviewId,
           revision: openPreviewRevision,
           purpose: "preview",
+          bridgeChannel: channel,
+          parentOrigin: previewParentOrigin,
           client: clientKind,
         }))
-        if (current) setPreviewRender({ state: "ready", url: artifactUrlFor(url, access) })
+        if (current) setPreviewRender({ state: "ready", url: artifactUrlFor(url, access), channel })
       } catch (cause) {
         if (current) setPreviewRender({ state: "failed", reason: cause instanceof Error ? cause.message : "The daemon refused the grant" })
       }
@@ -356,6 +363,22 @@ export function App() {
     })
   }
 
+  // A comment on a render is a reference to an element, coordinates plus
+  // text. The daemon answers with the snapshot that carries it; the phone
+  // waits for that rather than drawing a comment it has not been given.
+  const commentOnElement = async (artifactId: string, anchor: PreviewSelection["anchor"], body: string) => {
+    const artifact = snapshot ? findArtifact(snapshot, artifactId) : undefined
+    if (!artifact) return
+    await call("annotation.create", {
+      sessionId: artifact.sessionId,
+      artifactId,
+      ...(artifact.variant ? { variantId: artifact.variant.id } : {}),
+      anchor,
+      body,
+      client: clientKind,
+    })
+  }
+
   const pauseSession = async (sessionId: string) => {
     setPausing(true)
     try {
@@ -456,6 +479,7 @@ export function App() {
             variants={openVariants}
             onBack={() => setOpenArtifactId(undefined)}
             onOpenVariant={setOpenArtifactId}
+            onComment={(anchor, body) => commentOnElement(openArtifact.id, anchor, body)}
           />
         </SafeAreaView>
       </SafeAreaProvider>

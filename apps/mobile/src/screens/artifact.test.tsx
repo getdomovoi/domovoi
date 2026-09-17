@@ -11,11 +11,24 @@ jest.mock("react-native-webview", () => {
   return {
     // The host view has no `source`; it is carried as an extra prop so the
     // test can read what the frame was handed.
-    WebView: (props: { testID: string, source: { uri: string } }) => <Host testID={props.testID} {...{ source: props.source }} />,
+    WebView: (props: { testID: string, source: { uri: string }, onMessage?: (event: { nativeEvent: { data: string } }) => void }) =>
+      <Host testID={props.testID} {...{ source: props.source, onMessage: props.onMessage }} />,
   }
 })
 
 type Artifact = WorkspaceSnapshot["artifacts"][number]
+
+const channel = "channel-0123456789abcdef"
+
+function selection(artifactId: string) {
+  return JSON.stringify({
+    type: "domovoi.preview.selection",
+    channel,
+    artifactId,
+    anchor: { cssSelector: "main > div:nth-of-type(3)", textQuote: "retried after 15m", bbox: { x: 12, y: 340, width: 300, height: 56 } },
+    label: "div · retried after 15m",
+  })
+}
 
 function preview(): Artifact {
   const found = structuredClone(demoWorkspace).artifacts.find((artifact) => artifact.type === "preview")
@@ -31,6 +44,7 @@ async function draw(overrides: Partial<Parameters<typeof ArtifactScreen>[0]> = {
     variants: [],
     onBack: jest.fn<() => void>(),
     onOpenVariant: jest.fn<(artifactId: string) => void>(),
+    onComment: jest.fn<(anchor: object, body: string) => Promise<void>>(async () => {}),
     ...overrides,
   }
   await render(<ArtifactScreen {...props} />)
@@ -39,7 +53,7 @@ async function draw(overrides: Partial<Parameters<typeof ArtifactScreen>[0]> = {
 
 describe("ArtifactScreen preview", () => {
   it("shows the render from the machine and says it stays there", async () => {
-    await draw({ render: { state: "ready", url: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s" } })
+    await draw({ render: { state: "ready", url: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s", channel } })
 
     const frame = screen.getByTestId("preview-render")
     expect(frame.props.source).toEqual({ uri: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s" })
@@ -61,7 +75,7 @@ describe("ArtifactScreen preview", () => {
     mine.variant = { id: "a", groupId: "g", label: "A", order: 0 }
     const props = await draw({
       artifact: mine,
-      render: { state: "ready", url: "https://x/y" },
+      render: { state: "ready", url: "https://x/y", channel },
       variants: [
         { id: mine.id, label: "A" },
         { id: "artifact-preview-b", label: "B" },
@@ -73,5 +87,46 @@ describe("ArtifactScreen preview", () => {
 
     expect(props.onOpenVariant).toHaveBeenCalledWith("artifact-preview-b")
     expect(screen.getByRole("button", { name: "Variant A" }).props.accessibilityState).toEqual({ selected: true })
+  })
+
+})
+
+describe("ArtifactScreen comment on an element", () => {
+  it("anchors a comment to the element the person tapped and sends it as a reference", async () => {
+    const props = await draw({ render: { state: "ready", url: "https://x/y", channel } })
+
+    await fireEvent.press(screen.getByRole("button", { name: "Comment" }))
+    expect(screen.getByText("Tap the element in the render you want to comment on.")).toBeOnTheScreen()
+
+    await fireEvent(screen.getByTestId("preview-render"), "message", { nativeEvent: { data: selection(props.artifact.id) } })
+    expect(screen.getByText("ANCHORED TO")).toBeOnTheScreen()
+    expect(screen.getByText("div · retried after 15m")).toBeOnTheScreen()
+    expect(screen.getByText(/Sent as a reference to that element/)).toBeOnTheScreen()
+
+    await fireEvent.changeText(screen.getByLabelText("Comment on this element"), "Fifteen minutes is too long.")
+    await fireEvent.press(screen.getByRole("button", { name: "Send to the agent" }))
+
+    expect(props.onComment).toHaveBeenCalledWith(
+      { cssSelector: "main > div:nth-of-type(3)", textQuote: "retried after 15m", bbox: { x: 12, y: 340, width: 300, height: 56 } },
+      "Fifteen minutes is too long.",
+    )
+    expect(screen.queryByText("ANCHORED TO")).toBeNull()
+  })
+
+  it("ignores a selection for another render and will not send an empty comment", async () => {
+    const props = await draw({ render: { state: "ready", url: "https://x/y", channel } })
+
+    await fireEvent.press(screen.getByRole("button", { name: "Comment" }))
+    await fireEvent(screen.getByTestId("preview-render"), "message", { nativeEvent: { data: selection("artifact-other") } })
+    expect(screen.queryByText("ANCHORED TO")).toBeNull()
+
+    await fireEvent(screen.getByTestId("preview-render"), "message", { nativeEvent: { data: selection(props.artifact.id) } })
+    await fireEvent.press(screen.getByRole("button", { name: "Send to the agent" }))
+    expect(props.onComment).not.toHaveBeenCalled()
+  })
+
+  it("offers no comment while the render is not on screen", async () => {
+    await draw({ render: { state: "pending" } })
+    expect(screen.queryByRole("button", { name: "Comment" })).toBeNull()
   })
 })
