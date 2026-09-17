@@ -9,7 +9,6 @@ import {
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
 import { Switch } from "./components/ui/switch"
-import { FloatingSurface } from "./floating-surface"
 import { autoIsOffered, permissionModeLabel, permissionModes, withAuto, withPermissionMode } from "./permission-mode"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { cn } from "./lib/utils"
@@ -34,31 +33,35 @@ export function ModeChip({
   const label = permissionModeLabel(runtime.permissionMode, runtime.auto)
   const autoOffered = autoIsOffered(runtime.permissionMode)
 
+  // Not modal: this is a surface beside the composer, not a dialog. Modal is
+  // the Radix default and it marks the rest of the page aria-hidden, which
+  // takes the composer and the chip itself out of the accessibility tree while
+  // the list is open.
   return (
-    <div className="relative flex">
-      <button
-        ref={trigger}
-        type="button"
-        aria-label={`Mode: ${label}`}
-        aria-expanded={open}
-        disabled={pending}
-        onClick={() => setOpen((value) => !value)}
-        className={cn(
-          "flex items-center gap-1.5 rounded-full px-2.5 py-[5px] text-[11px] font-medium",
-          open ? "bg-accent" : "bg-muted/60",
-          "disabled:cursor-not-allowed disabled:opacity-45",
-        )}
-      >
-        <StatusDot meaning={current.meaning as StatusMeaning} label={label} size="inline" />
-        <ChevronDownIcon className={cn("size-3 text-faint transition-transform", open && "rotate-180")} />
-      </button>
-      <FloatingSurface
-        open={open}
-        onClose={() => setOpen(false)}
-        label="Mode for the next turn"
-        trigger={trigger}
-        className="bottom-[calc(100%+8px)] top-auto w-[300px] p-0"
-      >
+    <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          ref={trigger}
+          type="button"
+          aria-label={`Mode: ${label}`}
+          disabled={pending}
+          className={cn(
+            "flex items-center gap-1.5 rounded-full px-2.5 py-[5px] text-[11px] font-medium",
+            open ? "bg-accent" : "bg-muted/60",
+            "disabled:cursor-not-allowed disabled:opacity-45",
+          )}
+        >
+          <StatusDot meaning={current.meaning as StatusMeaning} label={label} size="inline" />
+          <ChevronDownIcon className={cn("size-3 text-faint transition-transform", open && "rotate-180")} />
+        </button>
+      </DropdownMenuTrigger>
+      {/* This list sits at the bottom of the composer and opens upward. It used
+          FloatingSurface, which positions absolutely and was cut off by an
+          ancestor, losing the first rows: Plan and Ask were unreachable on a
+          real screen while every test passed, because jsdom has no layout. The
+          effort chip beside it never had the problem, so this uses the same
+          portalled primitive it does. */}
+      <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[300px] p-0">
         <div className="border-b px-3 py-2 text-eyebrow font-medium tracking-[.13em] text-faint">MODE FOR THE NEXT TURN</div>
         <div role="listbox" aria-label="Permission modes">
           {permissionModes.map((mode) => {
@@ -93,7 +96,12 @@ export function ModeChip({
             )
           })}
         </div>
-        <label className={cn("flex items-center gap-3 border-t px-3 py-2.5", !autoOffered && "opacity-60")}>
+        {/* Toggling Auto must not close the list: it is a control on the same
+            surface, not a choice that ends the interaction. */}
+        <label
+          onClick={(event) => event.preventDefault()}
+          className={cn("flex items-center gap-3 border-t px-3 py-2.5", !autoOffered && "opacity-60")}
+        >
           <div className="min-w-0 flex-1">
             <div className={cn("text-[12.5px]", autoOffered ? "text-foreground" : "text-faint")}>{runtime.auto ? "Auto, on" : "Auto"}</div>
             <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">
@@ -110,8 +118,8 @@ export function ModeChip({
             onCheckedChange={(checked) => onSetRuntime(withAuto(runtime, checked))}
           />
         </label>
-      </FloatingSurface>
-    </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 

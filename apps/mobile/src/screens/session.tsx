@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { KeyboardAvoidingView, Platform, Pressable, View } from "react-native"
 
+import { AgentMarkdown } from "../components/agent-markdown"
 import { Composer } from "../components/composer"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
@@ -43,7 +44,7 @@ function Entry({ entry }: { entry: ThreadEntry }) {
         <View className="h-[22px] w-[22px] items-center justify-center rounded-md border border-border">
           <Text className="font-mono text-machine text-primary">◆</Text>
         </View>
-        <Text variant="body" className="flex-1 leading-[20px]">{entry.body}</Text>
+        <AgentMarkdown body={entry.body} className="flex-1" />
       </View>
     )
   }
