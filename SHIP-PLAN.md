@@ -1271,6 +1271,23 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
 - [ ] **S3.3 [CC]** Mobile: 19 designed frames against nine existing screens. In order:
       pairing by camera first, which is in the not-built list and is the thing standing
       between a phone and a daemon; then the gate path end to end on a real device.
+  - [x] Pairing by camera (3c2ae09c, #451; fe7968f9, #442) and the gate path on a real
+        device (`S3.0`, d14addde).
+  - [x] Sixteen of nineteen frames on `main` by 2026-09-17, one PR each, test-first: 01
+        grouped sessions (b26506d9), 03 receipt facts (9cb178ae), 15 plan edit (c50c37d2),
+        16 and 17 render fetched with a grant (37b3fa00), 18 comment on an element
+        (1469846a), 19 pinned plan (d5e75503, 55492e93), thread follows a reply
+        (d7139a4b), markdown (2e30deb5). "Built" here means what `jest-expo` proves:
+        text, order, roles and wiring against protocol fixtures. None of it has been seen
+        on a device since the `S3.0` run; the WebView render, the bridge under the
+        render's opaque origin, and the keyboard offset are `unverified` there.
+  - [ ] Frames 04, 13 and 14 wait on the protocol, not on the phone. Read-only terminal
+        attach and `session.send` carrying bytes; options with consequences in
+        `~/.agents/plans/2026-09-17-domovoi-phone-protocol-asks.md`, recommendation B for
+        attachments (images only, the annotation bound reused) and A for the terminal
+        (a watch method, after Phase 1). Three affordances the phone credential refuses
+        left the design instead (b6116b7e, #465): revert, take the shell, build on a
+        variant. A phone answers what a machine proposed.
 - [ ] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
       tailnet a closed app cannot be woken. Two options, consequences stated, no choice made:
       (a) the product says plainly that you open the app to see a waiting gate; the phone is a
