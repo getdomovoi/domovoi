@@ -132,3 +132,33 @@ describe("FloatingSurface", () => {
     expect(screen.queryByRole("group", { name: "Modes" })).toBeNull()
   })
 })
+
+// The surface opens upward from chips at the bottom of the composer. Rendered
+// in place it was clipped by an ancestor and lost its first rows, which is how
+// the mode list's Plan and Ask became unreachable on a real screen while this
+// suite stayed green: jsdom has no layout, so clipping is invisible here. What
+// a test can hold is the structural cause, that the surface leaves the subtree
+// it was opened from.
+it("renders outside the subtree that opened it, where no ancestor can clip it", async () => {
+  const user = userEvent.setup()
+  function Host() {
+    const [open, setOpen] = useState(false)
+    const trigger = useRef<HTMLButtonElement>(null)
+    return (
+      <div className="overflow-hidden">
+        <button ref={trigger} type="button" onClick={() => setOpen(true)}>Open</button>
+        <FloatingSurface open={open} onClose={() => setOpen(false)} label="Surface" trigger={trigger} placement="above">
+          <button type="button">First row</button>
+        </FloatingSurface>
+      </div>
+    )
+  }
+  const host = document.createElement("div")
+  document.body.appendChild(host)
+  render(<Host />, { container: host })
+
+  await user.click(screen.getByRole("button", { name: "Open" }))
+  const row = screen.getByRole("button", { name: "First row" })
+  expect(host.contains(row)).toBe(false)
+  expect(document.body.contains(row)).toBe(true)
+})
