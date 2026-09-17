@@ -653,41 +653,41 @@
             <span style="color: var(--muted-foreground);">{{ iImage }}</span>
             <div style="flex: 1; min-width: 0;">
               <div style="font-size: 14px; color: var(--foreground);">Photo or screenshot</div>
-              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">uploads to the machine, not stored here</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">up to 1.5 MB and 2048 px, uploaded to the machine and not stored here</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
             <span style="color: var(--muted-foreground);">{{ iCamera }}</span>
             <div style="flex: 1; min-width: 0;">
               <div style="font-size: 14px; color: var(--foreground);">Take a photo</div>
-              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">one shot, sent with the turn</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">one shot, sent with the turn, same bound</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
             <span style="color: var(--muted-foreground);">{{ iFile }}</span>
             <div style="flex: 1; min-width: 0;">
-              <div style="font-size: 14px; color: var(--foreground);">File from the worktree</div>
-              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">scoped to what this session changed</div>
+              <div style="font-size: 14px; color: var(--muted-foreground);">File from the worktree</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">desktop work: a phone holds no worktree to pick from</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
             <span style="color: var(--muted-foreground);">{{ iTerminal }}</span>
             <div style="flex: 1; min-width: 0;">
-              <div style="font-size: 14px; color: var(--foreground);">Terminal output</div>
-              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">select a range, byte count shown</div>
+              <div style="font-size: 14px; color: var(--muted-foreground);">Terminal output</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">waits on a read-only terminal path, which a phone does not have yet</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
             <span style="color: var(--muted-foreground);">{{ iGlobe }}</span>
             <div style="flex: 1; min-width: 0;">
-              <div style="font-size: 14px; color: var(--foreground);">A URL to fetch</div>
-              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px;">the machine fetches it, not the phone</div>
+              <div style="font-size: 14px; color: var(--muted-foreground);">A URL to fetch</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">not built: an outbound fetch on a phone's word needs its own gate line</div>
             </div>
           </div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Drawn, not built: session.send carries no bytes yet, so nothing here can reach a machine. Every source names where the bytes go, and nothing is stored on the phone.</div>
+      <div style="{{ captionStyle }}">Drawn, not built: session.send carries no bytes yet. Images are the settled scope, so the lower three sources are dimmed and say what each one waits on.</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -726,7 +726,7 @@
           </div>
           <div style="display: flex; align-items: center; gap: 8px;">
             <span style="{{ infoDot }}"></span>
-            <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">3.0 MB uploads to mac-mini-m4 when you send. It is not kept on this phone.</span>
+            <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground); line-height: 1.5;">2.3 MB uploads to mac-mini-m4 when you send, and is not kept on this phone. Images only, up to 1.5 MB and 2048 px each. Anything larger is refused rather than resized.</span>
           </div>
         </div>
         <div style="{{ keyboardStyle }}">
@@ -1266,16 +1266,9 @@ class Component extends DCLogic {
       })),
       kbShiftOn: st.kbShift,
       toggleShift: () => this.setState(s => ({ kbShift: !s.kbShift })),
-      attachSheetRows: [
-        { id: "photo", label: "Photo or screenshot", note: "uploads to the machine, not stored here" },
-        { id: "camera", label: "Take a photo", note: "one shot, sent with the turn" },
-        { id: "file", label: "File from the worktree", note: "scoped to what this session changed" },
-        { id: "term", label: "Terminal output", note: "select a range, byte count shown" },
-        { id: "url", label: "A URL for the agent to fetch", note: "the machine fetches it, not the phone" }
-      ],
       draftThumbs: [
         { n: "1", label: "before.png", size: "1.4 MB" },
-        { n: "2", label: "after.png", size: "1.6 MB" }
+        { n: "2", label: "after.png", size: "0.9 MB" }
       ],
       unpairedRows: [
         { label: "Sessions", text: "Nothing to list, and nothing hidden from you." },
