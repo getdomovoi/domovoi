@@ -177,9 +177,9 @@ Parallel with Phase 0. Touches nothing the gates decide.
       the per-user systemd unit, and on Windows a limited-user `ONLOGON` scheduled task
       registered by `service/install.ts`, with `windows-task.ts` for its status and removal.
       `docs/service-lifecycle-assessment.md` keeps the box open. WSL selection is wired
-      into `service install`; its new CLI native proof is pending. The guest-loop
-      restart/removal repairs passed native run 35268866928 at b36f4c9f, superseding
-      the failed task-managed restart assertion, not erasing it. Actual logon acceptance
+      into `service install`; its CLI proof and guest-loop restart/removal passed
+      native run 35275707927, attempt 2, at bf584079. This supersedes the failed
+      task-managed restart assertion, not erasing it. Actual logon acceptance
       remains open, as do the separate native Windows crash-supervision and Linux
       login/logout/boot policy decisions. Tick when the assessment says so.
 - [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses

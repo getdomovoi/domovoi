@@ -41,7 +41,7 @@ status and removal under a non-root guest user with an isolated profile. Their
 test and cleanup budgets share the existing service-phase deadline. Both use
 demand start, not an actual Windows user logon. The latter acceptance is still
 open. The CLI fixture grants its non-root user read/traverse access to the
-disposable guest's code-only artifact root; no host installation is changed.
+disposable guest's code-only Node and daemon artifact roots; no host installation is changed.
 
 Missing virtualization, a corrupt listing, a
 disappearing distro, a failed assertion or a missing report makes the job red.

@@ -23,7 +23,19 @@ WSL selection is now wired through `domovoid service install`, with the owned
 task's launch inputs saved in the guest registration. Status uses both task and
 guest evidence; removal proves guest shutdown before deleting the task or saved
 configuration. A second required native test invokes those production CLI paths
-with an isolated profile. Native acceptance of that new installer test is pending.
+under a non-root guest user with an isolated profile.
+[Native run 35275707927, attempt 2](https://github.com/getdomovoi/domovoi/actions/runs/35275707927/job/105387288362)
+at `bf5840790df72cd786334f1254108f70eae1958c` passed both required service
+tests with no skips: CLI installation/status/removal in 11,809 ms, and guest-loop
+restart/removal in 61,785 ms. The service phase took 76 seconds; the separate
+15 transport/repository proofs also passed. This is the installer acceptance
+record, not a substituted result from the older repair run.
+
+The first CLI fixture failed because its Node directory was root-only; the next
+reached successful CLI removal but used a guest executable path for its Windows
+cross-check. Both fixture defects were corrected before this accepted report.
+Attempt 1 of the accepted run failed an unchanged endpoint-rediscovery test before
+the service phase; attempt 2 passed on the same head without a transport change.
 The existing task fixture still supplies failed-launch, crash/backoff/exhaustion,
 clean-exit and live-child/backoff-removal evidence independently.
 
