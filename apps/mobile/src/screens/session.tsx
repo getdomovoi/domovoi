@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { KeyboardAvoidingView, Platform, Pressable, View } from "react-native"
+import { KeyboardAvoidingView, Platform, Pressable, TextInput, View } from "react-native"
 
 import { AgentMarkdown } from "../components/agent-markdown"
 import { Composer } from "../components/composer"
@@ -13,6 +13,7 @@ import { cn } from "../lib/cn"
 import type { ArtifactRow } from "../artifact-rows"
 import type { PlanRow, PlanSummary } from "../plan-rows"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
+import { colors } from "../theme/tokens.generated"
 
 // The handoff tints a step's mark with the state it is in rather than outlining
 // it, so a plan reads as a column of coloured marks at a glance.
@@ -61,37 +62,119 @@ function Entry({ entry }: { entry: ThreadEntry }) {
   )
 }
 
-function PlanCard({ plan }: { plan: PlanSummary }) {
+// One step rewritten in place. The editor holds the step it opened on, so
+// what is sent is the step's id and its new text, never a position that the
+// plan may have moved since.
+function StepEditor({ row, index, saving, onSave, onCancel }: {
+  row: PlanRow
+  index: number
+  saving: boolean
+  onSave: (text: string) => void
+  onCancel: () => void
+}) {
+  const [text, setText] = useState(row.text)
+  const usable = text.trim().length > 0
+  return (
+    <View className="gap-2 px-3 py-2.5">
+      <TextInput
+        multiline
+        autoFocus
+        editable={!saving}
+        value={text}
+        onChangeText={setText}
+        selectionColor={colors.dark.primary}
+        accessibilityLabel={`Step ${index + 1}`}
+        className="min-h-tap rounded-lg border border-border bg-code px-2.5 py-2 font-sans text-[12px] text-foreground"
+      />
+      <View className="flex-row justify-end gap-2">
+        <Button title="Cancel" onPress={onCancel} disabled={saving} />
+        <Button
+          title="Save step"
+          variant="primary"
+          onPress={() => { if (usable) onSave(text.trim()) }}
+          disabled={saving || !usable}
+        />
+      </View>
+    </View>
+  )
+}
+
+function PlanCard({ plan, onEditStep }: {
+  plan: PlanSummary
+  onEditStep: ((stepId: string, text: string) => Promise<void>) | undefined
+}) {
+  // Editing is a mode the person enters, so a tap on a step in the ordinary
+  // reading of the plan does nothing surprising.
+  const [editing, setEditing] = useState(false)
+  const [openStep, setOpenStep] = useState<string | undefined>(undefined)
+  const [saving, setSaving] = useState(false)
+  const save = async (stepId: string, text: string) => {
+    if (!onEditStep) return
+    setSaving(true)
+    try {
+      await onEditStep(stepId, text)
+      setOpenStep(undefined)
+      setEditing(false)
+    } finally {
+      setSaving(false)
+    }
+  }
   return (
     <Card flush>
       <View className="flex-row items-center gap-2 border-b border-border px-3 py-2.5">
-        <Text variant="section">Working plan</Text>
+        <Text variant="section" className="flex-1">Working plan</Text>
         <Text variant="machine">{plan.progress}</Text>
+        {plan.revised ? <Text variant="machine" className="text-faint">{plan.revised}</Text> : null}
       </View>
-      {plan.rows.map((row, index) => (
-        <View
-          key={row.id}
-          className={cn(
-            "flex-row items-start gap-2.5 px-3 py-2.5",
-            index > 0 && "border-t border-border",
-          )}
-        >
-          <View className={cn(
-            "mt-px h-[17px] w-[17px] items-center justify-center rounded-full",
-            markTone[row.tone],
-          )}>
-            {/* A finished step carries a tick, and neither loaded face has a
-                glyph for one, so the mark is drawn rather than typed. */}
-            {row.tone === "done"
-              ? <Icon name="check" tone="success" size={11} />
-              : <Text variant="machine" className={cn(markTone[row.tone])}>{row.mark}</Text>}
+      {plan.rows.map((row, index) => {
+        const body = (
+          <View className="flex-row items-start gap-2.5">
+            <View className={cn(
+              "mt-px h-[17px] w-[17px] items-center justify-center rounded-full",
+              markTone[row.tone],
+            )}>
+              {/* A finished step carries a tick, and neither loaded face has a
+                  glyph for one, so the mark is drawn rather than typed. */}
+              {row.tone === "done"
+                ? <Icon name="check" tone="success" size={11} />
+                : <Text variant="machine" className={cn(markTone[row.tone])}>{row.mark}</Text>}
+            </View>
+            <View className="flex-1">
+              <Text className={cn("text-[12px] leading-[17px]", textTone[row.tone])}>{row.text}</Text>
+              <Text variant="machine" className="mt-[3px] text-faint">{row.meta}</Text>
+            </View>
+            {editing ? <Icon name="pencil" tone="faint" size={13} /> : null}
           </View>
-          <View className="flex-1">
-            <Text className={cn("text-[12px] leading-[17px]", textTone[row.tone])}>{row.text}</Text>
-            <Text variant="machine" className="mt-[3px] text-faint">{row.meta}</Text>
+        )
+        if (openStep === row.id) {
+          return (
+            <View key={row.id} className={cn(index > 0 && "border-t border-border")}>
+              <StepEditor
+                row={row}
+                index={index}
+                saving={saving}
+                onSave={(text) => void save(row.id, text)}
+                onCancel={() => setOpenStep(undefined)}
+              />
+            </View>
+          )
+        }
+        return editing ? (
+          <Pressable
+            key={row.id}
+            accessibilityRole="button"
+            accessibilityLabel={`Edit step ${index + 1}: ${row.text}`}
+            onPress={() => setOpenStep(row.id)}
+            className={cn("px-3 py-2.5 active:opacity-70", index > 0 && "border-t border-border")}
+          >
+            {body}
+          </Pressable>
+        ) : (
+          <View key={row.id} className={cn("px-3 py-2.5", index > 0 && "border-t border-border")}>
+            {body}
           </View>
-        </View>
-      ))}
+        )
+      })}
       {plan.pendingEdit ? (
         <View className="border-t border-border px-3 py-2.5">
           <Text variant="note">
@@ -99,6 +182,21 @@ function PlanCard({ plan }: { plan: PlanSummary }) {
               ? "An edit to these steps is waiting for the agent to pick it up."
               : "An edit to these steps no longer matches the plan and needs redoing."}
           </Text>
+        </View>
+      ) : null}
+      {onEditStep ? (
+        <View className="gap-2 border-t border-border px-3 py-2.5">
+          {/* The plan is a document, and an edit says when it takes effect. */}
+          <Text variant="note">
+            Editing a step here applies at the next turn boundary, not to the turn in flight.
+          </Text>
+          <View className="flex-row">
+            <Button
+              title={editing ? "Done editing" : "Edit a step"}
+              onPress={() => { setEditing(!editing); setOpenStep(undefined) }}
+              disabled={saving}
+            />
+          </View>
         </View>
       ) : null}
     </Card>
@@ -149,6 +247,7 @@ function ArtifactList({
   )
 }
 
+
 export function SessionScreen({
   detail,
   artifacts,
@@ -165,6 +264,7 @@ export function SessionScreen({
   onChangeDraft,
   onSend,
   onOpenSkills,
+  onEditStep,
 }: {
   detail: SessionDetail
   artifacts: ArtifactRow[]
@@ -181,6 +281,9 @@ export function SessionScreen({
   onChangeDraft: (draft: string) => void
   onSend: () => void
   onOpenSkills: () => void
+  // Absent when the phone has no way to send an edit, in which case the plan
+  // is read-only and says nothing about editing.
+  onEditStep?: ((stepId: string, text: string) => Promise<void>) | undefined
 }) {
   // The composer floats over the thread, so the thread pads by what the
   // composer reports covering rather than by a guess at its height.
@@ -228,7 +331,7 @@ export function SessionScreen({
           </PressableCard>
         ) : null}
 
-        {plan ? <PlanCard plan={plan} /> : null}
+        {plan ? <PlanCard plan={plan} onEditStep={onEditStep} /> : null}
 
         {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
 
