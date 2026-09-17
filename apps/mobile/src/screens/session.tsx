@@ -3,6 +3,7 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } fro
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { AgentMarkdown } from "../components/agent-markdown"
+import { AttachSheet } from "../components/attach-sheet"
 import { Composer } from "../components/composer"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
@@ -13,6 +14,7 @@ import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
 import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
+import type { Attachment } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
 import { colors } from "../theme/tokens.generated"
 
@@ -334,6 +336,14 @@ export function SessionScreen({
   onEditStep,
   planPinned,
   onPinPlan,
+  machine,
+  attachments,
+  attachmentSummary,
+  attachmentsAllowed,
+  attachProblem,
+  onPickLibrary,
+  onTakePhoto,
+  onRemoveAttachment,
 }: {
   detail: SessionDetail
   artifacts: ArtifactRow[]
@@ -357,7 +367,19 @@ export function SessionScreen({
   // coming back. Pinned stays pinned across screens.
   planPinned: boolean
   onPinPlan: (pinned: boolean) => void
+  // Frames 13 and 14. The queue and its size line live in the composer; the
+  // sheet names the sources. All of it is app state, because the bytes are
+  // sent with the turn from there.
+  machine: string
+  attachments: readonly Attachment[]
+  attachmentSummary: string | undefined
+  attachmentsAllowed: boolean
+  attachProblem: string
+  onPickLibrary: () => void
+  onTakePhoto: () => void
+  onRemoveAttachment: (index: number) => void
 }) {
+  const [attachOpen, setAttachOpen] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
   // The composer floats over the thread, so the thread pads by what the
   // composer reports covering rather than by a guess at its height.
@@ -464,7 +486,20 @@ export function SessionScreen({
         onChangeDraft={onChangeDraft}
         onSend={onSend}
         onOpenSkills={onOpenSkills}
+        attachments={attachments}
+        attachmentSummary={attachmentSummary}
+        attachmentsAllowed={attachmentsAllowed}
+        onOpenAttach={() => setAttachOpen(true)}
+        onRemoveAttachment={onRemoveAttachment}
         onFootprint={setComposerFootprint}
+      />
+      <AttachSheet
+        open={attachOpen}
+        machine={machine}
+        problem={attachProblem}
+        onPickLibrary={() => { setAttachOpen(false); onPickLibrary() }}
+        onTakePhoto={() => { setAttachOpen(false); onTakePhoto() }}
+        onClose={() => setAttachOpen(false)}
       />
     </KeyboardAvoidingView>
   )

@@ -26,6 +26,9 @@ import { clearCredential, loadCredential, saveCredential } from "./lib/credentia
 import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
+import * as ImagePicker from "expo-image-picker"
+
+import { attachmentFrom, attachmentRefusalMessage, attachmentSummary, maximumSessionAttachments, type Attachment } from "./attachments"
 import { planForSession, planStepEdit, planSummary, unpinnedAfter } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
@@ -70,6 +73,36 @@ export function App() {
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [sendProblem, setSendProblem] = useState("")
+  // Frames 13 and 14: what the next turn carries besides words. Held here
+  // and sent with the turn; nothing is kept once the send is answered.
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachProblem, setAttachProblem] = useState("")
+  const pickImage = async (source: "library" | "camera") => {
+    setAttachProblem("")
+    if (attachments.length >= maximumSessionAttachments) {
+      setAttachProblem(`Two images per turn. Remove one to add another.`)
+      return
+    }
+    if (source === "camera") {
+      const permission = await ImagePicker.requestCameraPermissionsAsync()
+      if (!permission.granted) {
+        setAttachProblem("This phone has not allowed Domovoi to use the camera.")
+        return
+      }
+    }
+    const result = source === "library"
+      ? await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 1 })
+      : await ImagePicker.launchCameraAsync({ base64: true, quality: 1 })
+    if (result.canceled) return
+    const asset = result.assets[0]
+    if (!asset) return
+    const read = attachmentFrom(asset)
+    if (!read.ok) {
+      setAttachProblem(read.reason)
+      return
+    }
+    setAttachments((current) => [...current, read.attachment])
+  }
   // The plan starts pinned: the design leads the thread with a strip saying
   // where the machine is, and the whole plan is one tap away. Unpinning
   // collapses it into the thread. Held here, not in the screen, so leaving
@@ -130,7 +163,7 @@ export function App() {
     setProblem: setFleetProblem,
   }))
 
-  const { snapshot, status, fault, call, refresh, reconnect } = useDaemon(
+  const { snapshot, status, fault, call, refresh, reconnect, imageAttachments } = useDaemon(
     connectTo?.url,
     connectTo?.token,
     fleetLoads.accept,
@@ -431,11 +464,17 @@ export function App() {
         prompt: draft.trim(),
         client: clientKind,
         ...(selection ? { skillSelection: selection } : {}),
+        ...(attachments.length > 0
+          ? { attachments: attachments.map(({ mimeType, width, height, data }) => ({ mimeType, width, height, data })) }
+          : {}),
       })
       setDraft("")
+      setAttachments([])
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
+      const refusedImage = attachmentRefusalMessage(cause)
       if (refusal) setSendProblem(refusalMessage(refusal))
+      else if (refusedImage) setSendProblem(refusedImage)
       else setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
     } finally {
       inFlightSend.current = false
@@ -525,6 +564,14 @@ export function App() {
             onEditStep={(stepId, text) => editPlanStep(openSession.id, stepId, text)}
             planPinned={!unpinnedPlans.has(openSession.id)}
             onPinPlan={(pinned) => pinPlan(openSession.id, pinned)}
+            machine={snapshot?.machine.name ?? "the machine"}
+            attachments={attachments}
+            attachmentSummary={attachmentSummary(attachments, snapshot?.machine.name ?? "the machine")}
+            attachmentsAllowed={imageAttachments}
+            attachProblem={attachProblem}
+            onPickLibrary={() => void pickImage("library")}
+            onTakePhoto={() => void pickImage("camera")}
+            onRemoveAttachment={(index) => setAttachments((current) => current.filter((_item, at) => at !== index))}
           />
           <SkillSheet
             open={skillsOpen}

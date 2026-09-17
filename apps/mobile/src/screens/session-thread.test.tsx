@@ -39,6 +39,14 @@ async function draw() {
         onOpenSkills={jest.fn<() => void>()}
         planPinned={false}
         onPinPlan={jest.fn<(pinned: boolean) => void>()}
+        machine="mac-mini-m4"
+        attachments={[]}
+        attachmentSummary={undefined}
+        attachmentsAllowed
+        attachProblem=""
+        onPickLibrary={jest.fn<() => void>()}
+        onTakePhoto={jest.fn<() => void>()}
+        onRemoveAttachment={jest.fn<(index: number) => void>()}
       />
     </SafeAreaProvider>,
   )
