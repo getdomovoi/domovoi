@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { RefreshControl, Text } from "react-native"
+import { RefreshControl, ScrollView, Text } from "react-native"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 
 import { PageScroller } from "./page-scroller"
@@ -109,5 +109,32 @@ describe("PageScroller", () => {
     await layOut(844)
     await fill(1600)
     expect(scroller().props.showsVerticalScrollIndicator).toBe(false)
+  })
+
+  // A thread reads newest-last. When a reply lands the person is waiting for
+  // it at the bottom, so the scroller goes there; when nothing grew, it stays
+  // where the person put it.
+  it("follows the end when content grows and it was asked to", async () => {
+    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
+    await draw({ followEnd: true })
+    await layOut(844)
+    await fill(1200)
+    expect(scrollToEnd).toHaveBeenCalledTimes(1)
+
+    await fill(1600)
+    expect(scrollToEnd).toHaveBeenCalledTimes(2)
+
+    await fill(1600)
+    expect(scrollToEnd).toHaveBeenCalledTimes(2)
+    scrollToEnd.mockRestore()
+  })
+
+  it("leaves the scroll where it is when not asked to follow", async () => {
+    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
+    await draw()
+    await layOut(844)
+    await fill(1600)
+    expect(scrollToEnd).not.toHaveBeenCalled()
+    scrollToEnd.mockRestore()
   })
 })

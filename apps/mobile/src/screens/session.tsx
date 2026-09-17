@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { KeyboardAvoidingView, Platform, Pressable, View } from "react-native"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { Composer } from "../components/composer"
 import { PageScroller } from "../components/page-scroller"
@@ -185,10 +186,16 @@ export function SessionScreen({
   // composer reports covering rather than by a guess at its height.
   const [composerFootprint, setComposerFootprint] = useState(0)
   const approvalId = detail.approvalId
+  // The screen sits inside the safe area, so the keyboard's height is measured
+  // from a frame that starts below the status bar. Without the offset the
+  // composer is lifted short by exactly that much and the keyboard covers its
+  // bottom rows.
+  const insets = useSafeAreaInsets()
   return (
     <KeyboardAvoidingView
       className="flex-1 bg-background"
       behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={insets.top}
     >
       <View className="flex-row items-center gap-2.5 px-3.5 pb-3 pt-1.5">
         <Pressable
@@ -209,6 +216,8 @@ export function SessionScreen({
       <PageScroller
         contentContainerClassName="gap-3 px-3.5"
         bottomInset={composerFootprint}
+        followEnd
+        testID="thread"
       >
         {/* The reason the phone was picked up goes above the reading, because
             scrolling a thread to find the decision is the slow path. */}
