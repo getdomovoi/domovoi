@@ -37,8 +37,9 @@ Unrelated passes, duplicate names and extra assertions cannot satisfy the guard.
 
 The separate service invocation requires exactly two named proofs with no skips:
 the guest-loop crash/restart/removal fixture, and production CLI installation,
-status and removal under a non-root guest user with an isolated profile. Their
-test and cleanup budgets share the existing service-phase deadline. Both use
+status and removal under a non-root guest user with an isolated profile. The
+service proofs, including their fixture cleanup, share `budgets.service`. The
+runner's outer guest cleanup has a separate `budgets.cleanup` deadline. Both use
 demand start, not an actual Windows user logon. The latter acceptance is still
 open. The CLI fixture grants its non-root user read/traverse access to the
 disposable guest's code-only Node and daemon artifact roots; no host installation is changed.

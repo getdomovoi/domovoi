@@ -21,11 +21,15 @@ async function capture(command: ServiceCommand, dependencies: ServiceCommandDepe
 async function discover(dependencies: ServiceCommandDependencies, deadline: OperationDeadline): Promise<WslInstallation> {
   const environment = dependencies.environment ?? {}
   if (!environment.WSL_INTEROP || !environment.WSL_DISTRO_NAME) throw new Error("WSL service installation requires WSL 2 Windows interop")
-  const candidates = [...new Set((environment.PATH ?? "").split(":")
-    .filter((path) => posix.isAbsolute(path) && /\/System32\/WindowsPowerShell\/v1\.0\/?$/i.test(path))
-    .map((path) => posix.join(path, "powershell.exe")))]
-  if (candidates.length !== 1) throw new Error("WSL service requires one absolute WindowsPowerShell path in PATH")
-  const powershell = candidates[0]!
+  const candidate = environment.DOMOVOI_WINDOWS_POWERSHELL ?? await capture({
+    command: "/usr/bin/wslpath", args: ["-u", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"],
+  }, dependencies, deadline)
+  if (!posix.isAbsolute(candidate) || candidate.length > 4096
+    || [...candidate].some((character) => character < " " || character === "\x7f")) {
+    throw new Error("WindowsPowerShell requires a bounded absolute guest path")
+  }
+  const powershell = posix.normalize(candidate)
+  await capture({ command: "/usr/bin/test", args: ["-f", powershell] }, dependencies, deadline)
   const root = await capture({ command: powershell, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write($env:SystemRoot)"] }, dependencies, deadline)
   if (!/^[A-Za-z]:[\\/]/.test(root) || [...root].some((character) => character < " " || character === "\x7f")) {
     throw new Error("Windows did not report an absolute SystemRoot")

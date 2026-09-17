@@ -47,6 +47,59 @@ describe("WSL service installation", () => {
     expect(deps.run).not.toHaveBeenCalled()
   })
 
+  it("ignores a hostile PATH and checks the mounted file before executing it", async () => {
+    const deps = dependencies()
+    deps.environment.PATH = "/tmp/project/System32/WindowsPowerShell/v1.0"
+    expect(await runServiceCommand(["service", "install"], deps)).toBe(0)
+    expect(deps.capture.mock.calls.slice(0, 3)).toEqual([
+      ["/usr/bin/wslpath", ["-u", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"], expect.anything()],
+      ["/usr/bin/test", ["-f", wsl.powershell], expect.anything()],
+      [wsl.powershell, expect.any(Array), expect.anything()],
+    ])
+    expect(deps.capture.mock.calls.some(([command]) => command.startsWith("/tmp/project/"))).toBe(false)
+  })
+
+  it.each([undefined, "/mnt/d/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"])(
+    "refuses a missing or non-regular mounted file before Windows execution (%s)", async (override) => {
+      const deps = dependencies()
+      if (override !== undefined) Object.assign(deps.environment, { DOMOVOI_WINDOWS_POWERSHELL: override })
+      deps.capture.mockImplementation(async (command) => command === "/usr/bin/wslpath"
+        ? { code: 0, stdout: wsl.powershell } : { code: 1, stdout: "" })
+      expect(await runServiceCommand(["service", "install"], deps)).toBe(1)
+      expect(deps.capture).toHaveBeenCalledWith("/usr/bin/test", ["-f", override ?? wsl.powershell], expect.anything())
+      expect(deps.capture.mock.calls.every(([command]) => command.startsWith("/usr/bin/"))).toBe(true)
+      expect(deps.write).not.toHaveBeenCalled()
+      expect(deps.run).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(["powershell.exe", "C:\\Windows\\powershell.exe", "/tmp/invalid\npath", ""])("refuses invalid override %j before execution", async (override) => {
+    const deps = dependencies()
+    Object.assign(deps.environment, { DOMOVOI_WINDOWS_POWERSHELL: override })
+    expect(await runServiceCommand(["service", "install"], deps)).toBe(1)
+    expect(deps.capture).not.toHaveBeenCalled()
+    expect(deps.write).not.toHaveBeenCalled()
+  })
+
+  it("validates an absolute override and persists its matching host root", async () => {
+    const deps = dependencies()
+    const override = "/mnt/d/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    Object.assign(deps.environment, { DOMOVOI_WINDOWS_POWERSHELL: override })
+    deps.capture.mockImplementation(async (_command, args) => ({ code: 0, stdout: args[0] === "-u" ? override : "D:\\Windows" }))
+    expect(await runServiceCommand(["service", "install"], deps)).toBe(0)
+    expect(deps.capture.mock.calls[0]).toEqual(["/usr/bin/test", ["-f", override], expect.anything()])
+    expect(deps.capture).toHaveBeenCalledWith(override, expect.any(Array), expect.anything())
+    expect(parseServiceConfiguration(deps.write.mock.calls[0]![1]!).wsl).toMatchObject({ powershell: override, wsl: "D:\\Windows\\System32\\wsl.exe" })
+  })
+
+  it("refuses a regular override whose reported SystemRoot does not match its mount", async () => {
+    const deps = dependencies()
+    Object.assign(deps.environment, { DOMOVOI_WINDOWS_POWERSHELL: "/mnt/d/Windows/System32/WindowsPowerShell/v1.0/powershell.exe" })
+    expect(await runServiceCommand(["service", "install"], deps)).toBe(1)
+    expect(deps.write).not.toHaveBeenCalled()
+    expect(deps.run).not.toHaveBeenCalled()
+  })
+
   it("keeps an existing registration unchanged on reinstall", async () => {
     const deps: ServiceCommandDependencies = { ...dependencies(), readConfiguration: () => configuration }
     expect(await runServiceCommand(["service", "install"], deps)).toBe(1)

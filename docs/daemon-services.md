@@ -5,10 +5,18 @@
 Inside WSL 2 with Windows interop enabled, the command instead registers the
 decided Windows-logon task running the guest supervisor. The distribution comes
 from `WSL_DISTRO_NAME`, the Linux user from the invoking process, and the runtime
-and entry point are absolute paths. WindowsPowerShell must appear exactly once
-as an absolute `System32/WindowsPowerShell/v1.0` directory in PATH; its reported
-SystemRoot is checked through `/usr/bin/wslpath`. Missing interop or an ambiguous
-path refuses installation, without falling back to systemd or editing distro init.
+and entry point are absolute paths. PowerShell discovery ignores PATH. The fixed
+`/usr/bin/wslpath` helper translates
+`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` to its mounted guest
+path, normally `/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe`.
+An explicit `DOMOVOI_WINDOWS_POWERSHELL` override must be an absolute guest path.
+Both paths must name an existing regular file before execution; the reported
+SystemRoot must then translate back to the same PowerShell path before any task
+or registration is created. The override is an operator-selected executable,
+not executable authentication. The default trusts the system-managed Windows
+mount, not a project PATH entry. Missing interop, a missing/non-regular file or
+a mismatched SystemRoot refuses installation, without falling back to systemd
+or editing distro init.
 
 The guest's per-user `service.json` retains the WSL launch inputs and selected
 profile. Status and removal use that saved registration even without the shell's
