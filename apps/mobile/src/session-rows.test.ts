@@ -1,7 +1,7 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { approvalLead, elapsedLabel, sessionRows, waitingCount } from "./session-rows"
+import { approvalLead, elapsedLabel, sessionGroups, sessionRows, waitingCount } from "./session-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -134,5 +134,40 @@ describe("approvalLead", () => {
     snapshot.approvals = []
 
     expect(approvalLead(snapshot, at)).toBeUndefined()
+  })
+})
+
+describe("sessionGroups", () => {
+  it("puts needs-you first, then running, then quiet, each with its count", () => {
+    const snapshot = workspace()
+
+    const groups = sessionGroups(snapshot)
+
+    expect(groups.map((group) => group.id)).toEqual(["needs-you", "running", "quiet"])
+    expect(groups.map((group) => group.label)).toEqual(["NEEDS YOU", "RUNNING", "QUIET"])
+    expect(groups.map((group) => group.rows.length)).toEqual([1, 1, 1])
+    expect(groups[0]?.rows[0]?.id).toBe(snapshot.approvals[0]?.sessionId)
+  })
+
+  it("drops a group with nothing in it rather than drawing an empty heading", () => {
+    const snapshot = workspace()
+    snapshot.approvals = []
+
+    const groups = sessionGroups(snapshot)
+
+    expect(groups.map((group) => group.id)).toEqual(["running", "quiet"])
+  })
+
+  it("keeps a running session in needs-you while it holds an approval", () => {
+    const snapshot = workspace()
+    const waiting = snapshot.sessions.find((session) => session.id === snapshot.approvals[0]?.sessionId)
+    if (!waiting) throw new Error("fixture needs a pending approval")
+    waiting.state = "active"
+
+    const groups = sessionGroups(snapshot)
+
+    expect(groups[0]?.id).toBe("needs-you")
+    expect(groups[0]?.rows.map((row) => row.id)).toEqual([waiting.id])
+    expect(groups.find((group) => group.id === "running")?.rows.map((row) => row.id)).not.toContain(waiting.id)
   })
 })
