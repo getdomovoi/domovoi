@@ -29,4 +29,14 @@ describe("artifactUrlFor", () => {
     })
     expect(url.hash).toBe("")
   })
+
+  it("carries the bridge channel and the page's own origin when the grant has them", () => {
+    const url = new URL(artifactUrlFor("wss://mac.tailnet.ts.net:47831/rpc", {
+      ...access,
+      bridgeChannel: "channel-0123456789abcdef",
+      parentOrigin: "https://mac.tailnet.ts.net:47831",
+    }))
+    expect(url.searchParams.get("bridge")).toBe("channel-0123456789abcdef")
+    expect(url.searchParams.get("parentOrigin")).toBe("https://mac.tailnet.ts.net:47831")
+  })
 })
