@@ -87,12 +87,37 @@ describe("SessionsScreen", () => {
     expect(onOpenSession).toHaveBeenCalledWith(session.id)
   })
 
+  it("groups sessions under needs-you, running and quiet, in that order", async () => {
+    const { snapshot } = await draw()
+    const waiting = snapshot.sessions.find((session) => session.id === snapshot.approvals[0]?.sessionId)
+    if (!waiting) throw new Error("fixture needs a pending approval")
+
+    const headings = ["NEEDS YOU", "RUNNING", "QUIET"].map((label) => screen.getByText(label))
+    expect(headings).toHaveLength(3)
+    expect(screen.getByText(/^1 need you · /)).toBeOnTheScreen()
+
+    // The session holding the approval is the first card after the lead.
+    const order = tappable()
+    const firstSession = order.findIndex((label) =>
+      snapshot.sessions.some((session) => session.title === label))
+    expect(order[firstSession]).toBe(waiting.title)
+  })
+
+  it("says nobody is needed only by leaving the count out", async () => {
+    const calm = workspace()
+    calm.approvals = []
+    await draw({ snapshot: calm })
+
+    expect(screen.queryByText(/need you/)).toBeNull()
+    expect(screen.queryByText("NEEDS YOU")).toBeNull()
+  })
+
   it("does not claim a machine count it has not been given", async () => {
     await draw({ machineCount: undefined })
     expect(screen.queryByText(/machine/)).toBeNull()
 
     await draw({ machineCount: 3 })
-    expect(screen.getByText(/^3 machines · /)).toBeOnTheScreen()
+    expect(screen.getByText(/3 machines · /)).toBeOnTheScreen()
   })
 
   // The daemon answered and has nothing open. That is a fact about the machine,

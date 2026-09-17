@@ -117,6 +117,32 @@ export function sessionRows(snapshot: WorkspaceSnapshot): SessionRow[] {
     .map((entry) => entry.row)
 }
 
+export type SessionGroupId = "needs-you" | "running" | "quiet"
+
+export type SessionGroup = {
+  id: SessionGroupId
+  label: string
+  rows: SessionRow[]
+}
+
+// The design draws the list as three groups, needs-you first and never
+// collapsed. A session holding an approval is needs-you even while its turn
+// runs: on a phone the person is the reason to open the app, so what wants
+// them outranks what the machine is doing. Order inside a group is the row
+// order, so the longest-waiting approval still leads its group.
+export function sessionGroups(snapshot: WorkspaceSnapshot): SessionGroup[] {
+  const groups: SessionGroup[] = [
+    { id: "needs-you", label: "NEEDS YOU", rows: [] },
+    { id: "running", label: "RUNNING", rows: [] },
+    { id: "quiet", label: "QUIET", rows: [] },
+  ]
+  for (const row of sessionRows(snapshot)) {
+    const target = row.attention === "approval" ? 0 : row.dot === "active" ? 1 : 2
+    groups[target]!.rows.push(row)
+  }
+  return groups.filter((group) => group.rows.length > 0)
+}
+
 export function waitingCount(snapshot: WorkspaceSnapshot): number {
   return new Set(snapshot.approvals.map((approval) => approval.sessionId)).size
 }
