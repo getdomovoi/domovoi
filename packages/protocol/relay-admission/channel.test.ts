@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createNoiseIk } from "../relay/index.js"
 import { maximumRelayMessageBytes, relayAdmissionTimeoutMs } from "../src/relay-admission.js"
+import { maximumSessionPromptCharacters, sessionSendParamsSchema } from "../src/rpc.js"
 import { createRelayClient, createRelayResponder, relayPublicKeyFromPrivateKey, type RelayChannel } from "./index.js"
 
 const clientKey = new Uint8Array(32).fill(11)
@@ -18,7 +19,7 @@ function fixture(accept = true) {
   const authorize = vi.fn((supplied: string, key: Uint8Array) => accept && supplied === token
     && Buffer.from(key).toString("base64url") === relayPublicKeyFromPrivateKey(clientKey))
   const client = createRelayClient({ context, staticPrivateKey: clientKey, token,
-    carrier: { bufferedAmount: 0, send: (frame) => upstream.push(frame.slice()), close: () => { closed.client++ } },
+    carrier: { get bufferedAmount() { return upstream.reduce((sum, frame) => sum + frame.length, 0) }, send: (frame) => upstream.push(frame.slice()), close: () => { closed.client++ } },
     onMessage: (message) => clientMessages.push(message) })
   const server = createRelayResponder({ context, staticPrivateKey: serverKey, authorize,
     carrier: { bufferedAmount: 0, send: (frame) => downstream.push(frame.slice()), close: () => { closed.server++ } },
@@ -116,6 +117,19 @@ describe("relay admission against the frozen IK codec", () => {
     f.client.receive(f.take(f.downstream))
     expect(f.clientMessages).toEqual(["你好🙂"])
     expect(() => f.client.send(message + "x")).toThrow("Relay admission rejected")
+  })
+
+  it("carries two maximum-size image uploads plus an escaped prompt without enlarging frames", () => {
+    const f = fixture(); f.admit()
+    const image = { mimeType: "image/jpeg", width: 2048, height: 2048, data: "A".repeat(2_000_000) }
+    const params = sessionSendParamsSchema.parse({ sessionId: "session-images", client: "phone",
+      prompt: "\u0000".repeat(maximumSessionPromptCharacters), attachments: [image, image] })
+    const message = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session.send", params })
+    expect(Buffer.byteLength(message)).toBeLessThan(maximumRelayMessageBytes)
+    f.client.send(message)
+    expect(f.upstream.every((frame) => frame.length <= 65_535)).toBe(true)
+    while (f.upstream.length) f.server.receive(f.take(f.upstream))
+    expect(f.serverMessages[0] === message).toBe(true)
   })
 
   it("rejects a replay and closes both directions for that channel", () => {

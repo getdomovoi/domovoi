@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { maximumRpcMessageBytes } from "./rpc-limits.js"
 
 import { credentialSchema } from "./identifiers.js"
 
@@ -29,12 +30,12 @@ export const relayAdmissionResultSchema = z.object({ kind: z.literal("admitted")
 
 export const maximumRelayFrameBytes = 65_535
 export const maximumRelayAdmissionBytes = 4_096
-export const maximumRelayMessageBytes = 2 * 1_024 * 1_024
+export const maximumRelayMessageBytes = maximumRpcMessageBytes
 export const relayRecordHeaderBytes = 9
 export const maximumRelayChunkBytes = maximumRelayFrameBytes - 16 - relayRecordHeaderBytes
 export const relayAdmissionTimeoutMs = 10_000
 export const relayMessageTimeoutMs = 10_000
-export const maximumRelayBufferedBytes = 4 * 1_024 * 1_024
+export const maximumRelayBufferedBytes = maximumRelayMessageBytes + 2 * 1_024 * 1_024
 
 export type RelayAdmissionContext = z.infer<typeof relayAdmissionContextSchema>
 export type RelayChannelPin = z.infer<typeof relayChannelPinSchema>

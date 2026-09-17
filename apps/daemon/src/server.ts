@@ -7,6 +7,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 
 import {
   buildVersion,
+  maximumRpcMessageBytes,
+  type SessionAttachmentRefusal,
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
@@ -143,6 +145,7 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
+import { prepareSessionAttachments, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -256,7 +259,7 @@ const internalError = -32603
 const maximumAuthenticationFailures = 3
 const preAuthAuditWindowMs = 60_000
 type PreAuthAuditKind = "authentication" | "invalid-request" | "pairing" | "pairing-rate-limit"
-export const maximumWebSocketPayloadBytes = 2 * 1_024 * 1_024
+export const maximumWebSocketPayloadBytes = maximumRpcMessageBytes
 export const maximumAuthenticationPayloadBytes = 4 * 1_024
 // One failed write is a transient disk or lock problem worth retrying. This many
 // consecutive failures means the daemon is running on state nobody will get back,
@@ -1895,7 +1898,7 @@ export class DomovoiDaemon {
     id: string | number | null,
     code: number,
     message: string,
-    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal,
+    data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal,
   ): void {
     this.#send(socket, {
       jsonrpc: "2.0",
@@ -6821,6 +6824,7 @@ export class DomovoiDaemon {
           && workingPlanNeedsProviderDelivery(boundaryPlan, providerTarget)
         let preparedTurn
         try {
+          const attachments = prepareSessionAttachments(params.attachments, registeredAgent.capabilities)
           preparedTurn = await composeProviderPrompt({
             snapshot: this.#snapshot,
             sessionId: session.id,
@@ -6834,7 +6838,12 @@ export class DomovoiDaemon {
               session.runtime.permissionMode === "build" && session.runtime.auto,
             ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
           })
+          preparedTurn.visualContexts.push(...attachments)
         } catch (error) {
+          if (error instanceof SessionAttachmentError) {
+            this.#error(socket, request.id, invalidParams, error.message, error.refusal)
+            return
+          }
           if (error instanceof TurnSkillSelectionError) {
             this.#error(
               socket,
@@ -7272,6 +7281,7 @@ export class DomovoiDaemon {
       const result = method === "system.hello"
         ? {
             ...visibleSnapshot,
+            sessionImageAttachments: true,
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
           }
         : clientSnapshot
