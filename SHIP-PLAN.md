@@ -1273,14 +1273,17 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
   - [x] Step 3, what a browser tab can and cannot do, measured against the browser rather
         than drawn (ad121ceb, #471). Seen in a real browser 2026-09-17: headless Brave over
         CDP against a daemon from `ad121ceb`, pairing, the panel and `Open project` all real.
-  - [ ] Step 6, Design review, unchecked: the shell is shared with the desktop, so it should
-        run over loopback with `parentOrigin` on the `:5178` allow-list, but a session needs a
-        signed-in provider, the sign-in is Keychain-bound to the real `HOME`, and the daemon
-        infers its profile from `HOME`. So the check either runs against the live profile or
-        not at all. fetzy chose not at all until the daemon takes a profile directory it is
-        told (`DOMOVOI_PROFILE_DIR`), which makes any such run reproducible by someone who is
-        not the user at their own machine. Ask 3 in
-        `~/.agents/plans/2026-09-17-domovoi-daemon-asks.md`, handed to Codex.
+  - [x] Step 6, Design review, seen in a real browser 2026-09-17 against a daemon from
+        `c2c9acb6` on an isolated profile (`DOMOVOI_PROFILE_DIR`, 1bc74647, #478) with the
+        real sign-in: every provider read `Ready`, a session was created, a
+        `previews/*.preview.html` dropped into its worktree was published by the watcher and
+        loaded in the shell's iframe with a bridge grant, `Annotate` selected an element
+        through the bridge, and `Save annotation` recorded it: `1 open`, `web ·
+        preview-ed214a7cd5c425df`, selector anchor. Headless Brave over CDP; the shell is
+        shared with the desktop, so this is the desktop flow on the `:5178` allow-list. The
+        first attempt at this check (same day) could not start a session at all, because
+        the profile could only be isolated by moving `HOME`, which loses the Keychain
+        sign-in; that is what ask 3 was for.
   - [ ] Over the tailnet there is no web app to reach: vite serves loopback only. Decided
         2026-09-17: the daemon serves the built web app under the certificate the phone
         already trusts, as a separate artifact beside the daemon rather than compiled in, so a
