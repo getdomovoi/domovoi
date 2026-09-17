@@ -21,7 +21,7 @@ export type ArtifactRow = {
 }
 
 const unreadableReasons: Record<Artifact["type"], string> = {
-  preview: "A preview needs a signed fetch this phone cannot make yet.",
+  preview: "A preview is fetched from the machine with a signed grant.",
   plan: "The daemon sent no contents for this plan.",
   diff: "The daemon sent no contents for this diff.",
   terminal: "A terminal is watched live on the desktop, not read here.",
@@ -92,4 +92,20 @@ export function findArtifact(
   artifactId: string,
 ): Artifact | undefined {
   return snapshot.artifacts.find((artifact) => artifact.id === artifactId)
+}
+
+// The renders that stand beside this one: every artifact in its variant group,
+// itself included, in the order the daemon assigned. A render with no group
+// stands alone and gets no tabs.
+export function previewVariants(
+  snapshot: WorkspaceSnapshot,
+  artifactId: string,
+): { id: string, label: string }[] {
+  const mine = findArtifact(snapshot, artifactId)
+  if (!mine?.variant) return []
+  const groupId = mine.variant.groupId
+  return snapshot.artifacts
+    .filter((artifact) => artifact.sessionId === mine.sessionId && artifact.variant?.groupId === groupId)
+    .sort((left, right) => (left.variant?.order ?? 0) - (right.variant?.order ?? 0))
+    .map((artifact) => ({ id: artifact.id, label: artifact.variant?.label ?? artifact.title }))
 }
