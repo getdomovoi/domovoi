@@ -103,3 +103,13 @@ export function planStrip(plan: PlanSummary): string {
   if (running >= 0) return `Step ${running + 1} of ${total} · ${plan.rows[running]!.text}`
   return `${plan.progress} done`
 }
+
+// Pinned is the default, so the app remembers only the sessions whose plan
+// a person unpinned. Unpinning one plan says nothing about another: a person
+// coming back to session B finds B as they left B.
+export function unpinnedAfter(unpinned: ReadonlySet<string>, sessionId: string, pinned: boolean): ReadonlySet<string> {
+  const next = new Set(unpinned)
+  if (pinned) next.delete(sessionId)
+  else next.add(sessionId)
+  return next
+}

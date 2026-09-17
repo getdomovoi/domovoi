@@ -25,7 +25,7 @@ import { clearCredential, loadCredential, saveCredential } from "./lib/credentia
 import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
-import { planForSession, planStepEdit, planSummary } from "./plan-rows"
+import { planForSession, planStepEdit, planSummary, unpinnedAfter } from "./plan-rows"
 import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
@@ -73,7 +73,13 @@ export function App() {
   // where the machine is, and the whole plan is one tap away. Unpinning
   // collapses it into the thread. Held here, not in the screen, so leaving
   // and coming back finds it where it was.
-  const [planPinned, setPlanPinned] = useState(true)
+  // Kept per session: unpinning one plan says nothing about another, and a
+  // person coming back to session B should find B as they left B. Pinned is
+  // the default, so what is remembered is the unpinned ones.
+  const [unpinnedPlans, setUnpinnedPlans] = useState<ReadonlySet<string>>(new Set())
+  const pinPlan = (sessionId: string, pinned: boolean) => {
+    setUnpinnedPlans((previous) => unpinnedAfter(previous, sessionId, pinned))
+  }
   // A turn costs money, and two taps land in the same frame before the sending
   // state has re-rendered anything. The latch is read and set synchronously, so
   // the second tap has nothing left to do.
@@ -493,8 +499,8 @@ export function App() {
             onSend={() => void sendMessage(openSession.id)}
             onOpenSkills={() => setSkillsOpen(true)}
             onEditStep={(stepId, text) => editPlanStep(openSession.id, stepId, text)}
-            planPinned={planPinned}
-            onPinPlan={setPlanPinned}
+            planPinned={!unpinnedPlans.has(openSession.id)}
+            onPinPlan={(pinned) => pinPlan(openSession.id, pinned)}
           />
           <SkillSheet
             open={skillsOpen}
