@@ -217,8 +217,8 @@
           </div>
           <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.</div>
           <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
-            <div style="{{ secondaryBtn }}">Revert to the checkpoint</div>
             <div style="{{ secondaryBtn }}">Watch the rest of the turn</div>
+            <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</div>
           </div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
@@ -261,14 +261,13 @@
               <span style="{{ infoDot }}"></span>
               <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--info-fg);">The shell is held on desktop</span>
             </div>
-            <div style="font-size: 12px; color: var(--info-dim); margin-top: 6px; line-height: 1.55;">Reading is free. Typing needs the claim, and taking it tells the desktop rather than stealing it.</div>
-            <div style="{{ claimBtn }}">Take the shell</div>
+            <div style="font-size: 12px; color: var(--info-dim); margin-top: 6px; line-height: 1.55;">Typing needs the claim, and a phone cannot take one. Claim it from a desktop.</div>
           </div>
           <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">This phone cannot pull the repository down. Diffs and output stream from the machine and are never stored here.</div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">One claimant at a time is a real rule, so the phone states who holds the shell instead of failing when you type.</div>
+      <div style="{{ captionStyle }}">Drawn, not built: a phone shows no terminal output yet. One claimant at a time is real, and a phone is never the claimant.</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -688,7 +687,7 @@
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Every source names where the bytes go. Nothing you attach is stored on the phone, because the phone holds no repository.</div>
+      <div style="{{ captionStyle }}">Drawn, not built: session.send carries no bytes yet, so nothing here can reach a machine. Every source names where the bytes go, and nothing is stored on the phone.</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -757,7 +756,7 @@
           </div>
         </div>
       </div>
-      <div style="{{ captionStyle }}">Attachments grow the composer into a card, each thumb removable, and the size line says where the bytes go before you send.</div>
+      <div style="{{ captionStyle }}">Drawn, not built, and the queue is the over-promise: session.send carries no bytes, so these two would never leave. Attachments grow the composer into a card, each thumb removable, with the size line stated before you send.</div>
     </div>
 
   </div>
@@ -892,8 +891,8 @@
           <div style="font-size: 11.5px; color: var(--muted-foreground); text-align: center;">B is the one the agent builds on</div>
           <div style="display: flex; gap: 8px;">
             <div style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--strong); cursor: pointer;">Comment</div>
-            <div style="flex: 1; padding: 13px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 500; text-align: center; cursor: pointer;">Build on B</div>
           </div>
+          <div style="font-size: 11.5px; color: var(--faint); text-align: center; line-height: 1.55;">Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.</div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
@@ -1384,7 +1383,6 @@ class Component extends DCLogic {
         style: "color: " + (l.k === "pass" ? "var(--success)" : l.k === "fail" ? "var(--destructive)" : l.k === "cmd" ? "var(--foreground)" : "var(--muted-foreground)") +
           "; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
       })),
-      claimBtn: "margin-top: 11px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 14px; border: 1px solid var(--info-border); color: var(--info-fg); font-size: 13.5px; cursor: pointer;",
 
       phoneAlternatives: [
         { text: "Write the SQL to prisma/migrations and stop.", k: "success" },
