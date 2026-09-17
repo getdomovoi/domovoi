@@ -83,9 +83,9 @@ it.runIf(process.platform === "win32" && required)(
     let failure: unknown
     try {
       await guest(["/usr/sbin/useradd", "--create-home", "--home-dir", home, "--shell", "/bin/sh", linuxUser], deadline, "root")
-      // The runner's artifact root is private to root. This disposable guest
-      // shares only that code directory with the non-root acceptance user.
-      await guest([node, "-e", "require('node:fs').chmodSync('/opt/domovoi-ci-daemon', 0o755)"], deadline, "root")
+      // Both runner artifact roots are private to root. This disposable guest
+      // shares only those code directories with the non-root acceptance user.
+      await guest([node, "-e", "for (const path of ['/opt/domovoi-ci-node', '/opt/domovoi-ci-daemon']) require('node:fs').chmodSync(path, 0o755)"], deadline, "root")
       installed = true
       expect(await cli("install")).toContain("Installed the Domovoi WSL guest supervisor")
       const configurationText = await guest([node, "-e", "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", home + "/.domovoi/service.json"])
