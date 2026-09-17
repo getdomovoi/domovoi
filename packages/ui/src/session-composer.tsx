@@ -40,6 +40,10 @@ export function SessionComposer({
   // both close a list the text still qualifies for.
   const [dismissed, setDismissed] = useState(false)
   const editor = useRef<HTMLTextAreaElement>(null)
+  // The surface is portalled, so it needs something to measure against. The
+  // wrapper holds the chip that opens it and is also what an outside click is
+  // measured from.
+  const modeAnchor = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(-1)
   const listId = useId()
 
@@ -169,7 +173,7 @@ export function SessionComposer({
       />
 
       <div className="flex items-center gap-2">
-        <div className="relative flex">
+        <div ref={modeAnchor} className="relative flex">
           <Chip size="chip" onClick={() => setModeOpen(true)}>
             <StatusDot
               meaning={permissionModes.find((mode) => mode.id === runtime.permissionMode)!.meaning as StatusMeaning}
@@ -177,7 +181,7 @@ export function SessionComposer({
               size="inline"
             />
           </Chip>
-          <FloatingSurface open={modeOpen} onClose={() => setModeOpen(false)} label="Permission mode">
+          <FloatingSurface open={modeOpen} onClose={() => setModeOpen(false)} label="Permission mode" trigger={modeAnchor} placement="above">
             {permissionModes.map((mode) => (
               <button
                 type="button"

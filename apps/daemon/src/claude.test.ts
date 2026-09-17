@@ -773,20 +773,11 @@ describe("ClaudeAgentSdkAdapter", () => {
       runtime: runtime("ask"),
     })
 
-    expect(calls[0]?.options).toMatchObject({
-      permissionMode: "dontAsk",
-      settingSources: [],
-      tools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
-    })
-    expect(calls[0]?.options.disallowedTools).toEqual(expect.arrayContaining([
-      "Bash",
-      "Edit",
-      "Write",
-      "NotebookEdit",
-      "Task",
-      "Skill",
-      "mcp__*",
-    ]))
+    // Ask is enforced when a tool is actually asked for, not by withholding
+    // tools when the conversation opens. Declaring it in the options reads
+    // like a second lock but cannot follow a mode change, because the SDK
+    // fixes tools at creation.
+    expect(calls[0]?.options).toMatchObject({ permissionMode: "dontAsk" })
     await expect(calls[0]!.options.canUseTool!(
       "Bash",
       { command: "touch escaped" },
@@ -808,30 +799,42 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
-  it("reopens a Claude session when a turn crosses the Ask tool boundary", async () => {
+  it("changes mode in place, without restarting the conversation", async () => {
+    // This test pinned two defects in turn, so both are recorded rather than
+    // quietly dropped. It asserted a resume of a conversation that had never
+    // been opened, which failed for real with "No conversation found with
+    // session ID". Then it asserted a resume across the Ask boundary, which
+    // is what carried the read-only tool set into Build and left sessions
+    // answering "this session has no Write, Edit, or Bash tool available" for
+    // good. Neither restart is needed: Claude's mode is applied live and Ask
+    // is enforced per tool call, so switching keeps the conversation.
     const { calls, factory } = factoryHarness()
     const ids: ClaudeMessageId[] = [
       "11111111-1111-4111-8111-111111111111",
       "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
     ]
     const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Look around", runtime: runtime("build") })
 
-    await adapter.startTurn({
-      threadId,
-      cwd: "/worktree",
-      prompt: "Inspect only",
-      runtime: runtime("ask"),
-    })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Inspect only", runtime: runtime("ask") })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.query.close).not.toHaveBeenCalled()
+    expect(calls[0]!.query.setPermissionMode).toHaveBeenCalledWith("dontAsk")
 
-    expect(calls).toHaveLength(2)
-    expect(calls[0]!.query.close).toHaveBeenCalledOnce()
-    expect(calls[1]!.options).toMatchObject({
-      resume: threadId,
-      permissionMode: "dontAsk",
-      settingSources: [],
-      tools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
-    })
+    const context = {
+      signal: new AbortController().signal,
+      toolUseID: "tool-ask",
+      requestId: "request-ask",
+    } as unknown as Parameters<NonNullable<ClaudeQueryOptions["canUseTool"]>>[2]
+    await expect(calls[0]!.options.canUseTool!("Write", { file_path: "/tmp/x" }, context))
+      .resolves.toMatchObject({ behavior: "deny" })
+
+    // Back to Build on the same conversation, and the tool is available again.
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "write it", runtime: runtime("build") })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.query.setPermissionMode).toHaveBeenLastCalledWith("default")
     await adapter.close()
   })
 
@@ -962,5 +965,67 @@ describe("ClaudeAgentSdkAdapter", () => {
       ],
     }))
     await adapter.close()
+  })
+})
+
+describe("changing the mode on a live session", () => {
+  // Measured against a real daemon on 2026-09-16. Creating a session, moving
+  // the chip from Build to Ask and sending the first message failed with
+  // "No conversation found with session ID", and every send afterwards failed
+  // with "Claude session is not loaded". Moving it back to Build then left the
+  // session unable to write at all. Three causes, all in one branch: it asked
+  // Claude to resume a conversation that had never been started, it removed
+  // the session before the reopen so the failure took the thread with it, and
+  // the reopen carried the tool set the conversation was created with.
+  it("does not restart the conversation when the mode changes before the first turn", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    expect(calls[0]?.options).toMatchObject({ sessionId: threadId })
+
+    // The first turn ever, with the mode changed since the session was made.
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "hello", runtime: runtime("ask") })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.options).not.toHaveProperty("resume")
+  })
+
+  it("resumes a session that ended, and keeps the thread usable when that fails", async () => {
+    const queries: FakeQuery[] = []
+    let failNext = false
+    const factory: ClaudeQueryFactory = (_input, _options) => {
+      const query = new FakeQuery()
+      if (failNext) query.initializationResult.mockRejectedValueOnce(new Error("Claude is unavailable"))
+      queries.push(query)
+      return query
+    }
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "hello", runtime: runtime("build") })
+
+    // The provider drops the connection, which is the one case that reopens.
+    queries[0]!.close()
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
+
+    failNext = true
+    await expect(
+      adapter.startTurn({ threadId, cwd: "/worktree", prompt: "again", runtime: runtime("build") }),
+    ).rejects.toThrow()
+
+    // The next send reports what actually went wrong rather than saying the
+    // thread has vanished. Losing the session made the first failure permanent.
+    failNext = false
+    await expect(
+      adapter.startTurn({ threadId, cwd: "/worktree", prompt: "retry", runtime: runtime("build") }),
+    ).resolves.toBeTruthy()
   })
 })

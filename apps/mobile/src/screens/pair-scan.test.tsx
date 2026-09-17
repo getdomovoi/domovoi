@@ -30,6 +30,12 @@ describe("pairing by camera", () => {
     expect(readPairingScan("https://example.com")).toEqual({ ok: false, reason: "This is not a Domovoi pairing code" })
   })
 
+  // The first render in this file pays for transforming the camera screen's
+  // whole module tree. On the Windows runner that alone has taken the test past
+  // jest's five seconds, three times in one evening, on branches that did not
+  // touch it. The budget is for the cold start, not for the pairing.
+  const cold = 20_000
+
   it("pairs from a scanned code and names the machine before connecting", async () => {
     const onPaired = jest.fn()
     await render(
@@ -42,8 +48,7 @@ describe("pairing by camera", () => {
     expect(screen.getByText(/cannot tell that credential from the machine's own/)).toBeTruthy()
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     await waitFor(() => expect(onPaired).toHaveBeenCalledWith(credential))
-  })
-
+  }, cold)
   it("says what a wrong code is and keeps scanning", async () => {
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,

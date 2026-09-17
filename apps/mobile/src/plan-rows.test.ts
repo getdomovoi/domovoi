@@ -1,7 +1,7 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { planForSession, planSummary } from "./plan-rows"
+import { planForSession, planStepEdit, planSummary, revisedLabel } from "./plan-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -47,5 +47,51 @@ describe("planSummary", () => {
 
   it("reports an edit nobody has accepted, rather than showing stale steps silently", () => {
     expect(planSummary(billingPlan(workspace())).pendingEdit).toBe("conflicted")
+  })
+})
+
+describe("revisedLabel", () => {
+  it("says when the plan last changed as a wall-clock time", () => {
+    expect(revisedLabel(new Date(2026, 8, 16, 14, 6).toISOString())).toBe("revised 14:06")
+    expect(revisedLabel(new Date(2026, 8, 16, 9, 3).toISOString())).toBe("revised 09:03")
+  })
+
+  it("says nothing for a timestamp it cannot read", () => {
+    expect(revisedLabel("not a date")).toBeUndefined()
+  })
+})
+
+describe("planStepEdit", () => {
+  it("rewrites one step against the plan's current structure and names the edit it replaces", () => {
+    const plan = billingPlan(workspace())
+
+    const edit = planStepEdit(plan, "plan-step-tests", "Cover expiry and duplicate delivery in replay.spec.ts")
+
+    expect(edit.basedOnStructureRevision).toBe(plan.structureRevision)
+    expect(edit.baseSteps).toEqual(plan.steps.map((step) => ({ id: step.id, text: step.text })))
+    expect(edit.draftSteps.map((step) => step.id)).toEqual(plan.steps.map((step) => step.id))
+    expect(edit.draftSteps[3]?.text).toBe("Cover expiry and duplicate delivery in replay.spec.ts")
+    expect(edit.draftSteps[0]?.text).toBe(plan.steps[0]?.text)
+    expect(edit.replacesPendingEditId).toBe("plan-edit-migration-order")
+  })
+
+  it("replaces nothing when no edit is pending", () => {
+    const plan = billingPlan(workspace())
+    delete plan.pendingEdit
+
+    expect(planStepEdit(plan, "plan-step-tests", "x").replacesPendingEditId).toBeUndefined()
+  })
+
+  it("refuses a step the plan does not hold", () => {
+    expect(() => planStepEdit(billingPlan(workspace()), "plan-step-missing", "x")).toThrow(/not in this plan/)
+  })
+})
+
+describe("planSummary header", () => {
+  it("carries when the plan was revised", () => {
+    const plan = billingPlan(workspace())
+    plan.updatedAt = new Date(2026, 8, 16, 14, 6).toISOString()
+
+    expect(planSummary(plan).revised).toBe("revised 14:06")
   })
 })

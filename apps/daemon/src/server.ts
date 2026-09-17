@@ -1,4 +1,4 @@
-import { createServer, type Server as HttpServer } from "node:http"
+import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http"
 import { createServer as createSecureServer } from "node:https"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { lstat, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises"
@@ -302,6 +302,36 @@ function skillInstallAuditDetail(values: Record<string, unknown>): string {
     ? (values.source as Record<string, unknown>).path
     : undefined
   return `scope=${String(values.scope ?? "")} sourceDigest=${String(values.sourceDigest ?? "")} source=${String(source ?? "")}`
+}
+
+// A browser attaches Origin itself and a page cannot forge it, which is the
+// whole value of checking it: a site the user visits must not be able to drive
+// their daemon. Any other client picks its own Origin or sends none, so the
+// list was never protecting anything from them, and it cannot hold a phone:
+// React Native sends the address it dialled, which differs per machine and per
+// route. A request whose Origin names this same daemon is same-origin, so it
+// came from something dialling this daemon directly rather than from a page
+// somewhere else, and the comparison is against the Host this very request
+// carried rather than against what the daemon believes it is reachable as.
+//
+// That Host is the caller's to set, and a DNS-rebinding page can make its own
+// name resolve here so that its Origin and Host agree. Over TLS that page
+// never gets this far: the handshake is for a name this certificate does not
+// carry and fails before a header is read. Over plaintext nothing stops it, so
+// the same-host rule holds only on a socket that was encrypted, and a
+// plaintext listener keeps the allow-list alone.
+function namesThisDaemon(origin: string, request: IncomingMessage): boolean {
+  const host = request.headers.host
+  if (!host || !isEncrypted(request.socket)) return false
+  try {
+    return new URL(origin).host === host
+  } catch {
+    return false
+  }
+}
+
+function isEncrypted(socket: IncomingMessage["socket"]): boolean {
+  return (socket as { encrypted?: boolean }).encrypted === true
 }
 
 const unauditedRpcMethods = new Set<RpcMethod>([
@@ -1418,8 +1448,9 @@ export class DomovoiDaemon {
       response.end(JSON.stringify({ error: "not_found" }))
     })
 
-    const verifyClient: VerifyClientCallbackSync = ({ origin }) =>
-      !this.#stopping && !this.#stopped && (!origin || this.allowedOrigins.has(origin))
+    const verifyClient: VerifyClientCallbackSync = ({ origin, req }) =>
+      !this.#stopping && !this.#stopped
+      && (!origin || this.allowedOrigins.has(origin) || namesThisDaemon(origin, req))
 
     this.#websocket = new WebSocketServer({
       server: this.#http,
