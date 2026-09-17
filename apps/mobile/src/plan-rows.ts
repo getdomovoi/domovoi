@@ -17,6 +17,39 @@ export type PlanSummary = {
   // conflicted one is a change that no longer applies. Both are things the
   // phone should say rather than quietly render the old steps.
   pendingEdit: "queued" | "conflicted" | undefined
+  // When the plan last changed, as a time of day. The plan is a document, and
+  // a document says when it was last revised.
+  revised: string | undefined
+}
+
+// The wire shape of one step rewritten in place, minus the session and the
+// client, which the caller adds. It is built against the plan's current
+// structure so the daemon can refuse it if the plan moved underneath.
+export type PlanStepEdit = {
+  basedOnStructureRevision: number
+  baseSteps: { id: string, text: string }[]
+  draftSteps: { id: string, text: string }[]
+  replacesPendingEditId: string | undefined
+}
+
+export function revisedLabel(iso: string): string | undefined {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return undefined
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `revised ${pad(at.getHours())}:${pad(at.getMinutes())}`
+}
+
+export function planStepEdit(plan: WorkingPlan, stepId: string, text: string): PlanStepEdit {
+  if (!plan.steps.some((step) => step.id === stepId)) {
+    throw new Error(`Step ${stepId} is not in this plan`)
+  }
+  const baseSteps = plan.steps.map((step) => ({ id: step.id, text: step.text }))
+  return {
+    basedOnStructureRevision: plan.structureRevision,
+    baseSteps,
+    draftSteps: baseSteps.map((step) => step.id === stepId ? { id: step.id, text } : step),
+    replacesPendingEditId: plan.pendingEdit?.id,
+  }
 }
 
 function toneFor(row: WorkingPlan["steps"][number]): PlanRow["tone"] {
@@ -54,5 +87,6 @@ export function planSummary(plan: WorkingPlan): PlanSummary {
       }
     }),
     pendingEdit: plan.pendingEdit?.status,
+    revised: revisedLabel(plan.updatedAt),
   }
 }
