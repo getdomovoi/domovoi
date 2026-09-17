@@ -1137,6 +1137,14 @@ td { color: var(--ink2); }
 <li>[ ] <strong>S3.10 [CC]</strong> Desktop chrome: move the three v1 leftovers to where v2 draws them, so the surface looks like the design rather than containing its parts. (a) Think, the mode toggle and Auto leave the thread header for the composer's action row beside the model chip (<code>permChipStyle</code>, part1-template line 948). (b) The app bar's usage readout goes; the chip is the one usage surface. (c) The dock's usage footer goes for the same reason. One PR each, each body stating what moved and what the design draws that the protocol cannot; no new RPCs expected.
 </li>
 <li>[ ] <strong>S3.2 [CC]</strong> Web: the six-step flow over loopback and the tailnet, with capability-refused real rather than drawn. Over the relay once Phase 2 lands.
+<ul>
+<li>[x] Step 3, what a browser tab can and cannot do, measured against the browser rather than drawn (ad121ceb, #471). Seen in a real browser 2026-09-17: headless Brave over CDP against a daemon from <code>ad121ceb</code>, pairing, the panel and <code>Open project</code> all real.
+</li>
+<li>[ ] Step 6, Design review, unchecked: the shell is shared with the desktop, so it should run over loopback with <code>parentOrigin</code> on the <code>:5178</code> allow-list, but a session needs a signed-in provider, the sign-in is Keychain-bound to the real <code>HOME</code>, and the daemon infers its profile from <code>HOME</code>. So the check either runs against the live profile or not at all. fetzy chose not at all until the daemon takes a profile directory it is told (<code>DOMOVOI_PROFILE_DIR</code>), which makes any such run reproducible by someone who is not the user at their own machine. Ask 3 in <code>~/.agents/plans/2026-09-17-domovoi-daemon-asks.md</code>, handed to Codex.
+</li>
+<li>[ ] Over the tailnet there is no web app to reach: vite serves loopback only. Decided 2026-09-17: the daemon serves the built web app under the certificate the phone already trusts, as a separate artifact beside the daemon rather than compiled in, so a web regression is not a daemon release. Ask 4 in the same file, after Phase 1's own items. Steps 1 and 5 are relay states and wait on Phase 2.
+</li>
+</ul>
 </li>
 <li>[ ] <strong>S3.3 [CC]</strong> Mobile: 19 designed frames against nine existing screens. In order: pairing by camera first, which is in the not-built list and is the thing standing between a phone and a daemon; then the gate path end to end on a real device.
 <ul>
