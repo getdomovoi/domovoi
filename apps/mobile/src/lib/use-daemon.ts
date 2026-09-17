@@ -78,7 +78,11 @@ export function useDaemon(
         onDelta: (delta: WorkspaceDelta) =>
           setSnapshot((current) => current ? applyWorkspaceDelta(current, delta) : current),
         onFleet: (entries) => fleetSink.current(entries),
-        onStatus: setStatus,
+        onStatus: (next) => {
+          // A closed or reconnecting connection has not said what it can do.
+          if (next !== "open") setImageAttachments(false)
+          setStatus(next)
+        },
         onError: (cause) => {
           const next = connectionFault(cause)
           setFault(next)

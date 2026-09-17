@@ -455,6 +455,13 @@ export function App() {
       setSendProblem(dropped)
       return
     }
+    // The plus was offered on a hello that said yes; the connection may have
+    // been replaced since by one that did not. The daemon would refuse the
+    // whole send, so say so here rather than after the bytes went.
+    if (attachments.length > 0 && !imageAttachments) {
+      setSendProblem("This daemon does not take images. Remove them to send the words.")
+      return
+    }
     inFlightSend.current = true
     setSending(true)
     setSendProblem("")
@@ -551,6 +558,8 @@ export function App() {
               setOpenSessionId(undefined)
               setOpenArtifactId(undefined)
               setSendProblem("")
+              setAttachments([])
+              setAttachProblem("")
             }}
             onOpenApproval={setOpenApprovalId}
             onOpenArtifact={setOpenArtifactId}
@@ -641,6 +650,9 @@ export function App() {
                   if (sessionId !== openSessionId) {
                     setDraft("")
                     setSendProblem("")
+                    // Same for what was picked to go with it.
+                    setAttachments([])
+                    setAttachProblem("")
                   }
                   setOpenSessionId(sessionId)
                 }}
