@@ -1,4 +1,5 @@
-import { useEffect, useRef, type ReactNode, type RefObject } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react"
+import { createPortal } from "react-dom"
 
 import { cn } from "./lib/utils"
 
@@ -7,11 +8,41 @@ import { cn } from "./lib/utils"
 // dim the page. It closes on Escape and on a click outside, and it returns focus
 // to whatever opened it, because a keyboard user who opens one from a chip has
 // nowhere to go otherwise.
+//
+// It renders in a portal rather than beside its trigger. Positioned in place it
+// was cut off by an ancestor when it opened upward from the composer, losing
+// its first rows: the mode list's Plan and Ask could not be reached on a real
+// screen while every test passed, because jsdom has no layout and cannot see
+// clipping. A portal takes the surface out of every ancestor's overflow, so the
+// only thing that can bound it is the window.
+
+export type FloatingPlacement = "below" | "above"
+
+type Position = { left: number; top: number; maxHeight: number } | undefined
+
+const gap = 8
+
+function positionFor(anchor: HTMLElement, surface: HTMLElement, placement: FloatingPlacement, align: "start" | "end"): Position {
+  const rect = anchor.getBoundingClientRect()
+  const width = surface.offsetWidth
+  const height = surface.offsetHeight
+  // Flip rather than run off the window: a surface that opens past the edge
+  // puts its rows where no pointer can reach them.
+  const roomAbove = rect.top - gap
+  const roomBelow = window.innerHeight - rect.bottom - gap
+  const above = placement === "above" ? roomAbove >= Math.min(height, 160) || roomAbove >= roomBelow : roomBelow < Math.min(height, 160) && roomAbove > roomBelow
+  const top = above ? Math.max(gap, rect.top - gap - height) : rect.bottom + gap
+  const rawLeft = align === "end" ? rect.right - width : rect.left
+  const left = Math.max(gap, Math.min(rawLeft, window.innerWidth - width - gap))
+  return { left, top, maxHeight: Math.max(120, (above ? roomAbove : roomBelow)) }
+}
+
 export function FloatingSurface({
   open,
   onClose,
   label,
   align = "start",
+  placement = "below",
   trigger,
   children,
   className,
@@ -20,17 +51,38 @@ export function FloatingSurface({
   onClose: () => void
   label: string
   align?: "start" | "end"
+  placement?: FloatingPlacement
   trigger?: RefObject<HTMLElement | null> | undefined
   children: ReactNode
   className?: string
 }) {
   const surface = useRef<HTMLDivElement>(null)
   const opener = useRef<Element | null>(null)
+  const [position, setPosition] = useState<Position>(undefined)
   // Focus goes back to the opener when the surface closes, and only then. If
   // the effect depended on onClose, an unrelated render would tear it down and
   // pull focus out of whatever the person was typing in.
   const close = useRef(onClose)
   close.current = onClose
+
+  // Measured after paint and before the browser shows it, so it never appears
+  // at the wrong place first.
+  useLayoutEffect(() => {
+    if (!open) { setPosition(undefined); return }
+    const anchor = trigger?.current
+    const element = surface.current
+    if (!anchor || !element) return
+    const place = () => setPosition(positionFor(anchor, element, placement, align))
+    place()
+    window.addEventListener("resize", place)
+    // Capture: a surface anchored to a chip inside a scrolling pane has to
+    // follow it, and scroll does not bubble.
+    window.addEventListener("scroll", place, true)
+    return () => {
+      window.removeEventListener("resize", place)
+      window.removeEventListener("scroll", place, true)
+    }
+  }, [open, trigger, placement, align])
 
   useEffect(() => {
     if (!open) return
@@ -63,21 +115,30 @@ export function FloatingSurface({
   }, [open, trigger])
 
   if (!open) return null
-  return (
+  const surfaceNode = (
     <div
       ref={surface}
       role="group"
       aria-label={label}
+      style={{
+        position: "fixed",
+        left: position?.left ?? 0,
+        top: position?.top ?? 0,
+        maxHeight: position?.maxHeight,
+        // Hidden only for the first frame, while it waits to be measured. A
+        // surface given no trigger has nothing to measure against, so it shows
+        // where it lands rather than never showing at all.
+        visibility: position || !trigger ? "visible" : "hidden",
+      }}
       className={cn(
-        // A surface never grows past the window. Without this a long list runs
-        // off the bottom of the screen and whatever sits under it, an action
-        // or the last row, cannot be reached at all.
-        "absolute top-[calc(100%+6px)] z-50 max-h-[70vh] min-w-56 overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg",
-        align === "end" ? "right-0" : "left-0",
+        "z-50 min-w-56 overflow-y-auto rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-lg",
         className,
       )}
     >
       {children}
     </div>
   )
+  // Without a document there is nothing to portal into, which is the case in a
+  // non-browser render; the surface still renders so its contents are testable.
+  return typeof document === "undefined" ? surfaceNode : createPortal(surfaceNode, document.body)
 }
