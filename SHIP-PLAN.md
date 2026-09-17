@@ -1221,11 +1221,25 @@ carrier adapter was stopped on 2026-09-14 so Codex's queue is M1; it resumes her
 The client work that reaches a daemon over loopback or the tailnet is M1. Anything that needs
 the hosted relay waits for Phase 2. Starts when the protocol is stable.
 
-- [ ] **S3.0 [CC + H]** The check before the build. Can a paired phone attach to a desktop
-      session over the tailnet route right now, and what breaks? Pair a real phone to a real
-      daemon, attach to a session, answer a gate, and report a yes or a defect list. This
-      path is designed and drawn and has never been run; its answer decides how much of the
-      remaining mobile work matters. No feature code for the phone before this reports.
+- [x] **S3.0 [CC + H]** The check before the build. Ran 2026-09-16 on real hardware: an
+      iPhone on 5G over the tailnet with TLS, against a daemon built from `4ddf93f5`. Answer
+      is yes. Four proofs: (1) tailnet transport with TLS; (2) a `client/phone` credential
+      earned by spending a one-use code the machine drew (3c2ae09c, #451); (3) sessions listed
+      and attached on the phone; (4) a gate raised by a session started in the browser,
+      answered on the phone, the desktop receipt reading `decided from phone`. Nine defects
+      found. Five fixed on the run, each its own PR: origin check refused every client that
+      sent an `Origin`, same-host admission on TLS sockets only (2c9ffc10, #453);
+      `FloatingSurface` clipped its own first rows, mode list unreachable (5c17e887, #454); a
+      mode change before the first turn resumed a conversation that never existed, a failed
+      reopen destroyed the thread, and a session once in Ask could never write again
+      (5a14da7c, #455); the phone rendered markdown raw (2e30deb5, #456, not yet seen on the
+      device); pairing refusals hid the socket's own reason (ccc9dd1d, #457). Three open:
+      `project.open` and
+      `session.send` answer "Internal daemon error" for every cause, a policy decision on what
+      detail leaves the daemon; `session.tsx` keyboard avoidance lacks
+      `keyboardVerticalOffset` and the thread does not autoscroll; a daemon built from `main`
+      quarantined a live profile's stored snapshot on first start and reset the workspace,
+      with nothing telling the user. Phone credential revoked at the end of the run.
 - [x] **S3.1 [CC]** Desktop: the 2026-09-15 audit's v2 gap list is closed on `main`, and
       that is the whole of this claim; v2 is not landed. Each gap went in as its own slice,
       built to the v2 arrangement and sitting in the v1 chrome: Checkpoints tab (e535558c,
