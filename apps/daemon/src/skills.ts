@@ -268,9 +268,9 @@ export class FileSkillCatalog implements SkillCatalog {
   }
 }
 
-export function skillRoots(home: string, project?: string): SkillRoot[] {
+export function skillRoots(home: string, project?: string, profile = join(home, ".domovoi")): SkillRoot[] {
   const roots: SkillRoot[] = [
-    { path: join(home, ".domovoi", "skills"), scope: "user", source: "domovoi" },
+    { path: join(profile, "skills"), scope: "user", source: "domovoi" },
     { path: join(home, ".agents", "skills"), scope: "user", source: "agents" },
     { path: join(home, ".kilo", "skills"), scope: "user", source: "kilo" },
     { path: join(home, ".claude", "skills"), scope: "user", source: "claude" },

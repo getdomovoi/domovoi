@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { z } from "zod"
@@ -33,7 +34,7 @@ export const storedUpdatePolicySchema = z.object({
 }).strict()
 
 export type DaemonUpdateOptions = {
-  homeDirectory: string
+  homeDirectory: ProfileLocation
   lease: ProfileLease
   fetcher?: typeof fetch
   install?: BootstrapInstall
@@ -50,10 +51,10 @@ class UpdateRefusal extends Error {
   constructor(readonly refusal: Refusal) { super(refusal.message) }
 }
 
-function readPolicy(homeDirectory: string) {
+function readPolicy(homeDirectory: ProfileLocation) {
   try {
     return storedUpdatePolicySchema.parse(JSON.parse(readLocalProfileFile(
-      join(homeDirectory, ".domovoi", "update-policy.json"), maximumUpdateMetadataBytes,
+      join(profileDirectory(homeDirectory), "update-policy.json"), maximumUpdateMetadataBytes,
     )))
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined

@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
 import { posix, win32 } from "node:path"
 
 import { z } from "zod"
@@ -7,6 +8,8 @@ import { parseDaemonEnvironment, type DaemonEnvironment, type DaemonEnvironmentC
 import { OperationDeadline } from "../operation-deadline.js"
 import { configuredSshTunnelsSchema, tailnetHostSchema } from "../transport-config.js"
 import { withinServiceDeadline } from "./deadline.js"
+import { profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
+import { readLocalProfileFile } from "../local-owner-record.js"
 
 const maximumConfigurationBytes = 64 * 1_024
 const pathSchema = z.string().min(1).refine((path) => posix.isAbsolute(path) || win32.isAbsolute(path))
@@ -14,6 +17,7 @@ const configurationSchema = z.object({
   version: z.literal(1),
   registrationId: z.uuid().optional(),
   homeDirectory: pathSchema,
+  profileDirectory: pathSchema.optional(),
   host: z.string(),
   port: z.number().int(),
   credentialPath: pathSchema,
@@ -41,6 +45,8 @@ export type ServiceConfiguration = Omit<DaemonEnvironmentConfig, "authToken"> & 
 export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironment {
   return {
     DOMOVOI_HOST: config.host,
+    DOMOVOI_PROFILE_DIR: config.profileDirectory ?? profileDirectory(config.homeDirectory,
+      win32.isAbsolute(config.homeDirectory) && !posix.isAbsolute(config.homeDirectory) ? "win32" : "linux"),
     DOMOVOI_PORT: String(config.port),
     DOMOVOI_CREDENTIAL_PATH: config.credentialPath,
     DOMOVOI_MACHINE_IDENTITY_PATH: config.machineIdentityPath,
@@ -70,7 +76,9 @@ export function createServiceConfiguration(environment: DaemonEnvironment, optio
   if (!paths.isAbsolute(options.homeDirectory) || !paths.isAbsolute(options.workingDirectory)) {
     throw new Error("Service installation requires absolute home and working directories")
   }
-  const config = parseDaemonEnvironment(environment, options.homeDirectory)
+  const config = parseDaemonEnvironment({ ...environment,
+    DOMOVOI_PROFILE_DIR: environment.DOMOVOI_PROFILE_DIR ?? paths.join(options.homeDirectory, ".domovoi"),
+  }, options.homeDirectory)
   const absolute = (path: string) => paths.resolve(options.workingDirectory, path)
   const { authToken: _authToken, ...settings } = config
   return {
@@ -84,15 +92,27 @@ export function createServiceConfiguration(environment: DaemonEnvironment, optio
 }
 
 export function serviceConfigurationPath(home: string, platform: string): string {
-  return (platform === "win32" ? win32 : posix).join(home, ".domovoi", "service.json")
+  return (platform === "win32" ? win32 : posix).join(profileDirectory(home, platform), "service.json")
+}
+
+export function serviceRegistrationBlocksProfile(home: string, profile: ProfileLocation): boolean {
+  const path = serviceConfigurationPath(home, process.platform)
+  if (!existsSync(path)) return false
+  try {
+    const config = parseServiceConfiguration(readLocalProfileFile(path, maximumConfigurationBytes))
+    return sameProfileDirectory(profileLocation(config.homeDirectory, config.profileDirectory), profile)
+  } catch {
+    return true
+  }
 }
 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, relayIdentityPublicKey, relayCredentialFile, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, ...required } = configurationSchema.parse(JSON.parse(text))
     const config: ServiceConfiguration = {
       ...required,
+      ...(profileDirectory !== undefined ? { profileDirectory } : {}),
       ...(relayIdentityPublicKey !== undefined ? { relayIdentityPublicKey } : {}),
       ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),
       ...(registrationId !== undefined ? { registrationId } : {}),

@@ -25,9 +25,11 @@ import {
   skillTrustPath,
 } from "./skill-signing.js"
 import { FileSkillCatalog, skillRoots } from "./skills.js"
+import { profileLocation } from "./profile-directory.js"
 
 export type SkillCommandDependencies = {
   home: string
+  profileDirectory?: string
   cwd: () => string
   stdout: (text: string) => void
   stderr: (text: string) => void
@@ -60,7 +62,7 @@ export async function runSkillCommand(
     return sign(args[2]!, args[4]!, dependencies)
   }
   if (action === "trust" && (args.length === 3 || (args.length === 5 && args[3] === "--trust-file"))) {
-    return trust(args[2]!, args[4] ?? skillTrustPath(dependencies.home), dependencies)
+    return trust(args[2]!, args[4] ?? skillTrustPath(profileLocation(dependencies.home, dependencies.profileDirectory)), dependencies)
   }
   if (action === "add" && args.length >= 3) {
     const options = addOptions(args.slice(3))
@@ -230,8 +232,8 @@ async function add(
   dependencies: SkillCommandDependencies,
 ): Promise<number> {
   const source = { kind: "path" as const, path: resolve(skillPath) }
-  const catalog = new FileSkillCatalog(skillRoots(dependencies.home, dependencies.cwd()), undefined, {
-    trustPath: skillTrustPath(dependencies.home),
+  const catalog = new FileSkillCatalog(skillRoots(dependencies.home, dependencies.cwd(), dependencies.profileDirectory), undefined, {
+    trustPath: skillTrustPath(profileLocation(dependencies.home, dependencies.profileDirectory)),
   })
   let preview: SkillInstallPreview
   try {

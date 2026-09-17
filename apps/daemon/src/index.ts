@@ -8,6 +8,7 @@ import { runPairCommand } from "./pair-command.js"
 import { isLoopbackHost, pairingAddressFor } from "./pairing-address.js"
 import { renderQrToTerminal } from "./qr-terminal.js"
 import { runProfileCommand } from "./profile-command.js"
+import { configuredProfileDirectory, profileLocation } from "./profile-directory.js"
 import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { exitAfterStderr } from "./flushed-exit.js"
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
@@ -108,9 +109,10 @@ Options:
 Environment:
   DOMOVOI_HOST                    Listener host (default: 127.0.0.1)
   DOMOVOI_PORT                    Listener port (default: 47831)
+  DOMOVOI_PROFILE_DIR             Absolute profile directory (default: ~/.domovoi)
   DOMOVOI_AUTH_TOKEN              Bearer token for daemon requests
-  DOMOVOI_CREDENTIAL_PATH         Credential file (default: ~/.domovoi/daemon.token)
-  DOMOVOI_MACHINE_IDENTITY_PATH   Machine identity file (default: ~/.domovoi/machine.json)
+  DOMOVOI_CREDENTIAL_PATH         Credential file (default: <profile>/daemon.token)
+  DOMOVOI_MACHINE_IDENTITY_PATH   Machine identity file (default: <profile>/machine.json)
   DOMOVOI_ALLOWED_ORIGINS         Comma-separated trusted browser origins
   DOMOVOI_ALLOW_REMOTE_TRANSPORT  Set to 1 to permit non-loopback listeners
   DOMOVOI_TLS_CERT_PATH           TLS certificate chain, required off loopback
@@ -166,6 +168,7 @@ async function main() {
   if (args[0] === "profile") {
     process.exitCode = runProfileCommand(args, {
       homeDirectory: homedir(),
+      profileDirectory: configuredProfileDirectory(process.env.DOMOVOI_PROFILE_DIR, homedir()),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })
@@ -208,6 +211,7 @@ async function main() {
     // the private key never leaves the file the person named.
     process.exitCode = await runSkillCommand(args, {
       home: homedir(),
+      profileDirectory: configuredProfileDirectory(process.env.DOMOVOI_PROFILE_DIR, homedir()),
       cwd: () => process.cwd(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
@@ -289,7 +293,9 @@ async function main() {
   const published = isLoopbackListener(address.host)
     ? { host: address.host, port: address.port, token: daemon.authToken }
     : undefined
-  const daemonHome = serviceConfig?.homeDirectory ?? homedir()
+  const daemonHome = profileLocation(serviceConfig?.homeDirectory ?? homedir(),
+    serviceConfig ? configuredProfileDirectory(serviceConfig.profileDirectory, serviceConfig.homeDirectory)
+      : configuredProfileDirectory(process.env.DOMOVOI_PROFILE_DIR, homedir()))
   if (published) await publishEndpointFile({ home: daemonHome, ...published })
 
   installShutdownHandlers({

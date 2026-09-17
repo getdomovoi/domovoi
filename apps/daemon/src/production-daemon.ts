@@ -23,6 +23,7 @@ import {
   type DaemonServerOptions,
 } from "./server.js"
 import { skillTrustPath } from "./skill-signing.js"
+import { profileDirectory, profileLocation } from "./profile-directory.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 import { wslHostFacts } from "./wsl-host.js"
 
@@ -108,6 +109,7 @@ export async function createProductionDaemonWithDependencies(
   const environment = options.environment ?? process.env
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
   const machineLabel = options.machineLabel ?? hostname()
+  let profile = profileLocation(homeDirectory)
   let lease = ownership?.lease
   let diagnosticLog: RotatingDaemonLog | undefined
   let published = false
@@ -116,14 +118,15 @@ export async function createProductionDaemonWithDependencies(
   let relayResult: ProvisionedRelayChannel | undefined
   try {
     const config = dependencies.parseEnvironment(environment, homeDirectory)
+    profile = profileLocation(homeDirectory, config.profileDirectory)
     if (options.owner === "desktop" && options.serviceRegistrationId !== undefined) throw new Error("Desktop cannot claim a service registration")
     // Validate transport before any secret or listener side effect. Store
     // construction itself writes state, so ownership precedes its constructor.
     const tls = config.tls ? await beforeDeadline(dependencies.loadTls(config.tls), deadline) : undefined
     deadline.throwIfExpired()
-    lease ??= claimProfile(homeDirectory)
+    lease ??= claimProfile(profile)
     const ownedLease = lease
-    diagnosticLog = new RotatingDaemonLog(join(homeDirectory, ".domovoi", "logs"))
+    diagnosticLog = new RotatingDaemonLog(join(profileDirectory(profile), "logs"))
     const ownedLog = diagnosticLog
     let reportedLogFailure = false
     const errorSink: DaemonErrorSink = (entry) => {
@@ -145,14 +148,14 @@ export async function createProductionDaemonWithDependencies(
       dependencies.loadOrCreateIdentity(config.machineIdentityPath, { label: machineLabel }),
     ]), deadline)
     loadingRelay = dependencies.loadRelayChannel({
-      homeDirectory, machineId: machineIdentity.id, deadline,
+      homeDirectory: profile, machineId: machineIdentity.id, deadline,
       ...(config.relayIdentityPublicKey !== undefined ? { identityPublicKey: config.relayIdentityPublicKey } : {}),
       ...(config.relayCredentialFile !== undefined ? { credentialFile: config.relayCredentialFile } : {}),
       warn: (message) => errorSink({ context: "Relay channel credential custody", detail: message }),
     })
     void loadingRelay.then((value) => { relayResult = value; relaySettled = true }, () => { relaySettled = true })
     const relay = await beforeDeadline(loadingRelay, deadline)
-    const secret = await beforeDeadline(createLocalOwnerSecret(homeDirectory, authToken, deadline), deadline)
+    const secret = await beforeDeadline(createLocalOwnerSecret(profile, authToken, deadline), deadline)
     deadline.throwIfExpired()
     const identity = { instanceId: randomUUID(), machineId: machineIdentity.id, protocolVersion }
     const credential: ProductionDaemonCredential = config.authToken
@@ -162,12 +165,12 @@ export async function createProductionDaemonWithDependencies(
       ...(options.serviceRegistrationId ? { serviceRegistrationId: options.serviceRegistrationId } : {}),
       ...(config.tls ? { certificatePath: resolve(config.tls.certPath) } : {}),
     }
-    writeLocalOwnerRecord(homeDirectory, record)
+    writeLocalOwnerRecord(profile, record)
     published = true
     deadline.throwIfExpired()
     const wsl = dependencies.wslFacts(environment)
     const daemon = dependencies.createDaemon({
-      updates: { homeDirectory, lease: ownedLease },
+      updates: { homeDirectory: profile, lease: ownedLease },
       localOwner: { secret, identity },
       host: config.host,
       port: config.port,
@@ -185,9 +188,10 @@ export async function createProductionDaemonWithDependencies(
       ...(config.sshTunnels ? { sshTunnels: config.sshTunnels } : {}),
       ...(wsl ? { wsl } : {}),
       machineCredentials: dependencies.createMachineCredentials(),
-      statePath: join(homeDirectory, ".domovoi", "state.sqlite"),
-      worktreeRoot: join(homeDirectory, ".domovoi", "worktrees"),
-      skillTrustPath: skillTrustPath(homeDirectory),
+      statePath: join(profileDirectory(profile), "state.sqlite"),
+      worktreeRoot: join(profileDirectory(profile), "worktrees"),
+      profileDirectory: profileDirectory(profile),
+      skillTrustPath: skillTrustPath(profile),
       manageStateDirectoryPermissions: true,
       errorSink,
     })
@@ -197,11 +201,11 @@ export async function createProductionDaemonWithDependencies(
     let stopping: Promise<void> | undefined
     const shutdown = (): Promise<void> => {
       if (!stopping) {
-        writeLocalOwnerRecord(homeDirectory, { ...record, state: "stopping" })
+        writeLocalOwnerRecord(profile, { ...record, state: "stopping" })
         // A late start must settle before closing its stores. A hung or failed
         // stop retains the lease. Expiring a caller never authorizes a writer.
         stopping = Promise.resolve(starting).catch(() => {}).then(() => daemon.stop()).then(() => {
-          writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
+          writeLocalOwnerRecord(profile, { version: 1, state: "none" })
           ownedLog.close()
           ownedLease.release()
         })
@@ -221,7 +225,7 @@ export async function createProductionDaemonWithDependencies(
             if (stopping) throw new Error("Daemon stopped during startup")
             const reachableHost = config.advertiseHost ?? config.tailnetHost ?? address.host
             const endpoint = { ...address, url: `${secureTransport ? "wss" : "ws"}://${urlHost(reachableHost)}:${address.port}/rpc` }
-            writeLocalOwnerRecord(homeDirectory, { ...record, state: "ready", url: endpoint.url })
+            writeLocalOwnerRecord(profile, { ...record, state: "ready", url: endpoint.url })
             return endpoint
           })
         }
@@ -246,7 +250,7 @@ export async function createProductionDaemonWithDependencies(
         .catch((cleanup) => console.error("Relay provisioning cleanup failed:", redactErrorDetail(cleanup)))
     }
     try {
-      if (published) writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" })
+      if (published) writeLocalOwnerRecord(profile, { version: 1, state: "none" })
     } finally {
       diagnosticLog?.close()
       lease?.release()

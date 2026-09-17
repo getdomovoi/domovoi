@@ -16,9 +16,22 @@ absolute installation paths rather than a truncated launch command.
 The versioned file contains a fresh installation registration UUID, listener host and port,
 remote-listener opt-in, TLS certificate and key
 **paths**, advertised host, allowed browser origins, credential and machine-identity paths, and the
-user home used for durable state. Relative input paths become absolute against the installing
+real user home for provider processes and the explicit profile directory for durable state.
+Relative per-file input paths become absolute against the installing
 shell's working directory. The default paths and port are captured too, so a changed environment
 cannot silently choose a different identity or endpoint after a restart.
+
+Set `DOMOVOI_PROFILE_DIR` to an absolute directory before installation to select a profile.
+Its leases, owner records, credentials, identity, database, logs and worktrees use that directory;
+provider CLIs keep the real home and sign-ins. Saved configurations predating this setting use
+`<saved-home>/.domovoi`. The invoking shell cannot override a saved profile at startup.
+
+Registration remains at `<user-home>/.domovoi/service.json`, and the service-operation lease
+remains shared per OS user. There is still one native service job per user, not one per profile.
+Status and removal find the installed profile from that registration even with no shell override.
+Installing a different profile first requires the previous registered profile's lease to be free;
+changing directories cannot bypass a running owner. Registration blocks interactive fallback
+only for its selected profile; unreadable registration conservatively blocks fallback.
 
 No bearer, TLS key contents, provider credentials, or arbitrary shell environment are serialized.
 An install with `DOMOVOI_AUTH_TOKEN` set refuses before writing files or invoking the manager.

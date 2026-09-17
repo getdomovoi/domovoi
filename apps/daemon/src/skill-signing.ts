@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import {
   createHash,
   createPublicKey,
@@ -48,8 +49,8 @@ export class SkillTrustFileError extends Error {
   }
 }
 
-export function skillTrustPath(home: string): string {
-  return join(home, ".domovoi", skillTrustFileName)
+export function skillTrustPath(home: ProfileLocation): string {
+  return join(profileDirectory(home), skillTrustFileName)
 }
 
 export function skillContentDigest(content: string): string {

@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import { join } from "node:path"
 
 import { claimExclusiveFileLease } from "./file-lease.js"
@@ -17,8 +18,8 @@ export function assertProfileLeaseHeld(lease: ProfileLease): void {
   if (!liveHandles.has(lease)) throw new Error("Profile metadata mutation requires a held profile lease")
 }
 
-export function claimProfile(homeDirectory: string): ProfileLease {
-  const directory = join(homeDirectory, ".domovoi")
+export function claimProfile(homeDirectory: ProfileLocation): ProfileLease {
+  const directory = profileDirectory(homeDirectory)
   const file = claimExclusiveFileLease(join(directory, "profile-lease.sqlite"), () => new ProfileAlreadyOwnedError(directory))
   const lease: ProfileLease = {
     release: () => {
