@@ -24,16 +24,6 @@ const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 const maximumClaudeStderrBytes = 16_384
 const claudeAskTools = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const
 const claudeContextUsageTimeoutMs = 250
-const claudeAskDisallowedTools = [
-  "Bash",
-  "Edit",
-  "Write",
-  "NotebookEdit",
-  "Task",
-  "Agent",
-  "Skill",
-  "mcp__*",
-] as const
 
 export type ClaudeMessageId = ReturnType<typeof randomUUID>
 
@@ -130,6 +120,9 @@ type Session = {
   stderr: ClaudeStderrTail
   activeTurnId?: string
   assistantError?: string
+  // Set once a turn has been sent. Claude has no conversation to resume until
+  // then, so a reopen before it must start a fresh one.
+  started?: true
   ended?: true
 }
 
@@ -241,11 +234,26 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     visualContexts?: AgentVisualContext[]
   }): Promise<string> {
     let session = this.#requireSession(threadId)
-    if (session.ended || isClaudeAsk(session.runtime) !== isClaudeAsk(runtime)) {
-      session.input.close()
-      session.query.close()
+    // A mode change no longer restarts anything: the tool boundary moved to
+    // #requestApproval, and Claude's own mode is applied live by #applyRuntime
+    // below. Only a session that has ended needs reopening.
+    if (session.ended) {
+      const previous = session
       this.#sessions.delete(threadId)
-      await this.#openSession(threadId, session.cwd, runtime, true)
+      try {
+        // Resume only a conversation that exists. Moving the mode before the
+        // first turn used to ask Claude to resume a session it had never
+        // opened, which failed with "No conversation found".
+        await this.#openSession(threadId, previous.cwd, runtime, previous.started === true)
+      } catch (error) {
+        // Put back what was working. Dropping the session here made the first
+        // failure permanent: every later send found nothing and reported that
+        // the session was not loaded, which hid the real cause.
+        if (!this.#sessions.has(threadId)) this.#sessions.set(threadId, previous)
+        throw error
+      }
+      previous.input.close()
+      previous.query.close()
       session = this.#requireSession(threadId)
     }
     const turnId = this.#id()
@@ -254,6 +262,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     await this.#applyRuntime(session, runtime)
     session.activeTurnId = turnId
     session.input.push(userMessage(threadId, turnId, prompt, visualContexts))
+    session.started = true
     return turnId
   }
 
@@ -321,7 +330,6 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const permission = claudePermissionFor(runtime)
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
-      ...claudeBoundaryOptions(runtime),
       cwd,
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
@@ -645,18 +653,16 @@ class ClaudeStderrTail {
   }
 }
 
-function isClaudeAsk(runtime: Runtime): boolean {
-  return runtime.permissionMode === "ask"
-}
 
-function claudeBoundaryOptions(runtime: Runtime): ClaudeQueryOptions {
-  if (!isClaudeAsk(runtime)) return {}
-  return {
-    settingSources: [],
-    tools: [...claudeAskTools],
-    disallowedTools: [...claudeAskDisallowedTools],
-  }
-}
+// Ask is enforced per tool call in #requestApproval, against the session's
+// current runtime, so it follows a mode change immediately. It used to also be
+// declared in the query options as a tool allow-list, which sounds like a
+// second lock but is not: the SDK fixes tools when a conversation is created
+// and offers no way to change them, so the only way to lift the restriction
+// was to start a new conversation. Switching Ask to Build therefore either
+// kept the read-only tool set for the life of the session, or threw the
+// conversation away. Enforcement lives in one place now, the place that can
+// change with the mode.
 
 function baseOptions(): ClaudeQueryOptions {
   return {
