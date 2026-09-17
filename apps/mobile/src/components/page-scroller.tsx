@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import {
   ScrollView,
   type LayoutChangeEvent,
@@ -19,12 +19,18 @@ import { scrollerScrolls } from "../scroller-overflow"
 // scrolls.
 export function PageScroller({
   bottomInset = 0,
+  followEnd = false,
   contentContainerStyle,
   ...props
 }: ScrollViewProps & {
   // What FloatingBar reported covering. Zero on a screen with no bar over it.
   bottomInset?: number
+  // A thread reads newest-last, and the person is waiting at the bottom for
+  // what lands. When the content grows the scroller goes to the end; when it
+  // does not, the scroll stays where the person put it.
+  followEnd?: boolean
 }) {
+  const scroller = useRef<ScrollView>(null)
   const [viewport, setViewport] = useState<number | undefined>(undefined)
   const [content, setContent] = useState<number | undefined>(undefined)
 
@@ -43,6 +49,9 @@ export function PageScroller({
   }
 
   const measureContent = (width: number, height: number) => {
+    if (followEnd && (content === undefined || height > content)) {
+      scroller.current?.scrollToEnd({ animated: true })
+    }
     setContent(height)
     props.onContentSizeChange?.(width, height)
   }
@@ -52,6 +61,7 @@ export function PageScroller({
   return (
     <ScrollView
       {...props}
+      ref={scroller}
       onLayout={measureViewport}
       onContentSizeChange={measureContent}
       // The design system hides scrollbars on touch outright, under
