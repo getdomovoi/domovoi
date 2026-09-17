@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import { createHash, randomBytes } from "node:crypto"
 import { isAbsolute, join, resolve } from "node:path"
 
@@ -35,7 +36,7 @@ type ProvisioningRecord = z.infer<typeof recordSchema>
 
 export type ProvisionedRelayChannel = { privateKey: Uint8Array; identity: RelayIdentityPin; successor?: RelaySignedSuccessor }
 type Options = {
-  homeDirectory: string
+  homeDirectory: ProfileLocation
   machineId: string
   identityPublicKey?: string
   credentialFile?: string
@@ -53,7 +54,7 @@ export const relayProvisioningDependencies: Dependencies = {
   publishRecord: writePrivateFile,
 }
 
-export const relayProvisioningPath = (homeDirectory: string) => join(homeDirectory, ".domovoi", "relay-identity.json")
+export const relayProvisioningPath = (homeDirectory: ProfileLocation) => join(profileDirectory(homeDirectory), "relay-identity.json")
 const fileWarning = (path: string) => `The relay channel key is kept in ${path}, not in an OS keychain. The file is mode 0600 and holds the X25519 private key. Anyone who can read it can impersonate this daemon until paired clients accept an identity-signed successor. The identity private key must be kept off this machine.`
 const unavailable = (cause?: Error) => (cause
   ? `The OS keychain did not answer (${cause.message}), so this daemon's relay channel key cannot be kept there. Unlock it and run this again, or`
@@ -101,12 +102,12 @@ function activeSecret(identity: RelayIdentityPin, privateKey: string): string {
   return JSON.stringify({ version: 1, machineId: identity.machineId, identityPublicKey: identity.identityPublicKey, privateKey })
 }
 
-async function openCustody(homeDirectory: string, machineId: string, credentialFile: string | undefined, warn: Options["warn"], dependencies: Dependencies) {
+async function openCustody(homeDirectory: ProfileLocation, machineId: string, credentialFile: string | undefined, warn: Options["warn"], dependencies: Dependencies) {
   const store = await openCredentialBackend({
     keyring: dependencies.keyring, ...(credentialFile !== undefined ? { credentialFile } : {}),
     warn, fileWarning, unavailable, maximumBytes: maximumCredentialBytes,
   })
-  const account = createHash("sha256").update("domovoi.relay-profile.v1\0").update(resolve(homeDirectory)).update("\0").update(machineId).digest("hex")
+  const account = createHash("sha256").update("domovoi.relay-profile.v1\0").update(resolve(typeof homeDirectory === "string" ? homeDirectory : profileDirectory(homeDirectory))).update("\0").update(machineId).digest("hex")
   const read = () => store.where === "file" ? store.read() : store.keyring.get(account)
   const write = (value: string) => store.where === "file" ? store.write(value) : store.keyring.set(account, value)
   const publish = async (value: string) => {
@@ -119,7 +120,7 @@ async function openCustody(homeDirectory: string, machineId: string, credentialF
 
 // Read-only verification still works after the warm credential is lost. It
 // neither adopts the successor nor proves that a recipient persisted its pin.
-export async function verifyRelayProfileSuccessor(homeDirectory: string, envelope: unknown): Promise<RelayIdentityPin> {
+export async function verifyRelayProfileSuccessor(homeDirectory: ProfileLocation, envelope: unknown): Promise<RelayIdentityPin> {
   const text = await readPrivateFile(relayProvisioningPath(homeDirectory), { maximumBytes: maximumRecordBytes })
   if (text === undefined) throw new Error("Relay identity is not provisioned")
   return verifyRelayChannelSuccessor(parseRecord(text).identity, envelope)
@@ -207,7 +208,7 @@ export async function loadOrProvisionRelayChannel(options: Options, dependencies
   } finally { privateKey?.fill(0) }
 }
 
-export type RelayProfileRecoveryOptions = { homeDirectory: string; warn(message: string): void }
+export type RelayProfileRecoveryOptions = { homeDirectory: ProfileLocation; warn(message: string): void }
 
 async function recoveryRecord(options: RelayProfileRecoveryOptions): Promise<ProvisioningRecord> {
   const text = await readPrivateFile(relayProvisioningPath(options.homeDirectory), { maximumBytes: maximumRecordBytes })

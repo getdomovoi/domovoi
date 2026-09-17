@@ -583,6 +583,7 @@ describe("runServiceCommand", () => {
     const configuration = vi.mocked(dependencies.write).mock.calls.find(([path]) => path.endsWith("service.json"))
     expect(configuration, "the supervised launch must carry a configuration file").toBeDefined()
     expect(JSON.parse(configuration![1])).toEqual({
+      profileDirectory: at(".domovoi"),
       version: 1,
       registrationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       homeDirectory: root,

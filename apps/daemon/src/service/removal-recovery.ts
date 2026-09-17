@@ -1,3 +1,4 @@
+import { profileLocation } from "../profile-directory.js"
 import { createHash } from "node:crypto"
 
 import { localOwnerRecordPath, readLocalOwnerRecord, readLocalProfileFile, type LocalOwnerRecord } from "../local-owner-record.js"
@@ -8,6 +9,7 @@ export type ServiceRemovalSnapshot = {
   owner: LocalOwnerRecord | undefined
   configurationDigest: string | null
   registrationId?: string
+  profileDirectory?: string
   // A record or configuration that exists but cannot be read is not proof of
   // anything. Removal still proceeds; no receipt can be derived from it.
   unreadable?: string
@@ -20,31 +22,31 @@ function failureDetail(error: unknown): string {
 export function readServiceRemovalSnapshot(homeDirectory: string, platform: string): ServiceRemovalSnapshot {
   let owner: LocalOwnerRecord | undefined
   let unreadable: string | undefined
-  try {
-    owner = readLocalOwnerRecord(homeDirectory)
-  } catch (error) {
-    unreadable = `The profile owner record could not be read at ${localOwnerRecordPath(homeDirectory)}: ${failureDetail(error)}`
-  }
   const configurationPath = serviceConfigurationPath(homeDirectory, platform)
-  let text: string
+  let text: string | undefined
   try {
     text = readLocalProfileFile(configurationPath, 64 * 1_024)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       unreadable ??= `The saved service configuration at ${configurationPath} could not be read: ${failureDetail(error)}`
     }
-    return { owner, configurationDigest: null, ...(unreadable === undefined ? {} : { unreadable }) }
   }
-  const configurationDigest = createHash("sha256").update(text).digest("hex")
-  if (unreadable !== undefined) return { owner, configurationDigest, unreadable }
+  const configurationDigest = text === undefined ? null : createHash("sha256").update(text).digest("hex")
+  let registrationId: string | undefined
+  let profileDirectory: string | undefined
   // A malformed or legacy config can still be removed, but cannot assert a
   // registration binding. Only the explicit operator path can recover it.
   try {
-    const { registrationId } = parseServiceConfiguration(text)
-    return { owner, configurationDigest, ...(registrationId ? { registrationId } : {}) }
-  } catch {
-    return { owner, configurationDigest }
+    if (text !== undefined) ({ registrationId, profileDirectory } = parseServiceConfiguration(text))
+  } catch { /* A malformed registration cannot authorize recovery. */ }
+  const profile = profileLocation(homeDirectory, profileDirectory)
+  try { owner = readLocalOwnerRecord(profile) }
+  catch (error) {
+    unreadable ??= `The profile owner record could not be read at ${localOwnerRecordPath(profile)}: ${failureDetail(error)}`
   }
+  return { owner, configurationDigest, ...(registrationId ? { registrationId } : {}),
+    ...(profileDirectory === undefined ? {} : { profileDirectory }),
+    ...(unreadable === undefined ? {} : { unreadable }) }
 }
 
 export type ServiceRemovalRecovery =

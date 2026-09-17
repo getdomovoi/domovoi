@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
@@ -60,11 +61,11 @@ const emptyMetadata: TrustedUpdateMetadata = {
   targetsDigest: "",
 }
 
-function metadataPath(homeDirectory: string): string {
-  return join(homeDirectory, ".domovoi", "update-metadata.json")
+function metadataPath(homeDirectory: ProfileLocation): string {
+  return join(profileDirectory(homeDirectory), "update-metadata.json")
 }
 
-export async function readTrustedUpdateMetadata(homeDirectory: string): Promise<TrustedUpdateMetadata> {
+export async function readTrustedUpdateMetadata(homeDirectory: ProfileLocation): Promise<TrustedUpdateMetadata> {
   try {
     return trustedUpdateMetadataSchema.parse(JSON.parse(await readFile(metadataPath(homeDirectory), "utf8")))
   } catch (error) {
@@ -74,7 +75,7 @@ export async function readTrustedUpdateMetadata(homeDirectory: string): Promise<
 }
 
 export async function persistTrustedUpdateMetadata(
-  homeDirectory: string,
+  homeDirectory: ProfileLocation,
   lease: ProfileLease,
   next: TrustedUpdateMetadata,
 ): Promise<TrustedUpdateMetadata> {
@@ -93,7 +94,7 @@ export async function persistTrustedUpdateMetadata(
       throw new Error(`Trusted update metadata ${String(version)} changed at an existing version`)
     }
   }
-  const directory = join(homeDirectory, ".domovoi")
+  const directory = profileDirectory(homeDirectory)
   await mkdir(directory, { recursive: true, mode: 0o700 })
   const temporary = `${metadataPath(homeDirectory)}.${process.pid}.${randomUUID()}.tmp`
   try {
@@ -107,7 +108,7 @@ export async function persistTrustedUpdateMetadata(
 }
 
 export async function stageVerifiedUpdate(options: {
-  homeDirectory: string
+  homeDirectory: ProfileLocation
   lease: ProfileLease
   install?: BootstrapInstall
   target: VerifiedUpdateTarget
@@ -115,7 +116,7 @@ export async function stageVerifiedUpdate(options: {
   runtimeRoot?: string
 }): Promise<{ version: string, path: string, sha256: string }> {
   assertProfileLeaseHeld(options.lease)
-  const destination = options.runtimeRoot ?? join(options.homeDirectory, ".domovoi", "runtimes")
+  const destination = options.runtimeRoot ?? join(profileDirectory(options.homeDirectory), "runtimes")
   const result = await (options.install ?? bootstrapInstall)({
     version: options.target.version,
     baseUrl: options.baseUrl,

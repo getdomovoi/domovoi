@@ -1,3 +1,4 @@
+import { profileDirectory, type ProfileLocation } from "./profile-directory.js"
 import { randomUUID } from "node:crypto"
 import { chmodSync, closeSync, constants, fstatSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join, posix, win32 } from "node:path"
@@ -36,17 +37,17 @@ export type LocalOwnerRecord = z.infer<typeof localOwnerRecordSchema>
 export type ReadyLocalOwner = Extract<LocalOwnerRecord, { state: "ready" }>
 export const maximumLocalOwnerRecordBytes = 16 * 1024
 
-export function localOwnerRecordPath(homeDirectory: string): string {
-  return join(homeDirectory, ".domovoi", "local-owner.json")
+export function localOwnerRecordPath(homeDirectory: ProfileLocation): string {
+  return join(profileDirectory(homeDirectory), "local-owner.json")
 }
 
-export function localOwnerSecretPath(homeDirectory: string): string {
-  return join(homeDirectory, ".domovoi", "local-owner.key")
+export function localOwnerSecretPath(homeDirectory: ProfileLocation): string {
+  return join(profileDirectory(homeDirectory), "local-owner.key")
 }
 
 // These bounded, local metadata operations are serialized while holding the
 // profile lease. No queued rename may outlive release and replace a new owner.
-export function writeLocalOwnerRecord(homeDirectory: string, record: LocalOwnerRecord): void {
+export function writeLocalOwnerRecord(homeDirectory: ProfileLocation, record: LocalOwnerRecord): void {
   const parsed = localOwnerRecordSchema.parse(record)
   const text = `${JSON.stringify(parsed)}\n`
   if (Buffer.byteLength(text) > maximumLocalOwnerRecordBytes) throw new Error("Local owner record exceeds its size limit")
@@ -61,7 +62,7 @@ export function writeLocalOwnerRecord(homeDirectory: string, record: LocalOwnerR
   }
 }
 
-export function readLocalOwnerRecord(homeDirectory: string): LocalOwnerRecord | undefined {
+export function readLocalOwnerRecord(homeDirectory: ProfileLocation): LocalOwnerRecord | undefined {
   const path = localOwnerRecordPath(homeDirectory)
   try {
     const contents = readLocalProfileFile(path, maximumLocalOwnerRecordBytes)
@@ -74,13 +75,13 @@ export function readLocalOwnerRecord(homeDirectory: string): LocalOwnerRecord | 
   }
 }
 
-export async function createLocalOwnerSecret(homeDirectory: string, rootBearer: string, deadline: OperationDeadline): Promise<LocalOwnerSecret> {
+export async function createLocalOwnerSecret(homeDirectory: ProfileLocation, rootBearer: string, deadline: OperationDeadline): Promise<LocalOwnerSecret> {
   const secret = localOwnerSecretSchema.parse(await loadOrCreateDaemonToken(localOwnerSecretPath(homeDirectory), deadline))
   if (secret === rootBearer) throw new Error("The local owner challenge key must differ from the daemon credential")
   return secret
 }
 
-export function readLocalOwnerSecret(homeDirectory: string): LocalOwnerSecret {
+export function readLocalOwnerSecret(homeDirectory: ProfileLocation): LocalOwnerSecret {
   return localOwnerSecretSchema.parse(readLocalProfileFile(localOwnerSecretPath(homeDirectory), 256).trim())
 }
 
