@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 
 import {
   applyStoredAppearanceTheme,
+  BrowserLimitsPanel,
   DaemonCredentialPrompt,
   localStorageRelayPinStorage,
   WorkspaceErrorBoundary,
@@ -13,6 +14,8 @@ import { DomovoiClient } from "@/client"
 
 applyStoredAppearanceTheme()
 
+import { browserLimits } from "./browser-limits"
+import { browserLimitsSeen, markBrowserLimitsSeen } from "./browser-limits-seen"
 import { browserPlatformEnvironment, createBrowserPlatform } from "./browser-platform"
 import { clientKindForBrowser } from "./client-kind"
 import { registerDomovoiServiceWorker } from "./pwa"
@@ -33,7 +36,8 @@ const clientKind = clientKindForBrowser({
   userAgent: navigator.userAgent,
   viewportWidth: window.innerWidth,
 })
-const platform = createBrowserPlatform(browserPlatformEnvironment(window))
+const environment = browserPlatformEnvironment(window)
+const platform = createBrowserPlatform(environment)
 
 forgetSupersededCredential(sessionStorage)
 
@@ -45,6 +49,11 @@ function DomovoiWeb() {
   const [session, setSession] = useState(() => loadDaemonSession(sessionStorage))
   const [pairing, setPairing] = useState(false)
   const [pairingError, setPairingError] = useState("")
+  // The limits are stated once per tab, after pairing and before the session,
+  // so a refusal inside the session is never the first time a person hears
+  // of it. A tab that cannot keep session storage sees them every time,
+  // which is itself one of the rows.
+  const [limitsSeen, setLimitsSeen] = useState(() => browserLimitsSeen(sessionStorage))
 
   if (!session) {
     return <DaemonCredentialPrompt
@@ -74,6 +83,12 @@ function DomovoiWeb() {
     />
   }
 
+  if (!limitsSeen) {
+    return <BrowserLimitsPanel
+      rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(sessionStorage))}
+      onContinue={() => setLimitsSeen(true)}
+    />
+  }
   return (
     <WorkspaceShell
       clientKind={clientKind}
