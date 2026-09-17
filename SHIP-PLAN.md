@@ -176,10 +176,12 @@ Parallel with Phase 0. Touches nothing the gates decide.
       WSL's init gap. Built, not accepted: #367 (617ac46d) carries the per-user LaunchAgent,
       the per-user systemd unit, and on Windows a limited-user `ONLOGON` scheduled task
       registered by `service/install.ts`, with `windows-task.ts` for its status and removal.
-      `docs/service-lifecycle-assessment.md` keeps the box open: WSL selection is not wired
-      into `service install`, logon acceptance is not established, the guest supervisor's
-      automatic-restart assertion failed, and complete removal acceptance is still due. Tick
-      when that document says so.
+      `docs/service-lifecycle-assessment.md` keeps the box open. WSL selection is wired
+      into `service install`; its new CLI native proof is pending. The guest-loop
+      restart/removal repairs passed native run 35268866928 at b36f4c9f, superseding
+      the failed task-managed restart assertion, not erasing it. Actual logon acceptance
+      remains open, as do the separate native Windows crash-supervision and Linux
+      login/logout/boot policy decisions. Tick when the assessment says so.
 - [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
       clearly rather than half-working. The hello refuses with
       `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`); exact version parsing and

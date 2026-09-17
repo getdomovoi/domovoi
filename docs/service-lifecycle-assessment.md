@@ -9,6 +9,28 @@ Measured on 2026-09-11 after fetching `origin/main` at
 `98c412c540bad49b9cbf2459a47bc3309cda62b8`. S1.1 remains open; this document
 does not claim completed lifecycle acceptance.
 
+### WSL follow-up, 2026-09-17
+
+[Native run 35268866928](https://github.com/getdomovoi/domovoi/actions/runs/35268866928/job/105362819282)
+at `b36f4c9f1537237d7451a4eca0c5480d240c5ffb` passed the later guest-loop
+implementation's required restart/removal test in 70,134 ms, with one passed
+service test and no skips. It includes the exhaustion status-1 assertion and the
+startup-lease shutdown proof missing from the first recorded run below. The
+service phase took 71.9 seconds. This supersedes the later-repair acceptance
+pending statement below, not the historical failed Task Scheduler retry results.
+
+WSL selection is now wired through `domovoid service install`, with the owned
+task's launch inputs saved in the guest registration. Status uses both task and
+guest evidence; removal proves guest shutdown before deleting the task or saved
+configuration. A second required native test invokes those production CLI paths
+with an isolated profile. Native acceptance of that new installer test is pending.
+The existing task fixture still supplies failed-launch, crash/backoff/exhaustion,
+clean-exit and live-child/backoff-removal evidence independently.
+
+Actual Windows user logon is still unproved. Neither this wiring nor a manual
+task start closes that gate. Native Windows crash-supervision policy and Linux
+login/logout/boot policy remain separate maintainer decisions. S1.1 stays open.
+
 The accepted scope is Unix acceptance, two status-reporting fixes, and Windows
 and WSL lifecycle decisions. Existing Unix adapters already install, supervise
 and remove services. Calling those adapters missing would duplicate work.

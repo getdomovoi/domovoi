@@ -34,6 +34,15 @@ with zero skipped, pending, todo or failed tests. The required count comes from
 that named set, not a separate minimum. Local tests read the real test
 registrations, so adding or removing one requires an explicit contract update.
 Unrelated passes, duplicate names and extra assertions cannot satisfy the guard.
+
+The separate service invocation requires exactly two named proofs with no skips:
+the guest-loop crash/restart/removal fixture, and production CLI installation,
+status and removal under a non-root guest user with an isolated profile. Their
+test and cleanup budgets share the existing service-phase deadline. Both use
+demand start, not an actual Windows user logon. The latter acceptance is still
+open. The CLI fixture grants its non-root user read/traverse access to the
+disposable guest's code-only artifact root; no host installation is changed.
+
 Missing virtualization, a corrupt listing, a
 disappearing distro, a failed assertion or a missing report makes the job red.
 Success prints `DOMOVOI_WSL_NATIVE_OK`; failure prints
@@ -187,8 +196,8 @@ The job still does **not** resolve two distribution identities or cover
 Windows 11 mirrored networking and VPNs. It does not prove the host keychain,
 multi-distro port collision handling or an atomic stop-versus-endpoint-read
 operation. The regular guest CLI retains WSL's distribution environment; the
-saved service launch configuration does not carry those facts today and is not
-covered by this proof. The restart is a normal foreground CLI restart, not
+saved WSL service registration is covered separately by the service invocation,
+not these fifteen proofs. This restart is a normal foreground CLI restart, not
 crash recovery or supervisor restart. The client open uses the guest's local
 root credential; the fleet route separately uses the paired machine credential.
 This does not add client admission to a machine credential or prove a session

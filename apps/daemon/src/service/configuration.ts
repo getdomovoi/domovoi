@@ -10,12 +10,14 @@ import { configuredSshTunnelsSchema, tailnetHostSchema } from "../transport-conf
 import { withinServiceDeadline } from "./deadline.js"
 import { profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
+import { installedWslTask, wslInstallationSchema, type WslInstallation } from "./wsl-registration.js"
 
 const maximumConfigurationBytes = 64 * 1_024
 const pathSchema = z.string().min(1).refine((path) => posix.isAbsolute(path) || win32.isAbsolute(path))
 const configurationSchema = z.object({
   version: z.literal(1),
   registrationId: z.uuid().optional(),
+  wsl: wslInstallationSchema.optional(),
   homeDirectory: pathSchema,
   profileDirectory: pathSchema.optional(),
   host: z.string(),
@@ -35,6 +37,7 @@ const configurationSchema = z.object({
 export type ServiceConfiguration = Omit<DaemonEnvironmentConfig, "authToken"> & {
   version: 1
   registrationId?: string
+  wsl?: WslInstallation
   homeDirectory: string
 }
 
@@ -109,9 +112,10 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, ...required } = configurationSchema.parse(JSON.parse(text))
     const config: ServiceConfiguration = {
       ...required,
+      ...(wsl !== undefined ? { wsl } : {}),
       ...(profileDirectory !== undefined ? { profileDirectory } : {}),
       ...(relayIdentityPublicKey !== undefined ? { relayIdentityPublicKey } : {}),
       ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),
@@ -124,6 +128,10 @@ export function parseServiceConfiguration(text: string): ServiceConfiguration {
     }
     // Reuse the production listener and origin checks, including required TLS.
     parseDaemonEnvironment(serviceEnvironment(config), config.homeDirectory)
+    if (wsl) {
+      if (!registrationId || !posix.isAbsolute(config.homeDirectory)) throw new Error("Invalid WSL registration")
+      installedWslTask(wsl, registrationId, serviceConfigurationPath(config.homeDirectory, "linux"))
+    }
     return config
   } catch {
     // No parser diagnostics that could echo unexpected secret-bearing fields.
