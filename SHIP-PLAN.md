@@ -1334,11 +1334,11 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         that no daemon on a tailnet has; frames 21 to 23 (Live Activity) are native-only per
         the 2026-09-18 ruling and update from the background only through an ActivityKit
         push token, which is APNs again. Nothing here ships before Phase 2's relay. The
-        design's own caption on frame 21 says drawn, not built; frames 20, 22 and 23 should
-        carry the same convention with the reason, and that is a design-side edit. The
-        vendored `Domovoi Phone v2.dc.html` (104,738 bytes, 19 frames) predates these four
-        frames; the live file has 23 (128,715 bytes on 2026-09-18) and is the copy this line
-        was read from.
+        design carries the convention on all four captions as of 2026-09-18, with the reason,
+        and frame 21 names both blockers (the relay and a native target). The vendored
+        `Domovoi Phone v2.dc.html` (104,738 bytes, 19 frames) predates these four frames; the
+        live file has 23 and is the copy this line was read from. Re-vendor with the next
+        handoff.
 - [ ] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
       tailnet a closed app cannot be woken. Two options, consequences stated, no choice made:
       (a) the product says plainly that you open the app to see a waiting gate; the phone is a
