@@ -5,7 +5,7 @@ import { ConnectionBanner } from "../components/connection-banner"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
-import { Card, PressableCard } from "../components/ui/card"
+import { PressableCard } from "../components/ui/card"
 import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
@@ -174,14 +174,9 @@ export function SessionsScreen({
               No sessions running
             </Text>
             <Text variant="meta" className="text-center leading-[19px]">
-              This machine reported in and has nothing open. Run the CLI on it and the session
-              appears here within a second.
+              This machine reported in and has nothing open. Start one from the desktop or the
+              web app on that machine and it appears here within a second.
             </Text>
-            <Card className="bg-code px-[11px] py-2">
-              <Text variant="machine" className="text-[10.5px] text-strong">
-                domovoi new --machine {snapshot.machine.name}
-              </Text>
-            </Card>
           </View>
         ) : null}
 

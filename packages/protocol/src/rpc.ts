@@ -1655,7 +1655,7 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
 export const phoneAndTabletPromise = [
   { text: "Watch every session and its diffs", tone: "granted" },
   { text: "Answer gates, with the same three decisions", tone: "granted" },
-  { text: "Start and stop sessions, and steer one mid-run", tone: "granted" },
+  { text: "Pause and resume sessions, and steer one mid-run", tone: "granted" },
   { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
   { text: "It cannot pull the repository down. Files stay here.", tone: "limit" },
 ] as const satisfies readonly { text: string, tone: "granted" | "unbuilt" | "limit" }[]
