@@ -51,6 +51,7 @@ const base = {
   openProject: vi.fn(),
   newSession: vi.fn(),
   pauseAll: vi.fn(),
+  emergencyStop: vi.fn(),
   reconnect: vi.fn(),
   setSurface: vi.fn(),
 }

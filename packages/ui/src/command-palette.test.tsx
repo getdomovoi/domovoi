@@ -53,6 +53,7 @@ describe("buildWorkspaceCommands", () => {
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
       reconnect: vi.fn(),
       setSurface: vi.fn(),
     }
@@ -66,6 +67,7 @@ describe("buildWorkspaceCommands", () => {
       "open-project",
       "new-session",
       "pause-all",
+      "emergency-stop",
       "surface-workspace",
       "surface-providers",
       "surface-skills",
@@ -81,6 +83,7 @@ describe("buildWorkspaceCommands", () => {
       ...callbacks,
     })
     expect(disconnected.map(({ id }) => id)).toContain("reconnect")
+    expect(disconnected.find(({ id }) => id === "emergency-stop")?.disabled).toBe(true)
     expect(disconnected.find(({ id }) => id === "pause-all")?.disabled).toBe(true)
     expect(disconnected.find(({ id }) => id === "new-session")?.disabled).toBe(true)
   })
@@ -90,6 +93,7 @@ describe("buildWorkspaceCommands", () => {
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
       reconnect: vi.fn(),
       setSurface: vi.fn(),
     }
@@ -127,6 +131,7 @@ describe("buildWorkspaceCommands", () => {
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
       reconnect: vi.fn(),
       setSurface: vi.fn(),
     })
@@ -156,6 +161,7 @@ describe("buildWorkspaceCommands", () => {
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
       reconnect: vi.fn(),
       setSurface: vi.fn(),
     })
@@ -183,6 +189,7 @@ describe("launcher entities", () => {
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
       reconnect: vi.fn(),
       setSurface: vi.fn(),
       skills: [{ id: "design-studio", name: "design-studio", scope: "built-in" }],
@@ -229,6 +236,7 @@ describe("open elsewhere", () => {
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
       reconnect: vi.fn(),
       setSurface: vi.fn(),
       sessions: [session],
@@ -256,6 +264,7 @@ describe("open elsewhere", () => {
       openProject: vi.fn(),
       newSession: vi.fn(),
       pauseAll: vi.fn(),
+    emergencyStop: vi.fn(),
       reconnect: vi.fn(),
       setSurface: vi.fn(),
       sessions: [session],

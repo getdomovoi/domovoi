@@ -35,6 +35,7 @@ function appBarProps() {
     emergencyStopError: null,
     onOpenProject: vi.fn(),
     onPauseAll: vi.fn(),
+    onEmergencyStop: vi.fn(),
   }
 }
 

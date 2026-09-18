@@ -10,6 +10,7 @@ it("keeps the forced-colors hook on the app bar connectivity dot", () => {
   expect(styles).toContain("[data-status-dot] {")
   expect(styles).toContain("background: CanvasText !important")
   const { container } = render(<AppBar snapshot={demoWorkspace} connected emergencyStopPending={false}
-    emergencyStopOutcome={null} emergencyStopError={null} onOpenProject={vi.fn()} onPauseAll={vi.fn()} />)
+    emergencyStopOutcome={null} emergencyStopError={null} onOpenProject={vi.fn()} onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()} />)
   expect(container.querySelectorAll("[data-status-dot]").length).toBeGreaterThan(0)
 })
