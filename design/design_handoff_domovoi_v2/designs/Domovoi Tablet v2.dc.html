@@ -241,7 +241,15 @@
           <div style="width: 100%; max-width: 720px; display: flex; align-items: center; gap: 11px;">
             <div style="flex: 1; min-width: 0; height: 52px; display: flex; align-items: center; gap: 11px; padding: 0 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
               <span style="flex: 1; font-size: 15px; color: var(--faint);">Reply, or steer the plan</span>
-              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">claude-sonnet-4.6</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">{{ tabModelLabel }}</span>
+              <span style="{{ tabSepStyle }}">·</span>
+              <sc-if value="{{ tabShowRing }}" hint-placeholder-val="{{ true }}">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex: 0 0 14px;" role="img" aria-label="{{ tabRingLabel }}">
+                  <circle cx="7" cy="7" r="5.5" stroke="var(--muted)" stroke-width="2"></circle>
+                  <circle cx="7" cy="7" r="5.5" stroke="{{ tabRingStroke }}" stroke-width="2" stroke-linecap="round" stroke-dasharray="34.56" stroke-dashoffset="{{ tabRingOffset }}" transform="rotate(-90 7 7)"></circle>
+                </svg>
+              </sc-if>
+              <span style="{{ tabCostStyle }}">{{ tabCost }}</span>
             </div>
             <div style="width: 52px; height: 52px; flex: 0 0 52px; display: flex; align-items: center; justify-content: center; border-radius: 16px; background: var(--accent); color: var(--muted-foreground); cursor: pointer;">
               {{ iPaperclip }}
@@ -383,7 +391,7 @@
 </div>
 
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1430,&quot;height&quot;:1170},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1240,&quot;height&quot;:1080},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;connection&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;subscription&quot;,&quot;options&quot;:[&quot;subscription&quot;,&quot;api&quot;,&quot;unreported&quot;],&quot;tsType&quot;:&quot;\&quot;subscription\&quot; | \&quot;api\&quot; | \&quot;unreported\&quot;&quot;,&quot;section&quot;:&quot;Behaviour&quot;}}">
 class Component extends DCLogic {
   state = {
     screen: "gate",
@@ -442,6 +450,7 @@ class Component extends DCLogic {
 
   renderVals() {
     const st = this.state;
+    const conn = this.props.connection ?? "subscription";
     const sc = st.screen;
     const theme = st.theme ?? this.props.theme ?? "dark";
     const cellular = sc === "cellular";
@@ -482,15 +491,15 @@ class Component extends DCLogic {
 
       groups: [
         {
-          label: "RUNNING", count: "2", items: [
+          label: "NEEDS YOU", count: "3", items: [
             { title: "Migrate billing webhooks to the new idempotency table", meta: "waiting on you", k: "warning", active: true },
-            { title: "Backfill org_id on 4.1M audit rows without locking", meta: "running 12m", k: "success" }
+            { title: "Port the CLI auth flow off the deprecated device grant", meta: "review 7 files", k: "info" },
+            { title: "Find why the staging queue drains at 40 per second", meta: "failed 1h ago", k: "destructive" }
           ]
         },
         {
-          label: "NEEDS YOU", count: "2", items: [
-            { title: "Port the CLI auth flow off the deprecated device grant", meta: "review 7 files", k: "info" },
-            { title: "Find why the staging queue drains at 40 per second", meta: "failed 1h ago", k: "destructive" }
+          label: "RUNNING", count: "1", items: [
+            { title: "Backfill org_id on 4.1M audit rows without locking", meta: "running 12m", k: "success" }
           ]
         },
         {
@@ -581,6 +590,30 @@ class Component extends DCLogic {
       iPaperclip: this.icon("Paperclip", 20),
       iClose: this.icon("X", 18),
       iSend: this.icon("ArrowUp", 20),
+      // Derived, so a model discovered by runtime.discover needs no second name authored:
+      // drop any token the harness already says, then space the rest. The full id stays in
+      // the model picker, because that string is what the audit log and the provider say.
+      tabModelLabel: (() => {
+        const agent = "claude-code";
+        const id = "claude-sonnet-4.6";
+        const owned = agent.split("-");
+        return agent + " · " + id.split("-").filter(t => owned.indexOf(t) === -1).join(" ");
+      })(),
+      // An OAuth connection is already paid for, so a price would read as zero. One ring for
+      // two windows: it shows the tighter of the 5 hour and weekly limits, and the label says
+      // which, because a bare percentage is ambiguous between two denominators. Unreported is
+      // its own state: no dial drawn from a denominator nobody gave us.
+      tabShowRing: conn === "subscription",
+      tabRingOffset: (34.56 * (1 - 82 / 100)).toFixed(2),
+      tabRingStroke: "var(--warning)",
+      tabRingLabel: "82 percent of the weekly window, resets Thursday 09:00, the tighter of the two",
+      tabCost: conn === "api" ? "$0.38" : "",
+      tabCostStyle: conn === "api"
+        ? "font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);"
+        : "display: none;",
+      tabSepStyle: conn === "unreported"
+        ? "display: none;"
+        : "font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);",
       tabReview: st.sheetTab === "review",
       variantChips: ["A", "B", "C"].map(v => {
         const on = st.variant === v;

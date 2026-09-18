@@ -535,7 +535,7 @@ class Component extends DCLogic {
       { id: "twoclients", num: "5", label: "Two clients", note: "One holder answers gates. The daemon serialises, so two answers cannot race." },
       { id: "nodekey", num: "6", label: "Node key expired", note: "Reads as offline but is not. Domovoi cannot renew a Tailscale key and should not be able to." },
       { id: "acl", num: "7", label: "ACL denies 7717", note: "Reachable and refusing. Your network policy working correctly, shown as a policy problem." },
-      { id: "billing", num: "8", label: "Plan and billing", note: "Metered on relayed bytes only. Stopping payment costs you the route, not your work." }
+      { id: "billing", num: "8", label: "Plan and billing", note: "Machines are the metered unit. Bytes are fair use, clients are never counted, and stopping payment costs you the route rather than your work." }
     ];
 
     const inc = incidents[sc];
