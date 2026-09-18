@@ -550,6 +550,13 @@
             </div>
           </sc-for>
         </div>
+        <sc-if value="{{ showJumpPill }}" hint-placeholder-val="{{ true }}">
+          <div style="{{ jumpPillStyle }}">
+            <span style="{{ jumpDotStyle }}"></span>
+            <span style="font-size: 13px;">{{ jumpPillText }}</span>
+            <span style="display: inline-flex; flex: 0 0 auto;">{{ iJumpDown }}</span>
+          </div>
+        </sc-if>
         <div style="{{ composerRestStyle }}">
           <span style="flex: 1; min-width: 0; font-size: 13.5px; color: var(--faint);">Steer it, or queue a message</span>
           <div style="{{ planBtnStyle }}">{{ iPlanList }}</div>
@@ -1012,7 +1019,7 @@
 </div>
 
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2260,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;ios&quot;,&quot;options&quot;:[&quot;ios&quot;,&quot;android&quot;],&quot;tsType&quot;:&quot;\&quot;ios\&quot; | \&quot;android\&quot;&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2200,&quot;height&quot;:1080},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;ios&quot;,&quot;options&quot;:[&quot;ios&quot;,&quot;android&quot;],&quot;tsType&quot;:&quot;\&quot;ios\&quot; | \&quot;android\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;threadFollow&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;scrolled&quot;,&quot;options&quot;:[&quot;bottom&quot;,&quot;scrolled&quot;,&quot;gate&quot;],&quot;tsType&quot;:&quot;\&quot;bottom\&quot; | \&quot;scrolled\&quot; | \&quot;gate\&quot;&quot;,&quot;section&quot;:&quot;Behaviour&quot;}}">
 class Component extends DCLogic {
   state = { theme: null, plat: "ios", kbShift: false };
 
@@ -1056,9 +1063,17 @@ class Component extends DCLogic {
 
   renderVals() {
     const st = this.state;
+    const follow = this.props.threadFollow ?? "scrolled";
     const theme = st.theme ?? this.props.theme ?? "dark";
     const plat = st.plat ?? this.props.platform ?? "ios";
     const ios = plat === "ios";
+    // One source for where the composer sits and how tall it renders, so the pill above it
+    // cannot be positioned from a guess. The height is measured rather than derivable from
+    // the style string, which is why it is named here instead of recomputed at each use.
+    // Must sit below `ios`: these are read at declaration time, not inside the returned
+    // object, so reading it earlier hits the temporal dead zone and throws.
+    const composerBottom = ios ? 90 : 78;
+    const composerHeight = 56;
     const R = ios ? 44 : 30;
     const W = ios ? 390 : 412;
 
@@ -1208,8 +1223,21 @@ class Component extends DCLogic {
           (t.k === "user" ? "18px 18px 4px 18px; background: var(--primary); color: var(--primary-foreground);"
             : "18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border); color: var(--foreground);")
       })),
+      // The phone needs this more than the desktop does, not less: flicking back to the end
+      // of a long thread by hand is harder on a touch screen, so following only at the
+      // bottom without an offered ride back would be worse than always following.
+      showJumpPill: follow !== "bottom",
+      jumpPillText: follow === "gate" ? "Waiting on you" : "3 new",
+      iJumpDown: this.icon("ArrowDown", 15),
+      jumpDotStyle: this.dot(follow === "gate" ? "var(--warning)" : "var(--primary)", 7) +
+        (follow === "gate" ? " animation: dvPulse 2.4s infinite;" : ""),
+      jumpPillStyle: "position: absolute; left: 50%; transform: translateX(-50%); bottom: " +
+        (composerBottom + composerHeight + 10) + "px; z-index: 5; height: 44px; display: flex; align-items: center; gap: 9px; padding: 0 17px; border-radius: 999px; box-shadow: 0 12px 34px var(--shadow-lg); border: 1px solid " +
+        (follow === "gate" ? "var(--warn-border)" : "var(--border)") + "; background: var(--" +
+        (follow === "gate" ? "warn-bg" : "card") + "); color: var(--" +
+        (follow === "gate" ? "warn-fg" : "strong") + ");",
       composerRestStyle: "position: absolute; left: " + (ios ? 14 : 12) + "px; right: " + (ios ? 14 : 12) + "px; bottom: " +
-        (ios ? 90 : 78) + "px; z-index: 4; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-radius: 999px; border: 1px solid var(--border); background: " +
+        composerBottom + "px; min-height: " + composerHeight + "px; z-index: 4; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-radius: 999px; border: 1px solid var(--border); background: " +
         (ios ? "color-mix(in oklab, var(--sidebar) 72%, transparent)" : "color-mix(in oklab, var(--card) 72%, transparent)") +
         "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 10px 32px var(--shadow-lg);",
       composerFocusStyle: "position: absolute; left: 0; right: 0; bottom: " + (ios ? 258 : 244) +

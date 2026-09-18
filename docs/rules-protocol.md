@@ -4,6 +4,14 @@ This is the protocol half of the v2 Rules tab. The product source is `rules` and
 `neverRules` in the signed `Domovoi Desktop V2.dc.html` handoff. The tab
 itself is not implemented here.
 
+That file is 302,172 bytes and a DC file keeps its logic class at the end, so
+`rules`, `neverRules`, the model short-name derivation, the usage rows and the
+theme flip all sit in the last 40 KB. A read through the design tooling caps at
+262,144 bytes and returns a prefix without saying so; the repository's vendored
+copy under `design/design_handoff_domovoi_v2/designs/` is the whole file and is
+the one to read for anything past the template. Vendoring it whole replaced the
+two-part export that used to document this cap.
+
 ## Retire a rule
 
 `approvalRule.revoke` takes `{ ruleId, client }` and returns the updated workspace
