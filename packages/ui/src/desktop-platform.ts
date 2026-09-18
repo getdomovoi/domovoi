@@ -40,6 +40,9 @@ export type DesktopWindowBridge = {
   readRelayPin?(key: string): Promise<string | undefined>
   swapRelayPin?(key: string, expected: string | undefined, replacement: string): Promise<boolean>
   platform: "darwin" | "linux" | "win32"
+  // Pixels from the window's leading edge to where titlebar content may
+  // start, past the OS-drawn window buttons; 0 where there are none.
+  titlebarLeadingInset?: number | undefined
   getRpcEndpoint(): Promise<{ url: string; token: string }>
   captureAnnotation(rect: { x: number; y: number; width: number; height: number }): Promise<{
     mimeType: "image/png"

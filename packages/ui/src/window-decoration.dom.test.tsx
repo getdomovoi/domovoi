@@ -9,6 +9,7 @@ afterEach(cleanup)
 function bridge(platform: DesktopWindowBridge["platform"]): DesktopWindowBridge {
   return {
     platform,
+    titlebarLeadingInset: platform === "darwin" ? 84 : 0,
     getRpcEndpoint: vi.fn(async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "token" })),
     captureAnnotation: vi.fn(),
     notify: vi.fn(async () => true),
@@ -53,15 +54,21 @@ it("leaves window controls to the operating system frame", () => {
   expect(screen.queryByRole("button", { name: "Close" })).toBeNull()
 })
 
-it("reserves no traffic-light inset under a system frame on macOS", () => {
+it("starts titlebar content past the macOS window buttons by the inset the desktop derived", () => {
   const domovoi = render(
     <AppBar {...appBarProps()} bridge={bridge("darwin")} windowDecoration="domovoi" />,
   )
-  expect(domovoi.container.querySelectorAll("[aria-hidden=\"true\"].w-\\[64px\\]").length).toBe(2)
+  expect(domovoi.container.querySelector("header")?.style.paddingLeft).toBe("84px")
   cleanup()
 
   const system = render(
     <AppBar {...appBarProps()} bridge={bridge("darwin")} windowDecoration="system" />,
   )
-  expect(system.container.querySelectorAll("[aria-hidden=\"true\"].w-\\[64px\\]").length).toBe(0)
+  expect(system.container.querySelector("header")?.style.paddingLeft).toBe("")
+  cleanup()
+
+  const linux = render(
+    <AppBar {...appBarProps()} bridge={bridge("linux")} windowDecoration="domovoi" />,
+  )
+  expect(linux.container.querySelector("header")?.style.paddingLeft).toBe("")
 })
