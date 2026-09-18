@@ -1016,6 +1016,179 @@
     </div>
 
   </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">WITHOUT OPENING THE APP</span>
+    <span style="{{ sectionNote }}">The reason the phone exists: answering a gate from the lock screen</span>
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">20</span><span style="{{ frameName }}">Lock screen, decided in place</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarLockStyle }}">
+          <span style="flex: 1;"></span>
+          <span style="{{ statusIconsStyle }}">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ lockGroundStyle }}">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; padding: 34px 0 0;">
+            <div style="{{ lockDateStyle }}">{{ lockDate }}</div>
+            <div style="{{ lockClockStyle }}">9:41</div>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
+            <sc-for list="{{ notifications }}" as="n" hint-placeholder-count="3">
+              <div style="{{ n.cardStyle }}">
+                <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ n.iconStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ n.chromeColor }};">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ n.chromeColor }};">{{ n.when }}</span>
+                </div>
+                <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ n.titleColor }}; line-height: 1.4;">{{ n.title }}</div>
+                <div style="font-size: 12px; line-height: 1.5; margin-top: 4px; color: {{ n.bodyColor }};">{{ n.body }}</div>
+                <sc-if value="{{ n.actions }}" hint-placeholder-val="{{ true }}">
+                  <div style="display: flex; gap: 7px; margin-top: 11px;">
+                    <span style="{{ n.allowStyle }}">Allow once</span>
+                    <span style="{{ n.denyStyle }}">Deny</span>
+                    <span style="{{ n.viewStyle }}">Open</span>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Drawn, not built: waking a locked phone needs APNs, so this waits on the relay rather than on client work. Three actions, the same three the gate screen offers, so a decision taken here is the decision. Always allow is absent, because a standing rule is not a thing to grant from a locked phone.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">21</span><span style="{{ frameName }}">Live Activity, while it works</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarLockStyle }}">
+          <span style="flex: 1;"></span>
+          <span style="{{ statusIconsStyle }}">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ lockGroundStyle }}">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; padding: 34px 0 0;">
+            <div style="{{ lockDateStyle }}">{{ lockDate }}</div>
+            <div style="{{ lockClockStyle }}">9:41</div>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
+            <div style="{{ activityCardStyle }}">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                <span style="{{ activityIconStyle }}" role="img" aria-label="Domovoi"></span>
+                <span style="flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: {{ activityInk }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Migrate billing webhooks</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ activityDim }};">mac-mini-m4</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 10px; margin-top: 12px;">
+                <span style="{{ activityStepStyle }}">step 3 of 4</span>
+                <span style="flex: 1; min-width: 0; font-size: 12px; color: {{ activityDim }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Running the test suite</span>
+              </div>
+              <div style="{{ activityTrackStyle }}">
+                <span style="{{ activityFillStyle }}"></span>
+              </div>
+              <div style="font-size: 11px; color: {{ activityDim }}; margin-top: 9px; line-height: 1.5;">{{ activityNote }}</div>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Drawn, not built, and twice over: a Live Activity is a Swift widget extension, and every background update to it is an APNs push. So it needs the relay and a native target. It shows progress and never a decision, because a glance is not consent.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">22</span><span style="{{ frameName }}">Four at once, so no progress bar</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarLockStyle }}">
+          <span style="flex: 1;"></span>
+          <span style="{{ statusIconsStyle }}">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ lockGroundStyle }}">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; padding: 34px 0 0;">
+            <div style="{{ lockDateStyle }}">{{ lockDate }}</div>
+            <div style="{{ lockClockStyle }}">9:41</div>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
+            <div style="{{ activityCardStyle }}">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                <span style="{{ activityIconStyle }}" role="img" aria-label="Domovoi"></span>
+                <span style="flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: {{ activityInk }};">{{ rosterHead }}</span>
+                <span style="{{ rosterBadgeStyle }}">{{ rosterBadge }}</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 1px; margin-top: 12px; border-radius: 12px; overflow: hidden; background: oklch(1 0 0 / .07);">
+                <sc-for list="{{ roster }}" as="r" hint-placeholder-count="4">
+                  <div style="{{ r.rowStyle }}">
+                    <span style="{{ r.dot }}"></span>
+                    <span style="flex: 1; min-width: 0; font-size: 12px; color: {{ r.ink }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ r.title }}</span>
+                    <span style="{{ r.stateStyle }}">{{ r.state }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="font-size: 11px; color: {{ activityDim }}; margin-top: 10px; line-height: 1.5;">{{ rosterNote }}</div>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Drawn, not built, same reason as 21. One activity for Domovoi, not one per session: four sessions have no shared denominator, so averaging step 3 of 4 with step 1 of 7 would be a number nobody can act on. The roster names each one and its own state instead.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">23</span><span style="{{ frameName }}">Unlocked, where the island is compact</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ islandGroundStyle }}">
+          <div style="{{ islandBarStyle }}">
+            <span style="{{ islandClockStyle }}">9:41</span>
+            <span style="flex: 1;"></span>
+            <div style="{{ islandPillStyle }}">
+              <span style="{{ islandIconStyle }}" role="img" aria-label="Domovoi"></span>
+              <span style="{{ islandCountStyle }}">{{ islandCount }}</span>
+              <span style="{{ islandGateDotStyle }}"></span>
+            </div>
+            <span style="flex: 1;"></span>
+            <span style="{{ islandStatusStyle }}">{{ statusIcons }}</span>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 22px; padding: 26px 22px 0;">
+            <sc-for list="{{ homeRows }}" as="hr" hint-placeholder-count="2">
+              <div style="display: flex; align-items: flex-start; gap: 22px;">
+                <sc-for list="{{ hr.apps }}" as="ha" hint-placeholder-count="4">
+                  <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; width: 58px;">
+                    <div style="{{ ha.tileStyle }}">
+                      <span style="{{ ha.glyphStyle }}">{{ ha.glyph }}</span>
+                    </div>
+                    <span style="{{ ha.labelStyle }}">{{ ha.label }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+            <span style="flex: 1;"></span>
+            <div style="flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 6px;">
+              <sc-for list="{{ pageDots }}" as="pd" hint-placeholder-count="3">
+                <span style="{{ pd }}"></span>
+              </sc-for>
+            </div>
+            <div style="{{ dockStyle }}">
+              <sc-for list="{{ dockApps }}" as="da" hint-placeholder-count="4">
+                <div style="{{ da }}"></div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Drawn, not built, same reason as 21. The home screen, because a compact island is what an unlocked phone shows; locked, the same activity is the card in frames 21 and 22.</div>
+      <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+        <sc-for list="{{ islandFacts }}" as="i" hint-placeholder-count="3">
+          <div style="{{ i.cardStyle }}">
+            <div style="font-size: 12px; font-weight: 500; color: var(--foreground);">{{ i.title }}</div>
+            <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); margin-top: 5px;">{{ i.body }}</div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+  </div>
 </div>
 
 </x-dc>
@@ -1035,6 +1208,15 @@ class Component extends DCLogic {
 
   componentWillUnmount() {
     if (this._iconTimer) clearInterval(this._iconTimer);
+  }
+
+  // The mark's paths are currentColor, which only resolves for inline SVG, so every consumer
+  // masks it. One helper so a site cannot be pointed at a different file or miss the mask.
+  mark(size, color, file) {
+    const f = file || "mark-reduced.svg";
+    return "display: block; width: " + size + "px; height: " + size + "px; flex: 0 0 " + size +
+      "px; background: " + color + "; -webkit-mask: url(assets/" + f + ") center/contain no-repeat; mask: url(assets/" + f +
+      ") center/contain no-repeat;";
   }
 
   icon(name, size) {
@@ -1074,6 +1256,24 @@ class Component extends DCLogic {
     // object, so reading it earlier hits the temporal dead zone and throws.
     const composerBottom = ios ? 90 : 78;
     const composerHeight = 56;
+    // Fixed literals from the dark ramp. The lock screen ground is a wallpaper, so no card
+    // on it may invert; naming them together is what stops a themed fill creeping back in.
+    const LOCK = {
+      ink: "oklch(0.97 0.004 285)",
+      dim: "oklch(0.78 0.008 285)",
+      faint: "oklch(0.68 0.008 285)",
+      card: "oklch(0.205 0.006 285 / .78)",
+      hairline: "oklch(1 0 0 / .1)",
+      warnCard: "oklch(0.235 0.045 62 / .86)",
+      warnBorder: "oklch(0.38 0.08 62)",
+      warnInk: "oklch(0.94 0.05 68)",
+      warnDim: "oklch(0.76 0.07 62)",
+      warnSolid: "oklch(0.79 0.13 62)",
+      warnDeep: "oklch(0.19 0.03 62)",
+      accent: "oklch(0.72 0.17 275)",
+      ok: "oklch(0.75 0.14 158)",
+      info: "oklch(0.72 0.1 240)"
+    };
     const R = ios ? 44 : 30;
     const W = ios ? 390 : 412;
 
@@ -1089,7 +1289,7 @@ class Component extends DCLogic {
       isLightTheme: theme === "light",
       toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
       iconBtn: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);",
-      markStyle: "display: block; width: 24px; height: 24px; flex: 0 0 24px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      markStyle: this.mark(24, "var(--primary)"),
 
       platIsIos: ios,
       platIsAndroid: !ios,
@@ -1107,6 +1307,13 @@ class Component extends DCLogic {
         (ios ? "'Instrument Sans', system-ui, sans-serif" : "'Instrument Sans', Roboto, system-ui, sans-serif") + ";",
       statusBarStyle: "flex: 0 0 " + (ios ? 42 : 30) + "px; height: " + (ios ? 42 : 30) + "px; display: flex; align-items: center; gap: 6px; padding: " +
         (ios ? "6px 24px 0" : "0 16px") + "; color: var(--foreground);",
+      // The lock screen keeps signal, wifi and battery: the big clock replaces the time in
+      // the bar, not the bar itself. Ink is fixed rather than themed, because the ground here
+      // is a wallpaper the OS drew and not a theme surface.
+      statusBarLockStyle: "flex: 0 0 " + (ios ? 42 : 30) + "px; height: " + (ios ? 42 : 30) +
+        "px; display: flex; align-items: center; gap: 6px; padding: " + (ios ? "6px 24px 0" : "0 16px") +
+        "; background: oklch(0.3 0.04 268); color: " + LOCK.ink + ";",
+      statusIconsStyle: "font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .06em;",
       homeIndicatorStyle: ios
         ? "position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); width: 134px; height: 5px; border-radius: 999px; background: var(--muted); z-index: 5;"
         : "position: absolute; left: 50%; bottom: 5px; transform: translateX(-50%); width: 108px; height: 3px; border-radius: 999px; background: var(--muted); z-index: 5;",
@@ -1120,6 +1327,164 @@ class Component extends DCLogic {
       iSunSm: this.icon("Sun", 16),
       iMoonSm: this.icon("Moon", 16),
       iEmptyChat: this.icon("MessageSquareDashed", 24),
+      // The lock screen is the OS drawing over a wallpaper, so it is the one surface whose
+      // ground is not a theme token. Notification cards are translucent over it, which is
+      // the second of the two places the design system permits blur.
+      // The lock screen is the OS drawing over a wallpaper, so nothing on it is a theme
+      // surface: the ground does not invert, and neither may the cards sitting on it. Every
+      // value here is a fixed literal taken from the dark ramp, because a themed fill with
+      // fixed ink is the half-and-half that breaks in light mode. LOCK is the whole palette,
+      // so a new card on this surface cannot reach for var(--card) by habit.
+      lockDate: "Friday 18 September",
+      lockGroundStyle: "flex: 1; min-height: 0; display: flex; flex-direction: column; background: linear-gradient(165deg, oklch(0.3 0.04 268), oklch(0.18 0.03 285) 62%, oklch(0.14 0.02 290));",
+      lockDateStyle: "font-size: 14px; color: " + LOCK.dim + ";",
+      lockClockStyle: "font-size: 72px; font-weight: 500; letter-spacing: -.03em; line-height: 1.05; color: " + LOCK.ink + "; margin-top: 2px;",
+      notifications: [
+        {
+          when: "now", title: "Waiting on you, mac-mini-m4",
+          body: "pnpm prisma migrate deploy in acme-api. Writes to acme_dev, and a checkpoint was taken first.",
+          actions: true, hi: true
+        },
+        {
+          when: "12m", title: "repo-audit finished on hetzner-cx42",
+          body: "41 packages checked, 3 licence flags to review.", actions: false, hi: false
+        },
+        {
+          when: "1h", title: "design-studio rendered 3 variants",
+          body: "Onboarding v3 is ready, with 2 open comments.", actions: false, hi: false
+        }
+      ].map(n => {
+        const ink = n.hi ? LOCK.warnInk : LOCK.ink;
+        const dim = n.hi ? LOCK.warnDim : LOCK.dim;
+        return {
+          when: n.when, title: n.title, body: n.body, actions: n.actions,
+          titleColor: ink, bodyColor: dim, chromeColor: dim,
+          // iOS draws the app icon here as a tile, but a tile needs a ground that separates
+          // from the card behind it, and the amber gate card sits at the same lightness as
+          // every neutral surface in the ramp. The mark alone in --primary reads on all
+          // three cards and matches frames 21 and 23, which is worth more than the tile.
+          iconStyle: this.mark(17, LOCK.accent),
+          cardStyle: "padding: 13px 14px; border-radius: " + (ios ? "19px" : "23px") +
+            "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); background: " +
+            (n.hi ? LOCK.warnCard : LOCK.card) + "; border: 1px solid " +
+            (n.hi ? LOCK.warnBorder : LOCK.hairline) + ";",
+          // The same three the gate screen offers, so a decision here is the decision.
+          allowStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; background: " +
+            LOCK.warnSolid + "; color: " + LOCK.warnDeep + "; font-size: 12.5px; font-weight: 600;",
+          denyStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; border: 1px solid " +
+            LOCK.warnBorder + "; color: " + LOCK.warnInk + "; font-size: 12.5px;",
+          viewStyle: "flex: 0 0 64px; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; border: 1px solid " +
+            LOCK.warnBorder + "; color: " + LOCK.warnDim + "; font-size: 12.5px;"
+        };
+      }),
+      activityInk: LOCK.ink,
+      activityDim: LOCK.dim,
+      activityIconStyle: this.mark(18, LOCK.accent),
+      activityCardStyle: "padding: 14px 15px; border-radius: " + (ios ? "22px" : "24px") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); background: " +
+        LOCK.card + "; border: 1px solid " + LOCK.hairline + ";",
+      activityStepStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 3px 9px; border-radius: 999px; background: oklch(0.72 0.17 275 / .3); color: " +
+        LOCK.ink + ";",
+      activityTrackStyle: "display: block; position: relative; height: 4px; border-radius: 999px; margin-top: 12px; background: oklch(1 0 0 / .14); overflow: hidden;",
+      activityFillStyle: "position: absolute; inset: 0 auto 0 0; display: block; width: 72%; border-radius: 999px; background: " + LOCK.accent + ";",
+      activityNote: "No decision here. When a gate opens, a notification arrives beside this one and carries the buttons.",
+
+      // Four sessions share no denominator, so there is no honest aggregate progress. Same
+      // rule as the usage ring: do not draw a dial from a number nobody gave us.
+      rosterHead: "4 sessions, 3 machines",
+      rosterBadge: "1 waiting",
+      rosterBadgeStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 3px 9px; border-radius: 999px; background: oklch(0.79 0.13 62 / .26); color: " +
+        LOCK.warnInk + ";",
+      roster: [
+        { title: "Migrate billing webhooks", state: "waiting on you", k: "warning" },
+        { title: "Backfill the search index", state: "step 2 of 5", k: "success" },
+        { title: "Write the on-call runbook", state: "step 1 of 3", k: "success" },
+        { title: "Upgrade the Postgres client", state: "queued", k: "info" }
+      ].map(r => ({
+        title: r.title, state: r.state,
+        ink: r.k === "warning" ? LOCK.warnInk : LOCK.ink,
+        dot: this.dot(r.k === "warning" ? LOCK.warnSolid : r.k === "success" ? LOCK.ok : LOCK.info, 6),
+        stateStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: " +
+          (r.k === "warning" ? LOCK.warnSolid : LOCK.faint) + ";",
+        rowStyle: "display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 7px 11px; background: " +
+          (r.k === "warning" ? "oklch(0.235 0.045 62 / .74)" : "oklch(1 0 0 / .03)") + ";"
+      })),
+      rosterNote: "Sorted so the one waiting on you is first. The others are ordered by machine, not by progress, because progress across unrelated work is not a ranking.",
+
+      // Same wallpaper as frames 20 to 22: this is a locked phone, and the island band sits
+      // where the status bar would be. The pill stays absolute black because the Dynamic
+      // Island is physical hardware and does not invert with a theme.
+      // A home screen, not a lock screen: iOS draws a Live Activity as the compact island
+      // only when the device is unlocked. Locked, it is the card frames 21 and 22 draw, so
+      // pairing the pill with a lock wallpaper would teach the wrong context.
+      islandGroundStyle: "flex: 1; min-height: 0; display: flex; flex-direction: column; background: linear-gradient(200deg, oklch(0.34 0.05 262), oklch(0.22 0.04 278) 58%, oklch(0.16 0.03 288));",
+      // The status bar is not absent here, it is split: the island takes the centre and the
+      // clock and battery keep their corners, which is what the hardware actually does.
+      islandBarStyle: "flex: 0 0 " + (ios ? 42 : 30) + "px; height: " + (ios ? 42 : 30) +
+        "px; display: flex; align-items: center; gap: 8px; padding: " + (ios ? "5px 20px 0" : "0 14px") + ";",
+      islandClockStyle: "font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; color: " + LOCK.ink + ";",
+      islandStatusStyle: "font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: .06em; color: " + LOCK.ink + ";",
+      // OS chrome, so it stays as drawn: a home screen without a dock has no bottom edge and
+      // reads as an unfinished mockup. The dock tiles carry no glyph, because at 52px in an
+      // annotation a tile is all a dock icon is, and inventing more stand-ins to fill it
+      // would trade one fidelity problem for another.
+      pageDots: [0, 1, 2].map(i => "display: block; width: " + (i === 0 ? 7 : 6) + "px; height: " +
+        (i === 0 ? 7 : 6) + "px; border-radius: 50%; background: oklch(1 0 0 / " + (i === 0 ? ".9" : ".34") + ");"),
+      dockStyle: "flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 16px; margin-bottom: 14px; border-radius: 26px; background: oklch(1 0 0 / .1); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);",
+      dockApps: [
+        "oklch(0.52 0.16 250)", "oklch(0.3 0.02 150)", "oklch(0.46 0.14 20)", "oklch(0.24 0.02 285)"
+      ].map(bg => "width: 52px; height: 52px; flex: 0 0 52px; border-radius: 13px; background: " + bg + ";"),
+      homeRows: [
+        {
+          apps: [
+            { label: "Domovoi", domovoi: true },
+            { label: "Notes", glyph: "Aa", bg: "oklch(0.97 0.01 85)", ink: "oklch(0.45 0.02 85)" },
+            { label: "Slack", glyph: "#", bg: "oklch(0.44 0.17 300)", ink: "oklch(0.98 0.01 300)" },
+            { label: "Xcode", glyph: "\u2318", bg: "oklch(0.3 0.02 240)", ink: "oklch(0.72 0.14 235)" }
+          ]
+        },
+        {
+          apps: [
+            { label: "Mail", glyph: "@", bg: "oklch(0.55 0.16 250)", ink: "oklch(0.99 0.01 250)" },
+            { label: "Linear", glyph: "L", bg: "oklch(0.24 0.02 285)", ink: "oklch(0.86 0.02 285)" },
+            { label: "Figma", glyph: "F", bg: "oklch(0.32 0.02 20)", ink: "oklch(0.88 0.08 25)" },
+            { label: "Terminal", glyph: ">", bg: "oklch(0.16 0.004 285)", ink: "oklch(0.78 0.13 158)" }
+          ]
+        }
+      ].map(r => ({
+        apps: r.apps.map(a => ({
+          label: a.label,
+          glyph: a.domovoi ? "" : a.glyph,
+          labelStyle: "font-size: 10.5px; color: " + LOCK.ink + "; white-space: nowrap;",
+          tileStyle: "width: 58px; height: 58px; flex: 0 0 58px; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: " +
+            (a.domovoi ? "oklch(0.205 0.006 285)" : a.bg) + ";",
+          glyphStyle: a.domovoi
+            ? this.mark(35, LOCK.accent)
+            : "font-family: 'JetBrains Mono', monospace; font-size: 20px; color: " + a.ink + ";"
+        }))
+      })),
+      islandPillStyle: "display: flex; align-items: center; gap: 9px; height: 37px; padding: 0 15px; border-radius: 999px; background: oklch(0.04 0 0);",
+      islandIconStyle: this.mark(15, LOCK.accent),
+      islandCount: "4",
+      islandCountStyle: "font-family: 'JetBrains Mono', monospace; font-size: 12px; color: " + LOCK.ink + ";",
+      islandGateDotStyle: this.dot(LOCK.warnSolid, 7) + " animation: dvPulse 2.4s infinite;",
+      islandFacts: [
+        {
+          title: "A count and a state, and that is the budget",
+          body: "Compact mode is two small slots either side of the camera. The mark, the number of running sessions, and an amber dot if any of them is waiting. No title fits, and a truncated session title is worse than none."
+        },
+        {
+          title: "iOS shows one activity, whichever is most recent",
+          body: "This is why Domovoi runs a single activity rather than one per session. Four would mean three of them are invisible in the island and the user cannot tell which one they are looking at."
+        },
+        {
+          title: "Expanding it opens the roster, not the app",
+          body: "A long press expands to frame 22's list. Tapping a row deep-links to that session, so the island is a way in rather than a second place to decide."
+        }
+      ].map(i => ({
+        title: i.title, body: i.body,
+        cardStyle: "padding: 12px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--card);"
+      })),
       sectionEyebrow: "font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);",
       sectionNote: "font-size: 12px; color: var(--faint);",
       frameLabel: "display: flex; align-items: baseline; gap: 9px;",
@@ -1135,7 +1500,7 @@ class Component extends DCLogic {
       emptyBodyText: "font-size: 13px; color: var(--muted-foreground); line-height: 1.6;",
       primaryBtn: "margin-top: 4px; padding: 14px 22px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13.5px; font-weight: 500; cursor: pointer;",
       quietBtn: "padding: 13px 20px; border-radius: 999px; border: 1px solid var(--border); color: var(--strong); font-size: 13px; cursor: pointer;",
-      splashMarkStyle: "display: block; width: 62px; height: 62px; flex: 0 0 62px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-working.svg) center/contain no-repeat; mask: url(assets/mark-working.svg) center/contain no-repeat;",
+      splashMarkStyle: this.mark(62, "var(--primary)", "mark-working.svg"),
       splashPhases: [
         { name: "mac-mini-m4", state: "loopback, 12ms", k: "success" },
         { name: "hetzner-cx42", state: "tailnet, 41ms", k: "success" },
