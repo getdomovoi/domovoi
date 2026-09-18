@@ -11,13 +11,14 @@ import {
 } from "./components/ui/dropdown-menu"
 import { formatTokenCount, formatUsageCost, sessionUsageCostNote, sessionUsageReportedCost } from "./session-usage.js"
 
-// The v2 composer carries one usage chip, "42.1k · $0.38", that opens four
-// rows: this turn, this session, the context with its share of the window,
-// and a fourth the design draws as the provider's own rate window. No daemon
-// can observe a provider's limit, so the fourth row here is today's usage from
-// Domovoi's own accounting and says so; the value is real and the claim is
-// the one that can be checked. A row whose numbers the daemon does not have
-// is left out rather than guessed.
+// The v2 composer carries one usage chip with three states of one shape:
+// tokens, a separator, then a price or a ring. A reported cost gives
+// "42.1k · $0.38". No cost and no provider window gives "42.1k" alone with the
+// separator hidden: a limit the provider has not stated is not drawn, and the
+// popover's last row says so. The ring, for a subscription whose provider
+// reports its window, waits on the wire carrying that window. The rows are
+// this turn, this session, the context with its share of the window, today
+// from Domovoi's own accounting (which says so), and the provider window.
 
 export type UsageChipRow = {
   label: string
@@ -28,7 +29,8 @@ export type UsageChipRow = {
 }
 
 export function usageChipText(usage: SessionUsage): string {
-  return `${formatTokenCount(usage.totalTokens)} · ${sessionUsageReportedCost(usage) ?? "cost unavailable"}`
+  const cost = sessionUsageReportedCost(usage)
+  return cost ? `${formatTokenCount(usage.totalTokens)} · ${cost}` : formatTokenCount(usage.totalTokens)
 }
 
 function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
@@ -46,7 +48,7 @@ function sessionRow(usage: SessionUsage): UsageChipRow {
   const cost = sessionUsageReportedCost(usage)
   return {
     label: "This session",
-    value: `${formatTokenCount(usage.totalTokens)} tokens · ${cost ?? "cost unavailable"}`,
+    value: cost ? `${formatTokenCount(usage.totalTokens)} tokens · ${cost}` : `${formatTokenCount(usage.totalTokens)} tokens`,
     note: sessionUsageCostNote(usage),
   }
 }
@@ -63,14 +65,26 @@ function contextRow(usage: SessionUsage): UsageChipRow | undefined {
 
 function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefined {
   if (!today || today.turns <= 0) return undefined
-  const cost = today.reportedCostTurns > 0 && today.currency ? formatUsageCost(today.costMicros, today.currency) : "cost unavailable"
+  const cost = today.reportedCostTurns > 0 && today.currency ? formatUsageCost(today.costMicros, today.currency) : undefined
   const turns = today.turns === 1 ? "1 turn" : `${today.turns} turns`
   const sessions = today.sessions === 1 ? "1 session" : `${today.sessions} sessions`
   return {
     label: "Today",
-    value: `${formatTokenCount(today.totalTokens)} tokens · ${cost}`,
+    value: cost ? `${formatTokenCount(today.totalTokens)} tokens · ${cost}` : `${formatTokenCount(today.totalTokens)} tokens`,
     note: [`${turns} in ${sessions}`, "Domovoi's count, not the provider's limit", sessionUsageCostNote(today)]
       .filter((part) => part !== undefined).join(" · "),
+  }
+}
+
+// No provider reports its rolling limit over the wire yet, so the dial is
+// not drawn and the row says why. When a provider states the window this row
+// becomes the ring's source; until then an inferred denominator would be
+// invented precision.
+function providerWindowRow(): UsageChipRow {
+  return {
+    label: "Provider window",
+    value: "not reported",
+    note: "This provider has not said what the limit is, so Domovoi draws no dial rather than guessing one.",
   }
 }
 
@@ -123,7 +137,7 @@ export function usageChipRows(input: {
   today: UsageWindow | null | undefined
 }): UsageChipRow[] {
   const session = sessionHasUsage(input.usage) ? [turnRow(input.turn), sessionRow(input.usage), contextRow(input.usage)] : []
-  return [...session, todayRow(input.today)]
+  return [...session, todayRow(input.today), ...(session.length > 0 ? [providerWindowRow()] : [])]
     .filter((row): row is UsageChipRow => row !== undefined)
 }
 
