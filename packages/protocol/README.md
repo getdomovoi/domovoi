@@ -2,6 +2,24 @@
 
 Typed schemas and shared types for the Domovoi daemon and clients.
 
+## What else lives here, and the line
+
+This is also the only package both `packages/ui` and `apps/mobile` depend on, so a helper every
+surface needs and neither can import from the other lands here. Two kinds are in, one is not:
+
+- Derivations from wire values are in. `modelDisplayName` (`model-display.ts`) reads a model id
+  and a harness id, both of which cross the wire, and is the one place the short name is derived.
+- Cross-surface UI state that every thread must agree on is in, as a stated exception:
+  `threadFollowState` and `threadFollowPillText` (`thread-follow.ts`) are presentational and
+  do not describe the wire. They are here so the desktop and the phone cannot drift on when a
+  thread follows and what the pill says. Two functions, decided 2026-09-18.
+- Anything that touches React, the DOM, React Native or a scroll position is not. `isAtBottom`
+  and `useThreadFollow` stay in `packages/ui`; `PageScroller` stays in `apps/mobile`.
+
+The third presentational helper that wants a home here is the signal to make a small shared
+package for cross-surface UI logic and move all three, rather than let a published protocol
+package become the shared-utilities package under a name that stops describing it.
+
 ## Installation
 
 `@getdomovoi/protocol` is not yet on a package registry, so there is no version to install from
