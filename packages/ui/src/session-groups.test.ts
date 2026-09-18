@@ -17,10 +17,23 @@ function session(overrides: Partial<WorkspaceSnapshot["sessions"][number]>): Wor
 }
 
 describe("grouping sessions for the drawer", () => {
-  it("calls a gated session Running while its turn is still in flight", () => {
+  // Membership follows the row's own state: a session whose note says it is
+  // waiting on you cannot sit under Running, or the label and the row disagree.
+  it("puts a gated session under Needs you even while its turn is still in flight", () => {
     const groups = groupSessions(snapshotWith([session({ id: "s1", activeTurnId: "turn-1" })], "s1"))
-    expect(groups[0]!.id).toBe("running")
+    expect(groups[0]!.id).toBe("needs-you")
     expect(groups[0]!.sessions[0]!.note).toBe("waiting on you")
+    expect(groups[0]!.sessions[0]!.running).toBe(true)
+    expect(groups.map((group) => group.id)).toEqual(["needs-you"])
+  })
+
+  it("leads with Needs you, then Running, then Quiet", () => {
+    const groups = groupSessions(snapshotWith([
+      session({ id: "s1", activeTurnId: "turn-1" }),
+      session({ id: "s2", state: "idle" }),
+      session({ id: "s3", state: "failed" }),
+    ]))
+    expect(groups.map((group) => group.id)).toEqual(["needs-you", "running", "quiet"])
   })
 
   it("moves a gated session to Needs you once nothing is running", () => {
@@ -61,5 +74,9 @@ describe("grouping sessions for the drawer", () => {
       session({ id: "s3", activeTurnId: "turn-1" }),
     ], "s2")
     expect(sessionsNeedingYou(snapshot)).toBe(2)
+  })
+
+  it("counts a gated session that is still running as waiting on a person", () => {
+    expect(sessionsNeedingYou(snapshotWith([session({ id: "s1", activeTurnId: "turn-1" })], "s1"))).toBe(1)
   })
 })
