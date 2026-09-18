@@ -129,6 +129,7 @@ export function buildWorkspaceCommands({
   openInEditor,
   externalEditor,
   pauseAll,
+  emergencyStop,
   reconnect,
   setSurface,
   sessions,
@@ -154,6 +155,7 @@ export function buildWorkspaceCommands({
   openInEditor?: (() => void) | undefined
   externalEditor?: DesktopExternalEditor | undefined
   pauseAll: () => void
+  emergencyStop: () => void
   reconnect: () => void
   setSurface: (surface: WorkspaceSurface) => void
   sessions?: readonly WorkspaceSnapshot["sessions"][number][] | undefined
@@ -184,7 +186,8 @@ export function buildWorkspaceCommands({
     ...(activeWorkspacePath && copyWorktreePath ? [
       { id: "copy-worktree-path", label: "Copy worktree path", section: "Session" as const, keywords: ["clipboard", "folder"], icon: ClipboardIcon, run: copyWorktreePath },
     ] : []),
-    { id: "pause-all", label: "Pause all", section: "Session", keywords: ["stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
+    { id: "pause-all", label: "Pause everything", section: "Session", keywords: ["pause", "turn boundary"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
+    { id: "emergency-stop", label: "Emergency stop", section: "Session", keywords: ["kill", "stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: emergencyStop },
     { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, run: () => setSurface("workspace") },
     { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, run: () => setSurface("providers") },
     { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },

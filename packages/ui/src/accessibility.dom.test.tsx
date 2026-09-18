@@ -18,6 +18,7 @@ function renderTopBar() {
       emergencyStopError={null}
       onOpenProject={vi.fn()}
       onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()}
       onOpenCommands={vi.fn()}
       commandShortcut="Ctrl+K"
     />,
@@ -35,7 +36,7 @@ describe("top bar keyboard focus", () => {
     expect(focusable.map((button) => button.getAttribute("aria-label") ?? button.textContent)).toEqual([
       expect.stringContaining(demoWorkspace.project?.name ?? "Open project"),
       "Open command palette",
-      "Pause all",
+      "Stop everything",
     ])
 
     for (const button of focusable) {

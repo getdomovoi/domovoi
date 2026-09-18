@@ -44,9 +44,10 @@ describe("workspace command palette keyboard path", () => {
     const combobox = screen.getByRole("combobox")
     expect(document.activeElement).toBe(combobox)
 
-    await user.type(combobox, "pause all")
+    await user.type(combobox, "pause everything")
     await user.keyboard("{Enter}")
-    expect(sentRequests(socket, "system.emergencyStop")).toHaveLength(1)
+    expect(sentRequests(socket, "system.pauseAll")).toHaveLength(1)
+    expect(sentRequests(socket, "system.emergencyStop")).toHaveLength(0)
     await settle()
     expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull()
 
@@ -56,5 +57,20 @@ describe("workspace command palette keyboard path", () => {
     expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull()
     await settle()
     expect(document.activeElement).toBe(trigger)
+  })
+
+  it("sends the kill only from the emergency stop command", async () => {
+    const user = userEvent.setup()
+    render(<WorkspaceShell />)
+    const socket = harness.socket(0)
+    await act(async () => {
+      completeHandshake(socket, workspaceSnapshot())
+    })
+
+    await user.keyboard("{Control>}k{/Control}")
+    await user.type(screen.getByRole("combobox"), "emergency stop")
+    await user.keyboard("{Enter}")
+    expect(sentRequests(socket, "system.emergencyStop")).toHaveLength(1)
+    expect(sentRequests(socket, "system.pauseAll")).toHaveLength(0)
   })
 })

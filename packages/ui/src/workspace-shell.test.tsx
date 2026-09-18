@@ -268,6 +268,7 @@ describe("AppBar", () => {
         emergencyStopError={null}
         onOpenProject={vi.fn()}
         onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()}
       />,
     )
     expect(markup).not.toContain("Usage today")
@@ -287,10 +288,11 @@ describe("AppBar", () => {
         emergencyStopError={null}
         onOpenProject={vi.fn()}
         onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()}
       />,
     )
 
-    expect(markup).toMatch(/<button(?=[^>]*aria-label="Pause all")(?![^>]*disabled="")/)
+    expect(markup).toMatch(/<button(?=[^>]*aria-label="Stop everything")(?![^>]*disabled="")/)
   })
 
   it("disables pause-all while pending and announces its outcome", () => {
@@ -317,10 +319,11 @@ describe("AppBar", () => {
         emergencyStopError={null}
         onOpenProject={vi.fn()}
         onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()}
       />,
     )
 
-    expect(markup).toMatch(/<button(?=[^>]*aria-label="Pause all")(?=[^>]*disabled="")/)
+    expect(markup).toMatch(/<button(?=[^>]*aria-label="Stop everything")(?=[^>]*disabled="")/)
     expect(markup).toContain('role="status"')
     expect(markup).toContain("2 turns stopped")
     expect(markup).toContain("1 terminal closed")
@@ -339,11 +342,12 @@ describe("AppBar", () => {
         emergencyStopError="daemon did not respond"
         onOpenProject={vi.fn()}
         onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()}
       />,
     )
 
     expect(markup).toContain('role="alert"')
-    expect(markup).toContain("Pause all failed: daemon did not respond")
+    expect(markup).toContain("Emergency stop failed: daemon did not respond")
   })
 })
 

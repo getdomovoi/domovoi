@@ -155,6 +155,7 @@ import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
 import { collectFleetInventories } from "./fleet-inventories"
 import { DomovoiMark } from "./domovoi-mark"
+import { StopMenu } from "./stop-menu"
 import { annotationsForActiveSession } from "./annotations"
 import { annotationCaptureUpload } from "./annotation-capture"
 import {
@@ -500,6 +501,7 @@ export function AppBar({
   windowDecoration = "domovoi",
   onOpenProject,
   onPauseAll,
+  onEmergencyStop,
   onOpenCommands,
   commandShortcut,
   sessionsDrawer,
@@ -512,14 +514,17 @@ export function AppBar({
   bridge?: DesktopWindowBridge | undefined
   windowDecoration?: WorkspaceWindowDecoration | undefined
   onOpenProject: () => void
+  // Two controls, kept apart: pausing stops at the next turn boundary, the
+  // emergency stop kills processes now.
   onPauseAll: () => void
+  onEmergencyStop: () => void
   onOpenCommands?: (() => void) | undefined
   commandShortcut?: string | undefined
   sessionsDrawer?: ReactNode | undefined
 }) {
   const ownsDecoration = Boolean(bridge) && windowDecoration === "domovoi"
   const emergencyStopMessage = emergencyStopError
-    ? `Pause all failed: ${emergencyStopError}`
+    ? `Emergency stop failed: ${emergencyStopError}`
     : emergencyStopOutcome
       ? emergencyStopAnnouncement(emergencyStopOutcome)
       : null
@@ -556,16 +561,7 @@ export function AppBar({
             {commandShortcut ? <kbd className="hidden font-machine text-mono-xs text-muted-foreground lg:inline">{commandShortcut}</kbd> : null}
           </Button>
         ) : null}
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label="Pause all"
-          disabled={!connected || emergencyStopPending}
-          onClick={onPauseAll}
-        >
-          <CircleStopIcon data-icon="inline-start" />
-          <span className="hidden sm:inline">Pause all</span>
-        </Button>
+        <StopMenu connected={connected} pending={emergencyStopPending} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />
         {snapshot?.approvals.length ? (
           <Badge variant="warning">{snapshot.approvals.length} approval</Badge>
         ) : null}
@@ -638,7 +634,7 @@ export function emergencyStopAnnouncement(result: SystemEmergencyStopResult): st
   if (result.failures.length > 0) {
     summary.push(outcomeCount(result.failures.length, "failure", "failures"))
   }
-  return `Pause all complete: ${summary.join(", ")}.`
+  return `Emergency stop complete: ${summary.join(", ")}.`
 }
 
 export function SessionRow({
@@ -3303,6 +3299,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     emergencyStopError,
     emergencyStopOutcome,
     emergencyStopPending,
+    pauseAll,
     endpointUrl,
     forkSession,
     getSkillInventory,
@@ -3670,7 +3667,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       error: "",
     })
   }
+  // Pause everything stops at the next turn boundary through system.pauseAll;
+  // the emergency stop is the other thing and has its own control.
+  // Hold first: the pause's snapshot leaves every session idle, and an idle
+  // session with a waiting queue would be resumed by the release effect.
   const pauseActiveTurns = () => {
+    setQueues(holdAllAfterStop)
+    void pauseAll().catch(() => undefined)
+  }
+  const stopEverything = () => {
     void emergencyStop()
   }
 
@@ -3844,6 +3849,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     openProject: requestOpenProject,
     newSession: () => setLauncherMode(snapshot?.project ? "session" : "project"),
     pauseAll: pauseActiveTurns,
+    emergencyStop: stopEverything,
     reconnect: reconnectDaemon,
     setSurface,
     sessions: snapshot?.sessions ?? [],
@@ -4202,7 +4208,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   return (
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onOpenProject={requestOpenProject} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}

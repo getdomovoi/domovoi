@@ -73,6 +73,7 @@ describe("shared workspace accessibility contract", () => {
         emergencyStopError={null}
         onOpenProject={vi.fn()}
         onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()}
       />,
     )
     const disconnected = renderToStaticMarkup(
@@ -84,6 +85,7 @@ describe("shared workspace accessibility contract", () => {
         emergencyStopError={null}
         onOpenProject={vi.fn()}
         onPauseAll={vi.fn()}
+        onEmergencyStop={vi.fn()}
       />,
     )
 
