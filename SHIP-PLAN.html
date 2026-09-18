@@ -680,7 +680,7 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Context occupancy readout beside those totals
 <ul>
-<li><code>sessionUsageSchema</code> carries <code>contextTokens</code> and <code>contextWindowTokens</code>, and both are optional so a client shows the readout only when the provider reported the pair. The Codex, Claude, and ACP adapters report the pair, and <code>SessionUsageFooter</code> in <code>packages/ui/src/workspace-shell.tsx</code> renders it beside the session totals.
+<li><code>sessionUsageSchema</code> carries <code>contextTokens</code> and <code>contextWindowTokens</code>, and both are optional so a client shows the readout only when the provider reported the pair. The Codex, Claude, and ACP adapters report the pair, and the usage chip in <code>packages/ui/src/usage-chip.tsx</code> renders it beside the session totals.
 </li>
 </ul>
 </li>
