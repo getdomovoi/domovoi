@@ -1328,6 +1328,17 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         in the same file. Three affordances the phone credential refuses left the design
         instead (b6116b7e, #465): revert, take the shell, build on a variant. A phone
         answers what a machine proposed.
+  - [ ] Frames 20 to 23, the lock screen and the Live Activity, are drawn, not built, and
+        blocked on `S3.4`: frame 20 (Allow once, Deny, Open on a lock-screen notification)
+        needs APNs to wake a backgrounded app, which needs a server holding a push identity
+        that no daemon on a tailnet has; frames 21 to 23 (Live Activity) are native-only per
+        the 2026-09-18 ruling and update from the background only through an ActivityKit
+        push token, which is APNs again. Nothing here ships before Phase 2's relay. The
+        design's own caption on frame 21 says drawn, not built; frames 20, 22 and 23 should
+        carry the same convention with the reason, and that is a design-side edit. The
+        vendored `Domovoi Phone v2.dc.html` (104,738 bytes, 19 frames) predates these four
+        frames; the live file has 23 (128,715 bytes on 2026-09-18) and is the copy this line
+        was read from.
 - [ ] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
       tailnet a closed app cannot be woken. Two options, consequences stated, no choice made:
       (a) the product says plainly that you open the app to see a waiting gate; the phone is a
@@ -1337,6 +1348,29 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       means an account, a hosted service and its operations arrive in M1 for one feature.
       The plan said this is the phone's whole reason to exist; that claim is what the decision
       weighs.
+      **Checked 2026-09-18: (a) is the only M1 option, and (b) is a Phase 2 dependency, not a
+      choice.** Three facts, each read from Apple's material rather than taken from the plan.
+      First, iOS suspends an app shortly after it leaves the foreground and delivers no socket
+      events to a suspended app; the only ways to wake it are APNs (including PushKit and
+      Live Activity push tokens) and the system's own background modes, none of which is
+      "hold a WebSocket to a daemon". Second, the one local-network exception,
+      `NEAppPushProvider` (Local Push Connectivity, WWDC20 session 10113), runs only while the
+      device is on a Wi-Fi SSID, private LTE or (iOS 26) Ethernet network declared by the app;
+      it does not run over a VPN or the open internet, so a tailnet is not a network it can
+      match, and its entitlement `com.apple.developer.networking.networkextension` value
+      `app-push-provider` is granted by request only, for deployments where APNs is
+      unreachable (cruise ships, hospitals, campuses). It is not an entitlement a consumer app
+      on the App Store gets for "my daemon is on my tailnet". Third, a Live Activity may be
+      started by the foregrounded app, but every update after the app is backgrounded arrives
+      through an ActivityKit push token, which is APNs again. Android differs: a foreground
+      service with a persistent notification may hold the socket, so the Android half of a
+      lock-screen decision needs no server; that asymmetry is recorded and not designed
+      around, because the phone is drawn once.
+      Consequence: until a hosted push relay exists, the phone answers a gate only while the
+      app is in the foreground, and the product must say so where the person expects a
+      notification. Phone v2 frames 20 to 23 (the "without opening the app" section) are
+      drawn, not built, and cannot be built in M1; see `S3.3`. Option (a) is what M1 ships,
+      and its copy is the open item: the phone is a pull surface until Phase 2.
 - [ ] **S3.5 [CC]** Tablet: nothing exists yet.
 - [ ] **S3.6 [CC]** Cloud and Team surfaces; the cross-cutting states.
 - [ ] **S3.7 [CC]** Accessibility: focus order, screen-reader labels, and the StatusDot rule
