@@ -1336,9 +1336,7 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         push token, which is APNs again. Nothing here ships before Phase 2's relay. The
         design carries the convention on all four captions as of 2026-09-18, with the reason,
         and frame 21 names both blockers (the relay and a native target). The vendored
-        `Domovoi Phone v2.dc.html` (104,738 bytes, 19 frames) predates these four frames; the
-        live file has 23 and is the copy this line was read from. Re-vendor with the next
-        handoff.
+        `Domovoi Phone v2.dc.html` had 19 frames; #503 re-vendors it whole with all 23.
 - [ ] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
       tailnet a closed app cannot be woken. Two options, consequences stated, no choice made:
       (a) the product says plainly that you open the app to see a waiting gate; the phone is a
