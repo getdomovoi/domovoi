@@ -90,7 +90,6 @@ import {
 } from "./desktop-first-run-persistence"
 import { preferredSessionProvider } from "./runtime"
 import type { TerminalControls } from "./terminal-pane"
-import { StatusDot } from "./status-dot"
 import {
   browserWorkspaceUiStorage,
   loadWorkspaceUiState,
@@ -125,10 +124,7 @@ import {
   activeSession,
   activeSessionCount,
   activeThreadKey,
-  forkSessionBlockedReason,
   localFleetEntry,
-  renderedThreadForActiveSession,
-  sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
 import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
 import { AppBar, useUsageToday } from "./app-bar"

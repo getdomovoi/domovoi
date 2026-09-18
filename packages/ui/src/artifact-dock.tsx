@@ -111,10 +111,19 @@ export function artifactAuthorizationKey(targets: readonly ArtifactAuthorization
   return JSON.stringify(targets.map(({ sessionId, id, revision }) => [sessionId, id, revision]))
 }
 
+// The key is this module's own JSON.stringify above, so an unreadable one is a
+// bug here and not a damaged file; an entry that is not a triple is dropped.
 function artifactAuthorizationTargets(key: string): ArtifactAuthorizationTarget[] {
-  return (JSON.parse(key) as Array<[string, string, number]>).map(
-    ([sessionId, id, revision]) => ({ sessionId, id, revision }),
-  )
+  const parsed: unknown = JSON.parse(key)
+  if (!Array.isArray(parsed)) return []
+  const targets: ArtifactAuthorizationTarget[] = []
+  for (const entry of parsed as unknown[]) {
+    if (!Array.isArray(entry) || entry.length !== 3) continue
+    const [sessionId, id, revision] = entry as unknown[]
+    if (typeof sessionId !== "string" || typeof id !== "string" || typeof revision !== "number") continue
+    targets.push({ sessionId, id, revision })
+  }
+  return targets
 }
 
 export async function capturePreviewThumbnailState({
