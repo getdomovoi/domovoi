@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { delimiter, join } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
@@ -55,14 +55,21 @@ describe("resolveCommandPath", () => {
     const root = await mkdtemp(join(tmpdir(), "domovoi-tool-path-"))
     const bin = join(root, "bin")
     await mkdir(bin)
-    await writeFile(join(bin, "claude"), "#!/bin/sh\necho 1.2.3\n")
-    await chmod(join(bin, "claude"), 0o755)
-    await expect(resolveCommandPath("claude", `${guiLaunchPath}:${bin}`, "darwin")).resolves.toBe(join(bin, "claude"))
-    await expect(resolveCommandPath("claude", guiLaunchPath, "darwin")).resolves.toBeUndefined()
+    // Windows resolves by PATHEXT and ignores the mode bit; POSIX needs +x.
+    const name = process.platform === "win32" ? "claude.cmd" : "claude"
+    await writeFile(join(bin, name), process.platform === "win32" ? "@echo 1.2.3\r\n" : "#!/bin/sh\necho 1.2.3\n")
+    await chmod(join(bin, name), 0o755)
+    const searched = [guiLaunchPath.split(":").join(delimiter), bin].join(delimiter)
+    await expect(resolveCommandPath("claude", searched, process.platform)).resolves.toBe(join(bin, name))
+    await expect(resolveCommandPath("claude", guiLaunchPath.split(":").join(delimiter), process.platform)).resolves.toBeUndefined()
   })
 })
 
-describe("under a GUI launch environment", () => {
+// The login shell step is what a Finder or Dock launch on macOS and a desktop
+// entry on Linux need. Windows apps inherit the account PATH and the daemon
+// skips the step there, so the shell fixture below has nothing to prove on
+// Windows and would only exercise sh.
+describe.skipIf(process.platform === "win32")("under a GUI launch environment", () => {
   async function fixture() {
     const root = await mkdtemp(join(tmpdir(), "domovoi-gui-launch-"))
     const bin = join(root, "bin")
