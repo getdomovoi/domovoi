@@ -105,3 +105,25 @@ describe("SessionScreen follow", () => {
     expect(screen.queryByText("Waiting on you")).toBeNull()
   })
 })
+
+// The route can die with the thread open. The screen says what is drawn is
+// the last state sent, and the composer refuses with the reason instead of
+// offering a Send that fails after the person has typed.
+describe("SessionScreen when the route died", () => {
+  it("says the thread is not live and refuses the send with what is still true", async () => {
+    const { snapshot, detail } = fixture()
+    const base = props(detail, snapshot)
+    await render(
+      <SafeAreaProvider initialMetrics={metrics}>
+        <SessionScreen
+          {...base}
+          detail={{ ...detail, sending: { can: false, reason: "Not connected. The session is still on the machine; this reply cannot reach it yet." } }}
+          notice={{ tone: "warning", headline: "Not connected", detail: "Nothing here is live. This is the last state the phone was sent." }}
+        />
+      </SafeAreaProvider>,
+    )
+    expect(screen.getByText("Not connected")).toBeOnTheScreen()
+    expect(screen.getByText("Nothing here is live. This is the last state the phone was sent.")).toBeOnTheScreen()
+    expect(screen.getByText("Not connected. The session is still on the machine; this reply cannot reach it yet.")).toBeOnTheScreen()
+  })
+})

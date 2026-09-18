@@ -10,6 +10,7 @@ import {
   isPausable,
   promptProblem,
   sendReadiness,
+  sendReadinessOverSocket,
   sessionDetail,
   threadEntries,
 } from "./session-detail"
@@ -155,6 +156,22 @@ describe("sendReadiness", () => {
 
   it("allows a send once the session has a worktree and a provider thread", () => {
     expect(sendReadiness(ready(workspace()), false)).toEqual({ can: true, hint: undefined })
+  })
+
+  // The route can die with the composer open. The session is still on the
+  // machine, so the reason says so instead of offering a Send that would fail
+  // after the person has typed.
+  it("refuses a send while the socket is not open, and says the session is still there", () => {
+    const open = sendReadiness(ready(workspace()), false)
+    expect(sendReadinessOverSocket("open", open)).toBe(open)
+    expect(sendReadinessOverSocket("closed", open)).toEqual({
+      can: false,
+      reason: "Not connected. The session is still on the machine; this reply cannot reach it yet.",
+    })
+    expect(sendReadinessOverSocket("connecting", open)).toEqual({
+      can: false,
+      reason: "Connecting. The session is still on the machine; this reply cannot reach it yet.",
+    })
   })
 
   it("refuses a session the daemon has nothing to send into", () => {
