@@ -1,14 +1,30 @@
-import { DaemonError } from "./lib/daemon"
+import { DaemonError, DaemonNotSentError, DaemonUnconfirmedError } from "./lib/daemon"
 import { DaemonTimeoutError } from "./lib/request-timeout"
 
-// A decision that did not reach the daemon. The gate is still waiting on the
-// machine, and a client that could not answer it has not changed it, so every
-// sentence here ends by saying so. The daemon's own refusal is quoted as it
-// states it; a transport failure is named as one, not as a refusal.
+// A decision that did not come back confirmed. Three answers, told apart by
+// the transport's own classes, because the phone may only claim what it can
+// prove. Not sent: the frame never left, so the gate is still waiting. The
+// daemon refused: quoted as it states it, and the gate is still waiting.
+// Unconfirmed: the frame left and no answer came, so the daemon may have
+// applied the decision; the phone says it does not know, and that the screen
+// shows which once the connection returns, because the snapshot then either
+// carries the gate or does not. Asserting "not sent" here would be the phone
+// telling a person they denied something they allowed.
 export function decisionProblem(cause: unknown): string {
-  const stillWaiting = "The gate is still waiting."
-  if (cause instanceof DaemonError) return `The daemon refused: ${cause.message.replace(/\.$/, "")}. ${stillWaiting}`
-  if (cause instanceof DaemonTimeoutError) return `Not sent: the daemon did not answer in time. ${stillWaiting}`
-  if (cause instanceof Error) return `Not sent: ${cause.message.replace(/\.$/, "").replace(/^The /, "the ")}. ${stillWaiting}`
-  return `Not sent. ${stillWaiting}`
+  if (cause instanceof DaemonNotSentError) {
+    return `Not sent: ${lowerFirst(trimStop(cause.message))}. The gate is still waiting.`
+  }
+  if (cause instanceof DaemonError) return `The daemon refused: ${trimStop(cause.message)}. The gate is still waiting.`
+  if (cause instanceof DaemonUnconfirmedError || cause instanceof DaemonTimeoutError) {
+    return "The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which."
+  }
+  return "The decision did not come back confirmed. When the connection returns, this screen shows whether the gate is still waiting."
+}
+
+function trimStop(text: string): string {
+  return text.replace(/\.$/, "")
+}
+
+function lowerFirst(text: string): string {
+  return text.replace(/^The /, "the ")
 }

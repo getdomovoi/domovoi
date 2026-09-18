@@ -10,7 +10,7 @@ import {
 
 import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { openRelayPinStore } from "./credentials"
-import { DaemonConnection, type DaemonStatus } from "./daemon"
+import { DaemonConnection, DaemonNotSentError, type DaemonStatus } from "./daemon"
 import { reconcileRelayPin } from "./relay-pin"
 import { retryDelayMs } from "./reconnect"
 
@@ -132,7 +132,7 @@ export function useDaemon(
 
   const call = useCallback((method: string, params: unknown) => {
     const daemon = connection.current
-    if (!daemon) return Promise.reject(new Error("The daemon connection is not open"))
+    if (!daemon) return Promise.reject(new DaemonNotSentError("The daemon connection is not open"))
     return daemon.call(method, params)
   }, [])
 
