@@ -183,8 +183,10 @@ Parallel with Phase 0. Touches nothing the gates decide.
       remains open. The two policies were decided 2026-09-17 and are not open:
       **Linux enables linger.** A daemon that dies at logout is not a daemon; the
       premise is that the machine keeps working while its person is away. `service
-      install` runs `loginctl enable-linger` and prints that it did, and `service remove`
-      undoes it. **Windows matches WSL's shape.** Logon-only start with no recovery was
+      install` runs `loginctl enable-linger`, prints that it did, and records in its saved
+      configuration that it was the one who enabled it; `service remove` runs
+      `disable-linger` only on that record, so lingering another service or the person
+      already relied on is left as found. **Windows matches WSL's shape.** Logon-only start with no recovery was
       rejected for WSL; rejecting it here is consistency, not a new call. The scheduled
       task gains the same supervisor loop with backoff and loud exhaustion the WSL guest
       has, so Windows is not the platform that silently stays dead. Both are Codex's after
