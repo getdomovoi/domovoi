@@ -18,10 +18,11 @@ const run = promisify(execFile)
 // 10.8 s on a loaded Windows runner and surfaced as "Command failed" with
 // nothing on stderr, which is a SIGKILL at the deadline, not a script error.
 const probeBudgetMs = 30_000
-// The test's own deadline sits above the probe's, so a probe that never
-// returns is still reported as the probe expiring, with its name, and not as
-// a bare vitest timeout.
-const testBudgetMs = probeBudgetMs + 5_000
+// The test's own deadline sits above the probe's plus the scratch cleanup's
+// retry backoff (a few seconds), so a probe that never returns is still
+// reported as the probe expiring, with its name, and not as a bare vitest
+// timeout that lands first because cleanup ate the margin.
+const testBudgetMs = probeBudgetMs + 10_000
 const decode = (args: readonly string[]) => Buffer.from(args.at(-1)!, "base64").toString("utf16le")
 
 // Execute the generated PowerShell, but replace the scheduler COM boundary.
