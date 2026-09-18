@@ -11,10 +11,10 @@ const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
 
-const runtime: Runtime = { provider: "claude", model: "claude-sonnet-4.6", reasoning: "medium", permissionMode: "build", auto: false }
+const runtime: Runtime = { provider: "claude-code", model: "claude-sonnet-4.6", reasoning: "medium", permissionMode: "build", auto: false }
 
 const providers: ProviderRuntime[] = [
-  { id: "claude", command: "claude", status: "ready", sessionCapable: true },
+  { id: "claude-code", command: "claude", status: "ready", sessionCapable: true },
   { id: "codex", command: "codex", status: "ready", sessionCapable: true },
   { id: "aider", command: "aider", status: "missing", sessionCapable: true },
 ]
@@ -24,7 +24,7 @@ function model(provider: string, id: string, description: string, isDefault = fa
 }
 
 const catalogs: Record<string, ProviderModel[]> = {
-  claude: [model("claude", "claude-sonnet-4.6", "The default here.", true), model("claude", "claude-opus-4.2", "Slower and dearer.")],
+  "claude-code": [model("claude-code", "claude-sonnet-4.6", "The default here.", true), model("claude-code", "claude-opus-4.2", "Slower and dearer.")],
   codex: [model("codex", "gpt-5.3-codex", "Authenticated here.")],
 }
 
@@ -50,11 +50,11 @@ function popover(extra: Partial<Parameters<typeof ModelPopover>[0]> = {}) {
 it("lists every reporting harness's models flat, ticks the current one, and omits a harness that is not installed", async () => {
   const user = userEvent.setup()
   render(popover())
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   const rows = screen.getAllByRole("option")
   expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
-    "claude-sonnet-4.6, claude", "claude-opus-4.2, claude", "gpt-5.3-codex, codex",
+    "claude-sonnet-4.6, claude-code", "claude-opus-4.2, claude-code", "gpt-5.3-codex, codex",
   ])
   expect(rows[0]!.getAttribute("aria-selected")).toBe("true")
   expect(screen.queryByRole("button", { name: "aider" })).toBeNull()
@@ -68,7 +68,7 @@ it("lists every reporting harness's models flat, ticks the current one, and omit
 it("derives the short name and keeps the full id beside it", async () => {
   const user = userEvent.setup()
   render(popover())
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   const row = screen.getByRole("option", { name: "gpt-5.3-codex, codex" })
   expect(within(row).getByText("gpt 5.3")).toBeTruthy()
@@ -78,10 +78,10 @@ it("derives the short name and keeps the full id beside it", async () => {
 it("narrows by typed text and by a harness chip, and says when nothing matches", async () => {
   const user = userEvent.setup()
   render(popover())
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   await user.type(screen.getByRole("searchbox", { name: "Search models on this machine" }), "opus")
-  expect(screen.getAllByRole("option").map((row) => row.getAttribute("aria-label"))).toEqual(["claude-opus-4.2, claude"])
+  expect(screen.getAllByRole("option").map((row) => row.getAttribute("aria-label"))).toEqual(["claude-opus-4.2, claude-code"])
   expect(screen.getByText("1 of 3 · 2 harnesses reported")).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "clear" }))
   await user.click(screen.getByRole("button", { name: "codex", pressed: false }))
@@ -96,15 +96,15 @@ it("asks the agents again through discovery and shows what each one reported", a
     ? { machineId: "machine-1", provider, status: "unavailable", reason: "auth-required", action: "sign-in", retryable: true, message: "Sign in to codex on this machine." }
     : provider === "aider"
       ? { machineId: "machine-1", provider, status: "unavailable", reason: "missing", action: "install", retryable: false, message: "aider is not installed." }
-      : { machineId: "machine-1", provider, status: "ready", models: [...catalogs.claude!, model("claude", "claude-haiku-4.1", "Fast and cheap.")], defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true })
+      : { machineId: "machine-1", provider, status: "ready", models: [...catalogs["claude-code"]!, model("claude-code", "claude-haiku-4.1", "Fast and cheap.")], defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true })
   render(popover({ onDiscoverRuntime }))
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   await user.click(screen.getByRole("button", { name: "Ask the agents again" }))
   await settle()
-  expect(onDiscoverRuntime.mock.calls.map(([provider]) => provider).sort()).toEqual(["aider", "claude", "codex"])
+  expect(onDiscoverRuntime.mock.calls.map(([provider]) => provider).sort()).toEqual(["aider", "claude-code", "codex"])
   const labels = screen.getAllByRole("option").map((row) => row.getAttribute("aria-label"))
-  expect(labels).toContain("claude-haiku-4.1, claude")
+  expect(labels).toContain("claude-haiku-4.1, claude-code")
   expect(labels).toContain("codex")
   expect(labels).not.toContain("aider")
   expect(screen.getByText("Sign in to codex on this machine.")).toBeTruthy()
@@ -118,7 +118,7 @@ it("shows a harness the snapshot called missing once discovery hears models from
     ? { machineId: "machine-1", provider, status: "ready", models: [model("aider", "deepseek-v4", "Installed since the snapshot.")], defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true }
     : { machineId: "machine-1", provider, status: "ready", models: catalogs[provider] ?? [], defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true })
   render(popover({ onDiscoverRuntime }))
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   await user.click(screen.getByRole("button", { name: "Ask the agents again" }))
   await settle()
@@ -131,7 +131,7 @@ it("asks before changing to another model, and switches here on that answer", as
   const user = userEvent.setup()
   const onChange = vi.fn()
   render(popover({ onChange }))
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   await user.click(screen.getByRole("option", { name: "gpt-5.3-codex, codex" }))
   expect(screen.getByRole("alertdialog")).toBeTruthy()
@@ -148,7 +148,7 @@ it("states what the daemon does with a change, and holds a harness switch shut d
   const user = userEvent.setup()
   const onChange = vi.fn()
   render(popover({ onChange, turnRunning: true }))
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   expect(screen.getByText(/applies from the next turn/)).toBeTruthy()
   expect(screen.getByText(/needs the running turn stopped first/)).toBeTruthy()
@@ -158,11 +158,11 @@ it("states what the daemon does with a change, and holds a harness switch shut d
   expect(switchHere.title).toMatch(/Stop the active turn/)
   await user.click(screen.getByRole("button", { name: "Cancel" }))
   // The dialog sits outside the surface, so answering it closed the chip.
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
-  await user.click(screen.getByRole("option", { name: "claude-opus-4.2, claude" }))
+  await user.click(screen.getByRole("option", { name: "claude-opus-4.2, claude-code" }))
   await user.click(screen.getByRole("button", { name: "Switch here" }))
-  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude", model: "claude-opus-4.2" }))
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ provider: "claude-code", model: "claude-opus-4.2" }))
 })
 
 it("asks every harness again, so one that needed a sign-in can come back with models", async () => {
@@ -176,12 +176,12 @@ it("asks every harness again, so one that needed a sign-in can come back with mo
     ? { machineId: "machine-1", provider, status: "unavailable", reason: "missing", action: "install", retryable: false, message: "aider is not installed." }
     : { machineId: "machine-1", provider, status: "ready", models: catalogs[provider]!, defaultRuntime: runtime, permissionModes: ["ask", "plan", "build"], supportsAuto: true })
   render(popover({ providers: signedOut, onDiscoverRuntime }))
-  await user.click(screen.getByRole("button", { name: /claude · sonnet 4\.6/ }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   expect(screen.getByText(/codex needs a sign-in on mac-mini-m4/)).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Ask the agents again" }))
   await settle()
-  expect(onDiscoverRuntime.mock.calls.map(([provider]) => provider).sort()).toEqual(["aider", "claude", "codex"])
+  expect(onDiscoverRuntime.mock.calls.map(([provider]) => provider).sort()).toEqual(["aider", "claude-code", "codex"])
   expect(screen.getAllByRole("option").map((row) => row.getAttribute("aria-label"))).toContain("gpt-5.3-codex, codex")
   expect(screen.queryByText("aider is not installed.")).toBeNull()
 })
@@ -193,5 +193,5 @@ it("counts matches against everything reported", () => {
 
 it("locks the chip while a runtime update is pending", () => {
   render(popover({ pending: true }))
-  expect((screen.getByRole("button", { name: /claude · sonnet 4\.6/ }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }) as HTMLButtonElement).disabled).toBe(true)
 })
