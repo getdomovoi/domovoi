@@ -1,5 +1,15 @@
 import { vi } from "vitest"
 
+// Three measurement classes, three budgets, and the rule is that a wait names
+// its class. An in-process observation, a spawned fixture's startup and a call
+// over the production socket cost different orders on a loaded runner, and a
+// budget shared between two of them silently favours the faster: it passes on
+// every quiet run and expires on the slow one, which then reads as a flake.
+// 2026-09-18: two spawned fixtures (profile-recovery, credentials-interruption)
+// waited on the in-process budget and expired on Windows with their output
+// still empty, no first line printed yet. A test that spawns a process waits
+// on waitForFixtureStartup for its first line, never on waitForDaemon or a raw
+// vi.waitFor with a number in it.
 export function daemonWaitTimeoutMs(platform: NodeJS.Platform): number {
   return platform === "win32" ? 10_000 : 3_000
 }

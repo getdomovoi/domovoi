@@ -11,6 +11,18 @@ import { windowsPowerShellPath } from "./windows-task.js"
 import { wslTaskPlan } from "./wsl-task.js"
 
 const run = promisify(execFile)
+
+// The probe is a whole PowerShell run, not a first line: process start,
+// the scheduler fixture, a task registration and an inspection. Its own
+// class, so its own budget. A fixed ten seconds expired on 2026-09-18 at
+// 10.8 s on a loaded Windows runner and surfaced as "Command failed" with
+// nothing on stderr, which is a SIGKILL at the deadline, not a script error.
+const probeBudgetMs = 30_000
+// The test's own deadline sits above the probe's plus the scratch cleanup's
+// retry backoff (a few seconds), so a probe that never returns is still
+// reported as the probe expiring, with its name, and not as a bare vitest
+// timeout that lands first because cleanup ate the margin.
+const testBudgetMs = probeBudgetMs + 10_000
 const decode = (args: readonly string[]) => Buffer.from(args.at(-1)!, "base64").toString("utf16le")
 
 // Execute the generated PowerShell, but replace the scheduler COM boundary.
@@ -85,7 +97,7 @@ async function inspectInjectedTask(change: string, oldUserComparison = false) {
     // A file avoids re-encoding two commands beyond Windows' command-line cap.
     // ExecutionPolicy applies only to this process and its private test script.
     const result = await run(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path], {
-      timeout: 10_000, killSignal: "SIGKILL", windowsHide: true,
+      timeout: probeBudgetMs, killSignal: "SIGKILL", windowsHide: true,
     })
     outcome = { result }
   } catch (error) {
@@ -109,7 +121,7 @@ describe.runIf(process.platform === "win32")("WSL task ownership guard in Window
     // Console.Out bypasses Out-Null. Account for registration and inspection.
     expect((await inspectInjectedTask(change)).stdout.trim().split(/\r?\n/))
       .toEqual(["domovoi-task:created", "domovoi-task:3"])
-  }, 15_000)
+  }, testBudgetMs)
 
   it.each([
     { term: "Source", change: "$script:fixtureTask.Definition.RegistrationInfo.Source = 'unrelated-registration'" },
@@ -124,17 +136,17 @@ describe.runIf(process.platform === "win32")("WSL task ownership guard in Window
     await expect(inspectInjectedTask(change)).rejects.toMatchObject({
       code: 1, stderr: expect.stringContaining("WSL task ownership mismatch: " + term),
     })
-  }, 15_000)
+  }, testBudgetMs)
 
   it("names UserId when the identity cannot be resolved", async () => {
     await expect(inspectInjectedTask("$script:fixtureTask.Definition.Principal.UserId = ''")).rejects.toMatchObject({
       code: 1, stderr: expect.stringContaining("WSL task UserId could not be resolved to a SID"),
     })
-  }, 15_000)
+  }, testBudgetMs)
 
   it("detects restoring the raw-string comparison for an account-name principal", async () => {
     await expect(inspectInjectedTask(
       "$script:fixtureTask.Definition.Principal.UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name", true,
     )).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("WSL task ownership mismatch: UserId") })
-  }, 15_000)
+  }, testBudgetMs)
 })
