@@ -1,4 +1,6 @@
-import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
+
+import { fleetSummary } from "./machine-rows"
 
 export type SessionRow = {
   id: string
@@ -145,4 +147,18 @@ export function sessionGroups(snapshot: WorkspaceSnapshot): SessionGroup[] {
 
 export function waitingCount(snapshot: WorkspaceSnapshot): number {
   return new Set(snapshot.approvals.map((approval) => approval.sessionId)).size
+}
+
+// The line under the Sessions title. The sessions are one machine's, so the
+// running count is scoped to that machine by name; the handoff says "none
+// running" rather than "0 running" because a zero reads as a measurement that
+// failed. The fleet part says how many machines answered and how many did
+// not, in the fleet screen's own words. It never says "3 machines": that
+// would state a fact about three machines from the data of one, and no results
+// and not searched are different answers.
+export function sessionsHeaderLine(snapshot: WorkspaceSnapshot, fleet: FleetEntry[] | undefined): string {
+  const running = snapshot.sessions.filter((session) => session.state === "active").length
+  const runningLabel = running === 0 ? "none running" : `${running} running`
+  const summary = fleet ? fleetSummary(fleet) : undefined
+  return [snapshot.machine.name, runningLabel, summary].filter((part) => part !== undefined).join(" · ")
 }

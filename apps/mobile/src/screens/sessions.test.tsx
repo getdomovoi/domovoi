@@ -1,8 +1,20 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, type FleetEntry, type FleetMachine, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 
 import { SessionsScreen } from "./sessions"
+
+function entry(label: string, health: FleetMachine["health"]): FleetEntry {
+  return {
+    kind: "machine",
+    machine: {
+      id: `machine-${label.padEnd(32, "0")}`, label, platform: "linux", arch: "x64", version: "0.0.1",
+      connection: "tailnet", capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+      heartbeat: { state: health === "unreachable" ? "offline" : "online", lastSeenAt: "2026-09-18T00:00:00.000Z" },
+      health, self: false,
+    },
+  }
+}
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -11,7 +23,7 @@ function workspace(): WorkspaceSnapshot {
 async function draw(overrides: Partial<Parameters<typeof SessionsScreen>[0]> = {}) {
   const props = {
     snapshot: workspace(),
-    machineCount: undefined,
+    fleet: undefined,
     notice: undefined,
     refreshing: false,
     now: Date.now(),
@@ -112,12 +124,14 @@ describe("SessionsScreen", () => {
     expect(screen.queryByText("NEEDS YOU")).toBeNull()
   })
 
-  it("does not claim a machine count it has not been given", async () => {
-    await draw({ machineCount: undefined })
-    expect(screen.queryByText(/machine/)).toBeNull()
+  it("names the machine, and says how many of the fleet answered only once the fleet has been read", async () => {
+    await draw({ fleet: undefined })
+    expect(screen.queryByText(/reachable|offline/)).toBeNull()
+    expect(screen.getByText(/^macbook-pro-m3 · /)).toBeOnTheScreen()
 
-    await draw({ machineCount: 3 })
-    expect(screen.getByText(/3 machines · /)).toBeOnTheScreen()
+    await draw({ fleet: [entry("a", "healthy"), entry("b", "healthy"), entry("c", "unreachable")] })
+    expect(screen.getByText(/ · 2 reachable · 1 offline$/)).toBeOnTheScreen()
+    expect(screen.queryByText(/3 machines/)).toBeNull()
   })
 
   // The daemon answered and has nothing open. That is a fact about the machine,
@@ -126,10 +140,10 @@ describe("SessionsScreen", () => {
     const idle = workspace()
     idle.sessions = []
     idle.approvals = []
-    await draw({ snapshot: idle, machineCount: 4 })
+    await draw({ snapshot: idle, fleet: [entry("a", "healthy"), entry("b", "healthy")] })
 
     expect(screen.getByText("No sessions running")).toBeOnTheScreen()
-    expect(screen.getByText("4 machines · none running")).toBeOnTheScreen()
+    expect(screen.getByText("macbook-pro-m3 · none running · 2 reachable")).toBeOnTheScreen()
     // No CLI command: the phone does not start sessions and the CLI has no such verb.
     expect(screen.getByText(/Start one from the desktop or the web app/)).toBeOnTheScreen()
     expect(screen.queryByText(/domovoi new/)).toBeNull()
