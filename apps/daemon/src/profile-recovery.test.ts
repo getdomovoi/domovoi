@@ -19,7 +19,7 @@ import { claimProfile } from "./profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./service/configuration.js"
 import { installService, nodeServiceEffects, removeService } from "./service/install.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { waitForDaemon } from "./test-wait-for.js"
+import { waitForFixtureStartup } from "./test-wait-for.js"
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
@@ -111,7 +111,13 @@ async function startOwner(home: string, deadline: OperationDeadline, service = f
   let output = ""
   child.stdout?.on("data", (bytes: Buffer) => { output += bytes.toString() })
   child.stderr?.on("data", (bytes: Buffer) => { output += bytes.toString() })
-  await beforeDeadline(waitForDaemon(() => {
+  // This is a spawned fixture: Node boots with the import hook, transpiles the
+  // daemon and listens, which is the startup class test-wait-for.ts measures
+  // in seconds, not the in-process wait. On 2026-09-18 the in-process budget
+  // expired here on Windows with output still empty: the child had not printed
+  // its first line within ten seconds, which is startup not yet finished, not
+  // output cut short.
+  await beforeDeadline(waitForFixtureStartup("The owner daemon", () => {
     expect(output).toContain("domovoid listening on")
     expect(readLocalOwnerRecord(home)?.state).toBe("ready")
   }), deadline)
