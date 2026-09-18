@@ -132,6 +132,10 @@ export async function checkConformance(root, inventoryPath) {
     claimed.set(text, owner)
   }
   for (const text of inventory.sample ?? []) claim(text, "sample")
+  // Frame names, numbers, section eyebrows and step captions describe the
+  // drawing; they are the spec's intent for a human reader, not copy the
+  // product draws, and no rule holds intent.
+  for (const text of inventory.annotations ?? []) claim(text, "annotations")
   const sources = await readSources(root, inventory.sources ?? [])
   if (sources.files.length === 0) failures.push(`${inventoryPath}: sources ${JSON.stringify(inventory.sources)} matched no files`)
   const ids = new Set()

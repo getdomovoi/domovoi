@@ -1,0 +1,152 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi Tablet v2.dc.html",
+  "sha256": "01479d3f9f2356a47af72e65678d9d728abd99dc013eba091fbf7b3776d78df0",
+  "derivedOn": "2026-09-18",
+  "sources": [
+    "apps/mobile/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts"
+  ],
+  "note": "Four frames: two pane with a gate waiting, decision made, the review sheet, on cellular. Nothing of the tablet exists (S3.5), so every element is missing with that reason; the phone app is where the tablet will live, hence the sources. The cellular frame reaches the machine over Domovoi Cloud, which is Phase 2, so it is blocked rather than missing. Evidence for the missing elements names the components the tablet will introduce under apps/mobile/src (TabletSessionsPane, TabletThreadHeader, TabletThread, TabletGateCard, TabletReceipt, TabletComposer, TabletReviewSheet); an implementer who names them differently updates the evidence in the same change.",
+  "sample": [
+    "14:06",
+    "62%",
+    "Migrate billing webhooks to the new idempotency table",
+    "7 files",
+    "Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.",
+    "Claim-then-commit is in, on a replay table keyed by event id. One spec still asserts the old at-least-once behaviour. Step 3 needs a migration on this machine, so I stopped and asked.",
+    "Worked for 4m 18s",
+    "14 tools · 7 files",
+    "step 3 of 4",
+    "pnpm -w prisma migrate deploy",
+    "src/webhooks/handler.ts",
+    "@@ -41,3 +41,9 @@",
+    "Replay table, three states",
+    "design-studio",
+    "webhook_replay",
+    "One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.",
+    "open"
+  ],
+  "elements": [
+    {
+      "id": "sidebar",
+      "name": "Sessions pane",
+      "where": "left pane: mark and Domovoi, machines button, New session, groups NEEDS YOU / RUNNING / QUIET with rows",
+      "copy": [
+        "Domovoi",
+        "New session"
+      ],
+      "evidence": [
+        "TabletSessionsPane"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "S3.5: the tablet is not started; the phone has these groups as a single-column list"
+      }
+    },
+    {
+      "id": "thread.header",
+      "name": "Thread header",
+      "where": "right pane top: title, repo · branch · worktree · clock, the files button opening the sheet, theme toggle",
+      "evidence": [
+        "TabletThreadHeader"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "S3.5"
+      }
+    },
+    {
+      "id": "thread.turns",
+      "name": "Thread turns with the activity row",
+      "where": "right pane: the user message, prose, Worked for N with tools and files",
+      "evidence": [
+        "TabletThread"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "S3.5"
+      }
+    },
+    {
+      "id": "thread.gate",
+      "name": "Gate card with 52 and 48px targets",
+      "where": "in the thread: Approval required, hard gate; step n of N; the command; Allow once, Always here, Deny",
+      "copy": [
+        "Approval required, hard gate",
+        "Allow once",
+        "Always here",
+        "Deny"
+      ],
+      "evidence": [
+        "TabletGateCard",
+        "Always here"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "S3.5; the phone's approval screen decides with its own copy and layout"
+      }
+    },
+    {
+      "id": "thread.receipt",
+      "name": "Decision receipt at arm's length",
+      "where": "in the thread after the decision: what ran, how long, that a checkpoint exists",
+      "evidence": [
+        "TabletReceipt"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "S3.5"
+      }
+    },
+    {
+      "id": "composer",
+      "name": "Tablet composer",
+      "where": "right pane foot: Reply, or steer the plan; queued row",
+      "copy": [
+        "Reply, or steer the plan"
+      ],
+      "evidence": [
+        "TabletComposer",
+        "Reply, or steer the plan"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "S3.5"
+      }
+    },
+    {
+      "id": "sheet",
+      "name": "Review bottom sheet",
+      "where": "over the thread with a grab handle: Changes, Diff, Plan, Review tabs; file rows, a unified diff, the plan, the design render with anchored comments and a draft (Say what is wrong with this element, Post, Cancel)",
+      "copy": [
+        "Say what is wrong with this element",
+        "Post",
+        "Cancel"
+      ],
+      "evidence": [
+        "TabletReviewSheet",
+        "Say what is wrong with this element"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "S3.5"
+      }
+    },
+    {
+      "id": "cellular-banner",
+      "name": "On cellular over Domovoi Cloud banner",
+      "where": "top of the thread when off the network",
+      "copy": [
+        "On cellular over Domovoi Cloud, so this view is a few seconds behind"
+      ],
+      "evidence": [
+        "over Domovoi Cloud"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "platform",
+        "reason": "the route is the Phase 2 relay; M1 has loopback and the tailnet"
+      }
+    }
+  ]
+}

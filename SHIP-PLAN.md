@@ -1295,13 +1295,22 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       dated reason; the list only shrinks. The chrome pass is the largest item in it and goes
       first: titlebar, session controls out of the composer into the drawer menu, the composer
       action row as drawn. The three leftovers this item named before are inside that.
-      Per surface, from the inventories: **desktop** partial (above); **phone** 16 of 19
-      original frames built to jest-expo, frames 20 to 23 blocked on `S3.4`, inventory to
-      follow; **web** renders the desktop package, so it inherits the desktop's state plus its
-      own limits panel, inventory to follow; **tablet** nothing built (`S3.5`).
-      Blocked, on the maintainer's desk (from the desktop inventory): the watching-only chip
-      and composer note need a client access level on the wire; the pairing copy promises a
-      Domovoi Cloud fallback that M1 cannot ship and its definition of done forbids.
+      Per surface, from the inventories in `docs/design-conformance/` (counts on 2026-09-18):
+      **desktop** 23 built, 42 partial, 9 missing, 3 blocked; **phone** 6 built, 13 partial,
+      1 missing (the policy refusal screen), 7 blocked (frame 04 on `terminal.watch`, frames
+      20 to 23 on `S3.4`, a clone action with no RPC, a Cloud clause in the pairing copy);
+      **web** 3 built, 3 partial, 5 blocked, because the Web v2 design is the Phase 2 product
+      (Cloud attach, relay latency, account tiers) drawn early; **tablet** 7 missing, 1
+      blocked, nothing started (`S3.5`). Not inventoried: Cloud, Team, Skills, Onboarding and
+      States, which are Phase 2 surfaces or state references rather than screens a client
+      draws today.
+      Blocked, on the maintainer's desk: the watching-only chip and composer note need a
+      client access level on the wire; the desktop pairing copy promises a Domovoi Cloud
+      fallback and the phone's names Domovoi Cloud, neither of which M1 can ship; the phone's
+      Clone a repository onto a machine has no RPC and the phone answers what a machine
+      proposed; the Web v2 design as a whole waits on Phase 2 and Phase 5. One design-side
+      correction: the phone's frame 14 caption still says drawn, not built, and attachments
+      landed 2026-09-17.
 - [ ] **S3.2 [CC]** Web: the six-step flow over loopback and the tailnet, with
       capability-refused real rather than drawn. Over the relay once Phase 2 lands.
   - [x] Step 3, what a browser tab can and cannot do, measured against the browser rather

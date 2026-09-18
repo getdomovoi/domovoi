@@ -17,6 +17,7 @@ const design = `<x-dc>
   <div>{{ machineName }}</div>
   <div>acme-api · main</div>
   <div onClick="{{ jump }}">Jump to latest</div>
+  <div>The pill never moves the viewport on a gate.</div>
 </div>
 </x-dc>
 <script>const x = "not copy";</script>`
@@ -34,6 +35,7 @@ async function fixture(inventory, source = "export const label = \"Hide sessions
     derivedOn: "2026-09-18",
     sources: ["src/**/*.tsx"],
     sample: ["acme-api · main"],
+    annotations: ["The pill never moves the viewport on a gate."],
     elements: [],
     ...inventory,
   }
@@ -42,7 +44,7 @@ async function fixture(inventory, source = "export const label = \"Hide sessions
 }
 
 test("template copy is every literal text node and aria-label, not bindings or script", () => {
-  assert.deepEqual(designCopy(design), ["Domovoi", "Hide sessions", "acme-api · main", "Jump to latest"])
+  assert.deepEqual(designCopy(design), ["Domovoi", "Hide sessions", "acme-api · main", "Jump to latest", "The pill never moves the viewport on a gate."])
 })
 
 test("a built element whose evidence is in source, a claimed sample and a missing element pass", async () => {
