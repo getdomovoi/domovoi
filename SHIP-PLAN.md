@@ -180,8 +180,17 @@ Parallel with Phase 0. Touches nothing the gates decide.
       into `service install`; its CLI proof and guest-loop restart/removal passed
       native run 35275707927, attempt 2, at bf584079. This supersedes the failed
       task-managed restart assertion, not erasing it. Actual logon acceptance
-      remains open, as do the separate native Windows crash-supervision and Linux
-      login/logout/boot policy decisions. Tick when the assessment says so.
+      remains open. The two policies were decided 2026-09-17 and are not open:
+      **Linux enables linger.** A daemon that dies at logout is not a daemon; the
+      premise is that the machine keeps working while its person is away. `service
+      install` runs `loginctl enable-linger`, prints that it did, and records in its saved
+      configuration that it was the one who enabled it; `service remove` runs
+      `disable-linger` only on that record, so lingering another service or the person
+      already relied on is left as found. **Windows matches WSL's shape.** Logon-only start with no recovery was
+      rejected for WSL; rejecting it here is consistency, not a new call. The scheduled
+      task gains the same supervisor loop with backoff and loud exhaustion the WSL guest
+      has, so Windows is not the platform that silently stays dead. Both are Codex's after
+      the weekly budget resets; tick when the assessment says so.
 - [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
       clearly rather than half-working. The hello refuses with
       `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`); exact version parsing and
@@ -207,6 +216,13 @@ Parallel with Phase 0. Touches nothing the gates decide.
       removed or explicitly accepted before activation ships. Ownership: reproducible builds
       are named here and in `S4.6`; `S4.6` owns the two-clean-build comparison and its release
       record, and this item consumes it as an activation precondition. Not fixed here.
+      **Decided 2026-09-17: not for M1.** The chain is built with zero callers, no RPC
+      dispatches it and there is no release to fetch. A signing ceremony is operational
+      work, key custody, a published root digest, a documented recovery path, and none of it
+      brings the app closer to being used. M1 ships the unsigned DMG `package:desktop:mac`
+      already produces and says plainly that updates are manual. TUF and the deviation above
+      become load-bearing when there is a public release to protect, which is after the
+      maintainer has used the thing. The M1 definition of done below is corrected to match.
 - [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart. Landed as #374 (c8eb1a93).
 - [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
@@ -1873,7 +1889,9 @@ when all of these are proven:
   direct API adapters that duplicate a capable subscription CLI.
 - `S3.0` answered yes: a paired phone attaches to a desktop session over the tailnet route
   and answers a gate on real hardware.
-- A signed desktop build can install, start, update, and remove its supervised local daemon.
+- The packaged desktop build can install, start, and remove its supervised local daemon.
+  Unsigned and updated by hand for M1, and the product says so (decided 2026-09-17 under
+  `S1.4`); signing and self-update are M2 preconditions, not M1's.
 - A new user can open a repository, start an agent, review tool activity, annotate a plan, approve
   or deny consequential work, restore a checkpoint, and reopen the session after restart.
 - Every supported provider failure produces an actionable state without losing the worktree.

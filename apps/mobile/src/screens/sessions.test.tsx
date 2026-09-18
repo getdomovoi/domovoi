@@ -130,7 +130,9 @@ describe("SessionsScreen", () => {
 
     expect(screen.getByText("No sessions running")).toBeOnTheScreen()
     expect(screen.getByText("4 machines · none running")).toBeOnTheScreen()
-    expect(screen.getByText(`domovoi new --machine ${idle.machine.name}`)).toBeOnTheScreen()
+    // No CLI command: the phone does not start sessions and the CLI has no such verb.
+    expect(screen.getByText(/Start one from the desktop or the web app/)).toBeOnTheScreen()
+    expect(screen.queryByText(/domovoi new/)).toBeNull()
   })
 
   it("says nothing about being empty while a session is listed", async () => {
