@@ -120,8 +120,9 @@ export function SettingsScreen({
           <View className="gap-1.5">
             <Text variant="label">Pairing token</Text>
             <Text variant="note">
-              This token can do anything you can do on that machine: send work to an agent, approve
-              a command, and open a terminal. Treat it like the machine's keys.
+              This credential can send work to an agent on that machine, approve a command, and
+              pause a session. It cannot open a terminal or read files there. Treat it like a key
+              to those three things.
             </Text>
             <TextInput
               value={token}
@@ -177,8 +178,8 @@ export function SettingsScreen({
               ))}
             </Card>
             <Text variant="note" className="px-1 text-faint">
-              These live on the machine, not on this phone. They stay listed so you can see what
-              pairing unlocks.
+              These live on the machine and are set from the desktop. They stay listed so the
+              phone does not look like it lost them.
             </Text>
           </View>
         )}

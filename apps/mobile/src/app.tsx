@@ -9,8 +9,10 @@ import {
   skillSummariesSchema,
   turnSkillRefusalFrom,
   turnSkillSelectionFor,
+  workspaceSnapshotSchema,
   type ApprovalDecision,
   type FleetEntry,
+  type PermissionMode,
   type SkillSummary,
 } from "@getdomovoi/protocol"
 
@@ -19,6 +21,7 @@ import { artifactUrlFor } from "./artifact-url"
 import { previewChannel, previewParentOrigin, type PreviewSelection } from "./preview-bridge"
 import { connectionNotice } from "./connection-notice"
 import { ConfirmSheet } from "./components/confirm-sheet"
+import { StopSheet } from "./components/stop-sheet"
 import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
@@ -30,6 +33,7 @@ import * as ImagePicker from "expo-image-picker"
 
 import { attachmentFrom, attachmentRefusalMessage, attachmentSummary, maximumSessionAttachments, type Attachment } from "./attachments"
 import { planForSession, planStepEdit, planSummary, unpinnedAfter } from "./plan-rows"
+import { startLikeRequest } from "./start-like"
 import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
@@ -418,6 +422,40 @@ export function App() {
     })
   }
 
+  // A start from a phone is two calls the credential already has: create the
+  // session with the source's runtime and the chosen mode, then send the
+  // words. The created session is the snapshot's active one, and the phone
+  // opens it so the person lands where the work is.
+  const [starting, setStarting] = useState(false)
+  const [startProblem, setStartProblem] = useState("")
+  const startLike = async (sessionId: string, prompt: string, mode: PermissionMode) => {
+    const like = snapshot?.sessions.find((session) => session.id === sessionId)
+    if (!like) return
+    setStarting(true)
+    setStartProblem("")
+    try {
+      const request = startLikeRequest(like, prompt, mode)
+      const created = workspaceSnapshotSchema.parse(await call("session.create", {
+        title: request.title,
+        runtime: request.runtime,
+        client: clientKind,
+      }))
+      const startedId = created.activeSessionId
+      if (!startedId) throw new Error("The daemon created the session but did not say which")
+      await call("session.send", { sessionId: startedId, prompt: request.prompt, client: clientKind })
+      setOpenSessionId(startedId)
+      setOpenArtifactId(undefined)
+      setDraft("")
+      setSendProblem("")
+      setAttachments([])
+      setAttachProblem("")
+    } catch (cause) {
+      setStartProblem(cause instanceof Error ? cause.message : "The session was not started")
+    } finally {
+      setStarting(false)
+    }
+  }
+
   const pauseSession = async (sessionId: string) => {
     setPausing(true)
     try {
@@ -581,6 +619,9 @@ export function App() {
             onPickLibrary={() => void pickImage("library")}
             onTakePhoto={() => void pickImage("camera")}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_item, at) => at !== index))}
+            starting={starting}
+            startProblem={startProblem}
+            onStartLike={(prompt, mode) => void startLike(openSession.id, prompt, mode)}
           />
           <SkillSheet
             open={skillsOpen}
@@ -656,7 +697,7 @@ export function App() {
                   }
                   setOpenSessionId(sessionId)
                 }}
-                onPauseAll={() => setConfirmPause(true)}
+                onOpenStop={() => setConfirmPause(true)}
                 bottomInset={tabFootprint}
               />
             ) : unreachable ? (
@@ -753,12 +794,13 @@ export function App() {
           onSelect={setTab}
           onFootprint={setTabFootprint}
         />
-        <ConfirmSheet
+        <StopSheet
           open={confirmPause}
-          title="Pause every session?"
-          detail="This stops every running agent on the machine at once. Work already done is kept, and each session has to be started again by hand."
-          confirmLabel="Pause all sessions"
-          onConfirm={() => {
+          onOpenStop={() => {
+            setConfirmPause(false)
+            void call("system.pauseAll", { client: clientKind })
+          }}
+          onEmergencyStop={() => {
             setConfirmPause(false)
             void call("system.emergencyStop", { client: clientKind })
           }}

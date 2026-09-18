@@ -47,6 +47,9 @@ async function draw() {
         onPickLibrary={jest.fn<() => void>()}
         onTakePhoto={jest.fn<() => void>()}
         onRemoveAttachment={jest.fn<(index: number) => void>()}
+        starting={false}
+        startProblem=""
+        onStartLike={jest.fn<(prompt: string, mode: "ask" | "plan" | "build") => void>()}
       />
     </SafeAreaProvider>,
   )

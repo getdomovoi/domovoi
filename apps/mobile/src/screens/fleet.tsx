@@ -145,10 +145,10 @@ export function FleetScreen({
             <Card className="w-full bg-code">
               <Text variant="label">On the machine</Text>
               <Text variant="machine" className="mt-1.5 text-[10.5px] leading-[19px] text-strong">
-                curl -fsSL domovoi.sh/install | sh
+                domovoid pair --client phone --label "this phone"
               </Text>
-              <Text variant="machine" className="text-[10.5px] leading-[19px] text-strong">
-                domovoi pair
+              <Text variant="note" className="mt-1.5">
+                Then scan the code it draws from Settings on this phone.
               </Text>
             </Card>
             <Text variant="note" className="text-center text-faint">
