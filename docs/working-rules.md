@@ -193,6 +193,21 @@ tooling. Anything that crosses that line is split into two commits, protocol fir
    would be wrong about `main` — the exact shape of a check that looks green while proving
    nothing. If the merge policy ever changes, this convention has to change with it.
 
+   **A fourth, 2026-09-18, in the other direction: the checker ran and answered a different
+   question.** `pnpm lint | grep -cE '^\s+[0-9]+:[0-9]+'` reported `0` on a branch with five
+   ESLint errors, and the PR body said lint was clean. `\s` is not POSIX ERE; BSD `grep -E`
+   matched a literal `s`, found none, and printed the count it was asked for. `grep -c` does
+   exit 1 when nothing matches, and nothing read that status: the reader took the printed `0`
+   as the answer. So not a failure to enumerate exit codes, and not a fail-open on a non-zero
+   exit either. The check ran to completion, printed a number, and what it counted was not what
+   was meant. CI caught it because CI ran `eslint` and read its exit, not a grep over its output.
+
+   Same family as the three above, same fix: **verify a checker against a known-bad input before
+   trusting a pass.** A grep that has never matched anything has not been shown to match; a lint
+   wrapper that has never reported an error has not been shown to report one. The pattern now
+   used is `grep -cE '^ +[0-9]+:[0-9]+ +error'`, checked against a probe file with one unused
+   import (count `1`, then `0` with the probe removed) before the count was believed.
+
 9. **A tick ships in the pull request that lands the commit it cites.** Found 2026-09-10 while
    building the first stack: a plan-only branch passed every gate locally and would have failed
    in CI, because fourteen cited shas do not exist on a fresh clone of it. The task list is
