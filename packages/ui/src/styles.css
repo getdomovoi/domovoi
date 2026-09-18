@@ -68,6 +68,9 @@
 :root,
 .light {
   color-scheme: light;
+  /* design/design_system_domovoi/tokens/motion.css, which this sheet does not
+     import (D1); the one easing the theme flip needs, copied with its source. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --background: oklch(0.985 0.003 90);
   --foreground: oklch(0.22 0.01 285);
   --card: oklch(1 0 0);
@@ -265,7 +268,29 @@
   }
 }
 
+/* The light and dark flip animates. Armed by appearance.ts for the flip only,
+   never standing, so hover stays the instant step the design system asks for. */
+.dv-theming,
+.dv-theming *,
+.dv-theming *::before,
+.dv-theming *::after {
+  transition:
+    background-color 200ms var(--ease-out, ease),
+    border-color 200ms var(--ease-out, ease),
+    color 200ms var(--ease-out, ease),
+    fill 200ms var(--ease-out, ease),
+    stroke 200ms var(--ease-out, ease),
+    box-shadow 200ms var(--ease-out, ease);
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .dv-theming,
+  .dv-theming *,
+  .dv-theming *::before,
+  .dv-theming *::after {
+    transition-duration: 0.01ms;
+  }
+
   [data-slot="dialog-content"],
   [data-slot="alert-dialog-content"],
   [data-slot="dropdown-menu-content"],

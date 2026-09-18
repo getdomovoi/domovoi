@@ -1,3 +1,4 @@
+import ArrowDown from "lucide-react-native/icons/arrow-down"
 import ArrowUp from "lucide-react-native/icons/arrow-up"
 import Ban from "lucide-react-native/icons/ban"
 import Camera from "lucide-react-native/icons/camera"
@@ -25,6 +26,7 @@ import { colors } from "../../theme/tokens.generated"
 // a missing glyph with whichever fallback face has one, which is how a tab bar
 // ends up wearing the emoji gear.
 const glyphs = {
+  "arrow-down": ArrowDown,
   "arrow-up": ArrowUp,
   ban: Ban,
   camera: Camera,

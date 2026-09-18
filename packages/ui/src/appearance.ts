@@ -26,7 +26,26 @@ export function resolveAppearanceTheme(
   return prefersDark ? "dark" : "light"
 }
 
+// The flip between light and dark animates: 200ms on --ease-out across the
+// colour properties, collapsed by prefers-reduced-motion. It is armed for the
+// flip and removed after, never standing: a permanent transition on every
+// element would also fade hover backgrounds, and the design system's hover is
+// an instant step to --accent. The class goes on in the same call that
+// changes the theme; a frame later would miss the flip.
+export const themeFlipMs = 240
+const flipTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>()
+
 export function applyAppearanceTheme(element: Element, resolved: ResolvedAppearanceTheme): void {
+  const current = element.classList.contains("dark") ? "dark" : element.classList.contains("light") ? "light" : undefined
+  if (current !== undefined && current !== resolved) {
+    element.classList.add("dv-theming")
+    const pending = flipTimers.get(element)
+    if (pending !== undefined) clearTimeout(pending)
+    flipTimers.set(element, setTimeout(() => {
+      element.classList.remove("dv-theming")
+      flipTimers.delete(element)
+    }, themeFlipMs))
+  }
   element.classList.toggle("dark", resolved === "dark")
   element.classList.toggle("light", resolved === "light")
 }
