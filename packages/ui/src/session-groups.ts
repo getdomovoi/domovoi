@@ -21,10 +21,11 @@ export type SessionGroup = {
   sessions: GroupedSession[]
 }
 
-// v2 replaces the flat sidebar with three groups. The rule follows the design:
-// a session with a turn in flight is Running even when a gate is waiting on it,
-// because the machine is still working; Needs you is for sessions where nothing
-// is running and a person is the reason.
+// v2 replaces the flat sidebar with three groups. Two rules, from the design:
+// Needs you leads and never collapses, and membership follows the row's own
+// state. A session whose note says it is waiting on you sits under Needs you
+// even while its turn is still in flight, or the group label and the row
+// would disagree; the row's running flag still says the machine is working.
 export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
   const gated = new Set(snapshot.approvals.map((approval) => approval.sessionId))
   const running: GroupedSession[] = []
@@ -35,18 +36,12 @@ export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
     if (session.state === "archived") continue
     const waiting = gated.has(session.id)
     const flags = { running: Boolean(session.activeTurnId), archiving: session.state === "archiving" }
-    if (session.activeTurnId) {
-      running.push({
-        id: session.id,
-        title: session.title,
-        meaning: waiting ? "waiting" : "online",
-        note: waiting ? "waiting on you" : "running",
-        ...flags,
-      })
-      continue
-    }
     if (waiting) {
       needsYou.push({ id: session.id, title: session.title, meaning: "waiting", note: "waiting on you", ...flags })
+      continue
+    }
+    if (session.activeTurnId) {
+      running.push({ id: session.id, title: session.title, meaning: "online", note: "running", ...flags })
       continue
     }
     if (session.state === "failed") {
@@ -70,8 +65,8 @@ export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
   }
 
   const groups: SessionGroup[] = [
-    { id: "running", label: "RUNNING", sessions: running },
     { id: "needs-you", label: "NEEDS YOU", sessions: needsYou },
+    { id: "running", label: "RUNNING", sessions: running },
     { id: "quiet", label: "QUIET", sessions: quiet },
   ]
   return groups.filter((group) => group.sessions.length > 0)
