@@ -689,7 +689,7 @@ export function App() {
             ) : snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
-                machineCount={fleet?.filter((entry) => entry.kind === "machine").length}
+                fleet={fleet}
                 notice={notice}
                 refreshing={refreshing}
                 now={now}

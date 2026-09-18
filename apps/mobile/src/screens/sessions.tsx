@@ -1,5 +1,5 @@
 import { RefreshControl, View } from "react-native"
-import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { ConnectionBanner } from "../components/connection-banner"
 import { PageScroller } from "../components/page-scroller"
@@ -10,7 +10,7 @@ import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
-import { approvalLead, sessionGroups, waitingCount, type ApprovalLead, type SessionGroup, type SessionRow } from "../session-rows"
+import { approvalLead, sessionGroups, sessionsHeaderLine, waitingCount, type ApprovalLead, type SessionGroup, type SessionRow } from "../session-rows"
 import { colors } from "../theme/tokens.generated"
 
 const dotColour: Record<SessionRow["dot"], string> = {
@@ -99,7 +99,7 @@ function SessionCard({ row, onOpen }: { row: SessionRow, onOpen: (id: string) =>
 
 export function SessionsScreen({
   snapshot,
-  machineCount,
+  fleet,
   notice,
   refreshing,
   now,
@@ -110,9 +110,10 @@ export function SessionsScreen({
   bottomInset,
 }: {
   snapshot: WorkspaceSnapshot
-  // Unknown until the fleet has been asked, and a phone claiming one machine
-  // because it has only counted the one it is talking to is a lie on screen.
-  machineCount: number | undefined
+  // The fleet list from this daemon, once it has been asked. Used only to say
+  // how many machines answered; the sessions here are this machine's, and a
+  // phone claiming a fleet count from the one machine it talks to is a lie.
+  fleet: FleetEntry[] | undefined
   notice: ConnectionNotice | undefined
   refreshing: boolean
   // Passed in rather than read from the clock here, so what the screen draws is
@@ -129,15 +130,9 @@ export function SessionsScreen({
   const groups = sessionGroups(snapshot)
   const lead = approvalLead(snapshot, now)
   const needed = waitingCount(snapshot)
-  const running = snapshot.sessions.filter((session) => session.state === "active").length
-  // The handoff says "none running" rather than "0 running". A zero reads as a
-  // measurement that failed; the word reads as a fleet that is simply idle.
-  const runningLabel = running === 0 ? "none running" : `${running} running`
   // Leads with how many want a person, because that is what the phone is for.
   // Says nothing when nobody does: a zero here would read as a measurement.
-  const countLabel = machineCount === undefined
-    ? runningLabel
-    : `${machineCount} machine${machineCount === 1 ? "" : "s"} · ${runningLabel}`
+  const countLabel = sessionsHeaderLine(snapshot, fleet)
   const empty = groups.length === 0 && !lead
 
   return (
