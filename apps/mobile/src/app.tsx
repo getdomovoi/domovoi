@@ -20,6 +20,7 @@ import { artifactRows, findArtifact, previewVariants } from "./artifact-rows"
 import { artifactUrlFor } from "./artifact-url"
 import { previewChannel, previewParentOrigin, type PreviewSelection } from "./preview-bridge"
 import { connectionNotice } from "./connection-notice"
+import { decisionProblem } from "./decision-problem"
 import { ConfirmSheet } from "./components/confirm-sheet"
 import { StopSheet } from "./components/stop-sheet"
 import { ShellNotice } from "./components/shell-notice"
@@ -46,7 +47,7 @@ import { SessionsScreen } from "./screens/sessions"
 import { PairScanScreen, usePairCameraPermission } from "./screens/pair-scan"
 import { SettingsScreen } from "./screens/settings"
 import { UnpairedScreen } from "./screens/unpaired"
-import { promptProblem, sessionDetail } from "./session-detail"
+import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session-detail"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
 import {
@@ -77,6 +78,7 @@ export function App() {
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [sendProblem, setSendProblem] = useState("")
+  const [decideProblem, setDecideProblem] = useState("")
   // Frames 13 and 14: what the next turn carries besides words. Held here
   // and sent with the turn; nothing is kept once the send is answered.
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -377,6 +379,7 @@ export function App() {
   const decide = async (decision: ApprovalDecision, explanation?: string) => {
     if (!openApproval) return
     setDeciding(true)
+    setDecideProblem("")
     try {
       await call("approval.resolve", {
         approvalId: openApproval.id,
@@ -386,6 +389,10 @@ export function App() {
       })
       setExplaining(false)
       setOpenApprovalId(undefined)
+    } catch (cause) {
+      // The gate is still waiting on the machine; a client that could not
+      // answer it has not changed it. The screen stays and says why.
+      setDecideProblem(decisionProblem(cause))
     } finally {
       setDeciding(false)
     }
@@ -547,6 +554,8 @@ export function App() {
             <ApprovalScreen
               approval={openApproval}
               pending={deciding}
+              notice={notice}
+              problem={decideProblem}
               onDecide={(decision) => void decide(decision)}
               onDenyExplain={() => setExplaining(true)}
               onBack={() => setOpenApprovalId(undefined)}
@@ -566,6 +575,7 @@ export function App() {
         <SafeAreaView className="flex-1 bg-background">
           <ArtifactScreen
             artifact={openArtifact}
+            notice={notice}
             comments={openArtifactComments}
             render={previewRender}
             variants={openVariants}
@@ -587,7 +597,8 @@ export function App() {
         <StatusBar style="light" />
         <SafeAreaView className="flex-1 bg-background">
           <SessionScreen
-            detail={openSession}
+            detail={{ ...openSession, sending: sendReadinessOverSocket(status, openSession.sending) }}
+            notice={notice}
             artifacts={openArtifacts}
             plan={openPlan}
             pausing={pausing}
@@ -681,7 +692,7 @@ export function App() {
             ) : snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
-                machineCount={fleet?.filter((entry) => entry.kind === "machine").length}
+                fleet={fleet}
                 notice={notice}
                 refreshing={refreshing}
                 now={now}

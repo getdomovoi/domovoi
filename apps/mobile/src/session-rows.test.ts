@@ -1,7 +1,7 @@
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, type FleetEntry, type FleetMachine, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { approvalLead, elapsedLabel, sessionGroups, sessionRows, waitingCount } from "./session-rows"
+import { approvalLead, elapsedLabel, sessionGroups, sessionRows, sessionsHeaderLine, waitingCount } from "./session-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -169,5 +169,35 @@ describe("sessionGroups", () => {
     expect(groups[0]?.id).toBe("needs-you")
     expect(groups[0]?.rows.map((row) => row.id)).toEqual([waiting.id])
     expect(groups.find((group) => group.id === "running")?.rows.map((row) => row.id)).not.toContain(waiting.id)
+  })
+})
+
+// The sessions on this screen are one machine's. A running count is a fact
+// about that machine, so the line names it; the fleet count says how many
+// machines answered, because no results and not searched are different
+// answers and a total would round the second down to the first.
+describe("sessionsHeaderLine", () => {
+  const machine = (label: string, health: FleetMachine["health"]): FleetEntry => ({
+    kind: "machine",
+    machine: {
+      id: `machine-${label.padEnd(32, "0")}`, label, platform: "linux", arch: "x64", version: "0.0.1",
+      connection: "tailnet", capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+      heartbeat: { state: health === "unreachable" ? "offline" : "online", lastSeenAt: "2026-09-18T00:00:00.000Z" },
+      health, self: false,
+    },
+  })
+
+  it("names the machine and scopes the running count to it", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.sessions = snapshot.sessions.map((session) => ({ ...session, state: "idle" as const, activeTurnId: undefined }))
+    expect(sessionsHeaderLine(snapshot, undefined)).toBe(`${snapshot.machine.name} · none running`)
+  })
+
+  it("says how many of the fleet answered instead of a total", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.sessions = snapshot.sessions.map((session) => ({ ...session, state: "idle" as const, activeTurnId: undefined }))
+    const line = sessionsHeaderLine(snapshot, [machine("a", "healthy"), machine("b", "healthy"), machine("c", "unreachable")])
+    expect(line).toBe(`${snapshot.machine.name} · none running · 2 reachable · 1 offline`)
+    expect(line).not.toMatch(/3 machines/)
   })
 })

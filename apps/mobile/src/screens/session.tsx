@@ -4,10 +4,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { threadFollowState, type PermissionMode } from "@getdomovoi/protocol"
 
+import type { ConnectionNotice } from "../connection-notice"
+
 import { AgentMarkdown } from "../components/agent-markdown"
 import { AttachSheet } from "../components/attach-sheet"
 import { StartLikeSheet } from "../components/start-like-sheet"
 import { Composer } from "../components/composer"
+import { ConnectionBanner } from "../components/connection-banner"
 import { JumpPill } from "../components/jump-pill"
 import { PageScroller, type PageScrollerHandle } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
@@ -323,6 +326,7 @@ function ArtifactList({
 
 export function SessionScreen({
   detail,
+  notice,
   artifacts,
   plan,
   pausing,
@@ -353,6 +357,9 @@ export function SessionScreen({
   onStartLike,
 }: {
   detail: SessionDetail
+  // The route can die while the thread is open; the screen says what is drawn
+  // is the last state the phone was sent.
+  notice?: ConnectionNotice | undefined
   artifacts: ArtifactRow[]
   plan: PlanSummary | undefined
   pausing: boolean
@@ -455,6 +462,7 @@ export function SessionScreen({
         onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
         testID="thread"
       >
+        <ConnectionBanner notice={notice} />
         {/* The reason the phone was picked up goes above the reading, because
             scrolling a thread to find the decision is the slow path. */}
         {approvalId ? (

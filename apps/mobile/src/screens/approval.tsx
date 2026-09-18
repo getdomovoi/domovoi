@@ -2,6 +2,9 @@ import { useState } from "react"
 import { Pressable, View } from "react-native"
 import type { ApprovalRequest } from "@getdomovoi/protocol"
 
+import type { ConnectionNotice } from "../connection-notice"
+
+import { ConnectionBanner } from "../components/connection-banner"
 import { FloatingBar } from "../components/floating-bar"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
@@ -29,12 +32,20 @@ function facts(approval: ApprovalRequest): Array<{ key: string, value: string, t
 export function ApprovalScreen({
   approval,
   pending,
+  notice,
+  problem = "",
   onDecide,
   onDenyExplain,
   onBack,
 }: {
   approval: ApprovalRequest
   pending: boolean
+  // The route can die while a gate is open. What is drawn is then the last
+  // state the phone was sent, and the screen says so above the decision.
+  notice?: ConnectionNotice | undefined
+  // A decision that could not be sent. The gate is still waiting on the
+  // machine; a client that could not answer it has not changed it.
+  problem?: string
   onDecide: (decision: "allow-once" | "always-project" | "deny") => void
   // Denying with a reason is a second screen rather than a second tap, because
   // the reason is the only thing the agent is given and it has to be written.
@@ -64,6 +75,7 @@ export function ApprovalScreen({
         contentContainerClassName="gap-3 px-3.5"
         bottomInset={footprint}
       >
+        <ConnectionBanner notice={notice} />
         <Text variant="body">{approval.operation}</Text>
 
         <Card className="bg-code px-3.5 py-3.5">
@@ -97,6 +109,9 @@ export function ApprovalScreen({
           at the end of a scroll, and the affirmative one wears the warning the
           request wears, so neither answer reads as the safe default. */}
       <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
+        {problem ? (
+          <Text accessibilityRole="alert" className="px-1 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
+        ) : null}
         <Button
           title="Allow once"
           variant="affirm"
