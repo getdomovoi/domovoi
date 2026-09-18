@@ -254,7 +254,7 @@
                 <div style="font-size: 13.5px; color: var(--faint);">Steer it, or queue the next message</div>
                 <div style="display: flex; align-items: center; gap: 7px;">
                   <div style="{{ webModelChipStyle }}">
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">claude-sonnet-4.6</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ webModelLabel }}</span>
                   </div>
                   <div style="{{ webModeChipStyle }}">
                     <span style="{{ webModeDot }}"></span>
@@ -265,7 +265,15 @@
                     <span style="font-size: 11px;">{{ terminalLabel }}</span>
                   </div>
                   <span style="flex: 1;"></span>
-                  <span style="font-size: 11px; color: var(--muted-foreground);">42.1k · $0.38</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">42.1k</span>
+                  <span style="{{ webSepStyle }}">·</span>
+                  <sc-if value="{{ webShowRing }}" hint-placeholder-val="{{ true }}">
+                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" style="flex: 0 0 13px;" role="img" aria-label="{{ webRingLabel }}">
+                      <circle cx="7" cy="7" r="5.5" stroke="var(--muted)" stroke-width="2"></circle>
+                      <circle cx="7" cy="7" r="5.5" stroke="{{ webRingStroke }}" stroke-width="2" stroke-linecap="round" stroke-dasharray="34.56" stroke-dashoffset="{{ webRingOffset }}" transform="rotate(-90 7 7)"></circle>
+                    </svg>
+                  </sc-if>
+                  <span style="{{ webCostStyle }}">{{ webCost }}</span>
                   <div onClick="{{ queueWeb }}" style="display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); cursor: pointer;">{{ iSend }}</div>
                 </div>
               </div>
@@ -414,7 +422,7 @@
 </div>
 
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1540,&quot;height&quot;:1070},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1540,&quot;height&quot;:1080},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;connection&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;subscription&quot;,&quot;options&quot;:[&quot;subscription&quot;,&quot;api&quot;,&quot;unreported&quot;],&quot;tsType&quot;:&quot;\&quot;subscription\&quot; | \&quot;api\&quot; | \&quot;unreported\&quot;&quot;,&quot;section&quot;:&quot;Behaviour&quot;}}">
 class Component extends DCLogic {
   state = {
     screen: "attach", theme: null,
@@ -465,6 +473,7 @@ class Component extends DCLogic {
 
   renderVals() {
     const st = this.state;
+    const conn = this.props.connection ?? "subscription";
     const sc = st.screen;
     const theme = st.theme ?? this.props.theme ?? "dark";
     const degraded = sc === "degraded";
@@ -512,6 +521,26 @@ class Component extends DCLogic {
       goRelay: this.go("degraded"),
 
       isReview: sc === "review",
+      // Derived from the harness name rather than authored twice; the full id belongs in the
+      // model picker, since that is the string the audit log and the provider will name.
+      webModelLabel: (() => {
+        const agent = "claude-code";
+        const owned = agent.split("-");
+        return agent + " · " + "claude-sonnet-4.6".split("-").filter(t => owned.indexOf(t) === -1).join(" ");
+      })(),
+      // Subscription pays a flat fee, so the chip carries the window, not a price that would
+      // read as zero. One ring, two windows, tighter one shown, and unreported draws nothing.
+      webShowRing: conn === "subscription",
+      webRingOffset: (34.56 * (1 - 82 / 100)).toFixed(2),
+      webRingStroke: "var(--warning)",
+      webRingLabel: "82 percent of the weekly window, resets Thursday 09:00, the tighter of the two",
+      webCost: conn === "api" ? "$0.38" : "",
+      webCostStyle: conn === "api"
+        ? "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);"
+        : "display: none;",
+      webSepStyle: conn === "unreported"
+        ? "display: none;"
+        : "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);",
       webQueued: st.webQueued,
       queueWeb: () => this.setState({ webQueued: true }),
       unqueueWeb: () => this.setState({ webQueued: false }),
