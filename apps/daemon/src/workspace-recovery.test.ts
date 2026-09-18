@@ -14,7 +14,11 @@ import { GitWorkspaceService } from "./workspace.js"
 
 const execute = promisify(execFile)
 const directories: string[] = []
-const budgets = recoveryFixtureBudgets(fixtureStartupTimeoutMs(process.platform))
+// The ancestry snapshot spawns PowerShell on Windows and reads the whole
+// process table; it gets its own budget rather than the fixture's, per the
+// rule in test-wait-for.ts that a wait names its class.
+const processSnapshotTimeoutMs = process.platform === "win32" ? 45_000 : 10_000
+const budgets = recoveryFixtureBudgets(fixtureStartupTimeoutMs(process.platform), processSnapshotTimeoutMs)
 afterEach(async () => { await removeScratchDirectories(directories) })
 
 describe("worktree crash recovery", () => {
@@ -91,7 +95,7 @@ describe("worktree crash recovery", () => {
         const owner = JSON.parse(await readFile(join(root, ".restore-leases", "session-recovery.json"), "utf8")) as { children: number[] }
         expect(owner.children).toHaveLength(1)
         gitPid = owner.children[0]!
-        const ancestry = await runRecoveryPhase("ancestry", sequence, budgets.phaseMs, (deadline) => processAncestry(holdPid!, deadline))
+        const ancestry = await runRecoveryPhase("ancestry", sequence, budgets.ancestryMs, (deadline) => processAncestry(holdPid!, deadline))
         console.info(JSON.stringify({ phase: "descendant-ancestry", gitPid, ancestry }))
         expect(ancestry, "Holding fixture must descend from the recorded Git launcher").toContain(gitPid)
         expect(ancestry[1]).toBe(holdParentPid)
@@ -176,7 +180,9 @@ async function processAncestry(pid: number, deadline: OperationDeadline): Promis
   let records: unknown
   if (process.platform === "win32") {
     const { stdout } = await execute("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-      '$ErrorActionPreference = "Stop"; $rows = @(Get-CimInstance -ClassName Win32_Process | Select-Object ProcessId, ParentProcessId); ConvertTo-Json -InputObject $rows -Compress',
+      // -Property asks CIM for the two columns instead of every property of
+      // every process, which is most of what the enumeration costs.
+      '$ErrorActionPreference = "Stop"; $rows = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId | Select-Object ProcessId, ParentProcessId); ConvertTo-Json -InputObject $rows -Compress',
     ], options)
     records = JSON.parse(stdout)
   } else {

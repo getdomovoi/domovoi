@@ -5,14 +5,19 @@ import { beforeDeadline, OperationDeadline, validateOperationDeadlineBudget } fr
 const recoveryPhases = ["repository", "owner startup", "writer startup", "ancestry", "settlement", "restore"] as const
 type RecoveryPhase = typeof recoveryPhases[number] | "cleanup" | "forced reap"
 
-export function recoveryFixtureBudgets(phaseMs: number) {
+export function recoveryFixtureBudgets(phaseMs: number, ancestryMs = phaseMs) {
   // Starting two runtimes and taking an OS ancestry snapshot are separate
-  // operations. The holder must survive all six phases and failed-run cleanup.
-  const sequenceMs = recoveryPhases.length * phaseMs
+  // operations, and the snapshot is its own measurement class: on Windows it
+  // is a whole PowerShell run over the process table, which the test runner
+  // itself inflates by a worker per file. It expired twice on 2026-09-18 at
+  // the shared phase budget (25009 ms, 25002 ms) while the in-process phases
+  // beside it settled in under a second. The holder must survive all six
+  // phases and failed-run cleanup.
+  const sequenceMs = (recoveryPhases.length - 1) * phaseMs + ancestryMs
   const cleanupMs = phaseMs
   const reapMs = phaseMs
   const holderMs = sequenceMs + cleanupMs + reapMs
-  return { phaseMs, sequenceMs, cleanupMs, reapMs, holderMs, testMs: holderMs + phaseMs }
+  return { phaseMs, ancestryMs, sequenceMs, cleanupMs, reapMs, holderMs, testMs: holderMs + phaseMs }
 }
 
 export async function runRecoveryPhase<T>(
