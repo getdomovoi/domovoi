@@ -196,9 +196,11 @@ tooling. Anything that crosses that line is split into two commits, protocol fir
    **A fourth, 2026-09-18, in the other direction: the checker ran and answered a different
    question.** `pnpm lint | grep -cE '^\s+[0-9]+:[0-9]+'` reported `0` on a branch with five
    ESLint errors, and the PR body said lint was clean. `\s` is not POSIX ERE; BSD `grep -E`
-   matched a literal `s`, found none, and printed the count it was asked for. No non-zero exit,
-   no failure to enumerate: the check ran to completion and what it checked was not what was
-   meant. CI caught it because CI ran `eslint` and read its exit, not a grep over its output.
+   matched a literal `s`, found none, and printed the count it was asked for. `grep -c` does
+   exit 1 when nothing matches, and nothing read that status: the reader took the printed `0`
+   as the answer. So not a failure to enumerate exit codes, and not a fail-open on a non-zero
+   exit either. The check ran to completion, printed a number, and what it counted was not what
+   was meant. CI caught it because CI ran `eslint` and read its exit, not a grep over its output.
 
    Same family as the three above, same fix: **verify a checker against a known-bad input before
    trusting a pass.** A grep that has never matched anything has not been shown to match; a lint
