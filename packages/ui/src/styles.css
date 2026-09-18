@@ -43,7 +43,18 @@
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
   --color-info: var(--info);
-  --color-info-foreground: var(--info-foreground);
+  /* info and danger are tinted families like warn and ok: background, border,
+     text on that tint, and a dim. info-foreground maps to the on-tint text,
+     which is how every call site pairs it; the on-solid --info-foreground is
+     not mapped because no surface draws solid info. */
+  --color-info-foreground: var(--info-fg);
+  --color-info-background: var(--info-bg);
+  --color-info-border: var(--info-border);
+  --color-info-dim: var(--info-dim);
+  --color-danger-background: var(--danger-bg);
+  --color-danger-border: var(--danger-border);
+  --color-danger-foreground: var(--danger-fg);
+  --color-danger-dim: var(--danger-dim);
   --color-strong: var(--strong);
   --color-faint: var(--faint);
   --color-code: var(--code);
