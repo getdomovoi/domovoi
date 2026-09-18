@@ -1338,7 +1338,8 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         and frame 21 names both blockers (the relay and a native target). The vendored
         `Domovoi Phone v2.dc.html` had 19 frames; #503 re-vendors it whole with all 23.
 - [ ] **S3.4 [H]** Push notifications need a decision, not code. Over loopback and the
-      tailnet a closed app cannot be woken. Two options, consequences stated, no choice made:
+      tailnet a closed app cannot be woken. Two options as first written, consequences
+      stated; the check below settles which one M1 can have:
       (a) the product says plainly that you open the app to see a waiting gate; the phone is a
       pull surface and the copy must never imply otherwise; nothing hosted in M1.
       (b) push becomes the first hosted piece and arrives before the relay: an APNs and FCM
