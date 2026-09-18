@@ -1,14 +1,15 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
-import type { PermissionMode } from "@getdomovoi/protocol"
+import { threadFollowState, type PermissionMode } from "@getdomovoi/protocol"
 
 import { AgentMarkdown } from "../components/agent-markdown"
 import { AttachSheet } from "../components/attach-sheet"
 import { StartLikeSheet } from "../components/start-like-sheet"
 import { Composer } from "../components/composer"
-import { PageScroller } from "../components/page-scroller"
+import { JumpPill } from "../components/jump-pill"
+import { PageScroller, type PageScrollerHandle } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
@@ -397,6 +398,28 @@ export function SessionScreen({
   // composer reports covering rather than by a guess at its height.
   const [composerFootprint, setComposerFootprint] = useState(0)
   const approvalId = detail.approvalId
+
+  // The thread follows only at the bottom. Scrolled up, what lands is counted
+  // for the pill and the viewport is left alone; a gate waiting below names
+  // itself instead of a count. Back at the bottom, by hand or by the pill,
+  // the count clears.
+  const thread = useRef<PageScrollerHandle>(null)
+  const [atEnd, setAtEnd] = useState(true)
+  const [unseen, setUnseen] = useState(0)
+  const seenEntries = useRef(detail.entries.length)
+  const seenSession = useRef(detail.id)
+  useEffect(() => {
+    if (seenSession.current !== detail.id) {
+      seenSession.current = detail.id
+      seenEntries.current = detail.entries.length
+      setUnseen(0)
+      return
+    }
+    const delta = detail.entries.length - seenEntries.current
+    seenEntries.current = detail.entries.length
+    if (delta > 0 && !atEnd) setUnseen((count) => count + delta)
+  }, [atEnd, detail.entries.length, detail.id])
+  const follow = threadFollowState({ atBottom: atEnd, unseen, gated: Boolean(approvalId) })
   // The screen sits inside the safe area, so the keyboard's height is measured
   // from a frame that starts below the status bar. Without the offset the
   // composer is lifted short by exactly that much and the keyboard covers its
@@ -425,9 +448,11 @@ export function SessionScreen({
       </View>
 
       <PageScroller
+        ref={thread}
         contentContainerClassName="gap-3 px-3.5"
         bottomInset={composerFootprint}
         followEnd
+        onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
         testID="thread"
       >
         {/* The reason the phone was picked up goes above the reading, because
@@ -503,6 +528,7 @@ export function SessionScreen({
         />
       ) : null}
 
+      <JumpPill state={follow} unseen={unseen} above={composerFootprint} onPress={() => thread.current?.scrollToEnd()} />
       <Composer
         draft={draft}
         readiness={detail.sending}
