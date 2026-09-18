@@ -254,7 +254,12 @@ export function LauncherDialog({
   const projectDescription = projectNote
     ? `Choose a local Git repository. Code stays on this machine. ${projectNote}`
     : "Choose a local Git repository. Code stays on this machine."
-  const selectedProvider = providers.find((provider) => provider.id === runtime.provider)
+  // A harness that is not installed is absent from the picker, so the trigger
+  // cannot name it either: the runtime may still carry the default provider's
+  // id when nothing on the machine can start, and the trigger and the picker
+  // must agree.
+  const pickableProviders = providers.filter((provider) => provider.status !== "missing")
+  const selectedProvider = pickableProviders.find((provider) => provider.id === runtime.provider)
   const selectedModel = models.find((model) =>
     model.provider === runtime.provider && model.id === runtime.model,
   )
@@ -335,7 +340,7 @@ export function LauncherDialog({
                     <DropdownMenuContent align="start" className="w-72">
                       <DropdownMenuLabel>Execution provider</DropdownMenuLabel>
                       <DropdownMenuGroup>
-                        {providers.map((provider) => (
+                        {pickableProviders.map((provider) => (
                           <DropdownMenuItem
                             key={provider.id}
                             disabled={pending || !providerCanStartSession(provider)}
