@@ -105,7 +105,7 @@ export function SessionsScreen({
   now,
   onOpenSession,
   onOpenApproval,
-  onPauseAll,
+  onOpenStop,
   onRefresh,
   bottomInset,
 }: {
@@ -120,7 +120,7 @@ export function SessionsScreen({
   now: number
   onOpenSession: (sessionId: string) => void
   onOpenApproval: (approvalId: string) => void
-  onPauseAll: () => void
+  onOpenStop: () => void
   onRefresh: () => void
   // What the floating tab bar covers. The list runs underneath it, so the
   // last row is only readable if the scroller pads by what the bar reports.
@@ -149,7 +149,7 @@ export function SessionsScreen({
             {needed > 0 ? `${needed} need you · ${countLabel}` : countLabel}
           </Text>
         </View>
-        <Button title="Pause all" onPress={onPauseAll} />
+        <Button title="Stop everything" onPress={onOpenStop} />
       </View>
 
       <PageScroller
