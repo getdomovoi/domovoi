@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import {
   ArchiveIcon,
+  ArrowDownIcon,
   BotIcon,
   CheckIcon,
   CircleStopIcon,
@@ -56,6 +57,7 @@ import { Button } from "./components/ui/button"
 import { Input } from "./components/ui/input"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
+import { threadFollowPillText, useThreadFollow } from "./thread-follow"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
@@ -89,6 +91,7 @@ import { PromptEditorDialog } from "./prompt-editor"
 import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
 import {
   activeSessionCount,
+  activeThreadKey,
   forkSessionBlockedReason,
   localFleetEntry,
   localMachineEntry,
@@ -200,13 +203,9 @@ function ApprovalCard({
     explanation?: string,
   ) => void
 }) {
-  const cardRef = useRef<HTMLDivElement>(null)
   const explainTriggerRef = useRef<HTMLButtonElement>(null)
   const [explainOpen, setExplainOpen] = useState(false)
   const [explanation, setExplanation] = useState("")
-  useEffect(() => {
-    cardRef.current?.scrollIntoView({ block: "end" })
-  }, [approval.id])
 
   // Agent and mode ride the header line instead of the grid, the way the design
   // system draws the gate. Nothing is dropped: a desktop shows every fact.
@@ -224,7 +223,7 @@ function ApprovalCard({
   }
 
   return (
-    <Alert ref={cardRef} variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
+    <Alert variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
       <CircleStopIcon />
       <AlertTitle className="flex items-center gap-2 text-[12.5px]">
         Approval required
@@ -531,6 +530,14 @@ export function Thread({
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
   const [prompt, setPrompt] = useState("")
+  const threadViewport = useRef<HTMLDivElement>(null)
+  const threadRows = active ? groupThreadActivity(renderedThreadForActiveSession(snapshot)) : []
+  const follow = useThreadFollow(threadViewport, {
+    itemCount: threadRows.length + (approval ? 1 : 0),
+    gated: Boolean(approval),
+    threadKey: activeThreadKey(snapshot),
+  })
+  const followPill = threadFollowPillText(follow.state, follow.unseen)
   const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(undefined)
   const [skillRefusal, setSkillRefusal] = useState<TurnSkillSelectionRefusal | undefined>(undefined)
   const [promptEditorOpen, setPromptEditorOpen] = useState(false)
@@ -869,8 +876,8 @@ export function Thread({
           </div>
         )}
       </div>
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 py-6">
+      <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
+        <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 pt-6 pb-14">
           {active.providerFailure ? (
             <Alert variant="destructive">
               <CircleStopIcon />
@@ -890,7 +897,7 @@ export function Thread({
               </AlertDescription>
             </Alert>
           ) : null}
-          {groupThreadActivity(renderedThreadForActiveSession(snapshot)).map((row) => {
+          {threadRows.map((row) => {
             if (row.kind === "activity") {
               return (
                 <TurnActivity
@@ -938,6 +945,22 @@ export function Thread({
           {approval && !archiveReadOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
+      {followPill ? (
+        <div className="relative z-10 flex justify-center">
+          <button
+            type="button"
+            onClick={follow.jumpToBottom}
+            className={cn(
+              "absolute bottom-1 flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11.5px] shadow-md transition-[filter] hover:brightness-110",
+              follow.state === "gate" ? "border-warn-border bg-warn-background text-warn-foreground" : "border-border bg-card text-strong",
+            )}
+          >
+            <span aria-hidden className={cn("size-1.5 rounded-full", follow.state === "gate" ? "animate-pulse bg-warning" : "bg-primary")} />
+            {followPill}
+            <ArrowDownIcon className="size-3" />
+          </button>
+        </div>
+      ) : null}
       {archiveReadOnly ? (
         <div className="px-5 py-3">
           {planStrip}
