@@ -1,4 +1,4 @@
-import type { ProviderModel, ProviderRuntime, Runtime, RuntimeDiscoverResult } from "@getdomovoi/protocol"
+import { modelDisplayName, type ProviderModel, type ProviderRuntime, type Runtime, type RuntimeDiscoverResult } from "@getdomovoi/protocol"
 import { CheckIcon, ChevronDownIcon, SearchIcon } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
@@ -28,7 +28,7 @@ type Catalog =
   | { status: "unavailable", note: string }
 
 export function modelCountText(matches: number, total: number, harnesses: number): string {
-  return `${matches} of ${total} · ${harnesses} ${harnesses === 1 ? "harness" : "harnesses"}`
+  return `${matches} of ${total} · ${harnesses} ${harnesses === 1 ? "harness" : "harnesses"} reported`
 }
 
 function unavailableNote(provider: ProviderRuntime, machineName: string): string {
@@ -76,7 +76,13 @@ export function ModelPopover({
   const providersRef = useRef(providers)
   providersRef.current = providers
 
-  const listed = providers.filter((provider) => provider.sessionCapable)
+  // A harness that did not report is absent, not dimmed. The fleet's
+  // dim-and-keep rule is about machines, which you paired and still own when
+  // unreachable; an agent that is not installed was never yours, and a greyed
+  // filter is a filter that returns nothing. One the snapshot called missing
+  // that answers discovery with models has reported, and appears from then on.
+  const listed = providers.filter((provider) => provider.sessionCapable
+    && (provider.status !== "missing" || catalogs[provider.id]?.status === "ready"))
 
   // Each open reads the catalogs afresh; a reply from an earlier open or an
   // earlier "ask again" is dropped rather than overwriting a newer one. A
@@ -159,7 +165,7 @@ export function ModelPopover({
           open ? "border-border bg-accent" : "border-transparent",
         )}
       >
-        {runtime.model}
+        {runtime.provider} · {modelDisplayName(runtime.model, runtime.provider)}
         <ChevronDownIcon className={cn("size-3 text-faint transition-transform", open && "rotate-180")} />
       </button>
       <FloatingSurface
@@ -218,9 +224,9 @@ export function ModelPopover({
             >
               <StatusDot meaning="online" label={`${providerDisplayName(row.model.provider)} reports this model`} size="inline" labelHidden className="mt-1" />
               <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-machine text-[12px] text-foreground">{row.model.id}</span>
-                  <span className="font-machine text-mono-xs text-faint">{row.model.provider}</span>
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="text-[12.5px] text-foreground">{modelDisplayName(row.model.id, row.model.provider)}</span>
+                  <span className="font-machine text-[10px] text-faint">{row.model.id}</span>
                 </div>
                 {row.model.description ? <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{row.model.description}</p> : null}
               </div>
