@@ -138,6 +138,19 @@ describe("runtime discovery over production daemon sockets", () => {
     expect(codex.listModels).toHaveBeenCalledTimes(2)
   }, budgetMs)
 
+  it("reports the PATH the probe searched on the machine, so a client can say where it looked", async () => {
+    const target = await harness.machine("searched path", undefined, {
+      agents: { codex: agent() }, providerProbe: { inspect: async () => [], searchPath: "/usr/bin:/bin:/usr/sbin:/sbin" },
+    })
+    await vi.waitFor(async () => {
+      expect((await target.root.ok("workspace.get", {})).machine.toolPath).toBe("/usr/bin:/bin:/usr/sbin:/sbin")
+    })
+    const bare = await harness.machine("bare probe", undefined, {
+      agents: { codex: agent() }, providerProbe: { inspect: async () => [] },
+    })
+    expect((await bare.root.ok("workspace.get", {})).machine.toolPath).toBeUndefined()
+  }, budgetMs)
+
   it("refuses providers without an adapter or verified readiness", async () => {
     const target = await harness.machine("unsupported discovery", undefined, {
       agents: { codex: agent() }, providerProbe: { inspect: async () => [] },
