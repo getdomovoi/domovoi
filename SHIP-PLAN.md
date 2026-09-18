@@ -1304,13 +1304,15 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       blocked, nothing started (`S3.5`). Not inventoried: Cloud, Team, Skills, Onboarding and
       States, which are Phase 2 surfaces or state references rather than screens a client
       draws today.
-      Blocked, on the maintainer's desk: the watching-only chip and composer note need a
-      client access level on the wire; the desktop pairing copy promises a Domovoi Cloud
-      fallback and the phone's names Domovoi Cloud, neither of which M1 can ship; the phone's
-      Clone a repository onto a machine has no RPC and the phone answers what a machine
-      proposed; the Web v2 design as a whole waits on Phase 2 and Phase 5. One design-side
-      correction: the phone's frame 14 caption still says drawn, not built, and attachments
-      landed 2026-09-17.
+      Blocked, ruled 2026-09-18: the watching-only chip and composer note go to Codex as a
+      client access level exposing the mutating | read-only classification already at
+      `packages/protocol/src/rpc.ts:1484`; the desktop and phone pairing copy that names
+      Domovoi Cloud is a design edit (say loopback and tailnet, name Cloud as not yet
+      available), frames kept and marked drawn-not-built; Clone a repository from the phone is
+      cut from the design, no RPC; the Web v2 inventory is scoped to the limits page and what
+      the web inherits until the relay exists. The first-hour report's Auto item is withdrawn:
+      Auto lives in the mode menu in both the design and the code, where a Build-only flag
+      belongs. Phone frame 13 and 14 captions were corrected on the design side.
 - [ ] **S3.2 [CC]** Web: the six-step flow over loopback and the tailnet, with
       capability-refused real rather than drawn. Over the relay once Phase 2 lands.
   - [x] Step 3, what a browser tab can and cannot do, measured against the browser rather

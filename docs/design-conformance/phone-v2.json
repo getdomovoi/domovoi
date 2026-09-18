@@ -6,7 +6,7 @@
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "Twenty-three frames in five sections. Frame names, section eyebrows and step captions are annotations; the fictional session is sample. Frames 20 to 23 are blocked on S3.4 and the native decision. One design-side correction to raise: the caption on frame 14 still says drawn, not built, and attachments landed on 2026-09-17 (#474, #475).",
+  "note": "Twenty-three frames in five sections. Frame names, section eyebrows and step captions are annotations; the fictional session is sample. Frames 20 to 23 are blocked on S3.4 and the native decision. Frame 13 and 14 captions were corrected on the design side 2026-09-18 (attachments landed 2026-09-17); the next re-vendor picks that up and this inventory re-derives.",
   "sample": [
     "Migrate billing webhooks",
     "pnpm -w prisma migrate deploy",
@@ -342,7 +342,7 @@
       "blocked": {
         "since": "2026-09-18",
         "needs": "design",
-        "reason": "M1 has no Domovoi Cloud and its definition of done forbids a surface that claims one; the phone already says the exchange is direct and no account is involved. The design should drop the Cloud clause until Phase 2"
+        "reason": "M1 has no Domovoi Cloud. Ruled 2026-09-18: design edit, the frame keeps its drawn-not-built convention with the reason and the sentence stops naming Cloud"
       }
     },
     {
@@ -400,8 +400,8 @@
       ],
       "blocked": {
         "since": "2026-09-18",
-        "needs": "protocol",
-        "reason": "no RPC clones a repository, and the phone credential allow-list does not include one; a phone answers what a machine proposed"
+        "needs": "design",
+        "reason": "cut. Ruled 2026-09-18: cloning is a setup operation and setup belongs where a filesystem is visible; the phone answers what a machine proposed. The design removes the button; no RPC is built"
       }
     },
     {
@@ -486,7 +486,7 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "attachments queue and send (#474, #475); the upload line copy is not the design's. The design caption still says drawn, not built; it is out of date and should be corrected on the design side"
+        "reason": "attachments queue and send (#474, #475); the upload line copy is not the design's"
       }
     },
     {

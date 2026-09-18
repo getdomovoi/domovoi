@@ -7,7 +7,7 @@
     "packages/protocol/src/**/*.ts",
     "apps/web/src/**/*.{ts,tsx}"
   ],
-  "note": "Six frames. The web renders the desktop package, so the thread, gate, composer and review inherit docs/design-conformance/desktop-v2.json and are not repeated here; this inventory holds what the web draws of its own. The design describes a browser reached over Domovoi Cloud with account tiers. M1's web client runs over loopback and the tailnet with no relay and no accounts (S3.2, S0.6, Phase 2, Phase 5), so most of this design is blocked on the platform rather than unbuilt, and the finding is recorded once at the top: the Web v2 design is the Phase 2 product drawn early.",
+  "note": "Six frames. The web renders the desktop package, so the thread, gate, composer and review inherit docs/design-conformance/desktop-v2.json and are not repeated here; this inventory holds what the web draws of its own. The design describes a browser reached over Domovoi Cloud with account tiers. M1's web client runs over loopback and the tailnet with no relay and no accounts (S3.2, S0.6, Phase 2, Phase 5), so most of this design is blocked on the platform rather than unbuilt, and the finding is recorded once at the top: the Web v2 design is the Phase 2 product drawn early. Ruled 2026-09-18: this inventory is scoped to the limits page and what the web inherits from the desktop; the rest is not measurable until the relay exists, and five blocked out of eleven is the honest number.",
   "sample": [
     "acme-api · pull requests",
     "no extension, no install",
