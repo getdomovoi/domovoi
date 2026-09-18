@@ -251,10 +251,13 @@
               <span style="position: absolute; inset: 0; width: 30%; border-radius: 3px; background: var(--primary); animation: dvSweep 1.5s var(--ease-out, ease) infinite; display: block;"></span>
             </span>
           </div>
-          <div style="flex: 0 0 auto; border-radius: 14px; background: var(--code); padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.75; display: flex; flex-direction: column; overflow: hidden;">
-            <sc-for list="{{ streamLines }}" as="l" hint-placeholder-count="6">
-              <div style="{{ l.style }}">{{ l.text }}</div>
-            </sc-for>
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px;">
+            <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT THE AGENT REPORTED</div>
+            <div style="border-radius: 14px; background: var(--code); padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.75; display: flex; flex-direction: column; overflow: hidden;">
+              <sc-for list="{{ streamLines }}" as="l" hint-placeholder-count="6">
+                <div style="{{ l.style }}">{{ l.text }}</div>
+              </sc-for>
+            </div>
           </div>
           <div style="flex: 0 0 auto; padding: 12px 14px; border: 1px solid var(--info-border); border-radius: 14px; background: var(--info-bg);">
             <div style="display: flex; align-items: center; gap: 10px;">
@@ -263,11 +266,11 @@
             </div>
             <div style="font-size: 12px; color: var(--info-dim); margin-top: 6px; line-height: 1.55;">Typing needs the claim, and a phone cannot take one. Claim it from a desktop.</div>
           </div>
-          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">This phone cannot pull the repository down. Diffs and output stream from the machine and are never stored here.</div>
+          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">This phone cannot pull the repository down. Diffs stream from the machine and are never stored here. Terminal output does not reach a phone yet.</div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Drawn, not built: a phone shows no terminal output yet. One claimant at a time is real, and a phone is never the claimant.</div>
+      <div style="{{ captionStyle }}">A run the agent reports is not a shell stream. One claimant at a time is real, a phone is never the claimant, and the held shell's own output is not drawn here because it does not reach a phone.</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -896,7 +899,7 @@
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Full fidelity, not a status readout. Variants and the build-on choice ride in the same floating card the gate uses.</div>
+      <div style="{{ captionStyle }}">Full fidelity, not a status readout, in the same floating card the gate uses. Variants switch for viewing; choosing which one the agent builds on is desktop work.</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -1365,7 +1368,7 @@ class Component extends DCLogic {
 
       watchPill: "flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--muted-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10.5px;",
       streamLines: [
-        { text: "$ pnpm vitest run replay.spec.ts", k: "cmd" },
+        { text: "replay.spec.ts, reported by the agent", k: "cmd" },
         { text: "✓ claims an unseen event id", k: "pass" },
         { text: "✓ refuses a second delivery", k: "pass" },
         { text: "✓ releases an expired claim", k: "pass" },

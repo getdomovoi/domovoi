@@ -1,7 +1,7 @@
 # Rules protocol
 
 This is the protocol half of the v2 Rules tab. The product source is `rules` and
-`neverRules` in the signed `Domovoi Desktop V2.part2-logic.html` handoff. The tab
+`neverRules` in the signed `Domovoi Desktop V2.dc.html` handoff. The tab
 itself is not implemented here.
 
 ## Retire a rule
