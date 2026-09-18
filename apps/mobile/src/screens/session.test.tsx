@@ -165,4 +165,13 @@ describe("SessionScreen start another", () => {
 
     expect(props.onStartLike).toHaveBeenCalledWith("Cover the claim-expiry case", "plan")
   })
+
+  it("reads a fresh session as ready to start rather than as empty", async () => {
+    const { props } = await draw()
+    const fresh = { ...props.detail, entries: [], omitted: 0, sending: { can: true as const, hint: undefined } }
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={fresh} /></SafeAreaProvider>)
+    expect(screen.getByText("Nothing has run yet")).toBeOnTheScreen()
+    expect(screen.getByText(/Your first message is what starts it/)).toBeOnTheScreen()
+    expect(screen.queryByText(/Nothing has been said/)).toBeNull()
+  })
 })

@@ -62,9 +62,10 @@ function Comment({ row }: { row: AnnotationRow }) {
   )
 }
 
-function Render({ render, artifactId, picking, onSelect }: {
+function Render({ render, artifactId, picking, onSelect, onRetry }: {
   render: PreviewRender
   artifactId: string
+  onRetry: () => void
   // While picking, the bridge in the render highlights what is under the
   // finger and reports the element tapped instead of letting the tap through.
   picking: boolean
@@ -82,11 +83,16 @@ function Render({ render, artifactId, picking, onSelect }: {
       </Card>
     )
   }
+  // A failed read says what it tried, what is still true, and offers to try
+  // again. Nothing partial is drawn: a half-fetched render would read like a
+  // finished one.
   if (render.state === "failed") {
     return (
-      <Card className="border-destructive/40 bg-card">
+      <Card className="gap-2 border-destructive/40 bg-card">
         <Text className="text-[11.5px] leading-[18px] text-strong">The render could not be fetched.</Text>
-        <Text variant="machine" className="mt-2 text-faint">{render.reason}</Text>
+        <Text variant="machine" className="text-faint">{render.reason}</Text>
+        <Text variant="note">The artifact is still on the machine. The comments below are live; only the picture is missing.</Text>
+        <Button title="Try again" variant="outline" onPress={onRetry} />
       </Card>
     )
   }
@@ -163,6 +169,7 @@ export function ArtifactScreen({
   render,
   variants,
   onBack,
+  onRetryRender,
   onOpenVariant,
   onComment,
 }: {
@@ -175,6 +182,8 @@ export function ArtifactScreen({
   // order the person named them. Empty when the render stands alone.
   variants: PreviewVariant[]
   onBack: () => void
+  // Asks for the render again after a failed fetch.
+  onRetryRender: () => void
   onOpenVariant: (artifactId: string) => void
   onComment: (anchor: PreviewSelection["anchor"], body: string) => Promise<void>
 }) {
@@ -245,6 +254,7 @@ export function ArtifactScreen({
           <Render
             render={render}
             artifactId={artifact.id}
+            onRetry={onRetryRender}
             picking={picking}
             onSelect={(picked) => { setPicking(false); setSelection(picked) }}
           />
