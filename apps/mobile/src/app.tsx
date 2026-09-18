@@ -19,6 +19,7 @@ import { artifactUrlFor } from "./artifact-url"
 import { previewChannel, previewParentOrigin, type PreviewSelection } from "./preview-bridge"
 import { connectionNotice } from "./connection-notice"
 import { ConfirmSheet } from "./components/confirm-sheet"
+import { StopSheet } from "./components/stop-sheet"
 import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { TabBar, type Tab } from "./components/tab-bar"
@@ -656,7 +657,7 @@ export function App() {
                   }
                   setOpenSessionId(sessionId)
                 }}
-                onPauseAll={() => setConfirmPause(true)}
+                onOpenStop={() => setConfirmPause(true)}
                 bottomInset={tabFootprint}
               />
             ) : unreachable ? (
@@ -753,12 +754,13 @@ export function App() {
           onSelect={setTab}
           onFootprint={setTabFootprint}
         />
-        <ConfirmSheet
+        <StopSheet
           open={confirmPause}
-          title="Pause every session?"
-          detail="This stops every running agent on the machine at once. Work already done is kept, and each session has to be started again by hand."
-          confirmLabel="Pause all sessions"
-          onConfirm={() => {
+          onOpenStop={() => {
+            setConfirmPause(false)
+            void call("system.pauseAll", { client: clientKind })
+          }}
+          onEmergencyStop={() => {
             setConfirmPause(false)
             void call("system.emergencyStop", { client: clientKind })
           }}
