@@ -22,18 +22,21 @@ const today: UsageWindow = {
   costMicros: 1_120_000, currency: "USD", sessions: 3, turns: 27, reportedCostTurns: 27, unavailableCostTurns: 0,
 }
 
-// The v2 chip reads "42.1k · $0.38" and opens four rows. The fourth row in the
-// design is the provider's own window, which no daemon can observe; ours is
-// Domovoi's accounting for today and the row says so rather than pretending.
+// The v2 chip has three states of one shape: tokens, separator, then a price
+// or a ring. With a reported cost it reads "42.1k · $0.38". With no cost and
+// no provider window it reads "42.1k" alone, separator hidden: a limit the
+// provider has not stated is not drawn, and the popover says so. The ring
+// waits on the wire carrying a provider's window.
 describe("usage chip", () => {
-  it("names the session's tokens and cost, or says the cost is unavailable", () => {
+  it("names the session's tokens and cost, or the tokens alone when nothing priced them", () => {
     expect(usageChipText(usage)).toBe("42.1k · $0.38")
-    expect(usageChipText({ ...usage, reportedCostTurns: 0, unavailableCostTurns: 9 })).toBe("42.1k · cost unavailable")
+    expect(usageChipText({ ...usage, reportedCostTurns: 0, unavailableCostTurns: 9 })).toBe("42.1k")
   })
 
-  it("draws the turn, the session, the context with its share, and today", () => {
+  it("draws the turn, the session, the context with its share, today, and the window it cannot see", () => {
     const rows = usageChipRows({ usage, turn, today })
-    expect(rows.map((row) => row.label)).toEqual(["This turn", "This session", "Context", "Today"])
+    expect(rows.map((row) => row.label)).toEqual(["This turn", "This session", "Context", "Today", "Provider window"])
+    expect(rows[4]).toMatchObject({ value: "not reported", note: "This provider has not said what the limit is, so Domovoi draws no dial rather than guessing one." })
     expect(rows[0]).toMatchObject({ value: "8,410 in · 1,206 out", note: "claude-sonnet-4.6 · 3 tool results" })
     expect(rows[1]).toMatchObject({ value: "42.1k tokens · $0.38" })
     expect(rows[2]).toMatchObject({ value: "42.1k of 200k", share: 21 })
@@ -43,14 +46,21 @@ describe("usage chip", () => {
 
   it("leaves out what it cannot know instead of guessing", () => {
     const rows = usageChipRows({ usage: { ...usage, contextTokens: undefined, contextWindowTokens: undefined }, turn: undefined, today: null })
-    expect(rows.map((row) => row.label)).toEqual(["This session"])
+    expect(rows.map((row) => row.label)).toEqual(["This session", "Provider window"])
     const partial = usageChipRows({ usage: { ...usage, reportedCostTurns: 5, unavailableCostTurns: 4 }, turn: undefined, today: null })
     expect(partial[0]?.note).toBe("4 turns reported no cost, so this total is partial.")
+    const unpriced = usageChipRows({ usage: { ...usage, reportedCostTurns: 0, unavailableCostTurns: 9 }, turn: undefined, today: null })
+    expect(unpriced[0]).toMatchObject({ value: "42.1k tokens", note: "9 turns reported no cost, so Domovoi has no cost to show." })
+  })
+
+  it("shows today's tokens alone when no turn was priced", () => {
+    const rows = usageChipRows({ usage: null, turn: undefined, today: { ...today, currency: undefined, reportedCostTurns: 0, unavailableCostTurns: 27 } })
+    expect(rows[0]).toMatchObject({ label: "Today", value: "120k tokens" })
   })
 
   it("says when today's cost is partial instead of showing it as complete", () => {
     const rows = usageChipRows({ usage, turn: undefined, today: { ...today, reportedCostTurns: 1, unavailableCostTurns: 26 } })
-    expect(rows.at(-1)).toMatchObject({
+    expect(rows.at(-2)).toMatchObject({
       label: "Today",
       value: "120k tokens · $1.12",
       note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · 26 turns reported no cost, so this total is partial.",
