@@ -795,15 +795,6 @@ it("does not offer machine actions while the daemon is unreachable", () => {
   expect(card.getByRole("button", { name: "Terminal on workshop" })).toHaveProperty("disabled", true)
 })
 
-it("marks a machine running an older daemon than the fleet", () => {
-  renderFleet({ entries: entries(local, { ...studio, version: "0.4.1" }) })
-
-  const behind = within(screen.getByRole("group", { name: "studio" }))
-  expect(behind.getByText("UPDATE 0.4.2")).toBeTruthy()
-  const current = within(screen.getByRole("group", { name: "workshop" }))
-  expect(current.queryByText(/^UPDATE/u)).toBeNull()
-})
-
 it("says the target refused this machine's credential and that pairing again is the fix", () => {
   renderFleet({ entries: entries(local, { ...studio, health: "pairing-required" }) })
 

@@ -22,7 +22,7 @@ async function draw(overrides: Partial<Parameters<typeof ApprovalScreen>[0]> = {
   const props = {
     approval: approval(),
     pending: false,
-    onDecide: jest.fn<(decision: "allow-once" | "deny") => void>(),
+    onDecide: jest.fn<(decision: "allow-once" | "always-project" | "deny") => void>(),
     onDenyExplain: jest.fn<() => void>(),
     onBack: jest.fn<() => void>(),
     ...overrides,
@@ -74,6 +74,21 @@ describe("ApprovalScreen", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
     expect(onDecide).toHaveBeenLastCalledWith("allow-once")
     expect(onDecide).toHaveBeenCalledTimes(2)
+  })
+
+  it("offers to stop asking for this project, and sends the rule decision", async () => {
+    const { onDecide } = await draw({ approval: { ...approval(), risk: "normal" } })
+
+    await fireEvent.press(screen.getByRole("button", { name: "Always allow this here" }))
+    expect(onDecide).toHaveBeenLastCalledWith("always-project")
+    expect(screen.getByText(/stops asking for this command in this project/)).toBeOnTheScreen()
+  })
+
+  it("does not offer a standing rule on a hard gate, because the daemon refuses one", async () => {
+    await draw({ approval: { ...approval(), risk: "hard-gate" } })
+
+    expect(screen.queryByRole("button", { name: "Always allow this here" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeOnTheScreen()
   })
 
   it("takes no decision while one is already on its way", async () => {

@@ -158,8 +158,9 @@ describe("FleetScreen", () => {
     await draw({ fleet: [] })
 
     expect(screen.getByText("Nothing paired to this phone")).toBeOnTheScreen()
-    expect(screen.getByText("curl -fsSL domovoi.sh/install | sh")).toBeOnTheScreen()
-    expect(screen.getByText("domovoi pair")).toBeOnTheScreen()
+    // The command the machine runs, and no installer: nothing serves one yet.
+    expect(screen.getByText('domovoid pair --client phone --label "this phone"')).toBeOnTheScreen()
+    expect(screen.queryByText(/curl/)).toBeNull()
     expect(screen.queryByText("Pair a machine")).toBeNull()
   })
 
@@ -167,6 +168,6 @@ describe("FleetScreen", () => {
     await draw({ fleet: undefined })
 
     expect(screen.queryByText("Nothing paired to this phone")).toBeNull()
-    expect(screen.queryByText("domovoi pair")).toBeNull()
+    expect(screen.queryByText(/domovoid pair/)).toBeNull()
   })
 })

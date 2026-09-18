@@ -35,7 +35,7 @@ export function ApprovalScreen({
 }: {
   approval: ApprovalRequest
   pending: boolean
-  onDecide: (decision: "allow-once" | "deny") => void
+  onDecide: (decision: "allow-once" | "always-project" | "deny") => void
   // Denying with a reason is a second screen rather than a second tap, because
   // the reason is the only thing the agent is given and it has to be written.
   onDenyExplain: () => void
@@ -104,6 +104,24 @@ export function ApprovalScreen({
           disabled={pending}
           onPress={() => onDecide("allow-once")}
         />
+        {/* A rule, not an execution: the gate answered for the fourth time is
+            the one a person wants to stop answering. The daemon refuses a
+            standing rule on a hard gate, so the button is absent there rather
+            than present and refused. */}
+        {approval.risk === "hard-gate" ? null : (
+          <View className="gap-1">
+            <Button
+              title="Always allow this here"
+              variant="outline"
+              shape="wide"
+              disabled={pending}
+              onPress={() => onDecide("always-project")}
+            />
+            <Text variant="note" className="px-1 text-center">
+              Allows it now and stops asking for this command in this project.
+            </Text>
+          </View>
+        )}
         <View className="flex-row gap-2">
           <Button
             title="Deny"
