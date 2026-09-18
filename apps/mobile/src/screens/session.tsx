@@ -2,8 +2,11 @@ import { useState } from "react"
 import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
+import type { PermissionMode } from "@getdomovoi/protocol"
+
 import { AgentMarkdown } from "../components/agent-markdown"
 import { AttachSheet } from "../components/attach-sheet"
+import { StartLikeSheet } from "../components/start-like-sheet"
 import { Composer } from "../components/composer"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
@@ -344,6 +347,9 @@ export function SessionScreen({
   onPickLibrary,
   onTakePhoto,
   onRemoveAttachment,
+  starting,
+  startProblem,
+  onStartLike,
 }: {
   detail: SessionDetail
   artifacts: ArtifactRow[]
@@ -378,7 +384,13 @@ export function SessionScreen({
   onPickLibrary: () => void
   onTakePhoto: () => void
   onRemoveAttachment: (index: number) => void
+  // Start another session like this one: same machine, repository, provider
+  // and model, with words from the person and a mode, Plan by default.
+  starting: boolean
+  startProblem: string
+  onStartLike: (prompt: string, mode: PermissionMode) => void
 }) {
+  const [startOpen, setStartOpen] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
   // The composer floats over the thread, so the thread pads by what the
@@ -464,8 +476,22 @@ export function SessionScreen({
             disabled={!detail.pausable || pausing}
             onPress={onPause}
           />
+          <Text variant="note">
+            Or start another session on the same machine and repository, with this one's
+            provider and model.
+          </Text>
+          <Button title="Start another like this one" shape="block" onPress={() => setStartOpen(true)} />
         </Card>
       </PageScroller>
+
+      <StartLikeSheet
+        open={startOpen}
+        like={{ title: detail.title, machine, runtime: detail.runtime }}
+        starting={starting}
+        problem={startProblem}
+        onStart={(prompt, mode) => onStartLike(prompt, mode)}
+        onClose={() => setStartOpen(false)}
+      />
 
       {plan && planPinned ? (
         <PlanSheet
