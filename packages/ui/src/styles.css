@@ -67,6 +67,7 @@
   --color-ok-border: var(--ok-border);
   --color-ok-foreground: var(--ok-fg);
   --color-ok-dim: var(--ok-dim);
+  --color-overlay: var(--overlay);
   --color-skeleton: var(--skel);
   --color-skeleton-highlight: var(--skel-hi);
   --radius-sm: calc(var(--radius) - 4px);
