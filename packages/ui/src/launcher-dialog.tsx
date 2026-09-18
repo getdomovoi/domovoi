@@ -335,7 +335,10 @@ export function LauncherDialog({
                     <DropdownMenuContent align="start" className="w-72">
                       <DropdownMenuLabel>Execution provider</DropdownMenuLabel>
                       <DropdownMenuGroup>
-                        {providers.map((provider) => (
+                        {/* A harness that is not installed is absent, not a
+                            greyed item that can never be chosen. The readiness
+                            list beside still states the fact. */}
+                        {providers.filter((provider) => provider.status !== "missing").map((provider) => (
                           <DropdownMenuItem
                             key={provider.id}
                             disabled={pending || !providerCanStartSession(provider)}
