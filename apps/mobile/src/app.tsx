@@ -240,6 +240,8 @@ export function App() {
   // lands after the person moved on is dropped rather than shown under the
   // wrong title.
   const [previewRender, setPreviewRender] = useState<PreviewRender | undefined>(undefined)
+  // Bumped by Try again on a failed render; the effect below re-runs on it.
+  const [renderAttempt, setRenderAttempt] = useState(0)
   const openPreviewId = openArtifact?.type === "preview" ? openArtifact.id : undefined
   const openPreviewRevision = openArtifact?.type === "preview" ? openArtifact.revision : undefined
   const openPreviewSessionId = openArtifact?.type === "preview" ? openArtifact.sessionId : undefined
@@ -271,7 +273,7 @@ export function App() {
       }
     })()
     return () => { current = false }
-  }, [call, openPreviewId, openPreviewRevision, openPreviewSessionId, url])
+  }, [call, openPreviewId, openPreviewRevision, openPreviewSessionId, renderAttempt, url])
 
   // Every artifact the workspace holds, whichever session made it, because the
   // Review tab is opened to answer what is outstanding rather than to walk back
@@ -568,6 +570,7 @@ export function App() {
             render={previewRender}
             variants={openVariants}
             onBack={() => setOpenArtifactId(undefined)}
+            onRetryRender={() => setRenderAttempt((attempt) => attempt + 1)}
             onOpenVariant={setOpenArtifactId}
             onComment={(anchor, body) => commentOnElement(openArtifact.id, anchor, body)}
           />

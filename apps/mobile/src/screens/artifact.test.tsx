@@ -43,6 +43,7 @@ async function draw(overrides: Partial<Parameters<typeof ArtifactScreen>[0]> = {
     render: undefined as PreviewRender | undefined,
     variants: [],
     onBack: jest.fn<() => void>(),
+    onRetryRender: jest.fn<() => void>(),
     onOpenVariant: jest.fn<(artifactId: string) => void>(),
     onComment: jest.fn<(anchor: object, body: string) => Promise<void>>(async () => {}),
     ...overrides,
@@ -68,6 +69,16 @@ describe("ArtifactScreen preview", () => {
     await draw({ render: { state: "failed", reason: "Pairing was refused" } })
     expect(screen.getByText(/could not be fetched/)).toBeOnTheScreen()
     expect(screen.getByText(/Pairing was refused/)).toBeOnTheScreen()
+  })
+
+  // A failed read says what it tried, what is still true, and offers to try
+  // again. The artifact and its comments are on the machine; a phone that
+  // could not fetch the render has not changed them.
+  it("says what is still true when the render failed, and offers to try again", async () => {
+    const { onRetryRender } = await draw({ render: { state: "failed", reason: "Pairing was refused" } })
+    expect(screen.getByText("The artifact is still on the machine. The comments below are live; only the picture is missing.")).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Try again" }))
+    expect(onRetryRender).toHaveBeenCalledTimes(1)
   })
 
   it("offers the other variants of the same render and opens the one tapped", async () => {

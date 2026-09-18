@@ -483,8 +483,20 @@ export function SessionScreen({
           </Text>
         ) : null}
 
+        {/* A fresh session is a readiness, not an absence: the worktree is
+            cut and the agent has not been given a turn. The first message is
+            what starts it, so the line says that rather than "nothing". */}
         {detail.entries.length === 0
-          ? <Text variant="meta">Nothing has been said in this session yet.</Text>
+          ? (
+            <View className="gap-1">
+              <Text className="font-sans-medium text-[13px] text-foreground">Nothing has run yet</Text>
+              <Text variant="meta">
+                {detail.sending.can
+                  ? "The session exists, the worktree is cut, and the agent has not been given a turn. Your first message is what starts it."
+                  : "The session exists and the agent has not been given a turn."}
+              </Text>
+            </View>
+          )
           : null}
         {detail.entries.map((entry) => <Entry key={entry.id} entry={entry} />)}
 
