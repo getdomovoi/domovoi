@@ -48,6 +48,9 @@ async function draw(overrides: Partial<Parameters<typeof SessionScreen>[0]> = {}
     onPickLibrary: jest.fn<() => void>(),
     onTakePhoto: jest.fn<() => void>(),
     onRemoveAttachment: jest.fn<(index: number) => void>(),
+    starting: false,
+    startProblem: "",
+    onStartLike: jest.fn<(prompt: string, mode: "ask" | "plan" | "build") => void>(),
     ...overrides,
   }
   await render(
@@ -148,5 +151,18 @@ describe("SessionScreen pinned plan", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Save step" }))
 
     expect(props.onEditStep).toHaveBeenCalledWith(target.id, "Cover expiry in replay.spec.ts")
+  })
+})
+
+describe("SessionScreen start another", () => {
+  it("starts another session like this one from the session itself, in Plan by default", async () => {
+    const { props } = await draw()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Start another like this one" }))
+    expect(screen.getByText(/Same machine, repository, provider and model/)).toBeOnTheScreen()
+    await fireEvent.changeText(screen.getByLabelText("What to do"), "Cover the claim-expiry case")
+    await fireEvent.press(screen.getByRole("button", { name: "Start" }))
+
+    expect(props.onStartLike).toHaveBeenCalledWith("Cover the claim-expiry case", "plan")
   })
 })
