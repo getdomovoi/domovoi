@@ -21,6 +21,26 @@ type Pending = {
 // the phone can name the skill rather than show the sentence and guess. The
 // code is what separates a refusal that will never change from one worth
 // retrying, and it is the daemon's own constant rather than its wording.
+// The three ways a request fails in transport, told apart by class because a
+// screen's copy depends on which. Not sent: the frame never left, so the
+// daemon did not act; a screen may say so. Unconfirmed: the frame left and
+// the socket closed before an answer, so the daemon may have acted; a screen
+// may not claim it did not. A timeout (DaemonTimeoutError) is the second
+// kind. The daemon's own refusal is DaemonError below.
+export class DaemonNotSentError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = "DaemonNotSentError"
+  }
+}
+
+export class DaemonUnconfirmedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "DaemonUnconfirmedError"
+  }
+}
+
 export class DaemonError extends Error {
   constructor(message: string, readonly code: number | undefined, readonly data: unknown) {
     super(message)
@@ -147,7 +167,7 @@ export class DaemonConnection {
     socket.onclose = () => {
       for (const pending of this.#pending.values()) {
         clearTimeout(pending.timer)
-        pending.reject(new Error("The daemon closed the connection"))
+        pending.reject(new DaemonUnconfirmedError("The daemon closed the connection"))
       }
       this.#pending.clear()
       this.handlers.onStatus("closed")
@@ -168,7 +188,7 @@ export class DaemonConnection {
 
   call(method: string, params: unknown): Promise<unknown> {
     const socket = this.#socket
-    if (!socket) return Promise.reject(new Error("The daemon connection is not open"))
+    if (!socket) return Promise.reject(new DaemonNotSentError("The daemon connection is not open"))
     const id = this.#nextId++
     const timeoutMs = requestTimeoutMs(method)
     return new Promise((resolve, reject) => {
@@ -189,7 +209,7 @@ export class DaemonConnection {
         // class cannot keep on its own.
         clearTimeout(timer)
         this.#pending.delete(id)
-        reject(cause instanceof Error ? cause : new Error("The request could not be sent"))
+        reject(new DaemonNotSentError(cause instanceof Error ? cause.message : "The request could not be sent", { cause }))
       }
     })
   }

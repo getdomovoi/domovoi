@@ -116,4 +116,22 @@ describe("ApprovalScreen", () => {
     expect(onDenyExplain).toHaveBeenCalledTimes(1)
     expect(onDecide).not.toHaveBeenCalled()
   })
+
+  // The route can die while a gate is open. The screen says so above the
+  // decision, and a decision that could not be sent stays on screen with the
+  // refusal where the buttons are, because the gate is still waiting on the
+  // machine and a client that could not answer it has not changed it.
+  it("says the connection is down above the decision", async () => {
+    await draw({ notice: { tone: "warning", headline: "Not connected", detail: "Nothing here is live. This is the last state the phone was sent." } })
+
+    expect(screen.getByText("Not connected")).toBeOnTheScreen()
+    expect(screen.getByText("Nothing here is live. This is the last state the phone was sent.")).toBeOnTheScreen()
+  })
+
+  it("keeps the gate on screen and names why a decision was not sent", async () => {
+    await draw({ problem: "Not sent: the daemon connection is not open. The gate is still waiting." })
+
+    expect(screen.getByText("Not sent: the daemon connection is not open. The gate is still waiting.")).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeOnTheScreen()
+  })
 })

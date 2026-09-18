@@ -3,6 +3,7 @@ import { Pressable, ScrollView, TextInput, View } from "react-native"
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { WebView } from "react-native-webview"
 
+import { ConnectionBanner } from "../components/connection-banner"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Card } from "../components/ui/card"
@@ -10,6 +11,7 @@ import { Button } from "../components/ui/button"
 import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import { artifactBody, diffLines, type DiffLine } from "../artifact-rows"
+import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
 import { pickerScript, readSelection, webviewBridgeScript, type PreviewSelection } from "../preview-bridge"
 import { openAnnotationCount, type AnnotationRow } from "../review-rows"
@@ -156,6 +158,7 @@ function CommentComposer({ selection, sending, onSend, onCancel }: {
 
 export function ArtifactScreen({
   artifact,
+  notice,
   comments,
   render,
   variants,
@@ -164,6 +167,7 @@ export function ArtifactScreen({
   onComment,
 }: {
   artifact: WorkspaceSnapshot["artifacts"][number]
+  notice?: ConnectionNotice | undefined
   comments: AnnotationRow[]
   // Present only for a preview: what became of the fetch for its render.
   render: PreviewRender | undefined
@@ -211,6 +215,7 @@ export function ArtifactScreen({
       </View>
 
       <PageScroller contentContainerClassName="gap-3 px-3.5 pb-8">
+        <ConnectionBanner notice={notice} />
         {variants.length > 1 ? (
           <View className="flex-row gap-1.5">
             {variants.map((variant) => {

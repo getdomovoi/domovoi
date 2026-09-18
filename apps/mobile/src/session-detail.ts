@@ -5,6 +5,8 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+import type { DaemonStatus } from "./lib/daemon"
+
 type ThreadItem = WorkspaceSnapshot["thread"][number]
 
 export type ThreadEntry = {
@@ -164,6 +166,15 @@ export function sendReadiness(
     return { can: true, hint: "A turn is running. This steers it rather than starting a new one." }
   }
   return { can: true, hint: undefined }
+}
+
+// The socket is a reason of its own, checked over the session's. A send that
+// cannot reach the daemon is refused before the person types, and the reason
+// says what is still true: the session is on the machine and unchanged.
+export function sendReadinessOverSocket(status: DaemonStatus, readiness: SendReadiness): SendReadiness {
+  if (status === "open") return readiness
+  const state = status === "connecting" ? "Connecting" : "Not connected"
+  return { can: false, reason: `${state}. The session is still on the machine; this reply cannot reach it yet.` }
 }
 
 // The daemon trims before it measures, so a prompt of nothing but spaces is

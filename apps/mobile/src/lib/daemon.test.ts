@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { DaemonConnection } from "./daemon"
+import { DaemonConnection, DaemonNotSentError, DaemonUnconfirmedError } from "./daemon"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
   ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
@@ -86,6 +86,7 @@ describe("DaemonConnection.call", () => {
     daemon.connect()
 
     await expect(daemon.call("workspace.get", {})).rejects.toThrow("INVALID_STATE_ERR")
+    await expect(daemon.call("workspace.get", {})).rejects.toBeInstanceOf(DaemonNotSentError)
     // The entry is cleared by call itself. Leaving it for onclose would make
     // this class correct only for as long as that handler keeps doing it.
     expect(daemon.pendingRequests()).toBe(0)
@@ -95,7 +96,23 @@ describe("DaemonConnection.call", () => {
     const daemon = connection()
 
     await expect(daemon.call("workspace.get", {})).rejects.toThrow("not open")
+    await expect(daemon.call("workspace.get", {})).rejects.toBeInstanceOf(DaemonNotSentError)
     expect(daemon.pendingRequests()).toBe(0)
+  })
+
+  // A frame that left before the socket closed may have been applied. The
+  // rejection says so by its class, so a screen cannot claim "not sent" for a
+  // decision the daemon may have taken.
+  it("rejects a request the socket closed on as unconfirmed, not as unsent", async () => {
+    const socket = withSocket(() => {})
+    const daemon = connection()
+    daemon.connect()
+    socket.onopen?.()
+    const pending = daemon.call("workspace.get", {})
+    void pending.catch(() => {})
+    socket.onclose?.()
+    await expect(pending).rejects.toBeInstanceOf(DaemonUnconfirmedError)
+    await expect(pending).rejects.toThrow("The daemon closed the connection")
   })
 })
 
