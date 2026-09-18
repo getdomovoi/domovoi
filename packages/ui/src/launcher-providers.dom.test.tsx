@@ -73,3 +73,26 @@ it("lists only the harnesses that reported in the provider picker", async () => 
   expect(items.some((text) => text.includes("Claude Code") && text.includes("Sign in required"))).toBe(true)
   expect(items.some((text) => text.includes("aider") || text.includes("Not installed"))).toBe(false)
 })
+
+// The runtime keeps the default provider's id when nothing can start, so the
+// trigger reads from the same list as the picker and says so, rather than
+// naming a harness the picker cannot show.
+it("says no provider is available when the default harness is not installed, instead of naming it", async () => {
+  const user = userEvent.setup()
+  render(
+    <LauncherDialog
+      mode="session"
+      defaultProviderId="codex"
+      defaultPermissionMode="build"
+      onOpenChange={vi.fn()}
+      onOpenProject={vi.fn(async () => {})}
+      onCreateSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      providers={[{ id: "codex", command: "codex", status: "missing", sessionCapable: true }]}
+    />,
+  )
+  expect(screen.getByRole("button", { name: "Execution provider" }).textContent).toContain("No provider available")
+  expect(screen.getByText("No provider on this machine can start a session")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Execution provider" }))
+  expect(screen.queryAllByRole("menuitem")).toHaveLength(0)
+})
