@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { forwardRef, useImperativeHandle, useRef, useState } from "react"
 import {
   ScrollView,
   type LayoutChangeEvent,
@@ -23,13 +23,12 @@ import { scrollerScrolls } from "../scroller-overflow"
 // scroll that settles a hair short still follows.
 const atEndSlack = 24
 
-export function PageScroller({
-  bottomInset = 0,
-  followEnd = false,
-  onAtEndChange,
-  contentContainerStyle,
-  ...props
-}: ScrollViewProps & {
+export type PageScrollerHandle = {
+  // The ride back a jump pill offers: to the end, and following resumes.
+  scrollToEnd: () => void
+}
+
+export const PageScroller = forwardRef<PageScrollerHandle, ScrollViewProps & {
   // What FloatingBar reported covering. Zero on a screen with no bar over it.
   bottomInset?: number
   // A thread reads newest-last, and the person is waiting at the bottom for
@@ -39,13 +38,29 @@ export function PageScroller({
   followEnd?: boolean
   // Fires when at-the-bottom flips, so a screen can offer the ride back.
   onAtEndChange?: (atEnd: boolean) => void
-}) {
+}>(function PageScroller({
+  bottomInset = 0,
+  followEnd = false,
+  onAtEndChange,
+  contentContainerStyle,
+  ...props
+}, handle) {
   const scroller = useRef<ScrollView>(null)
   const [viewport, setViewport] = useState<number | undefined>(undefined)
   const [content, setContent] = useState<number | undefined>(undefined)
   // Read from scroll events rather than derived from sizes: only the scroll
   // position says where the person put the viewport.
   const atEnd = useRef(true)
+
+  useImperativeHandle(handle, () => ({
+    scrollToEnd: () => {
+      scroller.current?.scrollToEnd({ animated: true })
+      if (!atEnd.current) {
+        atEnd.current = true
+        onAtEndChange?.(true)
+      }
+    },
+  }))
 
   const trackScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent
@@ -101,4 +116,4 @@ export function PageScroller({
       contentContainerStyle={padding}
     />
   )
-}
+})
