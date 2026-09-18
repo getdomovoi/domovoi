@@ -440,24 +440,36 @@ someone already in that file with the context to choose between the branches.
 The rule wants to be a custom ESLint rule with scope analysis rather than a `no-restricted-syntax`
 selector, since the selector cannot see what is local.
 
-### D5 · Split `workspace-shell.tsx` — scheduled, not recorded
-Recording this a fifth time would be deferral dressed as agreement. It is the next piece of client
-work, ahead of `D4`, and `CC6` waits on the relay anyway. The case, with the counts as evidence:
+### D5 · Split `workspace-shell.tsx` — done 2026-09-18
+Recording this a fifth time would have been deferral dressed as agreement, so it was done instead.
+The case that scheduled it, with the counts as evidence:
 
-- **4,600 lines**, and it holds `Thread`, `HistoryPanel`, `RuntimeControls`, the session sidebar
+- **4,600 lines**, and it held `Thread`, `HistoryPanel`, `RuntimeControls`, the session sidebar
   and the shell itself.
 - `D3` is a standing complaint about `Thread`'s prop surface, raised before this session.
-- **45 of the 102** first-pass disabled sites, and **22 of the 56** scoped ones, are in this file
+- **45 of the 102** first-pass disabled sites, and **22 of the 56** scoped ones, were in this file
   alone — more than a third either way.
 - Every cross-cutting pass this session had to touch it: the history row, the turn meta, the
   session-start fork, both empty states, the status dot.
-- **183 commits since 2026-08-01**, the most-touched file in the repository by a wide margin. That
-  is the number that turns the case from a complaint into a schedule: every change goes through it,
-  so every change pays for its size.
+- **183 commits since 2026-08-01**, the most-touched file in the repository by a wide margin.
 
-The prop surface is the symptom `D3` names; the size is why every unrelated change lands here.
-Splitting it is not a refactor for tidiness, it is what stops the next cross-cutting item being a
-merge conflict with the one before it.
+What it became, one module per surface, each a mechanical move with no behaviour change and
+`workspace-shell.tsx` re-exporting every public name so no import elsewhere moved:
+
+| File | Holds | Lines |
+|---|---|---|
+| `workspace-shell.tsx` | `WorkspaceShell` and the skill refresh keys | 1,440 |
+| `thread.tsx` | `Thread`, `SessionRow`, `ApprovalCard`, the checkpoint row, archive and read-only notices, status meanings, transfer receipt copy | 1,140 |
+| `artifact-dock.tsx` | `ArtifactDock`, `AnnotationComments`, `DockRail`, preview thumbnail helpers, the lazy terminal pane | 1,070 |
+| `launcher-dialog.tsx` | `LauncherDialog`, `ProviderReadinessList`, `ProjectSwitchConfirmationDialog`, the default runtime | 360 |
+| `history-panel.tsx` | `HistoryPanel` | 300 |
+| `app-bar.tsx` | `AppBar`, `WindowControls`, usage-today readout and hook, emergency stop announcement | 170 |
+| `workspace-selectors.ts` | the snapshot readers the shell and the dock share | 100 |
+| `restore-focus.ts` | `restoreFocusAfterUpdate` | 15 |
+
+`Thread` is still 700 lines with the prop surface `D3` names; the split moved it, it did not
+shrink it. The 22 disabled sites moved with their components and are now spread across four
+files, so the disabled-sites pass reads each file rather than one.
 
 ### D3 · `Thread`'s prop surface
 Three separate flags against it, and `pendingTransferTargetId` /
