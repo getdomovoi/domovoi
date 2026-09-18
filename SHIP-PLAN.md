@@ -542,7 +542,7 @@ the mockup on purpose, the note under it says so.
 - [x] Context occupancy readout beside those totals
   - `sessionUsageSchema` carries `contextTokens` and `contextWindowTokens`, and both are optional
     so a client shows the readout only when the provider reported the pair. The Codex, Claude, and
-    ACP adapters report the pair, and `SessionUsageFooter` in `packages/ui/src/workspace-shell.tsx`
+    ACP adapters report the pair, and the usage chip in `packages/ui/src/usage-chip.tsx`
     renders it beside the session totals.
 - [x] Add-skill flow with declared-capability review and install scope
   - `skill.installPreview` reads a folder on the execution machine and returns its manifest,
