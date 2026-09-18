@@ -39,7 +39,6 @@ import {
   unenrolledNote,
 } from "./fleet-entries.js"
 import { fleetOverflowNotice } from "./fleet-overflow.js"
-import { fleetUpdateAvailable } from "./fleet-updates.js"
 import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
 import { machineAttachment } from "./machine-selection.js"
 import { AuthorizeClientDialog } from "./authorize-client-dialog.js"
@@ -247,7 +246,6 @@ function sessionSummary(count: number): string {
 
 function MachineCard({
   machine,
-  fleet,
   sessionCount,
   inUse,
   connected,
@@ -259,7 +257,6 @@ function MachineCard({
   onRemoveAccess,
 }: {
   machine: FleetMachine
-  fleet: readonly FleetEntry[]
   sessionCount: number | undefined
   inUse: boolean
   connected: boolean
@@ -271,7 +268,6 @@ function MachineCard({
   onRemoveAccess?: ((machine: FleetMachine) => void) | undefined
 }) {
   const transports = orderedMachineTransports(machine)
-  const updateVersion = fleetUpdateAvailable(machine, fleet)
   const note = healthNote[machine.health]?.(machine.label)
   const attachment = machineAttachment(machine, clientAccess?.state === "admitted")
   const canControl = connected && attachment.selectable
@@ -282,11 +278,6 @@ function MachineCard({
         <span className="text-[13px] font-semibold text-strong">{machine.label}</span>
         <Badge variant={healthVariant[machine.health]}>{healthLabel[machine.health]}</Badge>
         {machine.self ? <Badge variant="outline">This machine</Badge> : null}
-        {updateVersion ? (
-          <Badge variant="warning" title={`This machine runs ${machine.version}`}>
-            UPDATE {updateVersion}
-          </Badge>
-        ) : null}
         <span className="ml-auto flex flex-wrap items-center gap-1.5">
           {inUse ? (
             <span className="font-machine text-[10px] text-faint">In use</span>
@@ -1195,7 +1186,6 @@ export function FleetView({
               <MachineCard
                 key={machine.id}
                 machine={machine}
-                fleet={entries}
                 {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
                 inUse={machine.id === currentMachineId}
                 connected={connected}
