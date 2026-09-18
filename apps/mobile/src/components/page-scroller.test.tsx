@@ -25,6 +25,11 @@ async function layOut(height: number) {
 async function fill(height: number) {
   await fireEvent(scroller(), "contentSizeChange", 390, height)
 }
+async function scrollTo(y: number, viewport: number, content: number) {
+  await fireEvent.scroll(scroller(), {
+    nativeEvent: { contentOffset: { x: 0, y }, layoutMeasurement: { width: 390, height: viewport }, contentSize: { width: 390, height: content } },
+  })
+}
 
 function enabled(): boolean {
   return scroller().props.scrollEnabled
@@ -126,6 +131,39 @@ describe("PageScroller", () => {
 
     await fill(1600)
     expect(scrollToEnd).toHaveBeenCalledTimes(2)
+    scrollToEnd.mockRestore()
+  })
+
+  // Following is for a person waiting at the bottom. One who scrolled up to
+  // read turn 3 is not waiting, and moving the viewport under them is the one
+  // moment they most need it not to move. Back at the bottom, following resumes.
+  it("holds still when the person scrolled up, and follows again once they are back at the bottom", async () => {
+    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
+    await draw({ followEnd: true })
+    await layOut(844)
+    await fill(1200)
+    expect(scrollToEnd).toHaveBeenCalledTimes(1)
+
+    await scrollTo(100, 844, 1200)
+    await fill(1600)
+    expect(scrollToEnd).toHaveBeenCalledTimes(1)
+
+    await scrollTo(756, 844, 1600)
+    await fill(2000)
+    expect(scrollToEnd).toHaveBeenCalledTimes(2)
+    scrollToEnd.mockRestore()
+  })
+
+  it("tells the screen whether it is at the bottom", async () => {
+    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
+    const onAtEndChange = jest.fn()
+    await draw({ followEnd: true, onAtEndChange })
+    await layOut(844)
+    await fill(1200)
+    await scrollTo(100, 844, 1200)
+    expect(onAtEndChange).toHaveBeenLastCalledWith(false)
+    await scrollTo(356, 844, 1200)
+    expect(onAtEndChange).toHaveBeenLastCalledWith(true)
     scrollToEnd.mockRestore()
   })
 
