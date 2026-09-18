@@ -33,7 +33,7 @@ import type {
   ThreadItem,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, sessionTransferRefusalMessage, turnSkillRefusalFrom, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, turnSkillRefusalFrom, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   readOnlySessionNotice,
@@ -57,7 +57,7 @@ import { Button } from "./components/ui/button"
 import { Input } from "./components/ui/input"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
-import { threadFollowPillText, useThreadFollow } from "./thread-follow"
+import { useThreadFollow } from "./thread-follow"
 import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"

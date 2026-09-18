@@ -1,29 +1,12 @@
+import { threadFollowState, type ThreadFollow } from "@getdomovoi/protocol"
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 
-// The thread sticks to the bottom only when it is already there. Scrolled up,
-// it holds still, and a pill above the composer offers the ride back. Three
-// states, driven by the real scroll position: bottom (no pill), scrolled (new
-// output arrived below), gate (a decision is waiting below). The gate state
-// earns the affordance: while an agent works, output arrives constantly and a
-// bare count is noise; what matters is whether the thing that arrived needs a
-// decision. Neither state moves the viewport.
-export type ThreadFollow = "bottom" | "scrolled" | "gate"
+// The three follow states and the pill copy live in protocol, shared with the
+// phone; this file is the DOM half: reading the viewport and moving it.
 
 // Within this many pixels of the end counts as at the bottom, so a wheel that
 // settles a hair short still follows.
 export const atBottomSlack = 24
-
-export function threadFollowState(input: { atBottom: boolean; unseen: number; gated: boolean }): ThreadFollow {
-  if (input.atBottom) return "bottom"
-  if (input.gated) return "gate"
-  return "scrolled"
-}
-
-export function threadFollowPillText(state: ThreadFollow, unseen: number): string | undefined {
-  if (state === "gate") return "Waiting on you"
-  if (state === "scrolled" && unseen > 0) return unseen === 1 ? "1 new" : `${unseen} new`
-  return undefined
-}
 
 export function isAtBottom(viewport: { scrollTop: number; clientHeight: number; scrollHeight: number }): boolean {
   return viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - atBottomSlack

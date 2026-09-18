@@ -2,7 +2,9 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useRef } from "react"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { isAtBottom, threadFollowPillText, threadFollowState, useThreadFollow } from "./thread-follow"
+import { threadFollowPillText, threadFollowState } from "@getdomovoi/protocol"
+
+import { isAtBottom, useThreadFollow } from "./thread-follow"
 
 afterEach(cleanup)
 
