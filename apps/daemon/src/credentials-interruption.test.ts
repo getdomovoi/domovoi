@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { expect, it, vi } from "vitest"
+import { expect, it } from "vitest"
 
 import { MachineCredentialStore } from "./machine-credentials.js"
 import { OperationDeadline } from "./operation-deadline.js"
@@ -13,6 +13,7 @@ import { createProductionDaemonWithDependencies, productionDaemonDependencies, t
 import { withinServiceDeadline } from "./service/deadline.js"
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { removeScratchDirectory } from "./test-scratch.js"
+import { waitForFixtureStartup } from "./test-wait-for.js"
 
 for (const file of ["daemon.token", "local-owner.key"]) {
   it(`starts a real daemon after a killed first writer of ${file}`, async () => {
@@ -36,10 +37,12 @@ for (const file of ["daemon.token", "local-owner.key"]) {
       let stderr = ""
       child.stdout!.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
       child.stderr!.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
-      await withinServiceDeadline(deadline, () => vi.waitFor(() => {
+      // A spawned fixture with the import hook: its first line is startup,
+      // measured in seconds, so it waits on that budget and not a fixed ten.
+      await withinServiceDeadline(deadline, () => waitForFixtureStartup("The interrupted-credential fixture", () => {
         expect(child!.exitCode, stderr).toBeNull()
         expect(stdout).toContain("DOMOVOI_CREDENTIAL_WRITE_HELD\n")
-      }, { timeout: 10_000 }))
+      }))
       expect(child.kill("SIGKILL")).toBe(true)
       await withinServiceDeadline(deadline, () => exited!)
       await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" })
