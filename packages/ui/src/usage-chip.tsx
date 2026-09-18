@@ -9,7 +9,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu"
-import { formatTokenCount, formatUsageCost, sessionUsageCostNote, sessionUsageReportedCost } from "./session-usage.js"
+import { formatTokenCount } from "./session-usage.js"
 
 // The v2 composer carries one usage chip with three states of one shape:
 // tokens, a separator, then a price or a ring. A reported cost gives
@@ -28,9 +28,15 @@ export type UsageChipRow = {
   share?: number | undefined
 }
 
+// Until the wire says whether a session runs on a subscription or an API
+// key, every session is the unreported state: tokens alone, no separator, no
+// money. A provider reports a dollar figure for a subscription turn too, and
+// that is money nobody is charged. The priced state and the ring wait on the
+// connection kind and the provider window (asks 5 and 6).
+export const unreportedCostNote = "Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key."
+
 export function usageChipText(usage: SessionUsage): string {
-  const cost = sessionUsageReportedCost(usage)
-  return cost ? `${formatTokenCount(usage.totalTokens)} · ${cost}` : formatTokenCount(usage.totalTokens)
+  return formatTokenCount(usage.totalTokens)
 }
 
 function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
@@ -45,11 +51,10 @@ function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
 }
 
 function sessionRow(usage: SessionUsage): UsageChipRow {
-  const cost = sessionUsageReportedCost(usage)
   return {
     label: "This session",
-    value: cost ? `${formatTokenCount(usage.totalTokens)} tokens · ${cost}` : `${formatTokenCount(usage.totalTokens)} tokens`,
-    note: sessionUsageCostNote(usage),
+    value: `${formatTokenCount(usage.totalTokens)} tokens`,
+    note: unreportedCostNote,
   }
 }
 
@@ -65,14 +70,12 @@ function contextRow(usage: SessionUsage): UsageChipRow | undefined {
 
 function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefined {
   if (!today || today.turns <= 0) return undefined
-  const cost = today.reportedCostTurns > 0 && today.currency ? formatUsageCost(today.costMicros, today.currency) : undefined
   const turns = today.turns === 1 ? "1 turn" : `${today.turns} turns`
   const sessions = today.sessions === 1 ? "1 session" : `${today.sessions} sessions`
   return {
     label: "Today",
-    value: cost ? `${formatTokenCount(today.totalTokens)} tokens · ${cost}` : `${formatTokenCount(today.totalTokens)} tokens`,
-    note: [`${turns} in ${sessions}`, "Domovoi's count, not the provider's limit", sessionUsageCostNote(today)]
-      .filter((part) => part !== undefined).join(" · "),
+    value: `${formatTokenCount(today.totalTokens)} tokens`,
+    note: [`${turns} in ${sessions}`, "Domovoi's count, not the provider's limit", unreportedCostNote].join(" · "),
   }
 }
 

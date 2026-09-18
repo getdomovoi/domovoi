@@ -1,7 +1,7 @@
 import type { SessionHistoryPage, SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { latestTurnFromHistory, usageChipRows, usageChipText, usageChipTriggerText } from "./usage-chip"
+import { latestTurnFromHistory, unreportedCostNote, usageChipRows, usageChipText, usageChipTriggerText } from "./usage-chip"
 
 const usage: SessionUsage = {
   sessionId: "session-billing",
@@ -23,13 +23,14 @@ const today: UsageWindow = {
 }
 
 // The v2 chip has three states of one shape: tokens, separator, then a price
-// or a ring. With a reported cost it reads "42.1k · $0.38". With no cost and
-// no provider window it reads "42.1k" alone, separator hidden: a limit the
-// provider has not stated is not drawn, and the popover says so. The ring
-// waits on the wire carrying a provider's window.
+// or a ring. Until the wire says whether a session runs on a subscription or
+// an API key (ask 5), every session is the unreported state: tokens alone,
+// separator hidden, no money. A provider reports a dollar figure for a
+// subscription turn too, and that is money nobody is charged; drawing it was
+// the first-hour finding of 2026-09-18. The price and the ring wait on the wire.
 describe("usage chip", () => {
-  it("names the session's tokens and cost, or the tokens alone when nothing priced them", () => {
-    expect(usageChipText(usage)).toBe("42.1k · $0.38")
+  it("names the session's tokens alone while the connection kind is unreported", () => {
+    expect(usageChipText(usage)).toBe("42.1k")
     expect(usageChipText({ ...usage, reportedCostTurns: 0, unavailableCostTurns: 9 })).toBe("42.1k")
   })
 
@@ -38,19 +39,21 @@ describe("usage chip", () => {
     expect(rows.map((row) => row.label)).toEqual(["This turn", "This session", "Context", "Today", "Provider window"])
     expect(rows[4]).toMatchObject({ value: "not reported", note: "This provider has not said what the limit is, so Domovoi draws no dial rather than guessing one." })
     expect(rows[0]).toMatchObject({ value: "8,410 in · 1,206 out", note: "claude-sonnet-4.6 · 3 tool results" })
-    expect(rows[1]).toMatchObject({ value: "42.1k tokens · $0.38" })
+    expect(rows[1]).toMatchObject({ value: "42.1k tokens", note: "Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key." })
     expect(rows[2]).toMatchObject({ value: "42.1k of 200k", share: 21 })
     expect(rows[2]?.note).toMatch(/restart the provider thread/)
-    expect(rows[3]).toMatchObject({ value: "120k tokens · $1.12", note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit" })
+    expect(rows[3]).toMatchObject({ value: "120k tokens", note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key." })
   })
 
   it("leaves out what it cannot know instead of guessing", () => {
     const rows = usageChipRows({ usage: { ...usage, contextTokens: undefined, contextWindowTokens: undefined }, turn: undefined, today: null })
     expect(rows.map((row) => row.label)).toEqual(["This session", "Provider window"])
+    // Partly priced and unpriced sessions read the same: no figure is drawn
+    // from either until the connection kind says a figure would be real.
     const partial = usageChipRows({ usage: { ...usage, reportedCostTurns: 5, unavailableCostTurns: 4 }, turn: undefined, today: null })
-    expect(partial[0]?.note).toBe("4 turns reported no cost, so this total is partial.")
+    expect(partial[0]).toMatchObject({ value: "42.1k tokens", note: unreportedCostNote })
     const unpriced = usageChipRows({ usage: { ...usage, reportedCostTurns: 0, unavailableCostTurns: 9 }, turn: undefined, today: null })
-    expect(unpriced[0]).toMatchObject({ value: "42.1k tokens", note: "9 turns reported no cost, so Domovoi has no cost to show." })
+    expect(unpriced[0]).toMatchObject({ value: "42.1k tokens", note: unreportedCostNote })
   })
 
   it("shows today's tokens alone when no turn was priced", () => {
@@ -58,12 +61,12 @@ describe("usage chip", () => {
     expect(rows[0]).toMatchObject({ label: "Today", value: "120k tokens" })
   })
 
-  it("says when today's cost is partial instead of showing it as complete", () => {
+  it("keeps today's row to tokens and the reason, even when the provider priced part of it", () => {
     const rows = usageChipRows({ usage, turn: undefined, today: { ...today, reportedCostTurns: 1, unavailableCostTurns: 26 } })
     expect(rows.at(-2)).toMatchObject({
       label: "Today",
-      value: "120k tokens · $1.12",
-      note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · 26 turns reported no cost, so this total is partial.",
+      value: "120k tokens",
+      note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key.",
     })
   })
 
@@ -96,6 +99,6 @@ describe("usage chip", () => {
     expect(usageChipTriggerText(null, today)).toBe("120k today")
     expect(usageChipTriggerText(null, { ...today, turns: 0 })).toBeUndefined()
     expect(usageChipRows({ usage: empty, turn, today }).map((row) => row.label)).toEqual(["Today"])
-    expect(usageChipTriggerText(usage, today)).toBe("42.1k · $0.38")
+    expect(usageChipTriggerText(usage, today)).toBe("42.1k")
   })
 })
