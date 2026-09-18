@@ -3669,7 +3669,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
   // Pause everything stops at the next turn boundary through system.pauseAll;
   // the emergency stop is the other thing and has its own control.
+  // Hold first: the pause's snapshot leaves every session idle, and an idle
+  // session with a waiting queue would be resumed by the release effect.
   const pauseActiveTurns = () => {
+    setQueues(holdAllAfterStop)
     void pauseAll().catch(() => undefined)
   }
   const stopEverything = () => {

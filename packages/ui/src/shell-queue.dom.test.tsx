@@ -394,3 +394,17 @@ it('gives refusals in different sessions their own receipts', async () => {
   await snapshot(socket, visible(bothIdle, firstId))
   expect(screen.queryByText('for the first session')).not.toBeNull()
 })
+
+it('Pause everything holds the queue so a paused session is not resumed by it', async () => {
+  const value = running()
+  const socket = await open(value)
+  queue('do not resume after a pause')
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Stop everything' }))
+  await user.click(screen.getByRole('menuitem', { name: /Pause everything/ }))
+  expect(sentRequests(socket, 'system.pauseAll')).toHaveLength(1)
+  await act(async () => respond(socket, 'system.pauseAll', idle(value)))
+  await settle()
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(/Held because work was stopped/)).toBeTruthy()
+})
