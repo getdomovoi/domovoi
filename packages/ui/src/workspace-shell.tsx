@@ -134,7 +134,7 @@ export { ArchiveSessionAction, CheckpointThreadItem, SessionReadOnlyNotice, Sess
 
 export { AppBar, emergencyStopAnnouncement, useUsageToday } from "./app-bar"
 
-export { LauncherDialog, ProjectSwitchConfirmationDialog, ProviderReadinessList } from "./launcher-dialog"
+export { LauncherDialog, ProjectSwitchConfirmationDialog, ProviderReadinessList, ProviderSearchReport } from "./launcher-dialog"
 
 export { activeSession, activeSessionCount, activeThreadKey, forkSessionBlockedReason, renderedThreadForActiveSession, sessionIsArchiveReadOnly } from "./workspace-selectors"
 export { AnnotationComments, ArtifactDock, PreviewVariantThumbnail, artifactAuthorizationKey, capturePreviewThumbnailState } from "./artifact-dock"
@@ -1370,6 +1370,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           mode={launcherMode}
           {...(launcherProjectNote ? { projectNote: launcherProjectNote } : {})}
           providers={snapshot.machine.providers}
+          toolPath={snapshot.machine.toolPath}
           {...(desktopFirstRun.persisted.status === "complete"
             ? { defaultProviderId: desktopFirstRun.persisted.providerId }
             : {})}

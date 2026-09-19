@@ -42,7 +42,8 @@ export function providerCanStartSession(provider: ProviderRuntime): boolean {
 
 export function providerStatusLabel(provider: ProviderRuntime): string {
   if (provider.status === "auth-required") return "Sign in required"
-  if (provider.status === "missing") return "Not installed"
+  // A miss on the searched PATH, not a fact about the machine.
+  if (provider.status === "missing") return "Not found"
   if (provider.status === "unknown") return "Detected"
   return "Ready"
 }

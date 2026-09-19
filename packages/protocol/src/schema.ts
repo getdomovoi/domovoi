@@ -122,6 +122,9 @@ export const machineSchema = z.object({
   connection: connectionKindSchema,
   reachable: z.boolean(),
   providers: z.array(providerRuntimeSchema).default([]),
+  // The PATH the daemon searched for provider CLIs, so a client can say
+  // where it looked when it found none. Absent from daemons that predate it.
+  toolPath: z.string().min(1).optional(),
 })
 
 export const projectSchema = z.object({

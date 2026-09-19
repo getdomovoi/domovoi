@@ -5,6 +5,7 @@ import { devicePairResultSchema, protocolVersion, type ProviderModel } from "@ge
 import type { AgentAdapter } from "./agents.js"
 import type { ProviderDetection } from "./providers.js"
 import { fleetProductionHarness, sessionAgent } from "./test-fleet-production.js"
+import { waitForDaemon } from "./test-wait-for.js"
 
 const harness = fleetProductionHarness()
 afterEach(harness.cleanup)
@@ -136,6 +137,20 @@ describe("runtime discovery over production daemon sockets", () => {
     expect(result).not.toHaveProperty("models")
     expect((await target.root.ok("runtime.discover", { provider: "codex", client: "cli" })).status).toBe("ready")
     expect(codex.listModels).toHaveBeenCalledTimes(2)
+  }, budgetMs)
+
+  it("reports the PATH the probe searched on the machine, so a client can say where it looked", async () => {
+    const target = await harness.machine("searched path", undefined, {
+      agents: { codex: agent() }, providerProbe: { inspect: async () => [], searchPath: "/usr/bin:/bin:/usr/sbin:/sbin" },
+    })
+    // The readiness refresh runs in-process after the harness answers.
+    await waitForDaemon(async () => {
+      expect((await target.root.ok("workspace.get", {})).machine.toolPath).toBe("/usr/bin:/bin:/usr/sbin:/sbin")
+    })
+    const bare = await harness.machine("bare probe", undefined, {
+      agents: { codex: agent() }, providerProbe: { inspect: async () => [] },
+    })
+    expect((await bare.root.ok("workspace.get", {})).machine.toolPath).toBeUndefined()
   }, budgetMs)
 
   it("refuses providers without an adapter or verified readiness", async () => {

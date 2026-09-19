@@ -1880,8 +1880,10 @@ export class DomovoiDaemon {
       ...provider,
       sessionCapable: sessionProviders.has(provider.id),
     }))
+    const toolPath = this.#providerProbe!.searchPath
     await this.#enqueueMutation(async () => {
       this.#snapshot.machine.providers = providers
+      if (toolPath) this.#snapshot.machine.toolPath = toolPath
       await this.#persistSnapshot()
       this.#broadcastSnapshot()
     })
