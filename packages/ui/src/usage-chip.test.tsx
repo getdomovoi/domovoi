@@ -39,10 +39,10 @@ describe("usage chip", () => {
     expect(rows.map((row) => row.label)).toEqual(["This turn", "This session", "Context", "Today", "Provider window"])
     expect(rows[4]).toMatchObject({ value: "not reported", note: "This provider has not said what the limit is, so Domovoi draws no dial rather than guessing one." })
     expect(rows[0]).toMatchObject({ value: "8,410 in · 1,206 out", note: "claude-sonnet-4.6 · 3 tool results" })
-    expect(rows[1]).toMatchObject({ value: "42.1k tokens", note: "Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key." })
+    expect(rows[1]).toMatchObject({ value: "42.1k tokens", note: "Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key." })
     expect(rows[2]).toMatchObject({ value: "42.1k of 200k", share: 21 })
     expect(rows[2]?.note).toMatch(/restart the provider thread/)
-    expect(rows[3]).toMatchObject({ value: "120k tokens", note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key." })
+    expect(rows[3]).toMatchObject({ value: "120k tokens", note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key." })
   })
 
   it("leaves out what it cannot know instead of guessing", () => {
@@ -66,7 +66,7 @@ describe("usage chip", () => {
     expect(rows.at(-2)).toMatchObject({
       label: "Today",
       value: "120k tokens",
-      note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key.",
+      note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key.",
     })
   })
 

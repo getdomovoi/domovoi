@@ -33,7 +33,7 @@ export type UsageChipRow = {
 // money. A provider reports a dollar figure for a subscription turn too, and
 // that is money nobody is charged. The priced state and the ring wait on the
 // connection kind and the provider window (asks 5 and 6).
-export const unreportedCostNote = "Cost not shown: the wire does not say yet whether this session runs on a subscription or an API key."
+export const unreportedCostNote = "Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key."
 
 export function usageChipText(usage: SessionUsage): string {
   return formatTokenCount(usage.totalTokens)
