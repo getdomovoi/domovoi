@@ -83,7 +83,7 @@ describe("provider readiness", () => {
     expect(providerStatusLabel(provider({ id: "claude-code", sessionCapable: false })))
       .toBe("Ready")
     expect(providerStatusLabel(provider({ status: "auth-required" }))).toBe("Sign in required")
-    expect(providerStatusLabel(provider({ status: "missing" }))).toBe("Not installed")
+    expect(providerStatusLabel(provider({ status: "missing" }))).toBe("Not found")
     expect(providerStatusLabel(provider({ status: "unknown" }))).toBe("Detected")
     expect(providerStatusLabel(provider({}))).toBe("Ready")
   })

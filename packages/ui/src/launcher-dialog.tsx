@@ -101,13 +101,48 @@ const defaultRuntime: Runtime = {
 }
 export type LauncherMode = "project" | "session" | null
 
-export function ProviderReadinessList({
+// When every harness is missing the list is an empty state, and the useful
+// part of an empty state is what was looked for and where. A miss on one PATH
+// is not proof of absence: an app launched from the Dock searches a PATH the
+// person's shell never sees. So this is a search report, not a picker and not
+// a status list, and it names what would change the answer.
+export function ProviderSearchReport({
   providers,
+  toolPath,
 }: {
   providers: readonly ProviderRuntime[]
+  toolPath?: string | undefined
+}) {
+  const commands = providers.map((provider) => provider.command)
+  const named = commands.length === 1
+    ? commands[0]!
+    : `${commands.slice(0, -1).join(", ")} and ${commands.at(-1)}`
+  const outcome = commands.length === 2 ? "found neither" : "found nothing"
+  const searched = toolPath
+    ? `Searched ${toolPath} for ${named} and ${outcome}.`
+    : `Searched for ${named} and ${outcome}. This daemon did not report where it looked.`
+  return (
+    <section aria-label="Provider search" className="flex flex-col gap-1.5 rounded-lg border bg-background/40 px-3 py-2.5 text-[12px]">
+      <p className="m-0 break-all font-machine text-mono-xs text-muted-foreground">{searched}</p>
+      <p className="m-0 text-faint">
+        Finding nothing here is not proof nothing is installed. A CLI that lives in a directory not on that path is invisible to this daemon; add the directory as the override in tools.json in the profile, or set DOMOVOI_TOOL_PATH, and restart the daemon.
+      </p>
+    </section>
+  )
+}
+
+export function ProviderReadinessList({
+  providers,
+  toolPath,
+}: {
+  providers: readonly ProviderRuntime[]
+  toolPath?: string | undefined
 }) {
   if (providers.length === 0) {
     return <FieldDescription>Provider readiness has not been reported by this machine yet.</FieldDescription>
+  }
+  if (providers.every((provider) => provider.status === "missing")) {
+    return <ProviderSearchReport providers={providers} toolPath={toolPath} />
   }
 
   return (
@@ -140,6 +175,7 @@ export function LauncherDialog({
   mode,
   projectNote,
   providers,
+  toolPath,
   defaultProviderId,
   defaultPermissionMode,
   onOpenChange,
@@ -150,6 +186,7 @@ export function LauncherDialog({
   mode: LauncherMode
   projectNote?: string
   providers: readonly ProviderRuntime[]
+  toolPath?: string | undefined
   defaultProviderId?: string
   defaultPermissionMode: PermissionMode
   onOpenChange: (open: boolean) => void
@@ -192,7 +229,7 @@ export function LauncherDialog({
     ) ?? preferredSessionProvider(providersRef.current)
     if (!provider) {
       setModels([])
-      setModelsError("No provider on this machine can start a session")
+      setModelsError("Domovoi found no provider CLI on the path it searched")
       return
     }
 
@@ -391,7 +428,7 @@ export function LauncherDialog({
                   </DropdownMenu>
                 </div>
                 <FieldError id="launcher-model-error">{modelsError}</FieldError>
-                <ProviderReadinessList providers={providers} />
+                <ProviderReadinessList providers={providers} toolPath={toolPath} />
               </Field>
             ) : null}
           </FieldGroup>

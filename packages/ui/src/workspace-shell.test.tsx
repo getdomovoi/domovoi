@@ -382,7 +382,7 @@ describe("ProviderReadinessList", () => {
     expect(markup).toContain("adapter unavailable")
     expect(markup).toContain("Codex")
     expect(markup).toContain("Ready")
-    expect(markup).toContain("Not installed")
+    expect(markup).toContain("Not found")
     expect(markup).toContain("2.1.247")
   })
 })

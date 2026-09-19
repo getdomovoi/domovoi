@@ -71,7 +71,7 @@ it("lists only the harnesses that reported in the provider picker", async () => 
   const items = screen.getAllByRole("menuitem").map((item) => item.textContent ?? "")
   expect(items.some((text) => text.includes("Codex"))).toBe(true)
   expect(items.some((text) => text.includes("Claude Code") && text.includes("Sign in required"))).toBe(true)
-  expect(items.some((text) => text.includes("aider") || text.includes("Not installed"))).toBe(false)
+  expect(items.some((text) => text.includes("aider") || text.includes("Not found"))).toBe(false)
 })
 
 // The runtime keeps the default provider's id when nothing can start, so the
@@ -92,7 +92,54 @@ it("says no provider is available when the default harness is not installed, ins
     />,
   )
   expect(screen.getByRole("button", { name: "Execution provider" }).textContent).toContain("No provider available")
-  expect(screen.getByText("No provider on this machine can start a session")).toBeTruthy()
+  expect(screen.getByText("Domovoi found no provider CLI on the path it searched")).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Execution provider" }))
   expect(screen.queryAllByRole("menuitem")).toHaveLength(0)
+})
+
+// A search that finds nothing is not proof of absence: the daemon may have
+// looked on a PATH the person's shell never sees. The empty state is a search
+// report: what was looked for, where, and what would change the answer. It is
+// not the greyed-out picker the launcher ruling removed, and not a status
+// list either.
+it("reports what it searched for and where when every harness is missing", () => {
+  render(
+    <LauncherDialog
+      mode="session"
+      defaultProviderId="codex"
+      defaultPermissionMode="build"
+      onOpenChange={vi.fn()}
+      onOpenProject={vi.fn(async () => {})}
+      onCreateSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      providers={[
+        { id: "claude-code", command: "claude", status: "missing", sessionCapable: true },
+        { id: "codex", command: "codex", status: "missing", sessionCapable: true },
+      ]}
+      toolPath="/usr/bin:/bin:/usr/sbin:/sbin"
+    />,
+  )
+  const report = screen.getByRole("region", { name: "Provider search" })
+  expect(report.textContent).toContain("Searched /usr/bin:/bin:/usr/sbin:/sbin for claude and codex and found neither.")
+  expect(report.textContent).toContain("Finding nothing here is not proof nothing is installed")
+  expect(report.textContent).toContain("tools.json")
+  expect(screen.queryByRole("list", { name: "Provider readiness" })).toBeNull()
+  expect(screen.queryByText("Not installed")).toBeNull()
+})
+
+it("says the path was not reported when the daemon predates the search record", () => {
+  render(
+    <LauncherDialog
+      mode="session"
+      defaultProviderId="codex"
+      defaultPermissionMode="build"
+      onOpenChange={vi.fn()}
+      onOpenProject={vi.fn(async () => {})}
+      onCreateSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      providers={[{ id: "codex", command: "codex", status: "missing", sessionCapable: true }]}
+    />,
+  )
+  const report = screen.getByRole("region", { name: "Provider search" })
+  expect(report.textContent).toContain("Searched for codex and found nothing. This daemon did not report where it looked.")
 })
