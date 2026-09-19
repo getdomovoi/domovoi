@@ -1295,13 +1295,24 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       dated reason; the list only shrinks. The chrome pass is the largest item in it and goes
       first: titlebar, session controls out of the composer into the drawer menu, the composer
       action row as drawn. The three leftovers this item named before are inside that.
-      Per surface, from the inventories: **desktop** partial (above); **phone** 16 of 19
-      original frames built to jest-expo, frames 20 to 23 blocked on `S3.4`, inventory to
-      follow; **web** renders the desktop package, so it inherits the desktop's state plus its
-      own limits panel, inventory to follow; **tablet** nothing built (`S3.5`).
-      Blocked, on the maintainer's desk (from the desktop inventory): the watching-only chip
-      and composer note need a client access level on the wire; the pairing copy promises a
-      Domovoi Cloud fallback that M1 cannot ship and its definition of done forbids.
+      Per surface, from the inventories in `docs/design-conformance/` (counts on 2026-09-18):
+      **desktop** 23 built, 42 partial, 9 missing, 2 blocked; **phone** 6 built, 13 partial,
+      1 missing (the policy refusal screen), 5 blocked (frame 04 on `terminal.watch`, frames
+      20 to 23 on `S3.4`);
+      **web** 3 built, 3 partial, 5 blocked, because the Web v2 design is the Phase 2 product
+      (Cloud attach, relay latency, account tiers) drawn early; **tablet** 7 missing, 1
+      blocked, nothing started (`S3.5`). Not inventoried: Cloud, Team, Skills, Onboarding and
+      States, which are Phase 2 surfaces or state references rather than screens a client
+      draws today.
+      Blocked, ruled 2026-09-18: the watching-only chip and composer note go to Codex as a
+      client access level exposing the mutating | read-only classification already at
+      `packages/protocol/src/rpc.ts:1484`; the desktop and phone pairing copy that names
+      Domovoi Cloud is a design edit (say loopback and tailnet, name Cloud as not yet
+      available), frames kept and marked drawn-not-built; Clone a repository from the phone is
+      cut from the design, no RPC; the Web v2 inventory is scoped to the limits page and what
+      the web inherits until the relay exists. The first-hour report's Auto item is withdrawn:
+      Auto lives in the mode menu in both the design and the code, where a Build-only flag
+      belongs. Phone frame 13 and 14 captions were corrected on the design side.
 - [ ] **S3.2 [CC]** Web: the six-step flow over loopback and the tailnet, with
       capability-refused real rather than drawn. Over the relay once Phase 2 lands.
   - [x] Step 3, what a browser tab can and cannot do, measured against the browser rather

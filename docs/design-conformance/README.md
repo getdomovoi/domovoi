@@ -14,9 +14,10 @@ the signed handoff and is never edited, and the check fails when the two disagre
   `derivedOn`.
 - Every literal string the design's template draws (text nodes, `aria-label`, `placeholder`,
   `title`) must be claimed by exactly one element's `copy` or listed under `sample` (the
-  fictional session: repository names, the task, machine names, times). A string the design
-  adds that nothing claims fails; a string an element claims that the design no longer draws
-  fails.
+  fictional session: repository names, the task, machine names, times) or under `annotations`
+  (frame names and numbers, section eyebrows, step captions: the design's intent for a human
+  reader, which no rule holds). A string the design adds that nothing claims fails; a string an
+  element claims that the design no longer draws fails.
 - Each element is one of:
   - **built**: every `evidence` entry is met in the implementation sources.
   - **partial** (dated reason): `presence` proves the element exists today, `evidence` names what
