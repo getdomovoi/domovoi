@@ -5,6 +5,7 @@ import { devicePairResultSchema, protocolVersion, type ProviderModel } from "@ge
 import type { AgentAdapter } from "./agents.js"
 import type { ProviderDetection } from "./providers.js"
 import { fleetProductionHarness, sessionAgent } from "./test-fleet-production.js"
+import { waitForDaemon } from "./test-wait-for.js"
 
 const harness = fleetProductionHarness()
 afterEach(harness.cleanup)
@@ -142,7 +143,8 @@ describe("runtime discovery over production daemon sockets", () => {
     const target = await harness.machine("searched path", undefined, {
       agents: { codex: agent() }, providerProbe: { inspect: async () => [], searchPath: "/usr/bin:/bin:/usr/sbin:/sbin" },
     })
-    await vi.waitFor(async () => {
+    // The readiness refresh runs in-process after the harness answers.
+    await waitForDaemon(async () => {
       expect((await target.root.ok("workspace.get", {})).machine.toolPath).toBe("/usr/bin:/bin:/usr/sbin:/sbin")
     })
     const bare = await harness.machine("bare probe", undefined, {
