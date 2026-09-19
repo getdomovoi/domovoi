@@ -181,7 +181,7 @@ importers:
         version: 19.2.8(react@19.2.8)
     devDependencies:
       '@tailwindcss/vite':
-        specifier: ^4.1.12
+        specifier: 4.3.3
         version: 4.3.3(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0))
       '@types/node':
         specifier: ^26.4.0
@@ -336,7 +336,7 @@ importers:
         version: 19.2.8(react@19.2.8)
     devDependencies:
       '@tailwindcss/vite':
-        specifier: ^4.1.12
+        specifier: 4.3.3
         version: 4.3.3(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0))
       '@types/react':
         specifier: ^19.1.10
@@ -474,7 +474,7 @@ importers:
         specifier: 4.3.3
         version: 4.3.3
       '@tailwindcss/vite':
-        specifier: ^4.1.12
+        specifier: 4.3.3
         version: 4.3.3(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0))
       '@testing-library/react':
         specifier: ^16.3.3
@@ -504,7 +504,7 @@ importers:
         specifier: ^4.21.0
         version: 4.21.0(typescript@5.9.3)
       tailwindcss:
-        specifier: ^4.1.12
+        specifier: 4.3.3
         version: 4.3.3
       typescript:
         specifier: 'catalog:'
@@ -11568,7 +11568,7 @@ snapshots:
       obug: 2.1.4
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 5.0.0(@types/node@26.4.0)(@vitest/coverage-v8@5.0.0)(happy-dom@20.14.0)(jsdom@20.0.3)(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0))
+      vitest: 5.0.0(@types/node@26.4.0)(@vitest/coverage-v8@5.0.0)(happy-dom@20.14.5)(jsdom@20.0.3)(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.0))
 
   '@vitest/istanbul-lib-coverage@1.0.1': {}
 
