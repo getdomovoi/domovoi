@@ -1,0 +1,1437 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
+  "sha256": "962208ec0d4e6deb51070d6777a06949615958a586a0dab463a483d087e1cfad",
+  "derivedOn": "2026-09-18",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts",
+    "apps/desktop/src/**/*.{ts,tsx}"
+  ],
+  "note": "Read from the vendored file at the digest above, the whole 302,172 bytes. Elements are grouped by the design's regions in template order: titlebar, drawer, fleet, audit, settings, thread notices, launcher, conversation, composer, dock, handoff, fullscreen preview, palette. `where` and `states` are for the human reading the design; the gate holds copy and evidence only. Sample data is the fictional session (acme-api, the Stripe webhook task, mac-mini-m4 and friends) and is claimed under `sample` with no element.",
+  "sample": [
+    "3 machines · 1 unreachable",
+    "prisma migrate",
+    "last 24 hours",
+    "writes a file on this machine · 1,204 rows match",
+    "Lost the daemon on wsl-ubuntu-24, last heard 41s ago",
+    "mac-mini-m4",
+    "main",
+    "Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.",
+    "acme-api · main · wt-billing-idem",
+    "Wrote a 4 step plan",
+    "14:03 · revised 14:06",
+    "FAIL webhooks/replay.spec.ts › retries the same event twice",
+    "expected 2 handler invocations, received 1",
+    "→ the assertion encodes the bug; rewritten in step 4",
+    "Review all 7 changed files",
+    "You asked for this command from the composer. It is still gated, because no rule covers prisma migrate on this machine yet.",
+    "pnpm -w prisma migrate deploy",
+    "Always for prisma migrate here",
+    "step 3 of 4 · refused by the daemon",
+    "pnpm -w prisma migrate deploy --url $PROD_DATABASE_URL",
+    "The agent read PROD_DATABASE_URL and aimed at production. A rule forbids it, so the daemon refused before the command ran. No approval or mode can permit this.",
+    "Review the 7 changed files",
+    "Reconnect to wsl-ubuntu-24",
+    "Your edit to step 4 is queued. It applies at the next turn boundary, not to the turn in flight.",
+    "TXT",
+    "pasted-text-1.txt",
+    "18.4 kB · 640 lines",
+    "revised once since 14:03",
+    "webhook_replay",
+    "One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.",
+    "PRE-FLIGHT ON HETZNER-CX42",
+    "migr"
+  ],
+  "elements": [
+    {
+      "id": "titlebar.mark",
+      "name": "The Domovoi mark",
+      "where": "titlebar, after the OS window buttons on macOS",
+      "states": [
+        "idle",
+        "working (the reduced mark animates)"
+      ],
+      "copy": [
+        "Domovoi"
+      ],
+      "evidence": [
+        "DomovoiMark"
+      ]
+    },
+    {
+      "id": "titlebar.drawer-toggle",
+      "name": "Sessions drawer toggle",
+      "where": "titlebar, first icon button after the mark",
+      "states": [
+        "closed: tooltip Sessions",
+        "open: tooltip Hide sessions",
+        "red badge when a session needs you"
+      ],
+      "evidence": [
+        "Hide sessions",
+        "aria-label=\"Sessions\""
+      ]
+    },
+    {
+      "id": "titlebar.new-session",
+      "name": "New session button",
+      "where": "titlebar, after the drawer toggle",
+      "states": [
+        "tooltip New session · ⌘N"
+      ],
+      "evidence": [
+        "New session · "
+      ],
+      "presence": [
+        "New session"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a New session action exists at the foot of the drawer; the titlebar button with the shortcut in its tooltip is not drawn; chrome pass"
+      }
+    },
+    {
+      "id": "titlebar.palette-pill",
+      "name": "Command palette pill",
+      "where": "titlebar centre, 560px wide, shows the current title and ⌘K",
+      "states": [
+        "thread title",
+        "surface name (Machines, Audit log, Settings, New session in <repo>)"
+      ],
+      "evidence": [
+        "Open command palette"
+      ]
+    },
+    {
+      "id": "titlebar.watching-chip",
+      "name": "Watching-only chip",
+      "where": "titlebar, before the machine chip, when this client is watching",
+      "states": [
+        "access = watching"
+      ],
+      "evidence": [
+        "watching only"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "protocol",
+        "reason": "the wire has no client access level (full | watching) for desktop clients; the design draws a watching state the daemon cannot assert"
+      }
+    },
+    {
+      "id": "titlebar.machine-chip",
+      "name": "Machine chip",
+      "where": "titlebar right, dot, machine name in mono, transport; opens Fleet",
+      "states": [
+        "online",
+        "offline (danger border and background)"
+      ],
+      "evidence": [
+        "Connected to",
+        "Disconnected from"
+      ]
+    },
+    {
+      "id": "titlebar.stop",
+      "name": "Stop everything button and menu",
+      "where": "titlebar right, octagon icon; menu titled STOP EVERYTHING, ON EVERY MACHINE with two options",
+      "states": [
+        "closed with tooltip",
+        "open: two rows, each a label and a note"
+      ],
+      "copy": [
+        "STOP EVERYTHING, ON EVERY MACHINE"
+      ],
+      "evidence": [
+        "Stop everything",
+        "Emergency stop"
+      ]
+    },
+    {
+      "id": "titlebar.settings",
+      "name": "Settings button",
+      "where": "titlebar right, gear icon with tooltip",
+      "copy": [
+        "Settings"
+      ],
+      "evidence": [
+        "aria-label=\"Settings\""
+      ]
+    },
+    {
+      "id": "titlebar.theme",
+      "name": "Theme toggle",
+      "where": "titlebar right, sun or moon icon; tooltip names the appearance it switches to",
+      "states": [
+        "dark: Light appearance",
+        "light: Dark appearance"
+      ],
+      "evidence": [
+        "Light appearance",
+        "Dark appearance"
+      ],
+      "presence": [
+        "aria-label=\"Theme\""
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a theme control exists in Settings, not as a titlebar toggle with the tooltip copy; chrome pass"
+      }
+    },
+    {
+      "id": "titlebar.window-controls",
+      "name": "Window controls off macOS",
+      "where": "titlebar far right on Windows and Linux: minimise, maximise, close",
+      "evidence": [
+        "aria-label=\"Minimize\"",
+        "aria-label=\"Maximize\"",
+        "aria-label=\"Close\""
+      ]
+    },
+    {
+      "id": "drawer.groups",
+      "name": "Session groups",
+      "where": "drawer column, NEEDS YOU then RUNNING then QUIET, each collapsible with a count",
+      "evidence": [
+        "NEEDS YOU",
+        "RUNNING",
+        "QUIET"
+      ]
+    },
+    {
+      "id": "drawer.row",
+      "name": "Session row",
+      "where": "under its group: dot, title, meta line, a menu on hover",
+      "states": [
+        "needs you",
+        "running",
+        "quiet",
+        "active"
+      ],
+      "evidence": [
+        "sessions-drawer"
+      ]
+    },
+    {
+      "id": "drawer.row-menu",
+      "name": "Session row menu",
+      "where": "on the row: Stop the agent or Resume session, Fork from a checkpoint, Move to another machine, Archive session, Delete the worktree",
+      "states": [
+        "running: Stop the agent",
+        "paused: Resume session"
+      ],
+      "evidence": [
+        "Stop the agent",
+        "Resume session",
+        "Fork from a checkpoint",
+        "Move to another machine",
+        "Archive session",
+        "Delete the worktree"
+      ],
+      "presence": [
+        "Fork from a checkpoint",
+        "Move to another machine",
+        "Archive session",
+        "Delete the worktree"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the row menu has no Stop the agent / Resume session entry"
+      }
+    },
+    {
+      "id": "drawer.footer",
+      "name": "Drawer footer to Fleet",
+      "where": "foot of the drawer: N machines · M unreachable, opens Fleet",
+      "evidence": [
+        "machines · "
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "the drawer foot holds New session and Providers; the machine count line is not drawn"
+      }
+    },
+    {
+      "id": "fleet.header",
+      "name": "Machines heading",
+      "where": "fleet surface top",
+      "copy": [
+        "Machines",
+        "Each one runs its own daemon. Code, credentials and Git state stay where the work happens."
+      ],
+      "evidence": [
+        "Each one runs its own daemon"
+      ],
+      "presence": [
+        "aria-label=\"Machines\""
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the fleet view has its own heading copy, not the design's"
+      }
+    },
+    {
+      "id": "fleet.machine-card",
+      "name": "Machine card",
+      "where": "fleet grid: dot, name, status, four facts, a primary action and Move a session here",
+      "states": [
+        "reachable",
+        "unreachable (dimmed, reason kept)"
+      ],
+      "copy": [
+        "Move a session here"
+      ],
+      "evidence": [
+        "Move a session here"
+      ],
+      "presence": [
+        "fleet-view"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "cards exist; the Move a session here action is not on them"
+      }
+    },
+    {
+      "id": "fleet.agents",
+      "name": "Agents and providers list",
+      "where": "fleet surface below the cards: per machine, agent, state, action",
+      "copy": [
+        "Agents and providers",
+        "Installed per machine. Tokens live in that machine's OS keychain."
+      ],
+      "evidence": [
+        "Agents and providers"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "providers are listed per machine in Settings, not on the fleet surface"
+      }
+    },
+    {
+      "id": "audit.header",
+      "name": "Audit log heading and note",
+      "where": "audit surface top",
+      "copy": [
+        "Audit log",
+        "Every decision this machine recorded, across every session. This is the record the product actually promises, so it is a query rather than a feed: filter it, read it, export it, and it stays here."
+      ],
+      "evidence": [
+        "Every decision this machine recorded"
+      ],
+      "presence": [
+        "Audit log"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the audit view has its own heading copy"
+      }
+    },
+    {
+      "id": "audit.filters",
+      "name": "Actor filters, query and time window",
+      "where": "audit surface: Every actor, Clients, Daemon, Providers, Machines chips; a query field; a time window",
+      "evidence": [
+        "Every actor",
+        "Clients",
+        "Daemon",
+        "Providers"
+      ],
+      "presence": [
+        "Audit entries"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "entries render; the actor filter chips are not the design's"
+      }
+    },
+    {
+      "id": "audit.rows",
+      "name": "Audit rows",
+      "where": "audit surface: when, what, actor, detail, who, outcome",
+      "evidence": [
+        "Audit outcome"
+      ]
+    },
+    {
+      "id": "audit.export",
+      "name": "Export this query",
+      "where": "audit surface foot; writes a file on this machine, row count stated",
+      "copy": [
+        "Export this query"
+      ],
+      "evidence": [
+        "Export this query"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "no export on the audit view"
+      }
+    },
+    {
+      "id": "audit.facts",
+      "name": "What this log is, and is not",
+      "where": "audit surface foot, bulleted facts",
+      "copy": [
+        "WHAT THIS LOG IS, AND IS NOT"
+      ],
+      "evidence": [
+        "WHAT THIS LOG IS, AND IS NOT"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "not drawn"
+      }
+    },
+    {
+      "id": "settings.header",
+      "name": "Settings heading",
+      "where": "settings column top",
+      "copy": [
+        "This machine holds its own settings. Nothing here is synced anywhere unless the row says so."
+      ],
+      "evidence": [
+        "This machine holds its own settings"
+      ],
+      "presence": [
+        "Settings sections"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "settings exist as a shell with sections; the design's one scrolling column and its heading copy are not drawn"
+      }
+    },
+    {
+      "id": "settings.pairing",
+      "name": "Phone and tablet pairing",
+      "where": "settings: QR grid, code, expiry, the explanation, A PAIRED DEVICE CAN grants",
+      "copy": [
+        "Phone and tablet",
+        "Pair a device to watch sessions and answer gates while away from the desk.",
+        "A PAIRED DEVICE CAN"
+      ],
+      "evidence": [
+        "Phone and tablet",
+        "A PAIRED DEVICE CAN"
+      ],
+      "presence": [
+        "Pairing"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "pairing exists as a dialog; the settings section, its copy and the grants list are not drawn"
+      }
+    },
+    {
+      "id": "settings.pairing-cloud-fallback",
+      "name": "Pairing copy that promises a Domovoi Cloud fallback",
+      "where": "settings pairing explanation, second and third sentences",
+      "copy": [
+        "Scan it in the Domovoi app, or type the code. The pairing exchanges keys directly with this daemon over your network. If the device is not on your network it falls back to Domovoi Cloud, which carries the exchange encrypted and cannot read it."
+      ],
+      "evidence": [
+        "falls back to Domovoi Cloud"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "design",
+        "reason": "the sentence promises a hosted relay; M1 ships none and its definition of done forbids a surface that claims one. The design should say what pairing does over loopback and the tailnet until Phase 2"
+      }
+    },
+    {
+      "id": "settings.paired-devices",
+      "name": "Paired device rows",
+      "where": "settings under pairing: name, meta, Rename or Save, Rotate, revoke; a rotated secret shown once",
+      "states": [
+        "renaming",
+        "rotated: secret, Copy once, Done",
+        "revoked note"
+      ],
+      "copy": [
+        "Save",
+        "Rename",
+        "Rotate",
+        "Copy once",
+        "Done"
+      ],
+      "evidence": [
+        "Paired devices",
+        "Rename",
+        "Rotate",
+        "Copy once"
+      ],
+      "presence": [
+        "Paired devices",
+        "Rename",
+        "Rotate"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "rows with rename and rotate exist; the rotated-secret copy-once flow is not drawn"
+      }
+    },
+    {
+      "id": "settings.providers",
+      "name": "Providers and tokens",
+      "where": "settings: per provider, machine, state, action",
+      "copy": [
+        "Providers and tokens",
+        "Stored in each machine's OS keychain. Never in a Domovoi account."
+      ],
+      "evidence": [
+        "Providers and tokens"
+      ],
+      "presence": [
+        "Provider readiness"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a providers surface exists with its own copy"
+      }
+    },
+    {
+      "id": "settings.notifications",
+      "name": "Notification toggles",
+      "where": "settings: five rows, the gate row always on",
+      "copy": [
+        "Notifications",
+        "A waiting gate always notifies. The rest is yours."
+      ],
+      "evidence": [
+        "A gate is waiting on you",
+        "Every tool call"
+      ],
+      "presence": [
+        "Notifications"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a notification settings panel exists with different rows"
+      }
+    },
+    {
+      "id": "settings.elsewhere",
+      "name": "Elsewhere links",
+      "where": "settings: Machines and daemons, Permissions and rules, Skills, Checkpoints, Audit log, each with a note and a shortcut",
+      "copy": [
+        "Elsewhere",
+        "These live on their own screens."
+      ],
+      "evidence": [
+        "Machines and daemons",
+        "Permissions and rules"
+      ],
+      "presence": [
+        "Elsewhere"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "an Elsewhere section exists; its rows are not the design's five"
+      }
+    },
+    {
+      "id": "settings.appearance",
+      "name": "Appearance",
+      "where": "settings: System, Dark, Light with a note each",
+      "copy": [
+        "Appearance"
+      ],
+      "evidence": [
+        "Follows your OS appearance"
+      ],
+      "presence": [
+        "Appearance"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a theme control exists; the three-option notes are not drawn"
+      }
+    },
+    {
+      "id": "thread.offline-banner",
+      "name": "Daemon lost banner",
+      "where": "top of the thread when the daemon is unreachable: machine, last heard, what was not rolled back, Retry now",
+      "copy": [
+        "the worktree and this thread are intact on the machine, nothing was rolled back",
+        "Retry now"
+      ],
+      "evidence": [
+        "Lost the daemon on",
+        "Retry now"
+      ],
+      "presence": [
+        "Lost the daemon on"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the banner names the machine; the intact note and Retry now are not drawn"
+      }
+    },
+    {
+      "id": "thread.session-notice",
+      "name": "Paused or archived notice",
+      "where": "top of the thread: text, meta, one action",
+      "states": [
+        "paused",
+        "archived"
+      ],
+      "evidence": [
+        "session-recovery"
+      ]
+    },
+    {
+      "id": "launcher.prompt",
+      "name": "Launcher: task, machine, worktree line",
+      "where": "thread surface when launching: heading, the machine and branch line, a task field, chips, Start the session",
+      "copy": [
+        "What should the agent work on?",
+        "It runs on",
+        "in a fresh worktree off",
+        ". Nothing touches your checkout.",
+        "Start the session"
+      ],
+      "evidence": [
+        "What should the agent work on?",
+        "Start the session"
+      ],
+      "presence": [
+        "Session goal",
+        "Create session"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a Start a session dialog with a goal field; the design's in-thread launcher, its copy and chips are not drawn"
+      }
+    },
+    {
+      "id": "launcher.recent",
+      "name": "Pick up where you left off",
+      "where": "launcher below the prompt: recent sessions with title and meta",
+      "copy": [
+        "PICK UP WHERE YOU LEFT OFF"
+      ],
+      "evidence": [
+        "PICK UP WHERE YOU LEFT OFF"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "not drawn"
+      }
+    },
+    {
+      "id": "conversation.header",
+      "name": "Thread header line",
+      "where": "top of the conversation: repo · branch · worktree, then the clock (started, running or stalled)",
+      "evidence": [
+        "thread-header"
+      ],
+      "presence": [
+        "thread"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the header carries session controls the design puts elsewhere; not measured against the design's line"
+      }
+    },
+    {
+      "id": "conversation.user-turn",
+      "name": "User message",
+      "where": "right-aligned card",
+      "evidence": [
+        "thread.tsx"
+      ],
+      "presence": [
+        "thread"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "exists; arrangement not measured"
+      }
+    },
+    {
+      "id": "conversation.assistant-prose",
+      "name": "Assistant prose with the working caret",
+      "where": "left column, one live line while working",
+      "states": [
+        "working: caret",
+        "done"
+      ],
+      "evidence": [
+        "aria-label=\"Prose\""
+      ]
+    },
+    {
+      "id": "conversation.plan-link",
+      "name": "Wrote a plan row",
+      "where": "under the prose: icon, Wrote a N step plan, revised time, Read it →",
+      "copy": [
+        "Read it →"
+      ],
+      "evidence": [
+        "Wrote a",
+        "Read it"
+      ],
+      "presence": [
+        "Read it"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a plan link exists; the row's wording and the revised time are not the design's"
+      }
+    },
+    {
+      "id": "conversation.activity-row",
+      "name": "Collapsed activity row",
+      "where": "under the prose: Working / Worked for N, show the steps; sweep while working; expands to the steps with a log",
+      "states": [
+        "working (sweep)",
+        "collapsed",
+        "open",
+        "a step with a log open"
+      ],
+      "evidence": [
+        "Worked for",
+        "show the steps"
+      ],
+      "presence": [
+        "turn-activity"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "activity groups exist with their own labels"
+      }
+    },
+    {
+      "id": "conversation.file-chips",
+      "name": "Changed file chips and Review all",
+      "where": "under the activity row: path, +n, -n per file, then Review all N changed files",
+      "evidence": [
+        "Review all"
+      ],
+      "presence": [
+        "changed files"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a changed-files line exists; the chip row and its Review all action are not the design's"
+      }
+    },
+    {
+      "id": "conversation.approval",
+      "name": "Hard gate card",
+      "where": "in the thread: Waiting on your decision, meta, the command, Allow once, Always for <x> here, Deny, a locked note when watching, What does this touch? facts",
+      "states": [
+        "from you (the composer asked)",
+        "from the agent",
+        "watching: locked",
+        "facts open"
+      ],
+      "copy": [
+        "Waiting on your decision",
+        "Allow once",
+        "Deny"
+      ],
+      "evidence": [
+        "Waiting on your decision",
+        "What does this touch?",
+        "Allow once",
+        "Deny"
+      ],
+      "presence": [
+        "Allow once",
+        "Deny"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the card decides; its header, the facts disclosure and the from-you note are not the design's"
+      }
+    },
+    {
+      "id": "conversation.policy-refusal",
+      "name": "Refused by policy card",
+      "where": "in the thread: Refused by policy, the command, why, THE RULE IT BROKE with its chain, What you can do instead, See what a rule can never cover →",
+      "copy": [
+        "Refused by policy, there is nothing to approve",
+        "THE RULE IT BROKE",
+        "What you can do instead",
+        "See what a rule can never cover →"
+      ],
+      "evidence": [
+        "THE RULE IT BROKE",
+        "What you can do instead"
+      ],
+      "presence": [
+        "Policy refusal"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the refusal card exists; the rule chain and the alternatives block are not the design's"
+      }
+    },
+    {
+      "id": "conversation.receipt",
+      "name": "Decision receipt",
+      "where": "in the thread after a decision: title, meta, body, a follow-up line, then Review the changed files, Move this session to another machine, and a link",
+      "states": [
+        "allowed",
+        "denied",
+        "with follow-up actions"
+      ],
+      "copy": [
+        "Move this session to another machine"
+      ],
+      "evidence": [
+        "Decision receipt",
+        "Move this session to another machine"
+      ],
+      "presence": [
+        "Decision receipt"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the receipt exists; the follow-up actions under it are not drawn"
+      }
+    },
+    {
+      "id": "conversation.offline-actions",
+      "name": "Offline actions under the thread",
+      "where": "when the daemon is lost: Reconnect to <machine>, and why review and move need it",
+      "copy": [
+        "Reviewing and moving this session both need the daemon, since the worktree only exists on that machine."
+      ],
+      "evidence": [
+        "Reconnect to",
+        "Reviewing and moving this session both need the daemon"
+      ],
+      "presence": [
+        "Reconnect to"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "reconnect exists; the explanation line is not drawn"
+      }
+    },
+    {
+      "id": "composer.jump-pill",
+      "name": "Jump pill",
+      "where": "floating above the composer when scrolled up or a gate waits",
+      "states": [
+        "bottom: hidden",
+        "scrolled: N new",
+        "gate: Waiting on you"
+      ],
+      "evidence": [
+        "threadFollowPillText",
+        "Waiting on you"
+      ]
+    },
+    {
+      "id": "composer.plan-strip",
+      "name": "Plan strip",
+      "where": "above the composer: step n of N, title, state, Edit, Plan preview; opens to the step list; a queued-edit notice with Discard",
+      "states": [
+        "collapsed",
+        "open",
+        "edit queued"
+      ],
+      "copy": [
+        "Discard",
+        "Edit",
+        "Plan preview"
+      ],
+      "evidence": [
+        "plan-strip",
+        "Discard",
+        "Plan preview"
+      ]
+    },
+    {
+      "id": "composer.attachments",
+      "name": "Attachment chips",
+      "where": "top of the composer: mark, name, meta, remove; a more count",
+      "evidence": [
+        "Image or file from this device"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "desktop attachments are not built; the phone's are"
+      }
+    },
+    {
+      "id": "composer.slash",
+      "name": "Slash commands for this turn",
+      "where": "in the composer when / is typed: THIS TURN list, the palette shortcut for navigation",
+      "copy": [
+        "THIS TURN"
+      ],
+      "evidence": [
+        "THIS TURN",
+        "Commands for this turn"
+      ]
+    },
+    {
+      "id": "composer.paste-converted",
+      "name": "Long paste becomes a file",
+      "where": "in the composer: TXT, filename, size, peek, drop; the inline-limit note",
+      "copy": [
+        "Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request."
+      ],
+      "evidence": [
+        "Too long to send inline"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "not built; depends on desktop attachments"
+      }
+    },
+    {
+      "id": "composer.watching-note",
+      "name": "Watching-only note in the composer",
+      "where": "composer body when this client is watching",
+      "evidence": [
+        "watchingReason"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "protocol",
+        "reason": "the wire has no client access level (full | watching) for desktop clients; the design draws a watching state the daemon cannot assert"
+      }
+    },
+    {
+      "id": "composer.queued",
+      "name": "Queued message row",
+      "where": "composer: the queued text, a note, unqueue",
+      "evidence": [
+        "queued"
+      ]
+    },
+    {
+      "id": "composer.attach-menu",
+      "name": "Attach menu",
+      "where": "from the + button: File in this repo, Path on <machine>, Image or file from this device, Paste terminal output",
+      "evidence": [
+        "File in this repo",
+        "Paste terminal output"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "desktop attachments are not built"
+      }
+    },
+    {
+      "id": "composer.model-chip",
+      "name": "Model chip and menu",
+      "where": "composer action row: harness · short name; menu with search, filters, rows with agent and note, the switch note, count and Ask the agents again",
+      "states": [
+        "closed",
+        "open",
+        "no match"
+      ],
+      "copy": [
+        "clear",
+        "Nothing on this machine matches. Models come from what each harness reports, so a name you expect may live on another machine.",
+        "A change lands at the next safe turn boundary. The thread, the plan and the worktree come with it, and the switch is recorded in the audit log.",
+        "Ask the agents again"
+      ],
+      "evidence": [
+        "Nothing on this machine matches",
+        "Ask the agents again",
+        "A change lands at the next safe turn boundary"
+      ],
+      "presence": [
+        "Nothing on this machine matches",
+        "Ask the agents again"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the popover exists; the switch note is not drawn"
+      }
+    },
+    {
+      "id": "composer.mode-chip",
+      "name": "Mode chip and menu with Auto",
+      "where": "composer action row beside the model chip: Plan, Ask, Build with notes, then the Auto row",
+      "states": [
+        "Build · auto",
+        "auto refused outside Build"
+      ],
+      "copy": [
+        "MODE FOR THE NEXT TURN"
+      ],
+      "evidence": [
+        "MODE FOR THE NEXT TURN",
+        "aria-label=\"Auto\"",
+        "Reads and proposes"
+      ]
+    },
+    {
+      "id": "composer.sheet-button",
+      "name": "Open the sheet button",
+      "where": "composer action row",
+      "evidence": [
+        "Expand artifact dock"
+      ]
+    },
+    {
+      "id": "composer.usage-chip",
+      "name": "Usage chip and popover",
+      "where": "composer action row: tokens, separator, ring or price; popover USAGE with the connection note and rows",
+      "states": [
+        "subscription: ring",
+        "api: price",
+        "unreported: tokens alone"
+      ],
+      "copy": [
+        "USAGE"
+      ],
+      "evidence": [
+        "USAGE",
+        "usageChipText",
+        "Provider window"
+      ]
+    },
+    {
+      "id": "composer.stop",
+      "name": "Stop the agent, with its hover note",
+      "where": "composer action row while working; the note says what ends and what stays",
+      "copy": [
+        "Stop the agent",
+        "Ends this turn at its next tool boundary. The session, plan and worktree stay as they are."
+      ],
+      "evidence": [
+        "Stop the agent",
+        "Ends this turn at its next tool boundary"
+      ],
+      "presence": [
+        "Stop the agent"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a stop exists; the hover note is not drawn"
+      }
+    },
+    {
+      "id": "composer.send",
+      "name": "Send or queue button",
+      "where": "composer action row, far right",
+      "evidence": [
+        "Send message"
+      ]
+    },
+    {
+      "id": "dock.tabs",
+      "name": "Sheet tabs",
+      "where": "dock header: Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules, each with a count and a tip; pin and close",
+      "evidence": [
+        "Plan",
+        "Preview",
+        "Changes",
+        "Terminal",
+        "History",
+        "Checkpoints",
+        "Rules",
+        "Close the sheet"
+      ]
+    },
+    {
+      "id": "dock.plan-doc",
+      "name": "Plan preview document",
+      "where": "Plan tab: title, meta, PROBLEM, APPROACH, steps with STOPS FOR APPROVAL, WHAT THIS DOES NOT FIX, STILL OPEN; Looks right, carry on; Comment on a step",
+      "copy": [
+        "PROBLEM",
+        "APPROACH",
+        "STOPS FOR APPROVAL",
+        "WHAT THIS DOES NOT FIX",
+        "STILL OPEN",
+        "Looks right, carry on",
+        "Comment on a step"
+      ],
+      "evidence": [
+        "PROBLEM",
+        "APPROACH",
+        "STOPS FOR APPROVAL",
+        "Looks right, carry on"
+      ],
+      "presence": [
+        "Working plan",
+        "Comments on the plan"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the plan renders with comments; the document sections and the two footer actions are not the design's"
+      }
+    },
+    {
+      "id": "dock.preview",
+      "name": "Preview tab",
+      "where": "Preview tab: RENDERED THIS SESSION list, title, authorize, widths sm/md/lg, annotate, fullscreen, the rendered page, hint and notes",
+      "states": [
+        "authorized · time left",
+        "authorize to view",
+        "annotate mode: Click an element"
+      ],
+      "copy": [
+        "RENDERED THIS SESSION"
+      ],
+      "evidence": [
+        "RENDERED THIS SESSION",
+        "authorize to view",
+        "Add a comment"
+      ],
+      "presence": [
+        "Preview device width",
+        "Comments on this preview"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "preview with widths and comments exists; the session list header, the authorize label and the annotate label are not the design's"
+      }
+    },
+    {
+      "id": "dock.preview-draft",
+      "name": "New comment draft on a preview",
+      "where": "Preview tab: new comment, anchor, text, Post the comment, Cancel, the agent reads it next turn",
+      "copy": [
+        "new comment",
+        "Post the comment",
+        "Cancel",
+        "the agent reads it next turn"
+      ],
+      "evidence": [
+        "Post the comment",
+        "the agent reads it next turn"
+      ],
+      "presence": [
+        "Comments on this preview"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "commenting exists with its own labels"
+      }
+    },
+    {
+      "id": "dock.preview-comments",
+      "name": "Comments on a variant",
+      "where": "Preview tab: COMMENTS ON VARIANT n, count, send to the agent, rows with pin, anchor, state, status, replies, action",
+      "evidence": [
+        "COMMENTS ON VARIANT",
+        "Design variants"
+      ],
+      "presence": [
+        "Design variants"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "variants and comments exist; the header copy is not the design's"
+      }
+    },
+    {
+      "id": "dock.preview-variants",
+      "name": "Variant chips and Build on this",
+      "where": "Preview tab foot: variant chips, state text, Build on this / Unpick",
+      "evidence": [
+        "Build on this",
+        "Unpick"
+      ],
+      "presence": [
+        "Design variants"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "variants exist; the choose action copy is not the design's"
+      }
+    },
+    {
+      "id": "dock.terminal",
+      "name": "Terminal tab",
+      "where": "Terminal tab: claim banner (who holds the shell, Take the shell / Release the shell), the stream, Attach this output to the composer, read-only note",
+      "states": [
+        "held by me",
+        "held by the phone",
+        "watching: claim disabled"
+      ],
+      "copy": [
+        "Attach this output to the composer",
+        "read-only, the agent owns this shell"
+      ],
+      "evidence": [
+        "Take the shell",
+        "Attach this output to the composer"
+      ],
+      "presence": [
+        "Terminal quick keys"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a terminal pane exists; the claim banner and the attach action are not drawn"
+      }
+    },
+    {
+      "id": "dock.history",
+      "name": "History tab",
+      "where": "History tab: category chips Everything, Turns, Approvals, Checkpoints, Transfers; rows with time, title, category, meta, Fork from here; a more line",
+      "copy": [
+        "Fork from here"
+      ],
+      "evidence": [
+        "Everything",
+        "Turns",
+        "Approvals",
+        "Transfers",
+        "Fork from here"
+      ]
+    },
+    {
+      "id": "dock.checkpoints",
+      "name": "Checkpoints tab",
+      "where": "Checkpoints tab: the revert note, rows with id, label, meta, Fork, Revert to here or Reset the session",
+      "copy": [
+        "Every approved write takes one first. Reverting rewinds the worktree and the thread together.",
+        "Fork"
+      ],
+      "evidence": [
+        "Every approved write takes one first",
+        "Revert to here"
+      ],
+      "presence": [
+        "checkpoints-panel"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the tab exists with restore actions; the note and action labels are not the design's"
+      }
+    },
+    {
+      "id": "dock.rules",
+      "name": "Rules tab",
+      "where": "Rules tab: the scope note, rows with pattern, scope, used, Revoke; NEVER COVERED BY A RULE list",
+      "copy": [
+        "What you have already allowed. Scoped to a repository and a machine.",
+        "Revoke",
+        "NEVER COVERED BY A RULE"
+      ],
+      "evidence": [
+        "What you have already allowed",
+        "Revoke",
+        "NEVER COVERED BY A RULE"
+      ]
+    },
+    {
+      "id": "dock.changes",
+      "name": "Changes tab, evidence per file",
+      "where": "Changes tab: EVIDENCE PER FILE, per file badge, path, coverage, +n -n, runs, diff, revert ask (Revert this file / Keep it), reverted note, Revert file; foot Open a pull request, Open the worktree in your editor, nothing is merged until you do",
+      "states": [
+        "file open",
+        "diff shown",
+        "revert asked",
+        "reverted"
+      ],
+      "copy": [
+        "EVIDENCE PER FILE",
+        "What ran against each change, and whether it passed.",
+        "Revert this file",
+        "Keep it",
+        "Revert file",
+        "Open a pull request",
+        "Open the worktree in your editor",
+        "nothing is merged until you do"
+      ],
+      "evidence": [
+        "EVIDENCE PER FILE",
+        "Revert this file",
+        "Keep it",
+        "Open a pull request",
+        "Open the worktree in your editor"
+      ],
+      "presence": [
+        "session-evidence",
+        "Revert this file"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "evidence per file and revert exist; the header, the keep/revert ask and the foot actions are not the design's"
+      }
+    },
+    {
+      "id": "handoff.dialog",
+      "name": "Move this session dialog",
+      "where": "modal: title, phase chips Pre-flight / Half-failed move / Both sides changed, the recreated-on-target note",
+      "copy": [
+        "The thread, the plan and the worktree are recreated on the target. Running processes are not moved, and the agent starts its next turn there from a clean checkout of the same branch."
+      ],
+      "evidence": [
+        "The thread, the plan and the worktree are recreated on the target"
+      ],
+      "presence": [
+        "transfer-session-dialog"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a transfer dialog exists with its own copy"
+      }
+    },
+    {
+      "id": "handoff.preflight",
+      "name": "Pre-flight phase",
+      "where": "TARGET list, PRE-FLIGHT ON <machine> checks, holdback toggle and the not-sent note, confirm and Cancel, estimate",
+      "copy": [
+        "TARGET",
+        "Not sent either way: shell history, background processes, anything written outside the worktree, and credentials. The target authenticates its own providers."
+      ],
+      "evidence": [
+        "Transfer checks",
+        "Not sent either way"
+      ],
+      "presence": [
+        "Transfer checks"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "checks run; the holdback note copy is not the design's"
+      }
+    },
+    {
+      "id": "handoff.recover",
+      "name": "Half-failed move phase",
+      "where": "two sides with roles and lines, the risk, Recover the source and keep working here, Retry the move, the lease note",
+      "copy": [
+        "Recover the source and keep working here",
+        "Retry the move",
+        "doing nothing is safe, the lease expires"
+      ],
+      "evidence": [
+        "Recover the source and keep working here",
+        "Retry the move"
+      ],
+      "presence": [
+        "session-recovery"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "recovery exists with its own copy"
+      }
+    },
+    {
+      "id": "handoff.conflict",
+      "name": "Both sides changed phase",
+      "where": "two sides to pick from, Keep the chosen side, nothing is merged and nothing is deleted",
+      "copy": [
+        "Keep the chosen side",
+        "nothing is merged, and nothing is deleted"
+      ],
+      "evidence": [
+        "Keep the chosen side"
+      ],
+      "presence": [
+        "conflict"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a conflict resolution exists with its own copy"
+      }
+    },
+    {
+      "id": "preview.fullscreen",
+      "name": "Fullscreen preview",
+      "where": "over the shell: title, the read-only path line, widths, Exit fullscreen with esc, the page, variants, comments with Post / Cancel",
+      "copy": [
+        "design-studio · .domovoi/previews · read-only",
+        "Exit fullscreen",
+        "esc",
+        "Post"
+      ],
+      "evidence": [
+        "Exit fullscreen"
+      ],
+      "missing": {
+        "since": "2026-09-18",
+        "reason": "no fullscreen preview"
+      }
+    },
+    {
+      "id": "palette",
+      "name": "Command palette",
+      "where": "over the shell: query, the scope line, SESSIONS and COMMANDS groups with meta",
+      "copy": [
+        "sessions, machines, commands, skills"
+      ],
+      "evidence": [
+        "Search commands",
+        "sessions, machines, commands, skills"
+      ],
+      "presence": [
+        "Search commands"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the palette exists; its scope line and groups are not the design's"
+      }
+    },
+    {
+      "id": "composer.action-row",
+      "name": "Composer action row holds only composer controls",
+      "where": "composer action row: attach, model chip, mode chip, sheet, usage, stop, send. Checkpoint, Archive session and the machine switch live in the drawer row menu and the palette, not here",
+      "evidence": [
+        {
+          "absent": "<ArchiveSessionAction",
+          "in": "packages/ui/src/thread.tsx"
+        },
+        {
+          "absent": "<MachineSwitcher",
+          "in": "packages/ui/src/thread.tsx"
+        },
+        {
+          "absent": ">Checkpoint</Button>",
+          "in": "packages/ui/src/thread.tsx"
+        }
+      ],
+      "presence": [
+        "Send message"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "Checkpoint, Stop, Archive session and the machine switcher sit in the composer action row; the design puts session controls in the drawer row menu and the palette; chrome pass"
+      }
+    },
+    {
+      "id": "composer.think",
+      "name": "No Think control",
+      "where": "the composer action row draws no Think chip; reasoning effort is not a v2 control",
+      "evidence": [
+        {
+          "absent": "<ThinkChip",
+          "in": "packages/ui/src/thread.tsx"
+        }
+      ],
+      "presence": [
+        "ThinkChip"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "a Think chip is drawn in the composer with no drawing in the design; drawn before it ships or removed, per the maintainer 2026-09-18"
+      }
+    }
+  ],
+  "humanRead": [
+    {
+      "id": "titlebar.drawer-toggle",
+      "since": "2026-09-18",
+      "note": "the design draws an icon button with a needs-you badge and a tooltip; the app bar draws a text button. Arrangement, not copy; chrome pass"
+    },
+    {
+      "id": "titlebar.palette-pill",
+      "since": "2026-09-18",
+      "note": "the design centres a 560px pill carrying the current title; the app bar has a Commands button at the right. Arrangement, not copy; chrome pass"
+    },
+    {
+      "id": "titlebar.machine-chip",
+      "since": "2026-09-18",
+      "note": "the design chip opens Fleet and names the transport; the app bar badge does neither. Behaviour and arrangement, not copy; chrome pass"
+    },
+    {
+      "id": "thread.session-notice",
+      "since": "2026-09-18",
+      "note": "paused and archived banners with a resume action are not verified against the design"
+    }
+  ]
+}

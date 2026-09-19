@@ -1259,7 +1259,8 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       quarantined a live profile's stored snapshot on first start and reset the workspace,
       with nothing telling the user. Phone credential revoked at the end of the run.
 - [x] **S3.1 [CC]** Desktop: the 2026-09-15 audit's v2 gap list is closed on `main`, and
-      that is the whole of this claim; v2 is not landed. Each gap went in as its own slice,
+      that is the whole of this claim; v2 is not landed. As of 2026-09-18 what is and is not
+      landed is measured, not described: see `S3.10` and `docs/design-conformance/desktop-v2.json`. Each gap went in as its own slice,
       built to the v2 arrangement and sitting in the v1 chrome: Checkpoints tab (e535558c,
       #427), usage chip in the composer (1f50a698, #429), plan edit strip with the queued-edit
       notice (2cda8329, #432), model popover with discovery and rediscover (91589000, #433),
@@ -1277,13 +1278,30 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       drawer sources named in those PRs. Earlier: #386 to #401 (41e675ab) landed v2's
       corrections to the v1 layout. The work-split items under "From the work split: client
       items" below are the rest of the detail.
-- [ ] **S3.10 [CC]** Desktop chrome: move the three v1 leftovers to where v2 draws them, so the
-      surface looks like the design rather than containing its parts. (a) Think, the mode
-      toggle and Auto leave the thread header for the composer's action row beside the model
-      chip (`permChipStyle`, part1-template line 948). (b) The app bar's usage readout goes;
-      the chip is the one usage surface. (c) The dock's usage footer goes for the same reason.
-      One PR each, each body stating what moved and what the design draws that the protocol
-      cannot; no new RPCs expected.
+- [ ] **S3.10 [CC]** Desktop chrome pass: **unstarted as of 2026-09-18.** The v2 conversion
+      is not landed on any surface, and this plan read as though it were, because the designs
+      were converted into itemised change lists and only the items were built; the chrome was
+      settled in a design conversation and never appeared in a prompt. The maintainer's first
+      hour in the packaged app (2026-09-18) found it: Checkpoint, Stop, Archive session and the
+      machine switcher in the composer where v2 puts session controls in the drawer row menu
+      and the palette; a Think chip with no drawing in the design; the titlebar as a text bar
+      rather than v2's icon row (drawer toggle with a needs-you badge, New session, the
+      centred palette pill carrying the title, machine chip opening Fleet, stop, settings,
+      theme). Auto is inside the mode menu in both the design and the code.
+      **The gate**: `docs/design-conformance/desktop-v2.json`, checked by `pnpm design:conformance`
+      and `release:invariants` (`docs/design-conformance/README.md` says what it holds and what it
+      does not). Seeded 2026-09-18 from the whole vendored file: 23 elements built, 42
+      partial, 9 missing, 3 blocked, 4 arrangement notes no rule holds. Every entry carries a
+      dated reason; the list only shrinks. The chrome pass is the largest item in it and goes
+      first: titlebar, session controls out of the composer into the drawer menu, the composer
+      action row as drawn. The three leftovers this item named before are inside that.
+      Per surface, from the inventories: **desktop** partial (above); **phone** 16 of 19
+      original frames built to jest-expo, frames 20 to 23 blocked on `S3.4`, inventory to
+      follow; **web** renders the desktop package, so it inherits the desktop's state plus its
+      own limits panel, inventory to follow; **tablet** nothing built (`S3.5`).
+      Blocked, on the maintainer's desk (from the desktop inventory): the watching-only chip
+      and composer note need a client access level on the wire; the pairing copy promises a
+      Domovoi Cloud fallback that M1 cannot ship and its definition of done forbids.
 - [ ] **S3.2 [CC]** Web: the six-step flow over loopback and the tailnet, with
       capability-refused real rather than drawn. Over the relay once Phase 2 lands.
   - [x] Step 3, what a browser tab can and cannot do, measured against the browser rather
