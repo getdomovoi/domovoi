@@ -229,6 +229,20 @@ The supported provider names are `anthropic`, `openai`, and `openrouter`. `set` 
 from the terminal without echoing it. Provider CLIs and provider services are installed and
 licensed separately from Domovoi.
 
+### Where the daemon looks for provider CLIs
+
+An app launched from Finder, the Dock or a desktop entry, and a daemon started by launchd or
+systemd, inherit a PATH with nothing a person installed on it (macOS gives
+`/usr/bin:/bin:/usr/sbin:/sbin`). At every start the daemon therefore resolves a tool PATH
+once: `DOMOVOI_TOOL_PATH` or the `override` in `~/.domovoi/tools.json` first, then what the
+account's login shell reports (`$SHELL -l -c 'printf %s "$PATH"'`, or `string join` for fish),
+then the PATH it was launched with. The result is written to `~/.domovoi/tools.json` with the
+three inputs, and the Providers surface names the absolute path each CLI was found at. To
+correct an unusual setup, set `DOMOVOI_TOOL_PATH` for the daemon or add `"override":
+"/dir/one:/dir/two"` to `tools.json`; the override survives restarts, everything else in the
+file is re-derived. Windows apps inherit the account PATH, so the login shell step is skipped
+there.
+
 ## Step 7: pair a second machine
 
 Pairing is direct only. The machine being added needs the reachable TLS listener from step 4, and

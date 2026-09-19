@@ -11,7 +11,8 @@ import { loadOrCreateDaemonToken } from "./credentials.js"
 import { RotatingDaemonLog } from "./daemon-logs.js"
 import { loadOrCreateMachineIdentity, type MachineIdentity } from "./machine-identity.js"
 import { MachineCredentialWorker, type AsyncMachineCredentials } from "./machine-credential-worker.js"
-import { CliProviderProbe, type ProviderProbe } from "./providers.js"
+import { CliProviderProbe, runProviderCommand, type ProviderProbe } from "./providers.js"
+import { resolveToolPath } from "./tool-path.js"
 import { claimProfile, type ProfileLease } from "./profile-lease.js"
 import { createLocalOwnerSecret, writeLocalOwnerRecord, type LocalOwnerRecord } from "./local-owner-record.js"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
@@ -78,7 +79,8 @@ export type ProductionDaemonDependencies = {
   ): Promise<MachineIdentity>
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
   loadRelayChannel: typeof loadOrProvisionRelayChannel
-  createProviderProbe(): ProviderProbe
+  resolveToolPath: typeof resolveToolPath
+  createProviderProbe(toolPath: string | undefined): ProviderProbe
   createMachineCredentials(): AsyncMachineCredentials
   wslFacts(environment: DaemonEnvironment): MachineWslFacts | undefined
   createDaemon(options: DaemonServerOptions): ProductionDaemonRuntime
@@ -90,7 +92,8 @@ export const productionDaemonDependencies = {
   loadOrCreateIdentity: loadOrCreateMachineIdentity,
   loadTls: loadTlsMaterial,
   loadRelayChannel: loadOrProvisionRelayChannel,
-  createProviderProbe: () => new CliProviderProbe(),
+  resolveToolPath,
+  createProviderProbe: (toolPath) => new CliProviderProbe(runProviderCommand, { path: toolPath }),
   createMachineCredentials: () => new MachineCredentialWorker(),
   wslFacts: (environment) => wslHostFacts({ environment }),
   createDaemon: (options) => new DomovoiDaemon(options),
@@ -169,6 +172,16 @@ export async function createProductionDaemonWithDependencies(
     published = true
     deadline.throwIfExpired()
     const wsl = dependencies.wslFacts(environment)
+    // Resolved before any harness is spawned. node-pty shells and the harness
+    // adapters spawn with process.env, so the process PATH is the one written
+    // back, whatever environment record configured the daemon.
+    const toolPath = await dependencies.resolveToolPath({
+      environment,
+      platform: process.platform,
+      profileDirectory: profileDirectory(profile),
+      run: runProviderCommand,
+    })
+    process.env.PATH = toolPath.path
     const daemon = dependencies.createDaemon({
       updates: { homeDirectory: profile, lease: ownedLease },
       localOwner: { secret, identity },
@@ -180,7 +193,7 @@ export async function createProductionDaemonWithDependencies(
         relayRecovery: { identity: relay.identity, ...(relay.successor ? { successor: relay.successor } : {}) },
       } : {}),
       ...(config.allowRemoteTransport ? { allowRemoteTransport: true } : {}),
-      providerProbe: dependencies.createProviderProbe(),
+      providerProbe: dependencies.createProviderProbe(toolPath.path),
       machineIdentity,
       ...(tls ? { tls } : {}),
       ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),

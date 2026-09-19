@@ -2,6 +2,8 @@ import { execFile } from "node:child_process"
 
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 
+import { resolveCommandPath } from "./tool-path.js"
+
 export type ProviderDetection = Omit<ProviderRuntime, "sessionCapable">
 
 export type CommandResult = {
@@ -67,11 +69,24 @@ const definitions: ProviderDefinition[] = [
   },
 ]
 
+// With a tool PATH the probe resolves each candidate to an absolute path
+// before running it, so the detection names where the harness was found and
+// does not depend on the PATH the process was launched with. Without one it
+// runs the bare command, which is what tests with a fake runner want.
+export type CliProviderProbeOptions = {
+  path?: string | undefined
+  platform?: NodeJS.Platform | undefined
+}
+
 export class CliProviderProbe implements ProviderProbe {
   readonly #run: ProviderCommandRunner
+  readonly #path: string | undefined
+  readonly #platform: NodeJS.Platform
 
-  constructor(run: ProviderCommandRunner = runProviderCommand) {
+  constructor(run: ProviderCommandRunner = runProviderCommand, options: CliProviderProbeOptions = {}) {
     this.#run = run
+    this.#path = options.path
+    this.#platform = options.platform ?? process.platform
   }
 
   async inspect(signal?: AbortSignal): Promise<ProviderDetection[]> {
@@ -86,7 +101,9 @@ export class CliProviderProbe implements ProviderProbe {
   async #inspect(definition: ProviderDefinition, signal?: AbortSignal): Promise<ProviderDetection> {
     let command = definition.commands[0]!
     let versionResult: CommandResult | undefined
-    for (const candidate of definition.commands) {
+    for (const name of definition.commands) {
+      const candidate = this.#path === undefined ? name : await resolveCommandPath(name, this.#path, this.#platform)
+      if (candidate === undefined) continue
       try {
         signal?.throwIfAborted()
         versionResult = await this.#run(candidate, ["--version"], signal)
