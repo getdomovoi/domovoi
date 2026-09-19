@@ -11,6 +11,7 @@ import {
   type DesktopDaemonAcquisition,
   type DesktopDaemonBridge,
 } from "../shared/daemon-acquisition.js"
+import { titlebarLeadingInset } from "../shared/traffic-lights.js"
 
 export type DesktopBridge = DesktopWindowBridge & DesktopDaemonBridge
 
@@ -142,6 +143,7 @@ export function createDesktopWindowBridge(
   const acquireDaemon = async () => daemonAcquisitionResult(await ipc.invoke("domovoi:rpc-endpoint"))
   return {
     platform,
+    titlebarLeadingInset: titlebarLeadingInset(platform),
     fleetRoute: (machineId, budgetMs) => ipc.invoke("domovoi:fleet-route", machineId, budgetMs),
     forgetFleetRoute: (machineId) => ipc.invoke("domovoi:fleet-route-forget", machineId),
     readRelayPin: async (key) => {
