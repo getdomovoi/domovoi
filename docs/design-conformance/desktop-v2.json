@@ -1,6 +1,6 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
-  "sha256": "962208ec0d4e6deb51070d6777a06949615958a586a0dab463a483d087e1cfad",
+  "sha256": "aba24841b27af6f14e6dce61c2fcba4557b5795994226976ba5030daed69f603",
   "derivedOn": "2026-09-18",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
@@ -408,34 +408,20 @@
       "copy": [
         "Phone and tablet",
         "Pair a device to watch sessions and answer gates while away from the desk.",
+        "Scan it in the Domovoi app, or type the code. The pairing exchanges keys directly with this daemon, over loopback on this machine or over your tailnet. A device that can reach neither cannot pair yet: Domovoi Cloud is the answer to that and it does not exist.",
         "A PAIRED DEVICE CAN"
       ],
       "evidence": [
         "Phone and tablet",
-        "A PAIRED DEVICE CAN"
+        "A PAIRED DEVICE CAN",
+        "over loopback on this machine or over your tailnet"
       ],
       "presence": [
         "Pairing"
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "pairing exists as a dialog; the settings section, its copy and the grants list are not drawn"
-      }
-    },
-    {
-      "id": "settings.pairing-cloud-fallback",
-      "name": "Pairing copy that promises a Domovoi Cloud fallback",
-      "where": "settings pairing explanation, second and third sentences",
-      "copy": [
-        "Scan it in the Domovoi app, or type the code. The pairing exchanges keys directly with this daemon over your network. If the device is not on your network it falls back to Domovoi Cloud, which carries the exchange encrypted and cannot read it."
-      ],
-      "evidence": [
-        "falls back to Domovoi Cloud"
-      ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "design",
-        "reason": "the sentence promises a hosted relay; M1 ships none and its definition of done forbids a surface that claims one. Ruled 2026-09-18: design edit, the copy says what M1 does (loopback and the tailnet) and names Cloud as not yet available rather than a fallback in place"
+        "reason": "pairing exists as a dialog; the settings section, its copy (corrected 2026-09-18 to name loopback and the tailnet and say Cloud does not exist) and the grants list are not drawn"
       }
     },
     {

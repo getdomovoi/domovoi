@@ -1,12 +1,12 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html",
-  "sha256": "8e705b3f05bc4e4d3b0df25fdc3bd14d6294fcdfd5d2978773ca9faa76eade3d",
+  "sha256": "e10f42ddc4f703ddde57a3e09a91a15ab0ee4f1e2a29b25e503818c82444cb0c",
   "derivedOn": "2026-09-18",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "Twenty-three frames in five sections. Frame names, section eyebrows and step captions are annotations; the fictional session is sample. Frames 20 to 23 are blocked on S3.4 and the native decision. Frame 13 and 14 captions were corrected on the design side 2026-09-18 (attachments landed 2026-09-17); the next re-vendor picks that up and this inventory re-derives.",
+  "note": "Twenty-three frames in five sections. Frame names, section eyebrows and step captions are annotations; the fictional session is sample. Frames 20 to 23 are blocked on S3.4 and the native decision. Re-derived 2026-09-18 after the design edits: frame 13 and 14 captions no longer say drawn-not-built, frame 08 names the tailnet instead of Cloud, and the clone action is gone from frame 10.",
   "sample": [
     "Migrate billing webhooks",
     "pnpm -w prisma migrate deploy",
@@ -75,9 +75,9 @@
     "The composer carries one plan button, tinted while a step needs you. Tapping it opens the rendered plan.",
     "Typing, keyboard up",
     "The keyboard takes the bottom half, the composer rides just above it, and the tab bar is gone while the field has focus.",
-    "Drawn, not built: session.send carries no bytes yet. Images are the settled scope, so the lower three sources are dimmed and say what each one waits on.",
+    "Images are the settled scope, so the lower three sources are dimmed and say what each one waits on. Every source names where the bytes go, and nothing is stored on the phone.",
     "Two photos, queued",
-    "Drawn, not built, and the queue is the over-promise: session.send carries no bytes, so these two would never leave. Attachments grow the composer into a card, each thumb removable, with the size line stated before you send.",
+    "Attachments grow the composer into a card, each thumb removable, and the size line says where the bytes go before you send. Images only, at the bound the annotation path already uses.",
     "READING WHAT IT MADE",
     "The plan, a design-studio render, and commenting on it from a phone",
     "The plan",
@@ -310,6 +310,7 @@
       "where": "frame 08: Pair this phone, Scan a code, Type it, WHAT STAYS UNAVAILABLE, device settings still work",
       "copy": [
         "Pair this phone",
+        "Pairing exchanges keys with one machine directly, over your tailnet. Nothing passes through a server, and the phone stores no code.",
         "Scan a code",
         "Type it",
         "WHAT STAYS UNAVAILABLE",
@@ -319,7 +320,8 @@
         "Pair this phone",
         "Scan a code",
         "Type it",
-        "WHAT STAYS UNAVAILABLE"
+        "WHAT STAYS UNAVAILABLE",
+        "Nothing passes through a server"
       ],
       "presence": [
         "No machines paired"
@@ -327,22 +329,6 @@
       "partial": {
         "since": "2026-09-18",
         "reason": "the machines tab says it is unpaired; the pairing entry points and the unavailable list are not drawn as designed"
-      }
-    },
-    {
-      "id": "machines.unpaired-cloud-line",
-      "name": "Pairing copy that names Domovoi Cloud",
-      "where": "frame 08: the sentence under Pair this phone",
-      "copy": [
-        "Pairing exchanges keys with one machine directly. Domovoi Cloud never sees them, and the phone stores no code."
-      ],
-      "evidence": [
-        "Domovoi Cloud never sees them"
-      ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "design",
-        "reason": "M1 has no Domovoi Cloud. Ruled 2026-09-18: design edit, the frame keeps its drawn-not-built convention with the reason and the sentence stops naming Cloud"
       }
     },
     {
@@ -370,7 +356,7 @@
     {
       "id": "sessions.idle",
       "name": "Nothing running, everything is idle",
-      "where": "frame 10: two machines answering and idle, Start a session",
+      "where": "frame 10: two machines answering and idle, Start a session is the only action (clone cut 2026-09-18)",
       "copy": [
         "Everything is idle",
         "Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.",
@@ -386,22 +372,6 @@
       "partial": {
         "since": "2026-09-18",
         "reason": "the empty state names the cause with its own copy; the Start a session action is not drawn"
-      }
-    },
-    {
-      "id": "sessions.idle-clone",
-      "name": "Clone a repository onto a machine",
-      "where": "frame 10: the second way to start",
-      "copy": [
-        "Clone a repository onto a machine"
-      ],
-      "evidence": [
-        "Clone a repository onto a machine"
-      ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "design",
-        "reason": "cut. Ruled 2026-09-18: cloning is a setup operation and setup belongs where a filesystem is visible; the phone answers what a machine proposed. The design removes the button; no RPC is built"
       }
     },
     {

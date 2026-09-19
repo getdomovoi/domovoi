@@ -1296,9 +1296,9 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       first: titlebar, session controls out of the composer into the drawer menu, the composer
       action row as drawn. The three leftovers this item named before are inside that.
       Per surface, from the inventories in `docs/design-conformance/` (counts on 2026-09-18):
-      **desktop** 23 built, 42 partial, 9 missing, 3 blocked; **phone** 6 built, 13 partial,
-      1 missing (the policy refusal screen), 7 blocked (frame 04 on `terminal.watch`, frames
-      20 to 23 on `S3.4`, a clone action with no RPC, a Cloud clause in the pairing copy);
+      **desktop** 23 built, 42 partial, 9 missing, 2 blocked; **phone** 6 built, 13 partial,
+      1 missing (the policy refusal screen), 5 blocked (frame 04 on `terminal.watch`, frames
+      20 to 23 on `S3.4`);
       **web** 3 built, 3 partial, 5 blocked, because the Web v2 design is the Phase 2 product
       (Cloud attach, relay latency, account tiers) drawn early; **tablet** 7 missing, 1
       blocked, nothing started (`S3.5`). Not inventoried: Cloud, Team, Skills, Onboarding and
