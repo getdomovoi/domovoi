@@ -71,9 +71,15 @@ export function AppBar({
     : emergencyStopOutcome
       ? emergencyStopAnnouncement(emergencyStopOutcome)
       : null
+  // Under the Domovoi frame on macOS the OS draws its buttons over the bar
+  // and content starts at the window edge; the desktop says how far past the
+  // buttons that is, derived from where it put them.
+  const leadingInset = ownsDecoration ? bridge?.titlebarLeadingInset ?? 0 : 0
   return (
-    <header className="electron-drag flex h-[var(--shell-titlebar)] shrink-0 items-center border-b bg-sidebar px-3">
-      {ownsDecoration && bridge?.platform === "darwin" ? <div className="w-[64px]" aria-hidden="true" /> : null}
+    <header
+      className="electron-drag flex h-[var(--shell-titlebar)] shrink-0 items-center border-b bg-sidebar px-3"
+      style={leadingInset > 0 ? { paddingLeft: leadingInset } : undefined}
+    >
       <div className="electron-no-drag flex min-w-0 flex-1 items-center gap-2">
         <DomovoiMark reduced className="size-5 text-primary" />
         <span className="text-sm font-semibold tracking-[-0.025em]">Domovoi</span>
