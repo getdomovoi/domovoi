@@ -1,3 +1,5 @@
+import { trafficLightPosition } from "../shared/traffic-lights.js"
+
 export type WindowDecoration = "domovoi" | "system"
 
 export type WindowFrameOptions = {
@@ -39,7 +41,7 @@ export function windowFrameOptions(
     return {
       frame: true,
       titleBarStyle: "hiddenInset",
-      trafficLightPosition: { x: 16, y: 14 },
+      trafficLightPosition: { ...trafficLightPosition },
     }
   }
   return { frame: false, titleBarStyle: "hidden" }
