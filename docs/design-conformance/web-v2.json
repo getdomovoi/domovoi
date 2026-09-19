@@ -1,0 +1,229 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi Web v2.dc.html",
+  "sha256": "6dbf4c5554b10cf9ce8061ea78d71189137c0bf2cd7ac285d6e3d5c935511ad1",
+  "derivedOn": "2026-09-18",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts",
+    "apps/web/src/**/*.{ts,tsx}"
+  ],
+  "note": "Six frames. The web renders the desktop package, so the thread, gate, composer and review inherit docs/design-conformance/desktop-v2.json and are not repeated here; this inventory holds what the web draws of its own. The design describes a browser reached over Domovoi Cloud with account tiers. M1's web client runs over loopback and the tailnet with no relay and no accounts (S3.2, S0.6, Phase 2, Phase 5), so most of this design is blocked on the platform rather than unbuilt, and the finding is recorded once at the top: the Web v2 design is the Phase 2 product drawn early. Ruled 2026-09-18: this inventory is scoped to the limits page and what the web inherits from the desktop; the rest is not measurable until the relay exists, and five blocked out of eleven is the honest number.",
+  "sample": [
+    "acme-api · pull requests",
+    "no extension, no install",
+    "hetzner-cx42",
+    "round trip 3.4s · 3 messages queued · the agent is unaffected",
+    "acme-api · main · wt-billing-idem · on hetzner-cx42",
+    "Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.",
+    "Claim-then-commit is in, on a replay table keyed by event id. One spec still asserts the old at-least-once behaviour. Step 3 needs a migration on that machine, so I stopped and asked.",
+    "pnpm -w prisma migrate deploy",
+    "Also cover the claim-expiry case in replay.spec.ts",
+    "42.1k",
+    "Replay table, three states",
+    "design-studio · read-only",
+    "webhook_replay",
+    "One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.",
+    "open"
+  ],
+  "elements": [
+    {
+      "id": "appbar",
+      "name": "Web app bar",
+      "where": "top of the tab: mark, Domovoi, the app label, route chip, theme toggle",
+      "copy": [
+        "Domovoi"
+      ],
+      "evidence": [
+        "DomovoiMark",
+        "aria-label=\"Theme\""
+      ]
+    },
+    {
+      "id": "appbar.route-chip",
+      "name": "Route chip",
+      "where": "app bar right: how this tab reaches the machine, always shown, opens the route detail",
+      "states": [
+        "cloud relay · latency",
+        "tailnet",
+        "loopback"
+      ],
+      "evidence": [
+        "routeText"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "platform",
+        "reason": "the chip's states are relay routes; M1 has loopback and the tailnet only (S0.6, Phase 2). The M1 web client shows connection state, not a route chip"
+      }
+    },
+    {
+      "id": "attach",
+      "name": "Pick a machine to attach to",
+      "where": "first screen: heading, the no-daemon line, machine rows with reachability and reason, HOW THIS TAB IS AUTHENTICATED facts",
+      "copy": [
+        "Pick a machine to attach to",
+        "No daemon here: every session runs on one of your machines, reached over Cloud.",
+        "HOW THIS TAB IS AUTHENTICATED"
+      ],
+      "evidence": [
+        "Pick a machine to attach to"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "platform",
+        "reason": "attaching over Cloud with a signed-in identity is Phase 2 and Phase 5; M1's web client pairs one daemon with a device credential (apps/web/src/credential.ts)"
+      }
+    },
+    {
+      "id": "sessions-column",
+      "name": "Sessions column with Switch",
+      "where": "left of the thread: the machine name, Switch back to attach, session rows",
+      "copy": [
+        "Switch"
+      ],
+      "evidence": [
+        "sessions-drawer"
+      ]
+    },
+    {
+      "id": "degraded-banner",
+      "name": "Cloud is slow banner",
+      "where": "top of the thread when the relay lags: the view is behind, round trip, queued count, the agent is unaffected",
+      "copy": [
+        "Cloud is slow, this view is behind the machine"
+      ],
+      "evidence": [
+        "this view is behind the machine"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "platform",
+        "reason": "a relay latency banner needs a relay; S2.4 covers degraded behaviour under packet loss for the routes M1 has"
+      }
+    },
+    {
+      "id": "gate",
+      "name": "Hard gate card on the web",
+      "where": "in the thread: Approval required, hard gate; the command; Allow once, Always here, Deny; who holds the gate",
+      "copy": [
+        "Approval required, hard gate",
+        "Allow once",
+        "Always here",
+        "Deny"
+      ],
+      "evidence": [
+        "Approval required, hard gate",
+        "Always here",
+        "Allow once",
+        "Deny"
+      ],
+      "presence": [
+        "Allow once"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the desktop card decides on the web too; the web header wording and the Always here label are not the design's, and the gate-holder line is not drawn"
+      }
+    },
+    {
+      "id": "composer",
+      "name": "Web composer",
+      "where": "under the thread: queued message row, the placeholder, model, Build, terminal, tokens with ring or cost, send",
+      "copy": [
+        "queued, sends when this turn ends",
+        "Steer it, or queue the next message",
+        "Build"
+      ],
+      "evidence": [
+        "Steer it, or queue the next message",
+        "queued, sends when this turn ends"
+      ],
+      "presence": [
+        "Send message"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "the desktop composer serves the web; the design's placeholder and queued-row copy are not drawn. Layout follows the desktop chrome pass"
+      }
+    },
+    {
+      "id": "review",
+      "name": "Design review in the browser",
+      "where": "a render with anchored comments, variant chips, Build on this, a draft with Say what is wrong with this element, Post, Cancel",
+      "copy": [
+        "Say what is wrong with this element",
+        "Post",
+        "Cancel"
+      ],
+      "evidence": [
+        "Say what is wrong with this element"
+      ],
+      "presence": [
+        "Comments on this preview"
+      ],
+      "partial": {
+        "since": "2026-09-18",
+        "reason": "review with anchored comments exists through the desktop package; the draft prompt copy is not the design's"
+      }
+    },
+    {
+      "id": "limits",
+      "name": "What a browser tab can and cannot do",
+      "where": "its own page: heading, the one-fact line, seven rows of what, state and why, the tier note",
+      "copy": [
+        "What a browser tab can and cannot do",
+        "Each difference follows from one fact: no daemon, no repository, no keychain."
+      ],
+      "evidence": [
+        "Browser limits",
+        "What a browser tab can and cannot do"
+      ]
+    },
+    {
+      "id": "limits.tier-note",
+      "name": "Tier note under the limits",
+      "where": "foot of the limits page",
+      "copy": [
+        "The tier matters here too. Terminal over a relay route is an Enthusiast capability, so a Free account sees the terminal control refused by the daemon rather than hidden by this page."
+      ],
+      "evidence": [
+        "Enthusiast"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "platform",
+        "reason": "tiers are Phase 5; no product surface may claim account behaviour in M1"
+      }
+    },
+    {
+      "id": "tier-refused",
+      "name": "The terminal is not available on this route",
+      "where": "in place of the terminal: the refusal, why, FREE STILL DOES, ENTHUSIAST ADDS, Carry on without the terminal, See what Enthusiast adds, the LAN note",
+      "copy": [
+        "The terminal is not available on this route",
+        "refused by the daemon · capability not on the route",
+        "Free carries a route with reads only, so the daemon refused the call. The page is not hiding a button.",
+        "FREE STILL DOES",
+        "ENTHUSIAST ADDS",
+        "Carry on without the terminal",
+        "See what Enthusiast adds",
+        "At the machine itself, on LAN or tailnet, the terminal was never gated."
+      ],
+      "evidence": [
+        "capability not on the route"
+      ],
+      "blocked": {
+        "since": "2026-09-18",
+        "needs": "platform",
+        "reason": "a capability refused by route exists (S3.2, capability-refused real rather than drawn); the tier framing and the two tier lists are Phase 5 and may not ship in M1"
+      }
+    }
+  ],
+  "humanRead": [
+    {
+      "id": "limits",
+      "since": "2026-09-18",
+      "note": "the panel reports real browser state; whether its rows are the design's seven, with what, state and why, is not verified by this gate"
+    }
+  ]
+}

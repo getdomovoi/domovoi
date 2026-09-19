@@ -21,6 +21,9 @@ export type ProviderCommandRunner = (
 export interface ProviderProbe {
   inspect(signal?: AbortSignal): Promise<ProviderDetection[]>
   inspectProvider?(provider: string, signal?: AbortSignal): Promise<ProviderDetection | undefined>
+  // The PATH the probe searched, so a client can say where it looked when
+  // it found nothing. Undefined when the probe ran bare commands.
+  readonly searchPath?: string | undefined
 }
 
 type ProviderDefinition = {
@@ -87,6 +90,10 @@ export class CliProviderProbe implements ProviderProbe {
     this.#run = run
     this.#path = options.path
     this.#platform = options.platform ?? process.platform
+  }
+
+  get searchPath(): string | undefined {
+    return this.#path
   }
 
   async inspect(signal?: AbortSignal): Promise<ProviderDetection[]> {
