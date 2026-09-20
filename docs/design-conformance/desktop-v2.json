@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
-  "sha256": "aba24841b27af6f14e6dce61c2fcba4557b5795994226976ba5030daed69f603",
-  "derivedOn": "2026-09-18",
+  "sha256": "c008cb5eea4f1f5ac965b20084fafc54137a4c40f1188dfc9feced91e3353208",
+  "derivedOn": "2026-09-20",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
@@ -9,25 +9,25 @@
   ],
   "note": "Read from the vendored file at the digest above, the whole 302,172 bytes. Elements are grouped by the design's regions in template order: titlebar, drawer, fleet, audit, settings, thread notices, launcher, conversation, composer, dock, handoff, fullscreen preview, palette. `where` and `states` are for the human reading the design; the gate holds copy and evidence only. Sample data is the fictional session (acme-api, the Stripe webhook task, mac-mini-m4 and friends) and is claimed under `sample` with no element.",
   "sample": [
-    "3 machines · 1 unreachable",
+    "3 machines \u00b7 1 unreachable",
     "prisma migrate",
     "last 24 hours",
-    "writes a file on this machine · 1,204 rows match",
+    "writes a file on this machine \u00b7 1,204 rows match",
     "Lost the daemon on wsl-ubuntu-24, last heard 41s ago",
     "mac-mini-m4",
     "main",
     "Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.",
-    "acme-api · main · wt-billing-idem",
+    "acme-api \u00b7 main \u00b7 wt-billing-idem",
     "Wrote a 4 step plan",
-    "14:03 · revised 14:06",
-    "FAIL webhooks/replay.spec.ts › retries the same event twice",
+    "14:03 \u00b7 revised 14:06",
+    "FAIL webhooks/replay.spec.ts \u203a retries the same event twice",
     "expected 2 handler invocations, received 1",
-    "→ the assertion encodes the bug; rewritten in step 4",
+    "\u2192 the assertion encodes the bug; rewritten in step 4",
     "Review all 7 changed files",
     "You asked for this command from the composer. It is still gated, because no rule covers prisma migrate on this machine yet.",
     "pnpm -w prisma migrate deploy",
     "Always for prisma migrate here",
-    "step 3 of 4 · refused by the daemon",
+    "step 3 of 4 \u00b7 refused by the daemon",
     "pnpm -w prisma migrate deploy --url $PROD_DATABASE_URL",
     "The agent read PROD_DATABASE_URL and aimed at production. A rule forbids it, so the daemon refused before the command ran. No approval or mode can permit this.",
     "Review the 7 changed files",
@@ -35,12 +35,13 @@
     "Your edit to step 4 is queued. It applies at the next turn boundary, not to the turn in flight.",
     "TXT",
     "pasted-text-1.txt",
-    "18.4 kB · 640 lines",
+    "18.4 kB \u00b7 640 lines",
     "revised once since 14:03",
     "webhook_replay",
     "One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.",
     "PRE-FLIGHT ON HETZNER-CX42",
-    "migr"
+    "migr",
+    "acme-api \u00b7 wt-billing-idem"
   ],
   "elements": [
     {
@@ -77,23 +78,16 @@
       "name": "New session button",
       "where": "titlebar, after the drawer toggle",
       "states": [
-        "tooltip New session · ⌘N"
+        "tooltip New session \u00b7 \u2318N"
       ],
       "evidence": [
-        "New session · "
-      ],
-      "presence": [
-        "New session"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a New session action exists at the foot of the drawer; the titlebar button with the shortcut in its tooltip is not drawn; chrome pass"
-      }
+        "New session \u00b7 "
+      ]
     },
     {
       "id": "titlebar.palette-pill",
       "name": "Command palette pill",
-      "where": "titlebar centre, 560px wide, shows the current title and ⌘K",
+      "where": "titlebar centre, 560px wide, shows the current title and \u2318K",
       "states": [
         "thread title",
         "surface name (Machines, Audit log, Settings, New session in <repo>)"
@@ -111,12 +105,7 @@
       ],
       "evidence": [
         "watching only"
-      ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "protocol",
-        "reason": "the wire has no client access level (full | watching) for desktop clients. Ruled 2026-09-18: Codex exposes the mutating | read-only classification at packages/protocol/src/rpc.ts:1484 (rpcMethodMutation) as a client access level; ask 8 in ~/.agents/plans/2026-09-18-domovoi-usage-chip-asks.md"
-      }
+      ]
     },
     {
       "id": "titlebar.machine-chip",
@@ -169,14 +158,7 @@
       "evidence": [
         "Light appearance",
         "Dark appearance"
-      ],
-      "presence": [
-        "aria-label=\"Theme\""
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a theme control exists in Settings, not as a titlebar toggle with the tooltip copy; chrome pass"
-      }
+      ]
     },
     {
       "id": "titlebar.window-controls",
@@ -231,25 +213,22 @@
       "presence": [
         "Fork from a checkpoint",
         "Move to another machine",
-        "Archive session",
-        "Delete the worktree"
+        "Archive session"
       ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the row menu has no Stop the agent / Resume session entry"
+      "blocked": {
+        "since": "2026-09-19",
+        "needs": "protocol",
+        "reason": "Stop and Resume are drawn. Direct worktree deletion needs a narrower daemon RPC; Archive also ends the session and cannot safely stand in for it."
       }
     },
     {
       "id": "drawer.footer",
       "name": "Drawer footer to Fleet",
-      "where": "foot of the drawer: N machines · M unreachable, opens Fleet",
+      "where": "foot of the drawer: N machines \u00b7 M unreachable, opens Fleet",
       "evidence": [
-        "machines · "
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "the drawer foot holds New session and Providers; the machine count line is not drawn"
-      }
+        "machineAvailability",
+        "onOpenMachines"
+      ]
     },
     {
       "id": "fleet.header",
@@ -264,11 +243,7 @@
       ],
       "presence": [
         "aria-label=\"Machines\""
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the fleet view has its own heading copy, not the design's"
-      }
+      ]
     },
     {
       "id": "fleet.machine-card",
@@ -286,11 +261,7 @@
       ],
       "presence": [
         "fleet-view"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "cards exist; the Move a session here action is not on them"
-      }
+      ]
     },
     {
       "id": "fleet.agents",
@@ -301,12 +272,9 @@
         "Installed per machine. Tokens live in that machine's OS keychain."
       ],
       "evidence": [
-        "Agents and providers"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "providers are listed per machine in Settings, not on the fleet surface"
-      }
+        "Agents and providers",
+        "Tokens live in that machine&apos;s OS keychain"
+      ]
     },
     {
       "id": "audit.header",
@@ -321,11 +289,7 @@
       ],
       "presence": [
         "Audit log"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the audit view has its own heading copy"
-      }
+      ]
     },
     {
       "id": "audit.filters",
@@ -339,11 +303,7 @@
       ],
       "presence": [
         "Audit entries"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "entries render; the actor filter chips are not the design's"
-      }
+      ]
     },
     {
       "id": "audit.rows",
@@ -362,11 +322,7 @@
       ],
       "evidence": [
         "Export this query"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "no export on the audit view"
-      }
+      ]
     },
     {
       "id": "audit.facts",
@@ -377,11 +333,7 @@
       ],
       "evidence": [
         "WHAT THIS LOG IS, AND IS NOT"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "not drawn"
-      }
+      ]
     },
     {
       "id": "settings.header",
@@ -395,11 +347,7 @@
       ],
       "presence": [
         "Settings sections"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "settings exist as a shell with sections; the design's one scrolling column and its heading copy are not drawn"
-      }
+      ]
     },
     {
       "id": "settings.pairing",
@@ -450,11 +398,7 @@
         "Paired devices",
         "Rename",
         "Rotate"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "rows with rename and rotate exist; the rotated-secret copy-once flow is not drawn"
-      }
+      ]
     },
     {
       "id": "settings.providers",
@@ -469,11 +413,7 @@
       ],
       "presence": [
         "Provider readiness"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a providers surface exists with its own copy"
-      }
+      ]
     },
     {
       "id": "settings.notifications",
@@ -509,11 +449,7 @@
       ],
       "presence": [
         "Elsewhere"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "an Elsewhere section exists; its rows are not the design's five"
-      }
+      ]
     },
     {
       "id": "settings.appearance",
@@ -527,11 +463,7 @@
       ],
       "presence": [
         "Appearance"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a theme control exists; the three-option notes are not drawn"
-      }
+      ]
     },
     {
       "id": "thread.offline-banner",
@@ -547,11 +479,7 @@
       ],
       "presence": [
         "Lost the daemon on"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the banner names the machine; the intact note and Retry now are not drawn"
-      }
+      ]
     },
     {
       "id": "thread.session-notice",
@@ -597,17 +525,14 @@
         "PICK UP WHERE YOU LEFT OFF"
       ],
       "evidence": [
-        "PICK UP WHERE YOU LEFT OFF"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "not drawn"
-      }
+        "PICK UP WHERE YOU LEFT OFF",
+        "recentSessions"
+      ]
     },
     {
       "id": "conversation.header",
       "name": "Thread header line",
-      "where": "top of the conversation: repo · branch · worktree, then the clock (started, running or stalled)",
+      "where": "top of the conversation: repo \u00b7 branch \u00b7 worktree, then the clock (started, running or stalled)",
       "evidence": [
         "thread-header"
       ],
@@ -649,9 +574,9 @@
     {
       "id": "conversation.plan-link",
       "name": "Wrote a plan row",
-      "where": "under the prose: icon, Wrote a N step plan, revised time, Read it →",
+      "where": "under the prose: icon, Wrote a N step plan, revised time, Read it \u2192",
       "copy": [
-        "Read it →"
+        "Read it \u2192"
       ],
       "evidence": [
         "Wrote a",
@@ -735,12 +660,12 @@
     {
       "id": "conversation.policy-refusal",
       "name": "Refused by policy card",
-      "where": "in the thread: Refused by policy, the command, why, THE RULE IT BROKE with its chain, What you can do instead, See what a rule can never cover →",
+      "where": "in the thread: Refused by policy, the command, why, THE RULE IT BROKE with its chain, What you can do instead, See what a rule can never cover \u2192",
       "copy": [
         "Refused by policy, there is nothing to approve",
         "THE RULE IT BROKE",
         "What you can do instead",
-        "See what a rule can never cover →"
+        "See what a rule can never cover \u2192"
       ],
       "evidence": [
         "THE RULE IT BROKE",
@@ -772,11 +697,7 @@
       ],
       "presence": [
         "Decision receipt"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the receipt exists; the follow-up actions under it are not drawn"
-      }
+      ]
     },
     {
       "id": "conversation.offline-actions",
@@ -836,12 +757,10 @@
       "name": "Attachment chips",
       "where": "top of the composer: mark, name, meta, remove; a more count",
       "evidence": [
-        "Image or file from this device"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "desktop attachments are not built; the phone's are"
-      }
+        "Image or file from this device",
+        "Attachments",
+        "attachmentMeta"
+      ]
     },
     {
       "id": "composer.slash",
@@ -851,8 +770,7 @@
         "THIS TURN"
       ],
       "evidence": [
-        "THIS TURN",
-        "Commands for this turn"
+        "THIS TURN"
       ]
     },
     {
@@ -863,32 +781,39 @@
         "Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request."
       ],
       "evidence": [
-        "Too long to send inline"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "not built; depends on desktop attachments"
-      }
+        "Too long to send inline",
+        "desktopInlineLineLimit",
+        "The prompt carries the first 40 lines"
+      ]
     },
     {
       "id": "composer.watching-note",
       "name": "Watching-only note in the composer",
       "where": "composer body when this client is watching",
       "evidence": [
-        "watchingReason"
+        "Free plan: this route carries reads only.",
+        "No sends, approvals, terminal or writes. Reads stream as normal."
+      ]
+    },
+    {
+      "id": "composer.watching-note-archived",
+      "name": "Watching-only wording, the archived half",
+      "where": "the read-only notice that stands in for the composer on an archived session",
+      "evidence": [
+        "Archived, so the daemon accepts reads only. No sends, approvals, terminal or writes. Reads stream as normal."
       ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "protocol",
-        "reason": "the wire has no client access level (full | watching) for desktop clients. Ruled 2026-09-18: Codex exposes the mutating | read-only classification at packages/protocol/src/rpc.ts:1484 (rpcMethodMutation) as a client access level; ask 8 in ~/.agents/plans/2026-09-18-domovoi-usage-chip-asks.md"
-      }
+      "notes": [
+        "The design draws one watching notice with two reasons: archived, and a free plan carrying reads only. Only the archived reason has a source on the wire, so only it is built; the other half stays blocked at composer.watching-note.",
+        "The design insets this card inside the composer card and locks the controls at 45% opacity. The app instead replaces the whole composer with a notice that also offers release, an action the design does not draw. The wording is the design's; the arrangement is not. Not yet reconciled."
+      ]
     },
     {
       "id": "composer.queued",
       "name": "Queued message row",
       "where": "composer: the queued text, a note, unqueue",
       "evidence": [
-        "queued"
+        "queued, sends when this turn ends",
+        "Unqueue the message"
       ]
     },
     {
@@ -897,17 +822,15 @@
       "where": "from the + button: File in this repo, Path on <machine>, Image or file from this device, Paste terminal output",
       "evidence": [
         "File in this repo",
+        "Path on",
+        "Image or file from this device",
         "Paste terminal output"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "desktop attachments are not built"
-      }
+      ]
     },
     {
       "id": "composer.model-chip",
       "name": "Model chip and menu",
-      "where": "composer action row: harness · short name; menu with search, filters, rows with agent and note, the switch note, count and Ask the agents again",
+      "where": "composer action row: harness \u00b7 short name; menu with search, filters, rows with agent and note, the switch note, count and Ask the agents again",
       "states": [
         "closed",
         "open",
@@ -923,22 +846,14 @@
         "Nothing on this machine matches",
         "Ask the agents again",
         "A change lands at the next safe turn boundary"
-      ],
-      "presence": [
-        "Nothing on this machine matches",
-        "Ask the agents again"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the popover exists; the switch note is not drawn"
-      }
+      ]
     },
     {
       "id": "composer.mode-chip",
       "name": "Mode chip and menu with Auto",
       "where": "composer action row beside the model chip: Plan, Ask, Build with notes, then the Auto row",
       "states": [
-        "Build · auto",
+        "Build \u00b7 auto",
         "auto refused outside Build"
       ],
       "copy": [
@@ -953,9 +868,9 @@
     {
       "id": "composer.sheet-button",
       "name": "Open the sheet button",
-      "where": "composer action row",
+      "where": "composer action row: an icon-only control, left of the spacer, that opens the sheet on Changes",
       "evidence": [
-        "Expand artifact dock"
+        "Open the sheet"
       ]
     },
     {
@@ -990,11 +905,7 @@
       ],
       "presence": [
         "Stop the agent"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a stop exists; the hover note is not drawn"
-      }
+      ]
     },
     {
       "id": "composer.send",
@@ -1005,18 +916,46 @@
       ]
     },
     {
+      "id": "composer.input",
+      "name": "Message field",
+      "where": "composer: 13.5px at 1.6, grows to a 172px cap then scrolls",
+      "states": [
+        "rest: Reply, or steer the plan",
+        "working: Steer it while it works",
+        "offline: Cannot send, the daemon is not answering"
+      ],
+      "evidence": [
+        "Reply, or steer the plan",
+        "Steer it while it works",
+        "Cannot send, the daemon is not answering",
+        "max-h-[172px]"
+      ],
+      "note": "the design carries these strings in its data, not as drawn copy"
+    },
+    {
+      "id": "composer.send-hint",
+      "name": "Send hint",
+      "where": "composer action row, left of the send control",
+      "evidence": [
+        "for a new line",
+        "sendHint"
+      ],
+      "note": "the design carries these strings in its data, not as drawn copy"
+    },
+    {
       "id": "dock.tabs",
       "name": "Sheet tabs",
-      "where": "dock header: Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules, each with a count and a tip; pin and close",
+      "where": "dock header: seven 28px icon tabs (Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules); the label and its note are drawn in the hover tip, the count is not drawn; pin and close",
       "evidence": [
-        "Plan",
+        "dockTabDefinitions",
+        "Plan preview",
         "Preview",
         "Changes",
         "Terminal",
         "History",
         "Checkpoints",
         "Rules",
-        "Close the sheet"
+        "Close"
       ]
     },
     {
@@ -1052,7 +991,7 @@
       "name": "Preview tab",
       "where": "Preview tab: RENDERED THIS SESSION list, title, authorize, widths sm/md/lg, annotate, fullscreen, the rendered page, hint and notes",
       "states": [
-        "authorized · time left",
+        "authorized \u00b7 time left",
         "authorize to view",
         "annotate mode: Click an element"
       ],
@@ -1250,11 +1189,7 @@
       ],
       "presence": [
         "transfer-session-dialog"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a transfer dialog exists with its own copy"
-      }
+      ]
     },
     {
       "id": "handoff.preflight",
@@ -1270,11 +1205,7 @@
       ],
       "presence": [
         "Transfer checks"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "checks run; the holdback note copy is not the design's"
-      }
+      ]
     },
     {
       "id": "handoff.recover",
@@ -1291,11 +1222,7 @@
       ],
       "presence": [
         "session-recovery"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "recovery exists with its own copy"
-      }
+      ]
     },
     {
       "id": "handoff.conflict",
@@ -1311,9 +1238,10 @@
       "presence": [
         "conflict"
       ],
-      "partial": {
+      "blocked": {
         "since": "2026-09-18",
-        "reason": "a conflict resolution exists with its own copy"
+        "needs": "protocol",
+        "reason": "The daemon can refuse a diverged target, but it exposes no conflict-resolution RPC or Keep the chosen side action."
       }
     },
     {
@@ -1321,18 +1249,15 @@
       "name": "Fullscreen preview",
       "where": "over the shell: title, the read-only path line, widths, Exit fullscreen with esc, the page, variants, comments with Post / Cancel",
       "copy": [
-        "design-studio · .domovoi/previews · read-only",
+        "design-studio \u00b7 .domovoi/previews \u00b7 read-only",
         "Exit fullscreen",
         "esc",
         "Post"
       ],
       "evidence": [
-        "Exit fullscreen"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "no fullscreen preview"
-      }
+        "Exit fullscreen",
+        "setFullscreen(false)"
+      ]
     },
     {
       "id": "palette",
@@ -1347,11 +1272,7 @@
       ],
       "presence": [
         "Search commands"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the palette exists; its scope line and groups are not the design's"
-      }
+      ]
     },
     {
       "id": "composer.action-row",
@@ -1363,21 +1284,13 @@
           "in": "packages/ui/src/thread.tsx"
         },
         {
-          "absent": "<MachineSwitcher",
-          "in": "packages/ui/src/thread.tsx"
-        },
-        {
           "absent": ">Checkpoint</Button>",
           "in": "packages/ui/src/thread.tsx"
         }
       ],
       "presence": [
         "Send message"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "Checkpoint, Stop, Archive session and the machine switcher sit in the composer action row; the design puts session controls in the drawer row menu and the palette; chrome pass"
-      }
+      ]
     },
     {
       "id": "composer.think",
@@ -1388,36 +1301,80 @@
           "absent": "<ThinkChip",
           "in": "packages/ui/src/thread.tsx"
         }
+      ]
+    },
+    {
+      "id": "editor.dialog",
+      "name": "The prompt editor",
+      "where": "a modal over the whole surface, opened by the composer expand control or Cmd+Shift+E",
+      "states": [
+        "prose",
+        "markdown",
+        "a turn is running (Send reads Queue it)"
       ],
-      "presence": [
-        "ThinkChip"
+      "copy": [
+        "Prompt editor"
       ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a Think chip is drawn in the composer with no drawing in the design; drawn before it ships or removed, per the maintainer 2026-09-18"
-      }
+      "evidence": [
+        "PromptEditorDialog",
+        "data-prompt-editor-scrim"
+      ]
+    },
+    {
+      "id": "editor.format-toggle",
+      "name": "The prose and markdown control",
+      "where": "the editor header, before the close control",
+      "states": [
+        "prose selected",
+        "markdown selected"
+      ],
+      "copy": [
+        "Aa",
+        "MD"
+      ],
+      "evidence": [
+        "Prose",
+        "Markdown"
+      ]
+    },
+    {
+      "id": "editor.footer",
+      "name": "The editor footer",
+      "where": "below the field, reading the composer values rather than its own copies",
+      "states": [
+        "at rest",
+        "a turn is running"
+      ],
+      "copy": [
+        "\u2318\u23ce send \u00b7 esc close",
+        "Keep as draft"
+      ],
+      "evidence": [
+        "Keep as draft",
+        "What this turn runs under"
+      ]
     }
   ],
   "humanRead": [
     {
-      "id": "titlebar.drawer-toggle",
-      "since": "2026-09-18",
-      "note": "the design draws an icon button with a needs-you badge and a tooltip; the app bar draws a text button. Arrangement, not copy; chrome pass"
-    },
-    {
-      "id": "titlebar.palette-pill",
-      "since": "2026-09-18",
-      "note": "the design centres a 560px pill carrying the current title; the app bar has a Commands button at the right. Arrangement, not copy; chrome pass"
-    },
-    {
-      "id": "titlebar.machine-chip",
-      "since": "2026-09-18",
-      "note": "the design chip opens Fleet and names the transport; the app bar badge does neither. Behaviour and arrangement, not copy; chrome pass"
+      "id": "settings.paired-devices",
+      "since": "2026-09-20",
+      "note": "Rename, rotate, one-time copy and dismiss are complete, but paired devices remain on Machines rather than in the signed Settings column. Verify the design-system navigation decision before moving the surface."
     },
     {
       "id": "thread.session-notice",
       "since": "2026-09-18",
       "note": "paused and archived banners with a resume action are not verified against the design"
+    },
+    {
+      "id": "composer.send-hint",
+      "since": "2026-09-19",
+      "note": "The design defines kSend in its data and draws it nowhere. Enter alone now sends, so the hint is rendered rather than left out; read it against the design as an addition, not a match."
+    },
+    {
+      "id": "composer.input",
+      "since": "2026-09-19",
+      "note": "The three placeholders and the queued note live in the design's data, so the gate cannot hold them as drawn copy. Read them against composerPlaceholder in packages/ui/src/composer-keys.ts."
     }
   ]
 }

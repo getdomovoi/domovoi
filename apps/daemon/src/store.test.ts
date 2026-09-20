@@ -53,6 +53,27 @@ describe("SqliteWorkspaceStore", () => {
     } finally { await again.close() }
   })
 
+  it("migrates protocol 0.7 state with empty queued sends", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-queue-migration-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seeded = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    await seeded.close()
+    const old = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    old.protocolVersion = "0.7.0"
+    delete old.queuedSends
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(old))
+    database.close()
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    try {
+      expect(reopened.load()).toMatchObject({ protocolVersion })
+      expect(reopened.load().queuedSends).toBeUndefined()
+    } finally {
+      await reopened.close()
+    }
+  })
+
   it("reopens persisted minute-precision state and pairing timestamps without quarantine", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-timestamp-compat-"))
     scratchDirectories.push(scratch)

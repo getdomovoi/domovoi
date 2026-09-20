@@ -111,7 +111,9 @@ export function readOnlySessionNotice(
       return {
         badge: "Archived",
         title: "Archived",
-        detail: "This session is read-only. Its history, checkpoints, artifacts, and annotations remain available.",
+        // The design states the mechanism on both sides: what the daemon
+        // refuses, and what still arrives.
+        detail: "Archived, so the daemon accepts reads only. No sends, approvals, terminal or writes. Reads stream as normal.",
       }
     case "transferring":
       return {

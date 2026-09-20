@@ -47,8 +47,9 @@ describe("audit log view", () => {
     expect(markup).toContain("desktop · desktop-1")
     expect(markup).toContain("request completed")
     expect(markup).toContain("Load older")
-    expect(markup).toContain("Export JSONL")
-    expect(markup.match(/>Skills<\/button>/g)).toHaveLength(2)
+    expect(markup).toContain("Export this query")
+    expect(markup).toContain("WHAT THIS LOG IS, AND IS NOT")
+    expect(markup).not.toContain("Settings navigation")
   })
 
   it("labels every typed actor without leaking object serialization", () => {

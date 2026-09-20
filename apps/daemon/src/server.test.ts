@@ -3145,12 +3145,12 @@ describe("DomovoiDaemon", () => {
 
     const page = index.page(snapshot, {
       sessionId: session.id,
-      categories: ["messages", "tools", "approvals", "handoffs", "transfers", "checkpoints", "annotations", "tests"],
+      categories: ["messages", "tools", "approvals", "policy-refusals", "handoffs", "transfers", "checkpoints", "annotations", "tests"],
       limit: 50,
     })!
     index.page(snapshot, {
       sessionId: session.id,
-      categories: ["messages", "tools", "approvals", "handoffs", "transfers", "checkpoints", "annotations", "tests"],
+      categories: ["messages", "tools", "approvals", "policy-refusals", "handoffs", "transfers", "checkpoints", "annotations", "tests"],
       before: page.nextCursor,
       limit: 50,
     })

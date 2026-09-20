@@ -45,7 +45,7 @@ it("keeps focus on the pinned dock rather than the opener", async () => {
   })
   await settle()
 
-  const opener = screen.getByRole("button", { name: "Changes" })
+  const opener = screen.getByRole("button", { name: "Open the sheet" })
   await user.click(opener)
   await settle()
 
@@ -61,7 +61,7 @@ it("keeps focus on the pinned dock rather than the opener", async () => {
 // each swap removes the control that was focused. Without an opener held above
 // those swaps the sheet reopens with document.body as its opener, and closing
 // then returns focus nowhere.
-it("returns focus to the rail after a pin and unpin cycle", async () => {
+it("returns focus to the sheet opener after a pin and unpin cycle", async () => {
   const user = userEvent.setup()
   render(<WorkspaceShell />)
   await act(async () => {
@@ -69,7 +69,7 @@ it("returns focus to the rail after a pin and unpin cycle", async () => {
   })
   await settle()
 
-  const opener = screen.getByRole("button", { name: "Changes" })
+  const opener = screen.getByRole("button", { name: "Open the sheet" })
   await user.click(opener)
   await settle()
   await user.click(screen.getByRole("button", { name: "Pin" }))
@@ -82,5 +82,5 @@ it("returns focus to the rail after a pin and unpin cycle", async () => {
   await settle()
 
   expect(screen.queryByRole("region", { name: "Machine surfaces" })).toBeNull()
-  expect(document.activeElement).toBe(opener)
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Open the sheet" }))
 })

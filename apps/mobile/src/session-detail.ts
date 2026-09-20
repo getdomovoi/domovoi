@@ -2,6 +2,9 @@ import {
   boundedClientThread,
   maximumSessionPromptCharacters,
   type ApprovalDecision,
+  type ClientAccess,
+  type PolicyRefusalThreadItem,
+  type QueuedSessionSend,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -9,15 +12,33 @@ import type { DaemonStatus } from "./lib/daemon"
 
 type ThreadItem = WorkspaceSnapshot["thread"][number]
 
-export type ThreadEntry = {
-  id: string
-  // Who is speaking decides how the entry is drawn: the person's own words sit
-  // on the right, the agent answers on the left, and everything the system
-  // recorded is a quieter note between them.
-  voice: "you" | "agent" | "note"
-  body: string
-  meta: string | undefined
-}
+export type ThreadEntry =
+  | {
+    id: string
+    kind: "message"
+    voice: "you" | "agent"
+    body: string
+  }
+  | {
+    id: string
+    kind: "note"
+    body: string
+    meta: string | undefined
+  }
+  | {
+    id: string
+    kind: "receipt"
+    decision: string
+    operation: string
+    explanation: string | undefined
+    attribution: string
+    checkpoint: string
+    duration: string | undefined
+  }
+  | ({ id: string, kind: "policy-refusal" } & Pick<
+    PolicyRefusalThreadItem,
+    "operation" | "command" | "rule" | "setBy" | "scope" | "remedy"
+  >)
 
 export type SessionDetail = {
   id: string
@@ -30,8 +51,9 @@ export type SessionDetail = {
   // person scrolling to the top deserves to know the thread starts mid-way.
   omitted: number
   approvalId: string | undefined
-  // A paused session is one the daemon has nothing running for, so offering to
-  // pause it again would be a button that does nothing.
+  policyRefusal: Extract<ThreadEntry, { kind: "policy-refusal" }> | undefined
+  queuedSend: QueuedSessionSend | undefined
+  activeTurn: boolean
   pausable: boolean
   sending: SendReadiness
 }
@@ -50,60 +72,66 @@ const decisionLabels: Record<ApprovalDecision, string> = {
   "deny-explain": "Denied with an explanation",
 }
 
-type Receipt = Extract<ThreadItem, { kind: "receipt" }>
-
 // Only a full commit SHA is safe to shorten. Anything else the daemon puts
 // here is a name, and half a name is a different name.
 function shortReference(reference: string): string {
   return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
 }
 
-// A decision is worth nothing if you cannot see what it did. The record names
-// who decided, the credential the audit row holds rather than the label the
-// person gave the device, the checkpoint it can be measured against, and how
-// long the decision took.
-function receiptFacts(receipt: Receipt): string {
-  const facts = [
-    `decided from ${receipt.client}`,
-    receipt.clientId ? `credential ${receipt.clientId}` : undefined,
-    receipt.checkpoint === "unavailable" ? "no checkpoint" : shortReference(receipt.checkpoint),
-    receipt.decisionDurationMs === undefined ? undefined : `in ${Math.round(receipt.decisionDurationMs / 1_000)}s`,
-  ]
-  return facts.filter((fact): fact is string => fact !== undefined).join(" · ")
+function credentialReference(clientId: string): string {
+  const normalized = clientId.replace(/^device-/, "device ")
+  if (normalized.length <= 16) return normalized
+  return `${normalized.slice(0, 11)}…${normalized.slice(-4)}`
 }
 
 function entryFor(item: ThreadItem): ThreadEntry {
   switch (item.kind) {
     case "user":
-      return { id: item.id, voice: "you", body: item.body, meta: undefined }
+      return { id: item.id, kind: "message", voice: "you", body: item.body }
     case "assistant":
-      return { id: item.id, voice: "agent", body: item.body, meta: undefined }
+      return { id: item.id, kind: "message", voice: "agent", body: item.body }
     case "system":
-      return { id: item.id, voice: "note", body: item.body, meta: item.detail }
+      return { id: item.id, kind: "note", body: item.body, meta: item.detail }
     case "checkpoint":
       return {
         id: item.id,
-        voice: "note",
+        kind: "note",
         body: item.label,
         meta: item.commit ? item.commit.slice(0, 7) : undefined,
       }
-    case "receipt":
+    case "receipt": {
+      const attribution = item.clientId
+        ? `${item.client} · ${credentialReference(item.clientId)}`
+        : item.client
       return {
         id: item.id,
-        voice: "note",
-        // The explanation is part of the decision; the record is the facts.
-        body: item.explanation
-          ? `${decisionLabels[item.decision]}: ${item.operation}\n${item.explanation}`
-          : `${decisionLabels[item.decision]}: ${item.operation}`,
-        meta: receiptFacts(item),
+        kind: "receipt",
+        decision: decisionLabels[item.decision],
+        operation: item.operation,
+        explanation: item.explanation,
+        attribution,
+        checkpoint: item.checkpoint === "unavailable" ? "no checkpoint" : shortReference(item.checkpoint),
+        duration: item.decisionDurationMs === undefined
+          ? undefined
+          : `${Math.round(item.decisionDurationMs / 1_000)}s`,
+      }
+    }
+    case "policy-refusal":
+      return {
+        id: item.id,
+        kind: "policy-refusal",
+        operation: item.operation,
+        command: item.command,
+        rule: item.rule,
+        setBy: item.setBy,
+        scope: item.scope,
+        remedy: item.remedy,
       }
     case "tool":
       return {
         id: item.id,
-        voice: "note",
+        kind: "note",
         body: item.title,
-        // Tool output is desktop material. The phone says what ran and how it
-        // ended, which is all a decision needs.
         meta: `${item.tool} · ${item.status}`,
       }
   }
@@ -153,7 +181,11 @@ const readOnlyReasons: Partial<Record<
 export function sendReadiness(
   session: WorkspaceSnapshot["sessions"][number],
   hasApproval: boolean,
+  access: ClientAccess = "full",
 ): SendReadiness {
+  if (access === "watching") {
+    return { can: false, reason: "Watching only. This phone can read the session but cannot change it." }
+  }
   const readOnly = readOnlyReasons[session.state]
   if (readOnly) return { can: false, reason: readOnly }
   if (!session.workspacePath || !session.providerThreadId) {
@@ -163,7 +195,7 @@ export function sendReadiness(
     return { can: true, hint: "An approval is waiting. Answering it may be the faster reply." }
   }
   if (session.activeTurnId) {
-    return { can: true, hint: "A turn is running. This steers it rather than starting a new one." }
+    return { can: true, hint: "A turn is running. Sending replaces the message queued for the next turn." }
   }
   return { can: true, hint: undefined }
 }
@@ -191,6 +223,7 @@ export function promptProblem(draft: string): string | undefined {
 export function sessionDetail(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
+  access: ClientAccess = "full",
 ): SessionDetail | undefined {
   const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)
   if (!session) return undefined
@@ -198,6 +231,9 @@ export function sessionDetail(
   const approvalId = snapshot.approvals.find(
     (approval) => approval.sessionId === sessionId,
   )?.id
+  const latestEntry = thread.entries.at(-1)
+  const policyRefusal = latestEntry?.kind === "policy-refusal" ? latestEntry : undefined
+  const queuedSend = snapshot.queuedSends?.find((queued) => queued.sessionId === sessionId)
   return {
     id: session.id,
     title: session.title,
@@ -209,7 +245,10 @@ export function sessionDetail(
     entries: thread.entries,
     omitted: thread.omitted,
     approvalId,
+    policyRefusal,
+    queuedSend,
+    activeTurn: Boolean(session.activeTurnId),
     pausable: isPausable(session),
-    sending: sendReadiness(session, approvalId !== undefined),
+    sending: sendReadiness(session, approvalId !== undefined, access),
   }
 }

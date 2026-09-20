@@ -44,6 +44,11 @@ const restoring = unreachable(shellState({
 async function draw(overrides: Partial<Parameters<typeof ShellNotice>[0]> = {}) {
   const props = {
     shell: reaching,
+    phases: [
+      { label: "Saved pairing", state: "found", tone: "complete" as const },
+      { label: "studio-arch", state: "trying direct route", tone: "active" as const },
+      { label: "Workspace", state: "waiting for route", tone: "waiting" as const },
+    ],
     address: "ws://studio-arch:7433",
     bottomInset: 0,
     onOpenSettings: jest.fn<() => void>(),

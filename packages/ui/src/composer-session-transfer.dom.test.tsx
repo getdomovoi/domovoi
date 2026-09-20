@@ -106,7 +106,7 @@ it("opens the transfer dialog from the composer device menu", async () => {
     checkpointCommit: "c".repeat(40),
   })
 
-  expect(screen.getByRole("heading", { name: "Move session to studio" })).toBeTruthy()
+  expect(screen.getByRole("heading", { name: "Move this session to another machine" })).toBeTruthy()
 })
 
 it("moves the session and switches to the target machine", async () => {

@@ -1,3 +1,5 @@
+import type { SessionAttachment } from "@getdomovoi/protocol"
+
 // Sending while a turn is running queues the message. It never cancels the
 // turn: the agent is mid-flight on a worktree, and a client keystroke is not a
 // reason to abandon work that may be half-written. Stopping is its own control.
@@ -39,6 +41,7 @@ export type QueuedMessage = {
   // The skills chosen when it was queued. Kept so the release resolves the
   // same choice the person made, and refuses if one has since gone.
   skillIds?: readonly string[]
+  attachments?: readonly SessionAttachment[]
 }
 
 // One slot per session, not one slot. Queueing in B must not overwrite what is

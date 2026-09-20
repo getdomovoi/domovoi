@@ -105,7 +105,7 @@ try {
     const pending = waiting.get(reply.id)
     if (!pending) return
     waiting.delete(reply.id)
-    if (reply.error) pending.reject(new Error(reply.error.message))
+    if (reply.error) pending.reject(new Error(`${pending.method}: ${reply.error.message}`))
     else pending.resolve(reply.result)
   })
   socket.on("close", () => { for (const pending of waiting.values()) pending.reject(new Error("Debugging socket closed")); waiting.clear() })
@@ -113,7 +113,7 @@ try {
     const id = ++sequence
     try {
       return await bounded(new Promise((resolve, reject) => {
-        waiting.set(id, { resolve, reject })
+        waiting.set(id, { resolve, reject, method })
         socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
       }), method)
     } finally { waiting.delete(id) }
@@ -136,9 +136,10 @@ try {
   }
   const buttons = "[...document.querySelectorAll('button')].filter(button => button.getClientRects().length)"
   const click = async name => poll(() => evaluate(`(() => {
-    const button = ${buttons}.find(button => (button.getAttribute('aria-label') || button.textContent.trim()) === ${JSON.stringify(name)});
+    const button = ${buttons}.find(button => { const label = button.getAttribute('aria-label') || button.textContent.trim(); return label === ${JSON.stringify(name)} || label.startsWith(${JSON.stringify(`${name}:`)}); });
     if (!button || button.disabled) return false; button.click(); return true;
   })()`), `button ${name}`)
+  const clickCommand = async name => poll(() => evaluate(`(() => { const item = [...document.querySelectorAll('[cmdk-item]')].find(element => element.textContent.trim().startsWith(${JSON.stringify(name)})); if (!item) return false; item.click(); return true; })()`), `command ${name}`)
   const text = value => poll(() => evaluate(`document.body?.innerText.includes(${JSON.stringify(value)})`), `text ${value}`)
   const capture = async (name, width) => {
     if (!images) return
@@ -151,7 +152,7 @@ try {
   await text("Home")
   await evaluate(`${buttons}.find(button => button.textContent.trim() === 'Skip for now')?.click()`)
   await click("Settings")
-  await click("Fleet & machines")
+  await click("Machines")
   await text("Studio")
   console.info("Fleet proof: enrolled row rendered")
   assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)
@@ -172,18 +173,20 @@ try {
   await capture("admitted", 430)
   await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId)
   // With home still selected, this read can only come from admitted fan-out.
-  await click("Skills")
+  await click("Open command palette")
+  await clickCommand("Skills")
   await poll(async () => {
     if (observationError) throw observationError
     return inventoryCount > 0
   }, "admitted inventory fan-out")
   console.info("Fleet proof: admitted inventory observed")
   await click("Settings")
-  await click("Fleet & machines")
+  await click("Machines")
   await click("Use Studio")
   await text("Remote proof session")
   await click("Settings")
-  await click("Skills")
+  await click("Open command palette")
+  await clickCommand("Skills")
   await text("Machine comparison")
   await poll(() => evaluate(`(() => {
     const title = [...document.querySelectorAll('[data-slot=card-title]')].find(node => node.textContent === 'Machine comparison');
@@ -192,12 +195,12 @@ try {
   })()`), "two-daemon inventory comparison")
   await click("Return to home daemon")
   await click("Settings")
-  await click("Fleet & machines")
+  await click("Machines")
   await click("Terminal on Studio")
   await text("desktop-owned")
   await click("Return to home daemon")
   await click("Settings")
-  await click("Fleet & machines")
+  await click("Machines")
   await click("Remove local access")
   await text("Devices list")
   assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)

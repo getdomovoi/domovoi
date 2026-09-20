@@ -1,0 +1,92 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 States.dc.html",
+  "sha256": "47bfa0bf66ab5b6686c42ba496a8401c33616058f6ef9766fd56bee15e5e6998",
+  "derivedOn": "2026-09-20",
+  "sources": [
+    "apps/mobile/src/**/*.{ts,tsx}",
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts"
+  ],
+  "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "elements": [
+    {
+      "id": "states.sessions",
+      "name": "Sessions empty and ready states",
+      "where": "sessions surface",
+      "copy": [
+        "Domovoi",
+        "SESSIONS",
+        "No sessions yet on mac-mini-m4",
+        "The daemon is answering and two repositories are visible to it. A session is a worktree plus a thread, so starting one never touches your checkout.",
+        "Start a session",
+        "Clone a repository",
+        "READY ON THIS MACHINE",
+        "reading the thread from mac-mini-m4"
+      ],
+      "evidence": [
+        "Start a session",
+        "SESSIONS"
+      ],
+      "presence": [
+        "Start a session"
+      ]
+    },
+    {
+      "id": "states.failed-read",
+      "name": "Failed session read state",
+      "where": "failed read state",
+      "copy": [
+        "Could not read this session",
+        "3 attempts",
+        "The daemon accepted the connection and then stopped answering mid-read. Domovoi will not show a partial thread, because a partial thread reads like a finished one.",
+        "WHAT IT TRIED",
+        "What is still true",
+        "Try again",
+        "Open the machine",
+        "nothing was written, nothing was lost",
+        "idempotency"
+      ],
+      "evidence": [
+        "Could not read this session",
+        "WHAT IT TRIED",
+        "nothing was written, nothing was lost"
+      ]
+    },
+    {
+      "id": "states.search",
+      "name": "Cross-machine search state",
+      "where": "search state",
+      "copy": [
+        "searched 3 machines",
+        "Nothing matched on the two machines that answered",
+        "wsl-ubuntu-24 did not answer, so its sessions were not searched. This is not the same as having no results, and Domovoi will not round it down to one.",
+        "Search only what answered",
+        "Worktree ready"
+      ],
+      "missing": {
+        "since": "2026-09-20",
+        "reason": "Cross-machine search is not exposed as the design draws it."
+      }
+    },
+    {
+      "id": "states.worktree",
+      "name": "Worktree ready state",
+      "where": "session start state",
+      "copy": [
+        "wt-search-index off main at 8f3c1de",
+        "Nothing has run yet",
+        "The session exists, the worktree is cut, and the agent has not been given a turn. Your first message is what starts it.",
+        "What it will do first",
+        "OR START FROM SOMETHING IT ALREADY KNOWS",
+        "Say what you want done in acme-api"
+      ],
+      "evidence": [
+        "Worktree ready",
+        "Nothing has run yet"
+      ],
+      "presence": [
+        "Worktree ready"
+      ]
+    }
+  ]
+}

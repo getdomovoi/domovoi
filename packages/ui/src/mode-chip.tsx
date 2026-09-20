@@ -88,7 +88,10 @@ export function ModeChip({
               >
                 <StatusDot meaning={mode.meaning as StatusMeaning} label={mode.label} size="inline" labelHidden className="mt-1" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[12.5px] text-foreground">{mode.label}</div>
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-[12.5px] text-foreground">{mode.label}</span>
+                    <span className="font-machine text-[10px] text-faint">{mode.id}</span>
+                  </div>
                   <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{mode.note}</p>
                 </div>
                 <CheckIcon className={cn("size-3.5 self-center", selected ? "text-primary" : "text-transparent")} />

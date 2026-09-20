@@ -6,6 +6,7 @@ import type {
   ProviderRuntime,
   ProjectSwitchConfirmation,
   Runtime,
+  WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 import {
   AlertDialog,
@@ -182,6 +183,8 @@ export function LauncherDialog({
   onOpenProject,
   onCreateSession,
   onListModels,
+  recentSessions = [],
+  onResumeSession,
 }: {
   mode: LauncherMode
   projectNote?: string
@@ -193,6 +196,8 @@ export function LauncherDialog({
   onOpenProject: (path: string) => Promise<void>
   onCreateSession: (title: string, runtime: Runtime) => Promise<void>
   onListModels: (provider: string) => Promise<ProviderModel[]>
+  recentSessions?: WorkspaceSnapshot["sessions"] | undefined
+  onResumeSession?: ((sessionId: string) => void) | undefined
 }) {
   const [value, setValue] = useState("")
   const [error, setError] = useState("")
@@ -432,6 +437,27 @@ export function LauncherDialog({
               </Field>
             ) : null}
           </FieldGroup>
+          {!isProject && recentSessions.length > 0 && onResumeSession ? (
+            <section aria-label="Pick up where you left off" className="border-t pt-4">
+              <p className="m-0 text-[10.5px] tracking-[0.13em] text-faint">PICK UP WHERE YOU LEFT OFF</p>
+              <div className="mt-2 grid gap-1.5">
+                {recentSessions.filter((session) => session.state !== "archived").slice(0, 3).map((session) => (
+                  <button
+                    key={session.id}
+                    type="button"
+                    className="flex items-center justify-between gap-4 rounded-lg border px-3 py-2 text-left hover:bg-accent"
+                    onClick={() => {
+                      onResumeSession(session.id)
+                      onOpenChange(false)
+                    }}
+                  >
+                    <span className="min-w-0 truncate text-[12px] font-medium">{session.title}</span>
+                    <span className="shrink-0 font-machine text-[10px] text-faint">{session.state}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button type="submit" disabled={!value.trim() || pending || (!isProject && !runtimeReady)}>

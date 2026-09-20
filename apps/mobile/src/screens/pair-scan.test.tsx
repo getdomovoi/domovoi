@@ -42,6 +42,7 @@ describe("pairing by camera", () => {
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
     )
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
+    expect(screen.queryByTestId("tab-bar")).toBeNull()
     expect(screen.queryByText(credential.token)).toBeNull()
     // The phone checks shape, not scope; the promise is conditional.
     for (const line of phoneAndTabletPromise) expect(screen.getByText(line.text)).toBeTruthy()

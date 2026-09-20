@@ -139,6 +139,15 @@ it("asks before changing to another model, and switches here on that answer", as
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ provider: "codex", model: "gpt-5.3-codex" }))
 })
 
+it("draws the signed next-boundary switch note when no turn is running", async () => {
+  const user = userEvent.setup()
+  render(popover())
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+
+  expect(screen.getByText("A change lands at the next safe turn boundary. The thread, the plan and the worktree come with it, and the switch is recorded in the audit log.")).toBeTruthy()
+})
+
 // The daemon applies a same-harness model change from the next turn and
 // refuses a harness change while a turn runs ("Stop the active turn before
 // changing providers"). The footer says that, not the design's promise of a

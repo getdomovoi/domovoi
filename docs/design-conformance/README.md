@@ -1,11 +1,16 @@
 # Design conformance
 
-One inventory per vendored v2 design, checked by `pnpm design:conformance` and by
-`pnpm release:invariants`. Every other invariant in this repository has a gate because it
-drifted once. Design conformance drifted for weeks with none: the designs were converted into
-itemised change lists and the items were built, so anything not itemised was never built, and no
-check said so. The inventory is the itemisation, kept here rather than under `design/` because that tree is
-the signed handoff and is never edited, and the check fails when the two disagree.
+`v2-manifest.json` maps all nine current vendored v2 designs to one inventory and its
+production implementation scope. It records the binding precedence: current design HTML,
+approved exception ledger, then production behavior. Old design documents and tests do not
+override v2. The gate checks the manifest, each present inventory, and the desktop and phone
+structural contracts through `pnpm design:conformance` and `pnpm release:invariants`.
+
+Every other invariant in this repository has a gate because it drifted once. Design conformance
+drifted for weeks with none: the designs were converted into itemised change lists and the items
+were built, so anything not itemised was never built, and no check said so. The inventory is the
+itemisation, kept here rather than under `design/` because that tree is the signed handoff and is
+never edited, and the check fails when the two disagree.
 
 ## What the gate holds
 
@@ -29,6 +34,12 @@ the signed handoff and is never edited, and the check fails when the two disagre
 - Evidence is a string the sources must contain, `re:` plus a pattern, or `{ "absent", "in" }`: a
   string one named file must not contain. The last is how "these controls leave the composer"
   is a rule.
+- The manifest rejects missing mapped inventories, unapproved visible exceptions, a permanent
+  desktop rail or inspector token, and the legacy phone Review/Fleet shell. The phone contract
+  also requires the Sessions, Machines, Settings order.
+- The approved exception ledger is limited to the send hint, denial explanation, provider
+  recovery, development-only credential diagnostic, mobile emergency stop, and startup/security
+  recovery. A new visible exception fails until it receives an explicit decision.
 
 ## What it does not hold
 

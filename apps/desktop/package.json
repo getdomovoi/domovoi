@@ -22,6 +22,8 @@
     "predev": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "pretest:launch": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "dev": "electron-vite dev",
+    "predev:fixture": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
+    "dev:fixture": "node scripts/dev-loop.mjs",
     "prepackage": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build",
     "package": "electron-vite build && electron-builder --config electron-builder.cjs --publish never && node scripts/package-smoke.mjs",
     "prepackage:linux": "pnpm prepackage",
@@ -43,6 +45,7 @@
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@getdomovoi/protocol": "workspace:*",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "^26.4.0",
     "@types/react": "^19.1.10",
@@ -54,6 +57,7 @@
     "electron-vite": "^5.0.0",
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "ws": "^8.18.3"
   }
 }

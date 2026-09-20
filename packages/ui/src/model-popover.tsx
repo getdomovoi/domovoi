@@ -250,7 +250,9 @@ export function ModelPopover({
           ))}
         </div>
         <p className="m-0 border-t px-3 py-2.5 text-[11px] leading-relaxed text-muted-foreground">
-          A model change on the same harness applies from the next turn. A different harness starts a fresh provider thread from the thread, the plan and the worktree, and needs the running turn stopped first.
+          {turnRunning
+            ? "A model change on the same harness applies from the next turn. A different harness starts a fresh provider thread from the thread, the plan and the worktree, and needs the running turn stopped first."
+            : "A change lands at the next safe turn boundary. The thread, the plan and the worktree come with it, and the switch is recorded in the audit log."}
         </p>
         <div className="flex items-center gap-2 border-t px-3 py-2">
           <span className="font-machine text-mono-xs text-faint">{modelCountText(matches, total, listed.length)}</span>

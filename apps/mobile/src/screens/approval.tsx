@@ -126,7 +126,7 @@ export function ApprovalScreen({
         {approval.risk === "hard-gate" ? null : (
           <View className="gap-1">
             <Button
-              title="Always allow this here"
+              title="Always allow this"
               variant="outline"
               shape="wide"
               disabled={pending}
@@ -137,24 +137,13 @@ export function ApprovalScreen({
             </Text>
           </View>
         )}
-        <View className="flex-row gap-2">
-          <Button
-            title="Deny"
-            variant="outline"
-            shape="wide"
-            className="flex-1"
-            disabled={pending}
-            onPress={() => onDecide("deny")}
-          />
-          <Button
-            title="Deny and explain"
-            variant="quiet"
-            shape="wide"
-            className="flex-1"
-            disabled={pending}
-            onPress={onDenyExplain}
-          />
-        </View>
+        <Button
+          title="Deny"
+          variant="outline"
+          shape="wide"
+          disabled={pending}
+          onPress={onDenyExplain}
+        />
       </FloatingBar>
     </View>
   )

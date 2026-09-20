@@ -39,6 +39,7 @@ describe("session history view model", () => {
     expect(sessionHistoryCategories).toEqual([
       { value: "messages", label: "Turns" },
       { value: "approvals", label: "Approvals" },
+      { value: "policy-refusals", label: "Policy refusals" },
       { value: "checkpoints", label: "Checkpoints" },
       { value: "transfers", label: "Transfers" },
       { value: "handoffs", label: "Handoffs" },

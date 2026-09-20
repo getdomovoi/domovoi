@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
@@ -106,6 +106,7 @@ export function useWorkspace(
     snapshot: null,
   }))
   const [connected, setConnected] = useState(false)
+  const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
   const [endpointUrl, setEndpointUrl] = useState(url)
   const [reconnecting, setReconnecting] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
@@ -152,6 +153,7 @@ export function useWorkspace(
     setEmergencyStopOutcome(null)
     setEmergencyStopError(null)
     setConnected(false)
+    setClientAccess("full")
     setReconnecting(false)
     setProtocolError(null)
     setAuthenticationRequired(null)
@@ -211,7 +213,10 @@ export function useWorkspace(
       if (!active) return
       setConnected(true)
       setEndpointUrl(client.url)
-      const hello = (event as CustomEvent<WorkspaceSnapshot | undefined>).detail
+      const hello = (event as CustomEvent<RpcResult<"system.hello"> | undefined>).detail
+      const access = hello?.clientAccess ?? "full"
+      client.setClientAccess(access)
+      setClientAccess(access)
       if (hello) reconcilePin(hello)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
@@ -359,10 +364,11 @@ export function useWorkspace(
     sessionId: string,
     prompt: string,
     skillSelection?: TurnSkillSelection,
+    attachments?: RpcParams<"session.send">["attachments"],
   ) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection))
+    updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection, attachments))
   }, [updateSnapshotFrom])
 
   const createCheckpoint = useCallback(async (sessionId: string, label?: string) => {
@@ -830,6 +836,7 @@ export function useWorkspace(
     claimTerminal,
     closeTerminal,
     connected,
+    clientAccess,
     createCheckpoint,
     createAnnotation,
     createTerminal,

@@ -12,6 +12,7 @@ import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
+  type ImageUpload,
   type MachineCapability,
   type MachineWslFacts,
   type FleetMachine,
@@ -47,6 +48,7 @@ import {
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
   type ProtocolMismatch,
+  rpcMethodAuthorizations,
   rpcMethods,
   rpcRequestSchema,
   sessionHistoryCategorySchema,
@@ -61,6 +63,7 @@ import {
   type AuditOutcome,
   type ProviderModel,
   type ProjectSwitchConfirmation,
+  type QueuedSessionSend,
   type RpcParams,
   type RpcResult,
   type RpcMethod,
@@ -86,7 +89,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
@@ -145,7 +148,7 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
-import { prepareSessionAttachments, SessionAttachmentError } from "./session-attachments.js"
+import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -187,7 +190,11 @@ import {
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
-import { permissionDecisionFor, permissionHardGates } from "./permission-policy.js"
+import {
+  permissionDecisionFor,
+  permissionHardGates,
+  permissionPolicyRefusalFor,
+} from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
@@ -288,6 +295,7 @@ const sessionResourceMethods = new Set([
   "plan.discardEdit",
   "plan.edit",
   "session.archive",
+  "session.cancelQueuedSend",
   "session.pause",
   "session.evidence",
   "session.fork",
@@ -564,6 +572,17 @@ export function sessionHistoryEntries(
         ...(item.explanation ? { explanation: item.explanation } : {}),
         ...(item.decisionDurationMs === undefined ? {} : { decisionDurationMs: item.decisionDurationMs }),
       })
+    } else if (item.kind === "policy-refusal") {
+      entries.push({
+        ...base,
+        category: "policy-refusals",
+        operation: item.operation,
+        command: item.command,
+        rule: item.rule,
+        setBy: item.setBy,
+        scope: item.scope,
+        remedy: item.remedy,
+      })
     } else {
       entries.push({
         ...base,
@@ -618,6 +637,9 @@ function sessionHistorySearchText(entry: SessionHistoryEntry): string {
   }
   if (entry.category === "approvals") {
     return `${entry.operation}\n${entry.decision}\n${entry.checkpoint}\n${entry.client}\n${entry.explanation ?? ""}`
+  }
+  if (entry.category === "policy-refusals") {
+    return `${entry.operation}\n${entry.command}\n${entry.rule}\n${entry.setBy}\n${entry.scope}\n${entry.remedy}`
   }
   if (entry.category === "handoffs") return `${entry.body}\n${entry.detail ?? ""}`
   if (entry.category === "transfers") {
@@ -958,6 +980,7 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
@@ -1200,6 +1223,24 @@ export class DomovoiDaemon {
       },
     )
     this.#snapshot = this.#store.load()
+    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+      const queued = loaded.state === "releasing"
+        ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
+        : loaded
+      if (loaded.state === "releasing") {
+        this.#store.transitionQueuedSessionSend?.(
+          loaded.sessionId,
+          loaded.id,
+          ["releasing"],
+          "unconfirmed",
+          queued.reason,
+        )
+      }
+      if (this.#snapshot.sessions.some((session) => session.id === queued.sessionId)) {
+        this.#queuedSessionSends.set(queued.sessionId, queued)
+      }
+    }
+    this.#syncQueuedSendMetadata()
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
       // Picking either identity would silently reassign the ownership of every
       // stored session. Fail before providers or listeners can do any work.
@@ -2079,6 +2120,187 @@ export class DomovoiDaemon {
     }
   }
 
+  #queuedSendMetadata(queued: StoredQueuedSessionSend): QueuedSessionSend {
+    return {
+      id: queued.id,
+      sessionId: queued.sessionId,
+      state: queued.state === "releasing" ? "unconfirmed" : queued.state,
+      createdAt: queued.createdAt,
+      origin: queued.origin,
+      skillIds: queued.skillIds,
+      attachments: queued.attachments,
+      ...(queued.reason ? { reason: queued.reason } : {}),
+    }
+  }
+
+  #syncQueuedSendMetadata(): void {
+    const durable = [...this.#queuedSessionSends.values()].map((queued) => this.#queuedSendMetadata(queued))
+    const durableSessions = new Set(durable.map((queued) => queued.sessionId))
+    const delivered = (this.#snapshot.queuedSends ?? []).filter(
+      (queued) => queued.state === "delivered" && !durableSessions.has(queued.sessionId),
+    )
+    this.#snapshot.queuedSends = [...durable, ...delivered]
+      .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
+  }
+
+  #replaceQueuedSessionSend(
+    params: RpcParams<"session.send">,
+    actor: Extract<AuditActor, { kind: "client" }>,
+    connectionId: string,
+    credentialDeviceId: string | undefined,
+  ): void {
+    const createdAt = new Date().toISOString()
+    const queued: StoredQueuedSessionSend = {
+      id: `queued-send-${randomUUID()}`,
+      sessionId: params.sessionId,
+      state: "waiting",
+      createdAt,
+      origin: {
+        client: actor.client,
+        ...(actor.clientId ? { clientId: actor.clientId } : {}),
+        connectionId,
+      },
+      skillIds: params.skillSelection?.skills.map((skill) => skill.skillId) ?? [],
+      attachments: params.attachments?.map((attachment) => {
+        if ("kind" in attachment) {
+          return attachment.kind === "text"
+            ? { kind: "text" as const, name: attachment.name, bytes: Buffer.byteLength(attachment.content, "utf8") }
+            : { kind: "workspace-file" as const, path: attachment.path }
+        }
+        return {
+          kind: "image" as const,
+          mimeType: attachment.mimeType,
+          width: attachment.width,
+          height: attachment.height,
+          bytes: canonicalBase64DecodedByteLength(attachment.data)!,
+        }
+      }) ?? [],
+      prompt: params.prompt,
+      ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
+      ...(params.attachments ? { uploads: params.attachments } : {}),
+      ...(credentialDeviceId ? { credentialDeviceId } : {}),
+    }
+    this.#store.replaceQueuedSessionSend?.(queued)
+    this.#queuedSessionSends.set(params.sessionId, queued)
+    this.#snapshot.queuedSends = (this.#snapshot.queuedSends ?? []).filter(
+      (candidate) => candidate.sessionId !== params.sessionId,
+    )
+    this.#syncQueuedSendMetadata()
+  }
+
+  #transitionQueuedSessionSend(
+    sessionId: string,
+    queueId: string,
+    from: StoredQueuedSessionSend["state"][],
+    state: StoredQueuedSessionSend["state"],
+    reason?: string,
+  ): boolean {
+    const queued = this.#queuedSessionSends.get(sessionId)
+    if (!queued || queued.id !== queueId || !from.includes(queued.state)) return false
+    if (this.#store.transitionQueuedSessionSend
+      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, reason)) return false
+    const updated = { ...queued, state }
+    if (reason) updated.reason = reason
+    else delete updated.reason
+    this.#queuedSessionSends.set(sessionId, updated)
+    this.#syncQueuedSendMetadata()
+    return true
+  }
+
+  #holdQueuedSessionSend(sessionId: string, reason: string): boolean {
+    const queued = this.#queuedSessionSends.get(sessionId)
+    if (!queued || queued.state === "held" || queued.state === "refused" || queued.state === "unconfirmed") return false
+    return this.#transitionQueuedSessionSend(
+      sessionId,
+      queued.id,
+      ["waiting", "releasing"],
+      "held",
+      reason,
+    )
+  }
+
+  #queuedOriginStillControls(queued: StoredQueuedSessionSend): boolean {
+    if (!queued.credentialDeviceId) return true
+    const device = this.#store.devices?.list().find((candidate) => candidate.id === queued.credentialDeviceId)
+    if (!device || device.revokedAt !== undefined || device.binding.kind !== "client") return false
+    return device.binding.client === queued.origin.client
+      && device.binding.clientAccess === "full"
+  }
+
+  async #releaseQueuedSessionSend(sessionId: string): Promise<void> {
+    const queued = this.#queuedSessionSends.get(sessionId)
+    if (!queued || queued.state !== "waiting") return
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    if (!session || sessionIsReadOnly(session)) {
+      this.#holdQueuedSessionSend(sessionId, sessionReadOnlyMessage(session) ?? "Session access no longer permits delivery.")
+      return
+    }
+    if (!session.workspacePath || !session.providerThreadId || this.#emergencyStopInProgress) {
+      this.#holdQueuedSessionSend(sessionId, "Session is not ready to release the queued send.")
+      return
+    }
+    if (!this.#queuedOriginStillControls(queued)) {
+      this.#holdQueuedSessionSend(sessionId, "The originating credential no longer has control access.")
+      return
+    }
+    if (!this.#transitionQueuedSessionSend(sessionId, queued.id, ["waiting"], "releasing")) return
+    let resolveResponse!: (response: Record<string, unknown>) => void
+    const response = new Promise<Record<string, unknown>>((resolve) => { resolveResponse = resolve })
+    const internalSocket: RpcOutboundSocket = {
+      bufferedAmount: 0,
+      readyState: 1,
+      send: (message) => resolveResponse(JSON.parse(message) as Record<string, unknown>),
+      close: () => {},
+    }
+    this.#authenticatedClients.add(internalSocket)
+    this.#authenticatedActors.set(internalSocket, {
+      kind: "client",
+      client: queued.origin.client,
+      ...(queued.origin.clientId ? { clientId: queued.origin.clientId } : {}),
+    })
+    this.#connectionIds.set(internalSocket, queued.origin.connectionId)
+    await this.#handle(internalSocket, JSON.stringify({
+      jsonrpc: "2.0",
+      id: queued.id,
+      method: "session.send",
+      params: {
+        sessionId: queued.sessionId,
+        prompt: queued.prompt,
+        client: queued.origin.client,
+        ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
+        ...(queued.uploads ? { attachments: queued.uploads } : {}),
+      },
+    }))
+    const result = await response
+    if (!("error" in result)) {
+      this.#store.deleteQueuedSessionSend?.(sessionId, queued.id)
+      this.#queuedSessionSends.delete(sessionId)
+      this.#snapshot.queuedSends = (this.#snapshot.queuedSends ?? []).filter(
+        (candidate) => candidate.sessionId !== sessionId,
+      )
+      this.#snapshot.queuedSends.push({
+        ...this.#queuedSendMetadata({ ...queued, state: "waiting" }),
+        state: "delivered",
+      })
+      await this.#persistSnapshot()
+      this.#broadcastSnapshot()
+      return
+    }
+    const current = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    const rpcError = result.error as { data?: { kind?: unknown }; message?: unknown }
+    const refused = rpcError.data?.kind === "turn-skill-selection-refused"
+      || rpcError.data?.kind === "session-attachment-refused"
+    const state = current?.activeTurnId ? "unconfirmed" : refused ? "refused" : "held"
+    const reason = typeof rpcError.message === "string"
+      ? rpcError.message
+      : state === "unconfirmed"
+        ? "Delivery could not be confirmed."
+        : "Queued delivery was held."
+    this.#transitionQueuedSessionSend(sessionId, queued.id, ["releasing"], state, reason)
+    await this.#persistSnapshot()
+    this.#broadcastSnapshot()
+  }
+
   #serializeSnapshotPersistence<T>(operation: () => Promise<T>): Promise<T> {
     const running = this.#snapshotPersistenceTail.then(operation, operation)
     this.#snapshotPersistenceTail = running.then(() => undefined, () => undefined)
@@ -2850,6 +3072,7 @@ export class DomovoiDaemon {
     const sourceSession = this.#snapshot.sessions.find(
       (candidate) => candidate.id === params.sessionId,
     )!
+    this.#holdQueuedSessionSend(sourceSession.id, "Session transfer held the queued send.")
     const frozen = freezeSourceSessionTransfer(
       this.#snapshot,
       prepared.intent,
@@ -3617,6 +3840,14 @@ export class DomovoiDaemon {
     // nothing more. The refusal comes before parameter parsing so that no
     // shape of request reaches a handler the card did not name.
     const handheld = this.#deviceCredentials.get(socket)?.verified
+    if (
+      handheld?.binding.kind === "client"
+      && handheld.binding.clientAccess === "watching"
+      && rpcMethodAuthorizations[method] === "control"
+    ) {
+      this.#error(socket, request.id, daemonAuthenticationErrorCode, "Watching-only credentials may only observe")
+      return
+    }
     if (handheld?.binding.kind === "client" && (handheld.binding.client === "phone" || handheld.binding.client === "tablet") && !phoneAndTabletRpcMethods.has(method)) {
       this.#error(
         socket,
@@ -3977,7 +4208,13 @@ export class DomovoiDaemon {
       if (method === "device.current") {
         const verified = this.#deviceCredentials.get(socket)?.verified
         const result = verified?.binding.kind === "client"
-          ? { kind: "client", machineId: this.#snapshot.machine.id, deviceId: verified.device.id, client: verified.binding.client }
+          ? {
+              kind: "client",
+              machineId: this.#snapshot.machine.id,
+              deviceId: verified.device.id,
+              client: verified.binding.client,
+              clientAccess: verified.binding.clientAccess,
+            }
           : { kind: "daemon", machineId: this.#snapshot.machine.id }
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
         return
@@ -5159,11 +5396,12 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "Device pairing is unavailable")
           return
         }
+        const params = paramsResult.data as RpcParams<"device.issueCode">
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(
-            this.#pairing.issue(Date.now(), (paramsResult.data as RpcParams<"device.issueCode">).targetClient),
+            this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
           ),
         })
         return
@@ -5211,6 +5449,7 @@ export class DomovoiDaemon {
                 binding: {
                   kind: "client",
                   client: (params as RpcParams<"device.pair">).targetClient ?? (params as RpcParams<"device.pair">).client,
+                  clientAccess: (params as RpcParams<"device.pair">).clientAccess ?? "full",
                 },
               })
             : method === "device.list"
@@ -6791,6 +7030,25 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "session.cancelQueuedSend") {
+        const params = paramsResult.data as RpcParams<"session.cancelQueuedSend">
+        const queued = this.#queuedSessionSends.get(params.sessionId)
+        if (!queued || queued.id !== params.queueId) {
+          this.#error(socket, request.id, invalidParams, "Queued send ID does not match the current entry")
+          return
+        }
+        if (this.#store.deleteQueuedSessionSend
+          && !this.#store.deleteQueuedSessionSend(params.sessionId, params.queueId)) {
+          this.#error(socket, request.id, invalidParams, "Queued send changed before cancellation")
+          return
+        }
+        this.#queuedSessionSends.delete(params.sessionId)
+        this.#snapshot.queuedSends = (this.#snapshot.queuedSends ?? []).filter(
+          (candidate) => candidate.sessionId !== params.sessionId || candidate.id !== params.queueId,
+        )
+        changed = true
+      }
+
       if (method === "session.send") {
         const params = paramsResult.data as RpcParams<"session.send">
         const session = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
@@ -6802,6 +7060,31 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready for agent turns")
           return
         }
+        if (params.delivery === "next-turn-replace") {
+          const actor = this.#authenticatedActors.get(socket)
+          const connectionId = this.#connectionIds.get(socket)
+          if (!actor || actor.kind !== "client" || !connectionId) {
+            this.#error(socket, request.id, invalidParams, "Queued sends require an authenticated connection identity")
+            return
+          }
+          this.#replaceQueuedSessionSend(
+            params,
+            actor,
+            connectionId,
+            this.#deviceCredentials.get(socket)?.verified.device.id,
+          )
+          if (!session.activeTurnId) {
+            const queued = this.#queuedSessionSends.get(session.id)!
+            this.#transitionQueuedSessionSend(
+              session.id,
+              queued.id,
+              ["waiting"],
+              "held",
+              "No provider turn is active, so no successful boundary can release this send.",
+            )
+          }
+          changed = true
+        } else {
         const registeredAgent = this.#agents.require(session.runtime.provider)
         const violation = permissionViolation(session.runtime, registeredAgent)
         if (violation) {
@@ -6830,11 +7113,13 @@ export class DomovoiDaemon {
           && workingPlanNeedsProviderDelivery(boundaryPlan, providerTarget)
         let preparedTurn
         try {
-          const attachments = prepareSessionAttachments(params.attachments, registeredAgent.capabilities)
+          const images = params.attachments?.filter((attachment): attachment is ImageUpload => !("kind" in attachment))
+          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities)
+          const attachmentText = await prepareSessionAttachmentText(params.attachments, session.workspacePath)
           preparedTurn = await composeProviderPrompt({
             snapshot: this.#snapshot,
             sessionId: session.id,
-            userPrompt: params.prompt,
+            userPrompt: attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt,
             budgetCodeUnits: this.#providerPromptBudgetCodeUnits,
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
@@ -7043,6 +7328,7 @@ export class DomovoiDaemon {
         delete currentSession.providerFailure
         this.#snapshot.activeSessionId = currentSession.id
         changed = true
+        }
       }
 
       if (method === "checkpoint.create") {
@@ -7281,6 +7567,7 @@ export class DomovoiDaemon {
         : workspaceSnapshotForClient(this.#snapshot)
       const helloConnectionId = this.#connectionIds.get(socket)
       const actor = this.#authenticatedActors.get(socket)
+      const helloCredential = this.#deviceCredentials.get(socket)?.verified
       const visibleSnapshot = method === "system.hello" && actor?.kind === "machine"
         ? workspaceSnapshotForClient(createEmptyWorkspace(this.#snapshot.machine))
         : clientSnapshot
@@ -7288,6 +7575,13 @@ export class DomovoiDaemon {
         ? {
             ...visibleSnapshot,
             sessionImageAttachments: true,
+            ...(actor?.kind === "client"
+              ? {
+                  clientAccess: helloCredential?.binding.kind === "client"
+                    ? helloCredential.binding.clientAccess
+                    : "full",
+                }
+              : {}),
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
           }
         : clientSnapshot
@@ -7372,6 +7666,7 @@ export class DomovoiDaemon {
       operations: [],
     }
     let requiresFullSnapshot = false
+    let releaseQueuedSend = false
 
     if (event.type === "text-delta") {
       const itemId = `assistant-message-${turnLink.turnId ?? event.turnId ?? session.id}`
@@ -7517,6 +7812,31 @@ export class DomovoiDaemon {
           revision: 1,
           mimeType: "text/x-diff",
           content: event.diff,
+        })
+      }
+    }
+
+    if (event.type === "policy-refused") {
+      const refusal = permissionPolicyRefusalFor(session.runtime)
+      if (refusal) {
+        this.#snapshot.thread.push({
+          id: `policy-refusal-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "policy-refusal",
+          ...turnLink,
+          operation: redactDurableText(event.reason).value,
+          command: redactDurableCommand(event.command).value,
+          ...refusal,
+          createdAt,
+        })
+        this.#appendAudit({
+          actor: { kind: "provider", provider, providerThreadId: threadId },
+          action: "provider.policy-refused",
+          outcome: "denied",
+          sessionId: session.id,
+          ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+          ...(event.itemId ? { target: event.itemId } : {}),
+          detail: refusal.rule,
         })
       }
     }
@@ -7769,6 +8089,8 @@ export class DomovoiDaemon {
         sessionId: session.id,
         ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
       })
+      if (failed) this.#holdQueuedSessionSend(session.id, "The provider turn failed before the queued boundary could release.")
+      else releaseQueuedSend = true
     }
 
     session.updatedAt = createdAt
@@ -7791,6 +8113,7 @@ export class DomovoiDaemon {
     } else {
       await this.#flushAgentState()
     }
+    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id)
   }
 
   async #handleProviderDisconnect(provider: string, reason: string): Promise<void> {
@@ -7815,6 +8138,7 @@ export class DomovoiDaemon {
     for (const session of this.#snapshot.sessions) {
       if (session.runtime.provider !== provider || !session.providerThreadId) continue
       affectedSessionIds.add(session.id)
+      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
       session.state = "failed"
       session.providerFailure = classifyProviderFailure(new Error(reason))
       this.#flushCommandOutputStreams(session.id)
@@ -7912,6 +8236,9 @@ export class DomovoiDaemon {
 
   async #runEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
     const requestedAt = new Date().toISOString()
+    for (const sessionId of this.#queuedSessionSends.keys()) {
+      this.#holdQueuedSessionSend(sessionId, "Emergency stop held the queued send.")
+    }
     const stopId = `stop-${randomUUID()}`
     const failures: SystemEmergencyStopResult["failures"] = []
     const affectedSessionIds = new Set<string>()
@@ -8211,6 +8538,7 @@ export class DomovoiDaemon {
       const sessionId = active[index]!.id
       const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
       if (!session) continue
+      this.#holdQueuedSessionSend(session.id, "The session was paused before the queued send could release.")
       session.updatedAt = createdAt
       if (result.status === "fulfilled") {
         session.state = "idle"
@@ -8358,6 +8686,9 @@ export class DomovoiDaemon {
     )
     if (interrupted.length === 0) return
 
+    for (const session of interrupted) {
+      this.#holdQueuedSessionSend(session.id, "Daemon restart interrupted the turn before the queued boundary.")
+    }
     const recoveredAt = new Date().toISOString()
     const candidate = structuredClone(this.#snapshot)
     const recoveredTurns: Array<{ sessionId: string; turnId: string }> = []
@@ -8422,6 +8753,7 @@ export class DomovoiDaemon {
   async #archiveSession(sessionId: string, client?: ClientKind): Promise<void> {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
     if (!session || session.state === "archived") return
+    this.#holdQueuedSessionSend(sessionId, "The session was archived before the queued send could release.")
     this.#flushCommandOutputStreams(sessionId)
     if (session.state !== "archiving") {
       const requestedAt = new Date().toISOString()
@@ -8888,6 +9220,7 @@ export class DomovoiDaemon {
     const threadId = session.providerThreadId
     if (!threadId) return
     const provider = session.runtime.provider
+    this.#holdQueuedSessionSend(sessionId, "Provider quarantine held the queued send.")
     this.#flushCommandOutputStreams(sessionId)
     delete session.providerThreadId
     delete session.activeTurnId

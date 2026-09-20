@@ -12,6 +12,7 @@ import {
   helloParamsSchema,
   isMutatingRpcMethod,
   isRefusedWithoutPersistence,
+  rpcMethodAuthorizations,
   maximumJsonValueDepth,
   persistenceRecoveryRpcMethods,
   phoneAndTabletPromise,
@@ -27,6 +28,7 @@ import {
   systemEmergencyStopResultSchema,
   systemEmergencyStoppedNotificationSchema,
   turnSkillSelectionErrorCode,
+  queuedSessionSendSchema,
   sessionEvidenceSchema,
   sessionHistoryCategorySchema,
   sessionHistoryEntrySchema,
@@ -481,6 +483,13 @@ describe("authenticated client identity", () => {
     expect(schema.safeParse({ ...demoWorkspace, sessionImageAttachments: "true" }).success).toBe(false)
   })
 
+  it("reports authoritative client access when the connection is a client", () => {
+    const schema = rpcMethods["system.hello"].result
+    expect(schema.parse({ ...demoWorkspace, clientAccess: "full" }).clientAccess).toBe("full")
+    expect(schema.parse({ ...demoWorkspace, clientAccess: "watching" }).clientAccess).toBe("watching")
+    expect(schema.safeParse({ ...demoWorkspace, clientAccess: "read-only" }).success).toBe(false)
+  })
+
   it("carries the protocol version in the handshake", () => {
     // A hello with no version is a client from before the field existed and is
     // accepted; the daemon treats it as speaking this protocol version.
@@ -877,6 +886,7 @@ describe("session history filters", () => {
       "messages",
       "tools",
       "approvals",
+      "policy-refusals",
       "handoffs",
       "transfers",
       "checkpoints",
@@ -1158,6 +1168,73 @@ describe("session.revertFile parameters", () => {
   })
 })
 
+describe("queued session send RPC contracts", () => {
+  const queued = {
+    id: "queued-send-11111111-1111-4111-8111-111111111111",
+    sessionId: demoWorkspace.sessions[0]!.id,
+    state: "waiting",
+    createdAt: "2026-09-20T00:00:00.000Z",
+    origin: {
+      client: "phone",
+      clientId: "device-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      connectionId: "11111111-1111-4111-8111-111111111111",
+    },
+    skillIds: ["release-review"],
+    attachments: [{ kind: "image", mimeType: "image/png", width: 1, height: 1, bytes: 68 }],
+  } as const
+
+  it("adds only an explicit next-turn delivery mode and rejects unknown delivery values", () => {
+    expect(rpcMethods["session.send"].params.parse({
+      sessionId: "session-1",
+      prompt: "Run after this turn",
+      client: "phone",
+      delivery: "next-turn-replace",
+    })).toMatchObject({ delivery: "next-turn-replace" })
+    expect(rpcMethods["session.send"].params.parse({
+      sessionId: "session-1",
+      prompt: "Steer this turn",
+      client: "phone",
+    })).not.toHaveProperty("delivery")
+    expect(rpcMethods["session.send"].params.safeParse({
+      sessionId: "session-1",
+      prompt: "Unknown mode",
+      client: "phone",
+      delivery: "queue",
+    }).success).toBe(false)
+  })
+
+  it("exposes bounded queue metadata without attachment data", () => {
+    expect(queuedSessionSendSchema.parse(queued)).toEqual(queued)
+    expect(queuedSessionSendSchema.safeParse({
+      ...queued,
+      attachments: [{ ...queued.attachments[0], data: "base64-bytes" }],
+    }).success).toBe(false)
+    expect(workspaceSnapshotSchema.parse({ ...demoWorkspace, queuedSends: [queued] }).queuedSends)
+      .toEqual([queued])
+    expect(workspaceSnapshotSchema.safeParse({
+      ...demoWorkspace,
+      queuedSends: [queued, { ...queued, id: "queued-send-22222222-2222-4222-8222-222222222222" }],
+    }).success).toBe(false)
+  })
+
+  it("cancels only the named queue entry and classifies cancellation as control", () => {
+    expect(rpcMethods["session.cancelQueuedSend"].params.parse({
+      sessionId: queued.sessionId,
+      queueId: queued.id,
+      client: "phone",
+    })).toEqual({ sessionId: queued.sessionId, queueId: queued.id, client: "phone" })
+    expect(rpcMethods["session.cancelQueuedSend"].params.safeParse({
+      sessionId: queued.sessionId,
+      queueId: queued.id,
+      client: "phone",
+      force: true,
+    }).success).toBe(false)
+    expect(rpcMethodAuthorizations["session.cancelQueuedSend"]).toBe("control")
+    expect(rpcMethodMutations["session.cancelQueuedSend"]).toBe("mutating")
+    expect(phoneAndTabletRpcMethods.has("session.cancelQueuedSend")).toBe(true)
+  })
+})
+
 describe("device rename RPC contract", () => {
   it("renames a label with no client attribution and no credential in the result", () => {
     const deviceId = `device-${"a".repeat(32)}`
@@ -1212,6 +1289,25 @@ describe("RPC method persistence classification", () => {
     for (const method of persistenceRecoveryRpcMethods) {
       expect(isMutatingRpcMethod(method)).toBe(true)
       expect(isRefusedWithoutPersistence(method)).toBe(false)
+    }
+  })
+})
+
+describe("RPC method authorization classification", () => {
+  it("classifies every method exactly once as observe or control", () => {
+    expect(Object.keys(rpcMethodAuthorizations).sort()).toEqual(Object.keys(rpcMethods).sort())
+    for (const authorization of Object.values(rpcMethodAuthorizations)) {
+      expect(["observe", "control"]).toContain(authorization)
+    }
+  })
+
+  it("keeps observation independent from persistence mutation", () => {
+    for (const method of ["workspace.get", "session.history", "session.evidence", "artifact.authorize"] as const) {
+      expect(rpcMethodAuthorizations[method]).toBe("observe")
+    }
+    for (const method of ["terminal.create", "terminal.claim", "terminal.input", "terminal.resize", "terminal.close"] as const) {
+      expect(rpcMethodMutations[method]).toBe("read-only")
+      expect(rpcMethodAuthorizations[method]).toBe("control")
     }
   })
 })

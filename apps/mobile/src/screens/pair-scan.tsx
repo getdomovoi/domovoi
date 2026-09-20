@@ -8,7 +8,7 @@ import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
 import { Text } from "../components/ui/text"
-import { colors } from "../theme/tokens.generated"
+import { useTheme } from "../theme/theme-provider"
 
 // Pairing by camera. The QR carries a daemon address and a credential minted
 // by `domovoid pair --client phone`; the phone reads it, names the machine and
@@ -55,6 +55,7 @@ export function PairScanScreen({
   onCancel,
   redeem = redeemPairingCode,
   deviceName = "",
+  mode = "scan",
   bottomInset = 0,
 }: {
   permission: PermissionResponse | null
@@ -69,9 +70,11 @@ export function PairScanScreen({
   bottomInset?: number
   // What the machine's device list will call this phone.
   deviceName?: string
+  mode?: "scan" | "type"
 }) {
   const [read, setRead] = useState<PairScanResult>()
   const [pasted, setPasted] = useState("")
+  const { palette } = useTheme()
   const [name, setName] = useState(deviceName)
   const [pairing, setPairing] = useState(false)
   const [refusal, setRefusal] = useState("")
@@ -123,8 +126,8 @@ export function PairScanScreen({
               onChangeText={setName}
               autoCorrect={false}
               placeholder="iPhone"
-              placeholderTextColor={colors.dark.faint}
-              selectionColor={colors.dark.primary}
+              placeholderTextColor={palette.faint}
+              selectionColor={palette.primary}
               editable={!pairing}
               className="min-h-tap rounded-md border border-border bg-code px-3 text-[13px] text-foreground"
             />
@@ -152,7 +155,7 @@ export function PairScanScreen({
             />
             <Button title="Scan again" variant="ghost" shape="block" disabled={pairing} onPress={() => { attempt.current += 1; setRead(undefined); setPasted(""); setRefusal("") }} />
           </Card>
-        ) : cameraReady && !cameraRefused ? (
+        ) : mode === "type" ? null : cameraReady && !cameraRefused ? (
           <View className="h-[300px] overflow-hidden rounded-xl border border-border">
             <Scanner onScanned={onScanned} />
           </View>
@@ -183,8 +186,8 @@ export function PairScanScreen({
               autoCapitalize="none"
               autoCorrect={false}
               placeholder="domovoi-pair:1:…"
-              placeholderTextColor={colors.dark.faint}
-              selectionColor={colors.dark.primary}
+              placeholderTextColor={palette.faint}
+              selectionColor={palette.primary}
               className="min-h-tap rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
             />
           </Card>

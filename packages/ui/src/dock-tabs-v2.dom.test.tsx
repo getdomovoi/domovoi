@@ -16,9 +16,20 @@ let harness: FakeWebSocketHarness
 beforeEach(() => { harness = installFakeWebSocket() })
 afterEach(() => { cleanup(); harness.uninstall() })
 
+const openSheet = async () => {
+  // v2 starts with the sheet closed, so a test that reads the dock opens it
+  // first. Already open is not an error: pinned runs render the same tabs.
+  if (screen.queryAllByRole("tab", { name: "Changes" }).length > 0) return
+  const open = screen.queryByRole("button", { name: "Open the sheet" })
+  if (!open) return
+  await userEvent.setup().click(open)
+  await settle()
+}
+
 const settle = () => act(async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve() })
 
-// v2's sheet is Plan, Preview, Changes, Terminal, History, Checkpoints, Rules.
+// v2's sheet is Plan preview, Preview, Changes, Terminal, History,
+// Checkpoints, Rules, each drawn as an icon whose label is its accessible name.
 // There is no Session tab, and Comments is not a tab: the design draws the
 // comments on a variant under the preview frame. Rules waits on its own slice.
 describe("the dock's tab list", () => {
@@ -26,8 +37,9 @@ describe("the dock's tab list", () => {
     render(<WorkspaceShell />)
     await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
     await settle()
-    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Plan", "Preview", "Changes", "Terminal", "History", "Checkpoints", "Rules",
+    await openSheet()
+    expect(screen.getAllByRole("tab").map((tab) => tab.getAttribute("aria-label"))).toEqual([
+      "Plan preview", "Preview", "Changes", "Terminal", "History", "Checkpoints", "Rules",
     ])
   })
 
@@ -36,6 +48,7 @@ describe("the dock's tab list", () => {
     const socket = harness.socket(0)
     await act(async () => { completeHandshake(socket, workspaceSnapshot()) })
     await settle()
+    await openSheet()
     await userEvent.setup().click(screen.getByRole("tab", { name: "Rules" }))
     await settle()
     expect(screen.getByText(rulesIntro)).toBeTruthy()
@@ -62,6 +75,7 @@ describe("the dock's tab list", () => {
     render(<WorkspaceShell />)
     await act(async () => { completeHandshake(harness.socket(0), snapshot) })
     await settle()
+    await openSheet()
     const user = userEvent.setup()
     await user.click(screen.getByRole("tab", { name: "Preview" }))
     await settle()
@@ -79,7 +93,7 @@ describe("the dock's tab list", () => {
     expect(within(comments).getByText("Tighten the header on A.")).toBeTruthy()
     expect(within(comments).queryByText("B loses the status column.")).toBeNull()
 
-    await user.click(screen.getByRole("tab", { name: "Plan" }))
+    await user.click(screen.getByRole("tab", { name: "Plan preview" }))
     await settle()
     const planComments = screen.getByRole("region", { name: "Comments on the plan" })
     expect(within(planComments).getByText("Run the migration on staging first.")).toBeTruthy()
@@ -92,7 +106,8 @@ describe("the dock's tab list", () => {
     render(<WorkspaceShell />)
     await act(async () => { completeHandshake(harness.socket(0), snapshot) })
     await settle()
-    await userEvent.setup().click(screen.getByRole("tab", { name: "Plan" }))
+    await openSheet()
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Plan preview" }))
     await settle()
     expect(screen.getByText("No plan content yet")).toBeTruthy()
     const planComments = screen.getByRole("region", { name: "Comments on the plan" })
@@ -120,6 +135,7 @@ it("keeps Revoke live in the Rules tab while an archived session is selected", a
   render(<WorkspaceShell />)
   await act(async () => { completeHandshake(harness.socket(0), snapshot) })
   await settle()
+  await openSheet()
   await userEvent.setup().click(screen.getByRole("tab", { name: "Rules" }))
   await settle()
   const rows = screen.getAllByTestId("rule-row")
@@ -134,5 +150,6 @@ it("carries no usage footer", async () => {
   render(<WorkspaceShell />)
   await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
   await settle()
+  await openSheet()
   expect(screen.queryByRole("status", { name: "Session cost and context" })).toBeNull()
 })

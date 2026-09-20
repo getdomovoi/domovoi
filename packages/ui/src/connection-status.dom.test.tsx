@@ -65,11 +65,11 @@ describe("WorkspaceConnectionStatus", () => {
 
     expect(
       screen.getByText(
-        "Lost the daemon on this-machine. Existing session state remains on that machine.",
+        "Lost the daemon on this-machine. The worktree and this thread are intact on the machine. Nothing was rolled back.",
       ),
     ).toBeDefined()
     expect(screen.getByText("retrying")).toBeDefined()
-    expect(screen.getByRole("button", { name: "Reconnect now" })).toBeDefined()
+    expect(screen.getByRole("button", { name: "Retry now" })).toBeDefined()
     expect(screen.queryByRole("button", { name: "Change credential" })).toBeNull()
   })
 
@@ -89,7 +89,7 @@ describe("WorkspaceConnectionStatus", () => {
     const onReconnect = vi.fn()
     render(<WorkspaceConnectionStatus {...baseProps} onReconnect={onReconnect} />)
 
-    screen.getByRole("button", { name: "Reconnect now" }).click()
+    screen.getByRole("button", { name: "Retry now" }).click()
 
     expect(onReconnect).toHaveBeenCalledOnce()
   })

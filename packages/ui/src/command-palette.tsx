@@ -335,7 +335,12 @@ export function CommandPalette({
   const elsewhere = rows.find((command) => command.id === current
     && (command.openElsewhere || canChooseMachine(command))
     && !command.disabled)
-  const sections = commandSections
+  const groups = choosing
+    ? [{ label: "MACHINES", items: rows }]
+    : [
+        { label: "SESSIONS", items: rows.filter((command) => command.kind === "SESSION") },
+        { label: "COMMANDS", items: rows.filter((command) => command.kind !== "SESSION") },
+      ]
   const reset = () => { setQuery(""); setChoosingId(null); setHighlighted("") }
   // Every way out closes the same way: nothing chosen and nothing typed is
   // left behind for the next open, whichever side asked for the close.
@@ -403,12 +408,16 @@ export function CommandPalette({
           value={query}
           onValueChange={setQuery}
         />
+        {!choosing ? (
+          <p className="m-0 border-b px-3 py-1.5 text-eyebrow text-faint">
+            sessions, machines, commands, skills
+          </p>
+        ) : null}
         <CommandList>
           <CommandEmpty>No matching commands.</CommandEmpty>
-          {(choosing ? ["Machines" as const] : sections).map((section) => {
-            const items = rows.filter((command) => choosing ? true : command.section === section)
+          {groups.map(({ label, items }) => {
             return items.length ? (
-              <CommandGroup key={section} heading={section}>
+              <CommandGroup key={label} heading={label}>
                 {items.map((command) => {
                   const Icon = command.icon
                   return (

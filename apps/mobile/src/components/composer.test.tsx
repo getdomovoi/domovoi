@@ -23,7 +23,10 @@ async function draw(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
     attachments: [] as Attachment[],
     attachmentSummary: undefined as string | undefined,
     attachmentsAllowed: true,
+    planAvailable: true,
     onChangeDraft: jest.fn<(draft: string) => void>(),
+    onOpenPlan: jest.fn<() => void>(),
+    onFocusChange: jest.fn<(focused: boolean) => void>(),
     onSend: jest.fn<() => void>(),
     onOpenSkills: jest.fn<() => void>(),
     onOpenAttach: jest.fn<() => void>(),
@@ -39,6 +42,33 @@ async function draw(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 }
 
 describe("Composer attachments", () => {
+  it("rests as the compact v2 composer without desktop-only skill chrome", async () => {
+    await draw()
+    expect(screen.getByPlaceholderText("Message for the next turn")).toBeOnTheScreen()
+    expect(screen.queryByText("Skills")).toBeNull()
+    expect(screen.getByRole("button", { name: "Open plan" })).toBeOnTheScreen()
+  })
+
+  it("expands on focus and reports when tabs must hide", async () => {
+    const props = await draw()
+    const input = screen.getByLabelText("Reply to this session")
+    await fireEvent(input, "focus")
+    expect(props.onFocusChange).toHaveBeenCalledWith(true)
+    await fireEvent(input, "blur")
+    expect(props.onFocusChange).toHaveBeenCalledWith(false)
+  })
+
+  it("locks every composer control while watching only", async () => {
+    const props = await draw({
+      readiness: { can: false, reason: "Watching only. This phone can read the session but cannot change it." },
+    })
+    expect(screen.getByText("Watching only. This phone can read the session but cannot change it.")).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: "Open plan" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Attach an image" })).toBeNull()
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    expect(props.onSend).not.toHaveBeenCalled()
+  })
+
   it("grows into a card with each queued image removable and the size line under them", async () => {
     const summary = "2.3 MB uploads to mac-mini-m4 when you send, and is not kept on this phone."
     const props = await draw({ attachments: [before, after], attachmentSummary: summary })

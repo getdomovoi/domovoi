@@ -18,6 +18,7 @@ export const sessionSnapshotTransferPolicy = {
   workingPlans: "session-slice",
   annotations: "session-slice",
   skillEnablements: "preserve",
+  queuedSends: "preserve",
   historyTruncated: "preserve",
 } as const satisfies Record<keyof WorkspaceSnapshot, SnapshotTransferPolicy>
 

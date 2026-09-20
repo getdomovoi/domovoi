@@ -143,7 +143,7 @@ describe("domovoid CLI connection identity", () => {
     try {
       await client.connect()
       expect(await client.request("device.current", {})).toEqual({
-        kind: "client", machineId, deviceId, client: "desktop",
+        kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full",
       })
     } finally { client.disconnect() }
 

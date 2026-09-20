@@ -22,7 +22,7 @@ async function draw(overrides: Partial<Parameters<typeof DenyExplainScreen>[0]> 
   const props = {
     approval: approval(),
     pending: false,
-    onSend: jest.fn<(explanation: string) => void>(),
+    onSend: jest.fn<(explanation?: string) => void>(),
     onBack: jest.fn<() => void>(),
     ...overrides,
   }
@@ -52,6 +52,12 @@ describe("DenyExplainScreen", () => {
     expect(onSend).not.toHaveBeenCalled()
     expect(screen.getByText("Write the reason the agent is given, or deny without one."))
       .toBeOnTheScreen()
+  })
+
+  it("offers a denial without explanation after Deny", async () => {
+    const { onSend } = await draw()
+    await fireEvent.press(screen.getByRole("button", { name: "Deny without explanation" }))
+    expect(onSend).toHaveBeenCalledWith()
   })
 
   it("sends the reason that was written, trimmed", async () => {

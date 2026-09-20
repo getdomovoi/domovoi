@@ -6,6 +6,7 @@ import tailwindcss from "@tailwindcss/vite"
 import { defineConfig, externalizeDepsPlugin } from "electron-vite"
 
 import { vendorChunkFor } from "../../packages/ui/src/vite-chunks"
+import { devLoopReporter } from "./src/dev/loop-reporter"
 
 // Node builtins were externalized for us until vite 8 changed how a bundled
 // require of a builtin resolves, which left the preload asking for
@@ -33,7 +34,11 @@ export default defineConfig({
     esbuild: { keepNames: true },
   },
   renderer: {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      devLoopReporter({ root: path.resolve(import.meta.dirname, "../..") }),
+    ],
     build: {
       minify: "esbuild",
       reportCompressedSize: true,

@@ -32,6 +32,14 @@ export type AgentEvent =
       blockedPath?: string
       reason?: string
     }
+  | {
+      type: "policy-refused"
+      threadId: string
+      turnId?: string
+      itemId?: string
+      command: string
+      reason: string
+    }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
   | { type: "usage"; threadId: string; turnId: string; usage: NormalizedUsage; source?: UsageSource }
   | { type: "turn-completed"; params: Record<string, unknown> }

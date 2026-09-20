@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html",
   "sha256": "e10f42ddc4f703ddde57a3e09a91a15ab0ee4f1e2a29b25e503818c82444cb0c",
-  "derivedOn": "2026-09-18",
+  "derivedOn": "2026-09-20",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
@@ -15,7 +15,7 @@
     "no writes to a production database",
     "Set by dana@acme.dev as org policy, on every machine on this account.",
     "mac-mini-m4",
-    "Step 3 of 4 · writing the migration",
+    "Step 3 of 4 \u00b7 writing the migration",
     "4m",
     "Steps 1 and 2 are done. replay.spec.ts asserts exactly-once delivery and passes.",
     "Also cover the claim-expiry case in replay.spec.ts",
@@ -216,11 +216,7 @@
       ],
       "presence": [
         "Allowed once"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the receipt decides and names the outcome; RECORDED AS, the watch action and the revert note are not drawn"
-      }
+      ]
     },
     {
       "id": "watching.screen",
@@ -257,13 +253,10 @@
       ],
       "evidence": [
         "Nothing to approve",
+        "Refused by policy",
         "THE RULE IT BROKE",
         "WHAT YOU CAN DO"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "the phone has no policy refusal screen; a refused gate arrives as a resolved approval"
-      }
+      ]
     },
     {
       "id": "launch.screen",
@@ -298,11 +291,7 @@
       ],
       "presence": [
         "Nothing paired to this phone"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the unpaired screen exists per tab with its own copy"
-      }
+      ]
     },
     {
       "id": "machines.unpaired",
@@ -325,11 +314,7 @@
       ],
       "presence": [
         "No machines paired"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the machines tab says it is unpaired; the pairing entry points and the unavailable list are not drawn as designed"
-      }
+      ]
     },
     {
       "id": "pairing.camera",
@@ -368,11 +353,7 @@
       ],
       "presence": [
         "No sessions running"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the empty state names the cause with its own copy; the Start a session action is not drawn"
-      }
+      ]
     },
     {
       "id": "thread.screen",
@@ -385,7 +366,7 @@
         "Steer it, or queue a message"
       ],
       "presence": [
-        "Reply…"
+        "Reply to this session"
       ],
       "partial": {
         "since": "2026-09-18",

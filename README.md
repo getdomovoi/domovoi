@@ -61,6 +61,25 @@ pnpm dev
 pnpm dev:desktop
 ```
 
+To work on the interface itself, run the desktop shell against a fixture daemon instead of a real
+one:
+
+```bash
+pnpm dev:fixture
+```
+
+This opens the real Electron window against `apps/desktop/scripts/dev-fixture-daemon.mjs`, a
+separate process that speaks the protocol and validates every frame against the schemas in
+`packages/protocol`. It never touches `~/.domovoi`, and it refuses any method it has no handler
+for, naming the method and the file to add it in, rather than answering with something plausible.
+Because it is its own process, its state survives a window relaunch.
+
+The terminal prints one line for every saved file it watches. An edit under `packages/ui/src` or
+`apps/desktop/src/renderer` applies in place and keeps the window state. An edit under
+`apps/desktop/src/main` or `apps/desktop/src/preload` relaunches the window on the same fixture.
+An unchanged window therefore always has a line beside it saying which of the two was supposed to
+happen.
+
 Every daemon requires authentication. Standalone `domovoid` creates a user-private credential at
 `~/.domovoi/daemon.token` when `DOMOVOI_AUTH_TOKEN` is unset. Remote listeners additionally require
 `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and `DOMOVOI_TLS_KEY_PATH`; the

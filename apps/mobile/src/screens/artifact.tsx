@@ -5,6 +5,7 @@ import { WebView } from "react-native-webview"
 
 import { ConnectionBanner } from "../components/connection-banner"
 import { PageScroller } from "../components/page-scroller"
+import { PlanMarkdown } from "../components/plan-markdown"
 import { Badge } from "../components/ui/badge"
 import { Card } from "../components/ui/card"
 import { Button } from "../components/ui/button"
@@ -15,7 +16,7 @@ import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
 import { pickerScript, readSelection, webviewBridgeScript, type PreviewSelection } from "../preview-bridge"
 import { openAnnotationCount, type AnnotationRow } from "../review-rows"
-import { colors } from "../theme/tokens.generated"
+import { useTheme } from "../theme/theme-provider"
 
 // What the phone knows about fetching a preview's render. The bytes never
 // land here: a signed grant from the daemon becomes an address the frame
@@ -132,6 +133,7 @@ function CommentComposer({ selection, sending, onSend, onCancel }: {
   onCancel: () => void
 }) {
   const [body, setBody] = useState("")
+  const { palette } = useTheme()
   const usable = body.trim().length > 0
   return (
     <Card className="gap-2.5">
@@ -146,8 +148,8 @@ function CommentComposer({ selection, sending, onSend, onCancel }: {
         value={body}
         onChangeText={setBody}
         placeholder="What should change here?"
-        placeholderTextColor={colors.dark.faint}
-        selectionColor={colors.dark.primary}
+        placeholderTextColor={palette.faint}
+        selectionColor={palette.primary}
         accessibilityLabel="Comment on this element"
         className="min-h-[72px] rounded-lg border border-border bg-code px-2.5 py-2 font-sans text-[12px] text-foreground"
       />
@@ -226,27 +228,30 @@ export function ArtifactScreen({
       <PageScroller contentContainerClassName="gap-3 px-3.5 pb-8">
         <ConnectionBanner notice={notice} />
         {variants.length > 1 ? (
-          <View className="flex-row gap-1.5">
-            {variants.map((variant) => {
-              const selected = variant.id === artifact.id
-              return (
-                <Pressable
-                  key={variant.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Variant ${variant.label}`}
-                  accessibilityState={{ selected }}
-                  onPress={() => { if (!selected) onOpenVariant(variant.id) }}
-                  className={cn(
-                    "min-h-tap flex-1 items-center justify-center rounded-lg border",
-                    selected ? "border-primary bg-primary/15" : "border-border bg-card",
-                  )}
-                >
-                  <Text className={cn("font-sans-medium text-[12.5px]", selected ? "text-primary" : "text-muted-foreground")}>
-                    {variant.label}
-                  </Text>
-                </Pressable>
-              )
-            })}
+          <View className="gap-2">
+            <View className="flex-row gap-1.5">
+              {variants.map((variant) => {
+                const selected = variant.id === artifact.id
+                return (
+                  <Pressable
+                    key={variant.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Variant ${variant.label}`}
+                    accessibilityState={{ selected }}
+                    onPress={() => { if (!selected) onOpenVariant(variant.id) }}
+                    className={cn(
+                      "min-h-tap flex-1 items-center justify-center rounded-lg border",
+                      selected ? "border-primary bg-primary/15" : "border-border bg-card",
+                    )}
+                  >
+                    <Text className={cn("font-sans-medium text-[12.5px]", selected ? "text-primary" : "text-muted-foreground")}>
+                      {variant.label}
+                    </Text>
+                  </Pressable>
+                )
+              })}
+            </View>
+            <Text variant="note" className="text-center">Viewing a variant does not change the build basis. Choose the build basis on desktop.</Text>
           </View>
         ) : null}
 
@@ -308,7 +313,11 @@ export function ArtifactScreen({
           </ScrollView>
         ) : null}
 
-        {body.readable && artifact.type !== "diff" ? (
+        {body.readable && artifact.type === "plan" ? (
+          <PlanMarkdown source={body.lines.join("\n")} />
+        ) : null}
+
+        {body.readable && artifact.type !== "diff" && artifact.type !== "plan" ? (
           <View className="rounded-xl border border-border bg-code p-3">
             {body.lines.map((line, index) => (
               <Text key={`${index}-${line}`} className="font-mono text-[10.5px] leading-4 text-foreground">

@@ -192,11 +192,106 @@ export async function checkConformance(root, inventoryPath) {
   return { inventory: inventoryPath, design: inventory.design, sha256, copy: copy.length, built, partial, missing, blocked, humanRead, failures }
 }
 
+const v2Designs = new Map([
+  ["cloud", "design/design_handoff_domovoi_v2/designs/Domovoi v2 Cloud.dc.html"],
+  ["skills", "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html"],
+  ["web", "design/design_handoff_domovoi_v2/designs/Domovoi Web v2.dc.html"],
+  ["tablet", "design/design_handoff_domovoi_v2/designs/Domovoi Tablet v2.dc.html"],
+  ["onboarding", "design/design_handoff_domovoi_v2/designs/Domovoi v2 Onboarding.dc.html"],
+  ["desktop", "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html"],
+  ["states", "design/design_handoff_domovoi_v2/designs/Domovoi v2 States.dc.html"],
+  ["phone", "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html"],
+  ["team", "design/design_handoff_domovoi_v2/designs/Domovoi v2 Team.dc.html"],
+])
+
+const approvedExceptions = new Set(["UX-001", "SAF-001", "SAF-002", "DEV-001", "SAF-003", "PLATFORM-001"])
+
+async function contractSources(root, paths) {
+  const files = []
+  for (const path of paths) {
+    if (path.includes("*")) {
+      const sources = await readSources(root, [path])
+      files.push(...sources.byFile)
+      continue
+    }
+    try {
+      files.push([path, await readFile(resolve(root, path), "utf8")])
+    } catch {
+      files.push([path, undefined])
+    }
+  }
+  return files
+}
+
+export async function checkV2Manifest(root, manifestPath = `${inventoryDirectory}/v2-manifest.json`) {
+  const manifest = JSON.parse(await readFile(resolve(root, manifestPath), "utf8"))
+  const failures = []
+  if (manifest.version !== 2) failures.push(`${manifestPath}: version must be 2`)
+  const precedence = ["current design HTML", "approved exception ledger", "production behavior"]
+  if (JSON.stringify(manifest.precedence) !== JSON.stringify(precedence)) failures.push(`${manifestPath}: precedence must be ${precedence.join(" > ")}`)
+  const designs = manifest.designs ?? []
+  if (designs.length !== v2Designs.size) failures.push(`${manifestPath}: requires exactly ${v2Designs.size} designs`)
+  const ids = new Set()
+  for (const design of designs) {
+    if (!design.id || ids.has(design.id)) failures.push(`${manifestPath}: design has a missing or repeated id`)
+    ids.add(design.id)
+    const expected = v2Designs.get(design.id)
+    if (!expected) failures.push(`${manifestPath}: ${design.id} is not a current v2 design`)
+    else if (design.design !== expected) failures.push(`${manifestPath}: ${design.id} must map to ${expected}`)
+    if (!design.inventory || !design.sources?.length) failures.push(`${manifestPath}: ${design.id ?? "design"} needs an inventory and implementation sources`)
+    if (design.inventory) {
+      try {
+        const inventory = JSON.parse(await readFile(resolve(root, design.inventory), "utf8"))
+        if (inventory.design !== design.design) failures.push(`${manifestPath}: ${design.id} inventory ${design.inventory} does not map to its current design`)
+      } catch {
+        failures.push(`${manifestPath}: ${design.id} inventory ${design.inventory} is missing`)
+      }
+    }
+  }
+  for (const id of v2Designs.keys()) if (!ids.has(id)) failures.push(`${manifestPath}: missing current v2 design ${id}`)
+  const exceptionIds = new Set()
+  for (const exception of manifest.exceptions ?? []) {
+    if (!exception.id || exceptionIds.has(exception.id)) failures.push(`${manifestPath}: exception has a missing or repeated id`)
+    exceptionIds.add(exception.id)
+    if (!exception.surface || !exception.allowance || !exception.constraint) failures.push(`${manifestPath}: ${exception.id ?? "exception"} needs surface, allowance and constraint`)
+  }
+  for (const id of approvedExceptions) if (!exceptionIds.has(id)) failures.push(`${manifestPath}: missing approved exception ${id}`)
+  for (const id of exceptionIds) if (!approvedExceptions.has(id)) failures.push(`${manifestPath}: ${id} is not an approved exception`)
+  const contractIds = new Set()
+  for (const contract of manifest.contracts ?? []) {
+    if (!contract.id || contractIds.has(contract.id)) failures.push(`${manifestPath}: contract has a missing or repeated id`)
+    contractIds.add(contract.id)
+    if (!contract.sources?.length) {
+      failures.push(`${manifestPath}: ${contract.id ?? "contract"} needs sources`)
+      continue
+    }
+    const sources = await contractSources(root, contract.sources)
+    for (const [path, text] of sources) {
+      if (text === undefined) failures.push(`${manifestPath}: ${contract.id} source ${path} is missing`)
+      for (const token of contract.forbidden ?? []) if (text?.includes(token)) failures.push(`${manifestPath}: ${contract.id} bans ${JSON.stringify(token)} in ${path}`)
+    }
+    const sourceText = sources.map(([, text]) => text ?? "").join("\n")
+    for (const token of contract.required ?? []) if (!sourceText.includes(token)) failures.push(`${manifestPath}: ${contract.id} requires ${JSON.stringify(token)}`)
+    let position = -1
+    for (const token of contract.order ?? []) {
+      const next = sourceText.indexOf(token, position + 1)
+      if (next === -1 || next < position) {
+        failures.push(`${manifestPath}: ${contract.id} requires ordered structure ${contract.order.map((item) => JSON.stringify(item)).join(" < ")}`)
+        break
+      }
+      position = next
+    }
+  }
+  for (const id of ["desktop-v2", "phone-v2"]) if (!contractIds.has(id)) failures.push(`${manifestPath}: missing structural contract ${id}`)
+  return { inventory: manifestPath, design: "v2 manifest", sha256: "", copy: 0, built: [], partial: [], missing: [], blocked: [], humanRead: [], failures }
+}
+
 export async function checkAll(root = repositoryRoot) {
   const directory = resolve(root, inventoryDirectory)
-  const entries = (await readdir(directory)).filter((name) => name.endsWith(".json")).sort()
+  const entries = (await readdir(directory)).filter((name) => name.endsWith("-v2.json")).sort()
   const results = []
   for (const name of entries) results.push(await checkConformance(root, `${inventoryDirectory}/${name}`))
+  results.push(await checkV2Manifest(root))
   return results
 }
 

@@ -25,7 +25,7 @@ export type WorkspaceSurface = "workspace" | "providers" | "skills" | "fleet" | 
 const surfaces = new Set<WorkspaceSurface>(["workspace", "providers", "skills", "fleet", "audit"])
 // v2 put sessions in a drawer, so the only panels left are the thread and the
 // machine dock, and the only layouts are those two arrangements.
-const layoutKeys = new Set(["drawer.dock", "drawer.rail"])
+const layoutKeys = new Set(["drawer.dock", "drawer.thread"])
 const panelIds = new Set(["thread", "dock"])
 
 export type WorkspaceUiState = {
@@ -43,6 +43,7 @@ export type WorkspaceUiState = {
   windowDecoration: WorkspaceWindowDecoration
   notifications: NotificationPreferences
   layouts: Record<string, Record<string, number>>
+  previewBuildBasis: Record<string, string>
 }
 
 export type WorkspaceUiDaemonTruth = {
@@ -54,7 +55,7 @@ export type WorkspaceUiDaemonTruth = {
 export function defaultWorkspaceUiState(): WorkspaceUiState {
   return {
     version: 5,
-    dockCollapsed: false,
+    dockCollapsed: true,
     dockPinned: false,
     surface: "workspace",
     projectId: null,
@@ -64,6 +65,7 @@ export function defaultWorkspaceUiState(): WorkspaceUiState {
     windowDecoration: "domovoi",
     notifications: defaultNotificationPreferences(),
     layouts: {},
+    previewBuildBasis: {},
   }
 }
 
@@ -81,6 +83,17 @@ function isId(value: unknown): value is string | null {
       return codePoint >= 0x20 && codePoint !== 0x7f
     })
   )
+}
+
+function parseIdMap(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) return {}
+  if (!isRecord(value)) return undefined
+  const parsed: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isId(key) || key === null || !isId(entry) || entry === null) return undefined
+    parsed[key] = entry
+  }
+  return parsed
 }
 
 function parseLayouts(value: unknown): WorkspaceUiState["layouts"] | undefined {
@@ -114,13 +127,14 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
   }
   if (!isId(value.projectId) || !isId(value.sessionId)) return undefined
   const layouts = parseLayouts(value.layouts)
-  if (!layouts) return undefined
+  const previewBuildBasis = parseIdMap(value.previewBuildBasis)
+  if (!layouts || !previewBuildBasis) return undefined
   return {
     version: 5,
     dockCollapsed: value.dockCollapsed,
     // Absent in every state written before v2, and false is the v2 default.
     dockPinned: value.dockPinned === true,
-    surface: value.surface as WorkspaceSurface,
+    surface: "workspace",
     projectId: value.projectId,
     sessionId: value.sessionId,
     externalEditor: value.version !== 1 && isDesktopExternalEditor(value.externalEditor)
@@ -132,6 +146,7 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
       : "domovoi",
     notifications: parseNotificationPreferences(value.notifications) ?? defaultNotificationPreferences(),
     layouts,
+    previewBuildBasis,
   }
 }
 

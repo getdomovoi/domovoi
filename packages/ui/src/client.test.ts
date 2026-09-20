@@ -2017,7 +2017,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"d".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
       revokedAt: "2026-09-01T12:00:00.000Z",
     }
 
@@ -2037,7 +2037,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"d".repeat(32)}`,
       label: "kitchen-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
     }
 
     const renaming = client.renameDevice({ deviceId: device.id, label: "kitchen-ipad" })
@@ -2056,7 +2056,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"d".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
     }
 
     const renaming = client.renameDevice({ deviceId: device.id, label: "studio-ipad", expectedLabel: "kitchen-ipad" })
@@ -2074,7 +2074,7 @@ describe("DomovoiClient session transfer and devices", () => {
       id: `device-${"e".repeat(32)}`,
       label: "studio-ipad",
       pairedAt: "2026-08-31T12:00:00.000Z",
-      binding: { kind: "client", client: "tablet" },
+      binding: { kind: "client", client: "tablet", clientAccess: "full" },
     }
 
     const rotating = client.rotateDevice({ deviceId: device.id })

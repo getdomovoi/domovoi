@@ -76,7 +76,7 @@ it('composer Stop holds the queue before its idle RPC response', async () => {
   const value = running()
   const socket = await open(value)
   queue('remain stopped')
-  fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Stop the agent' }))
   await act(async () => respond(socket, 'session.pause', idle(value)))
   await settle()
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
@@ -188,17 +188,15 @@ function withSkills(value: WorkspaceSnapshot, skills: SkillSummary[]) {
     manifest: item.manifest, reviewedAt: '2026-09-08T12:00:00Z', reviewedBy: { client: 'desktop' },
   })) })
 }
-async function omitBeta() {
-  const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: '2 skills' }))
-  await user.click(screen.getByRole('menuitemcheckbox', { name: 'beta' }))
+function selectSkill(name: string) {
+  queue(`/skill ${name}`)
 }
 
 it('captures explicit skill IDs even when the session view remounts', async () => {
   const skills = [skill('a', 'alpha'), skill('b', 'beta')]
   const value = withSkills(running(), skills)
   const socket = await open(value, false, skills)
-  await omitBeta()
+  selectSkill('alpha')
   queue('alpha only')
   const other = value.sessions.find(session => session.id !== value.activeSessionId)!.id
   await snapshot(socket, visible(value, other))
@@ -214,7 +212,7 @@ it('holds a queued explicit choice when that skill is no longer enabled', async 
   const skills = [skill('a', 'alpha'), skill('b', 'beta')]
   const value = withSkills(running(), skills)
   const socket = await open(value, false, skills)
-  await omitBeta()
+  selectSkill('alpha')
   queue('alpha only')
   const changed = idle(value)
   changed.skillEnablements[0]!.enabled = false
@@ -223,32 +221,32 @@ it('holds a queued explicit choice when that skill is no longer enabled', async 
   expect(screen.getByText(/Held because a skill you chose is no longer/)).toBeTruthy()
 })
 
-it('retains an explicit empty skill choice rather than using project defaults', async () => {
+it('uses project defaults when no skill command changes the turn', async () => {
   const skills = [skill('a', 'alpha')]
   const value = withSkills(running(), skills)
   const socket = await open(value, false, skills)
-  const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: 'alpha' }))
-  await user.click(screen.getByRole('menuitemcheckbox', { name: 'alpha' }))
-  queue('no skills this time')
+  queue('use project defaults')
   await snapshot(socket, idle(value))
-  expect(sentRequests(socket, 'session.send')[0]?.params).toMatchObject({ skillSelection: { mode: 'turn-explicit', skills: [] } })
+  expect(sentRequests(socket, 'session.send')[0]?.params).not.toHaveProperty('skillSelection')
 })
 
-it('waits for a pending catalog instead of claiming the chosen skill is gone', async () => {
+it('keeps a skill command editable until the pending catalog loads', async () => {
   const skills = [skill('a', 'alpha'), skill('b', 'beta')]
   const value = withSkills(running(), skills)
   const socket = await open(value, false, skills, false)
-  const user = userEvent.setup()
-  await user.click(screen.getByRole('button', { name: '2 skills' }))
-  await user.click(screen.getByRole('menuitemcheckbox', { name: skills[1]!.id }))
-  queue('alpha after catalog loads')
-  await snapshot(socket, idle(value))
-  const falseMissingNotice = screen.queryByText(/Held because a skill you chose is no longer/)
+  queue('/skill alpha')
+  expect((screen.getByLabelText('Message') as HTMLTextAreaElement).value).toBe('/skill alpha')
+  expect(screen.queryByText(/Held because a skill you chose is no longer/)).toBeNull()
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
   await loadCatalog(socket, value, skills)
   await settle()
-  expect(falseMissingNotice).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+  queue('alpha after catalog loads')
+  await snapshot(socket, idle(value))
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+  expect(sentRequests(socket, 'session.send')[0]?.params).toMatchObject({
+    skillSelection: { mode: 'turn-explicit', skills: [{ skillId: skills[0]!.id }] },
+  })
 })
 
 it('keeps both a newer instruction and the one that was refused', async () => {

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest"
 import { protocolVersion } from "./schema.js"
 
 import {
+  clientAccessSchema,
   deviceClaimParamsSchema,
+  deviceCurrentResultSchema,
+  deviceIssueCodeParamsSchema,
   deviceLabelMismatchSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -19,12 +22,20 @@ const device = {
   id: `device-${"a".repeat(32)}`,
   label: "studio-ipad",
   pairedAt: "2026-08-31T12:00:00.000Z",
-  binding: { kind: "client" as const, client: "phone" as const },
+  binding: { kind: "client" as const, client: "phone" as const, clientAccess: "full" as const },
 }
 
 describe("pairedDeviceSchema", () => {
-  it("describes a paired device", () => {
-    expect(pairedDeviceSchema.parse(device)).toEqual(device)
+  it("defaults existing client credential bindings to full access", () => {
+    expect(clientAccessSchema.options).toEqual(["full", "watching"])
+    const legacy = { ...device, binding: { kind: "client" as const, client: "phone" as const } }
+    expect(pairedDeviceSchema.parse(legacy).binding).toEqual({
+      kind: "client", client: "phone", clientAccess: "full",
+    })
+    expect(pairedDeviceSchema.parse({
+      ...device,
+      binding: { ...device.binding, clientAccess: "watching" },
+    }).binding).toEqual({ kind: "client", client: "phone", clientAccess: "watching" })
   })
 
   it("carries the optional contact and revocation times", () => {
@@ -123,6 +134,31 @@ describe("devicePairParamsSchema", () => {
       client: "desktop",
     }).success).toBe(false)
     expect(devicePairParamsSchema.safeParse({ label: "studio-ipad" }).success).toBe(false)
+    expect(devicePairParamsSchema.parse({
+      label: "watcher", client: "desktop", targetClient: "web", clientAccess: "watching",
+    }).clientAccess).toBe("watching")
+  })
+
+  it("binds issued client codes to an access level", () => {
+    expect(deviceIssueCodeParamsSchema.parse({ targetClient: "phone" }))
+      .toEqual({ targetClient: "phone" })
+    expect(deviceIssueCodeParamsSchema.parse({ targetClient: "phone", clientAccess: "watching" }).clientAccess)
+      .toBe("watching")
+  })
+
+  it("reports client access from the authenticated device", () => {
+    const current = {
+      kind: "client",
+      machineId: `machine-${"b".repeat(32)}`,
+      deviceId: device.id,
+      client: "phone",
+      clientAccess: "watching",
+    }
+    expect(deviceCurrentResultSchema.parse(current)).toEqual(current)
+    const { clientAccess: _clientAccess, ...legacy } = current
+    expect(deviceCurrentResultSchema.parse(legacy)).toMatchObject({
+      kind: "client", clientAccess: "full",
+    })
   })
 })
 

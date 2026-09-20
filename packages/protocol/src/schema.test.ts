@@ -69,8 +69,8 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
-  it("uses a breaking minor for counted and revoked approval rules", () => {
-    expect(protocolVersion).toBe("0.7.0")
+  it("uses a breaking minor for client access, refusals, and queued sends", () => {
+    expect(protocolVersion).toBe("0.8.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
   })
 

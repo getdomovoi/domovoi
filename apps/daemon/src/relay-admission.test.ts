@@ -248,7 +248,7 @@ describe("relay dispatcher inheritance", () => {
       if (kind === "throw") verify.mockImplementation(() => { throw new Error("storage secret") })
       else verify.mockReturnValue({ ...verified,
         ...(kind === "device" ? { device: { ...verified.device, id: `device-${"e".repeat(32)}` } } : {}),
-        ...(kind === "binding" ? { binding: { kind: "client", client: "web" } as const } : {}),
+        ...(kind === "binding" ? { binding: { kind: "client", client: "web", clientAccess: "full" } as const } : {}),
         ...(kind === "key" ? { channelPublicKey: relayPublicKeyFromPrivateKey(otherKey) } : {}),
       })
       const before = relay.messages.length

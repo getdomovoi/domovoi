@@ -53,11 +53,13 @@ const terminalStatusMeaning: Record<"closed" | "connected" | "connecting" | "dis
 export function TerminalPane({
   connected,
   controls,
+  readOnly = false,
   machineName,
   sessionId,
 }: {
   connected: boolean
   controls: TerminalControls
+  readOnly?: boolean
   machineName: string
   sessionId: string | null
 }) {
@@ -74,7 +76,7 @@ export function TerminalPane({
 
   useEffect(() => {
     const container = containerRef.current
-    if (!container || !connected || !sessionId || !terminalId) return
+    if (readOnly || !container || !connected || !sessionId || !terminalId) return
     let active = true
     let attached = false
     let ownsTerminal = false
@@ -155,7 +157,7 @@ export function TerminalPane({
       terminal.dispose()
       if (xtermRef.current === terminal) xtermRef.current = null
     }
-  }, [connected, controls, restartKey, sessionId, terminalId])
+  }, [connected, controls, readOnly, restartKey, sessionId, terminalId])
 
   if (!sessionId) {
     return (
@@ -164,6 +166,18 @@ export function TerminalPane({
           <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
           <EmptyTitle>No active session</EmptyTitle>
           <EmptyDescription>Open a session before starting its terminal.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
+  }
+
+  if (readOnly) {
+    return (
+      <Empty className="min-h-full border-0 text-muted-foreground">
+        <EmptyHeader>
+          <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
+          <EmptyTitle>Watching only</EmptyTitle>
+          <EmptyDescription>Terminal controls are unavailable. Session output remains readable in the thread.</EmptyDescription>
         </EmptyHeader>
       </Empty>
     )

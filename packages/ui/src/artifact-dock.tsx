@@ -6,26 +6,25 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from "react"
 import {
   CircleStopIcon,
   CodeXmlIcon,
-  FileDiffIcon,
   FileTextIcon,
-  GitCommitHorizontalIcon,
-  ShieldCheckIcon,
-  HistoryIcon,
   DownloadIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
-  PanelRightCloseIcon,
+  Maximize2Icon,
+  XIcon,
   PrinterIcon,
   TerminalSquareIcon,
 } from "lucide-react"
 import type {
   Annotation,
   Artifact,
+  ClientAccess,
   ArtifactAccess,
   RpcParams,
   SessionEvidence,
@@ -65,11 +64,10 @@ import {
 } from "./components/ui/empty"
 import { Field, FieldGroup, FieldLabel } from "./components/ui/field"
 import { ScrollArea, ScrollBar } from "./components/ui/scroll-area"
-import { Separator } from "./components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Textarea } from "./components/ui/textarea"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
-import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
 import { annotationsForActiveSession } from "./annotations"
@@ -92,6 +90,7 @@ import { SessionEvidencePanel } from "./session-evidence"
 import { MarkdownQuickView } from "./markdown-quick-view"
 import { type DesktopWindowBridge } from "./desktop-platform"
 import { HistoryPanel } from "./history-panel"
+import { dockTabDefinitions } from "./dock-tabs"
 import { activeSession, sessionIsArchiveReadOnly } from "./workspace-selectors"
 
 const TerminalPane = lazy(async () => {
@@ -157,6 +156,7 @@ export async function capturePreviewThumbnailState({
 }
 export function ArtifactDock({
   snapshot,
+  clientAccess = "full",
   onCollapse,
   collapseButtonRef,
   defaultTab,
@@ -182,12 +182,21 @@ export function ArtifactDock({
   onRevertSessionFile,
   captureAnnotation,
   previewRefusal,
+  pinControl,
+  buildBasisId,
+  onBuildBasisChange,
 }: {
   snapshot: WorkspaceSnapshot
+  clientAccess?: ClientAccess
   onCollapse: () => void
+  // The pin control sits in this tab row. Given a row of its own it is alone
+  // with nothing beside it, and floated over the row it covers the last tabs.
+  pinControl?: ReactNode
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
   previewRefusal?: string | undefined
+  buildBasisId?: string | undefined
+  onBuildBasisChange?: ((artifactId: string) => void) | undefined
   onEditPlan?: ((edit: {
     basedOnStructureRevision: number
     baseSteps: { id: string, text: string }[]
@@ -249,11 +258,14 @@ export function ArtifactDock({
   )
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | undefined>(previewCandidate?.id)
+  const [localBuildBasisId, setLocalBuildBasisId] = useState<string | undefined>(previewCandidate?.id)
+  const resolvedBuildBasisId = buildBasisId ?? localBuildBasisId
   const previewVariants = useMemo(
     () => previewVariantsForActiveSession(snapshot, selectedPreviewId),
     [selectedPreviewId, snapshot],
   )
   const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
+  const buildBasis = previewVariants.find((artifact) => artifact.id === resolvedBuildBasisId) ?? previewVariants.at(-1)
   const annotations = useMemo(() => annotationsForActiveSession(snapshot), [snapshot])
   // Comments belong to the artifact they were left on. The preview shows the
   // selected variant's, another variant's show when it is selected, the plan
@@ -270,6 +282,7 @@ export function ArtifactDock({
   const archiveReadOnly = sessionIsArchiveReadOnly(snapshot.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   ))
+  const readOnly = archiveReadOnly || clientAccess === "watching"
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const stageContainerRef = useRef<HTMLDivElement>(null)
   const [stageContainerWidth, setStageContainerWidth] = useState(0)
@@ -308,6 +321,7 @@ export function ArtifactDock({
   const [previewError, setPreviewError] = useState("")
   const [derivedArtifactPending, setDerivedArtifactPending] = useState<"print" | "download">()
   const [derivedArtifactError, setDerivedArtifactError] = useState("")
+  const [fullscreen, setFullscreen] = useState(false)
   const [comparisonStageUrls, setComparisonStageUrls] = useState<ReadonlyMap<string, string>>(
     () => new Map(),
   )
@@ -491,7 +505,7 @@ export function ArtifactDock({
         postNextAnchorResolutionBatch()
         return
       }
-      if (archiveReadOnly || !pickerActive) return
+      if (readOnly || !pickerActive) return
       const nextSelection = previewSelectionFor(event.data, bridgeChannel, preview.id)
       if (!nextSelection) return
       postPickerState(false)
@@ -519,7 +533,16 @@ export function ArtifactDock({
       active = false
       window.removeEventListener("message", receiveSelection)
     }
-  }, [annotations, archiveReadOnly, bridgeChannel, captureAnnotation, pickerActive, postNextAnchorResolutionBatch, postPickerState, preview, previewKey])
+  }, [annotations, readOnly, bridgeChannel, captureAnnotation, pickerActive, postNextAnchorResolutionBatch, postPickerState, preview, previewKey])
+
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreen(false)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [fullscreen])
 
   useEffect(() => {
     setPickerActive(false)
@@ -531,14 +554,14 @@ export function ArtifactDock({
     setBridgeReadyKey(undefined)
     pendingAnchorResolutionBatch.current = undefined
     queuedAnchorResolutionBatches.current = []
-  }, [archiveReadOnly, preview?.id, preview?.revision])
+  }, [readOnly, preview?.id, preview?.revision])
 
   useEffect(() => {
     if (bridgeReadyKey === previewKey) startAnchorResolutionRequests()
   }, [annotations, bridgeReadyKey, previewKey, startAnchorResolutionRequests])
 
   const togglePicker = () => {
-    if (archiveReadOnly) return
+    if (readOnly) return
     const active = !pickerActive
     setPickerActive(active)
     setAnnotationError("")
@@ -548,7 +571,7 @@ export function ArtifactDock({
   const saveAnnotation = async () => {
     const body = comment.trim()
     const sessionId = snapshot.activeSessionId
-    if (archiveReadOnly || !body || !selection || !sessionId || annotationPending) return
+    if (readOnly || !body || !selection || !sessionId || annotationPending) return
     setAnnotationPending(true)
     setAnnotationError("")
     try {
@@ -579,26 +602,45 @@ export function ArtifactDock({
       <AnnotationComments
         annotations={planComments}
         anchorResolutions={anchorResolutions}
-        readOnly={archiveReadOnly}
+        readOnly={readOnly}
         onReply={onReplyToAnnotation}
         onSetStatus={onSetAnnotationStatus}
       />
     </section>
   ) : null
   return (
+    <TooltipProvider>
     <aside aria-label="Session artifacts" data-workspace-panel="dock" className="flex h-full min-w-0 flex-col bg-sidebar">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full gap-0">
-        <div className="flex h-11 items-center border-b px-2">
-          <TabsList variant="line" className="min-w-0 flex-1 justify-start overflow-x-auto">
-            <TabsTrigger value="plan"><FileTextIcon />Plan</TabsTrigger>
-            <TabsTrigger value="preview"><CodeXmlIcon />Preview</TabsTrigger>
-            <TabsTrigger value="changes"><FileDiffIcon />Changes</TabsTrigger>
-            <TabsTrigger value="terminal"><TerminalSquareIcon />Terminal</TabsTrigger>
-            <TabsTrigger value="history"><HistoryIcon />History</TabsTrigger>
-            <TabsTrigger value="checkpoints"><GitCommitHorizontalIcon />Checkpoints</TabsTrigger>
-            <TabsTrigger value="rules"><ShieldCheckIcon />Rules</TabsTrigger>
+        <div className="flex items-center gap-[5px] border-b px-[13px] py-[11px]">
+          <TabsList className="min-w-0 justify-start gap-[5px] bg-transparent p-0">
+            {dockTabDefinitions.map(({ id, label, note, Icon }) => (
+              <Tooltip key={id}>
+                <TooltipTrigger asChild>
+                  <TabsTrigger
+                    value={id}
+                    aria-label={label}
+                    className="size-7 flex-none rounded-[calc(var(--radius)-3px)] p-0 text-muted-foreground data-[state=active]:bg-accent data-[state=active]:text-foreground data-[state=active]:shadow-none hover:bg-accent hover:text-foreground"
+                  >
+                    <Icon className="size-[15px] shrink-0" />
+                  </TabsTrigger>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="bottom"
+                  align="start"
+                  sideOffset={7}
+                  showArrow={false}
+                  className="w-[210px] max-w-none flex-col items-start gap-0 rounded-[calc(var(--radius)-2px)] border border-border bg-card px-[11px] py-[9px] text-card-foreground shadow-[var(--shadow-lg)]"
+                >
+                  <div className="text-[11.5px] text-foreground">{label}</div>
+                  <div className="mt-[3px] text-[11px] leading-[1.45] text-muted-foreground">{note}</div>
+                </TooltipContent>
+              </Tooltip>
+            ))}
           </TabsList>
-          <Button ref={collapseButtonRef} variant="ghost" size="icon-xs" aria-label="Collapse dock" onClick={onCollapse}><PanelRightCloseIcon /></Button>
+          <span className="flex-1" />
+          {pinControl}
+          <Button ref={collapseButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full text-muted-foreground" aria-label="Close" onClick={onCollapse}><XIcon className="size-4" /></Button>
         </div>
         <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
           {previewRefusal ? <Alert><AlertTitle>Remote preview unavailable</AlertTitle><AlertDescription>{previewRefusal}</AlertDescription></Alert> : preview ? (
@@ -630,12 +672,14 @@ export function ArtifactDock({
                 <div className={cn("flex min-w-0 items-center justify-end gap-2", previewControlLayout.wrap && "flex-wrap", previewControlLayout.fullWidth && "w-full")}>
                   <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Open sanitized print view" onClick={() => void openDerivedArtifact("print")}><PrinterIcon data-icon="inline-start" />{derivedArtifactPending === "print" ? "Preparing" : "Print view"}</Button>
                   <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Download sanitized offline HTML copy" onClick={() => void openDerivedArtifact("download")}><DownloadIcon data-icon="inline-start" />{derivedArtifactPending === "download" ? "Preparing" : "Download safe copy"}</Button>
-                  <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
-                    {[390, 768, 1440].map((width) => <ToggleGroupItem key={width} value={String(width)} className="min-h-11 min-w-11" aria-label={`${width} pixel preview`}>{width}</ToggleGroupItem>)}
-                  </ToggleGroup>
+                   <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
+                     {[390, 768, 1440].map((width) => <ToggleGroupItem key={width} value={String(width)} className="min-h-11 min-w-11" aria-label={`${width} pixel preview`}>{width}</ToggleGroupItem>)}
+                   </ToggleGroup>
+                   <Button variant="outline" size="xs" className="min-h-11" aria-label="Open fullscreen preview" onClick={() => setFullscreen(true)}><Maximize2Icon data-icon="inline-start" />Fullscreen</Button>
+
                   {previewVariants.length > 1 ? <Button variant="outline" size="xs" className="min-h-11" aria-pressed={reviewLayout.compare} disabled={stageContainerWidth > 0 && stageContainerWidth < 760} onClick={() => setCompareRequested((value) => !value)}>Compare</Button> : null}
                   {previewVariants.length > 1 && stageContainerWidth > 0 && stageContainerWidth < 760 ? <span className="sr-only" role="status">Compare is unavailable at this width; showing the selected variant.</span> : null}
-                  {!archiveReadOnly ? (
+                  {!readOnly ? (
                     <Button
                       variant={pickerActive ? "secondary" : "outline"}
                       size="xs"
@@ -681,9 +725,22 @@ export function ArtifactDock({
                   />
                 ))}
                 </div>
-              )}
-            </div>
-          ) : (
+               )}
+               {previewVariants.length > 1 ? (
+                 <div className="flex min-h-[46px] flex-wrap items-center gap-3 border-t px-[13px] py-2">
+                   <span className="font-machine text-[10.5px] text-muted-foreground">Viewing · {preview.variant?.label ?? preview.title}</span>
+                   <span className="font-machine text-[10.5px] text-faint">Build basis · {buildBasis?.variant?.label ?? buildBasis?.title}</span>
+                   <span className="flex-1" />
+                   {preview.id === buildBasis?.id ? <Badge variant="success">Chosen build basis</Badge> : (
+                     <Button size="sm" onClick={() => {
+                       setLocalBuildBasisId(preview.id)
+                       onBuildBasisChange?.(preview.id)
+                     }}>Use {preview.variant?.label ?? preview.title} as build basis</Button>
+                   )}
+                 </div>
+               ) : null}
+             </div>
+           ) : (
             <Empty className="min-h-full border">
               <EmptyHeader><EmptyMedia variant="icon"><CodeXmlIcon /></EmptyMedia><EmptyTitle>No preview yet</EmptyTitle><EmptyDescription>HTML artifacts created by the agent appear here.</EmptyDescription></EmptyHeader>
             </Empty>
@@ -698,7 +755,7 @@ export function ArtifactDock({
             <AnnotationComments
               annotations={previewComments}
               anchorResolutions={anchorResolutions}
-              readOnly={archiveReadOnly}
+              readOnly={readOnly}
               onReply={onReplyToAnnotation}
               onSetStatus={onSetAnnotationStatus}
             />
@@ -711,7 +768,7 @@ export function ArtifactDock({
                 <AnnotationComments
                   annotations={otherComments}
                   anchorResolutions={anchorResolutions}
-                  readOnly={archiveReadOnly}
+                  readOnly={readOnly}
                   onReply={onReplyToAnnotation}
                   onSetStatus={onSetAnnotationStatus}
                 />
@@ -726,7 +783,7 @@ export function ArtifactDock({
                 <WorkingPlanCard
                   plan={workingPlan}
                   running={planRunning}
-                  readOnly={archiveReadOnly}
+                  readOnly={readOnly}
                   {...(onEditPlan ? { onEditPlan } : {})}
                   {...(onDiscardPlanEdit ? { onDiscardEdit: onDiscardPlanEdit } : {})}
                 />
@@ -760,7 +817,7 @@ export function ArtifactDock({
         <TabsContent value="changes" className="min-h-0">
           <SessionEvidencePanel
             connected={connected}
-            readOnly={archiveReadOnly}
+            readOnly={readOnly}
             sessionId={snapshot.activeSessionId}
             onLoad={onLoadSessionEvidence}
             onRevertFile={onRevertSessionFile}
@@ -779,6 +836,7 @@ export function ArtifactDock({
             <TerminalPane
               connected={connected}
               controls={terminalControls}
+              readOnly={readOnly}
               machineName={snapshot.machine.name}
               sessionId={snapshot.activeSessionId}
             />
@@ -797,7 +855,8 @@ export function ArtifactDock({
             // from the shell: the dock cannot see the thread's own pending
             // state, and a snapshot arrives too late to stop a second click.
             restoreBlocked={
-              restoreBusy
+              readOnly
+              || restoreBusy
               || sessionIsArchiveReadOnly(activeSession(snapshot))
               || Boolean(activeSession(snapshot)?.activeTurnId)
             }
@@ -812,20 +871,18 @@ export function ArtifactDock({
             onRestoreCheckpoint={onRestoreCheckpoint}
             onForkCheckpoint={onForkCheckpoint}
             restoreBlocked={
-              restoreBusy
+              readOnly
+              || restoreBusy
               || sessionIsArchiveReadOnly(activeSession(snapshot))
               || Boolean(activeSession(snapshot)?.activeTurnId)
             }
           />
         </TabsContent>
         <TabsContent value="rules" className="min-h-0">
-          {/* Rules are the project's, not the session's: an archived session
-              selected in the thread does not take away the right to revoke a
-              rule. The protocol has no watch-only client, so nothing dims
-              Revoke here; a refusal comes back from the daemon and is shown. */}
           {onRevokeApprovalRule && onLoadHardGates ? (
             <RulesPanel
               rules={snapshot.approvalRules.filter((rule) => rule.projectId === snapshot.project?.id)}
+              readOnly={clientAccess === "watching"}
               projectName={snapshot.project?.name ?? "this project"}
               machineName={snapshot.machine.name}
               onRevoke={onRevokeApprovalRule}
@@ -834,8 +891,30 @@ export function ArtifactDock({
           ) : null}
         </TabsContent>
       </Tabs>
+      <Dialog open={fullscreen} onOpenChange={setFullscreen}>
+        <DialogContent className="flex h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] flex-col gap-3 p-4">
+          <DialogHeader>
+            <DialogTitle>{preview?.title ?? "Preview"}</DialogTitle>
+            <DialogDescription className="font-machine text-mono-xs">{preview?.path ?? "No preview selected"} · read-only · {deviceWidth}px</DialogDescription>
+          </DialogHeader>
+          {preview && previewUrl ? (
+            <iframe
+              className="min-h-0 flex-1 w-full border bg-background"
+              referrerPolicy="no-referrer"
+              sandbox="allow-scripts"
+              src={previewUrl}
+              title={`${preview.title} fullscreen`}
+            />
+          ) : (
+            <Alert><AlertTitle>Preview unavailable</AlertTitle><AlertDescription>The authorized preview is not ready.</AlertDescription></Alert>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFullscreen(false)}>Exit fullscreen</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog
-        open={!archiveReadOnly && selection !== null}
+        open={!readOnly && selection !== null}
         onOpenChange={(open) => {
           if (open || annotationPending) return
           setSelection(null)
@@ -890,6 +969,7 @@ export function ArtifactDock({
         </DialogContent>
       </Dialog>
     </aside>
+    </TooltipProvider>
   )
 }
 
@@ -1058,17 +1138,5 @@ export function AnnotationComments({
         </Empty>
       )}
     </ScrollArea>
-  )
-}
-
-export function DockRail({ onExpand, expandButtonRef }: { onExpand: () => void; expandButtonRef?: RefObject<HTMLButtonElement | null> }) {
-  // One icon per dock tab, in the tab list's order.
-  const items = [FileTextIcon, CodeXmlIcon, FileDiffIcon, TerminalSquareIcon, HistoryIcon, GitCommitHorizontalIcon, ShieldCheckIcon]
-  return (
-    <aside aria-label="Collapsed artifact dock" data-workspace-panel="dock-rail" className="flex w-[var(--shell-rail)] shrink-0 flex-col items-center gap-2 border-l bg-sidebar py-2">
-      <Tooltip><TooltipTrigger asChild><Button ref={expandButtonRef} variant="ghost" size="icon-sm" aria-label="Expand artifact dock" onClick={onExpand}><PanelRightCloseIcon className="rotate-180" /></Button></TooltipTrigger><TooltipContent side="left">Expand artifact dock</TooltipContent></Tooltip>
-      <Separator />
-      {items.map((Icon, index) => <Button key={index} variant="ghost" size="icon-sm" aria-label="Artifact dock item" onClick={onExpand}><Icon /></Button>)}
-    </aside>
   )
 }
