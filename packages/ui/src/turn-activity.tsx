@@ -45,17 +45,22 @@ export const TurnActivity = memo(function TurnActivity({
       <button
         type="button"
         aria-expanded={open}
+        // Until the first tool call there is nothing to expand, and a chip that
+        // opens an empty list reads as a broken control.
+        disabled={items.length === 0}
         onClick={() => setOpen((current) => !current)}
-        className="flex w-fit items-center gap-2 rounded-full border border-border px-3 py-1 text-muted-foreground"
+        className="flex w-fit items-center gap-2 rounded-full border border-border px-3 py-1 text-muted-foreground disabled:cursor-default disabled:opacity-100"
       >
-        <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+        {items.length > 0 ? (
+          <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+        ) : null}
         <span className="text-[11.5px]">{activityLabel(items, running)}</span>
         {meta ? <span className="font-mono text-[10.5px] text-faint">{meta}</span> : null}
         {running ? (
           // The only moving thing on the screen, and it says the turn is alive
           // rather than estimating a duration nobody can know.
-          <span aria-hidden className="relative block h-[3px] w-8 overflow-hidden rounded-full bg-muted">
-            <span className="absolute inset-y-0 left-0 w-1/3 animate-pulse rounded-full bg-primary" />
+          <span aria-hidden className="relative block h-[3px] w-[34px] overflow-hidden rounded-[3px] bg-muted">
+            <span className="sweep-bar absolute inset-0 block w-[30%] rounded-[3px] bg-primary" />
           </span>
         ) : null}
       </button>

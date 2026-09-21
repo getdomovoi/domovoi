@@ -389,6 +389,18 @@
   animation: dv-shimmer 1.6s linear infinite;
 }
 
+/* The working bar. A short segment travels the whole track and leaves it, so a
+   turn that has produced nothing yet still says it is alive. Fading in place
+   reads the same as a render that has stopped. */
+@keyframes dv-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(460%); }
+}
+
+@utility sweep-bar {
+  animation: dv-sweep 1.5s linear infinite;
+}
+
 @utility text-micro {
   font-size: var(--text-micro);
 }

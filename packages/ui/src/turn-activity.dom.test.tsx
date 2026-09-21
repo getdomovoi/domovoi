@@ -37,10 +37,10 @@ it("keeps output behind a second click, so one failure does not flood the thread
 
 it("moves only while the turn is running", () => {
   const { container: live } = render(<TurnActivity items={items} running />)
-  expect(live.querySelectorAll(".animate-pulse")).toHaveLength(1)
+  expect(live.querySelectorAll(".sweep-bar")).toHaveLength(1)
   cleanup()
   const { container: still } = render(<TurnActivity items={items} running={false} />)
-  expect(still.querySelectorAll(".animate-pulse")).toHaveLength(0)
+  expect(still.querySelectorAll(".sweep-bar")).toHaveLength(0)
 })
 
 it("says it is working before any tool call has happened", () => {
