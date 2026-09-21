@@ -21,7 +21,7 @@ describe("thread follow state", () => {
   it("names the pill: the count for new output, the wait for a gate, nothing at the bottom", () => {
     expect(threadFollowPillText("scrolled", 3)).toBe("3 new")
     expect(threadFollowPillText("scrolled", 1)).toBe("1 new")
-    expect(threadFollowPillText("scrolled", 0)).toBeUndefined()
+    expect(threadFollowPillText("scrolled", 0)).toBe("Jump to latest")
     expect(threadFollowPillText("gate", 0)).toBe("Waiting on you")
     expect(threadFollowPillText("bottom", 9)).toBeUndefined()
   })
