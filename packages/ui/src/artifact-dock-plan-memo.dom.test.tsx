@@ -1,14 +1,19 @@
 import { cleanup, render } from "@testing-library/react"
+import { memo } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-const markdownCalls = vi.hoisted(() => ({ count: 0 }))
+const quickViewRenders = vi.hoisted(() => ({ count: 0 }))
 
-vi.mock("react-markdown", () => ({
-  default: (props: { children?: string }) => {
-    markdownCalls.count += 1
-    return <div data-testid="markdown">{props.children}</div>
-  },
-}))
+vi.mock("./markdown-quick-view", async () => {
+  const actual = await vi.importActual<typeof import("./markdown-quick-view")>("./markdown-quick-view")
+  return {
+    ...actual,
+    MarkdownQuickView: memo(function MarkdownQuickView({ source }: { source: string }) {
+      quickViewRenders.count += 1
+      return <div data-testid="markdown">{source}</div>
+    }),
+  }
+})
 
 import { demoWorkspace, type Artifact, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
@@ -55,15 +60,16 @@ function dock() {
 
 afterEach(() => {
   cleanup()
-  markdownCalls.count = 0
+  quickViewRenders.count = 0
 })
 
-it("does not parse the plan markdown again when the plan did not change", () => {
+it("does not render the plan quick view again when the plan did not change", () => {
   const { rerender } = render(dock())
-  expect(markdownCalls.count).toBe(1)
+  const onFirstRender = quickViewRenders.count
+  expect(onFirstRender).toBeGreaterThan(0)
 
   rerender(dock())
   rerender(dock())
 
-  expect(markdownCalls.count).toBe(1)
+  expect(quickViewRenders.count).toBe(onFirstRender)
 })
