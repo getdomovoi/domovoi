@@ -12,16 +12,18 @@ afterEach(cleanup)
 
 type SendSpy = (sessionId: string, prompt: string) => Promise<void>
 
-function ThreadWith({ snapshot, onSend, connected = true }: {
+function ThreadWith({ snapshot, onSend, connected = true, surface = "desktop" }: {
   snapshot: WorkspaceSnapshot
   onSend: SendSpy
   connected?: boolean
+  surface?: "desktop" | "web"
 }) {
   const [queued, setQueued] = useState<QueuedMessage>()
   return (
     <Thread
       snapshot={snapshot}
       connected={connected}
+      surface={surface}
       queued={queued}
       onQueuedChange={setQueued}
       onResolve={vi.fn(async () => {})}
@@ -118,4 +120,25 @@ it("names what the field is for in each state", async () => {
   cleanup()
   render(<ThreadWith snapshot={withActiveTurn(false)} onSend={send} connected={false} />)
   expect(field().getAttribute("placeholder")).toBe("Cannot send, the daemon is not answering")
+})
+
+it("disables send while the daemon is not answering", async () => {
+  const user = userEvent.setup()
+  const onSend = vi.fn<SendSpy>(async () => {})
+  render(<ThreadWith snapshot={withActiveTurn(false)} onSend={onSend} connected={false} />)
+
+  await user.type(field(), "Do the work")
+  const send = screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement
+  expect(send.disabled).toBe(true)
+  await user.click(send)
+  expect(onSend).not.toHaveBeenCalled()
+})
+
+it("uses the signed browser placeholder while a turn is running or idle", () => {
+  const send = vi.fn<SendSpy>(async () => {})
+  const { rerender } = render(<ThreadWith snapshot={withActiveTurn(false)} onSend={send} surface="web" />)
+  expect(field().getAttribute("placeholder")).toBe("Steer it, or queue the next message")
+
+  rerender(<ThreadWith snapshot={withActiveTurn(true)} onSend={send} surface="web" />)
+  expect(field().getAttribute("placeholder")).toBe("Steer it, or queue the next message")
 })

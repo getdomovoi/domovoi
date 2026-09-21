@@ -110,6 +110,12 @@ export function artifactAuthorizationKey(targets: readonly ArtifactAuthorization
   return JSON.stringify(targets.map(({ sessionId, id, revision }) => [sessionId, id, revision]))
 }
 
+export const AnnotationDraftCopy = {
+  placeholder: "Say what is wrong with this element",
+  submit: "Post",
+  cancel: "Cancel",
+} as const
+
 // The key is this module's own JSON.stringify above, so an unreadable one is a
 // bug here and not a damaged file; an entry that is not a triple is dropped.
 function artifactAuthorizationTargets(key: string): ArtifactAuthorizationTarget[] {
@@ -162,6 +168,7 @@ export function ArtifactDock({
   defaultTab,
   onEditPlan,
   onDiscardPlanEdit,
+  onCarryOnPlan,
   tab,
   onTabChange,
   rpcUrl,
@@ -203,6 +210,7 @@ export function ArtifactDock({
     draftSteps: { id?: string, text: string }[]
   }) => Promise<void>) | undefined
   onDiscardPlanEdit?: ((editId: string) => Promise<void>) | undefined
+  onCarryOnPlan?: (() => Promise<void>) | undefined
   tab?: string | undefined
   onTabChange?: ((tab: string) => void) | undefined
   rpcUrl: string
@@ -336,10 +344,11 @@ export function ArtifactDock({
   const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
   const [uncontrolledTab, setUncontrolledTab] = useState<string>(defaultTab)
   const activeTab = tab ?? uncontrolledTab
-  const setActiveTab = (next: string) => {
+  const setActiveTab = useCallback((next: string) => {
     setUncontrolledTab(next)
     onTabChange?.(next)
-  }
+  }, [onTabChange])
+  const openPreviewTab = useCallback(() => setActiveTab("preview"), [setActiveTab])
   const stageObservationKey = previewStageObservationKey(preview?.id, previewError)
 
   useEffect(() => {
@@ -784,6 +793,7 @@ export function ArtifactDock({
                   plan={workingPlan}
                   running={planRunning}
                   readOnly={readOnly}
+                  {...(onCarryOnPlan ? { onCarryOn: () => onCarryOnPlan().then(onCollapse) } : {})}
                   {...(onEditPlan ? { onEditPlan } : {})}
                   {...(onDiscardPlanEdit ? { onDiscardEdit: onDiscardPlanEdit } : {})}
                 />
@@ -797,7 +807,7 @@ export function ArtifactDock({
                   <h2 className="m-0 text-[13px] font-semibold">{plan.title}</h2>
                   <p className="mt-1 font-machine text-mono-xs text-faint">revision {plan.revision}</p>
                 </div>
-                <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={() => setActiveTab("preview")} />
+                <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={openPreviewTab} />
                 {planCommentsBlock}
               </article>
             </ScrollArea>
@@ -946,7 +956,7 @@ export function ArtifactDock({
                 rows={4}
                 autoFocus
                 disabled={annotationPending}
-                placeholder="Describe what should change or what needs review"
+                placeholder={AnnotationDraftCopy.placeholder}
                 onChange={(event) => setComment(event.target.value)}
               />
             </Field>
@@ -957,13 +967,13 @@ export function ArtifactDock({
               disabled={annotationPending}
               onClick={() => setSelection(null)}
             >
-              Cancel
+              {AnnotationDraftCopy.cancel}
             </Button>
             <Button
               disabled={!comment.trim() || annotationPending}
               onClick={() => void saveAnnotation()}
             >
-              {annotationPending ? "Saving annotation" : "Save annotation"}
+              {annotationPending ? "Posting" : AnnotationDraftCopy.submit}
             </Button>
           </DialogFooter>
         </DialogContent>

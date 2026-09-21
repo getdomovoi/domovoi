@@ -1,5 +1,5 @@
 import { ChevronRightIcon } from "lucide-react"
-import { useState } from "react"
+import { memo, useState } from "react"
 
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { cn } from "./lib/utils"
@@ -23,7 +23,10 @@ function activityLabel(items: readonly ToolActivity[], running: boolean): string
   return failures > 0 ? `${counted}, ${failures} failed` : counted
 }
 
-export function TurnActivity({
+// A streaming reply re-renders the thread once per token. Every row above the
+// growing one has the tool calls it already had, and groupThreadActivity hands
+// back the same objects for them, so this draws only when its own turn changes.
+export const TurnActivity = memo(function TurnActivity({
   items,
   running,
   meta,
@@ -93,4 +96,4 @@ export function TurnActivity({
       ) : null}
     </div>
   )
-}
+})

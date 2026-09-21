@@ -106,6 +106,32 @@ describe("useThreadFollow", () => {
     expect(screen.getByTestId("unseen").textContent).toBe("0")
   })
 
+  it("follows a message that grows while the row count holds still", () => {
+    const { rerender } = render(<Probe itemCount={3} gated={false} />)
+    const viewport = screen.getByTestId("viewport")
+    size(viewport, 1000)
+    rerender(<Probe itemCount={3} gated={false} />)
+    expect(viewport.scrollTop).toBe(1000)
+
+    size(viewport, 1600)
+    rerender(<Probe itemCount={3} gated={false} />)
+    expect(viewport.scrollTop).toBe(1600)
+    expect(screen.getByTestId("state").textContent).toBe("bottom")
+  })
+
+  it("counts nothing new when a message grows while the person is scrolled up", () => {
+    const { rerender } = render(<Probe itemCount={3} gated={false} />)
+    const viewport = screen.getByTestId("viewport")
+    size(viewport, 1000)
+    viewport.scrollTop = 100
+    fireEvent.scroll(viewport)
+
+    size(viewport, 1600)
+    rerender(<Probe itemCount={3} gated={false} />)
+    expect(viewport.scrollTop).toBe(100)
+    expect(screen.getByTestId("unseen").textContent).toBe("0")
+  })
+
   it("treats another session's thread as a fresh scroll, not as new output", () => {
     const { rerender } = render(<Probe itemCount={3} gated={false} threadKey="s1" />)
     const viewport = screen.getByTestId("viewport")

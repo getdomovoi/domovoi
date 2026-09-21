@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import {
   ArchiveIcon,
   ArrowUpIcon,
@@ -87,7 +87,7 @@ import { FloatingSurface } from "./floating-surface"
 import { ModeChip } from "./mode-chip.js"
 import { permissionModeLabel, withPermissionMode } from "./permission-mode.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
-import { groupThreadActivity } from "./thread-activity-groups"
+import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
 import { TurnActivity } from "./turn-activity"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { UsageChip } from "./usage-chip.js"
@@ -338,12 +338,14 @@ export function SessionRow({
 function ApprovalCard({
   approval,
   onResolve,
+  surface,
 }: {
   approval: ApprovalRequest
   onResolve: (
     decision: ApprovalDecision,
     explanation?: string,
   ) => void
+  surface: "desktop" | "web"
 }) {
   const explainTriggerRef = useRef<HTMLButtonElement>(null)
   const [explainOpen, setExplainOpen] = useState(false)
@@ -368,8 +370,8 @@ function ApprovalCard({
     <Alert variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
       <CircleStopIcon />
       <AlertTitle className="flex items-center gap-2 text-[12.5px]">
-        Approval required
-        {approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
+        {surface === "web" && approval.risk === "hard-gate" ? "Approval required, hard gate" : "Approval required"}
+        {surface === "desktop" && approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
         <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">
           {approval.agent} · {approval.mode}
         </span>
@@ -426,8 +428,9 @@ function ApprovalCard({
         ) : (
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
-            <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>Always in this project</Button>
+            <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>{surface === "web" ? "Always here" : "Always in this project"}</Button>
             <Button ref={explainTriggerRef} variant="outline" size="sm" onClick={() => setExplainOpen(true)}>Deny</Button>
+            {surface === "web" ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}
           </div>
         )}
       </AlertDescription>
@@ -436,7 +439,7 @@ function ApprovalCard({
 }
 
 
-export function CheckpointThreadItem({
+export const CheckpointThreadItem = memo(function CheckpointThreadItem({
   item,
   disabled,
   onRestore,
@@ -453,7 +456,7 @@ export function CheckpointThreadItem({
       ) : null}
     </div>
   )
-}
+})
 
 export const archiveSessionDescription = "Domovoi creates a final checkpoint, stops provider and terminal resources, and removes the isolated session worktree. Durable history, checkpoint refs, artifact and annotation records, audit refs, and the archive branch are retained. The source checkout's branch, HEAD, status, and files remain unchanged."
 
@@ -583,6 +586,7 @@ export function Thread({
   machineMenuRequest,
   skillNames,
   skillCatalog,
+  surface = "desktop",
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -662,6 +666,7 @@ export function Thread({
   onOpenSkills?: (() => void) | undefined
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
+  surface?: "desktop" | "web" | undefined
 }) {
   const watching = clientAccess === "watching"
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
@@ -681,7 +686,17 @@ export function Thread({
   const slashQuery = prompt.split(/\s/u, 1)[0] ?? ""
   const slashOpen = connected && !watching && prompt.startsWith("/") && !slashDismissed
   const threadViewport = useRef<HTMLDivElement>(null)
-  const threadRows = active ? groupThreadActivity(renderedThreadForActiveSession(snapshot)) : []
+  const previousThreadRows = useRef<readonly ThreadRow[]>([])
+  const renderedThread = useMemo(() => renderedThreadForActiveSession(snapshot), [snapshot])
+  const threadRows = useMemo(
+    () => active
+      ? groupThreadActivity(renderedThread, previousThreadRows.current)
+      : [],
+    [active, renderedThread],
+  )
+  useEffect(() => {
+    previousThreadRows.current = threadRows
+  }, [threadRows])
   const follow = useThreadFollow(threadViewport, {
     itemCount: threadRows.length + (approval ? 1 : 0),
     gated: Boolean(approval),
@@ -709,6 +724,24 @@ export function Thread({
   const [restartPending, setRestartPending] = useState(false)
   const [restartError, setRestartError] = useState("")
   const [desktopError, setDesktopError] = useState("")
+  const archiveReadOnly = sessionIsArchiveReadOnly(active)
+  const readOnly = archiveReadOnly || watching
+  const activeSessionId = active?.id
+  const restoreCheckpoint = useCallback(async (checkpointId: string) => {
+    if (!activeSessionId || checkpointRestoreBlocked(pending, readOnly)) return
+    setPending(true)
+    setSendError("")
+    try {
+      await onRestoreCheckpoint(activeSessionId, checkpointId)
+    } catch (cause) {
+      setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
+    } finally {
+      setPending(false)
+    }
+  }, [activeSessionId, onRestoreCheckpoint, pending, readOnly])
+  const restoreCheckpointFromRow = useCallback((checkpointId: string) => {
+    void restoreCheckpoint(checkpointId)
+  }, [restoreCheckpoint])
   const addAttachments = (next: SessionAttachment[]) => {
     const combined = [...attachments, ...next]
     if (combined.length > desktopAttachmentLimit) {
@@ -791,8 +824,6 @@ export function Thread({
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit ? [item.id] : []
   )
 
-  const archiveReadOnly = sessionIsArchiveReadOnly(active)
-  const readOnly = archiveReadOnly || watching
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   const forkCheckpoint = snapshot.thread.filter((item) =>
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit
@@ -952,19 +983,6 @@ export function Thread({
       setRestartError(cause instanceof Error ? cause.message : "The provider thread could not be restarted")
     } finally {
       setRestartPending(false)
-    }
-  }
-
-  const restoreCheckpoint = async (checkpointId: string) => {
-    if (checkpointRestoreBlocked(pending, readOnly)) return
-    setPending(true)
-    setSendError("")
-    try {
-      await onRestoreCheckpoint(active.id, checkpointId)
-    } catch (cause) {
-      setSendError(cause instanceof Error ? cause.message : "The checkpoint could not be restored")
-    } finally {
-      setPending(false)
     }
   }
 
@@ -1131,7 +1149,7 @@ export function Thread({
             }
             const item = row.item
             if (item.kind === "checkpoint") {
-              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || restoreBusy || readOnly || Boolean(active.activeTurnId)} onRestore={(checkpointId) => void restoreCheckpoint(checkpointId)} />
+              return <CheckpointThreadItem key={item.id} item={item} disabled={pending || restoreBusy || readOnly || Boolean(active.activeTurnId)} onRestore={restoreCheckpointFromRow} />
             }
             if (item.kind === "user") {
               return (
@@ -1166,7 +1184,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !readOnly ? <ApprovalCard approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
+          {approval && !readOnly ? <ApprovalCard surface={surface} approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (
@@ -1318,7 +1336,9 @@ export function Thread({
             className={slashOpen
               ? "sr-only"
               : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] focus-visible:ring-0 dark:bg-transparent"}
-            placeholder={composerPlaceholder({ offline: !connected, working: Boolean(active.activeTurnId) })}
+            placeholder={surface === "web" && connected
+              ? "Steer it, or queue the next message"
+              : composerPlaceholder({ offline: !connected, working: Boolean(active.activeTurnId) })}
             value={prompt}
             onChange={(event) => {
               const next = event.target.value
@@ -1505,7 +1525,7 @@ export function Thread({
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
-              ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><ArrowUpIcon /></Button></div>
+              ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || !connected || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><ArrowUpIcon /></Button></div>
           </div>
           {!readOnly ? (
             <div className="sr-only">
