@@ -41,7 +41,7 @@ it("stops the sweep when the viewer asks for reduced motion", () => {
       }
     }
   }
-  const override = /\.sweep-bar \{([\s\S]*?)\n  \}/.exec(body)
+  const override = /\.sweep-bar \{([\s\S]*?)\n {2}\}/.exec(body)
   expect(override, "sweep-bar keeps animating under reduced motion").not.toBeNull()
   expect(override![1]).toContain("animation: none")
 })
