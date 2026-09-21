@@ -630,9 +630,9 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     sessionId: z.string().min(1),
     kind: z.literal("tool"),
     turnId: sessionTurnIdSchema.optional(),
-    // Nothing emits "file-change" any more, but a snapshot written before it was
-    // retired still carries it, and narrowing the enum would make that snapshot
-    // fail to parse on startup. Accepted on read, never produced.
+    // "file-change" went unproduced for a while and the enum kept it so an older
+    // snapshot would still parse on startup. The daemon emits it again, one row
+    // per provider file change, so both kinds are produced and read.
     tool: toolKindSchema,
     status: toolStatusSchema,
     title: z.string(),
