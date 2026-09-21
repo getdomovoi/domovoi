@@ -318,6 +318,7 @@ export function ArtifactDock({
     setBridgeState(nextBridgeState)
   }
   const [pickerActive, setPickerActive] = useState(false)
+  const [planCarryOnPending, setPlanCarryOnPending] = useState(false)
   const [selection, setSelection] = useState<PreviewBridgeSelectionMessage | null>(null)
   const [selectionVisualContext, setSelectionVisualContext] = useState<
     RpcParams<"annotation.create">["visualContextUpload"]
@@ -810,6 +811,29 @@ export function ArtifactDock({
                 <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={openPreviewTab} />
                 {planCommentsBlock}
               </article>
+              {/* A plan written as prose carries no steps, so the card that
+                  normally holds this row never renders. The decision belongs to
+                  the plan either way: a plan nobody can answer cannot be
+                  steered. */}
+              {onCarryOnPlan && !readOnly ? (
+                <div className="flex items-center gap-2 border-t px-4 py-3">
+                  <Button
+                    size="sm"
+                    disabled={planCarryOnPending}
+                    onClick={() => {
+                      setPlanCarryOnPending(true)
+                      void onCarryOnPlan().then(
+                        () => { setPlanCarryOnPending(false); onCollapse() },
+                        () => setPlanCarryOnPending(false),
+                      )
+                    }}
+                  >
+                    {planCarryOnPending ? "Sending" : "Looks right, carry on"}
+                  </Button>
+                  <span className="flex-1" />
+                  <span className="font-machine text-mono-xs text-faint">select any line to comment on it</span>
+                </div>
+              ) : null}
             </ScrollArea>
           ) : (
             <ScrollArea className="h-full">
