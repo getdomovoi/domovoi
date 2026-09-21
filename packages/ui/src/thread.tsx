@@ -70,6 +70,7 @@ import {
 import { Input } from "./components/ui/input"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
+import { sessionDraftStore } from "./session-draft"
 import { useThreadFollow } from "./thread-follow"
 import { composerPlaceholder, composerPlatform, sendHint } from "./composer-keys"
 import { Textarea } from "./components/ui/textarea"
@@ -673,8 +674,13 @@ export function Thread({
   const approval = active
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
     : undefined
-  const [prompt, setPrompt] = useState("")
-  const [attachments, setAttachments] = useState<SessionAttachment[]>([])
+  // Switching sessions remounts this component, which resets the pending send,
+  // the alerts and the receipts. That is correct for all of it except the part
+  // the person typed, so the composer starts from the stored draft instead of
+  // from empty. Everything else still resets.
+  const draftSessionId = snapshot.activeSessionId
+  const [prompt, setPrompt] = useState(() => sessionDraftStore.read(draftSessionId).prompt)
+  const [attachments, setAttachments] = useState<SessionAttachment[]>(() => [...sessionDraftStore.read(draftSessionId).attachments])
   const [attachmentPathMode, setAttachmentPathMode] = useState<"repo" | "machine" | null>(null)
   const [attachmentPath, setAttachmentPath] = useState("")
   const [attachmentError, setAttachmentError] = useState("")
@@ -703,8 +709,13 @@ export function Thread({
     threadKey: activeThreadKey(snapshot),
   })
   const followPill = threadFollowPillText(follow.state, follow.unseen)
-  const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(undefined)
-  const [promptEditorOpen, setPromptEditorOpen] = useState(false)
+  const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(() => sessionDraftStore.read(draftSessionId).skillSelection)
+  const [promptEditorOpen, setPromptEditorOpen] = useState(() => sessionDraftStore.read(draftSessionId).promptEditorOpen)
+  // A send clears the prompt, which writes an empty draft, which the store reads
+  // as no draft at all. So nothing has to clear it by hand.
+  useEffect(() => {
+    sessionDraftStore.write(draftSessionId, { prompt, attachments, skillSelection, promptEditorOpen })
+  }, [draftSessionId, prompt, attachments, skillSelection, promptEditorOpen])
   const [pairingMachine, setPairingMachine] = useState(false)
   const [ownTransferTargetId, setOwnTransferTargetId] = useState<string | null>(null)
   // The composer's machine menu and the launcher both name a target. The shell
