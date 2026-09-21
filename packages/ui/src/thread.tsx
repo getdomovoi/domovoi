@@ -102,6 +102,7 @@ import {
 import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { MarkdownQuickView } from "./markdown-quick-view"
+import { stripPlanTags } from "./plan-tag-strip"
 import { PromptEditorDialog } from "./prompt-editor"
 import {
   activeSessionCount,
@@ -1208,7 +1209,7 @@ export function Thread({
               return <PolicyRefusalCard key={item.id} refusal={item} />
             }
             if (item.kind === "tool") return null
-            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
+            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={stripPlanTags(item.body)} /></div>
           })}
           {workingRow ? <TurnActivity items={[]} running /> : null}
           {transferReceipt ? (
