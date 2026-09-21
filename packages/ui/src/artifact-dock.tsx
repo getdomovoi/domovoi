@@ -319,6 +319,7 @@ export function ArtifactDock({
   }
   const [pickerActive, setPickerActive] = useState(false)
   const [planCarryOnPending, setPlanCarryOnPending] = useState(false)
+  const [planCarryOnError, setPlanCarryOnError] = useState("")
   const [selection, setSelection] = useState<PreviewBridgeSelectionMessage | null>(null)
   const [selectionVisualContext, setSelectionVisualContext] = useState<
     RpcParams<"annotation.create">["visualContextUpload"]
@@ -816,22 +817,32 @@ export function ArtifactDock({
                   the plan either way: a plan nobody can answer cannot be
                   steered. */}
               {onCarryOnPlan && !readOnly ? (
-                <div className="flex items-center gap-2 border-t px-4 py-3">
-                  <Button
-                    size="sm"
-                    disabled={planCarryOnPending}
-                    onClick={() => {
-                      setPlanCarryOnPending(true)
-                      void onCarryOnPlan().then(
-                        () => { setPlanCarryOnPending(false); onCollapse() },
-                        () => setPlanCarryOnPending(false),
-                      )
-                    }}
-                  >
-                    {planCarryOnPending ? "Sending" : "Looks right, carry on"}
-                  </Button>
-                  <span className="flex-1" />
-                  <span className="font-machine text-mono-xs text-faint">select any line to comment on it</span>
+                <div className="flex flex-col gap-2 border-t px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      disabled={planCarryOnPending}
+                      onClick={() => {
+                        setPlanCarryOnError("")
+                        setPlanCarryOnPending(true)
+                        void onCarryOnPlan().then(
+                          () => { setPlanCarryOnPending(false); onCollapse() },
+                          (cause: unknown) => {
+                            setPlanCarryOnPending(false)
+                            setPlanCarryOnError(cause instanceof Error ? cause.message : "The plan reply could not be sent")
+                          },
+                        )
+                      }}
+                    >
+                      {planCarryOnPending ? "Sending" : "Looks right, carry on"}
+                    </Button>
+                  </div>
+                  {/* A button that returns from "Sending" in silence reads as a
+                      plan the agent took. The refusal belongs next to the
+                      control that asked for it. */}
+                  {planCarryOnError ? (
+                    <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">{planCarryOnError}</p>
+                  ) : null}
                 </div>
               ) : null}
             </ScrollArea>

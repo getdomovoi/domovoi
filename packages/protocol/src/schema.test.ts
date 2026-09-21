@@ -358,6 +358,21 @@ describe("workspace protocol", () => {
     expect(threadItemSchema.safeParse({ ...tool, files: Array.from({ length: 257 }, (_, index) => `src/${index}.ts`) }).success).toBe(false)
   })
 
+  // A leading or trailing space is a legal character in a path name. Trimming it
+  // reports a file the provider never named, and can fold two real paths into
+  // one so the count lies. Whitespace alone is still not a path.
+  it("reports the touched path the provider named", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "command", status: "completed",
+      title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    const parsed = threadItemSchema.safeParse({ ...tool, files: [" src/a.ts", "src/a.ts"] })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.kind === "tool" ? parsed.data.files : undefined)
+      .toEqual([" src/a.ts", "src/a.ts"])
+    expect(threadItemSchema.safeParse({ ...tool, files: ["   "] }).success).toBe(false)
+  })
+
   it("defaults durable skill reviews for older snapshots", () => {
     const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
     delete legacy.skillEnablements

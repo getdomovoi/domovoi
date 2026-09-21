@@ -639,7 +639,12 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     // The files this call touched, so a client can say how much of the worktree
     // a turn has moved without parsing the title. Absent on a snapshot written
     // before the field existed, and absent on a call that touched none.
-    files: z.array(z.string().trim().min(1).check(utf16MaxLength(1_024))).max(256).optional(),
+    // Reported verbatim: a space is a legal character in a path name, so
+    // trimming would name a file the provider never did and could fold two
+    // real paths into one. Whitespace alone is still not a path.
+    files: z.array(
+      z.string().min(1).check(utf16MaxLength(1_024)).refine((path) => path.trim().length > 0),
+    ).max(256).optional(),
     output: z.string().optional(),
     createdAt: dateTimeSchema,
   }),

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it } from "vitest"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
+  fail,
   installFakeWebSocket,
   workspaceSnapshot,
   type FakeWebSocketHarness,
@@ -41,4 +42,41 @@ it("lets a prose plan be accepted", async () => {
   await settle()
 
   expect(screen.getByRole("button", { name: "Looks right, carry on" })).toBeTruthy()
+})
+
+const openProsePlan = async () => {
+  const snapshot = workspaceSnapshot()
+  snapshot.workingPlans = []
+  snapshot.artifacts = snapshot.artifacts.map((artifact) =>
+    artifact.id === "artifact-plan" ? { ...artifact, content: "## Finish plan\n\nStep one." } : artifact,
+  )
+  render(<WorkspaceShell />)
+  await act(async () => { completeHandshake(harness.socket(0), snapshot) })
+  await settle()
+  await openSheet()
+  await userEvent.setup().click(screen.getByRole("tab", { name: "Plan preview" }))
+  await settle()
+}
+
+// A button that comes back from "Sending" with nothing said reads as a plan the
+// agent accepted. The refusal has to reach the person who pressed it.
+it("says so when the plan reply is refused", async () => {
+  await openProsePlan()
+  await userEvent.setup().click(screen.getByRole("button", { name: "Looks right, carry on" }))
+  await settle()
+  await act(async () => {
+    fail(harness.socket(0), "session.send", { code: -32602, message: "The session is read only" })
+  })
+  await settle()
+
+  expect(screen.getByText("The session is read only")).toBeTruthy()
+})
+
+// The prose branch renders a read-only quick view. Nothing in it carries a
+// selection or opens the annotation flow, so copy that invites a line comment
+// promises a control this branch does not have.
+it("does not offer a comment the prose branch cannot take", async () => {
+  await openProsePlan()
+
+  expect(screen.queryByText(/select any line to comment/iu)).toBeNull()
 })
