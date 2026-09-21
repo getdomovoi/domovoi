@@ -1,5 +1,6 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { cleanup, render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { Thread } from "./thread"
@@ -74,4 +75,54 @@ it("does not add a second row beside the calls it already made", () => {
   // The row holding the calls is the running one, so nothing in a running turn
   // reads as a finished count.
   expect(screen.queryByText(/tool calls?$/u)).toBeNull()
+})
+
+function snapshotWithTouchedFiles(running: boolean): WorkspaceSnapshot {
+  const snapshot = snapshotWithRunningTurn(running)
+  const sessionId = snapshot.activeSessionId!
+  snapshot.thread = [
+    ...snapshot.thread,
+    {
+      id: "tool-1",
+      sessionId,
+      kind: "tool",
+      tool: "file-change",
+      title: "File changes",
+      status: running ? "running" : "completed",
+      createdAt: "2026-09-08T09:00:01.000Z",
+      files: [{ path: "src/webhooks/handler.ts", additions: 62, deletions: 14 }],
+    },
+  ]
+  return snapshot
+}
+
+it("names the files a finished turn touched", () => {
+  render(<Thread snapshot={snapshotWithTouchedFiles(false)} connected queued={undefined} {...handlers} />)
+
+  expect(screen.getByText("src/webhooks/handler.ts")).toBeTruthy()
+  expect(screen.getByText("+62")).toBeTruthy()
+  expect(screen.getByText("−14")).toBeTruthy()
+})
+
+it("waits for the turn to finish before naming the files it touched", () => {
+  render(<Thread snapshot={snapshotWithTouchedFiles(true)} connected queued={undefined} {...handlers} />)
+
+  expect(screen.queryByText("src/webhooks/handler.ts")).toBeNull()
+})
+
+it("opens the review surface from a file the turn touched", async () => {
+  const onOpenSheet = vi.fn()
+  render(
+    <Thread
+      snapshot={snapshotWithTouchedFiles(false)}
+      connected
+      queued={undefined}
+      onOpenSheet={onOpenSheet}
+      {...handlers}
+    />,
+  )
+
+  await userEvent.click(screen.getByRole("button", { name: /handler\.ts/ }))
+
+  expect(onOpenSheet).toHaveBeenCalledTimes(1)
 })

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import {
   ArchiveIcon,
   ArrowUpIcon,
@@ -38,7 +38,7 @@ import type {
   ThreadItem,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   readOnlySessionNotice,
@@ -88,6 +88,7 @@ import { ModeChip } from "./mode-chip.js"
 import { permissionModeLabel, withPermissionMode } from "./permission-mode.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
+import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { UsageChip } from "./usage-chip.js"
@@ -1164,16 +1165,22 @@ export function Thread({
           ) : null}
           {threadRows.map((row) => {
             if (row.kind === "activity") {
+              // Between two calls no single call is in flight, but the turn
+              // still is. The row at the end of a running thread is the one
+              // the turn is working in.
+              const rowRunning = Boolean(active.activeTurnId)
+                && (row === lastRow || row.items.some((call) => call.outcome === "running"))
+              // A running turn's file list is still growing, so naming files
+              // mid-flight would show a total that keeps changing under the
+              // reader. The chips wait for the turn to settle.
+              const touched = rowRunning
+                ? []
+                : toolFileEntries(row.items.flatMap((call) => call.files ?? []))
               return (
-                <TurnActivity
-                  key={row.id}
-                  items={row.items}
-                  // Between two calls no single call is in flight, but the turn
-                  // still is. The row at the end of a running thread is the one
-                  // the turn is working in.
-                  running={Boolean(active.activeTurnId)
-                    && (row === lastRow || row.items.some((call) => call.outcome === "running"))}
-                />
+                <Fragment key={row.id}>
+                  <TurnActivity items={row.items} running={rowRunning} />
+                  {touched.length > 0 ? <ThreadFileChips files={touched} onReview={onOpenSheet} /> : null}
+                </Fragment>
               )
             }
             const item = row.item
