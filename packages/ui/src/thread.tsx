@@ -703,6 +703,11 @@ export function Thread({
   useEffect(() => {
     previousThreadRows.current = threadRows
   }, [threadRows])
+  // A turn that has not called a tool yet still has to say it is alive. Once a
+  // tool row runs, that row carries the pulse and a second one would say the
+  // same thing twice.
+  const workingRow = Boolean(active?.activeTurnId)
+    && !threadRows.some((row) => row.kind === "activity" && row.items.some((call) => call.outcome === "running"))
   const follow = useThreadFollow(threadViewport, {
     itemCount: threadRows.length + (approval ? 1 : 0),
     gated: Boolean(approval),
@@ -1199,6 +1204,7 @@ export function Thread({
             if (item.kind === "tool") return null
             return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={item.body} /></div>
           })}
+          {workingRow ? <TurnActivity items={[]} running /> : null}
           {transferReceipt ? (
             <Alert
               data-testid="session-transfer-receipt"
