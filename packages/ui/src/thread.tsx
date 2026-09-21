@@ -7,7 +7,6 @@ import {
   CheckIcon,
   CircleStopIcon,
   FolderOpenIcon,
-  ExternalLinkIcon,
   Maximize2Icon,
   PaperclipIcon,
   SquareIcon,
@@ -103,7 +102,6 @@ import { PromptDeliveryNote } from "./prompt-delivery-note"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { MarkdownQuickView } from "./markdown-quick-view"
 import { PromptEditorDialog } from "./prompt-editor"
-import { desktopExternalActionLabel, type DesktopExternalEditor } from "./desktop-platform"
 import {
   activeSessionCount,
   activeThreadKey,
@@ -492,6 +490,38 @@ export function ArchiveSessionAction({
   )
 }
 
+const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+
+// v2 opens a conversation with one mono rule naming where the work happens, and
+// lets it scroll away. The session title is already in the command palette pill
+// at the top of the window, so a fixed banner would say it twice and take the
+// height the thread wants.
+function ThreadStartLine({
+  project,
+  branch,
+  workspacePath,
+  startedAt,
+}: {
+  project?: string | undefined
+  branch?: string | undefined
+  workspacePath?: string | undefined
+  startedAt?: string | undefined
+}) {
+  const worktree = workspacePath?.split(/[\\/]/u).filter(Boolean).at(-1)
+  const parts = [project, branch, worktree].filter((part): part is string => Boolean(part))
+  if (parts.length === 0 && !startedAt) return null
+
+  return (
+    <div className="flex items-center gap-2.5 text-faint">
+      {parts.length > 0 ? <span className="font-machine text-[11px]">{parts.join(" · ")}</span> : null}
+      <span aria-hidden className="h-px flex-1 bg-border" />
+      {startedAt ? (
+        <span className="font-machine text-[11px]">started {threadClock.format(new Date(startedAt))}</span>
+      ) : null}
+    </div>
+  )
+}
+
 export function SessionReadOnlyNotice({
   session,
   otherLabel,
@@ -569,13 +599,11 @@ export function Thread({
   pendingTransferTargetId = null,
   onPendingTransferTargetChange,
   onPauseSession,
-  onOpenExternal,
   onPairMachine,
   onSelectMachine,
   onTransferSession,
   onPreviewTransfer,
   onReleaseSession,
-  externalEditor = "system",
   usage = null,
   usageToday = null,
   loadLatestTurn,
@@ -633,7 +661,6 @@ export function Thread({
   // The prop stays because the shell and the tests still pass it, and dropping
   // it would be a rename of Thread's surface rather than a design change.
   onArchiveSession?: (sessionId: string) => Promise<void>
-  onOpenExternal?: ((path: string) => Promise<void>) | undefined
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onSelectMachine?: ((machineId: string) => void) | undefined
   onTransferSession?: ((
@@ -649,7 +676,6 @@ export function Thread({
     transferId: string
     confirmation: SessionRecoveryOffer["confirmation"]
   }) => Promise<unknown>) | undefined
-  externalEditor?: DesktopExternalEditor | undefined
   usage?: SessionUsage | null | undefined
   usageToday?: UsageWindow | null | undefined
   loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
@@ -708,6 +734,9 @@ export function Thread({
   // same thing twice.
   const workingRow = Boolean(active?.activeTurnId)
     && !threadRows.some((row) => row.kind === "activity" && row.items.some((call) => call.outcome === "running"))
+  // The session carries no start time of its own, so the first thing said in it
+  // is the honest one. An empty thread has not started yet and says nothing.
+  const threadStartedAt = renderedThread[0]?.createdAt
   const follow = useThreadFollow(threadViewport, {
     itemCount: threadRows.length + (approval ? 1 : 0),
     gated: Boolean(approval),
@@ -742,7 +771,6 @@ export function Thread({
   const [runtimeError, setRuntimeError] = useState("")
   const [restartPending, setRestartPending] = useState(false)
   const [restartError, setRestartError] = useState("")
-  const [desktopError, setDesktopError] = useState("")
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
   const readOnly = archiveReadOnly || watching
   const activeSessionId = active?.id
@@ -1059,16 +1087,6 @@ export function Thread({
     }
   }
 
-  const openExternal = async () => {
-    if (!active.workspacePath || !onOpenExternal) return
-    setDesktopError("")
-    try {
-      await onOpenExternal(active.workspacePath)
-    } catch (cause) {
-      setDesktopError(cause instanceof Error ? cause.message : "External editor could not open the worktree")
-    }
-  }
-
   const updateRuntime = async (runtime: Runtime) => {
     if (watching || runtimePending) return
     setRuntimePending(true)
@@ -1115,36 +1133,13 @@ export function Thread({
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
-      <div className="flex min-h-[76px] flex-wrap items-start justify-between gap-4 border-b px-5 py-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="m-0 max-w-xl text-[17px] leading-[1.25] font-semibold tracking-[-0.01em]">
-            {active.title}
-          </h1>
-          <div className="mt-1 flex flex-wrap items-center gap-2 font-machine text-[10px] text-faint">
-            {active.workspacePath ? <span>{active.workspacePath}</span> : null}
-            {active.baseCommit && snapshot.project ? <span>from {snapshot.project.branch} @ {active.baseCommit.slice(0, 8)}</span> : null}
-            <span>{active.changedFiles} files</span>
-            <span className="text-success">{active.testsPassed} pass</span>
-            {active.testsFailed ? <span className="text-destructive">{active.testsFailed} fail</span> : null}
-          </div>
-        </div>
-        {archiveReadOnly ? (
-          <Badge variant="outline">
-            {readOnlySessionNotice(active, otherMachineLabel)?.badge ?? "Read-only"}
-          </Badge>
-        ) : !watching ? (
-          <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5">
-            {active.workspacePath && onOpenExternal ? (
-              <Button variant="outline" size="sm" onClick={() => void openExternal()}>
-                <ExternalLinkIcon data-icon="inline-start" />
-                {desktopExternalActionLabel(externalEditor)}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
         <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 pt-6 pb-14">
+          <ThreadStartLine
+            {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
+            {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
+            {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
+          />
           {providerRestartRequired ? (
             <FailedReadState
               message={active.providerFailure?.message ?? "The provider stopped answering before this session could be read completely."}
@@ -1235,7 +1230,6 @@ export function Thread({
         </div>
       ) : null}
       <div className="relative z-[1] -mt-5 bg-[linear-gradient(to_bottom,transparent_0,color-mix(in_oklab,var(--background)_58%,transparent)_9px,var(--background)_20px)] px-6 py-5">
-        {desktopError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Desktop action failed</AlertTitle><AlertDescription>{desktopError}</AlertDescription></Alert> : null}
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         {recoveryError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Session could not be released</AlertTitle><AlertDescription>{recoveryError}</AlertDescription></Alert> : null}

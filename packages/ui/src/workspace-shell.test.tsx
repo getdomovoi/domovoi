@@ -6,6 +6,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
 import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { buildWorkspaceCommands } from "./command-palette"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {
@@ -463,31 +464,25 @@ describe("checkpointBlockedReason", () => {
 })
 
 describe("Thread", () => {
-  it("names the signed session-header action for the selected editor", () => {
-    const snapshot = structuredClone(demoWorkspace)
-    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
-    active.workspacePath = "/worktrees/session-billing"
-    const markup = renderToStaticMarkup(
-      <Thread
-        onQueuedChange={vi.fn()}
-        snapshot={snapshot}
-        connected
-        onResolve={vi.fn(async () => {})}
-        onSetRuntime={vi.fn(async () => {})}
-        onForkSession={vi.fn(async () => {})}
-        onListModels={vi.fn(async () => [])}
-        onNewSession={vi.fn()}
-        onSend={vi.fn(async () => {})}
-        onCheckpoint={vi.fn(async () => {})}
-        onRestoreCheckpoint={vi.fn(async () => {})}
-        onPauseSession={vi.fn(async () => {})}
-        onArchiveSession={vi.fn(async () => {})}
-        onOpenExternal={vi.fn(async () => {})}
-        externalEditor="cursor"
-      />,
-    )
+  // v2 carries no fixed session banner, so the worktree action lives in the
+  // command palette. The editor it names is still the one the operator chose.
+  it("names the worktree action for the selected editor", () => {
+    const commands = buildWorkspaceCommands({
+      activeWorkspacePath: "/worktrees/session-billing",
+      openInEditor: vi.fn(),
+      externalEditor: "cursor",
+      connected: true,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      emergencyStop: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+    })
 
-    expect(markup).toContain(">Open in Cursor</button>")
+    expect(commands.find((command) => command.id === "open-in-editor")?.label).toBe("Open in Cursor")
   })
 
   it("offers a signed archive confirmation describing retained history and cleanup", () => {
