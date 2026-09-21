@@ -1,7 +1,7 @@
 import type { SessionHistoryPage, SessionTurn, SessionUsage, UsageWindow } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { latestTurnFromHistory, unreportedCostNote, usageChipRows, usageChipText, usageChipTriggerText } from "./usage-chip"
+import { latestTurnFromHistory, unreportedCostNote, usageChipRing, usageChipRows, usageChipText, usageChipTriggerText, usageRingCircumference } from "./usage-chip"
 
 const usage: SessionUsage = {
   sessionId: "session-billing",
@@ -43,6 +43,71 @@ describe("usage chip", () => {
     expect(rows[2]).toMatchObject({ value: "42.1k of 200k", share: 21 })
     expect(rows[2]?.note).toMatch(/restart the provider thread/)
     expect(rows[3]).toMatchObject({ value: "120k tokens", note: "27 turns in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key." })
+  })
+
+  it("shows provider-reported 5-hour and weekly quota windows", () => {
+    const rows = usageChipRows({
+      usage: {
+        ...usage,
+        providerLimits: {
+          provider: "codex",
+          planType: "plus",
+          windows: [
+            { kind: "primary", usedPercent: 23, windowDurationMinutes: 300, resetsAt: "2026-09-20T22:00:00.000Z" },
+            { kind: "secondary", usedPercent: 41, windowDurationMinutes: 10_080, resetsAt: "2026-09-24T22:00:00.000Z" },
+          ],
+        },
+      },
+      turn: undefined,
+      today: null,
+    })
+
+    expect(rows.map((row) => row.label)).toEqual(["This session", "Context", "5-hour limit", "Weekly limit"])
+    expect(rows[2]).toMatchObject({ value: "23% used", share: 23 })
+    expect(rows[2]?.note).toContain("Resets")
+    expect(rows[3]).toMatchObject({ value: "41% used", share: 41 })
+    expect(rows[3]?.note).toContain("Resets")
+  })
+
+  // The signed v2 chip draws a ring for the tighter of the provider's two
+  // windows. Two windows run at once, so the number a person needs is the one
+  // that will stop them first, and the label names which window that is.
+  it("draws the ring for the tighter provider window", () => {
+    const ring = usageChipRing({
+      ...usage,
+      providerLimits: {
+        provider: "codex",
+        windows: [
+          { kind: "primary", usedPercent: 68, windowDurationMinutes: 300, resetsAt: "2026-09-20T17:40:00.000Z" },
+          { kind: "secondary", usedPercent: 82, windowDurationMinutes: 10_080, resetsAt: "2026-09-24T09:00:00.000Z" },
+        ],
+      },
+    })
+
+    expect(ring?.percent).toBe(82)
+    expect(ring?.warning).toBe(false)
+    expect(ring?.offset).toBeCloseTo(usageRingCircumference * (1 - 82 / 100), 2)
+    expect(ring?.label).toContain("82 percent of the weekly window")
+    expect(ring?.label).toContain("which is the tighter of the two")
+  })
+
+  it("turns the ring to the warning colour once a window is nearly spent", () => {
+    const ring = usageChipRing({
+      ...usage,
+      providerLimits: {
+        provider: "codex",
+        windows: [{ kind: "primary", usedPercent: 85, windowDurationMinutes: 300 }],
+      },
+    })
+
+    expect(ring?.warning).toBe(true)
+    expect(ring?.label).toContain("85 percent of the 5 hour window")
+    expect(ring?.label).not.toContain("tighter")
+  })
+
+  it("draws no ring while no provider window is reported", () => {
+    expect(usageChipRing(usage)).toBeUndefined()
+    expect(usageChipRing(null)).toBeUndefined()
   })
 
   it("leaves out what it cannot know instead of guessing", () => {
