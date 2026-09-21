@@ -728,6 +728,9 @@ export function Thread({
   }
   const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
   const [pending, setPending] = useState(false)
+  // Local only, and never a thread item. The daemon owns the thread, so an
+  // in-flight message is shown beside it as a note, not forged into it.
+  const [sending, setSending] = useState<string | null>(null)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
   const [recoveryError, setRecoveryError] = useState("")
@@ -887,23 +890,34 @@ export function Thread({
         if (!fromComposer) onQueuedChange({ sessionId: active.id, text: nextPrompt, state: "held", reason: "Held because the skills you chose are gone. Send it again when you have chosen." })
         return
       }
-      if (sendAttachments.length > 0) await onSend(active.id, nextPrompt, selection, sendAttachments)
-      else await onSend(active.id, nextPrompt, selection)
-      // Only clear the box when the box is what was sent. A queued message
-      // released while someone types would otherwise erase the new draft.
+      // Empty the box now rather than after the round trip. The request budget is
+      // 120 seconds, and the queue path already clears immediately, so waiting
+      // made the interaction where less happened look like the faster one. Only
+      // clear the box when the box is what was sent: a queued message released
+      // while someone types would otherwise erase the new draft.
       if (fromComposer) {
         setPrompt("")
         setAttachments([])
+        setSending(nextPrompt)
       }
+      if (sendAttachments.length > 0) await onSend(active.id, nextPrompt, selection, sendAttachments)
+      else await onSend(active.id, nextPrompt, selection)
       // The daemon accepted this selection, so it stops being a draft.
       setSkillSelection(undefined)
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "The message could not be sent")
+      // Give the words back, but never over a newer thought. Waiting out a failed
+      // send is exactly when someone starts typing the next one.
+      if (fromComposer) {
+        setPrompt((current) => current.length > 0 ? current : nextPrompt)
+        setAttachments((current) => current.length > 0 ? current : [...sendAttachments])
+      }
       // Held, not waiting: a refused message that re-queued itself would be
       // retried by the release effect on the very next render, forever.
       if (!fromComposer) onQueuedChange({ sessionId: active.id, text: nextPrompt, state: "held", reason: "Held because sending failed. Send it again when you want to retry." })
     } finally {
       setPending(false)
+      setSending(null)
     }
   }
 
@@ -1267,6 +1281,13 @@ export function Thread({
               <Button variant="ghost" size="sm" disabled={readOnly} onClick={() => onDismissFailure?.(attempt.id)}>Dismiss</Button>
             </div>
           ))}
+          {sending !== null ? (
+            <div role="status" aria-label="Sending" className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
+              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
+              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{sending}</span>
+              <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">sending</span>
+            </div>
+          ) : null}
           {queued?.sessionId === active.id ? (
             <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
               <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
