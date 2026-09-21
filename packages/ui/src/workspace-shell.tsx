@@ -34,6 +34,7 @@ import {
 } from "./components/ui/alert-dialog"
 import { Button } from "./components/ui/button"
 import { WorkspaceConnectionStatus } from "./connection-status"
+import { shouldCollapseDockForWidth } from "./dock-auto-collapse"
 import {
   ResizableHandle,
   ResizablePanel,
@@ -1187,7 +1188,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!shell) return
     const observer = new ResizeObserver(([entry]) => {
       const width = entry?.contentRect.width ?? shell.clientWidth
-      if (width < 1080) setDockCollapsed(true)
+      if (shouldCollapseDockForWidth(width)) setDockCollapsed(true)
       // No sessions panel to collapse any more: the drawer is already out of
       // the layout, so a narrow window costs it nothing.
     })
