@@ -629,7 +629,7 @@ export function ArtifactDock({
   ) : null
   return (
     <TooltipProvider>
-    <aside aria-label="Session artifacts" data-workspace-panel="dock" className="flex h-full min-w-0 flex-col bg-sidebar">
+    <aside aria-label="Session artifacts" data-workspace-panel="dock" className="flex h-full min-w-0 flex-col bg-background">
       <Tabs value={activeTab} onValueChange={setActiveTab} className="h-full gap-0">
         <div className="flex items-center gap-[5px] border-b px-[13px] py-[11px]">
           <TabsList className="min-w-0 justify-start gap-[5px] bg-transparent p-0">
