@@ -94,6 +94,21 @@ export function splitDiffRows(diff: string): SplitDiffRow[] {
   return rows
 }
 
+export type UnifiedDiffLine = { kind: "meta" | "add" | "del" | "context"; text: string }
+
+// The unified view reads the same hunks as one column, so it classifies each
+// line the way the split view does and keeps the marker in place. A header
+// starts with the same character as an addition, so meta is tested first.
+export function unifiedDiffLines(diff: string): UnifiedDiffLine[] {
+  if (!diff) return []
+  return diff.replace(/\n$/u, "").split("\n").map((text) => {
+    if (diffMetaPrefixes.some((prefix) => text.startsWith(prefix))) return { kind: "meta" as const, text }
+    if (text.startsWith("+")) return { kind: "add" as const, text }
+    if (text.startsWith("-")) return { kind: "del" as const, text }
+    return { kind: "context" as const, text }
+  })
+}
+
 export function diffByFile(diff: string): Map<string, string> {
   const byFile = new Map<string, string>()
   if (!diff) return byFile
@@ -227,12 +242,7 @@ function FileEvidenceRow({
     </div>
     {open ? (
       fileDiff ? (
-        <pre
-          aria-label={`Diff for ${file.path}`}
-          className="m-0 max-h-72 overflow-auto whitespace-pre-wrap break-words border-t bg-code px-3 py-2 font-machine text-[10px] leading-relaxed"
-        >
-          {fileDiff}
-        </pre>
+        <UnifiedDiff diff={fileDiff} label={`Diff for ${file.path}`} className="max-h-72 border-t py-2" />
       ) : (
         <p className="m-0 border-t px-3 py-2 font-machine text-mono-xs text-warning">
           {file.binary
@@ -290,6 +300,31 @@ function RevertFileDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  )
+}
+
+export function UnifiedDiff({ diff, label, className }: { diff: string; label: string; className?: string }) {
+  const lines = useMemo(() => unifiedDiffLines(diff), [diff])
+  return (
+    <div
+      aria-label={label}
+      className={cn("max-h-80 overflow-auto bg-code font-machine text-[10px] leading-relaxed", className)}
+    >
+      {lines.map((line, index) => (
+        <pre
+          key={index}
+          className={cn(
+            "m-0 whitespace-pre-wrap break-words px-3 py-0.5",
+            line.kind === "meta" && "text-faint",
+            line.kind === "add" && "bg-success/10 text-success",
+            line.kind === "del" && "bg-destructive/10 text-destructive",
+            line.kind === "context" && "text-muted-foreground",
+          )}
+        >
+          {line.text}
+        </pre>
+      ))}
+    </div>
   )
 }
 
@@ -507,12 +542,7 @@ export function SessionEvidenceContent({
                   diffView === "split" ? (
                     <SplitDiff diff={evidence.workspace.diff} />
                   ) : (
-                    <pre
-                      aria-label="Unified diff"
-                      className="m-0 max-h-80 overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-machine text-[10px] leading-relaxed text-muted-foreground"
-                    >
-                      {evidence.workspace.diff}
-                    </pre>
+                    <UnifiedDiff diff={evidence.workspace.diff} label="Unified diff" className="py-3" />
                   )
                 ) : (
                   <p className="m-0 px-3 py-5 text-center text-[11px] text-faint">No diff output.</p>
