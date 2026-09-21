@@ -13,6 +13,7 @@ function toActivity(item: Extract<ThreadItem, { kind: "tool" }>): ToolActivity {
     argument: item.title,
     outcome: item.status,
     failed: item.status === "failed",
+    ...(item.files?.length ? { files: item.files } : {}),
     ...(item.output ? { log: item.output } : {}),
   }
 }

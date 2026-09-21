@@ -116,3 +116,19 @@ describe("reusing rows the delta did not touch", () => {
     expect(after[0]).not.toBe(before[0])
   })
 })
+
+it("carries the files a tool call reported", () => {
+  const tool: ThreadItem = {
+    id: "tool-files",
+    sessionId: "session-a",
+    kind: "tool",
+    tool: "command",
+    status: "completed",
+    title: "pnpm test",
+    files: ["src/a.ts"],
+    createdAt: "2026-09-08T09:00:00.000Z",
+  }
+  const rows = groupThreadActivity([tool])
+
+  expect(rows[0]!.kind === "activity" && rows[0]!.items[0]!.files).toEqual(["src/a.ts"])
+})

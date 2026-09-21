@@ -345,6 +345,19 @@ describe("workspace protocol", () => {
     expect(threadItemSchema.safeParse({ ...tool, tool: "invented" }).success).toBe(false)
   })
 
+  it("carries the files a tool call touched", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "command", status: "completed",
+      title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    // A snapshot written before the field existed still loads.
+    expect(threadItemSchema.safeParse(tool).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, files: ["src/a.ts", "src/b.ts"] }).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, files: [""] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: "src/a.ts" }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: Array.from({ length: 257 }, (_, index) => `src/${index}.ts`) }).success).toBe(false)
+  })
+
   it("defaults durable skill reviews for older snapshots", () => {
     const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
     delete legacy.skillEnablements

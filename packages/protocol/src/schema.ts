@@ -636,6 +636,10 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     tool: toolKindSchema,
     status: toolStatusSchema,
     title: z.string(),
+    // The files this call touched, so a client can say how much of the worktree
+    // a turn has moved without parsing the title. Absent on a snapshot written
+    // before the field existed, and absent on a call that touched none.
+    files: z.array(z.string().trim().min(1).check(utf16MaxLength(1_024))).max(256).optional(),
     output: z.string().optional(),
     createdAt: dateTimeSchema,
   }),

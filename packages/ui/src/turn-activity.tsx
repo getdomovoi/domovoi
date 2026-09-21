@@ -13,7 +13,31 @@ export type ToolActivity = {
   argument?: string
   outcome?: string
   failed?: boolean
+  files?: readonly string[]
   log?: string
+}
+
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? "" : "s"}`
+}
+
+// The line beside the label: how much of the worktree the turn has moved, and
+// what it is doing right now. A count nobody can verify is worse than no count,
+// so files are the distinct paths the calls reported and nothing is inferred
+// from a title.
+export function activityMeta(items: readonly ToolActivity[], running: boolean): string | undefined {
+  if (items.length === 0) return undefined
+  const parts = [plural(items.length, "tool")]
+  const files = new Set(items.flatMap((item) => item.files ?? []))
+  if (files.size > 0) parts.push(plural(files.size, "file"))
+  const current = running ? items.find((item) => item.outcome === "running") : undefined
+  if (current) {
+    parts.push(`running ${current.argument ?? current.name}`)
+    return parts.join(" · ")
+  }
+  const failures = items.filter((item) => item.failed).length
+  if (failures > 0) parts.push(plural(failures, "failure"))
+  return parts.join(" · ")
 }
 
 function activityLabel(items: readonly ToolActivity[], running: boolean): string {
@@ -39,6 +63,7 @@ export const TurnActivity = memo(function TurnActivity({
 }) {
   const [open, setOpen] = useState(false)
   const [openLog, setOpenLog] = useState<string>()
+  const metaLine = meta ?? activityMeta(items, running)
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
@@ -55,7 +80,7 @@ export const TurnActivity = memo(function TurnActivity({
           <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
         ) : null}
         <span className="text-[11.5px]">{activityLabel(items, running)}</span>
-        {meta ? <span className="font-mono text-[10.5px] text-faint">{meta}</span> : null}
+        {metaLine ? <span className="font-mono text-[10.5px] text-faint">{metaLine}</span> : null}
         {running ? (
           // The only moving thing on the screen, and it says the turn is alive
           // rather than estimating a duration nobody can know.
