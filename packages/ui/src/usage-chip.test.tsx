@@ -34,6 +34,16 @@ describe("usage chip", () => {
     expect(usageChipText({ ...usage, reportedCostTurns: 0, unavailableCostTurns: 9 })).toBe("42.1k")
   })
 
+  it("names the context the turn runs in, not the tokens the session has spent", () => {
+    const spent: SessionUsage = { ...usage, totalTokens: 3_700_000, contextTokens: 225_000, contextWindowTokens: 258_000 }
+    expect(usageChipText(spent)).toBe("225k")
+  })
+
+  it("falls back to the session's tokens when the provider reports no context", () => {
+    const { contextTokens: _tokens, contextWindowTokens: _window, ...noContext } = usage
+    expect(usageChipText(noContext)).toBe("42.1k")
+  })
+
   it("draws the turn, the session, the context with its share, today, and the window it cannot see", () => {
     const rows = usageChipRows({ usage, turn, today })
     expect(rows.map((row) => row.label)).toEqual(["This turn", "This session", "Context", "Today", "Provider window"])

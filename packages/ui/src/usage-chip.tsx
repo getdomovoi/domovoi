@@ -35,7 +35,14 @@ export type UsageChipRow = {
 // connection kind and the provider window (asks 5 and 6).
 export const unreportedCostNote = "Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key."
 
+// The chip names the context the next turn runs in, because that is the
+// number that decides whether the work continues. The session's own total is
+// a running tally nothing acts on, and the rows below carry it. A provider
+// that reports no context leaves the chip on that tally rather than blank.
 export function usageChipText(usage: SessionUsage): string {
+  if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
+    return formatTokenCount(usage.contextTokens)
+  }
   return formatTokenCount(usage.totalTokens)
 }
 
