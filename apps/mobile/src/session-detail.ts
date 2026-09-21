@@ -91,7 +91,13 @@ function entryFor(item: ThreadItem): ThreadEntry {
     case "assistant":
       return { id: item.id, kind: "message", voice: "agent", body: item.body }
     case "system":
-      return { id: item.id, kind: "note", body: item.body, meta: item.detail }
+      // A compaction row states that history left the provider's context. On
+      // its own that reads as though the thread itself were gone, so the phone
+      // names what it still holds rather than dropping the reassurance the
+      // larger clients draw as a boundary.
+      return item.notice === "context-compaction"
+        ? { id: item.id, kind: "note", body: item.body, meta: "Domovoi kept the thread above." }
+        : { id: item.id, kind: "note", body: item.body, meta: item.detail }
     case "checkpoint":
       return {
         id: item.id,
@@ -195,7 +201,7 @@ export function sendReadiness(
     return { can: true, hint: "An approval is waiting. Answering it may be the faster reply." }
   }
   if (session.activeTurnId) {
-    return { can: true, hint: "A turn is running. Sending replaces the message queued for the next turn." }
+    return { can: true, hint: "A turn is running, so this will queue and send at the boundary." }
   }
   return { can: true, hint: undefined }
 }

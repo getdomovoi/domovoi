@@ -1764,3 +1764,27 @@ describe("persisted thread compatibility", () => {
     expect(threadItemSchema.parse(item)).toMatchObject({ tool: "file-change" })
   })
 })
+
+describe("context compaction notice", () => {
+  const base = {
+    id: "item-compaction",
+    sessionId: "session-1",
+    kind: "system" as const,
+    body: "Context compacted.",
+    createdAt: new Date().toISOString(),
+  }
+
+  it("carries a compaction notice on a system row", () => {
+    expect(threadItemSchema.parse({ ...base, notice: "context-compaction" })).toMatchObject({
+      notice: "context-compaction",
+    })
+  })
+
+  it("still parses a system row written before the notice existed", () => {
+    expect(threadItemSchema.parse(base)).toMatchObject({ kind: "system" })
+  })
+
+  it("rejects an unknown notice", () => {
+    expect(() => threadItemSchema.parse({ ...base, notice: "something-else" })).toThrow()
+  })
+})

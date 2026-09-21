@@ -266,7 +266,7 @@ describe("sendReadiness", () => {
 
     expect(readiness).toEqual({
       can: true,
-      hint: "A turn is running. Sending replaces the message queued for the next turn.",
+      hint: "A turn is running, so this will queue and send at the boundary.",
     })
     expect(readiness.can && readiness.hint).not.toContain("steer")
   })
@@ -320,5 +320,39 @@ describe("isPausable", () => {
     session.state = "archiving"
 
     expect(isPausable(session)).toBe(false)
+  })
+})
+
+describe("context compaction", () => {
+  it("says what survived a compaction", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "system-compaction",
+      sessionId: snapshot.activeSessionId!,
+      kind: "system",
+      body: "Context compacted.",
+      notice: "context-compaction",
+      createdAt: "2026-09-08T09:00:01.000Z",
+    }]
+    const { entries } = threadEntries(snapshot, snapshot.activeSessionId!)
+    expect(entries[0]).toMatchObject({
+      kind: "note",
+      body: "Context compacted.",
+      meta: "Domovoi kept the thread above.",
+    })
+  })
+
+  it("leaves another system row's detail alone", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "system-handoff",
+      sessionId: snapshot.activeSessionId!,
+      kind: "system",
+      body: "Handed off to another provider.",
+      detail: "Hidden reasoning did not transfer.",
+      createdAt: "2026-09-08T09:00:01.000Z",
+    }]
+    const { entries } = threadEntries(snapshot, snapshot.activeSessionId!)
+    expect(entries[0]).toMatchObject({ meta: "Hidden reasoning did not transfer." })
   })
 })

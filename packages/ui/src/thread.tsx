@@ -1199,6 +1199,21 @@ export function Thread({
                 </div>
               )
             }
+            if (item.kind === "system" && item.notice === "context-compaction") {
+              // A boundary in the transcript, not a notice about it. The reader
+              // and the provider stop sharing history here, and the blue
+              // system banner would both overstate one row and repeat itself
+              // down a long session.
+              return (
+                <div key={item.id} data-testid="thread-compaction-marker" className="flex items-center gap-3 py-1 text-xs text-faint">
+                  <span className="h-px flex-1 bg-border" />
+                  <span className="shrink-0">
+                    Context compacted. The provider stopped reading the turns above. Domovoi kept the thread above.
+                  </span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+              )
+            }
             if (item.kind === "system") {
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }

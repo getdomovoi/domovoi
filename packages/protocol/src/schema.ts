@@ -606,6 +606,12 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     body: z.string(),
     detail: z.string().optional(),
     transfer: sessionTransferHistorySchema.optional(),
+    // A provider that compacts drops earlier turns from its own context while
+    // Domovoi keeps the whole thread, so the reader and the agent stop seeing
+    // the same history. A client that cannot tell this row from any other
+    // notice cannot say where that split happened. Absent on a snapshot
+    // written before the notice existed, and on every other system row.
+    notice: z.literal("context-compaction").optional(),
     createdAt: dateTimeSchema,
   }),
   z.object({
