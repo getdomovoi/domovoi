@@ -58,6 +58,7 @@ import {
   workspaceDeltaSchema,
   artifactSchema,
   threadItemSchema,
+  toolFileEntries,
   type WorkingPlan,
 } from "./index.js"
 
@@ -371,6 +372,34 @@ describe("workspace protocol", () => {
     expect(parsed.success && parsed.data.kind === "tool" ? parsed.data.files : undefined)
       .toEqual([" src/a.ts", "src/a.ts"])
     expect(threadItemSchema.safeParse({ ...tool, files: ["   "] }).success).toBe(false)
+  })
+
+  // The thread names the files a turn moved and by how much. A count that the
+  // client derives from the worktree describes the tree now, not that turn, so
+  // it drifts as later turns land. The provider reports the real numbers.
+  it("carries how far a tool call moved each file", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "file-change", status: "completed",
+      title: "File changes", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    const entry = { path: "src/a.ts", additions: 62, deletions: 14 }
+    const parsed = threadItemSchema.safeParse({ ...tool, files: [entry, "src/b.ts"] })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.kind === "tool" ? parsed.data.files : undefined)
+      .toEqual([entry, "src/b.ts"])
+    // A counted entry still needs a path, and a count is a whole number of lines.
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ additions: 1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "   ", additions: 1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts", additions: -1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts", additions: 1.5 }] }).success).toBe(false)
+    // Counts are optional, so a provider that reports only paths still parses.
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts" }] }).success).toBe(true)
+  })
+
+  it("reads a touched file whether or not it carries counts", () => {
+    expect(toolFileEntries(["src/a.ts", { path: "src/b.ts", additions: 7, deletions: 0 }]))
+      .toEqual([{ path: "src/a.ts" }, { path: "src/b.ts", additions: 7, deletions: 0 }])
+    expect(toolFileEntries(undefined)).toEqual([])
   })
 
   it("defaults durable skill reviews for older snapshots", () => {

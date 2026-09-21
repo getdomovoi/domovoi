@@ -566,6 +566,12 @@ export const policyRefusalThreadItemSchema = z.object({
   createdAt: dateTimeSchema,
 }).strict()
 
+// Reported verbatim: a space is a legal character in a path name, so trimming
+// would name a file the provider never did and could fold two real paths into
+// one. Whitespace alone is still not a path.
+const toolFilePathSchema = z.string().min(1).check(utf16MaxLength(1_024))
+  .refine((path) => path.trim().length > 0)
+
 export const threadItemSchema = z.discriminatedUnion("kind", [
   policyRefusalThreadItemSchema,
   z.object({
@@ -642,13 +648,31 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     // Reported verbatim: a space is a legal character in a path name, so
     // trimming would name a file the provider never did and could fold two
     // real paths into one. Whitespace alone is still not a path.
+    // An entry carries counts when the provider reported a diff, and stays a
+    // bare path when it did not. A client deriving counts from the worktree
+    // would describe the tree now rather than this turn, and drift once a later
+    // turn lands, so the numbers travel with the call that earned them.
     files: z.array(
-      z.string().min(1).check(utf16MaxLength(1_024)).refine((path) => path.trim().length > 0),
+      z.union([toolFilePathSchema, z.object({
+        path: toolFilePathSchema,
+        additions: z.number().int().min(0).max(1_000_000).optional(),
+        deletions: z.number().int().min(0).max(1_000_000).optional(),
+      })]),
     ).max(256).optional(),
     output: z.string().optional(),
     createdAt: dateTimeSchema,
   }),
 ])
+
+export type ToolFileEntry = { path: string; additions?: number | undefined; deletions?: number | undefined }
+
+// Both entry shapes answer the same question, so a reader asks once and gets a
+// path either way. A bare path reports no counts rather than zero: the provider
+// did not say the file gained nothing, it said nothing about how far it moved.
+export function toolFileEntries(files: readonly (string | ToolFileEntry)[] | undefined): ToolFileEntry[] {
+  if (!files) return []
+  return files.map((entry) => (typeof entry === "string" ? { path: entry } : entry))
+}
 
 export const artifactVariantSchema = z.object({
   id: z.string().min(1).check(utf16MaxLength(128)),

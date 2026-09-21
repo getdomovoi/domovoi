@@ -1,3 +1,4 @@
+import { toolFileEntries, type ToolFileEntry } from "@getdomovoi/protocol"
 import { ChevronRightIcon } from "lucide-react"
 import { memo, useState } from "react"
 
@@ -13,7 +14,7 @@ export type ToolActivity = {
   argument?: string
   outcome?: string
   failed?: boolean
-  files?: readonly string[]
+  files?: readonly (string | ToolFileEntry)[]
   log?: string
 }
 
@@ -28,7 +29,7 @@ function plural(count: number, word: string): string {
 export function activityMeta(items: readonly ToolActivity[], running: boolean): string | undefined {
   if (items.length === 0) return undefined
   const parts = [plural(items.length, "tool")]
-  const files = new Set(items.flatMap((item) => item.files ?? []))
+  const files = new Set(items.flatMap((item) => toolFileEntries(item.files).map((file) => file.path)))
   if (files.size > 0) parts.push(plural(files.size, "file"))
   const current = running ? items.find((item) => item.outcome === "running") : undefined
   if (current) {
