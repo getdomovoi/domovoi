@@ -40,8 +40,12 @@ export function activityMeta(items: readonly ToolActivity[], running: boolean): 
   return parts.join(" · ")
 }
 
+// The label answers the turn, not the tool count. While the turn runs it says
+// so; a running row that counted its calls would read as a turn that had
+// already stopped. The count is what the row becomes once it is done.
 function activityLabel(items: readonly ToolActivity[], running: boolean): string {
-  if (items.length === 0) return running ? "Working" : "No tool calls"
+  if (running) return "Working"
+  if (items.length === 0) return "No tool calls"
   const failures = items.filter((item) => item.failed).length
   const counted = `${items.length} ${items.length === 1 ? "tool call" : "tool calls"}`
   return failures > 0 ? `${counted}, ${failures} failed` : counted

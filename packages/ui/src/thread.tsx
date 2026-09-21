@@ -729,11 +729,11 @@ export function Thread({
   useEffect(() => {
     previousThreadRows.current = threadRows
   }, [threadRows])
-  // A turn that has not called a tool yet still has to say it is alive. Once a
-  // tool row runs, that row carries the pulse and a second one would say the
-  // same thing twice.
-  const workingRow = Boolean(active?.activeTurnId)
-    && !threadRows.some((row) => row.kind === "activity" && row.items.some((call) => call.outcome === "running"))
+  // A turn that has not called a tool yet still has to say it is alive. Once
+  // the turn has an activity row at the end of the thread, that row is the one
+  // working, and a second row beside it would say the same thing twice.
+  const lastRow = threadRows.at(-1)
+  const workingRow = Boolean(active?.activeTurnId) && lastRow?.kind !== "activity"
   // The session carries no start time of its own, so the first thing said in it
   // is the honest one. An empty thread has not started yet and says nothing.
   const threadStartedAt = renderedThread[0]?.createdAt
@@ -1168,7 +1168,11 @@ export function Thread({
                 <TurnActivity
                   key={row.id}
                   items={row.items}
-                  running={Boolean(active.activeTurnId) && row.items.some((call) => call.outcome === "running")}
+                  // Between two calls no single call is in flight, but the turn
+                  // still is. The row at the end of a running thread is the one
+                  // the turn is working in.
+                  running={Boolean(active.activeTurnId)
+                    && (row === lastRow || row.items.some((call) => call.outcome === "running"))}
                 />
               )
             }

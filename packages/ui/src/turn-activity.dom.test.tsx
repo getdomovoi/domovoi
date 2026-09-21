@@ -11,8 +11,10 @@ const items: ToolActivity[] = [
   { id: "2", name: "test", argument: "pnpm vitest run replay", outcome: "1 failed", failed: true, log: "replay.spec.ts:14 expected 1 got 2" },
 ]
 
+// The count and the failure belong to a turn that has stopped. While it runs
+// the design's label is "Working", covered in turn-activity-working-label.
 it("collapses the whole turn into one row", () => {
-  render(<TurnActivity items={items} running />)
+  render(<TurnActivity items={items} running={false} />)
   expect(screen.getByRole("button", { name: /2 tool calls, 1 failed/ })).toBeTruthy()
   expect(screen.queryByText("src/webhooks/handler.ts")).toBeNull()
 })
