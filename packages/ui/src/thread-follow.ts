@@ -27,14 +27,33 @@ export function useThreadFollow(
   const seenKey = useRef(input.threadKey)
   const seenHeight = useRef(0)
 
+  // A scroll gesture fires many events per frame and each read of the viewport
+  // forces layout. The first event in a frame is read inline, so the pill still
+  // answers the gesture at once; the rest are dropped and one trailing read on
+  // the next frame picks up where the gesture came to rest. Two reads a frame at
+  // worst, whatever the event rate.
+  const framePending = useRef(false)
   const onScroll = useCallback(() => {
-    const element = viewport.current
-    if (!element) return
-    const next = isAtBottom(element)
-    if (next === atBottomRef.current) return
-    atBottomRef.current = next
-    setAtBottom(next)
-    if (next) setUnseen(0)
+    const read = () => {
+      const element = viewport.current
+      if (!element) return
+      const next = isAtBottom(element)
+      if (next === atBottomRef.current) return
+      atBottomRef.current = next
+      setAtBottom(next)
+      if (next) setUnseen(0)
+    }
+    if (framePending.current) return
+    framePending.current = true
+    read()
+    if (typeof requestAnimationFrame !== "function") {
+      framePending.current = false
+      return
+    }
+    requestAnimationFrame(() => {
+      framePending.current = false
+      read()
+    })
   }, [viewport])
 
   const jumpToBottom = useCallback(() => {

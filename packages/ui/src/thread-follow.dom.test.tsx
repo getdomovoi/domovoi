@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { useRef } from "react"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { threadFollowPillText, threadFollowState } from "@getdomovoi/protocol"
 
@@ -48,6 +48,40 @@ function Probe({ itemCount, gated, threadKey = "s1" }: { itemCount: number; gate
 function size(element: HTMLElement, scrollHeight: number, clientHeight = 500) {
   Object.defineProperty(element, "scrollHeight", { configurable: true, value: scrollHeight })
   Object.defineProperty(element, "clientHeight", { configurable: true, value: clientHeight })
+}
+
+// The viewport is read at most once per frame, so a test that plays two
+// separate gestures has to let the frame between them run, as a browser does.
+const pendingFrames: FrameRequestCallback[] = []
+let realRequestAnimationFrame: typeof globalThis.requestAnimationFrame
+
+beforeEach(() => {
+  realRequestAnimationFrame = globalThis.requestAnimationFrame
+  globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+    pendingFrames.push(callback)
+    return pendingFrames.length
+  }) as typeof globalThis.requestAnimationFrame
+})
+
+afterEach(() => {
+  pendingFrames.length = 0
+  globalThis.requestAnimationFrame = realRequestAnimationFrame
+})
+
+function flushFrames() {
+  act(() => { for (const frame of pendingFrames.splice(0)) frame(0) })
+}
+
+function countScrollHeightReads(element: HTMLElement, scrollHeight: number) {
+  const reads = { count: 0 }
+  Object.defineProperty(element, "scrollHeight", {
+    configurable: true,
+    get() {
+      reads.count += 1
+      return scrollHeight
+    },
+  })
+  return reads
 }
 
 describe("useThreadFollow", () => {
@@ -100,6 +134,7 @@ describe("useThreadFollow", () => {
     fireEvent.scroll(viewport)
     rerender(<Probe itemCount={5} gated={false} />)
     expect(screen.getByTestId("unseen").textContent).toBe("2")
+    flushFrames()
     viewport.scrollTop = 490
     fireEvent.scroll(viewport)
     expect(screen.getByTestId("state").textContent).toBe("bottom")
@@ -130,6 +165,32 @@ describe("useThreadFollow", () => {
     rerender(<Probe itemCount={3} gated={false} />)
     expect(viewport.scrollTop).toBe(100)
     expect(screen.getByTestId("unseen").textContent).toBe("0")
+  })
+
+  it("reads the viewport once for a burst of scroll events in one frame", () => {
+    render(<Probe itemCount={3} gated={false} />)
+    const viewport = screen.getByTestId("viewport")
+    size(viewport, 1000)
+    viewport.scrollTop = 100
+    const reads = countScrollHeightReads(viewport, 1000)
+    for (let event = 0; event < 5; event += 1) fireEvent.scroll(viewport)
+    expect(reads.count).toBe(1)
+  })
+
+  it("still sees where the burst came to rest, on the next frame", () => {
+    render(<Probe itemCount={3} gated={false} />)
+    const viewport = screen.getByTestId("viewport")
+    size(viewport, 1000)
+    // The burst leaves the bottom and comes back within one frame. Only the
+    // first event is read inline, so the resting place is the dropped one.
+    viewport.scrollTop = 100
+    fireEvent.scroll(viewport)
+    viewport.scrollTop = 1000
+    fireEvent.scroll(viewport)
+    expect(screen.getByTestId("state").textContent).toBe("scrolled")
+
+    flushFrames()
+    expect(screen.getByTestId("state").textContent).toBe("bottom")
   })
 
   it("treats another session's thread as a fresh scroll, not as new output", () => {
