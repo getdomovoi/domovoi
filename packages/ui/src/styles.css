@@ -331,6 +331,13 @@
     animation: none;
     background-position: 0 0;
   }
+
+  /* The working bar is the same kind of loop. It parks at the head of its
+     track, and the label beside it says the turn is alive. */
+  .sweep-bar {
+    animation: none;
+    transform: translateX(0);
+  }
 }
 
 @media (forced-colors: active) {
