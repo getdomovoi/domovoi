@@ -80,3 +80,30 @@ it("does not offer a comment the prose branch cannot take", async () => {
 
   expect(screen.queryByText(/select any line to comment/iu)).toBeNull()
 })
+
+// Pinning the sheet is a statement that it stays. Answering the plan is not a
+// reason to take it away: the reply lands in the thread beside it, which is the
+// whole point of having pinned it.
+it("keeps a pinned sheet open after the plan is answered", async () => {
+  const snapshot = workspaceSnapshot()
+  snapshot.workingPlans = []
+  snapshot.artifacts = snapshot.artifacts.map((artifact) =>
+    artifact.id === "artifact-plan" ? { ...artifact, content: "## Finish plan\n\nStep one." } : artifact,
+  )
+  render(<WorkspaceShell />)
+  await act(async () => { completeHandshake(harness.socket(0), snapshot) })
+  await settle()
+  await openSheet()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("tab", { name: "Plan preview" }))
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Pin" }))
+  await settle()
+  expect(screen.getByRole("button", { name: "Unpin" })).toBeTruthy()
+
+  await user.click(screen.getByRole("button", { name: "Looks right, carry on" }))
+  await settle()
+
+  expect(screen.getByRole("button", { name: "Unpin" })).toBeTruthy()
+  expect(screen.queryAllByRole("tab", { name: "Plan preview" }).length).toBeGreaterThan(0)
+})

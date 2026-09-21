@@ -190,6 +190,7 @@ export function ArtifactDock({
   captureAnnotation,
   previewRefusal,
   pinControl,
+  pinned = false,
   buildBasisId,
   onBuildBasisChange,
 }: {
@@ -199,6 +200,9 @@ export function ArtifactDock({
   // The pin control sits in this tab row. Given a row of its own it is alone
   // with nothing beside it, and floated over the row it covers the last tabs.
   pinControl?: ReactNode
+  // Pinning is a statement that the sheet stays. Answering a plan is not a
+  // reason to take it away, because the reply lands in the thread beside it.
+  pinned?: boolean
   collapseButtonRef?: RefObject<HTMLButtonElement | null>
   defaultTab: "changes" | "preview"
   previewRefusal?: string | undefined
@@ -351,6 +355,10 @@ export function ArtifactDock({
     onTabChange?.(next)
   }, [onTabChange])
   const openPreviewTab = useCallback(() => setActiveTab("preview"), [setActiveTab])
+  // An overlay sheet covers the thread the reply lands in, so answering the
+  // plan gets out of the way. A pinned sheet sits beside that thread and was
+  // put there on purpose, so it stays.
+  const closeAfterPlanAnswer = useCallback(() => { if (!pinned) onCollapse() }, [pinned, onCollapse])
   const stageObservationKey = previewStageObservationKey(preview?.id, previewError)
 
   useEffect(() => {
@@ -795,7 +803,7 @@ export function ArtifactDock({
                   plan={workingPlan}
                   running={planRunning}
                   readOnly={readOnly}
-                  {...(onCarryOnPlan ? { onCarryOn: () => onCarryOnPlan().then(onCollapse) } : {})}
+                  {...(onCarryOnPlan ? { onCarryOn: () => onCarryOnPlan().then(closeAfterPlanAnswer) } : {})}
                   {...(onEditPlan ? { onEditPlan } : {})}
                   {...(onDiscardPlanEdit ? { onDiscardEdit: onDiscardPlanEdit } : {})}
                 />
@@ -826,7 +834,7 @@ export function ArtifactDock({
                         setPlanCarryOnError("")
                         setPlanCarryOnPending(true)
                         void onCarryOnPlan().then(
-                          () => { setPlanCarryOnPending(false); onCollapse() },
+                          () => { setPlanCarryOnPending(false); closeAfterPlanAnswer() },
                           (cause: unknown) => {
                             setPlanCarryOnPending(false)
                             setPlanCarryOnError(cause instanceof Error ? cause.message : "The plan reply could not be sent")
