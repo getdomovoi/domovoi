@@ -1228,6 +1228,28 @@ const usageTotalsSchema = z.object({
   costMicros: z.number().int().nonnegative(),
   currency: z.string().check(utf16Length(3)).optional(),
 }).strict()
+const providerUsageLimitsSchema = z.object({
+  provider: z.string().min(1).check(utf16MaxLength(128)),
+  planType: z.string().min(1).check(utf16MaxLength(128)).optional(),
+  windows: z.array(z.object({
+    kind: z.enum(["primary", "secondary"]),
+    usedPercent: z.number().min(0).max(100),
+    windowDurationMinutes: z.number().int().positive().optional(),
+    resetsAt: dateTimeSchema.optional(),
+  }).strict()).min(1).max(2),
+}).strict().superRefine((limits, context) => {
+  const kinds = new Set<string>()
+  for (const [index, window] of limits.windows.entries()) {
+    if (kinds.has(window.kind)) {
+      context.addIssue({
+        code: "custom",
+        path: ["windows", index, "kind"],
+        message: "Provider usage window kinds must be unique",
+      })
+    }
+    kinds.add(window.kind)
+  }
+})
 export const sessionUsageSchema = usageTotalsSchema.extend({
   sessionId: z.string().min(1),
   coverage: usageCoverageSchema.optional(),
@@ -1236,6 +1258,7 @@ export const sessionUsageSchema = usageTotalsSchema.extend({
   unavailableCostTurns: z.number().int().nonnegative(),
   contextTokens: z.number().int().nonnegative().optional(),
   contextWindowTokens: z.number().int().positive().optional(),
+  providerLimits: providerUsageLimitsSchema.optional(),
   byRuntime: z.array(usageTotalsSchema.extend({
     provider: z.string().min(1),
     model: z.string().min(1),
@@ -1802,6 +1825,7 @@ export type PlanDiscardEditParams = z.infer<typeof planDiscardEditParamsSchema>
 export type PlanEditDisposition = z.infer<typeof planEditDispositionSchema>
 export type PlanEditReceipt = z.infer<typeof planEditReceiptSchema>
 export type PlanMutationResult = z.infer<typeof planMutationResultSchema>
+export type ProviderUsageLimits = z.infer<typeof providerUsageLimitsSchema>
 export type SessionUsage = z.infer<typeof sessionUsageSchema>
 export type UsageWindowParams = z.infer<typeof usageWindowParamsSchema>
 export type UsageWindow = z.infer<typeof usageWindowSchema>

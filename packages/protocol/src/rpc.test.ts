@@ -381,6 +381,50 @@ describe("session usage RPC contracts", () => {
       contextWindowTokens: 0,
     }).success).toBe(false)
   })
+
+  it("carries only bounded provider-reported quota windows", () => {
+    const totals = {
+      sessionId: "session-1",
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      reasoningTokens: 1,
+      totalTokens: 15,
+      costMicros: 0,
+      reportedCostTurns: 0,
+      unavailableCostTurns: 1,
+      byRuntime: [],
+    }
+    const providerLimits = {
+      provider: "codex",
+      planType: "plus",
+      windows: [
+        { kind: "primary", usedPercent: 23, windowDurationMinutes: 300, resetsAt: "2026-09-20T22:00:00.000Z" },
+        { kind: "secondary", usedPercent: 41, windowDurationMinutes: 10_080, resetsAt: "2026-09-24T22:00:00.000Z" },
+      ],
+    }
+
+    expect(rpcMethods["session.usage"].result.parse({ ...totals, providerLimits }))
+      .toMatchObject({ providerLimits })
+    expect(rpcMethods["session.usage"].result.safeParse({
+      ...totals,
+      providerLimits: { ...providerLimits, windows: [{ kind: "primary", usedPercent: 101 }] },
+    }).success).toBe(false)
+    expect(rpcMethods["session.usage"].result.safeParse({
+      ...totals,
+      providerLimits: {
+        ...providerLimits,
+        windows: [
+          { kind: "primary", usedPercent: 20 },
+          { kind: "primary", usedPercent: 30 },
+        ],
+      },
+    }).success).toBe(false)
+    expect(rpcMethods["session.usage"].result.safeParse({
+      ...totals,
+      providerLimits: { ...providerLimits, windows: [{ kind: "primary", usedPercent: 20, resetsAt: "tomorrow" }] },
+    }).success).toBe(false)
+  })
 })
 
 describe("usage window RPC contracts", () => {
