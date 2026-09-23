@@ -495,11 +495,7 @@
       "evidence": [
         "Phone and tablet",
         "Rename, rotate and unpair them on Machines"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no client surface on the desktop shows a device pairing code (device.issueCode has no caller outside the daemon's own CLI); the earlier presence string Pairing matched code comments, and the pairing dialog that exists pairs this client to another machine"
-      }
+      ]
     },
     {
       "id": "settings.paired-devices",
@@ -1823,6 +1819,11 @@
       "id": "palette",
       "since": "2026-09-23",
       "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "settings.pairing",
+      "since": "2026-09-23",
+      "note": "The card's problem states that point at a tailnet setting (Go to the tailnet setting, Get it from Tailscale) draw no action, because TailnetReach is blocked; the reach and certificate lines come from the daemon's reported pairing address (ND8 adapter until the protocol carries it)."
     }
   ],
   "annotations": [

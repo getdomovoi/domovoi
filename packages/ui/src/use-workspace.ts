@@ -633,6 +633,12 @@ export function useWorkspace(
     return client.releaseSession(params, options)
   }, [])
 
+  const issueDeviceCode = useCallback(async (targetClient: ClientKind) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.issueDeviceCode(targetClient)
+  }, [])
+
   const listDevices = useCallback(async (
     options?: DomovoiRequestOptions,
   ): Promise<DevicesResult> => {
@@ -857,6 +863,7 @@ export function useWorkspace(
     loadSessionEvidence,
     listFleet,
     listDevices,
+    issueDeviceCode,
     listModels,
     discoverRuntime,
     listProviderSecrets,

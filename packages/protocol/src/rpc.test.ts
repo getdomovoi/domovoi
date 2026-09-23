@@ -1392,12 +1392,14 @@ describe("phone and tablet credential scope", () => {
   })
 
   it("carries the pairing card's list", () => {
-    // The card's list as step 10 draws it: the limit last, and the line the
-    // daemon does not keep yet marked rather than dropped.
-    expect(phoneAndTabletPromise).toHaveLength(5)
+    // The card's list as PairingCard draws it (2026-09-23): the three grants,
+    // the gates-while-open limit, the line the daemon does not keep yet marked
+    // rather than dropped, and the repository limit last.
+    expect(phoneAndTabletPromise).toHaveLength(6)
+    expect(phoneAndTabletPromise[3]).toEqual({ text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", tone: "limit" })
     expect(phoneAndTabletPromise.at(-1)).toEqual({ text: "It cannot pull the repository down. Files stay here.", tone: "limit" })
     expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
-      { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+      { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
     ])
   })
 })

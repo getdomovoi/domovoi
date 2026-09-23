@@ -931,6 +931,12 @@ export class DomovoiClient extends EventTarget {
     }, options)
   }
 
+  // The same code `domovoid pair --client` prints, for the kind named and no
+  // other. A watching client is refused before the request leaves.
+  issueDeviceCode(targetClient: ClientKind, options?: DomovoiRequestOptions): Promise<RpcResult<"device.issueCode">> {
+    return this.request("device.issueCode", { targetClient }, options)
+  }
+
   listDevices(options?: DomovoiRequestOptions): Promise<DevicesResult> {
     return this.request("device.list", {}, options)
   }

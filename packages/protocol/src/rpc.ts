@@ -1776,17 +1776,19 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   "skill.list",
 ])
 
-// The pairing card's grant list, verbatim from step 10 of the v2 desktop
-// design, in the order and on the ramps it draws them. The unbuilt line is one
-// of the grants rather than a note correcting them, because a drawing that
-// needs a footnote to stop being wrong is a drawing that should have said it.
-// Every surface showing the list reads it from here, so the machine's card,
-// the CLI and the phone cannot come to say different things.
+// The pairing card's grant list, verbatim from PairingCard in the 2026-09-23
+// desktop design, in the order it draws them. The unbuilt line is one of the
+// grants rather than a note correcting them, because a drawing that needs a
+// footnote to stop being wrong is a drawing that should have said it. Every
+// surface showing the list reads it from here, so the machine's card, the CLI
+// and the phone cannot come to say different things. The gates-while-open line
+// is a limit of the first release: without the relay nothing is pushed.
 export const phoneAndTabletPromise = [
   { text: "Watch every session and its diffs", tone: "granted" },
   { text: "Answer gates, with the same three decisions", tone: "granted" },
   { text: "Start and stop sessions, and steer one mid-run", tone: "granted" },
-  { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+  { text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", tone: "limit" },
+  { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
   { text: "It cannot pull the repository down. Files stay here.", tone: "limit" },
 ] as const satisfies readonly { text: string, tone: "granted" | "unbuilt" | "limit" }[]
 
