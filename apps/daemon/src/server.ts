@@ -6578,42 +6578,54 @@ export class DomovoiDaemon {
           )
           return
         }
-        if (approval.providerRequestId !== undefined && session) {
-          this.#agents.require(session.runtime.provider)
-            .resolveApproval(
-              approval.providerRequestId,
-              params.decision === "always-project" ? "allow-once" : params.decision,
-            )
+        const project = this.#snapshot.project
+        if (params.decision === "always-project" && !project) {
+          this.#error(socket, request.id, internalError, "Approval has no open project")
+          return
         }
-        if (params.decision === "always-project") {
-          const project = this.#snapshot.project
-          if (!project) {
-            this.#error(socket, request.id, internalError, "Approval has no open project")
-            return
-          }
-          const ruleId = `rule-${approval.id}-${Date.now()}`
-          this.#snapshot.approvalRules.push({
-            id: ruleId,
-            projectId: project.id,
-            operation: approval.operation,
-            command: approval.command,
-            status: "active",
-            execution: resolvedApprovalExecution!,
-            createdBy: actor.client,
-            createdByConnectionId: connectionId,
-            createdAt: new Date().toISOString(),
-            useCount: 0,
-          })
-          for (const inactiveRuleId of approval.reapproval?.inactiveRuleIds ?? []) {
-            const inactive = this.#snapshot.approvalRules.find(
-              (rule) => rule.id === inactiveRuleId && rule.status === "inactive",
-            )
-            if (inactive?.status === "inactive" && inactive.inactiveReason !== "revoked") inactive.replacedByRuleId = ruleId
-          }
-        }
+        // The decision is saved before the agent hears it. A decision the
+        // agent acts on but the daemon never stored would leave the person
+        // told the gate is still waiting while the command runs, and a
+        // standing rule they were told failed would reach disk later.
         const decidedAt = new Date().toISOString()
-        this.#snapshot.thread.push({
-          id: `receipt-${approval.id}-${Date.now()}`,
+        const receiptId = `receipt-${approval.id}-${Date.now()}`
+        const undecided = {
+          approval: structuredClone(approval),
+          sessionState: session?.state,
+          plans: structuredClone(this.#snapshot.workingPlans.filter((plan) => plan.steps.some(
+            (step) => step.blocker?.approvalId === approval.id,
+          ))),
+          replacedBy: new Map<string, string | undefined>(),
+        }
+        const candidate = structuredClone(this.#snapshot)
+        const newRule = params.decision === "always-project"
+          ? {
+              id: `rule-${approval.id}-${Date.now()}`,
+              projectId: project!.id,
+              operation: approval.operation,
+              command: approval.command,
+              status: "active" as const,
+              execution: resolvedApprovalExecution!,
+              createdBy: actor.client,
+              createdByConnectionId: connectionId,
+              createdAt: decidedAt,
+              useCount: 0,
+            }
+          : undefined
+        const replacedRuleIds = new Set(newRule ? approval.reapproval?.inactiveRuleIds ?? [] : [])
+        const withRule = (rules: WorkspaceSnapshot["approvalRules"]): WorkspaceSnapshot["approvalRules"] => {
+          if (!newRule) return rules
+          return [
+            ...rules.filter((rule) => rule.id !== newRule.id).map((rule) => (
+              replacedRuleIds.has(rule.id) && rule.status === "inactive" && rule.inactiveReason !== "revoked"
+                ? { ...rule, replacedByRuleId: newRule.id }
+                : rule
+            )),
+            newRule,
+          ]
+        }
+        candidate.thread.push({
+          id: receiptId,
           sessionId: approval.sessionId,
           kind: "receipt",
           decision: params.decision,
@@ -6627,16 +6639,136 @@ export class DomovoiDaemon {
             : {}),
           createdAt: decidedAt,
         })
-        this.#removeApprovals(
-          (candidate) => candidate.id === params.approvalId,
+        const blockedPlan = candidate.workingPlans.some((plan) => plan.steps.some(
+          (step) => step.blocker?.approvalId === approval.id,
+        ))
+        candidate.approvals = candidate.approvals.filter((candidateApproval) => candidateApproval.id !== approval.id)
+        candidate.workingPlans = clearWorkingPlanApprovalBlockers(
+          candidate.workingPlans,
+          new Set([approval.id]),
           decidedAt,
-        )
-        if (session) {
-          session.state = params.decision === "deny" || params.decision === "deny-explain"
+        ).plans
+        const decidedSession = candidate.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+        if (decidedSession) {
+          decidedSession.state = params.decision === "deny" || params.decision === "deny-explain"
             ? "idle"
             : "active"
         }
+        const decided = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
+          ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
+          approvalRules: withRule(latest.approvalRules),
+        })
+        const stillPending = () => this.#snapshot.approvals.some((pending) => pending.id === approval.id)
+        let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
+        try {
+          await this.#serializeSnapshotPersistence(async () => {
+            if (!stillPending()) return
+            undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+              rule.id,
+              "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+            ]))
+            const persisted = decided(this.#snapshot, candidate)
+            if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+            else this.#store.save(persisted)
+            if (!stillPending()) {
+              outcome = "cancelled-after-write"
+              return
+            }
+            this.#snapshot = decided(this.#snapshot, persisted)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            outcome = "committed"
+          })
+        } catch (error) {
+          this.#persistenceFailed(error)
+          this.#reportError("Domovoi could not save an approval decision", error)
+          this.#error(
+            socket,
+            request.id,
+            daemonPersistenceUnavailableErrorCode,
+            "Domovoi could not save this decision, so the agent was not told",
+          )
+          return
+        }
+        if (outcome !== "cancelled") this.#persistenceSucceeded()
+        if (outcome !== "committed") {
+          if (outcome === "cancelled-after-write") {
+            try {
+              await this.#persistSnapshot()
+            } catch (error) {
+              this.#reportError("Domovoi could not save state after a cancelled approval decision", error)
+            }
+          }
+          this.#error(socket, request.id, invalidParams, "Approval does not exist")
+          return
+        }
+        this.#activeAssistantItems.clear()
+        if (approval.providerRequestId !== undefined && session) {
+          try {
+            this.#agents.require(session.runtime.provider)
+              .resolveApproval(
+                approval.providerRequestId,
+                params.decision === "always-project" ? "allow-once" : params.decision,
+              )
+          } catch (error) {
+            this.#reportError("Domovoi could not pass an approval decision to the agent", error)
+            const undo = (snapshot: WorkspaceSnapshot) => {
+              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId)
+              if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
+                snapshot.approvals.push(structuredClone(undecided.approval))
+              }
+              if (newRule) {
+                snapshot.approvalRules = snapshot.approvalRules
+                  .filter((rule) => rule.id !== newRule.id)
+                  .map((rule) => {
+                    if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+                    const { replacedByRuleId: _replaced, ...restored } = rule
+                    const previous = undecided.replacedBy.get(rule.id)
+                    return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+                  })
+              }
+              snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
+                structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
+              const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+              if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
+            }
+            const rolledBack = structuredClone(this.#snapshot)
+            undo(rolledBack)
+            workspaceSnapshotSchema.parse(rolledBack)
+            undo(this.#snapshot)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            try {
+              await this.#persistSnapshot()
+            } catch (rollbackError) {
+              this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+              this.#error(
+                socket,
+                request.id,
+                daemonPersistenceUnavailableErrorCode,
+                "Domovoi could not save this decision, so the agent was not told",
+              )
+              return
+            }
+            this.#error(
+              socket,
+              request.id,
+              internalError,
+              "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
+            )
+            return
+          }
+        }
+        if (blockedPlan) {
+          this.#appendAudit({
+            actor: { kind: "daemon", component: "working-plan" },
+            action: "plan.approval-blocker-cleared",
+            outcome: "succeeded",
+            sessionId: approval.sessionId,
+            ...(project ? { projectId: project.id } : {}),
+            target: approval.id,
+          })
+        }
         changed = true
+        alreadyPersisted = true
       }
 
       if (method === "session.setRuntime") {
