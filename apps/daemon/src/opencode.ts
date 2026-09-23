@@ -75,6 +75,9 @@ type Session = {
   threadId: string
   cwd: string
   runtime: Runtime
+  // Changes each time the thread is loaded, so a reply that settles after an
+  // unload cannot leave anything behind for the next load.
+  generation: number
   activeTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
@@ -94,6 +97,7 @@ type PendingApproval = {
   // Set when a subagent asked: the thread and turn the subagent belongs to.
   // Its approval ends with that turn.
   subagentTurn?: SubagentTurn
+  generation?: number
 }
 
 type SubagentTurn = {
@@ -145,9 +149,10 @@ export class SubagentRegistry {
     this.#neverLinked.set(sessionId, threadId)
   }
 
-  delete(sessionId: string): void {
-    const threadId = this.#linked.get(sessionId)?.threadId ?? this.#neverLinked.get(sessionId)
-    if (threadId === undefined) return
+  // A deletion seen before the creation is remembered too, so the creation
+  // that follows adopts nothing.
+  delete(sessionId: string, fallbackThreadId = ""): void {
+    const threadId = this.#linked.get(sessionId)?.threadId ?? this.#neverLinked.get(sessionId) ?? fallbackThreadId
     this.#linked.delete(sessionId)
     this.#neverLinked.delete(sessionId)
     this.#tombstones.set(sessionId, threadId)
@@ -195,6 +200,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // when the card is answered or the thread's next turn starts or ends.
   #failedRefusals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
+  #nextGeneration = 0
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
@@ -412,7 +418,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }).catch((error: unknown) => {
       console.error(`Domovoi could not resolve a ${this.#identity.providerName} permission`, error)
       // A subagent's refusal must not be lost, or the subagent waits on it.
-      if (response === "reject" && pending.subagentTurn && !this.#closed) this.#failedRefusals.set(requestId, pending)
+      const owner = pending.subagentTurn ? this.#sessions.get(pending.subagentTurn.threadId) : undefined
+      const stillLoaded = owner !== undefined && owner.generation === pending.generation
+      if (response === "reject" && pending.subagentTurn && stillLoaded && !this.#closed) this.#failedRefusals.set(requestId, pending)
     })
   }
 
@@ -457,6 +465,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       threadId,
       cwd,
       runtime,
+      generation: ++this.#nextGeneration,
       assistantMessageTurnIds: new Map(),
       toolPhases: new Map(),
     }
@@ -619,7 +628,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         return
       }
       this.#forgetProviderSession(deleted)
-      this.#subagents.delete(deleted)
+      const parent = asRecord(properties.info)?.parentID
+      this.#subagents.delete(deleted, typeof parent === "string" ? parent : "")
       return
     }
     const sessionId = eventSessionId(properties)
@@ -636,7 +646,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const request = permissionRequest(properties, this.#identity.providerName)
       if (request) {
         this.#respond(
-          { providerSessionId: sessionId, cwd, permissionId: request.permissionId, subagentTurn },
+          { providerSessionId: sessionId, cwd, permissionId: request.permissionId, subagentTurn, generation: session.generation },
           "reject",
           ++this.#nextApprovalId,
         )
@@ -702,7 +712,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         providerSessionId: sessionId,
         cwd,
         permissionId: request.permissionId,
-        ...(subagentTurn ? { subagentTurn } : {}),
+        ...(subagentTurn ? { subagentTurn, generation: session.generation } : {}),
       })
       this.#emit({
         type: "approval-requested",

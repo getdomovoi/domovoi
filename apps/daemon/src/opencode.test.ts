@@ -940,6 +940,46 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  it("drops a refusal that fails after its thread was unloaded, instead of retrying it on the reloaded thread", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId } } })
+    stream.emit(askFrom("ses_child", "per_child"))
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 1 })))
+    const settle = deferred<never>()
+    client.postSessionIdPermissionsPermissionId.mockReturnValueOnce(settle.promise)
+
+    await adapter.stopThread(threadId)
+    settle.resolve(Promise.reject(new Error("provider busy")))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Again", runtime: runtime("build") })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
+  it("remembers a deletion it saw before the creation, so the child is never adopted", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+    stream.emit({ type: "session.deleted", properties: { info: { id: "ses_late", parentID: threadId } } })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_late", info: { id: "ses_late", parentID: threadId } } })
+    stream.emit(askFrom("ses_late", "per_late"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(events.filter((event) => event.type === "approval-requested")).toEqual([])
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
   it("forgets a deleted child without ever adopting it again", async () => {
     const { client, factory, stream } = harness()
     const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
