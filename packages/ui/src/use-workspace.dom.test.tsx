@@ -570,4 +570,3 @@ describe("useWorkspace attached machine admission", () => {
     expect(view.result.current.snapshot?.machine.name).toBe("changed during readmission")
   })
 })
-
