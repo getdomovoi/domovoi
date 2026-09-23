@@ -1,3 +1,6 @@
+// A frozen copy of apps/daemon/src/secret-redaction.ts at 8bda137f (main before
+// the terminal redaction rewrite). Test only: the differential fuzz test holds
+// the new terminal redactor to hiding at least what this one hid.
 const replacement = "[REDACTED]"
 
 export const maximumDurableCommandLength = 8_192
@@ -22,7 +25,7 @@ const structuredAssignment = new RegExp(
   "giu",
 )
 const secretFlag = new RegExp(
-  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))(${quotedValue}|[^\s;&|\r\n]+)`,
+  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 const quotedCmdAssignment = new RegExp(
@@ -30,7 +33,7 @@ const quotedCmdAssignment = new RegExp(
   "giu",
 )
 const javaSystemProperty = new RegExp(
-  String.raw`(-D${sensitiveName}\s*=)(${quotedValue}|[^\s;&|\r\n]+)`,
+  String.raw`(-D${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 
@@ -214,193 +217,13 @@ function boundedText(value: unknown, maximumLength: number): { value: string; tr
 }
 
 // A terminal is not command output: it has no reliable newlines, its lines can
-// be enormous, and what it shows has to keep up with typing. Each read is
-// redacted in the context of the whole of its current line, and what is shown
-// is how the redacted line has grown since last time. A value always follows
-// its name on the same line, so however the line was split across reads or
-// idle beats, the name is in view when the value arrives, and nothing that
-// could still turn out to be a value has to be held back to be caught.
-// Line boundaries are carriage returns and newlines.
+// be enormous, and what it shows has to keep up with typing. Redaction still
+// has to see across reads, so the whole of what has been carried plus the new
+// read is redacted together, and a tail is held back only while it could still
+// be the beginning of a secret. Ordinary output is never delayed, and nothing
+// is ever replaced wholesale.
 export const terminalRedactionCarryCharacters = 256
 
-// How much of one line is kept as context. A longer line keeps only its tail,
-// unless it ends inside a value, which is then dropped up to where it ends.
-const maximumTerminalLineContextCharacters = 8_192
-
-const lineBoundary = /[\r\n]/
-
-// Where a value ends, once the redactor has decided it is inside one.
-const valueDelimiter = /[\s;&|\r\n]/
-
-const assignmentPrefix = String.raw`(?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*`
-const structuredPrefix = String.raw`["']?\b${sensitiveName}\b["']?\s*:\s*`
-const flagPrefix = String.raw`(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)`
-const javaPrefix = String.raw`-D${sensitiveName}\s*=`
-const valuePrefix = `(?:${assignmentPrefix}|${structuredPrefix}|${flagPrefix}|${javaPrefix})`
-
-// A quoted value whose closing quote has not arrived yet: everything after the
-// opening quote is value until it does.
-const unclosedQuotedValue = new RegExp(String.raw`(${valuePrefix})(["'])(?:\\.|(?!\2)[^\\\r\n])*$`, "iu")
-
-// The line ends inside a value: an unclosed quote (possibly ending on the
-// backslash of an escape still arriving), or an unquoted run.
-const valueAtEnd = new RegExp(String.raw`${valuePrefix}(?:(["'])(?:\\.|(?!\1)[^\\\r\n])*\\?|[^\s;&|\r\n"'][^\s;&|\r\n]*)$`, "iu")
-
-// The line ends with a name and its separator whose value has not started.
-const pendingValue = new RegExp(String.raw`${valuePrefix}$`, "iu")
-
-type DroppedValue =
-  | { kind: "unquoted" }
-  | { kind: "quoted", quote: string, escaped: boolean }
-
-// The start of a bare token (sk-, ghp_, a JWT) still being printed. Held until
-// the next read, so its first characters are not shown before the pattern that
-// recognises it is complete. Not released on an idle beat: a token is not a
-// prompt anyone waits on.
-const tokenFragment = /\b(?:(?:sk|ghp|gho|github_pat|xox[baprs])(?:[-_][A-Za-z0-9_-]*)?|eyJ[A-Za-z0-9_.-]*)$/u
-
-// A shell word goes on after a closing quote (`"…"rest` is one value), so
-// what follows a redacted quoted value up to a delimiter is redacted with it.
-const wordAfterRedactedQuote = new RegExp(String.raw`(${escapeForPattern(replacement)}["'])[^\s;&|\r\n]+`, "gu")
-
-function escapeForPattern(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
-
-function redactTerminalLine(line: string): string {
-  return redactStreamText(line.replace(unclosedQuotedValue, (_match, prefix: string, quote: string) => `${prefix}${quote}${replacement}`))
-    .replace(wordAfterRedactedQuote, "$1")
-}
-
-function commonPrefixLength(left: string, right: string): number {
-  const length = Math.min(left.length, right.length)
-  let index = 0
-  while (index < length && left.charCodeAt(index) === right.charCodeAt(index)) index += 1
-  return index
-}
-
-class LineContextRedactor {
-  // The raw text of the current line so far, and the redacted form of it that
-  // has been shown.
-  #line = ""
-  #shown = ""
-  // Set when a line outgrew its context while inside a value: the value's
-  // remaining bytes are dropped until it ends. A quoted value ends at its
-  // unescaped closing quote; either kind ends at a line boundary.
-  #dropping: DroppedValue | undefined
-
-  push(chunk: string): string {
-    let input = chunk
-    if (this.#dropping) {
-      const end = this.#endOfDroppedValue(input, this.#dropping)
-      if (end === undefined) return ""
-      input = input.slice(end)
-      this.#dropping = undefined
-    }
-    let output = ""
-    while (input.length > 0) {
-      const boundary = lineBoundary.exec(input)
-      if (boundary) {
-        this.#line += input.slice(0, boundary.index + 1)
-        input = input.slice(boundary.index + 1)
-        output += this.#show(redactTerminalLine(this.#line))
-        this.#line = ""
-        this.#shown = ""
-        continue
-      }
-      this.#line += input
-      input = ""
-      const held = tokenFragment.exec(this.#line)
-      const ready = held && held[0].length <= terminalRedactionCarryCharacters
-        ? this.#line.slice(0, held.index)
-        : this.#line
-      output += this.#show(redactTerminalLine(ready))
-      if (this.#line.length > maximumTerminalLineContextCharacters) this.#trimLine()
-    }
-    return output
-  }
-
-  // An idle beat. Everything but a bare token still being printed has already
-  // been shown, so there is nothing more to release.
-  release(): string {
-    return ""
-  }
-
-  // The end of the stream: show what is held, redacted, and forget the line.
-  flush(): string {
-    const output = this.#line === "" ? "" : this.#show(redactTerminalLine(this.#line))
-    this.#line = ""
-    this.#shown = ""
-    this.#dropping = undefined
-    return output
-  }
-
-  // Shows how the redacted line grew. If redaction changed text already shown
-  // (a bare token recognised late), the rest of the redacted line is shown
-  // after it: the view may repeat a little, but nothing unredacted appears.
-  #show(redacted: string): string {
-    const shared = commonPrefixLength(redacted, this.#shown)
-    const added = redacted.slice(shared)
-    this.#shown = redacted
-    return added
-  }
-
-  #trimLine(): void {
-    const inValue = valueAtEnd.exec(this.#line)
-    if (inValue) {
-      const quote = inValue[1]
-      const trailingBackslashes = /\\*$/u.exec(this.#line)![0].length
-      this.#dropping = quote === undefined
-        ? { kind: "unquoted" }
-        : { kind: "quoted", quote, escaped: trailingBackslashes % 2 === 1 }
-      this.#line = ""
-      this.#shown = ""
-      return
-    }
-    // A name and separator whose value has not started stay as context, so a
-    // value after a long run of spaces is still seen as one.
-    const pending = pendingValue.exec(this.#line)
-    if (pending) {
-      const kept = pending[0].length > terminalRedactionCarryCharacters
-        ? pending[0].replace(/\s+$/u, (space) => space.slice(-1))
-        : pending[0]
-      this.#line = kept
-      this.#shown = redactTerminalLine(kept)
-      return
-    }
-    this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
-    this.#shown = redactTerminalLine(this.#line)
-  }
-
-  // Where a dropped value ends in this read, or undefined if it does not. A
-  // value is a shell word: quoted parts end at their unescaped closing quote,
-  // and the word goes on until an unquoted delimiter, so `"…"rest` is one
-  // value. A newline always ends it and is then read as a line boundary.
-  #endOfDroppedValue(input: string, dropping: DroppedValue): number | undefined {
-    for (let index = 0; index < input.length; index += 1) {
-      const character = input[index]!
-      if (character === "\n") return index
-      if (dropping.kind === "quoted") {
-        if (dropping.escaped) {
-          dropping.escaped = false
-        } else if (character === "\\" && dropping.quote === '"') {
-          dropping.escaped = true
-        } else if (character === dropping.quote) {
-          this.#dropping = dropping = { kind: "unquoted" }
-        }
-        continue
-      }
-      if (valueDelimiter.test(character)) return index
-      if (character === '"' || character === "'") this.#dropping = dropping = { kind: "quoted", quote: character, escaped: false }
-    }
-    return undefined
-  }
-}
-
-// The first stage, unchanged from before the line-context stage existed. It
-// holds back a tail that might become a secret, redacting what it holds with
-// what arrives next, and the terminal releases it on an idle beat so a prompt
-// shows. Whatever it hides stays hidden: the second stage only ever removes.
 // The start of an assignment this redactor would act on, left dangling at the
 // end of a read: a sensitive name, or one followed by its separator and a value
 // that may still be growing.
@@ -414,9 +237,9 @@ const danglingSecret = new RegExp(
 const danglingWord = /[A-Za-z][A-Za-z0-9_-]*$/
 
 // Where a value ends, once the redactor has decided it is inside one.
-const heldValueDelimiter = /[\s;&|\r\n]/
+const valueDelimiter = /[\s;&|\r\n]/
 
-class HeldTailRedactor {
+export class TerminalOutputRedactor {
   #carry = ""
   // Set once an assignment's value has outgrown what can be carried. From then
   // on the value's bytes are dropped rather than held, until its delimiter, so
@@ -428,7 +251,7 @@ class HeldTailRedactor {
   push(chunk: string): string {
     let input = chunk
     if (this.#droppingValue) {
-      const delimiter = heldValueDelimiter.exec(input)
+      const delimiter = valueDelimiter.exec(input)
       if (!delimiter) return ""
       input = input.slice(delimiter.index)
       this.#droppingValue = false
@@ -469,31 +292,5 @@ class HeldTailRedactor {
     const word = danglingWord.exec(window)
     if (!word) return combined.length
     return combined.length - window.length + word.index
-  }
-}
-
-// The terminal's redactor is the two stages in a row. The line-context stage
-// reads each line whole, so a value that arrives after its name, across a
-// read or an idle beat, is still redacted. The held-tail stage then reads what
-// the first let through, in the same reads, and hides what it always hid. Each
-// stage only removes, so what either hides stays hidden.
-export class TerminalOutputRedactor {
-  readonly #line = new LineContextRedactor()
-  readonly #held = new HeldTailRedactor()
-
-  push(chunk: string): string {
-    return this.#held.push(this.#line.push(chunk))
-  }
-
-  // An idle beat: the held-tail stage releases what it holds, so a prompt
-  // shows; the line-context stage keeps the line it belongs to as context.
-  release(): string {
-    const released = this.#line.release()
-    return `${released ? this.#held.push(released) : ""}${this.#held.flush()}`
-  }
-
-  flush(): string {
-    const remainder = this.#line.flush()
-    return `${remainder ? this.#held.push(remainder) : ""}${this.#held.flush()}`
   }
 }

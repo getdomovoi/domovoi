@@ -51,12 +51,13 @@ function fragments(value: string): string[] {
   return words.flatMap((word) => Array.from({ length: Math.max(1, word.length - 2) }, (_, index) => word.slice(index, index + 3)))
 }
 
-// Lines that name a secret word but carry no secret: shown exactly.
+// Lines that name a secret word but carry no secret: shown exactly. A name and
+// separator at the end of a line are not here: main reads the next line as
+// their value (`"password":` then a newline and `"value"`), and so does this.
 const plain: readonly string[] = [
   "passwords are hashed\r\n",
   "Enter password below\r\n",
   "password\r\nhello world\r\n",
-  "Password:\r\nhello world\r\n",
   "token count 5\r\n",
   "me@host:~$ ls -la\r\n",
   "\x1b[32mpasswords are hashed\x1b[0m\r\n",
@@ -89,6 +90,11 @@ const reviewCases: readonly { name: string, steps: readonly Step[], value: strin
   { name: "an oversized quoted value with an escaped quote", steps: ["export API_KEY=\"", "q".repeat(9_000), "\\\"zqxjwvkm", "\" done\r\n"], value: "zqxjwvkm" },
   { name: "an escaped quote split from its backslash", steps: ["export API_KEY=\"", "q".repeat(9_000), "\\", "\"zqxjwvkm\" done\r\n"], value: "zqxjwvkm" },
   { name: "an oversized unclosed quote, then plain lines", steps: ["export API_KEY=\"", "q".repeat(9_000), "\r\nplain line one\r\nplain line two\r\n"], value: "qqqq", plain: ["plain line one\r\n", "plain line two\r\n"] },
+  // Round 3: each hidden on main, shown by the line-context stage alone.
+  { name: "a JSON name and separator, then its value on the next line", steps: ["{\"password\":\n\"zqxjwvkm\"}\n"], value: "zqxjwvkm" },
+  { name: "a closed oversized quote, then the rest of the word", steps: ["API_KEY=\"", "q".repeat(9_000), "\"zqxjwvkm\r\n"], value: "zqxjwvkm" },
+  { name: "a property value with an escaped quote, split", steps: ["-", "Dpassword", "=\"aaaa\\\"zqxjwvkm\" done\r\n"], value: "zqxjwvkm" },
+  { name: "a property separator, a long run of spaces, then the value", steps: ["-Dpassword=", " ".repeat(8_300), "zqxjwvkm\r\n"], value: "zqxjwvkm" },
 ]
 
 describe("terminal redaction on the cases review reported", () => {
