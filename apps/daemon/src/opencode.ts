@@ -103,6 +103,9 @@ type PendingApproval = {
 type SubagentTurn = {
   threadId: string
   turnId: string
+  // Set by the registry: distinguishes this link from a later link of a
+  // reused session id.
+  link?: number
 }
 
 // Subagent sessions, by session id. A linked subagent belongs to the thread
@@ -116,6 +119,7 @@ export class SubagentRegistry {
   readonly #neverLinked = new Map<string, string>()
   readonly #tombstones = new Map<string, string>()
   readonly #tombstoneLimit: number
+  #nextLink = 0
 
   constructor(tombstoneLimit = 1_024) {
     this.#tombstoneLimit = tombstoneLimit
@@ -142,7 +146,7 @@ export class SubagentRegistry {
   }
 
   link(sessionId: string, turn: SubagentTurn): void {
-    this.#linked.set(sessionId, turn)
+    this.#linked.set(sessionId, { threadId: turn.threadId, turnId: turn.turnId, link: ++this.#nextLink })
   }
 
   neverLink(sessionId: string, threadId: string): void {
@@ -152,7 +156,10 @@ export class SubagentRegistry {
   // A deletion seen before the creation is remembered too, so the creation
   // that follows adopts nothing.
   delete(sessionId: string, fallbackThreadId = ""): void {
-    const threadId = this.#linked.get(sessionId)?.threadId ?? this.#neverLinked.get(sessionId) ?? fallbackThreadId
+    const threadId = this.#linked.get(sessionId)?.threadId
+      ?? this.#neverLinked.get(sessionId)
+      ?? (fallbackThreadId || this.#tombstones.get(sessionId))
+      ?? fallbackThreadId
     this.#linked.delete(sessionId)
     this.#neverLinked.delete(sessionId)
     // Re-insert so a repeated deletion is the newest tombstone, not the oldest.
@@ -423,7 +430,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const owner = pending.subagentTurn ? this.#sessions.get(pending.subagentTurn.threadId) : undefined
       const stillLoaded = owner !== undefined && owner.generation === pending.generation
       // A deleted subagent cannot take the refusal either, so nothing is kept for it.
-      const stillLinked = this.#subagents.get(pending.providerSessionId) !== undefined
+      const stillLinked = this.#subagents.get(pending.providerSessionId)?.link === pending.subagentTurn?.link
       if (response === "reject" && pending.subagentTurn && stillLoaded && stillLinked && !this.#closed) {
         this.#failedRefusals.set(requestId, pending)
       }

@@ -997,6 +997,32 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  it("does not retry an old refusal against a new child that reused the id after a tombstone burst", async () => {
+    const settle = deferred<{ data: boolean }>()
+    const { adapter, client, events, stream, threadId } = await childAskedInFirstTurn((client) => {
+      client.postSessionIdPermissionsPermissionId.mockReturnValueOnce(settle.promise)
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1))
+    stream.emit({ type: "session.deleted", properties: { info: { id: "ses_child", parentID: threadId } } })
+    for (let index = 0; index < 1_024; index += 1) {
+      stream.emit({ type: "session.deleted", properties: { info: { id: `ses_burst_${index}`, parentID: threadId } } })
+    }
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId } } })
+    stream.emit(askFrom("ses_child", "per_new"))
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 2 })))
+
+    settle.resolve(Promise.reject(new Error("provider busy")))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
+    )
+    await adapter.close()
+  })
+
   it("forgets a deleted child without ever adopting it again", async () => {
     const { client, factory, stream } = harness()
     const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
@@ -1181,6 +1207,15 @@ describe("SubagentRegistry", () => {
 })
 
 describe("SubagentRegistry tombstones", () => {
+  it("keeps the tombstone's thread when the same id is deleted again without a parent", () => {
+    const registry = new SubagentRegistry(8)
+    registry.delete("child", "thread")
+    registry.delete("child")
+    registry.forgetThread("thread")
+    expect(registry.isKnown("child")).toBe(false)
+  })
+
+
   it("moves a repeated deletion to the newest place, so a burst does not evict it", () => {
     const registry = new SubagentRegistry(2)
     registry.delete("old")
