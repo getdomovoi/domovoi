@@ -154,7 +154,7 @@ const desktopDaemonService = new DesktopDaemonService({
     version: app.getVersion(),
     platform: process.platform,
     exists: async (path) => { try { await access(path); return true } catch { return false } },
-    copy: (from, to) => cp(from, to, { recursive: true, force: true }),
+    copy: (from, to) => cp(from, to, { recursive: true, force: true, verbatimSymlinks: true }),
   }),
   install: (options) => installDaemonService(options),
   status: () => readDaemonServiceStatus(),

@@ -60,3 +60,54 @@ test("drops links with nothing behind them and links that leave the shipped tree
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("prunes the shipped daemon to what the runtime loads on the packaged platform", async () => {
+  const { pruneDaemonRuntime } = await import("./daemon-runtime.mjs")
+  const { mkdir, readdir } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-prune-"))
+  const file = async (path, body = "x") => { await mkdir(join(root, path, ".."), { recursive: true }); await writeFile(join(root, path), body) }
+  try {
+    for (const path of [
+      "dist/index.js", "dist/index.d.ts", "dist/index.js.map", "dist/public.js", "package.json",
+      "node_modules/node-pty/lib/index.js", "node_modules/node-pty/package.json", "node_modules/node-pty/LICENSE", "node_modules/node-pty/README.md",
+      "node_modules/node-pty/prebuilds/darwin-arm64/pty.node", "node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+      "node_modules/node-pty/prebuilds/linux-x64/pty.node", "node_modules/node-pty/prebuilds/win32-x64/pty.node",
+      "node_modules/node-pty/src/unix/pty.cc", "node_modules/node-pty/binding.gyp", "node_modules/node-pty/typings/node-pty.d.ts",
+      "node_modules/node-pty/third_party/conpty/conpty.dll", "node_modules/node-pty/scripts/prebuild.js",
+      "node_modules/zod/index.cjs", "node_modules/zod/index.d.cts", "node_modules/zod/src/index.ts", "node_modules/zod/CHANGELOG.md",
+      "node_modules/@x/y/dist/a.mjs", "node_modules/@x/y/dist/a.d.mts", "node_modules/@x/y/dist/a.mjs.map", "node_modules/@x/y/LICENSE.md",
+      "node_modules/.bin/yaml",
+    ]) await file(path)
+    const removed = await pruneDaemonRuntime(root, { platform: "darwin", arch: "arm64" })
+    const kept = (await readdir(root, { recursive: true })).map((p) => p.replaceAll("\\", "/")).filter((p) => /\.[a-z]+$|pty\.node|spawn-helper|LICENSE$/.test(p)).sort()
+    assert.deepEqual(kept, [
+      "dist/index.js", "dist/public.js",
+      "node_modules/@x/y/LICENSE.md", "node_modules/@x/y/dist/a.mjs",
+      "node_modules/node-pty/LICENSE", "node_modules/node-pty/lib/index.js", "node_modules/node-pty/package.json",
+      "node_modules/node-pty/prebuilds/darwin-arm64/pty.node",
+      "node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+      "node_modules/zod/index.cjs",
+      "package.json",
+    ].sort())
+    await assert.rejects(readdir(join(root, "node_modules", ".bin")))
+    assert.ok(removed.bytes > 0 && removed.files > 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("keeps the conpty files a Windows package needs", async () => {
+  const { pruneDaemonRuntime } = await import("./daemon-runtime.mjs")
+  const { mkdir, readdir } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-prune-win-"))
+  try {
+    await mkdir(join(root, "node_modules/node-pty/third_party/conpty"), { recursive: true })
+    await writeFile(join(root, "node_modules/node-pty/third_party/conpty/conpty.dll"), "x")
+    await mkdir(join(root, "node_modules/node-pty/prebuilds/win32-x64"), { recursive: true })
+    await writeFile(join(root, "node_modules/node-pty/prebuilds/win32-x64/pty.node"), "x")
+    await pruneDaemonRuntime(root, { platform: "win32", arch: "x64" })
+    assert.deepEqual(await readdir(join(root, "node_modules/node-pty/third_party/conpty")), ["conpty.dll"])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

@@ -121,12 +121,16 @@ const excludedDependency = /^@anthropic-ai\+claude-agent-sdk-[^@]+@|^claude-agen
 
 export async function deployDaemon({ repositoryRoot, destination, run = execute }) {
   await rm(destination, { recursive: true, force: true })
-  await run("pnpm", ["--filter", "@getdomovoi/daemon", "deploy", "--legacy", "--prod", destination], { cwd: repositoryRoot, maxBuffer: 16 * 1024 * 1024 })
+  // Hoisted: a flat node_modules with real directories and no store links, so
+  // the copy under the profile and the packaged copy are the same files with
+  // nothing to resolve back into the repository or the app bundle.
+  await run("pnpm", ["--filter", "@getdomovoi/daemon", "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", destination], { cwd: repositoryRoot, maxBuffer: 16 * 1024 * 1024 })
   const store = join(destination, "node_modules", ".pnpm")
   for (const entry of await readdir(store).catch(() => [])) {
     if (excludedDependency.test(entry)) await rm(join(store, entry), { recursive: true, force: true })
   }
   const scoped = join(destination, "node_modules", "@anthropic-ai")
+  // Hoisted layout: the vendor's per-platform agent packages sit here.
   for (const entry of await readdir(scoped).catch(() => [])) {
     if (excludedDependency.test(entry)) await rm(join(scoped, entry), { recursive: true, force: true })
   }
@@ -169,6 +173,39 @@ export async function removeDanglingLinks(path) {
   return removed
 }
 
+// What the runtime never loads on the platform being packaged: types, source
+// maps, TypeScript and markdown sources, node-pty's build inputs and the
+// prebuilds for other platforms, and the package-manager shims. node-pty
+// loads prebuilds/<platform>-<arch> (lib/utils.js); Windows also needs its
+// third_party conpty files. Licences stay.
+const neverLoaded = /\.(d\.ts|d\.mts|d\.cts|map|ts|tsx|mts|cts|md|markdown)$/i
+
+export async function pruneDaemonRuntime(root, { platform, arch }) {
+  const removed = { files: 0, bytes: 0 }
+  const drop = async (path) => {
+    let entry
+    try { entry = await lstat(path) } catch { return }
+    removed.bytes += entry.isDirectory() ? await directoryBytes(path) : entry.size
+    removed.files += 1
+    await rm(path, { recursive: true, force: true })
+  }
+  const nodePty = join(root, "node_modules", "node-pty")
+  for (const entry of await readdir(join(nodePty, "prebuilds")).catch(() => [])) {
+    if (entry !== `${platform}-${arch}`) await drop(join(nodePty, "prebuilds", entry))
+  }
+  for (const entry of ["src", "scripts", "typings", "binding.gyp", ...(platform === "win32" ? [] : ["third_party"])]) await drop(join(nodePty, entry))
+  await drop(join(root, "node_modules", ".bin"))
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) await walk(path)
+      else if (neverLoaded.test(entry.name) && !/^licen[cs]e/i.test(entry.name)) await drop(path)
+    }
+  }
+  await walk(root)
+  return removed
+}
+
 // The installer cannot prove the entry's imports resolve; running it can.
 export async function proveDaemonRuns({ nodeExecutable, daemonEntry, expectedVersion, run = execute }) {
   const { stdout } = await run(nodeExecutable, [daemonEntry, "--version"], { timeout: 30_000 })
@@ -200,6 +237,8 @@ export async function prepareDaemonRuntime({
   const archive = await fetchNodeArchive({ target, cacheDirectory: join(desktopRoot, ".cache", "node"), download })
   const nodeExecutable = await unpackNode({ archive, target, destination: join(output, "node"), run })
   const daemonEntry = await deployDaemon({ repositoryRoot, destination: join(output, "daemon"), run })
+  const pruned = await pruneDaemonRuntime(join(output, "daemon"), { platform, arch })
+  log(`pruned ${pruned.files} entries, ${(pruned.bytes / 1048576).toFixed(1)} MB, the runtime never loads on ${target.key}`)
   const manifest = JSON.parse(await readFile(join(repositoryRoot, "apps/daemon/package.json"), "utf8"))
   const host = platform === process.platform && arch === process.arch
   if (host) {
