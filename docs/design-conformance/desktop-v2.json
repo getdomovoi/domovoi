@@ -496,12 +496,9 @@
         "Phone and tablet",
         "Rename, rotate and unpair them on Machines"
       ],
-      "presence": [
-        "Pairing"
-      ],
-      "partial": {
+      "missing": {
         "since": "2026-09-23",
-        "reason": "pairing exists as a dialog; the settings section and the imported pairing card (J23) are not drawn in Settings"
+        "reason": "no client surface on the desktop shows a device pairing code (device.issueCode has no caller outside the daemon's own CLI); the earlier presence string Pairing matched code comments, and the pairing dialog that exists pairs this client to another machine"
       }
     },
     {
@@ -862,12 +859,9 @@
         "Wrote a",
         "Read it"
       ],
-      "presence": [
-        "Read it"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a plan link exists; the row's wording and the revised time are not the design's"
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no plan link row under the prose; the earlier presence string matched the credential prompt's Read it from, not this element"
       }
     },
     {
@@ -1002,12 +996,9 @@
         "Reconnect to",
         "Reviewing and moving this session both need the daemon"
       ],
-      "presence": [
-        "Reconnect to"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "reconnect exists; the explanation line is not drawn"
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no Reconnect to <machine> action or explanation in the thread; the earlier presence string matched the audit log's error text, not this element"
       }
     },
     {
