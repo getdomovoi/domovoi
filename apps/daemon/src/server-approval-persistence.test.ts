@@ -286,3 +286,106 @@ describe("approval decisions", () => {
     expect(live.thread.some((item) => item.kind === "receipt")).toBe(false)
   })
 })
+
+function reapprovals(): WorkspaceSnapshot {
+  const snapshot = structuredClone(pendingApproval())
+  const legacy = {
+    id: "rule-legacy",
+    projectId: snapshot.project!.id,
+    operation: "Apply a production database migration",
+    command: "pnpm prisma migrate deploy",
+    createdBy: "desktop" as const,
+    createdAt: "2026-08-01T12:00:00.000Z",
+    useCount: 3,
+    status: "inactive" as const,
+    inactiveReason: "legacy-text-only" as const,
+    inactivatedAt: "2026-08-20T12:00:00.000Z",
+  }
+  snapshot.approvalRules = [legacy]
+  const second = snapshot.sessions.find((session) => session.id !== "session-billing")!
+  second.runtime = { ...second.runtime, provider: "codex", model: "gpt-5.6-sol" }
+  second.state = "waiting"
+  second.workspacePath = `/worktrees/${second.id}`
+  second.providerThreadId = `thread-${second.id}`
+  delete second.activeTurnId
+  const reapproval = { reason: "legacy-text-only" as const, inactiveRuleIds: [legacy.id] }
+  snapshot.approvals = [
+    { ...snapshot.approvals[0]!, reapproval },
+    { ...snapshot.approvals[0]!, id: "approval-second", sessionId: second.id, providerRequestId: 42, reapproval },
+  ]
+  return workspaceSnapshotSchema.parse(snapshot)
+}
+
+describe("standing rule replacement links", () => {
+  it("removes the replacement link a rolled-back decision set", async () => {
+    const provider = agent()
+    provider.resolveApproval.mockImplementationOnce(() => { throw new Error("stdin closed") })
+    const store = {
+      load: () => reapprovals(),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => {}),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+    const before = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(before.approvals.map(({ id }) => id)).toEqual(["approval-migrate", "approval-second"])
+
+    const undelivered = await rpc("approval.resolve", {
+      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+    })
+    expect(undelivered.error).toMatchObject({ code: -32603 })
+    const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(live.approvalRules).toEqual(before.approvalRules)
+  })
+
+  it("keeps another decision's replacement link when a concurrent one rolls back", async () => {
+    const provider = agent()
+    provider.resolveApproval.mockImplementation((requestId: number) => {
+      if (requestId === 42) throw new Error("stdin closed")
+    })
+    let parkNext = false
+    let parked = () => {}
+    let release = () => {}
+    const parkedWrite = new Promise<void>((resolve) => { parked = resolve })
+    const store = {
+      load: () => reapprovals(),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => {
+        if (!parkNext) return
+        parkNext = false
+        await new Promise<void>((resolve) => {
+          release = resolve
+          parked()
+        })
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const first = await connect(daemon, port)
+    const second = await connect(daemon, port)
+
+    parkNext = true
+    const decidedFirst = first("approval.resolve", {
+      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+    })
+    await parkedWrite
+    const decidedSecond = second("approval.resolve", {
+      approvalId: "approval-second", decision: "always-project", client: "desktop",
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    release()
+    expect((await decidedFirst).error).toBeUndefined()
+    expect((await decidedSecond).error).toMatchObject({ code: -32603 })
+
+    const live = workspaceSnapshotSchema.parse((await first("workspace.get", {})).result)
+    const firstRule = live.approvalRules.find((rule) => rule.status === "active")!
+    expect(live.approvalRules.map(({ id }) => id)).toEqual(["rule-legacy", firstRule.id])
+    expect(live.approvalRules[0]).toMatchObject({ id: "rule-legacy", replacedByRuleId: firstRule.id })
+    expect(live.approvals.map(({ id }) => id)).toEqual(["approval-second"])
+  })
+})

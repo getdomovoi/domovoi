@@ -6594,10 +6594,7 @@ export class DomovoiDaemon {
           plans: structuredClone(this.#snapshot.workingPlans.filter((plan) => plan.steps.some(
             (step) => step.blocker?.approvalId === approval.id,
           ))),
-          replacedBy: new Map(this.#snapshot.approvalRules.map((rule) => [
-            rule.id,
-            "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
-          ])),
+          replacedBy: new Map<string, string | undefined>(),
         }
         const candidate = structuredClone(this.#snapshot)
         const newRule = params.decision === "always-project"
@@ -6665,6 +6662,10 @@ export class DomovoiDaemon {
         try {
           await this.#serializeSnapshotPersistence(async () => {
             if (!stillPending()) return
+            undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+              rule.id,
+              "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+            ]))
             const persisted = decided(this.#snapshot, candidate)
             if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
             else this.#store.save(persisted)
