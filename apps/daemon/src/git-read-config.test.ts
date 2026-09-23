@@ -14,8 +14,11 @@ const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 const programVariables = ["GIT_PAGER", "PAGER", "GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH"] as const
-const isolated: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }
-for (const name of programVariables) delete isolated[name]
+const isolated: NodeJS.ProcessEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_") && !(programVariables as readonly string[]).includes(name)),
+)
+isolated.GIT_CONFIG_GLOBAL = "/dev/null"
+isolated.GIT_CONFIG_NOSYSTEM = "1"
 
 async function repository() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-read-config-")))
@@ -88,6 +91,10 @@ describe("gitReadCanRunProgram", () => {
     ["format.pretty", "%GT"],
     ["format.pretty", "%GR"],
     ["pretty.signed", "%h %G? %s"],
+    ["format.pretty", "%%%G?"],
+    ["remote.origin.promisor", "true"],
+    ["remote.origin.partialCloneFilter", "blob:none"],
+    ["extensions.partialClone", "origin"],
   ])("asks when %s is set", async (key, value) => {
     const { root, set } = await repository()
     await set(key, value)
@@ -103,6 +110,9 @@ describe("gitReadCanRunProgram", () => {
     ["core.pager", "less"],
     ["pager.status", "cat"],
     ["pager.log", "/tmp/program"],
+    ["format.pretty", "100%%Green %h"],
+    ["pretty.escaped", "%%GG %s"],
+    ["remote.origin.promisor", "false"],
   ])("does not ask for %s=%s", async (key, value) => {
     const { root, set } = await repository()
     await set(key, value)
@@ -135,6 +145,21 @@ describe("gitReadCanRunProgram", () => {
     await git("git", ["-C", root, "update-index", "--add", "--cacheinfo", `160000,${head},vendor/lib`], { env: isolated })
 
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
+  })
+
+  it("asks in a partial clone, where git log --stat can fetch missing objects through the remote's programs", async () => {
+    const server = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-read-config-server-")))
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-read-config-partial-")))
+    scratchDirectories.push(server, parent)
+    const run = (cwd: string, ...args: string[]) => git("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", ...args], { env: isolated })
+    await run(server, "init", "-q")
+    await run(server, "config", "uploadpack.allowFilter", "true")
+    await writeFile(join(server, "a.txt"), "a\n")
+    await run(server, "add", "a.txt")
+    await run(server, "commit", "-qm", "a")
+    await run(parent, "clone", "-q", "--no-checkout", "--filter=blob:none", `file://${server}`, "clone")
+
+    await expect(gitReadCanRunProgram(join(parent, "clone"), isolated)).resolves.toBe(true)
   })
 
   it("reads settings from an included file", async () => {

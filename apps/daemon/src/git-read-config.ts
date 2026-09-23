@@ -22,6 +22,11 @@ import { resolve } from "node:path"
 // listed read, so it asks before this check runs.
 
 const programKeys: readonly RegExp[] = [
+  // A partial clone fetches missing objects on demand (git log --stat does),
+  // running the remote's upload-pack, SSH command or protocol helpers. Asking
+  // for every promisor repository covers those transport settings at once.
+  /^remote\..+\.partialclonefilter$/,
+  /^extensions\.partialclone$/,
   /^diff\.external$/,
   /^diff\..+\.(?:textconv|command)$/,
   /^filter\./,
@@ -35,9 +40,12 @@ const standardLfsFilter: Readonly<Record<string, string>> = {
   "filter.lfs.required": "true",
 }
 const switchedKeys = new Set(["core.fsmonitor", "log.showsignature"])
+const promisorKey = /^remote\..+\.promisor$/
 // Every signature placeholder (%G?, %GG, %GS, %GK, %GF, %GP, %GT, %GR) starts
-// with %G, and git log runs the signature program to fill any of them.
+// with %G, and git log runs the signature program to fill any of them. %% is a
+// literal percent sign, so only a %G after an even run of % is a placeholder.
 const signatureFormatKeys = /^(?:format\.pretty|pretty\..+)$/
+const signaturePlaceholder = /(?:^|[^%])(?:%%)*%G/
 const falseValues = new Set(["false", "no", "off", "0", ""])
 // Git runs GIT_EXTERNAL_DIFF for diffs and finds its helper programs under
 // GIT_EXEC_PATH.
@@ -65,7 +73,8 @@ export async function gitReadCanRunProgram(directory: string, env: NodeJS.Proces
     if (raw !== undefined && Object.hasOwn(standardLfsFilter, key) && standardLfsFilter[key] === raw) continue
     if (programKeys.some((pattern) => pattern.test(key))) return true
     if (switchedKeys.has(key) && !falseValues.has(value)) return true
-    if (signatureFormatKeys.test(key) && raw !== undefined && raw.includes("%G")) return true
+    if (promisorKey.test(key) && !falseValues.has(value)) return true
+    if (signatureFormatKeys.test(key) && raw !== undefined && signaturePlaceholder.test(raw)) return true
   }
   if (await hasGitlink(directory, env)) return true
   const hook = await run(directory, ["rev-parse", "--git-path", "hooks/post-index-change"], env)

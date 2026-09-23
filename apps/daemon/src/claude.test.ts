@@ -1047,12 +1047,22 @@ describe("changing the mode on a live session", () => {
 })
 
 describe("reads Claude would approve before Domovoi sees them", () => {
+  const inherited = new Map<string, string>()
   beforeEach(() => {
+    for (const [name, value] of Object.entries(process.env)) {
+      if (!name.startsWith("GIT_") || value === undefined) continue
+      inherited.set(name, value)
+      delete process.env[name]
+    }
     vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null")
     vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1")
-    for (const name of ["GIT_PAGER", "PAGER", "GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH"]) vi.stubEnv(name, "")
+    vi.stubEnv("PAGER", "")
   })
-  afterEach(() => { vi.unstubAllEnvs() })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    for (const [name, value] of inherited) process.env[name] = value
+    inherited.clear()
+  })
 
   async function session(mode: Runtime["permissionMode"]) {
     const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-claude-reads-")))
