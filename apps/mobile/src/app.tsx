@@ -183,7 +183,7 @@ export function App() {
     setProblem: setFleetProblem,
   }))
 
-  const { snapshot, status, fault, call, refresh, reconnect, imageAttachments, clientAccess } = useDaemon(
+  const { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess } = useDaemon(
     connectTo?.url,
     connectTo?.token,
     fleetLoads.accept,
@@ -192,7 +192,7 @@ export function App() {
     (method: string, params: unknown) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
   )
-  const notice = connectionNotice(status, fault, snapshot !== undefined)
+  const notice = connectionNotice(status, fault, snapshot !== undefined, protocolProblem)
   const shell = shellState({
     restoringCredential: restoring,
     hasCredential: connectTo !== undefined,

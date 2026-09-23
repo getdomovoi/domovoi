@@ -29,6 +29,7 @@ export function useDaemon(
   // the field and a text-only success would pass for an image delivery.
   const [imageAttachments, setImageAttachments] = useState(false)
   const [clientAccess, setClientAccess] = useState<ClientAccess>("watching")
+  const [protocolProblem, setProtocolProblem] = useState<string | undefined>(undefined)
   const connection = useRef<DaemonConnection | undefined>(undefined)
   const attempt = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -74,6 +75,7 @@ export function useDaemon(
         // decides the connection.
         onHello: (next) => {
           if (!current()) return
+          setProtocolProblem(undefined)
           setImageAttachments(next.sessionImageAttachments === true)
           setClientAccess(next.clientAccess ?? "full")
           void reconcileRelayPin({
@@ -105,6 +107,11 @@ export function useDaemon(
           const next = connectionFault(cause)
           setFault(next)
           if (!next.retriable) givenUp.current = true
+        },
+        onProtocolError: (reason) => {
+          if (!current()) return
+          console.warn("Daemon protocol error:", reason)
+          setProtocolProblem(reason)
         },
         onClosed: () => {
           if (!live || givenUp.current || !current()) return
@@ -167,5 +174,5 @@ export function useDaemon(
   // still wrong however many times it is asked.
   const reconnect = useCallback(() => reopen.current?.(), [])
 
-  return { snapshot, status, fault, call, refresh, reconnect, imageAttachments, clientAccess }
+  return { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess }
 }

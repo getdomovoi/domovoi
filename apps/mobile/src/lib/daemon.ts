@@ -1,10 +1,11 @@
 import {
   applyWorkspaceDelta,
   fleetSnapshotSchema,
+  systemHelloResultSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
-  type ClientAccess,
   type FleetEntry,
+  type RpcResult,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -49,6 +50,15 @@ export class DaemonError extends Error {
   }
 }
 
+// The daemon said something this build cannot read. Retrying reads the same
+// thing again, so the answer is an update rather than another dial.
+export class DaemonProtocolError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "DaemonProtocolError"
+  }
+}
+
 export type DaemonStatus = "connecting" | "open" | "closed"
 
 // The phone connects to a daemon over the tailnet like any other client. This
@@ -70,7 +80,7 @@ export class DaemonConnection {
       // pins trust may run on one of those.
       // The hello answer is the snapshot plus what this daemon can do that
       // the snapshot does not say, read once and never from a later push.
-      onHello?: (hello: WorkspaceSnapshot & { sessionImageAttachments?: boolean, clientAccess?: ClientAccess }) => void
+      onHello?: (hello: RpcResult<"system.hello">) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       // The daemon pushes the whole fleet whenever it changes, so a list on
       // screen stops being a claim about when the tab was opened.
@@ -79,6 +89,10 @@ export class DaemonConnection {
       // The cause rather than its sentence, because whether a refusal is worth
       // retrying is decided by the daemon's error code, not its wording.
       onError: (cause: unknown) => void
+      // A frame this build could not read. The screen keeps what it had, so
+      // the person is told it may be missing a change rather than shown it
+      // as current.
+      onProtocolError: (reason: string) => void
       onClosed: () => void
     },
   ) {}
@@ -97,10 +111,18 @@ export class DaemonConnection {
         protocolVersion: protocolVersionForClient,
         authToken: this.token,
       }).then(
-        (snapshot) => {
+        (result) => {
+          const hello = systemHelloResultSchema.safeParse(result)
+          if (!hello.success) {
+            const reason = "The daemon answered system.hello with something this app could not read"
+            this.handlers.onProtocolError(reason)
+            this.handlers.onError(new DaemonProtocolError(reason))
+            this.close()
+            return
+          }
           this.handlers.onStatus("open")
-          this.handlers.onSnapshot(snapshot as WorkspaceSnapshot)
-          this.handlers.onHello?.(snapshot as WorkspaceSnapshot & { sessionImageAttachments?: boolean, clientAccess?: ClientAccess })
+          this.handlers.onSnapshot(hello.data)
+          this.handlers.onHello?.(hello.data)
         },
         (cause: Error) => {
           this.handlers.onError(cause)
@@ -120,6 +142,7 @@ export class DaemonConnection {
       try {
         message = JSON.parse(String(event.data))
       } catch {
+        this.handlers.onProtocolError("The daemon sent a message that is not valid JSON")
         return
       }
       if (typeof message.id === "number") {
@@ -143,6 +166,7 @@ export class DaemonConnection {
       if (message.method === "workspace.delta") {
         const parsed = workspaceDeltaSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onDelta(parsed.data)
+        else this.handlers.onProtocolError("The daemon sent a workspace.delta notification this app could not read")
         return
       }
       // Everything except streamed provider output arrives as a whole snapshot,
@@ -151,6 +175,7 @@ export class DaemonConnection {
       if (message.method === "workspace.changed") {
         const parsed = workspaceSnapshotSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onSnapshot(parsed.data)
+        else this.handlers.onProtocolError("The daemon sent a workspace.changed notification this app could not read")
         return
       }
       // A machine enrolled, forgotten, or gone quiet reaches every client this
@@ -158,6 +183,7 @@ export class DaemonConnection {
       if (message.method === "fleet.changed") {
         const parsed = fleetSnapshotSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onFleet(parsed.data.entries)
+        else this.handlers.onProtocolError("The daemon sent a fleet.changed notification this app could not read")
       }
     }
 

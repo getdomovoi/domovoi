@@ -32,6 +32,7 @@ const handlers = {
   onFleet: vi.fn(),
   onStatus: vi.fn(),
   onError: vi.fn(),
+  onProtocolError: vi.fn(),
   onClosed: vi.fn(),
 }
 
