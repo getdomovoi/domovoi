@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto"
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import { DatabaseSync, type SQLInputValue } from "node:sqlite"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
 
 import {
@@ -134,6 +135,7 @@ export type WorkspaceWriter = {
 export type WorkspaceStoreOptions = {
   legacySnapshots?: WorkspaceSnapshot[]
   manageDirectoryPermissions?: boolean
+  integrityCheckMaximumBytes?: number
   writerFactory?: (path: string) => WorkspaceWriter
 }
 
@@ -450,29 +452,64 @@ function quotedColumn(name: string): string {
 }
 
 // Reading the stored version must not change the file an older build is
-// about to refuse. A read-only connection to a WAL database leaves -wal and
-// -shm files behind, so the ones this read created are removed again.
-function storedProtocolVersion(path: string): string | undefined {
+// about to refuse, nor create or remove the -wal and -shm files another
+// process may be using. With nothing pending in the write-ahead log the main
+// file is read as immutable, which opens no sidecar. When the log holds
+// changes, or this Node cannot open a URL path, a private copy is read.
+// Only a missing table, a missing row or unreadable content means there is
+// no stored version; an operational failure refuses the start.
+export function storedProtocolVersion(path: string): string | undefined {
   if (path === ":memory:" || !existsSync(path)) return undefined
-  const sidecars = [`${path}-wal`, `${path}-shm`].filter((sidecar) => !existsSync(sidecar))
-  let database: DatabaseSync | undefined
+  const walPath = `${path}-wal`
   try {
-    database = new DatabaseSync(path, { readOnly: true })
-    const row = database
-      .prepare("SELECT json_extract(snapshot, '$.protocolVersion') AS version FROM workspace_state WHERE id = 1")
-      .get() as { version?: unknown } | undefined
-    return typeof row?.version === "string" ? row.version : undefined
-  } catch {
-    return undefined
+    return existsSync(walPath) && statSync(walPath).size > 0
+      ? versionFromCopy(path)
+      : versionFromImmutable(path)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (isCorruption(error) || /no such table|malformed JSON/i.test(message)) return undefined
+    throw error
+  }
+}
+
+function readStoredVersion(database: DatabaseSync): string | undefined {
+  const row = database
+    .prepare("SELECT json_extract(snapshot, '$.protocolVersion') AS version FROM workspace_state WHERE id = 1")
+    .get() as { version?: unknown } | undefined
+  return typeof row?.version === "string" ? row.version : undefined
+}
+
+function versionFromImmutable(path: string): string | undefined {
+  const location = pathToFileURL(path)
+  location.searchParams.set("immutable", "1")
+  let database: DatabaseSync
+  try {
+    database = new DatabaseSync(location, { readOnly: true })
+  } catch (error) {
+    if (error instanceof TypeError) return versionFromCopy(path)
+    throw error
+  }
+  try {
+    return readStoredVersion(database)
   } finally {
-    database?.close()
-    for (const sidecar of sidecars) {
-      try {
-        if (existsSync(sidecar) && (sidecar.endsWith("-shm") || statSync(sidecar).size === 0)) unlinkSync(sidecar)
-      } catch {
-        // A sidecar this read could not remove is left for SQLite to reuse.
-      }
+    database.close()
+  }
+}
+
+function versionFromCopy(path: string): string | undefined {
+  const directory = mkdtempSync(join(tmpdir(), "domovoi-state-version-"))
+  try {
+    const copy = join(directory, "state.sqlite")
+    copyFileSync(path, copy)
+    if (existsSync(`${path}-wal`)) copyFileSync(`${path}-wal`, `${copy}-wal`)
+    const database = new DatabaseSync(copy, { readOnly: true })
+    try {
+      return readStoredVersion(database)
+    } finally {
+      database.close()
     }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
   }
 }
 
@@ -534,14 +571,13 @@ function salvageWorkspace(
   database: DatabaseSync,
   quarantinedPath: string,
 ): ReturnType<typeof migrateStoredWorkspace> | undefined {
-  const stored = openQuarantined(quarantinedPath, (source) => ({
-    snapshot: source.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as StoredWorkspace | undefined,
-    projects: source.prepare("SELECT project_id, state FROM workspace_projects").all() as Array<{ project_id: string; state: string }>,
-  }))
-  if (!stored?.snapshot) return undefined
+  const snapshot = openQuarantined(quarantinedPath, (source) => (
+    source.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as StoredWorkspace | undefined
+  ))
+  if (!snapshot) return undefined
   let migrated: ReturnType<typeof migrateStoredWorkspace>
   try {
-    const value: unknown = JSON.parse(stored.snapshot.snapshot)
+    const value: unknown = JSON.parse(snapshot.snapshot)
     if (newerStoredProtocol(value) !== undefined) return undefined
     migrated = migrateStoredWorkspace(value)
   } catch {
@@ -552,7 +588,12 @@ function salvageWorkspace(
     ON CONFLICT(project_id) DO NOTHING
   `)
   const updatedAt = new Date().toISOString()
-  for (const project of stored.projects) {
+  // Other projects' rows are kept best effort: damage there never costs the
+  // workspace that was read above.
+  const projects = openQuarantined(quarantinedPath, (source) => (
+    source.prepare("SELECT project_id, state FROM workspace_projects").all() as Array<{ project_id: string; state: string }>
+  )) ?? []
+  for (const project of projects) {
     if (project.project_id === migrated.snapshot.project?.id) continue
     try {
       const candidate = {
@@ -583,12 +624,22 @@ type OpenedState = {
   existing: StoredWorkspace | undefined
 }
 
+// Checking the whole file costs about 145 ms at 550 MB warm, and 0.6 s warm
+// but 8.4 s cold at 2.2 GB, so a file past this bound skips it and damage there
+// is found when a table is read, as before the check existed.
+export const defaultIntegrityCheckMaximumBytes = 256 * 1024 * 1024
+
+function stateBytes(path: string): number {
+  const sizeOf = (file: string) => existsSync(file) ? statSync(file).size : 0
+  return sizeOf(path) + sizeOf(`${path}-wal`)
+}
+
 // Everything that reads the file at startup runs here, so a damaged page in
 // any table is found before the daemon starts rather than on its first read.
-function openState(path: string): OpenedState {
+function openState(path: string, integrityCheckMaximumBytes: number): OpenedState {
   const database = openWorkspaceDatabase(path)
   try {
-    if (path !== ":memory:") {
+    if (path !== ":memory:" && stateBytes(path) <= integrityCheckMaximumBytes) {
       const problems = (database.prepare("PRAGMA quick_check").all() as Array<{ quick_check: string }>)
         .map((row) => row.quick_check)
         .filter((result) => result !== "ok")
@@ -825,9 +876,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     if (path !== ":memory:") prepareStatePath(path, manageDirectoryPermissions)
     let recovery: WorkspaceStoreRecovery | undefined
     let salvagedWorkspace: ReturnType<typeof migrateStoredWorkspace> | undefined
+    const integrityCheckMaximumBytes = options.integrityCheckMaximumBytes ?? defaultIntegrityCheckMaximumBytes
     let opened: OpenedState
     try {
-      opened = openState(path)
+      opened = openState(path, integrityCheckMaximumBytes)
     } catch (error) {
       if (path === ":memory:") throw error
       // An operational failure is reported to the caller rather than repaired,
@@ -835,7 +887,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       if (!isCorruption(error)) throw error
       const quarantinedPath = quarantineDatabase(path)
       prepareStatePath(path, manageDirectoryPermissions)
-      opened = openState(path)
+      opened = openState(path, integrityCheckMaximumBytes)
       salvagedWorkspace = salvageWorkspace(opened.database, quarantinedPath)
       recovery = {
         kind: "database",

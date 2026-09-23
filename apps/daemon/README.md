@@ -433,17 +433,21 @@ At startup the daemon reads `state.sqlite` and its stored workspace snapshot. Wh
 depends on why a read fails:
 
 - **Written by a newer build.** Before it changes anything, the daemon reads the stored protocol
-  version through a read-only connection and removes any `-wal` or `-shm` file that read created.
-  A snapshot whose protocol major or minor is newer than this build's is left byte for byte as it
-  was, and startup fails with a message that names the file, both protocol versions, and the build
-  needed to open it. Running that newer build again restores everything.
+  version without opening the file for writing and without creating or removing a `-wal` or `-shm`
+  file: the main file is read as immutable, or, when the write-ahead log holds changes, a private
+  copy is read. A snapshot whose protocol major or minor is newer than this build's is left byte for
+  byte as it was, and startup fails with a message that names the file, both protocol versions, and
+  the build needed to open it. Running that newer build again restores everything. If the version
+  cannot be read for an operational reason (permission, I/O), startup fails instead of guessing.
 - **An unreadable snapshot row.** Malformed JSON, or a value this build's schema rejects, is copied
   beside the database as `state.sqlite.snapshot-corrupt-<time>.json` and the workspace starts from
   the initial snapshot. The rest of the database stays, including paired devices, the audit log,
   the fleet registry, and queued sends.
 - **An unreadable database.** A file that is not a SQLite database, or one where `PRAGMA
   quick_check` finds damage in any table, is renamed to `state.sqlite.corrupt-<time>` with its
-  `-wal` and `-shm` files, and a new database is created. From the renamed file the daemon keeps
+  `-wal` and `-shm` files, and a new database is created. The whole-file check runs only when the
+  database and its log total 256 MB or less; a larger file skips it, and damage there is found when
+  a table is read. From the renamed file the daemon keeps
   what it can still read and validate: the workspace snapshot (after the same migration and
   validation as a normal start), other projects' saved state, and paired devices. Copied devices go
   through the registry's migrations again, and a row that no longer reads as a paired device is

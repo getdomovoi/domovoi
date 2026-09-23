@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   isCorruption,
+  storedProtocolVersion,
   projectWorkspaceState,
   resolveWorkspaceRedactionModule,
   SqliteWorkspaceStore,
@@ -1225,6 +1226,67 @@ describe("SqliteWorkspaceStore", () => {
       `).run(`${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`)
       database.close()
     }
+
+    it("keeps a readable workspace when another project's saved state is damaged too", async () => {
+      const marker = "unreadable-project-page"
+      const { databasePath } = await seedThenDamage("project-page", async (path) => {
+        const database = new DatabaseSync(path)
+        database.prepare("INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?)")
+          .run("project-other", `${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`, "2026-08-29T12:00:00.000Z")
+        database.close()
+        await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+        return ""
+      })
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+      try {
+        expect(store.recovery).toMatchObject({ kind: "database", workspaceKept: true })
+        expect(store.load()).toEqual(demoWorkspace)
+        expect(store.loadProject("project-other")).toBeUndefined()
+      } finally { store.close() }
+    })
+
+    it("skips the whole-file check above its size bound", async () => {
+      const marker = "unreadable-audit-page"
+      const { databasePath } = await seedThenDamage("large-file", async (path) => {
+        insertLargeAuditRow(path, marker)
+        await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+        return ""
+      })
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine), {
+        integrityCheckMaximumBytes: 1,
+      })
+      try {
+        expect(store.recovery).toBeUndefined()
+        expect(store.load()).toEqual(demoWorkspace)
+      } finally { store.close() }
+    })
+
+    it.skipIf(process.platform === "win32")("refuses to start when the stored version cannot be read for an operational reason", async () => {
+      const { databasePath } = await seedThenDamage("unreadable-version", async () => "")
+      await chmod(databasePath, 0o000)
+      try {
+        expect(() => storedProtocolVersion(databasePath)).toThrow()
+      } finally { await chmod(databasePath, 0o600) }
+      expect(storedProtocolVersion(databasePath)).toBe(demoWorkspace.protocolVersion)
+    })
+
+    it("reads the version of a newer build that is still only in the write-ahead log", async () => {
+      const [major, minor] = protocolVersion.split(".").map(Number)
+      const newer = `${major}.${minor! + 1}.0`
+      const { scratch, databasePath } = await seedThenDamage("wal-only", async () => "")
+      const writer = new DatabaseSync(databasePath)
+      try {
+        writer.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0")
+        writer.prepare("UPDATE workspace_state SET snapshot = json_set(snapshot, '$.protocolVersion', ?) WHERE id = 1").run(newer)
+        const entries = (await readdir(scratch)).sort()
+        expect(entries).toContain("state.sqlite-wal")
+        expect(storedProtocolVersion(databasePath)).toBe(newer)
+        expect((await readdir(scratch)).sort()).toEqual(entries)
+        writer.prepare("SELECT 1").get()
+      } finally { writer.close() }
+    })
 
     it("moves a database damaged outside the workspace aside and keeps its workspace and devices", async () => {
       const marker = "unreadable-audit-page"
