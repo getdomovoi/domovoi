@@ -22,6 +22,7 @@ import type {
 } from "@getdomovoi/protocol"
 import { selectableTurnSkills, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
+import { StateRecoveryNotice } from "./state-recovery-notice"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -249,6 +250,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     closeTerminal,
     connected,
     clientAccess: workspaceAccess,
+    stateRecovery,
     createCheckpoint,
     createAnnotation,
     createSession,
@@ -441,6 +443,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
   const [workspaceError, setWorkspaceError] = useState("")
+  const [dismissedStateRecovery, setDismissedStateRecovery] = useState<string | null>(null)
+  const visibleStateRecovery = stateRecovery && stateRecovery.quarantinedPath !== dismissedStateRecovery
+    ? stateRecovery
+    : null
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
@@ -1410,15 +1416,26 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <ThreadSkeleton reading={readingLabel} />
           </main>
         )}
-        {workspaceError ? (
-          <Alert
-            variant="destructive"
-            className="absolute bottom-3 left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]"
-          >
-            <CircleStopIcon />
-            <AlertTitle>Workspace action failed</AlertTitle>
-            <AlertDescription>{workspaceError}</AlertDescription>
-          </Alert>
+        {workspaceError || visibleStateRecovery ? (
+          <div className="absolute bottom-3 left-3 z-50 flex max-w-sm flex-col gap-2">
+            {visibleStateRecovery ? (
+              <StateRecoveryNotice
+                recovery={visibleStateRecovery}
+                onDismiss={() => setDismissedStateRecovery(visibleStateRecovery.quarantinedPath)}
+                className="w-auto shadow-[var(--shadow-md)]"
+              />
+            ) : null}
+            {workspaceError ? (
+              <Alert
+                variant="destructive"
+                className="w-auto shadow-[var(--shadow-md)]"
+              >
+                <CircleStopIcon />
+                <AlertTitle>Workspace action failed</AlertTitle>
+                <AlertDescription>{workspaceError}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
         ) : null}
         {snapshot && !watching ? <LauncherDialog
           mode={launcherMode}
