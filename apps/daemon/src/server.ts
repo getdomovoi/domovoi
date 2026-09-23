@@ -6703,6 +6703,7 @@ export class DomovoiDaemon {
           }
           const previousRuntime = currentSession.runtime
           const previousThreadId = currentSession.providerThreadId
+          const kiloNotice = await kiloRepositoryConfigNotice(runtime.provider, currentSession.workspacePath)
           const nextAgent = await this.#ensureAgentConnected(runtime.provider)
           const startNextThread = async () => {
             signal?.throwIfAborted()
@@ -6790,9 +6791,6 @@ export class DomovoiDaemon {
               : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
-          const kiloNotice = currentSession.workspacePath
-            ? await kiloRepositoryConfigNotice(runtime.provider, currentSession.workspacePath)
-            : undefined
           if (kiloNotice) this.#snapshot.thread.push({ id: `system-${randomUUID()}`, sessionId: currentSession.id, kind: "system", ...kiloNotice, createdAt })
         } else {
           currentSession.runtime = runtime
@@ -7064,6 +7062,7 @@ export class DomovoiDaemon {
           this.#removeAbandonedWorkspace(sessionId, creatingWorkspace)
           throw error
         })
+        const kiloNotice = await kiloRepositoryConfigNotice(runtime.provider, workspace.path)
         let providerThreadId: string
         try {
           const agent = this.#agents.require(runtime.provider)
@@ -7124,7 +7123,6 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
-        const kiloNotice = await kiloRepositoryConfigNotice(runtime.provider, workspace.path)
         if (kiloNotice) this.#snapshot.thread.push({ id: `system-${randomUUID()}`, sessionId: sessionId, kind: "system", ...kiloNotice, createdAt })
         changed = true
       }
@@ -7258,6 +7256,7 @@ export class DomovoiDaemon {
           this.#removeAbandonedWorkspace(sessionId, creatingWorkspace)
           throw error
         })
+        const kiloNotice = await kiloRepositoryConfigNotice(runtime.provider, workspace.path)
         const agent = this.#agents.require(runtime.provider)
         let providerThreadId: string
         try {
@@ -7316,7 +7315,6 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
-        const kiloNotice = await kiloRepositoryConfigNotice(runtime.provider, workspace.path)
         if (kiloNotice) candidate.thread.push({ id: `system-${randomUUID()}`, sessionId: sessionId, kind: "system", ...kiloNotice, createdAt })
         try {
           if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
