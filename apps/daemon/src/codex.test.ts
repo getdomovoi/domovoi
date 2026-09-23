@@ -134,6 +134,7 @@ describe("StdioCodexTransport", () => {
     transport.onError(error)
 
     child.emit("exit", 1, null)
+    child.emit("close", 1, null)
     child.emit("error", new Error("late process error"))
 
     expect(error).toHaveBeenCalledTimes(1)
@@ -153,11 +154,49 @@ describe("StdioCodexTransport", () => {
     child.stderr.write("token=super-secret\nNot logged in\n")
     await new Promise((resolve) => setImmediate(resolve))
     child.emit("exit", 1, null)
+    child.emit("close", 1, null)
 
     expect(error).toHaveBeenCalledTimes(1)
     const message = (error.mock.calls[0]?.[0] as Error).message
     expect(message).toBe("Codex app-server exited with code 1: token=[REDACTED]\nNot logged in")
     expect(classifyProviderFailure(new Error(message)).kind).toBe("authentication-expired")
+  })
+
+  it("reads stderr that arrives after the exit and before the streams close", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    child.emit("exit", 1, null)
+    child.stderr.write("Not logged in\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("close", 1, null)
+
+    expect(error).toHaveBeenCalledTimes(1)
+    expect((error.mock.calls[0]?.[0] as Error).message).toBe("Codex app-server exited with code 1: Not logged in")
+  })
+
+  it("still reports an exit whose streams a grandchild keeps open", async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new FakeChild()
+      const transport = new StdioCodexTransport(
+        () => child as unknown as ChildProcessWithoutNullStreams,
+      )
+      const error = vi.fn()
+      transport.onError(error)
+
+      child.emit("exit", 1, null)
+      expect(error).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: "Codex app-server exited with code 1" }))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("keeps only the last 16 KiB of stderr in the exit error", async () => {
@@ -172,6 +211,7 @@ describe("StdioCodexTransport", () => {
     child.stderr.write("Not logged in\n")
     await new Promise((resolve) => setImmediate(resolve))
     child.emit("exit", null, "SIGABRT")
+    child.emit("close", null, "SIGABRT")
 
     const message = (error.mock.calls[0]?.[0] as Error).message
     expect(message.startsWith("Codex app-server exited from signal SIGABRT: ")).toBe(true)

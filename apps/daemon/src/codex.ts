@@ -7,6 +7,7 @@ import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderU
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
+import { onProcessEnd } from "./process-end.js"
 
 export type { AgentAdapter, AgentEvent } from "./agents.js"
 
@@ -99,7 +100,7 @@ export class StdioCodexTransport implements CodexTransport {
     this.#child.stdin.on("error", (error) => this.#emitError(error))
     this.#child.stdout.on("error", (error) => this.#emitError(error))
     this.#child.stderr.on("error", (error) => this.#emitError(error))
-    this.#child.once("exit", (code, signal) => {
+    onProcessEnd(this.#child, (code, signal) => {
       if (this.#closing) return
       const exit = code !== null
         ? `Codex app-server exited with code ${code}`
