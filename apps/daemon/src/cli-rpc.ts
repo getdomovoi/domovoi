@@ -1,6 +1,6 @@
 import { WebSocket } from "ws"
 
-import { buildVersion, protocolVersion } from "@getdomovoi/protocol"
+import { buildVersion, protocolVersion, rpcResponseSchema } from "@getdomovoi/protocol"
 
 import { OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 
@@ -106,14 +106,24 @@ function exchange(
     // The daemon broadcasts notifications on the same socket, so only the reply
     // carrying this request's id may settle the wait, and a socket that closes
     // first must reject rather than leave the caller waiting.
+    // Valid JSON is not yet a reply: null, a number, an array or a
+    // notification is ignored. A frame that answers this request but is not a
+    // well-formed response still settles it, without repeating its text.
     const receive = (data: { toString(): string }) => {
-      let message: { id?: unknown; result?: unknown; error?: { message?: string } }
+      let value: unknown
       try {
-        message = JSON.parse(data.toString()) as typeof message
+        value = JSON.parse(data.toString())
       } catch { return }
-      if (message.id !== id) return
-      if (message.error) reject(new Error(message.error.message ?? `The daemon refused ${method}`))
-      else resolve(message.result)
+      const reply = rpcResponseSchema.safeParse(value)
+      if (!reply.success) {
+        if (typeof value === "object" && value !== null && !Array.isArray(value) && "id" in value && value.id === id) {
+          reject(new Error(`The daemon refused ${method}`))
+        }
+        return
+      }
+      if (reply.data.id !== id) return
+      if (reply.data.error) reject(new Error(reply.data.error.message))
+      else resolve(reply.data.result)
     }
     const closed = () => reject(new Error("The daemon closed the connection"))
     const failed = (error: Error) => reject(error)

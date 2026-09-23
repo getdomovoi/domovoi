@@ -24,7 +24,7 @@ import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
 import { discoverWslMachines } from "./wsl-discovery.js"
 import { runWslCommand } from "./wsl-command.js"
-import { type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { rpcMethods, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -38,10 +38,10 @@ async function requestPairingCode(
   token: string,
   targetClient?: ClientKind,
 ): Promise<DeviceIssueCodeResult> {
-  return await callDaemon({
+  return rpcMethods["device.issueCode"].result.parse(await callDaemon({
     target: config, token, method: "device.issueCode",
     params: targetClient === undefined ? {} : { targetClient },
-  }) as DeviceIssueCodeResult
+  }))
 }
 
 function isLoopbackListener(host: string): boolean {
