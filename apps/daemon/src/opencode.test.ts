@@ -765,6 +765,29 @@ describe("message order across processes", () => {
     await adapter.close()
   })
 
+  it("counts a message another client creates while the history is being read", async () => {
+    const { client, factory, stream } = harness()
+    const base = Date.now() + 14_400_000
+    const inHistory = `msg_${openCodeMessageOrder(base)}EEEEEEEEEEEEEE`
+    const midScan = `msg_${openCodeMessageOrder(base + 9_000)}FFFFFFFFFFFFFF`
+    client.session.messages.mockImplementationOnce(async () => {
+      // Like the server's event stream, an event reaches only a subscriber that
+      // is already listening.
+      if (client.event.subscribe.mock.calls.length > 0) {
+        stream.emit({ type: "message.updated", properties: { info: { id: midScan, sessionID: "open-session", role: "user" } } })
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return { data: [{ info: { id: inHistory } }], response: new Response(null) }
+    })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(turnId > midScan).toBe(true)
+    await adapter.close()
+  })
+
   it("follows a message the server made after the last prompt", async () => {
     const { factory, stream } = harness()
     const adapter = new OpenCodeSdkAdapter(factory)

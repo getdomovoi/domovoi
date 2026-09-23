@@ -286,8 +286,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (session.id !== threadId) {
         throw new Error(`${this.#identity.providerName} did not resume the requested session`)
       }
-      const newestMessageId = await this.#greatestMessageId(client, threadId, cwd)
-      await this.#loadSession(threadId, cwd, runtime, pending, newestMessageId)
+      // Listen first, then read the history: a message another client creates
+      // while the pages are read still raises the high-water mark.
+      await this.#loadSession(threadId, cwd, runtime, pending)
+      try {
+        const greatest = await this.#greatestMessageId(client, threadId, cwd)
+        const loaded = this.#sessions.get(threadId)
+        const newest = loaded ? laterMessageId(loaded.newestMessageId, greatest) : undefined
+        if (loaded && newest !== undefined) loaded.newestMessageId = newest
+      } catch (error) {
+        const loaded = this.#sessions.get(threadId)
+        if (loaded) this.#unloadSession(loaded)
+        throw error
+      }
     } finally {
       if (this.#pendingSessionLoads.get(threadId) === pending) {
         this.#pendingSessionLoads.delete(threadId)
@@ -432,13 +443,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     cwd: string,
     runtime: Runtime,
     pending?: PendingSessionLoad,
-    newestMessageId?: string,
   ): Promise<void> {
     const session: Session = {
       threadId,
       cwd,
       runtime,
-      ...(newestMessageId === undefined ? {} : { newestMessageId }),
       assistantMessageTurnIds: new Map(),
       toolPhases: new Map(),
     }
