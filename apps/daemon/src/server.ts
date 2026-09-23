@@ -92,6 +92,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { approvalFacts } from "./approval-facts.js"
 import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
@@ -8277,8 +8278,11 @@ export class DomovoiDaemon {
           agent: `${session.runtime.provider} / ${session.runtime.model}`,
           mode: session.runtime.permissionMode,
           directory: directoryCopy.value,
-          affects: "Files and processes in the session worktree.",
-          network: "No agent network access granted.",
+          ...approvalFacts({
+            ...(event.path === undefined ? {} : { path: event.path }),
+            workspace: session.workspacePath ?? project.path,
+            scope: this.#agents.require(provider).approvalScope,
+          }),
           estimatedDuration: "Unknown",
           checkpoint: session.baseCommit ?? "unavailable",
           providerRequestId: event.requestId,

@@ -7163,6 +7163,9 @@ describe("DomovoiDaemon", () => {
       result: {
         approvals: [expect.objectContaining({
           providerRequestId: 42,
+          // Claude Code runs an approved command as the user, unsandboxed.
+          affects: "Anything this user account can reach on this machine.",
+          network: "Not restricted: this provider runs commands with this machine's network access.",
           execution: expect.objectContaining({ state: "resolved" }),
           reapproval: {
             reason: "legacy-text-only",

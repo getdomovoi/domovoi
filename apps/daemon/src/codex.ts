@@ -4,7 +4,7 @@ import type { Readable } from "node:stream"
 
 import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
-import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
+import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
@@ -178,7 +178,15 @@ export class StdioCodexTransport implements CodexTransport {
   }
 }
 
+// Codex runs a command inside its sandbox (writes to the worktree, no network)
+// unless the request is to run outside it, which is what most approvals are.
+export const codexApprovalScope: ApprovalScope = {
+  command: "The session worktree while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
+  network: "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access.",
+}
+
 export class CodexAppServerAdapter implements AgentAdapter {
+  readonly approvalScope = codexApprovalScope
   readonly permissionCapabilities = { ask: "read-only", buildAuto: "unsupported" } as const
   #transportFactory: () => CodexTransport
   #transport: CodexTransport | undefined
