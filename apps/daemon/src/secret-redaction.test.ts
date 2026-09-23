@@ -72,6 +72,43 @@ describe("durable secret redaction", () => {
     })
   })
 
+  it.each([
+    "DOMOVOI_AUTH_TOKEN",
+    "NPM_TOKEN",
+    "HF_TOKEN",
+    "DATABASE_PASSWORD",
+    "POSTGRES_PASSWORD",
+    "CLOUDFLARE_API_TOKEN",
+  ])("redacts a value assigned to the prefixed name %s", (name) => {
+    const value = "fake-value-4f2a9c"
+    for (const text of [
+      `${name}=${value}`,
+      `export ${name}="${value}"`,
+      `$env:${name}='${value}'`,
+      `set "${name}=${value}"`,
+      `{"${name.toLowerCase()}": "${value}"}`,
+    ]) {
+      expect(redactDurableOutput(text).value, text).not.toContain(value)
+      expect(redactDurableCommand(text), text).toMatchObject({ redacted: true })
+    }
+  })
+
+  it("redacts prefixed secret flags and system properties", () => {
+    for (const text of [
+      "deploy --npm-token fake-value-4f2a9c",
+      "deploy --db_password=fake-value-4f2a9c",
+      "java -Ddb.password=fake-value-4f2a9c -jar app.jar",
+    ]) {
+      expect(redactDurableCommand(text).value, text).not.toContain("fake-value-4f2a9c")
+    }
+  })
+
+  it("leaves names that only start with a secret word alone", () => {
+    for (const safe of ["TOKENIZERS_PARALLELISM=false", "MAX_TOKENS=100", "PASSWORDLESS=true pnpm test"]) {
+      expect(redactDurableCommand(safe), safe).toEqual({ value: safe, redacted: false, truncated: false })
+    }
+  })
+
   it("is idempotent and keeps replacement markers stable", () => {
     const once = redactDurableText("token=one --api-key two")
     expect(redactDurableText(once.value)).toEqual({ ...once, truncated: false })

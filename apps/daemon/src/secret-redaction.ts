@@ -13,24 +13,27 @@ export type RedactedText = {
 
 const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret|client[_-]?secret|credentials?|cookie|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|github[_-]?token|openai[_-]?api[_-]?key|azure[_-]?client[_-]?secret)`
 const quotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
+// A sensitive name may carry an identifier prefix, as in NPM_TOKEN or
+// db.password. It may not carry a suffix: TOKEN_BUDGET names a number.
+const prefixedName = String.raw`(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9]+[_.-])*${sensitiveName}\b`
 const assignment = new RegExp(
-  String.raw`((?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
+  String.raw`((?:\$env:|\bset\s+)?["']?${prefixedName}["']?\s*=\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
 const structuredAssignment = new RegExp(
-  String.raw`(["']?\b${sensitiveName}\b["']?\s*:\s*)(${quotedValue}|[^\s,;&|}\r\n]+)`,
+  String.raw`(["']?${prefixedName}["']?\s*:\s*)(${quotedValue}|[^\s,;&|}\r\n]+)`,
   "giu",
 )
 const secretFlag = new RegExp(
-  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  String.raw`((?:--(?:[A-Za-z0-9]+[_.-])*|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 const quotedCmdAssignment = new RegExp(
-  String.raw`(\bset\s+)(["'])(${sensitiveName}\s*=)[^\r\n]*?\2`,
+  String.raw`(\bset\s+)(["'])((?:[A-Za-z0-9]+[_.-])*${sensitiveName}\s*=)[^\r\n]*?\2`,
   "giu",
 )
 const javaSystemProperty = new RegExp(
-  String.raw`(-D${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  String.raw`(-D(?:[A-Za-z0-9]+[_.-])*${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 
