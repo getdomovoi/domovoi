@@ -91,6 +91,14 @@ type PendingApproval = {
   providerSessionId: string
   cwd: string
   permissionId: string
+  // Set when a subagent asked: the thread and turn the subagent belongs to.
+  // Its approval ends with that turn.
+  subagentTurn?: SubagentTurn
+}
+
+type SubagentTurn = {
+  threadId: string
+  turnId: string
 }
 
 type PendingSessionLoad = {
@@ -119,8 +127,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
   // Subagent sessions the task tool started, by session id, with the thread
-  // whose turn they belong to.
-  #subagentSessions = new Map<string, string>()
+  // and turn they belong to. An entry stays after its turn ends so a late
+  // event from that subagent is recognised and dropped, not re-adopted.
+  #subagentSessions = new Map<string, SubagentTurn>()
   #nextApprovalId = 0
 
   constructor(
@@ -318,9 +327,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const pending = this.#pendingApprovals.get(requestId)
     if (!pending) return
     this.#pendingApprovals.delete(requestId)
-    const response = decision === "allow-once" || decision === "always-project"
-      ? "once"
-      : "reject"
+    this.#respond(pending, decision === "allow-once" || decision === "always-project" ? "once" : "reject")
+  }
+
+  #respond(pending: PendingApproval, response: "once" | "reject"): void {
     void this.#client().then(async (client) => {
       unwrap(await client.postSessionIdPermissionsPermissionId({
         path: { id: pending.providerSessionId, permissionID: pending.permissionId },
@@ -417,7 +427,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   #forgetSubagents(threadId: string): void {
     for (const [sessionId, owner] of this.#subagentSessions) {
-      if (owner === threadId) this.#subagentSessions.delete(sessionId)
+      if (owner.threadId === threadId) this.#subagentSessions.delete(sessionId)
     }
   }
 
@@ -463,9 +473,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const info = asRecord(properties.info)
     if (typeof info?.id !== "string" || typeof info.parentID !== "string") return
     if (this.#sessions.has(info.id) || this.#subagentSessions.has(info.id)) return
-    const owner = this.#subagentSessions.get(info.parentID) ?? info.parentID
-    if (this.#sessions.get(owner)?.cwd !== cwd) return
-    this.#subagentSessions.set(info.id, owner)
+    const parentSubagent = this.#subagentSessions.get(info.parentID)
+    const threadId = parentSubagent?.threadId ?? info.parentID
+    const session = this.#sessions.get(threadId)
+    if (session?.cwd !== cwd) return
+    const turnId = parentSubagent?.turnId ?? session.activeTurnId
+    if (!turnId || session.activeTurnId !== turnId) return
+    this.#subagentSessions.set(info.id, { threadId, turnId })
   }
 
   #receive(cwd: string, event: OpenCodeEvent): void {
@@ -475,15 +489,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (event.type === "session.created" || event.type === "session.updated") this.#adoptSubagent(cwd, properties)
     const sessionId = eventSessionId(properties)
     if (!sessionId) return
-    const subagent = this.#subagentSessions.has(sessionId)
-    const session = this.#sessions.get(this.#subagentSessions.get(sessionId) ?? sessionId)
+    const subagentTurn = this.#subagentSessions.get(sessionId)
+    const subagent = subagentTurn !== undefined
+    const session = this.#sessions.get(subagentTurn?.threadId ?? sessionId)
     if (!session || session.cwd !== cwd) return
+    // A subagent outlives nothing: once the turn that started it has ended,
+    // whatever it still sends is dropped rather than attached to a later turn.
+    if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) return
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
       if (info?.role === "assistant" && typeof info.id === "string") {
-        const turnId = subagent
-          ? session.activeTurnId
+        const turnId = subagentTurn
+          ? subagentTurn.turnId
           : typeof info.parentID === "string" ? info.parentID : undefined
         if (!turnId) return
         session.assistantMessageTurnIds.set(info.id, turnId)
@@ -533,7 +551,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       const request = permissionRequest(properties, this.#identity.providerName)
       if (!request) return
       const requestId = ++this.#nextApprovalId
-      this.#pendingApprovals.set(requestId, { providerSessionId: sessionId, cwd, permissionId: request.permissionId })
+      this.#pendingApprovals.set(requestId, {
+        providerSessionId: sessionId,
+        cwd,
+        permissionId: request.permissionId,
+        ...(subagentTurn ? { subagentTurn } : {}),
+      })
       this.#emit({
         type: "approval-requested",
         requestId,
@@ -625,6 +648,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     })
     delete session.activeTurnId
     session.toolPhases.clear()
+    // A subagent's request cannot outlive the turn that started it. Refuse it
+    // on the provider and forget it, so a later answer to its card does nothing.
+    for (const [requestId, pending] of this.#pendingApprovals) {
+      if (pending.subagentTurn?.threadId !== session.threadId || pending.subagentTurn.turnId !== turnId) continue
+      this.#pendingApprovals.delete(requestId)
+      this.#respond(pending, "reject")
+    }
   }
 
   #requireSession(threadId: string): Session {

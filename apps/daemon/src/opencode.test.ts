@@ -775,6 +775,112 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  async function childAskedInFirstTurn() {
+    const { client, factory, stream } = harness()
+    let turns = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++turns}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Explore", runtime: runtime("build") })
+    const child = "ses_child"
+    stream.emit({ type: "session.created", properties: { sessionID: child, info: { id: child, parentID: threadId, directory: "/worktree" } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: {
+        id: "per_child",
+        sessionID: child,
+        permission: "bash",
+        patterns: ["rm -rf build"],
+        metadata: { command: "rm -rf build" },
+        always: ["rm *"],
+        tool: { messageID: "msg_child", callID: "call_child" },
+      },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested", requestId: 1, threadId, turnId: "turn-1",
+    })))
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "parent failed" } } } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed", params: expect.objectContaining({ turnId: "turn-1" }),
+    })))
+    return { adapter, client, events, stream, threadId, child }
+  }
+
+  it("refuses a child's pending approval when the parent turn ends, and ignores a later answer", async () => {
+    const { adapter, client } = await childAskedInFirstTurn()
+
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
+    ))
+    adapter.resolveApproval(1, "allow-once")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "once" } }),
+    )
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
+  it("keeps the parent's own pending approval answerable after its turn ends", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "per_parent", sessionID: threadId, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [] },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 1 })))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    adapter.resolveApproval(1, "deny")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: threadId, permissionID: "per_parent" }, body: { response: "reject" } }),
+    ))
+    await adapter.close()
+  })
+
+  it("does not attach a child's late events to the parent's next turn", async () => {
+    const { adapter, events, stream, threadId, child } = await childAskedInFirstTurn()
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+
+    stream.emit({ type: "session.updated", properties: { sessionID: child, info: { id: child, parentID: threadId, directory: "/worktree" } } })
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_late", sessionID: child, role: "assistant", parentID: "child-user" } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          type: "tool",
+          sessionID: child,
+          messageID: "msg_late",
+          callID: "call_late",
+          tool: "bash",
+          state: { status: "completed", input: { command: "echo late" }, output: "" },
+        },
+      },
+    })
+    stream.emit({
+      type: "permission.asked",
+      properties: {
+        id: "per_late",
+        sessionID: child,
+        permission: "bash",
+        patterns: ["echo late"],
+        metadata: { command: "echo late" },
+        always: [],
+        tool: { messageID: "msg_late", callID: "call_late" },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => JSON.stringify(event).includes("turn-2"))).toEqual([])
+    await adapter.close()
+  })
+
   it("ignores a session whose parent it does not hold", async () => {
     const { adapter, events, stream } = await buildTurn()
 
