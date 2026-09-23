@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest"
 
 import { demoWorkspace, type Artifact, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { ArtifactDock } from "./artifact-dock"
+import { AnnotationDraftCopy, ArtifactDock } from "./artifact-dock"
 
 const sessionId = demoWorkspace.activeSessionId!
 const previews: Artifact[] = [
@@ -52,6 +52,14 @@ function renderDock() {
 }
 
 afterEach(cleanup)
+
+it("uses the signed review draft actions", () => {
+  expect(AnnotationDraftCopy).toEqual({
+    placeholder: "Say what is wrong with this element",
+    submit: "Post",
+    cancel: "Cancel",
+  })
+})
 
 it("keeps the viewed preview distinct from the build basis", async () => {
   const user = userEvent.setup()

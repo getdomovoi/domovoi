@@ -125,4 +125,64 @@ describe("SessionEvidenceContent revert and diff view", () => {
     await user.click(screen.getByRole("button", { name: "Unified" }))
     expect(screen.getByLabelText("Unified diff")).not.toBeNull()
   })
+
+  it("colours added and removed lines in the worktree diff", () => {
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    const unified = screen.getByLabelText("Unified diff")
+    const removed = [...unified.querySelectorAll("pre")].find((line) => line.textContent === "-const before = 2")
+    const added = [...unified.querySelectorAll("pre")].find((line) => line.textContent === "+const after = 3")
+    expect(removed?.className).toContain("text-destructive")
+    expect(added?.className).toContain("text-success")
+  })
+
+  it("colours added and removed lines when one file diff is expanded", async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }))
+
+    const fileDiff = screen.getByLabelText("Diff for src/app.ts")
+    const removed = [...fileDiff.querySelectorAll("pre")].find((line) => line.textContent === "-const before = 2")
+    const added = [...fileDiff.querySelectorAll("pre")].find((line) => line.textContent === "+const after = 3")
+    expect(removed?.className).toContain("text-destructive")
+    expect(added?.className).toContain("text-success")
+  })
+
+  it("colours both columns of the split diff", async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Split" }))
+
+    const split = screen.getByLabelText("Split diff")
+    const left = [...split.querySelectorAll("pre")].find((line) => line.textContent === "const before = 2")
+    const right = [...split.querySelectorAll("pre")].find((line) => line.textContent === "const after = 3")
+    expect(left?.className).toContain("text-destructive")
+    expect(right?.className).toContain("text-success")
+  })
 })

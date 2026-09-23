@@ -7,6 +7,8 @@ import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
   installFakeWebSocket,
+  pendingRequest,
+  respond,
   sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
@@ -53,6 +55,27 @@ describe("the dock's tab list", () => {
     await settle()
     expect(screen.getByText(rulesIntro)).toBeTruthy()
     expect(sentRequests(socket, "permission.hardGates")).toHaveLength(1)
+  })
+
+  it("sends plan agreement as a turn before closing the sheet", async () => {
+    const snapshot = workspaceSnapshot()
+    render(<WorkspaceShell />)
+    const socket = harness.socket(0)
+    await act(async () => { completeHandshake(socket, snapshot) })
+    await settle()
+    await openSheet()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("tab", { name: "Plan preview" }))
+    await user.click(screen.getByRole("button", { name: "Looks right, carry on" }))
+
+    const request = pendingRequest(socket, "session.send")
+    expect(request.params).toMatchObject({
+      sessionId: snapshot.activeSessionId,
+      prompt: "Looks right, carry on",
+    })
+    await act(async () => { respond(socket, "session.send", snapshot) })
+    await settle()
+    expect(screen.queryByRole("tab", { name: "Plan preview" })).toBeNull()
   })
 
   // v2 labels the block "COMMENTS ON VARIANT B" and its logic filters by the

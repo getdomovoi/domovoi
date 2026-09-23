@@ -36,7 +36,7 @@ const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
 
-const composer = /Reply, or steer the plan|Steer it while it works|Cannot send, the daemon is not answering/
+const composer = /Steer it, or queue the next message|Cannot send, the daemon is not answering/
 
 it("opens the chosen session's thread, whichever surface the drawer was used from", async () => {
   const user = userEvent.setup()

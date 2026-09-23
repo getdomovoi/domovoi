@@ -35,13 +35,14 @@ it("sends the selected approval-card decision", async () => {
   expect(onResolve).toHaveBeenCalledWith(approval.id, "allow-once", undefined)
 })
 
-function renderThread() {
+function renderThread(surface: "desktop" | "web" = "desktop") {
   const snapshot = structuredClone(demoWorkspace)
   render(
     <Thread
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
+      surface={surface}
       onResolve={vi.fn(async () => {})}
       onSetRuntime={vi.fn(async () => {})}
       onForkSession={vi.fn(async () => {})}
@@ -56,6 +57,15 @@ function renderThread() {
   )
   return snapshot.approvals[0]!
 }
+
+it("uses the signed web gate wording and names the holder", () => {
+  renderThread("web")
+  const card = screen.getByRole("alert")
+  expect(card.textContent).toContain("Approval required, hard gate")
+  expect(screen.getByRole("button", { name: "Always here" })).toBeTruthy()
+  expect(card.textContent).toContain("This tab holds the gate")
+  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+})
 
 it("keeps optional explanation behind Deny instead of a fourth peer action", async () => {
   const user = userEvent.setup()

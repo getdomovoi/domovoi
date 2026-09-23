@@ -331,7 +331,10 @@ export function UnifiedDiff({ diff, label, className }: { diff: string; label: s
 function SplitDiff({ diff }: { diff: string }) {
   const rows = useMemo(() => splitDiffRows(diff), [diff])
   return (
-    <div aria-label="Split diff" className="max-h-80 overflow-auto bg-code font-machine text-[10px] leading-relaxed">
+    <div
+      aria-label="Split diff"
+      className="max-h-80 w-0 min-w-full overflow-auto bg-code font-machine text-[10px] leading-relaxed"
+    >
       <div className="grid min-w-max grid-cols-2">
         {rows.map((row, index) => (
           <div key={index} className="contents">
@@ -428,8 +431,8 @@ export function SessionEvidenceContent({
           Refresh
         </Button>
       </div>
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-4 p-3">
+      <ScrollArea className="min-h-0 min-w-0 flex-1">
+        <div className="min-w-0 space-y-4 p-3">
           {loading && !evidence ? (
             <p role="status" className="py-8 text-center font-machine text-[10px] text-faint">
               Refreshing evidence
@@ -512,7 +515,7 @@ export function SessionEvidenceContent({
                 ) : null}
               </section>
 
-              <section className="overflow-hidden rounded-lg border bg-card">
+              <section className="min-w-0 overflow-hidden rounded-lg border bg-card">
                 <div className="flex items-center justify-between px-3 py-2">
                   <h3 className="m-0 text-[11px] font-medium">Worktree diff</h3>
                   <div className="flex items-center gap-2">
