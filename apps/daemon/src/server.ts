@@ -69,6 +69,7 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
+  type SessionSearchMatch,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -360,6 +361,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "skill.reviewRevision",
   "skill.installPreview",
   "session.history",
+  "session.search",
   "session.evidence",
   "audit.query",
   "fleet.heartbeat",
@@ -6080,6 +6082,32 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "session.search") {
+        const params = paramsResult.data as RpcParams<"session.search">
+        const needle = params.query.toLowerCase()
+        const matches: SessionSearchMatch[] = []
+        let truncated = false
+        for (const session of this.#snapshot.sessions) {
+          const matchedIn = session.title.toLowerCase().includes(needle)
+            ? "title"
+            : this.#sessionSummaryText(session.id)?.toLowerCase().includes(needle)
+              ? "summary"
+              : undefined
+          if (!matchedIn) continue
+          if (matches.length >= params.limit) {
+            truncated = true
+            break
+          }
+          matches.push({ session, matchedIn })
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
+        })
+        return
+      }
+
       if (method === "session.evidence") {
         const params = paramsResult.data as RpcParams<"session.evidence">
         const session = this.#snapshot.sessions.find(
@@ -9414,6 +9442,15 @@ export class DomovoiDaemon {
     if (failures >= maximumAuthenticationFailures) {
       setTimeout(() => socket.close(1008, "authentication failed"), 0)
     }
+  }
+
+  // A session's summary for search: the newest assistant message the daemon
+  // still holds for it in the snapshot window. Older history is not searched.
+  #sessionSummaryText(sessionId: string): string | undefined {
+    const newest = this.#snapshot.thread.findLast(
+      (item) => item.sessionId === sessionId && item.kind === "assistant",
+    )
+    return newest?.kind === "assistant" ? newest.body : undefined
   }
 
   #closeTerminal(terminalId: string): boolean {
