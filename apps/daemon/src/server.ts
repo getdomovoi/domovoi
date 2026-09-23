@@ -6587,6 +6587,18 @@ export class DomovoiDaemon {
         // told the gate is still waiting while the command runs, and a
         // standing rule they were told failed would reach disk later.
         const decidedAt = new Date().toISOString()
+        const receiptId = `receipt-${approval.id}-${Date.now()}`
+        const undecided = {
+          approval: structuredClone(approval),
+          sessionState: session?.state,
+          plans: structuredClone(this.#snapshot.workingPlans.filter((plan) => plan.steps.some(
+            (step) => step.blocker?.approvalId === approval.id,
+          ))),
+          replacedBy: new Map(this.#snapshot.approvalRules.map((rule) => [
+            rule.id,
+            "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+          ])),
+        }
         const candidate = structuredClone(this.#snapshot)
         const newRule = params.decision === "always-project"
           ? {
@@ -6615,7 +6627,7 @@ export class DomovoiDaemon {
           ]
         }
         candidate.thread.push({
-          id: `receipt-${approval.id}-${Date.now()}`,
+          id: receiptId,
           sessionId: approval.sessionId,
           kind: "receipt",
           decision: params.decision,
@@ -6689,11 +6701,59 @@ export class DomovoiDaemon {
         }
         this.#activeAssistantItems.clear()
         if (approval.providerRequestId !== undefined && session) {
-          this.#agents.require(session.runtime.provider)
-            .resolveApproval(
-              approval.providerRequestId,
-              params.decision === "always-project" ? "allow-once" : params.decision,
+          try {
+            this.#agents.require(session.runtime.provider)
+              .resolveApproval(
+                approval.providerRequestId,
+                params.decision === "always-project" ? "allow-once" : params.decision,
+              )
+          } catch (error) {
+            this.#reportError("Domovoi could not pass an approval decision to the agent", error)
+            const undo = (snapshot: WorkspaceSnapshot) => {
+              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId)
+              if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
+                snapshot.approvals.push(structuredClone(undecided.approval))
+              }
+              if (newRule) {
+                snapshot.approvalRules = snapshot.approvalRules
+                  .filter((rule) => rule.id !== newRule.id)
+                  .map((rule) => {
+                    if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+                    const { replacedByRuleId: _replaced, ...restored } = rule
+                    const previous = undecided.replacedBy.get(rule.id)
+                    return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+                  })
+              }
+              snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
+                structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
+              const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+              if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
+            }
+            const rolledBack = structuredClone(this.#snapshot)
+            undo(rolledBack)
+            workspaceSnapshotSchema.parse(rolledBack)
+            undo(this.#snapshot)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            try {
+              await this.#persistSnapshot()
+            } catch (rollbackError) {
+              this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+              this.#error(
+                socket,
+                request.id,
+                daemonPersistenceUnavailableErrorCode,
+                "Domovoi could not save this decision, so the agent was not told",
+              )
+              return
+            }
+            this.#error(
+              socket,
+              request.id,
+              internalError,
+              "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
             )
+            return
+          }
         }
         if (blockedPlan) {
           this.#appendAudit({

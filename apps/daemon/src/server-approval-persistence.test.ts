@@ -161,7 +161,7 @@ describe("approval decisions", () => {
     await parkedWrite
     const other = await connect(daemon, port)
     const stop = other("system.emergencyStop", { client: "desktop" })
-    await vi.waitFor(() => expect(provider.resolveApproval).toHaveBeenCalledWith(41, "deny"))
+    await vi.waitFor(() => expect(provider.resolveApproval).toHaveBeenCalledWith(41, "deny"), { timeout: 5_000 })
     release()
     expect((await decision).error).toBeDefined()
     expect((await stop).error).toBeUndefined()
@@ -206,5 +206,83 @@ describe("approval decisions", () => {
       .find((item) => item.kind === "receipt")!
     expect(before.some((id) => id.includes(receipt.id))).toBe(false)
     expect((await history()).some((id) => id.includes(receipt.id))).toBe(true)
+  })
+  it("keeps the gate waiting when the agent cannot be told after the save", async () => {
+    const provider = agent()
+    provider.resolveApproval.mockImplementationOnce(() => { throw new Error("stdin closed") })
+    const saved: WorkspaceSnapshot[] = []
+    let failNext = false
+    const store = {
+      load: () => pendingApproval(),
+      save: vi.fn(),
+      saveAsync: vi.fn(async (snapshot: WorkspaceSnapshot) => {
+        if (failNext) {
+          failNext = false
+          throw new Error("database is locked")
+        }
+        saved.push(structuredClone(snapshot))
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+    const decision = { approvalId: "approval-migrate", decision: "always-project", client: "desktop" }
+    const waiting = (snapshot: WorkspaceSnapshot) => {
+      expect(snapshot.approvals.map((approval) => approval.id)).toEqual(["approval-migrate"])
+      expect(snapshot.approvalRules).toEqual([])
+      expect(snapshot.thread.some((item) => item.kind === "receipt")).toBe(false)
+      expect(snapshot.sessions.find((session) => session.id === "session-billing")?.state).toBe("waiting")
+    }
+
+    const undelivered = await rpc("approval.resolve", decision)
+    expect(undelivered.error).toEqual({
+      code: -32603,
+      message: "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
+    })
+    waiting(workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result))
+    waiting(saved.at(-1)!)
+
+    const retried = await rpc("approval.resolve", decision)
+    expect(retried.error).toBeUndefined()
+    expect(provider.resolveApproval.mock.calls).toEqual([[41, "allow-once"], [41, "allow-once"]])
+    const decided = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(decided.approvals).toEqual([])
+    expect(decided.approvalRules).toEqual([expect.objectContaining({ status: "active" })])
+    expect(decided.thread.filter((item) => item.kind === "receipt")).toHaveLength(1)
+  })
+
+  it("answers the persistence failure when the rollback cannot be saved either", async () => {
+    const provider = agent()
+    let failNext = false
+    provider.resolveApproval.mockImplementationOnce(() => {
+      failNext = true
+      throw new Error("stdin closed")
+    })
+    const store = {
+      load: () => pendingApproval(),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => {
+        if (failNext) {
+          failNext = false
+          throw new Error("database is locked")
+        }
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+
+    const undelivered = await rpc("approval.resolve", {
+      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+    })
+    expect(undelivered.error).toMatchObject({ code: daemonPersistenceUnavailableErrorCode })
+    const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(live.approvals.map((approval) => approval.id)).toEqual(["approval-migrate"])
+    expect(live.approvalRules).toEqual([])
+    expect(live.thread.some((item) => item.kind === "receipt")).toBe(false)
   })
 })
