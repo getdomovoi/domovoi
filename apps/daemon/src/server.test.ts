@@ -13,6 +13,7 @@ import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  applyWorkspaceDelta,
   createEmptyWorkspace,
   daemonPersistenceUnavailableErrorCode,
   demoWorkspace,
@@ -22,21 +23,25 @@ import {
   maximumEffectiveClientThreadItems,
   maximumTerminalOutputChunkCharacters,
   maximumWorkspaceDeltaChunkLength,
+  maximumWorkspaceDeltaOperations,
   projectSwitchConfirmationSchema,
   protocolVersion,
   protocolVersionMismatchErrorCode,
   sessionHistoryPageSchema,
   skillInstallErrorCode,
   workspaceSnapshotSchema,
+  workspaceDeltaSchema,
   type ProviderModel,
   type RpcMethod,
   type RpcResult,
   type SkillSummary,
+  type WorkspaceSnapshot,
   turnSkillSelectionErrorCode,
 } from "@getdomovoi/protocol"
 
 import {
   appendPlanDelta,
+  ActiveAssistantItemCache,
   artifactAccessMatches,
   frameAncestorsFor,
   DomovoiDaemon,
@@ -54,6 +59,8 @@ import {
   sessionHistoryPage,
   signArtifactAccess,
   workspaceSnapshotForClient,
+  coalesceWorkspaceDeltas,
+  validWorkspaceDeltaBatches,
   workspaceDeltaChunks,
 } from "./server.js"
 import {
@@ -575,6 +582,232 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("sends a queued delta before any snapshot that already holds its text", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
+    const streaming = snapshot.sessions[0]!
+    const other = snapshot.sessions[1]!
+    for (const session of [streaming, other]) {
+      session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
+      session.workspacePath = "/worktrees/x"
+    }
+    streaming.providerThreadId = "thread-streaming"
+    streaming.activeTurnId = "turn-streaming"
+    streaming.state = "active"
+    other.providerThreadId = "thread-other"
+    delete other.activeTurnId
+    other.state = "idle"
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn-started"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listeners.add(next)
+        return () => { listeners.delete(next) }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    let parkNextPersist = false
+    let parked!: () => void
+    let releasePersist!: () => void
+    const persistParked = new Promise<void>((resolve) => { parked = resolve })
+    const store = {
+      load: () => structuredClone(snapshot),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => {
+        if (!parkNextPersist) return
+        parkNextPersist = false
+        await new Promise<void>((resolve) => {
+          releasePersist = resolve
+          parked()
+        })
+      }),
+      close: vi.fn(),
+    }
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const arrivals: { id?: number; method?: string; params?: unknown; result?: unknown }[] = []
+    socket.on("message", (data) => {
+      arrivals.push(JSON.parse(data.toString()) as { id?: number; method?: string; params?: unknown })
+    })
+    let nextId = 0
+    const rpc = async (method: string, params: Record<string, unknown>) => {
+      const id = ++nextId
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      await waitForDaemon(() => expect(arrivals.some((message) => message.id === id)).toBe(true))
+      return arrivals.find((message) => message.id === id)!.result as WorkspaceSnapshot
+    }
+    const streamedBody = (view: WorkspaceSnapshot) => view.thread
+      .filter((item) => item.sessionId === streaming.id && item.kind === "assistant")
+      .map((item) => (item.kind === "assistant" ? item.body : ""))
+      .join("")
+
+    const sent = await rpc("session.send", { sessionId: streaming.id, prompt: "go", client: "desktop" })
+    const turnId = sent.sessions.find((session) => session.id === streaming.id)!.activeTurnId!
+    const replayFrom = arrivals.length
+
+    parkNextPersist = true
+    const pendingOther = rpc("session.setRuntime", {
+      sessionId: other.id,
+      client: "desktop",
+      runtime: { ...other.runtime, reasoning: "high" },
+    })
+    await persistParked
+    for (const listener of listeners) {
+      listener({ type: "text-delta", threadId: "thread-streaming", turnId, delta: "hello from A" })
+    }
+    releasePersist()
+    await pendingOther
+    await waitForDaemon(() => expect(
+      arrivals.slice(replayFrom).some((message) => message.method === "workspace.delta"),
+    ).toBe(true))
+
+    let clientView: WorkspaceSnapshot = sent
+    for (const message of arrivals.slice(replayFrom)) {
+      if (message.method === "workspace.delta") {
+        clientView = applyWorkspaceDelta(clientView, workspaceDeltaSchema.parse(message.params))
+      } else if (message.method === "workspace.changed") {
+        clientView = message.params as WorkspaceSnapshot
+      } else if (message.id !== undefined && message.result && "thread" in (message.result as object)) {
+        clientView = message.result as WorkspaceSnapshot
+      }
+    }
+    expect(streamedBody(clientView)).toBe(`${streamedBody(sent)}hello from A`)
+    socket.close()
+  })
+
+  describe("streamed deltas", () => {
+    async function streamingDaemon() {
+      const snapshot = structuredClone(demoWorkspace)
+      snapshot.approvals = []
+      const session = snapshot.sessions[0]!
+      session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
+      session.workspacePath = "/worktrees/x"
+      session.providerThreadId = "thread-long"
+      session.state = "idle"
+      delete session.activeTurnId
+      const listeners = new Set<(event: AgentEvent) => void>()
+      const agent = {
+        connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+        startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "turn-long"),
+        steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+          listeners.add(next)
+          return () => { listeners.delete(next) }
+        }),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const errorSink = vi.fn()
+      const store = new SqliteWorkspaceStore(":memory:", snapshot)
+      const daemon = new DomovoiDaemon({
+        port: 0,
+        store,
+        agents: { codex: agent },
+        errorSink,
+      })
+      running.push(daemon)
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      const arrivals: { id?: number; method?: string; params?: unknown; result?: unknown }[] = []
+      socket.on("message", (data) => {
+        arrivals.push(JSON.parse(data.toString()) as { id?: number; method?: string; params?: unknown })
+      })
+      socket.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "session.send",
+        params: { sessionId: session.id, prompt: "go", client: "desktop" },
+      }))
+      await waitForDaemon(() => expect(arrivals.some((message) => message.id === 1)).toBe(true))
+      const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
+      return { session, socket, arrivals, emit, errorSink, store }
+    }
+
+    it("streams text from a long provider item id as a bounded delta", async () => {
+      const { socket, arrivals, emit, errorSink } = await streamingDaemon()
+      const replayFrom = arrivals.length
+      emit({
+        type: "text-delta",
+        threadId: "thread-long",
+        turnId: "turn-long",
+        itemId: "x".repeat(600),
+        delta: "streamed through a long item id",
+      })
+
+      await waitForDaemon(() => expect(arrivals.slice(replayFrom).some((message) =>
+        message.method === "workspace.delta")).toBe(true))
+      const delta = workspaceDeltaSchema.parse(
+        arrivals.slice(replayFrom).find((message) => message.method === "workspace.delta")!.params,
+      )
+      expect(delta.operations[0]).toMatchObject({
+        kind: "assistant.append",
+        delta: "streamed through a long item id",
+      })
+      expect(errorSink).not.toHaveBeenCalledWith(expect.objectContaining({
+        context: "Domovoi could not stream a workspace delta",
+      }))
+      socket.close()
+    })
+
+    it("streams deltas while text arrives but persists only once the stream pauses", async () => {
+      const { socket, arrivals, emit, store } = await streamingDaemon()
+      const saves = vi.spyOn(store, "saveAsync")
+      const replayFrom = arrivals.length
+      for (let index = 0; index < 30; index += 1) {
+        emit({
+          type: "text-delta",
+          threadId: "thread-long",
+          turnId: "turn-long",
+          delta: `chunk ${index} `,
+        })
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      const deltasBeforeStreamEnded = arrivals.slice(replayFrom)
+        .filter((message) => message.method === "workspace.delta").length
+      const savesDuringStream = saves.mock.calls.length
+
+      expect(deltasBeforeStreamEnded).toBeGreaterThanOrEqual(2)
+      expect(savesDuringStream).toBeLessThanOrEqual(3)
+      await waitForDaemon(() => expect(saves.mock.calls.length).toBeGreaterThan(0))
+      socket.close()
+    })
+
+    it("refuses a batch holding a delta that fails validation", () => {
+      const createdAt = "2026-09-22T00:00:00.000Z"
+      const valid = {
+        sessionId: "session-a",
+        updatedAt: createdAt,
+        operations: [{ kind: "assistant.append" as const, id: "assistant-a", delta: "ok", createdAt }],
+      }
+      const invalid = {
+        sessionId: "session-a",
+        updatedAt: createdAt,
+        operations: [{ kind: "assistant.append" as const, id: "x".repeat(600), delta: "no", createdAt }],
+      }
+
+      expect(validWorkspaceDeltaBatches([valid])).toEqual({ ok: true, batches: [valid] })
+      expect(validWorkspaceDeltaBatches([valid, { ...invalid, sessionId: "session-b" }]))
+        .toMatchObject({ ok: false })
+    })
+  })
+
   it("protects only valid crop references retained by annotations", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.annotations[0]!.visualContext = {
@@ -883,6 +1116,33 @@ describe("DomovoiDaemon", () => {
         },
       },
     })
+    listener!({
+      type: "item",
+      phase: "completed",
+      params: {
+        threadId: session.providerThreadId,
+        turnId: session.activeTurnId,
+        item: {
+          id: "reported-file-change",
+          type: "fileChange",
+          status: "completed",
+          changes: [
+            {
+              path: "src/app.ts",
+              diff: "@@ -1,2 +1,3 @@\n-old\n+new\n context\n+added\n",
+            },
+            {
+              path: "src/removed.ts",
+              diff: "@@ -1,2 +1 @@\n-old\n kept\n",
+            },
+            { path: "preview.html", diff: "binary files differ" },
+            { path: " src/spaced.ts", diff: "@@ -1 +1 @@\n-old\n+new\n" },
+            { path: "src/app.ts" },
+            { path: `${"a".repeat(1_016)}/token=x` },
+          ],
+        },
+      },
+    })
     const current = await rpc("workspace.get", {})
     const serialized = JSON.stringify(current.result)
     for (const secret of [
@@ -910,6 +1170,18 @@ describe("DomovoiDaemon", () => {
         kind: "tool",
         title: "pnpm test",
         output: "safe live line\ntoken=[REDACTED]\r\n",
+      }),
+      expect.objectContaining({
+        kind: "tool",
+        tool: "file-change",
+        status: "completed",
+        title: "File changes",
+        files: [
+          { path: "src/app.ts", additions: 2, deletions: 1 },
+          { path: "src/removed.ts", additions: 0, deletions: 1 },
+          "preview.html",
+          { path: " src/spaced.ts", additions: 1, deletions: 1 },
+        ],
       }),
     ]))
     expect(JSON.stringify(notifications)).toContain("safe live line\\n")
@@ -966,6 +1238,18 @@ describe("DomovoiDaemon", () => {
       byRuntime: [],
     }
     const usage = vi.fn(() => result)
+    const usageLimits = vi.fn(async () => ({
+      provider: "codex",
+      planType: "plus",
+      windows: [{ kind: "primary" as const, usedPercent: 23, windowDurationMinutes: 300 }],
+    }))
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()), usageLimits,
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}), resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
     const store = {
       snapshot: structuredClone(snapshot),
       load() { return structuredClone(this.snapshot) },
@@ -975,7 +1259,7 @@ describe("DomovoiDaemon", () => {
     const daemon = new DomovoiDaemon({
       port: 0,
       store,
-      agents: {},
+      agents: { codex: agent },
       usageLedger: { record: vi.fn(), session: usage, window: vi.fn(), close: vi.fn() },
     })
     running.push(daemon)
@@ -999,12 +1283,39 @@ describe("DomovoiDaemon", () => {
       params: { sessionId: session.id },
     }))
 
-    await expect(response).resolves.toMatchObject({ result })
+    await expect(response).resolves.toMatchObject({
+      result: {
+        ...result,
+        providerLimits: {
+          provider: "codex",
+          planType: "plus",
+          windows: [{ kind: "primary", usedPercent: 23, windowDurationMinutes: 300 }],
+        },
+      },
+    })
     expect(usage).toHaveBeenCalledWith(session.id, {
       provider: "codex",
       model: "gpt-5.6-sol",
       threadId: "thread-current",
     })
+    expect(agent.connect).toHaveBeenCalledOnce()
+    expect(usageLimits).toHaveBeenCalledOnce()
+
+    usageLimits.mockRejectedValueOnce(new Error("rate limits unavailable"))
+    const fallback = new Promise<Record<string, unknown>>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: string }
+        if (message.id === "usage-fallback") resolve(message as Record<string, unknown>)
+      })
+    })
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "usage-fallback",
+      method: "session.usage",
+      params: { sessionId: session.id },
+    }))
+    await expect(fallback).resolves.toMatchObject({ result })
+    expect((await fallback).result).not.toHaveProperty("providerLimits")
     socket.close()
   })
 
@@ -1176,6 +1487,86 @@ describe("DomovoiDaemon", () => {
     const stopped = await rpc("workspace.get", {}) as typeof snapshot
     expect(stopped.sessions.find((candidate) => candidate.id === session.id)).not.toHaveProperty("activeTurnId")
     expect(stopped.thread.some((item) => "body" in item && item.body.includes("after-emergency-text"))).toBe(false)
+    socket.close()
+  })
+
+  it("keeps each provider message its own thread item in call order", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals = []
+    snapshot.workingPlans = []
+    snapshot.thread = []
+    for (const candidate of snapshot.sessions) {
+      delete candidate.activeTurnId
+      candidate.state = "idle"
+    }
+    const session = snapshot.sessions[0]!
+    session.runtime = { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", permissionMode: "build", auto: false }
+    session.providerThreadId = "ordering-thread"
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-message-order-"))
+    scratchDirectories.push(worktree)
+    session.workspacePath = worktree
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "ordering-turn"),
+      steerTurn: vi.fn<AgentAdapter["steerTurn"]>(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      }), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = async (method: string, params: object) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      const result = await response
+      expect(result).not.toHaveProperty("error")
+      return result.result
+    }
+    const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
+    await rpc("session.send", { sessionId: session.id, prompt: "Check the model", client: "desktop" })
+
+    const common = { threadId: "ordering-thread", turnId: "ordering-turn" }
+    emit({ type: "text-delta", ...common, itemId: "message-1", delta: "Checking the model." })
+    emit({ type: "item", phase: "started", params: { ...common,
+      item: { id: "compaction-1", type: "contextCompaction" } } })
+    emit({ type: "item", phase: "completed", params: { ...common,
+      item: { id: "compaction-1", type: "contextCompaction" } } })
+    emit({ type: "item", phase: "completed", params: { ...common,
+      item: { id: "tool-1", type: "commandExecution", command: "codex --version" } } })
+    emit({ type: "text-delta", ...common, itemId: "message-2", delta: "I am Codex." })
+
+    const current = await rpc("workspace.get", {}) as typeof snapshot
+    const turn = current.thread.filter((item) =>
+      item.kind === "assistant" || item.kind === "system" || item.kind === "tool")
+    expect(turn.map((item) => item.kind)).toEqual(["assistant", "system", "tool", "assistant"])
+    expect(turn.filter((item) => item.kind === "assistant").map((item) => "body" in item ? item.body : ""))
+      .toEqual(["Checking the model.", "I am Codex."])
+    const compaction = turn.find((item) => item.kind === "system")
+    expect(compaction).toMatchObject({
+      kind: "system",
+      body: "Context compacted.",
+      notice: "context-compaction",
+    })
+    expect(compaction).not.toHaveProperty("detail")
     socket.close()
   })
 
@@ -3434,6 +3825,69 @@ describe("DomovoiDaemon", () => {
     expect(chunks).toHaveLength(3)
     expect(chunks.every((chunk) => chunk.length <= maximumWorkspaceDeltaChunkLength)).toBe(true)
     expect(chunks.join("")).toBe(input)
+  })
+
+  it("coalesces adjacent workspace deltas without crossing sessions or operation limits", () => {
+    const operations = Array.from({ length: maximumWorkspaceDeltaOperations + 2 }, (_, index) => ({
+      kind: "assistant.append" as const,
+      id: "assistant-a",
+      delta: String(index),
+      createdAt: "2026-09-20T00:00:00.000Z",
+    }))
+
+    const batches = coalesceWorkspaceDeltas([
+      { sessionId: "session-a", updatedAt: "2026-09-20T00:00:00.000Z", operations: operations.slice(0, 2) },
+      { sessionId: "session-a", updatedAt: "2026-09-20T00:00:01.000Z", operations: operations.slice(2) },
+      { sessionId: "session-b", updatedAt: "2026-09-20T00:00:02.000Z", operations: [operations[0]!] },
+      { sessionId: "session-a", updatedAt: "2026-09-20T00:00:03.000Z", operations: [operations[1]!] },
+    ])
+
+    expect(batches.map((batch) => ({
+      sessionId: batch.sessionId,
+      updatedAt: batch.updatedAt,
+      deltas: batch.operations.map((operation) => operation.kind === "assistant.append" ? operation.delta : ""),
+    }))).toEqual([
+      {
+        sessionId: "session-a",
+        updatedAt: "2026-09-20T00:00:01.000Z",
+        deltas: operations.slice(0, maximumWorkspaceDeltaOperations).map((operation) => operation.delta),
+      },
+      {
+        sessionId: "session-a",
+        updatedAt: "2026-09-20T00:00:01.000Z",
+        deltas: operations.slice(maximumWorkspaceDeltaOperations).map((operation) => operation.delta),
+      },
+      { sessionId: "session-b", updatedAt: "2026-09-20T00:00:02.000Z", deltas: ["0"] },
+      { sessionId: "session-a", updatedAt: "2026-09-20T00:00:03.000Z", deltas: ["1"] },
+    ])
+    expect(batches.every((batch) => batch.operations.length <= maximumWorkspaceDeltaOperations)).toBe(true)
+  })
+
+  it("reuses the active assistant lookup until the thread array changes", () => {
+    const assistant = {
+      id: "assistant-message-turn-a",
+      sessionId: "session-a",
+      kind: "assistant" as const,
+      turnId: "turn-a",
+      body: "first",
+      createdAt: "2026-09-20T00:00:00.000Z",
+    }
+    const thread = [...structuredClone(demoWorkspace.thread), assistant]
+    const find = vi.spyOn(thread, "find")
+    const cache = new ActiveAssistantItemCache()
+
+    expect(cache.find(thread, "session-a", assistant.id)).toBe(assistant)
+    expect(cache.find(thread, "session-a", assistant.id)).toBe(assistant)
+    expect(find).toHaveBeenCalledOnce()
+
+    const replacement = structuredClone(thread)
+    expect(cache.find(replacement, "session-a", assistant.id)).toBe(replacement.at(-1))
+    expect(cache.find(replacement, "session-a", assistant.id)).not.toBe(assistant)
+
+    const replacementFind = vi.spyOn(replacement, "find")
+    cache.delete("session-a")
+    expect(cache.find(replacement, "session-a", assistant.id)).toBe(replacement.at(-1))
+    expect(replacementFind).toHaveBeenCalledOnce()
   })
 
   it("migrates turn-scoped plan artifacts into one session plan", () => {
@@ -5923,7 +6377,10 @@ describe("DomovoiDaemon", () => {
       contentDigest: currentSkill.contentDigest,
       enabled: false,
     })
-    expect(disabled).toMatchObject({ result: { skillEnablements: [{ enabled: false }] } })
+    expect(disabled).toMatchObject({ result: { skillEnablements: [{
+      skillId: currentSkill.id,
+      enabled: false,
+    }] } })
     await waitForDaemon(() => expect(notifications).toEqual(expect.arrayContaining([
       expect.objectContaining({
         method: "workspace.changed",
@@ -6916,9 +7373,26 @@ describe("DomovoiDaemon", () => {
     running.push(daemon)
     const address = await daemon.start()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    const peer = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`, "web")
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
       socket.once("error", reject)
+    })
+    await new Promise<void>((resolve, reject) => {
+      peer.once("open", resolve)
+      peer.once("error", reject)
+    })
+    await identifyClient(socket)
+    await identifyClient(peer, "web", "web-peer")
+    const callerChanges: unknown[] = []
+    const peerChanges: unknown[] = []
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { method?: string }
+      if (message.method === "workspace.changed") callerChanges.push(message)
+    })
+    peer.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as { method?: string }
+      if (message.method === "workspace.changed") peerChanges.push(message)
     })
 
     const responseFor = (id: number) => new Promise<Record<string, unknown>>((resolve) => {
@@ -6941,6 +7415,8 @@ describe("DomovoiDaemon", () => {
     await expect(activated).resolves.toMatchObject({
       result: { activeSessionId: "session-audit" },
     })
+    await waitForDaemon(() => expect(peerChanges).toHaveLength(1))
+    await waitForDaemon(() => expect(callerChanges).toHaveLength(1))
 
     const rejected = responseFor(2)
     socket.send(JSON.stringify({
@@ -6952,6 +7428,7 @@ describe("DomovoiDaemon", () => {
     await expect(rejected).resolves.toMatchObject({
       error: { code: -32602, message: "Session does not exist" },
     })
+    peer.close()
     socket.close()
   })
 
@@ -8624,9 +9101,12 @@ describe("DomovoiDaemon", () => {
         delta: "\n3. Verify the next turn.",
       })
     }
+    expect(notifications.filter(
+      (notification) => notification.method === "workspace.delta",
+    )).toHaveLength(0)
     await waitForDaemon(() => expect(notifications.filter(
       (notification) => notification.method === "workspace.delta",
-    )).toHaveLength(4))
+    )).toHaveLength(1))
     await waitForDaemon(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeStream + 1))
     expect(notifications).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ method: "workspace.changed" }),
@@ -8635,13 +9115,48 @@ describe("DomovoiDaemon", () => {
       .toMatchObject({
         params: {
           sessionId,
-          operations: [expect.objectContaining({
-            kind: "assistant.append",
-            delta: "Tests are green.",
-          })],
+          operations: [
+            expect.objectContaining({ kind: "assistant.append", delta: "Tests are green." }),
+            expect.objectContaining({ kind: "plan.append", delta: "1. Inspect the failing test.\n" }),
+            expect.objectContaining({ kind: "plan.append", delta: "2. Fix the implementation." }),
+            expect.objectContaining({ kind: "plan.append", delta: "\n3. Verify the next turn." }),
+          ],
         },
       })
+
+    notifications.length = 0
+    const savesBeforeSnapshotRead = store.save.mock.calls.length
     for (const listener of agentListeners) {
+      listener({
+        type: "text-delta",
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        delta: " Snapshot race.",
+      })
+    }
+    const midStream = await rpc("workspace.get", {})
+    expect(notifications.filter(({ method }) => method === "workspace.delta")).toHaveLength(1)
+    const notificationsAfterSnapshot = notifications.length
+    await waitForDaemon(() => expect(store.save).toHaveBeenCalledTimes(savesBeforeSnapshotRead + 1))
+    let clientView = workspaceSnapshotSchema.parse(midStream.result)
+    for (const notification of notifications.slice(notificationsAfterSnapshot)) {
+      if (notification.method === "workspace.delta") {
+        clientView = applyWorkspaceDelta(clientView, workspaceDeltaSchema.parse(notification.params))
+      }
+    }
+    const daemonView = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(clientView.thread.find((item) => item.kind === "assistant")?.body).toBe(
+      daemonView.thread.find((item) => item.kind === "assistant")?.body,
+    )
+
+    notifications.length = 0
+    for (const listener of agentListeners) {
+      listener({
+        type: "text-delta",
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        delta: " Awaiting approval.",
+      })
       listener({
         type: "approval-requested",
         requestId: 71,
@@ -8653,11 +9168,18 @@ describe("DomovoiDaemon", () => {
         reason: "Build the project",
       })
     }
+    await waitForDaemon(() => expect(notifications.map(({ method }) => method)).toEqual([
+      "workspace.delta",
+      "workspace.changed",
+    ]))
     const streamed = await rpc("workspace.get", {})
     expect(streamed).toMatchObject({
       result: {
         thread: expect.arrayContaining([
-          expect.objectContaining({ kind: "assistant", body: "Tests are green." }),
+          expect.objectContaining({
+            kind: "assistant",
+            body: "Tests are green. Snapshot race. Awaiting approval.",
+          }),
         ]),
         artifacts: [expect.objectContaining({
           sessionId,
@@ -8718,7 +9240,14 @@ describe("DomovoiDaemon", () => {
       },
     })
 
+    notifications.length = 0
     for (const listener of agentListeners) {
+      listener({
+        type: "text-delta",
+        threadId: "provider-thread-1",
+        turnId: "provider-turn-1",
+        delta: " Complete.",
+      })
       listener({
         type: "turn-completed",
         params: {
@@ -8729,6 +9258,10 @@ describe("DomovoiDaemon", () => {
       })
     }
     await rpc("workspace.get", {})
+    await waitForDaemon(() => expect(notifications.map(({ method }) => method)).toEqual([
+      "workspace.delta",
+      "workspace.changed",
+    ]))
 
     let checkpointAborted = false
     workspaceService.checkpoint.mockImplementationOnce(

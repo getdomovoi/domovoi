@@ -39,6 +39,7 @@ import {
   skillInstallErrorCode,
   maximumEmergencyStopFailureMessageLength,
   maximumProviderPromptCodeUnits,
+  maximumWorkingPlanSteps,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
@@ -81,10 +82,12 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type ToolFileEntry,
   type SkillInstallRefusal,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
+  workspaceDeltaBatchDelayMilliseconds,
   versionlessClientProtocol,
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
@@ -446,6 +449,16 @@ export function appendPlanDelta(
   sessionId: string,
   delta: string,
 ): Artifact {
+  return writePlanArtifact(artifacts, annotations, sessionId, delta, true)
+}
+
+function writePlanArtifact(
+  artifacts: Artifact[],
+  annotations: Annotation[],
+  sessionId: string,
+  content: string,
+  append: boolean,
+): Artifact {
   const artifactId = `plan-${sessionId}`
   const legacyPrefix = `${artifactId}-`
   const matching = artifacts.filter((artifact) =>
@@ -462,7 +475,7 @@ export function appendPlanDelta(
       type: "plan",
       revision: 1,
       mimeType: "text/markdown",
-      content: delta,
+      content,
     }
     artifacts.push(artifact)
     return artifact
@@ -473,7 +486,9 @@ export function appendPlanDelta(
   artifact.id = artifactId
   artifact.title = "Working plan"
   artifact.mimeType = "text/markdown"
-  artifact.content = `${matching.map((candidate) => candidate.content ?? "").join("")}${delta}`
+  artifact.content = append
+    ? `${matching.map((candidate) => candidate.content ?? "").join("")}${content}`
+    : content
   artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {
@@ -487,12 +502,253 @@ export function appendPlanDelta(
   return artifact
 }
 
+function planModePrompt(prompt: string): string {
+  return [
+    "<domovoi_plan_mode>",
+    "Create a plan and do not implement it. Use the provider's native plan mechanism when available. The complete plan must include a title, problem, approach, numbered steps, files for each step when known, whether each step stops for approval, risks, and open questions. If the native plan mechanism is unavailable, return the complete Markdown plan as the final assistant response.",
+    "</domovoi_plan_mode>",
+    "",
+    prompt,
+  ].join("\n")
+}
+
+function finalizedPlanMarkdown(body: string): {
+  content: string
+  tagged: boolean
+  threadContent: string
+} {
+  const blocks = [...body.matchAll(
+    /(^|\r?\n)[ \t]*<proposed_plan>[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*<\/proposed_plan>[ \t]*(?=\r?\n|$)/gu,
+  )]
+  const block = blocks.at(-1)
+  if (!block || block.index === undefined) {
+    const content = body.trim()
+    return { content, tagged: false, threadContent: content }
+  }
+  const content = block[2]?.trim() ?? ""
+  return {
+    content,
+    tagged: true,
+    threadContent: [
+      body.slice(0, block.index).trim(),
+      content,
+      body.slice(block.index + block[0].length).trim(),
+    ].filter(Boolean).join("\n\n"),
+  }
+}
+
+function pendingPlanStepsFromMarkdown(content: string): Array<{
+  text: string
+  status: "pending"
+}> {
+  const numbered = /^ {0,3}\d+[.)]\s+(?:\[[ xX]\]\s*)?(.+?)\s*$/u
+  const numberedHeading = /^#{2,6}\s+(?:(?:step\s+)?\d+\s*[:.)-]\s*)(.+?)\s*#*\s*$/iu
+  const heading = /^#{1,6}\s+(.+?)\s*#*\s*$/u
+  const lines = content.split(/\r?\n/u)
+  let inFence = false
+  const outsideFence = lines.map((line) => {
+    if (/^ {0,3}(?:```|~~~)/u.test(line)) {
+      inFence = !inFence
+      return false
+    }
+    return !inFence
+  })
+  const isStepSection = (line: string): boolean => {
+    const title = heading.exec(line)?.[1]
+      ?.replaceAll(/[*_`]/gu, "")
+      .replace(/\s*\([^)]*\)\s*$/u, "")
+      .trim()
+      .toLowerCase()
+    return title === "steps"
+      || title === "numbered steps"
+      || title === "plan"
+      || title === "implementation"
+      || title === "implementation steps"
+      || title === "implementation plan"
+      || title === "implementation changes"
+      || title === "key changes"
+  }
+  const hasStepSection = lines.some((line, index) => outsideFence[index] && isStepSection(line))
+  const steps: Array<{ text: string, status: "pending" }> = []
+  let collecting = false
+  let startedFallback = false
+  for (const [index, line] of lines.entries()) {
+    if (!outsideFence[index]) continue
+    const headingMatch = heading.exec(line)
+    const match = headingMatch ? numberedHeading.exec(line) : numbered.exec(line)
+    if (headingMatch) {
+      if (!match) {
+        if (hasStepSection) {
+          collecting = isStepSection(line)
+          continue
+        }
+        if (startedFallback) break
+        continue
+      }
+      if (hasStepSection && !collecting) continue
+    } else {
+      if (hasStepSection && !collecting) continue
+    }
+    const text = match?.[1]?.trim()
+    if (!text) continue
+    steps.push({ text, status: "pending" })
+    startedFallback = true
+    if (steps.length === maximumWorkingPlanSteps) break
+  }
+  return steps
+}
+
+function reportedDiffCounts(diff: unknown): Pick<ToolFileEntry, "additions" | "deletions"> | undefined {
+  if (typeof diff !== "string") return undefined
+  let additions = 0
+  let deletions = 0
+  let oldRemaining = 0
+  let newRemaining = 0
+  let sawHunk = false
+
+  for (const line of diff.split(/\r?\n/u)) {
+    const header = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/u.exec(line)
+    if (header) {
+      if (oldRemaining !== 0 || newRemaining !== 0) return undefined
+      oldRemaining = header[1] === undefined ? 1 : Number(header[1])
+      newRemaining = header[2] === undefined ? 1 : Number(header[2])
+      sawHunk = true
+      continue
+    }
+    if (oldRemaining === 0 && newRemaining === 0) continue
+    if (line.startsWith("\\ No newline at end of file")) continue
+    if (line.startsWith("+")) {
+      additions += 1
+      newRemaining -= 1
+    } else if (line.startsWith("-")) {
+      deletions += 1
+      oldRemaining -= 1
+    } else if (line.startsWith(" ")) {
+      oldRemaining -= 1
+      newRemaining -= 1
+    } else {
+      return undefined
+    }
+    if (oldRemaining < 0 || newRemaining < 0) return undefined
+  }
+
+  if (!sawHunk || oldRemaining !== 0 || newRemaining !== 0) return undefined
+  return { additions, deletions }
+}
+
+function reportedFileChangePaths(item: Record<string, unknown>): (string | ToolFileEntry)[] {
+  if (!Array.isArray(item.changes)) return []
+  const paths: (string | ToolFileEntry)[] = []
+  const seen = new Set<string>()
+  for (const change of item.changes) {
+    if (!change || typeof change !== "object" || !("path" in change)) continue
+    const reported = typeof change.path === "string" ? change.path : ""
+    if (!reported.trim() || reported.length > 1_024) continue
+    const path = redactDurableText(reported).value
+    if (!path || path.length > 1_024 || seen.has(path)) continue
+    seen.add(path)
+    const counts = reportedDiffCounts("diff" in change ? change.diff : undefined)
+    paths.push(counts ? { path, ...counts } : path)
+    if (paths.length === 256) break
+  }
+  return paths
+}
+
+function providerTurnIdentity(provider: string, threadId: string, turnId: string): string {
+  return `${provider}\u0000${threadId}\u0000${turnId}`
+}
+
+function providerThreadIdentityPrefix(provider: string, threadId: string): string {
+  return `${provider}\u0000${threadId}\u0000`
+}
+
 export function workspaceDeltaChunks(value: string): string[] {
   const chunks: string[] = []
   for (let offset = 0; offset < value.length; offset += maximumWorkspaceDeltaChunkLength) {
     chunks.push(value.slice(offset, offset + maximumWorkspaceDeltaChunkLength))
   }
   return chunks
+}
+
+export function coalesceWorkspaceDeltas(deltas: readonly WorkspaceDelta[]): WorkspaceDelta[] {
+  const batches: WorkspaceDelta[] = []
+  let current: WorkspaceDelta | undefined
+  const finishCurrent = () => {
+    if (current) batches.push(current)
+    current = undefined
+  }
+
+  for (const delta of deltas) {
+    for (const operation of delta.operations) {
+      if (
+        !current
+        || current.sessionId !== delta.sessionId
+        || current.operations.length === maximumWorkspaceDeltaOperations
+      ) {
+        finishCurrent()
+        current = { sessionId: delta.sessionId, updatedAt: delta.updatedAt, operations: [] }
+      }
+      current.operations.push(operation)
+      current.updatedAt = delta.updatedAt
+    }
+  }
+  finishCurrent()
+  return batches
+}
+
+export function validWorkspaceDeltaBatches(
+  pending: readonly WorkspaceDelta[],
+): { ok: true, batches: WorkspaceDelta[] } | { ok: false, error: unknown } {
+  const batches: WorkspaceDelta[] = []
+  for (const delta of coalesceWorkspaceDeltas(pending)) {
+    const parsed = workspaceDeltaSchema.safeParse(delta)
+    if (!parsed.success) return { ok: false, error: parsed.error }
+    batches.push(parsed.data)
+  }
+  return { ok: true, batches }
+}
+
+type AssistantThreadItem = Extract<WorkspaceSnapshot["thread"][number], { kind: "assistant" }>
+
+export class ActiveAssistantItemCache {
+  #entries = new Map<string, {
+    thread: WorkspaceSnapshot["thread"]
+    itemId: string
+    item: AssistantThreadItem
+  }>()
+
+  find(
+    thread: WorkspaceSnapshot["thread"],
+    sessionId: string,
+    itemId: string,
+  ): AssistantThreadItem | undefined {
+    const cached = this.#entries.get(sessionId)
+    if (cached?.thread === thread && cached.itemId === itemId) return cached.item
+    const item = thread.find(
+      (candidate): candidate is AssistantThreadItem => candidate.id === itemId
+        && candidate.sessionId === sessionId
+        && candidate.kind === "assistant",
+    )
+    if (item) this.remember(thread, sessionId, item)
+    else this.#entries.delete(sessionId)
+    return item
+  }
+
+  remember(
+    thread: WorkspaceSnapshot["thread"],
+    sessionId: string,
+    item: AssistantThreadItem,
+  ): void {
+    this.#entries.set(sessionId, { thread, itemId: item.id, item })
+  }
+
+  delete(sessionId: string): void {
+    this.#entries.delete(sessionId)
+  }
+
+  clear(): void {
+    this.#entries.clear()
+  }
 }
 
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
@@ -1005,6 +1261,11 @@ export class DomovoiDaemon {
     this.#reportError("Domovoi mutation failed", error)
   })
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
+  #persistFlush: ReturnType<typeof setTimeout> | undefined
+  #pendingWorkspaceDeltas: WorkspaceDelta[] = []
+  #activeAssistantItems = new ActiveAssistantItemCache()
+  #providerPlanTurns = new Set<string>()
+  #planModeTurns = new Set<string>()
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #auditReadTimeoutMs: number
@@ -1606,7 +1867,7 @@ export class DomovoiDaemon {
         this.#mutations.cancelAll(error)
         failures.push(error)
       }
-      if (this.#deltaFlush) await this.#saveAgentState(false)
+      if (this.#deltaFlush || this.#persistFlush) await this.#saveAgentState(false)
     } catch (error) {
       failures.push(error)
     }
@@ -1841,6 +2102,7 @@ export class DomovoiDaemon {
   }
 
   #broadcastSnapshot(): void {
+    this.#flushPendingWorkspaceDeltas()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
         ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }]
@@ -1895,11 +2157,14 @@ export class DomovoiDaemon {
           client,
           method,
           message,
-          () => JSON.stringify({
-            jsonrpc: "2.0",
-            method: "workspace.changed",
-            params: workspaceSnapshotForClient(this.#snapshot),
-          }),
+          () => {
+            this.#flushPendingWorkspaceDeltas()
+            return JSON.stringify({
+              jsonrpc: "2.0",
+              method: "workspace.changed",
+              params: workspaceSnapshotForClient(this.#snapshot),
+            })
+          },
         )
       }
     }
@@ -2332,6 +2597,7 @@ export class DomovoiDaemon {
       this.#snapshot = workspaceSnapshotSchema.parse(
         mergeSessionSnapshotSlice(this.#snapshot, persisted, sessionId),
       )
+      this.#activeAssistantItems.clear()
       this.#sessionHistory.invalidate(sessionId)
       this.#syncArtifactWatchers()
       this.#broadcastSnapshot()
@@ -2543,6 +2809,7 @@ export class DomovoiDaemon {
     // Target ownership evidence changes authority immediately. The source is
     // frozen in memory before any fallible journal, cleanup, or snapshot write.
     this.#snapshot = authoritative
+    this.#activeAssistantItems.clear()
     this.#sessionHistory.invalidate(source.id)
     this.#syncArtifactWatchers()
     this.#broadcastSnapshot()
@@ -2974,6 +3241,7 @@ export class DomovoiDaemon {
     // any fallible cleanup or disk write. The machine that made the unverified
     // recovery claim stops, even when persistence or provider cleanup fails.
     this.#snapshot = authoritative
+    this.#activeAssistantItems.clear()
     this.#sessionHistory.invalidate(session.id)
     this.#syncArtifactWatchers()
     this.#broadcastSnapshot()
@@ -3311,6 +3579,11 @@ export class DomovoiDaemon {
       })
       return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
     }
+  }
+
+  #watchingOnly(socket: RpcOutboundSocket): boolean {
+    const credential = this.#deviceCredentials.get(socket)?.verified
+    return credential?.binding.kind === "client" && credential.binding.clientAccess === "watching"
   }
 
   #reportError(context: string, error: unknown): void {
@@ -3863,6 +4136,10 @@ export class DomovoiDaemon {
       return
     }
 
+    // Streaming mutates the canonical snapshot before its delta reaches the
+    // wire. Flush that delta before any RPC can return the newer snapshot.
+    this.#flushPendingWorkspaceDeltas()
+
     if (method === "system.hello") {
       if (!this.#authenticatedClients.has(socket)) {
         const supplied = "authToken" in paramsResult.data ? paramsResult.data.authToken : undefined
@@ -4285,11 +4562,28 @@ export class DomovoiDaemon {
           model: session.runtime.model,
           ...(session.providerThreadId ? { threadId: session.providerThreadId } : {}),
         }
+        const usage = this.#usageLedger.session(params.sessionId, activeUsageContext)
+        let providerLimits
+        try {
+          const agent = this.#agents.require(session.runtime.provider)
+          // A usage read never starts a provider. Limits come from a provider
+          // that is already connected, or not at all.
+          if (agent.usageLimits && this.#connectedAgents.has(session.runtime.provider)) {
+            providerLimits = await this.#withAbortTimeout(
+              async (signal) => agent.usageLimits?.(signal),
+              this.#agentTimeoutMs,
+              "Provider usage limits timed out",
+            )
+          }
+        } catch {
+          // Provider quota reporting is optional. Ledger usage remains useful
+          // when the provider does not support it or cannot answer this read.
+        }
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(
-            this.#usageLedger.session(params.sessionId, activeUsageContext),
+            providerLimits ? { ...usage, providerLimits } : usage,
           ),
         })
         return
@@ -4622,7 +4916,9 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"runtime.models">
         let models: ProviderModel[]
         try {
-          models = await this.#listProviderModels(params.provider)
+          models = this.#watchingOnly(socket) && !this.#connectedAgents.has(params.provider)
+            ? this.#providerModels.get(params.provider)?.models ?? []
+            : await this.#listProviderModels(params.provider)
         } catch (error) {
           if (!(error instanceof AgentProviderUnavailableError)) throw error
           this.#error(socket, request.id, invalidParams, error.message)
@@ -4987,6 +5283,7 @@ export class DomovoiDaemon {
             // disposable transaction journal. A later journal failure cannot
             // make the target overwrite its now-authoritative imported state.
             this.#snapshot = candidate
+            this.#activeAssistantItems.clear()
             this.#sessionHistory.invalidate(manifest.sessionId)
             this.#syncArtifactWatchers()
             this.#broadcastSnapshot()
@@ -4995,6 +5292,7 @@ export class DomovoiDaemon {
         })
         if (committed.snapshot !== before && this.#snapshot !== committed.snapshot) {
           this.#snapshot = committed.snapshot
+          this.#activeAssistantItems.clear()
           this.#sessionHistory.invalidate(manifest.sessionId)
           this.#syncArtifactWatchers()
           this.#broadcastSnapshot()
@@ -6069,6 +6367,7 @@ export class DomovoiDaemon {
         })
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
+        this.#flushPendingWorkspaceDeltas()
         const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -6156,6 +6455,7 @@ export class DomovoiDaemon {
         })
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
+        this.#flushPendingWorkspaceDeltas()
         const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -6564,6 +6864,7 @@ export class DomovoiDaemon {
           }
           this.#persistenceSucceeded()
           this.#snapshot = candidate
+          this.#activeAssistantItems.clear()
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
           changed = true
           alreadyPersisted = true
@@ -6664,6 +6965,7 @@ export class DomovoiDaemon {
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
+          this.#activeAssistantItems.clear()
           await this.#recoverSessionCreations()
           changed = true
         }
@@ -7019,6 +7321,7 @@ export class DomovoiDaemon {
           throw error
         }
         this.#snapshot = candidate
+        this.#activeAssistantItems.clear()
         this.#clearCommittedSessionCreations()
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#send(socket, {
@@ -7116,10 +7419,13 @@ export class DomovoiDaemon {
           const images = params.attachments?.filter((attachment): attachment is ImageUpload => !("kind" in attachment))
           const attachments = prepareSessionAttachments(images, registeredAgent.capabilities)
           const attachmentText = await prepareSessionAttachmentText(params.attachments, session.workspacePath)
+          const userPrompt = attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt
           preparedTurn = await composeProviderPrompt({
             snapshot: this.#snapshot,
             sessionId: session.id,
-            userPrompt: attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt,
+            userPrompt: dispatchRuntime.permissionMode === "plan"
+              ? planModePrompt(userPrompt)
+              : userPrompt,
             budgetCodeUnits: this.#providerPromptBudgetCodeUnits,
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
@@ -7325,6 +7631,9 @@ export class DomovoiDaemon {
         currentSession.state = "active"
         currentSession.updatedAt = createdAt
         currentSession.activeTurnId = turnId
+        if (dispatchRuntime.permissionMode === "plan") {
+          this.#planModeTurns.add(providerTurnIdentity(dispatchRuntime.provider, providerThreadId, turnId))
+        }
         delete currentSession.providerFailure
         this.#snapshot.activeSessionId = currentSession.id
         changed = true
@@ -7562,6 +7871,7 @@ export class DomovoiDaemon {
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed && !alreadyPersisted) await this.#persistSnapshot()
+      this.#flushPendingWorkspaceDeltas()
       const clientSnapshot = changed
         ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
         : workspaceSnapshotForClient(this.#snapshot)
@@ -7669,20 +7979,24 @@ export class DomovoiDaemon {
     let releaseQueuedSend = false
 
     if (event.type === "text-delta") {
-      const itemId = `assistant-message-${turnLink.turnId ?? event.turnId ?? session.id}`
-      const existing = this.#snapshot.thread.find(
-        (item) => item.id === itemId && item.kind === "assistant",
-      )
+      const itemId = `assistant-message-${
+        event.itemId === undefined
+          ? turnLink.turnId ?? event.turnId ?? session.id
+          : boundedProviderItemId(event.itemId)
+      }`
+      const existing = this.#activeAssistantItems.find(this.#snapshot.thread, session.id, itemId)
       if (existing?.kind === "assistant") existing.body += event.delta
       else {
-        this.#snapshot.thread.push({
+        const item: AssistantThreadItem = {
           id: itemId,
           sessionId: session.id,
           kind: "assistant",
           ...turnLink,
           body: event.delta,
           createdAt,
-        })
+        }
+        this.#snapshot.thread.push(item)
+        this.#activeAssistantItems.remember(this.#snapshot.thread, session.id, item)
       }
       delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
         kind: "assistant.append" as const,
@@ -7694,6 +8008,9 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "plan-delta") {
+      if (reportedTurnId) {
+        this.#providerPlanTurns.add(providerTurnIdentity(provider, threadId, reportedTurnId))
+      }
       const canonical = this.#snapshot.workingPlans.some(
         (plan) => plan.sessionId === session.id,
       )
@@ -7720,6 +8037,9 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "plan-updated") {
+      if (reportedTurnId) {
+        this.#providerPlanTurns.add(providerTurnIdentity(provider, threadId, reportedTurnId))
+      }
       const currentIndex = this.#snapshot.workingPlans.findIndex(
         (plan) => plan.sessionId === session.id,
       )
@@ -7994,6 +8314,23 @@ export class DomovoiDaemon {
         ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
         ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
       })
+      if (event.phase === "completed" && itemRecord?.type === "contextCompaction") {
+        const id = providerContextCompactionRowId(
+          String(itemRecord.id ?? randomUUID()),
+          turnLink.turnId,
+        )
+        if (!this.#snapshot.thread.some((threadItem) => threadItem.id === id)) {
+          this.#snapshot.thread.push({
+            id,
+            sessionId: session.id,
+            kind: "system",
+            ...turnLink,
+            body: "Context compacted.",
+            notice: "context-compaction",
+            createdAt,
+          })
+        }
+      }
       if (item && typeof item === "object" && "type" in item && item.type === "commandExecution") {
         const commandItem = item as Record<string, unknown>
         const id = providerToolRowId(String(commandItem.id ?? randomUUID()), turnLink.turnId)
@@ -8041,6 +8378,33 @@ export class DomovoiDaemon {
       if (item && typeof item === "object" && "type" in item && item.type === "fileChange") {
         const fileChange = item as Record<string, unknown>
         const changes = Array.isArray(fileChange.changes) ? fileChange.changes : []
+        const files = reportedFileChangePaths(fileChange)
+        const id = providerToolRowId(String(fileChange.id ?? randomUUID()), turnLink.turnId)
+        const status = fileChange.status === "failed"
+          ? "failed"
+          : fileChange.status === "declined"
+            ? "declined"
+            : event.phase === "completed"
+              ? "completed"
+              : "running"
+        const existingTool = this.#snapshot.thread.find((threadItem) => threadItem.id === id)
+        if (existingTool?.kind === "tool") {
+          existingTool.status = status
+          existingTool.title = files.length === 1 ? "File change" : "File changes"
+          if (files.length > 0) existingTool.files = files
+        } else {
+          this.#snapshot.thread.push({
+            id,
+            sessionId: session.id,
+            kind: "tool",
+            tool: "file-change",
+            ...turnLink,
+            status,
+            title: files.length === 1 ? "File change" : "File changes",
+            ...(files.length > 0 ? { files } : {}),
+            createdAt,
+          })
+        }
         for (const change of changes) {
           if (!change || typeof change !== "object" || !("path" in change)) continue
           const path = String(change.path)
@@ -8074,6 +8438,80 @@ export class DomovoiDaemon {
 
     if (event.type === "turn-completed") {
       const { failed, failure } = providerTurnCompletion(event.params)
+      let receivedProviderPlan = false
+      if (reportedTurnId) {
+        receivedProviderPlan = this.#providerPlanTurns.delete(
+          providerTurnIdentity(provider, threadId, reportedTurnId),
+        )
+      } else {
+        const prefix = providerThreadIdentityPrefix(provider, threadId)
+        for (const identity of this.#providerPlanTurns) {
+          if (!identity.startsWith(prefix)) continue
+          this.#providerPlanTurns.delete(identity)
+          receivedProviderPlan = true
+        }
+      }
+      const completedTurnLink = turnLink.turnId
+        ? turnLink
+        : this.#turnLink(session.id, provider, threadId, session.activeTurnId)
+      let sentInPlanMode = false
+      const planTurnId = reportedTurnId ?? session.activeTurnId
+      if (planTurnId) {
+        sentInPlanMode = this.#planModeTurns.delete(providerTurnIdentity(provider, threadId, planTurnId))
+      } else {
+        const prefix = providerThreadIdentityPrefix(provider, threadId)
+        for (const identity of this.#planModeTurns) {
+          if (!identity.startsWith(prefix)) continue
+          this.#planModeTurns.delete(identity)
+          sentInPlanMode = true
+        }
+      }
+      if (
+        !failed
+        && !receivedProviderPlan
+        && sentInPlanMode
+        && completedTurnLink.turnId
+      ) {
+        const finalReply = this.#snapshot.thread.findLast((item): item is AssistantThreadItem => (
+          item.kind === "assistant"
+          && item.sessionId === session.id
+          && item.turnId === completedTurnLink.turnId
+        ))
+        const finalized = finalReply ? finalizedPlanMarkdown(finalReply.body) : undefined
+        const content = finalized?.content
+        if (content) {
+          const safeContent = redactDurableText(content).value
+          if (finalized.tagged && finalReply) {
+            finalReply.body = redactDurableText(finalized.threadContent).value
+          }
+          const steps = pendingPlanStepsFromMarkdown(safeContent)
+          if (steps.length > 0) {
+            const currentIndex = this.#snapshot.workingPlans.findIndex(
+              (plan) => plan.sessionId === session.id,
+            )
+            const current = currentIndex === -1
+              ? undefined
+              : this.#snapshot.workingPlans[currentIndex]
+            const mutation = updateWorkingPlanFromProvider(current, {
+              sessionId: session.id,
+              provider,
+              model: session.runtime.model,
+              providerThreadId: threadId,
+              steps,
+              updatedAt: createdAt,
+            })
+            if (currentIndex === -1) this.#snapshot.workingPlans.push(mutation.plan)
+            else this.#snapshot.workingPlans[currentIndex] = mutation.plan
+          }
+          writePlanArtifact(
+            this.#snapshot.artifacts,
+            this.#snapshot.annotations,
+            session.id,
+            safeContent,
+            false,
+          )
+        }
+      }
       if (eventTurnId) this.#updateUsageAccounting(() => this.#usageLedger.finish?.(
         { provider, threadId, turnId: eventTurnId }, failed ? "failed" : "completed",
       ))
@@ -8101,14 +8539,7 @@ export class DomovoiDaemon {
       event.type === "command-output"
     ) {
       if (requiresFullSnapshot) this.#broadcastSnapshot()
-      else {
-        for (let offset = 0; offset < delta.operations.length; offset += maximumWorkspaceDeltaOperations) {
-          this.#broadcastNotification("workspace.delta", workspaceDeltaSchema.parse({
-            ...delta,
-            operations: delta.operations.slice(offset, offset + maximumWorkspaceDeltaOperations),
-          }))
-        }
-      }
+      else if (delta.operations.length > 0) this.#pendingWorkspaceDeltas.push(delta)
       this.#scheduleDeltaFlush()
     } else {
       await this.#flushAgentState()
@@ -8655,6 +9086,7 @@ export class DomovoiDaemon {
         }
         this.#persistenceSucceeded()
         this.#snapshot = candidate
+        this.#activeAssistantItems.clear()
         this.#sessionHistory.invalidate()
       })
     }
@@ -8728,6 +9160,7 @@ export class DomovoiDaemon {
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)
     this.#snapshot = candidate
+    this.#activeAssistantItems.clear()
     for (const recovered of recoveredTurns) {
       this.#appendAudit({
         actor: { kind: "daemon", component: "startup-recovery" },
@@ -8918,6 +9351,7 @@ export class DomovoiDaemon {
     session.state = "archived"
     session.archivedAt = archivedAt
     session.updatedAt = archivedAt
+    this.#activeAssistantItems.delete(sessionId)
     this.#snapshot.thread.push({
       id: `system-${randomUUID()}`,
       sessionId,
@@ -9132,11 +9566,32 @@ export class DomovoiDaemon {
   }
 
   #scheduleDeltaFlush(): void {
-    if (this.#deltaFlush) clearTimeout(this.#deltaFlush)
+    if (this.#persistFlush) clearTimeout(this.#persistFlush)
+    this.#persistFlush = setTimeout(() => {
+      this.#persistFlush = undefined
+      void this.#flushAgentState(false)
+    }, workspaceDeltaBatchDelayMilliseconds)
+    if (this.#deltaFlush) return
     this.#deltaFlush = setTimeout(() => {
       this.#deltaFlush = undefined
-      void this.#flushAgentState(false)
-    }, 32)
+      this.#flushPendingWorkspaceDeltas()
+    }, workspaceDeltaBatchDelayMilliseconds)
+  }
+
+  #flushPendingWorkspaceDeltas(): void {
+    if (this.#pendingWorkspaceDeltas.length === 0) return
+    const pending = this.#pendingWorkspaceDeltas
+    this.#pendingWorkspaceDeltas = []
+    const validated = validWorkspaceDeltaBatches(pending)
+    if (!validated.ok) {
+      this.#reportError("Domovoi could not stream a workspace delta", validated.error)
+      this.#broadcastNotification(
+        "workspace.changed",
+        structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+      )
+      return
+    }
+    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch)
   }
 
   async #flushAgentState(broadcast = true): Promise<void> {
@@ -9165,6 +9620,7 @@ export class DomovoiDaemon {
       ).value,
       createdAt: new Date().toISOString(),
     })
+    this.#flushPendingWorkspaceDeltas()
     this.#broadcastNotification(
       "workspace.changed",
       structuredClone(workspaceSnapshotForClient(this.#snapshot)),
@@ -9203,9 +9659,14 @@ export class DomovoiDaemon {
   }
 
   async #saveAgentState(broadcast = true): Promise<void> {
+    this.#flushPendingWorkspaceDeltas()
     if (this.#deltaFlush) {
       clearTimeout(this.#deltaFlush)
       this.#deltaFlush = undefined
+    }
+    if (this.#persistFlush) {
+      clearTimeout(this.#persistFlush)
+      this.#persistFlush = undefined
     }
     await this.#persistSnapshot()
     if (broadcast) this.#broadcastSnapshot()
@@ -9360,6 +9821,21 @@ function providerToolRowId(providerItemId: string, turnId: string | undefined): 
     ? createHash("sha256").update(JSON.stringify([turnId, providerItemId])).digest("hex")
     : providerItemId
   return `tool-${identity}`
+}
+
+const maximumProviderItemIdLength = 128
+
+function boundedProviderItemId(providerItemId: string): string {
+  return providerItemId.length <= maximumProviderItemIdLength
+    ? providerItemId
+    : createHash("sha256").update(providerItemId).digest("hex")
+}
+
+function providerContextCompactionRowId(providerItemId: string, turnId: string | undefined): string {
+  const identity = turnId
+    ? createHash("sha256").update(JSON.stringify([turnId, providerItemId])).digest("hex")
+    : providerItemId
+  return `context-compaction-${identity}`
 }
 
 function secureTokenMatch(expected: string, supplied: unknown): boolean {

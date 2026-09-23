@@ -1,10 +1,12 @@
 import { once } from "node:events"
 
-import { protocolVersion, rpcMethodAuthorizations, rpcMethods, type RpcMethod } from "@getdomovoi/protocol"
+import { demoWorkspace, protocolVersion, rpcMethodAuthorizations, rpcMethods, type RpcMethod } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
+import type { AgentAdapter } from "./agents.js"
 import { DomovoiDaemon } from "./server.js"
+import { SqliteWorkspaceStore } from "./store.js"
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -107,6 +109,53 @@ describe("watching client access", () => {
       expect(errorMessage(await watching(method, {}))).toMatch(/Watching-only credentials may only observe/)
     },
   )
+
+  it("answers model and usage reads from a watching credential without starting a provider", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      usageLimits: vi.fn(async () => undefined),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { codex: agent },
+      artifactWatcherFactory: () => ({ start: async () => {}, stop: () => {} }),
+    })
+    daemons.push(daemon)
+    await daemon.start()
+    const owner = await connect(daemon)
+    await owner("system.hello", {
+      client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken,
+    })
+    const minted = await owner("device.pair", {
+      label: "Watching phone", client: "cli", targetClient: "phone", clientAccess: "watching",
+    })
+    const token = (minted.result as { token: string }).token
+    const watching = await connect(daemon)
+    await watching("system.hello", {
+      client: "phone", clientVersion: "0.0.1", protocolVersion, authToken: token,
+    })
+
+    const models = await watching("runtime.models", { provider: "codex", client: "phone" })
+    expect(models, JSON.stringify(models)).not.toHaveProperty("error")
+    expect(await watching("session.usage", { sessionId: session.id })).not.toHaveProperty("error")
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(agent.listModels).not.toHaveBeenCalled()
+    expect(agent.usageLimits).not.toHaveBeenCalled()
+  })
 
   it("keeps omitted access and local-owner credentials fully authorized", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
