@@ -27,3 +27,16 @@ for (const [name, command, args] of cases) {
   }
   console.log(`BENCH ${label} ${JSON.stringify({ name, times, failure })}`)
 }
+
+if (process.argv[4] === "loop") {
+  const { existsSync } = await import("node:fs")
+  while (!existsSync(process.argv[5])) {
+    for (const [name, command, args] of cases.filter(([name]) => name === "git --version" || name === "powershell cim all")) {
+      const begin = now()
+      let failure
+      try { await run(command, args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: 120_000 }) } catch (error) { failure = String(error).slice(0, 120) }
+      console.log(`BENCHLOOP ${new Date().toISOString()} ${JSON.stringify({ name, ms: now() - begin, failure })}`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10_000))
+  }
+}

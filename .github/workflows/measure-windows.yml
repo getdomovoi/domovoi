@@ -1,6 +1,6 @@
 name: measure-windows
 
-# Temporary: per-test and per-spawn timings on windows-latest for the
+# Temporary: per-test, per-spawn and per-fs timings on windows-latest for the
 # timeouts under investigation. Removed before this pull request is ready.
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   measure:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -27,17 +27,26 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/credential-store build
+      - run: pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build
       - name: Bench on an idle runner
         run: node apps/daemon/measure/bench.mjs idle 5
       - name: Target files alone, coverage on as in CI
         working-directory: apps/daemon
-        run: npx vitest run --config measure/vitest.measure.config.ts --reporter=verbose src/fleet-production.test.ts src/workspace-recovery.test.ts src/workspace.test.ts > ../../alone.log 2>&1 || true
-      - name: Whole daemon suite with a concurrent bench, coverage on as in CI
+        run: npx vitest run --config measure/vitest.measure.config.ts --reporter=verbose src/fleet-production.test.ts src/workspace-recovery.test.ts src/workspace.test.ts 2>&1 | tee ../../alone.log || true
+      - name: Whole daemon suite with a sampling bench, coverage on as in CI
         working-directory: apps/daemon
         run: |
-          (sleep 90; node measure/bench.mjs loaded 3 > ../../bench-loaded.log 2>&1) &
-          npx vitest run --config measure/vitest.measure.config.ts --reporter=verbose > ../../suite.log 2>&1 || true
+          stop="$RUNNER_TEMP/stop-bench"
+          node measure/bench.mjs loaded 0 loop "$stop" > ../../bench-loop.log 2>&1 &
+          npx vitest run --config measure/vitest.measure.config.ts --reporter=verbose 2>&1 | tee ../../suite.log || true
+          touch "$stop"
           wait
-      - name: Summaries
-        run: node apps/daemon/measure/summarize.mjs bench-loaded.log alone.log suite.log
+          cat ../../bench-loop.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: measure-logs
+          path: |
+            alone.log
+            suite.log
+            bench-loop.log
