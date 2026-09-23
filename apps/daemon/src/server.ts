@@ -1750,6 +1750,10 @@ export class DomovoiDaemon {
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
     })
+    // The WebSocket server re-emits its HTTP server's errors. A listen failure
+    // such as a port in use is answered by start() below; without a listener
+    // here the re-emitted copy throws first and start() never settles.
+    this.#websocket.on("error", () => {})
     this.#websocket.on("headers", (headers, request) => {
       const nonce = request.headers["x-domovoi-owner-nonce"]
       const peer = request.socket.remoteAddress
