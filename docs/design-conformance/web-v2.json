@@ -115,7 +115,7 @@
         "Switch"
       ],
       "evidence": [
-        "sessions-drawer"
+        "<SessionsDrawerColumn"
       ]
     },
     {
