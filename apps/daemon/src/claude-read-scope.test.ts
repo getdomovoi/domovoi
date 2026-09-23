@@ -4,7 +4,7 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { claudeReadOutsideWorktree } from "./claude-read-scope.js"
+import { claudeReadOutsideWorktree, claudeShellReadIsListed } from "./claude-read-scope.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -41,6 +41,35 @@ describe("claudeReadOutsideWorktree", () => {
 
     await expect(claudeReadOutsideWorktree("Bash", { command: "ls" }, root, scratch)).resolves.toBe(scratch)
     await expect(claudeReadOutsideWorktree("Bash", { command: "ls" }, root, join(root, "src"))).resolves.toBeUndefined()
+  })
+
+  it.each([
+    "echo L2V0Yy9wYXNzd2Q= | base64 -d | xargs cat",
+    "printf '\\057etc\\057passwd' | xargs cat",
+    "find src -type l -exec cat {} +",
+    "grep -R secret src",
+    "ls -R src",
+    "ls -laR src",
+    "git log -p",
+    "git show HEAD",
+    "cat src/*.ts",
+    "cd src && cat index.ts",
+    "rg secret",
+  ])("does not let a read Domovoi cannot resolve at parse time skip the card: %s", (command) => {
+    expect(claudeShellReadIsListed(command)).toBe(false)
+  })
+
+  it.each([
+    "cat src/index.ts",
+    "head -n 5 src/index.ts | wc -l",
+    "tail -20 README.md",
+    "ls -la src 2>/dev/null",
+    "ls",
+    "git status --short",
+    "git log --oneline -n 5",
+    "git diff --stat",
+  ])("lets a short-list read whose arguments are all paths skip the card: %s", (command) => {
+    expect(claudeShellReadIsListed(command)).toBe(true)
   })
 
   it("judges a glob by the directory it starts from", async () => {

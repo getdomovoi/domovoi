@@ -1119,7 +1119,7 @@ describe("reads Claude would approve before Domovoi sees them", () => {
   it.each([
     ["Bash", { command: "ls -la src 2>/dev/null" }],
     ["Bash", { command: "git status --short" }],
-    ["Bash", { command: "cd src && cat index.ts" }],
+    ["Bash", { command: "cat src/index.ts | wc -l" }],
     ["Read", { file_path: "src/index.ts" }],
     ["Grep", { pattern: "export", path: "src" }],
     ["Glob", { pattern: "**/*.ts" }],
@@ -1128,6 +1128,50 @@ describe("reads Claude would approve before Domovoi sees them", () => {
     const { adapter, screen } = await session("build")
 
     await expect(screen(toolName, toolInput)).resolves.toEqual({})
+    await adapter.close()
+  })
+
+  it.each([
+    "grep -R secret src",
+    "find src -type l -exec cat {} +",
+    "echo L2V0Yy9wYXNzd2Q= | base64 -d | xargs cat",
+    "cd src && cat index.ts",
+  ])("sends a read Domovoi cannot resolve at parse time to an approval in Build: %s", async (command) => {
+    const { adapter, events, options, screen } = await session("build")
+
+    await expect(screen("Bash", { command })).resolves.toMatchObject({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" },
+    })
+    const approval = options.canUseTool!("Bash", { command }, {
+      signal: new AbortController().signal,
+      toolUseID: "tool-1",
+      requestId: "claude-request-1",
+      title: "Claude wants to run a command",
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested",
+      itemId: "tool-1",
+      command,
+      reason: "Claude wants to run a command",
+    })))
+    adapter.resolveApproval(1, "deny")
+    await expect(approval).resolves.toMatchObject({ behavior: "deny" })
+    await adapter.close()
+  })
+
+  it("refuses a read it cannot resolve at parse time in Ask, which has no approvals", async () => {
+    const { adapter, events, screen, threadId } = await session("ask")
+
+    await expect(screen("Bash", { command: "grep -R secret src" }, "tool-ask")).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    })
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "policy-refused",
+      threadId,
+      itemId: "tool-ask",
+      command: "grep -R secret src",
+      reason: "Domovoi cannot tell which files this command reads",
+    }))
     await adapter.close()
   })
 

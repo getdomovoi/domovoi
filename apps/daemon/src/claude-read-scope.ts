@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises"
 import { resolve } from "node:path"
 
 import { pathStaysInside } from "./execution-resolution.js"
+import { isReadOnlyGitCommand } from "./permission-policy.js"
 
 // Claude Code approves its read-only Bash commands and file reads inside the
 // working directory before Domovoi's callback runs. This finds the calls whose
@@ -50,6 +51,36 @@ export async function claudeReadOutsideWorktree(
     if (await pathValueOutside(value.trim(), root, base)) return value.trim()
   }
   return undefined
+}
+
+// Only these reads skip the card (owner ruling 2026-09-23), and only when every
+// argument is a path Domovoi can see before the command runs. Anything that
+// computes, finds or follows paths at run time (a pipe into xargs, find -exec,
+// a recursive read, a glob) asks, because the screen above cannot place it.
+const listedReaders = new Set(["cat", "head", "tail", "wc", "ls"])
+const unresolvableSyntax = /[`$(){}\\\n*?[\]~<>]/
+const deviceRedirect = /\s*\d*>>?\s*(?:\/dev\/null|\/dev\/stderr|\/dev\/stdout|&[12])(?=\s|$)/g
+const plainFlag = /^(?:-[A-Za-z0-9]+|--[a-z][a-z-]*)$/
+
+export function claudeShellReadIsListed(command: string): boolean {
+  const withoutRedirects = command.replace(deviceRedirect, " ")
+  if (unresolvableSyntax.test(withoutRedirects)) return false
+  for (const segment of withoutRedirects.split(/&&|\|\||[;|&]/)) {
+    const trimmed = segment.trim()
+    if (trimmed.length === 0) return false
+    if (/^git\s/.test(trimmed)) {
+      if (!isReadOnlyGitCommand(trimmed)) return false
+      continue
+    }
+    const [program, ...args] = trimmed.replace(/["']/g, "").split(/\s+/)
+    if (!program || !listedReaders.has(program)) return false
+    for (const argument of args) {
+      if (!argument.startsWith("-")) continue
+      if (!plainFlag.test(argument) || argument.startsWith("--files0")) return false
+      if (program === "ls" && (argument === "--recursive" || /^-[A-Za-z0-9]*R/.test(argument))) return false
+    }
+  }
+  return true
 }
 
 async function shellCommandOutside(command: string, root: string, base: string): Promise<string | undefined> {

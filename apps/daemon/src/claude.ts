@@ -17,7 +17,7 @@ import type {
   AgentVisualContext,
   AgentWorkingPlanStep,
 } from "./agents.js"
-import { claudeReadOutsideWorktree, isClaudeReadTool } from "./claude-read-scope.js"
+import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } from "./claude-read-scope.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { resolveCommandPathSync } from "./tool-path.js"
@@ -425,10 +425,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const command = typeof toolInput.command === "string" ? toolInput.command : toolName
     const operation = [command, ...Object.values(toolInput).filter((value) => typeof value === "string")].join("\n")
     const secret = permissionDecisionFor({ runtime: session.runtime, command: operation }).risk === "hard-gate"
-    if (outside === undefined && !secret) return {}
-    const reason = outside === undefined
-      ? "Reads credentials, private keys or environment secrets"
-      : `Reads outside the session worktree: ${outside}`
+    // Outside the short list, a Bash read may reach paths only known at run
+    // time, so it asks even when every path it names stays inside.
+    const unresolved = toolName === "Bash" && !claudeShellReadIsListed(command)
+    if (outside === undefined && !secret && !unresolved) return {}
+    const reason = outside !== undefined
+      ? `Reads outside the session worktree: ${outside}`
+      : secret
+        ? "Reads credentials, private keys or environment secrets"
+        : "Domovoi cannot tell which files this command reads"
     const itemId = hookInput.tool_use_id
     if (session.runtime.permissionMode === "ask") {
       this.#emit({
@@ -441,7 +446,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       })
       return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }
     }
-    if (itemId) {
+    // A command Domovoi only cannot place keeps Claude's own card text.
+    if (itemId && (outside !== undefined || secret)) {
       const path = typeof toolInput.path === "string" && isClaudeReadTool(toolName) ? toolInput.path : undefined
       session.screenedReads.set(itemId, { reason, ...(path ? { path } : {}) })
     }
