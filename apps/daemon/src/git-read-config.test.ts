@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { chmod, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -25,6 +25,38 @@ async function repository() {
   return { root, set }
 }
 
+// The pager exemption rests on one premise: Git starts a pager only when its
+// output is a terminal. Claude Code runs Bash commands without one (measured
+// 2026-09-23: [ -t 1 ] and [ -t 0 ] false, and a pager set with -c did not
+// run). Domovoi does not spawn those commands itself, so the closest point it
+// can pin is Git's own behaviour with a configured pager and piped output.
+describe("Git pager premise", () => {
+  async function pagedRepository() {
+    const { root, set } = await repository()
+    await writeFile(join(root, "a.txt"), "a\n")
+    await git("git", ["-C", root, "add", "a.txt"], { env: isolated })
+    await git("git", ["-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "a"], { env: isolated })
+    const marker = join(root, ".git", "pager-ran")
+    await set("core.pager", `sh -c 'echo ran > "${marker}"; cat'`)
+    return { root, marker }
+  }
+
+  it("does not run a configured pager when the output is not a terminal", async () => {
+    const { root, marker } = await pagedRepository()
+    await git("git", ["-C", root, "log", "-1", "--oneline"], { env: isolated })
+    await git("git", ["-C", root, "diff", "HEAD~0"], { env: isolated })
+
+    await expect(access(marker)).rejects.toThrow()
+  })
+
+  it.runIf(process.platform !== "win32")("runs the same pager when a terminal is faked, so the check above can see one", async () => {
+    const { root, marker } = await pagedRepository()
+    await git("python3", ["-c", "import pty, sys; pty.spawn(sys.argv[1:])", "git", "-C", root, "log", "-1", "--oneline"], { env: isolated })
+
+    await expect(access(marker)).resolves.toBeUndefined()
+  })
+})
+
 describe("gitReadCanRunProgram", () => {
   it("lets a read-only Git command through when no setting can run a program", async () => {
     const { root } = await repository()
@@ -35,8 +67,6 @@ describe("gitReadCanRunProgram", () => {
   it.each([
     ["core.fsmonitor", "/tmp/helper"],
     ["core.fsmonitor", "true"],
-    ["core.pager", "less"],
-    ["pager.status", "cat"],
     ["diff.external", "/tmp/differ"],
     ["diff.secret.textconv", "/tmp/decode"],
     ["diff.secret.command", "/tmp/differ"],
@@ -65,7 +95,15 @@ describe("gitReadCanRunProgram", () => {
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
   })
 
-  it.each([["core.fsmonitor", "false"], ["log.showSignature", "false"], ["format.pretty", "%h %s"], ["pretty.short", "%an %s"]])("does not ask for %s=%s", async (key, value) => {
+  it.each([
+    ["core.fsmonitor", "false"],
+    ["log.showSignature", "false"],
+    ["format.pretty", "%h %s"],
+    ["pretty.short", "%an %s"],
+    ["core.pager", "less"],
+    ["pager.status", "cat"],
+    ["pager.log", "/tmp/program"],
+  ])("does not ask for %s=%s", async (key, value) => {
     const { root, set } = await repository()
     await set(key, value)
 
@@ -109,10 +147,16 @@ describe("gitReadCanRunProgram", () => {
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
   })
 
+  it.each(["GIT_PAGER", "PAGER"])("does not ask for %s, since Git pages only to a terminal", async (name) => {
+    const { root } = await repository()
+
+    await expect(gitReadCanRunProgram(root, { ...isolated, [name]: "/tmp/program" })).resolves.toBe(false)
+  })
+
   it("reads the global configuration", async () => {
     const { root } = await repository()
     const global = join(root, ".git", "global.gitconfig")
-    await writeFile(global, "[core]\n\tpager = less\n")
+    await writeFile(global, "[core]\n\tfsmonitor = /tmp/helper\n")
 
     await expect(gitReadCanRunProgram(root, { ...isolated, GIT_CONFIG_GLOBAL: global })).resolves.toBe(true)
   })
@@ -128,7 +172,7 @@ describe("gitReadCanRunProgram", () => {
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
   })
 
-  it.each(programVariables)("asks when %s is set in the environment", async (name) => {
+  it.each(["GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH"])("asks when %s is set in the environment", async (name) => {
     const { root } = await repository()
 
     await expect(gitReadCanRunProgram(root, { ...isolated, [name]: "/tmp/program" })).resolves.toBe(true)

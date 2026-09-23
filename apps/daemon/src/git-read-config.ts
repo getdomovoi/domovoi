@@ -3,7 +3,7 @@ import { access } from "node:fs/promises"
 import { resolve } from "node:path"
 
 // A read-only Git command still runs whatever programs Git is configured to
-// run: an fsmonitor helper, a pager, an external diff or textconv, a filter,
+// run: an fsmonitor helper, an external diff or textconv, a filter,
 // a signature verifier, or a post-index-change hook when git status rewrites
 // the index. Any of them could read outside the worktree, so the command may
 // skip the card only when none is configured. Config comes from every scope
@@ -15,10 +15,13 @@ import { resolve } from "node:path"
 // v3.8.0 lfs/attribute.go); and a repository with a submodule always asks,
 // because git status runs each populated gitlink under that submodule's own
 // configuration, which this check does not read.
+//
+// Pager settings are not checked (owner ruling 2026-09-23): Git starts a pager
+// only when its output is a terminal, and Claude Code runs Bash commands
+// without one. A command that fakes a terminal (script, unbuffer) is not a
+// listed read, so it asks before this check runs.
 
 const programKeys: readonly RegExp[] = [
-  /^core\.pager$/,
-  /^pager\./,
   /^diff\.external$/,
   /^diff\..+\.(?:textconv|command)$/,
   /^filter\./,
@@ -36,9 +39,9 @@ const switchedKeys = new Set(["core.fsmonitor", "log.showsignature"])
 // with %G, and git log runs the signature program to fill any of them.
 const signatureFormatKeys = /^(?:format\.pretty|pretty\..+)$/
 const falseValues = new Set(["false", "no", "off", "0", ""])
-// Git picks a pager from GIT_PAGER, then core.pager, then PAGER, and its
-// helper programs from GIT_EXEC_PATH.
-const programEnvironment = ["GIT_EXTERNAL_DIFF", "GIT_PAGER", "PAGER", "GIT_EXEC_PATH"] as const
+// Git runs GIT_EXTERNAL_DIFF for diffs and finds its helper programs under
+// GIT_EXEC_PATH.
+const programEnvironment = ["GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH"] as const
 const limits = { timeout: 3_000, maxBuffer: 1024 * 1024 }
 
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {

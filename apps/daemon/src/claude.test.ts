@@ -1188,6 +1188,7 @@ describe("reads Claude would approve before Domovoi sees them", () => {
     "GIT_PAGER=cat git status --short",
     "git -c core.fsmonitor=helper status --short",
     "git log --show-signature",
+    "script -q /dev/null git log",
     "git log --format=%G?",
     "git log --pretty=format:%GG",
   ])("asks when the command itself sets Git configuration: %s", async (command) => {
