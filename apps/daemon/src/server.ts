@@ -2387,7 +2387,11 @@ export class DomovoiDaemon {
   // belongs to the project being left and is not loaded.
   #loadQueuedSessionSends(afterRestart: boolean): void {
     this.#queuedSessionSends.clear()
-    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+    const unreadable = (row: { sessionId: string; queueId: string; reason: string }) => this.#reportError(
+      "Domovoi moved an unreadable queued message aside",
+      new Error(`Queued message ${row.queueId} for ${row.sessionId} was moved to queued_session_send_quarantine. ${row.reason}`),
+    )
+    for (const loaded of this.#store.loadQueuedSessionSends?.(unreadable) ?? []) {
       if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
       const queued = afterRestart && loaded.state === "releasing"
         ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }

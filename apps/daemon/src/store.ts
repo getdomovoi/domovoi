@@ -57,6 +57,20 @@ type StoredQueuedSessionSendRow = {
   payload: string
 }
 
+export type UnreadableQueuedSessionSend = {
+  sessionId: string
+  queueId: string
+  reason: string
+}
+
+// A transition reason can carry a provider or RPC error message. The loader
+// validates it with the wire bounds, so the writer applies the same bounds.
+function boundedQueuedSendReason(reason: string | undefined): string | undefined {
+  const trimmed = reason?.trim()
+  if (!trimmed) return undefined
+  return queuedSessionSendSchema.shape.reason.parse(trimmed.slice(0, 1_024).trim())
+}
+
 export type StoredQueuedSessionSend = Omit<QueuedSessionSend, "state"> & {
   state: "waiting" | "held" | "refused" | "releasing" | "unconfirmed"
   prompt: string
@@ -113,7 +127,7 @@ export interface WorkspaceStore {
     snapshot: WorkspaceSnapshot,
     ownership: CommittedTransferOwnership,
   ): void | Promise<void>
-  loadQueuedSessionSends?(): StoredQueuedSessionSend[]
+  loadQueuedSessionSends?(onUnreadable?: (unreadable: UnreadableQueuedSessionSend) => void): StoredQueuedSessionSend[]
   replaceQueuedSessionSend?(queued: StoredQueuedSessionSend): void
   transitionQueuedSessionSend?(
     sessionId: string,
@@ -759,12 +773,67 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.#restrictFilePermissions()
   }
 
-  loadQueuedSessionSends(): StoredQueuedSessionSend[] {
-    return (this.#database.prepare(`
+  loadQueuedSessionSends(onUnreadable?: (unreadable: UnreadableQueuedSessionSend) => void): StoredQueuedSessionSend[] {
+    const rows = this.#database.prepare(`
       SELECT session_id, queue_id, state, payload
       FROM queued_session_sends
       ORDER BY created_at, queue_id
-    `).all() as StoredQueuedSessionSendRow[]).map(parseStoredQueuedSessionSend)
+    `).all() as StoredQueuedSessionSendRow[]
+    const loaded: StoredQueuedSessionSend[] = []
+    for (const row of rows) {
+      try {
+        loaded.push(parseStoredQueuedSessionSend(row))
+      } catch (error) {
+        // One row this build cannot read must not stop the daemon. Its bytes
+        // move to a quarantine table with a receipt, and the rest still load.
+        const unreadable = {
+          sessionId: String(row.session_id),
+          queueId: String(row.queue_id),
+          reason: describeFailure(error),
+        }
+        this.#quarantineQueuedSessionSend(row, unreadable)
+        onUnreadable?.(unreadable)
+      }
+    }
+    return loaded
+  }
+
+  #quarantineQueuedSessionSend(row: StoredQueuedSessionSendRow, unreadable: UnreadableQueuedSessionSend): void {
+    const quarantinedAt = new Date().toISOString()
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      this.#database.exec(`
+        CREATE TABLE IF NOT EXISTS queued_session_send_quarantine (
+          sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT,
+          queue_id TEXT,
+          state TEXT,
+          payload TEXT,
+          reason TEXT NOT NULL,
+          quarantined_at TEXT NOT NULL
+        );
+      `)
+      this.#database.prepare(`
+        INSERT INTO queued_session_send_quarantine (session_id, queue_id, state, payload, reason, quarantined_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(row.session_id, row.queue_id, row.state, row.payload, unreadable.reason, quarantinedAt)
+      this.#database.prepare(`
+        DELETE FROM queued_session_sends WHERE session_id = ? AND queue_id = ?
+      `).run(row.session_id, row.queue_id)
+      this.auditLog.append({
+        occurredAt: quarantinedAt,
+        actor: { kind: "daemon", component: "state-store" },
+        action: "queued-send.quarantine",
+        outcome: "succeeded",
+        target: unreadable.queueId,
+        detail: `A queued message for ${unreadable.sessionId} could not be read and was moved aside. ${unreadable.reason}`,
+      })
+      this.#database.exec("COMMIT")
+    } catch {
+      // A store that cannot move the row still skips it for this run; the
+      // row stays where it is and the next start tries again.
+      this.#database.exec("ROLLBACK")
+    }
   }
 
   replaceQueuedSessionSend(queued: StoredQueuedSessionSend): void {
@@ -828,8 +897,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     `).get(sessionId, queueId) as StoredQueuedSessionSendRow | undefined
     if (!row || !from.includes(row.state as StoredQueuedSessionSend["state"])) return false
     const payload = JSON.parse(row.payload) as Record<string, unknown>
-    if (reason === undefined) delete payload.reason
-    else payload.reason = reason
+    const bounded = boundedQueuedSendReason(reason)
+    if (bounded === undefined) delete payload.reason
+    else payload.reason = bounded
     const result = this.#database.prepare(`
       UPDATE queued_session_sends
       SET state = ?, payload = ?
