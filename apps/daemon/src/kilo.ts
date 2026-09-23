@@ -1,13 +1,13 @@
 import {
   OpenCodeSdkAdapter,
-  openCodeMessageId,
+  nextOpenCodeMessageId,
   type OpenCodeFactory,
 } from "./opencode.js"
 
 export type KiloFactory = OpenCodeFactory
 
 export class KiloSdkAdapter extends OpenCodeSdkAdapter {
-  constructor(factory: KiloFactory = defaultKiloFactory, id: () => string = openCodeMessageId) {
+  constructor(factory: KiloFactory = defaultKiloFactory, id: (after?: string) => string = nextOpenCodeMessageId) {
     super(factory, id, { providerId: "kilo", providerName: "Kilo" })
   }
 }

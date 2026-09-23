@@ -11,6 +11,7 @@ import {
   domovoiOpenCodeConfig,
   openCodeAgentFor,
   openCodeMessageId,
+  openCodeMessageOrder,
   type OpenCodeClient,
   type OpenCodeEvent,
   type OpenCodeFactory,
@@ -88,6 +89,7 @@ function harness() {
       delete: vi.fn(async () => ({ data: true })),
       abort: vi.fn(async () => ({ data: true })),
       promptAsync: vi.fn(async () => ({ data: undefined })),
+      messages: vi.fn(async (): Promise<{ data: unknown }> => ({ data: [] })),
     },
     event: {
       subscribe: vi.fn(async () => ({ stream })),
@@ -685,14 +687,75 @@ describe("message ids", () => {
 })
 
 describe("openCodeMessageId", () => {
-  it("orders ids made in the same millisecond and encodes the time the server reads back", () => {
-    const now = 1_790_000_000_123
-    const first = openCodeMessageId(now)
-    const second = openCodeMessageId(now)
-    const later = openCodeMessageId(now + 1)
+  it("encodes the time exactly as the servers do", () => {
+    // Ids the installed opencode 1.18.32 and kilo 7.7.6 servers made, with the
+    // creation time each reported for that message.
+    for (const [serverPrefix, created] of [
+      ["0cc7b53c0001", 1_790_137_029_568],
+      ["0cc7b5486001", 1_790_137_029_766],
+      ["0cc7b57f9001", 1_790_137_030_649],
+      ["0cc7b57fd001", 1_790_137_030_653],
+      ["0cc7b5f49001", 1_790_137_032_521],
+      ["0cc7b625d001", 1_790_137_033_309],
+    ] as const) {
+      expect(openCodeMessageOrder(created)).toBe(serverPrefix)
+    }
+  })
 
-    expect(second > first).toBe(true)
-    expect(later > second).toBe(true)
-    expect(Number(BigInt(`0x${first.slice(4, 16)}`) / 0x1000n)).toBe(now % 2 ** 36)
+  it("keeps rising when the clock steps back", () => {
+    const now = Date.now() + 60_000
+    const before = openCodeMessageId(now)
+    const after = openCodeMessageId(now - 5_000)
+
+    expect(after > before).toBe(true)
+  })
+
+  it("moves to the next millisecond instead of spilling the counter into the time", () => {
+    const now = Date.now() + 120_000
+    const ids = Array.from({ length: 4_097 }, () => openCodeMessageId(now))
+
+    for (let index = 1; index < ids.length; index += 1) expect(ids[index]! > ids[index - 1]!).toBe(true)
+    expect(ids.at(-1)!.slice(4, 16)).toBe(openCodeMessageOrder(now + 1, 1))
+  })
+
+  it("sorts after an id it is told to follow", () => {
+    const later = `msg_${openCodeMessageOrder(Date.now() + 600_000, 7)}zzzzzzzzzzzzzz`
+
+    expect(openCodeMessageId(Date.now(), later) > later).toBe(true)
+  })
+})
+
+describe("message order across processes", () => {
+  it("resumes after the newest message the server already holds", async () => {
+    const { client, factory } = harness()
+    const history = `msg_${openCodeMessageOrder(Date.now() + 3_600_000)}AAAAAAAAAAAAAA`
+    client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: history } }] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(client.session.messages).toHaveBeenCalledWith(expect.objectContaining({
+      path: { id: "open-session" },
+      query: { directory: "/worktree", limit: 1 },
+    }))
+    expect(turnId > history).toBe(true)
+    await adapter.close()
+  })
+
+  it("follows a message the server made after the last prompt", async () => {
+    const { factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const reply = `msg_${openCodeMessageOrder(Date.now() + 7_200_000)}BBBBBBBBBBBBBB`
+    stream.emit({ type: "message.updated", properties: { info: { id: reply, sessionID: threadId, role: "assistant", parentID: first } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    expect(second > reply).toBe(true)
+    await adapter.close()
   })
 })

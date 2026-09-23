@@ -36,6 +36,7 @@ export type OpenCodeClient = {
     promptAsync(
       options: MethodOptions<OpencodeSdkClient["session"]["promptAsync"]>,
     ): Promise<OpenCodeResult<unknown>>
+    messages(options: MethodOptions<OpencodeSdkClient["session"]["messages"]>): Promise<OpenCodeResult<unknown>>
   }
   event: {
     subscribe(options?: MethodOptions<OpencodeSdkClient["event"]["subscribe"]>): Promise<unknown>
@@ -75,6 +76,9 @@ type Session = {
   threadId: string
   cwd: string
   runtime: Runtime
+  // The newest message id this session is known to hold. The next prompt's id
+  // must sort after it.
+  newestMessageId?: string
   activeTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
@@ -98,21 +102,37 @@ type PendingSessionLoad = {
 
 // OpenCode and Kilo refuse a message id that does not start with "msg" and
 // order a session's messages by id. This is their ascending scheme: "msg_",
-// six bytes of milliseconds times 4096 plus a per-millisecond counter as hex,
-// then fourteen random base62 characters.
+// the low 48 bits of milliseconds times 4096 plus a per-millisecond counter as
+// twelve hex digits, then fourteen random base62 characters.
 const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-let lastMessageTimestamp = 0
-let messageCounter = 0
+const orderMask = 0xffff_ffff_ffffn
+const orderedMessageId = /^msg_([0-9a-f]{12})/u
+let lastOrder = 0n
 
-export function openCodeMessageId(now = Date.now()): string {
-  if (now !== lastMessageTimestamp) {
-    lastMessageTimestamp = now
-    messageCounter = 0
-  }
-  messageCounter += 1
-  const ordered = (BigInt(now) * 0x1000n + BigInt(messageCounter)) & 0xffff_ffff_ffffn
+export function openCodeMessageOrder(milliseconds: number, counter = 1): string {
+  return ((BigInt(milliseconds) * 0x1000n + BigInt(counter)) & orderMask).toString(16).padStart(12, "0")
+}
+
+// Each id sorts after the last one this process made, even when the clock
+// steps back or a millisecond runs out of counter values, and after `after`,
+// the newest id the session is known to hold.
+export function openCodeMessageId(now = Date.now(), after?: string): string {
+  let order = BigInt(`0x${openCodeMessageOrder(now)}`)
+  if (order <= lastOrder) order = lastOrder + 1n
+  const floor = after === undefined ? undefined : orderedMessageId.exec(after)?.[1]
+  if (floor !== undefined && order <= BigInt(`0x${floor}`)) order = BigInt(`0x${floor}`) + 1n
+  lastOrder = order & orderMask
   const random = Array.from(randomBytes(14), (byte) => base62[byte % 62]).join("")
-  return `msg_${ordered.toString(16).padStart(12, "0")}${random}`
+  return `msg_${lastOrder.toString(16).padStart(12, "0")}${random}`
+}
+
+export function nextOpenCodeMessageId(after?: string): string {
+  return openCodeMessageId(Date.now(), after)
+}
+
+function laterMessageId(current: string | undefined, candidate: unknown): string | undefined {
+  if (typeof candidate !== "string" || !orderedMessageId.test(candidate)) return current
+  return current === undefined || candidate > current ? candidate : current
 }
 
 export function openCodeAgentFor(runtime: Runtime): string {
@@ -125,7 +145,7 @@ export function openCodeAgentFor(runtime: Runtime): string {
 export class OpenCodeSdkAdapter implements AgentAdapter {
   readonly permissionCapabilities = { ask: "read-only", buildAuto: "pre-execution" } as const
   readonly #factory: OpenCodeFactory
-  readonly #id: () => string
+  readonly #id: (after?: string) => string
   readonly #identity: OpenCodeAdapterIdentity
   #runtime: Awaited<ReturnType<OpenCodeFactory>> | undefined
   #connection: Promise<void> | undefined
@@ -139,7 +159,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
-    id: () => string = openCodeMessageId,
+    id: (after?: string) => string = nextOpenCodeMessageId,
     identity: OpenCodeAdapterIdentity = { providerId: "opencode", providerName: "OpenCode" },
   ) {
     this.#factory = factory
@@ -258,7 +278,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (session.id !== threadId) {
         throw new Error(`${this.#identity.providerName} did not resume the requested session`)
       }
-      await this.#loadSession(threadId, cwd, runtime, pending)
+      const newest = unwrap(await client.session.messages({
+        path: { id: threadId },
+        query: { directory: cwd, limit: 1 },
+        throwOnError: true,
+      }), `${this.#identity.providerName} session history`)
+      const newestMessageId = (Array.isArray(newest) ? newest : [])
+        .reduce<string | undefined>((current, message) => laterMessageId(current, asRecord(asRecord(message)?.info)?.id), undefined)
+      await this.#loadSession(threadId, cwd, runtime, pending, newestMessageId)
     } finally {
       if (this.#pendingSessionLoads.get(threadId) === pending) {
         this.#pendingSessionLoads.delete(threadId)
@@ -273,7 +300,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<string> {
     const session = this.#requireSession(threadId)
-    const turnId = this.#id()
+    const turnId = this.#nextMessageId(session)
     session.runtime = runtime
     session.activeTurnId = turnId
     try {
@@ -290,7 +317,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (session.activeTurnId !== turnId) {
       throw new Error(`${this.#identity.providerName} turn is no longer active`)
     }
-    const providerMessageId = this.#id()
+    const providerMessageId = this.#nextMessageId(session)
     await this.#sendPrompt(session, providerMessageId, prompt, session.runtime)
     return { providerMessageId }
   }
@@ -363,6 +390,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     await this.#connection
   }
 
+  #nextMessageId(session: Session): string {
+    const id = this.#id(session.newestMessageId)
+    const newest = laterMessageId(session.newestMessageId, id)
+    if (newest !== undefined) session.newestMessageId = newest
+    return id
+  }
+
   async #client(): Promise<OpenCodeClient> {
     await this.connect()
     return this.#runtime!.client
@@ -373,11 +407,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     cwd: string,
     runtime: Runtime,
     pending?: PendingSessionLoad,
+    newestMessageId?: string,
   ): Promise<void> {
     const session: Session = {
       threadId,
       cwd,
       runtime,
+      ...(newestMessageId === undefined ? {} : { newestMessageId }),
       assistantMessageTurnIds: new Map(),
       toolPhases: new Map(),
     }
@@ -471,6 +507,8 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
+      const newest = laterMessageId(session.newestMessageId, info?.id)
+      if (newest !== undefined) session.newestMessageId = newest
       if (info?.role === "assistant" && typeof info.id === "string") {
         const turnId = typeof info.parentID === "string" ? info.parentID : undefined
         if (!turnId) return
@@ -766,6 +804,7 @@ function isOpenCodeClient(value: unknown): value is OpenCodeClient {
     && typeof session.delete === "function"
     && typeof session.abort === "function"
     && typeof session.promptAsync === "function"
+    && typeof session.messages === "function"
     && event
     && typeof event.subscribe === "function"
     && typeof client.postSessionIdPermissionsPermissionId === "function"
