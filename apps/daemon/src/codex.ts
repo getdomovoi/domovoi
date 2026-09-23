@@ -91,6 +91,10 @@ export const codexWorktreeSecretNotice = {
 
 export const codexDeveloperInstructions = `Domovoi runs you in a sandbox that refuses reads of these files anywhere in the worktree: ${codexWorktreeSecretFiles.join(", ")}. A command that opens one of them fails with "Operation not permitted", for example a test or build that loads .env. Domovoi cannot see that failure. When a command fails on one of these files, say so in your reply and name the file.`
 
+const codexSandboxContext = {
+  "domovoi-sandbox": { kind: "application", value: codexDeveloperInstructions },
+} as const
+
 export function codexAppServerArguments(): string[] {
   const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
   const denied = `{${[
@@ -250,6 +254,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #unsubscribeError: (() => void) | undefined
   #connectPromise: Promise<void> | undefined
   #collaborationModeAvailable = true
+  #additionalContextAvailable = true
 
   constructor(transportFactory: () => CodexTransport = () => new StdioCodexTransport()) {
     this.#transportFactory = transportFactory
@@ -400,27 +405,41 @@ export class CodexAppServerAdapter implements AgentAdapter {
       effort: runtime.reasoning,
       ...policy,
     }
+    const collaborationMode = {
+      mode: runtime.permissionMode === "plan" ? "plan" : "default",
+      settings: {
+        model: runtime.model,
+        reasoning_effort: runtime.reasoning,
+        developer_instructions: null,
+      },
+    }
+    // Thread developer instructions reach the model only when the thread
+    // starts, so a thread started before Domovoi sent them, then resumed,
+    // would never learn which files the sandbox refuses. Every turn carries
+    // the same text as context, which Codex keeps once per source key. A
+    // Codex without the field gets the rest of the turn unchanged.
     let result: unknown
-    if (this.#collaborationModeAvailable) {
+    for (;;) {
+      const withCollaboration = this.#collaborationModeAvailable
+      const withContext = withCollaboration && this.#additionalContextAvailable
       try {
         result = await this.#request("turn/start", {
           ...params,
-          collaborationMode: {
-            mode: runtime.permissionMode === "plan" ? "plan" : "default",
-            settings: {
-              model: runtime.model,
-              reasoning_effort: runtime.reasoning,
-              developer_instructions: null,
-            },
-          },
+          ...(withCollaboration ? { collaborationMode } : {}),
+          ...(withContext ? { additionalContext: codexSandboxContext } : {}),
         })
+        break
       } catch (error) {
-        if (!collaborationModeUnavailable(error)) throw error
-        this.#collaborationModeAvailable = false
-        result = await this.#request("turn/start", params)
+        if (withContext && additionalContextUnavailable(error)) {
+          this.#additionalContextAvailable = false
+          continue
+        }
+        if (withCollaboration && collaborationModeUnavailable(error)) {
+          this.#collaborationModeAvailable = false
+          continue
+        }
+        throw error
       }
-    } else {
-      result = await this.#request("turn/start", params)
     }
     const turnId = nestedId(result, "turn")
     if (!turnId) throw new Error("Codex did not return a turn id")
@@ -479,6 +498,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const transport = this.#transportFactory()
     this.#transport = transport
     this.#collaborationModeAvailable = true
+    this.#additionalContextAvailable = true
     this.#unsubscribeMessage = transport.onMessage((message) => {
       if (this.#transport === transport) this.#receive(message)
     })
@@ -621,6 +641,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
 function resolvedDeveloperInstructions(result: unknown): string | undefined {
   const instructions = asRecord(asRecord(result)?.config)?.developer_instructions
   return typeof instructions === "string" && instructions.trim() ? instructions.trim() : undefined
+}
+
+function additionalContextUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /additionalContext/iu.test(message)
 }
 
 function collaborationModeUnavailable(error: unknown): boolean {

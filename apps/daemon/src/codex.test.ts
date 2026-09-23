@@ -1078,8 +1078,57 @@ describe("CodexAppServerAdapter", () => {
       },
     })
     expect(transport.sent[3]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[3]?.params).not.toHaveProperty("additionalContext")
     transport.receive({ id: 3, result: { turn: { id: "turn-plan-fallback" } } })
     await expect(turning).resolves.toBe("turn-plan-fallback")
+    await adapter.close()
+  })
+
+  it.each([
+    ["ask", false],
+    ["plan", false],
+    ["build", false],
+    ["build", true],
+  ] as const)("tells every %s Codex turn which worktree files its sandbox refuses, so resumed threads learn it too", async (mode, auto) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({ threadId: "thread-old", cwd: "/worktree", prompt: "Go on", runtime: runtime(mode, auto) })
+    expect(transport.sent[2]).toMatchObject({
+      id: 2,
+      method: "turn/start",
+      params: {
+        additionalContext: { "domovoi-sandbox": { kind: "application", value: codexDeveloperInstructions } },
+      },
+    })
+    transport.receive({ id: 2, result: { turn: { id: "turn-old" } } })
+    await expect(turning).resolves.toBe("turn-old")
+    await adapter.close()
+  })
+
+  it("drops the sandbox context and keeps collaboration mode when Codex does not accept additionalContext", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "Go", runtime: runtime("build", false) })
+    transport.receive({ id: 2, error: { message: "turn/start.additionalContext requires experimentalApi capability" } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    expect(transport.sent[3]).toMatchObject({ id: 3, method: "turn/start", params: { collaborationMode: { mode: "default" } } })
+    expect(transport.sent[3]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 3, result: { turn: { id: "turn-1" } } })
+    await expect(turning).resolves.toBe("turn-1")
+
+    const next = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "Again", runtime: runtime("build", false) })
+    expect(transport.sent[4]).toMatchObject({ id: 4, method: "turn/start", params: { collaborationMode: { mode: "default" } } })
+    expect(transport.sent[4]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 4, result: { turn: { id: "turn-2" } } })
+    await expect(next).resolves.toBe("turn-2")
     await adapter.close()
   })
 
