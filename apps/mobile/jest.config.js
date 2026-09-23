@@ -29,4 +29,7 @@ module.exports = {
   // does not match, so the same babel step is pointed at it.
   transform: { ...preset.transform, "\\.mjs$": preset.transform["\\.[jt]sx?$"] },
   transformIgnorePatterns,
+  // See jest.setup.js: the components every screen draws are loaded before the
+  // first test, not inside it.
+  setupFiles: [...preset.setupFiles, "<rootDir>/jest.setup.js"],
 }
