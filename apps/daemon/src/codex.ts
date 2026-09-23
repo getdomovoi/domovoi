@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { createInterface } from "node:readline"
 import type { Readable } from "node:stream"
 
-import { buildVersion, type ApprovalDecision, type ProviderModel, type Runtime } from "@getdomovoi/protocol"
+import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
 import { redactDurableText } from "./secret-redaction.js"
@@ -188,6 +188,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   #unsubscribeMessage: (() => void) | undefined
   #unsubscribeError: (() => void) | undefined
   #connectPromise: Promise<void> | undefined
+  #collaborationModeAvailable = true
 
   constructor(transportFactory: () => CodexTransport = () => new StdioCodexTransport()) {
     this.#transportFactory = transportFactory
@@ -277,6 +278,14 @@ export class CodexAppServerAdapter implements AgentAdapter {
     return models
   }
 
+  async usageLimits(signal?: AbortSignal): Promise<ProviderUsageLimits | undefined> {
+    return parseCodexUsageLimits(await this.#request(
+      "account/rateLimits/read",
+      { excludeResetCreditDetails: true },
+      signal,
+    ))
+  }
+
   async stopThread(threadId: string): Promise<void> {
     await this.#request("thread/archive", { threadId })
   }
@@ -317,14 +326,36 @@ export class CodexAppServerAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<string> {
     const policy = codexPolicyFor(runtime, cwd)
-    const result = await this.#request("turn/start", {
+    const params = {
       threadId,
       input: [{ type: "text", text: prompt }],
       cwd,
       model: runtime.model,
       effort: runtime.reasoning,
       ...policy,
-    })
+    }
+    let result: unknown
+    if (this.#collaborationModeAvailable) {
+      try {
+        result = await this.#request("turn/start", {
+          ...params,
+          collaborationMode: {
+            mode: runtime.permissionMode === "plan" ? "plan" : "default",
+            settings: {
+              model: runtime.model,
+              reasoning_effort: runtime.reasoning,
+              developer_instructions: null,
+            },
+          },
+        })
+      } catch (error) {
+        if (!collaborationModeUnavailable(error)) throw error
+        this.#collaborationModeAvailable = false
+        result = await this.#request("turn/start", params)
+      }
+    } else {
+      result = await this.#request("turn/start", params)
+    }
     const turnId = nestedId(result, "turn")
     if (!turnId) throw new Error("Codex did not return a turn id")
     return turnId
@@ -381,6 +412,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   async #openTransport(): Promise<void> {
     const transport = this.#transportFactory()
     this.#transport = transport
+    this.#collaborationModeAvailable = true
     this.#unsubscribeMessage = transport.onMessage((message) => {
       if (this.#transport === transport) this.#receive(message)
     })
@@ -388,9 +420,17 @@ export class CodexAppServerAdapter implements AgentAdapter {
       this.#handleTransportFailure(transport, error)
     })
     try {
-      await this.#request("initialize", {
-        clientInfo: { name: "domovoi", title: "Domovoi", version: buildVersion },
-      })
+      const clientInfo = { name: "domovoi", title: "Domovoi", version: buildVersion }
+      try {
+        await this.#request("initialize", {
+          clientInfo,
+          capabilities: { experimentalApi: true },
+        })
+      } catch (error) {
+        if (!collaborationModeUnavailable(error)) throw error
+        this.#collaborationModeAvailable = false
+        await this.#request("initialize", { clientInfo })
+      }
       if (this.#transport !== transport) {
         throw new Error("Codex transport disconnected during initialization")
       }
@@ -438,7 +478,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
       ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
     }
     if (message.method === "item/agentMessage/delta" && typeof params.delta === "string") {
-      this.#emit({ type: "text-delta", ...common, delta: params.delta })
+      this.#emit({
+        type: "text-delta",
+        ...common,
+        ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
+        delta: params.delta,
+      })
     } else if (message.method === "item/plan/delta" && typeof params.delta === "string") {
       this.#emit({ type: "plan-delta", ...common, delta: params.delta })
     } else if (message.method === "turn/plan/updated" && typeof params.threadId === "string") {
@@ -507,6 +552,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 }
 
+function collaborationModeUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /collaborationMode|experimentalApi/iu.test(message)
+}
+
 function captureStderrTail(stream: Readable): () => string {
   let tail = Buffer.alloc(0)
   stream.on("data", (chunk: Buffer) => {
@@ -565,6 +615,41 @@ function requireModelPage(value: unknown): CodexModelPage {
     if (model) data.push(model)
   }
   return { data, nextCursor: page.nextCursor ?? null }
+}
+
+function parseCodexUsageLimits(value: unknown): ProviderUsageLimits | undefined {
+  const rateLimits = asRecord(asRecord(value)?.rateLimits)
+  if (!rateLimits) return undefined
+  const windows = (["primary", "secondary"] as const).flatMap((kind) => {
+    const window = asRecord(rateLimits[kind])
+    if (!window) return []
+    const usedPercent = window.usedPercent
+    if (typeof usedPercent !== "number" || !Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) {
+      return []
+    }
+    const duration = window.windowDurationMins
+    if (!isNullish(duration) && (typeof duration !== "number" || !Number.isInteger(duration) || duration <= 0)) {
+      return []
+    }
+    const resetSeconds = window.resetsAt
+    if (!isNullish(resetSeconds) && (typeof resetSeconds !== "number" || !Number.isFinite(resetSeconds) || resetSeconds < 0)) {
+      return []
+    }
+    return [{
+      kind,
+      usedPercent,
+      ...(typeof duration === "number" ? { windowDurationMinutes: duration } : {}),
+      ...(typeof resetSeconds === "number" ? { resetsAt: new Date(resetSeconds * 1_000).toISOString() } : {}),
+    }]
+  })
+  if (windows.length === 0) return undefined
+  return {
+    provider: "codex",
+    ...(typeof rateLimits.planType === "string" && rateLimits.planType.trim()
+      ? { planType: rateLimits.planType }
+      : {}),
+    windows,
+  }
 }
 
 function parseCodexModel(value: unknown): CodexModel | undefined {
