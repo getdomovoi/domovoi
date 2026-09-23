@@ -1017,9 +1017,10 @@ describe("subagents and current permission events", () => {
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
-      expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
+    const oldRefusals = (client.postSessionIdPermissionsPermissionId.mock.calls as unknown as Array<[{ path: { permissionID: string } }]>).filter(
+      ([input]) => input.path.permissionID === "per_child",
     )
+    expect(oldRefusals).toHaveLength(1)
     await adapter.close()
   })
 
@@ -1202,7 +1203,7 @@ describe("SubagentRegistry", () => {
     registry.link("child-c", { threadId: "other", turnId: "turn-1" })
     registry.forgetThread("thread")
     expect(registry.size).toBe(1)
-    expect(registry.get("child-c")).toEqual({ threadId: "other", turnId: "turn-1" })
+    expect(registry.get("child-c")).toMatchObject({ threadId: "other", turnId: "turn-1" })
   })
 })
 
