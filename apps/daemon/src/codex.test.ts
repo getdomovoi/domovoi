@@ -1096,9 +1096,39 @@ describe("CodexAppServerAdapter", () => {
       },
     })
     expect(transport.sent[3]?.params).not.toHaveProperty("collaborationMode")
-    expect(transport.sent[3]?.params).not.toHaveProperty("additionalContext")
+    expect(transport.sent[3]?.params).toMatchObject({
+      additionalContext: { "domovoi-sandbox": { kind: "application", value: codexDeveloperInstructions } },
+    })
     transport.receive({ id: 3, result: { turn: { id: "turn-plan-fallback" } } })
     await expect(turning).resolves.toBe("turn-plan-fallback")
+    await adapter.close()
+  })
+
+  it("keeps the sandbox context when collaboration mode is unavailable, and drops only what Codex rejects", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({ threadId: "thread-old", cwd: "/worktree", prompt: "Go on", runtime: runtime("build", false) })
+    transport.receive({ id: 2, error: { message: "turn/start.collaborationMode requires experimentalApi capability" } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    expect(transport.sent[3]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[3]?.params).toHaveProperty("additionalContext")
+    transport.receive({ id: 3, error: { message: "turn/start.additionalContext requires experimentalApi capability" } })
+    await vi.waitFor(() => expect(transport.sent[4]).toBeDefined())
+    expect(transport.sent[4]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[4]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 4, result: { turn: { id: "turn-old" } } })
+    await expect(turning).resolves.toBe("turn-old")
+
+    const next = adapter.startTurn({ threadId: "thread-old", cwd: "/worktree", prompt: "Again", runtime: runtime("build", false) })
+    expect(transport.sent[5]).toMatchObject({ id: 5, method: "turn/start" })
+    expect(transport.sent[5]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[5]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 5, result: { turn: { id: "turn-next" } } })
+    await expect(next).resolves.toBe("turn-next")
     await adapter.close()
   })
 

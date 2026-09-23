@@ -440,7 +440,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     let result: unknown
     for (;;) {
       const withCollaboration = this.#collaborationModeAvailable
-      const withContext = withCollaboration && this.#additionalContextAvailable
+      const withContext = this.#additionalContextAvailable
       try {
         result = await this.#request("turn/start", {
           ...params,
