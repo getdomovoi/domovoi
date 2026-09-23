@@ -106,7 +106,7 @@ export interface WorkspaceStore {
   readonly sessionCreations?: SqliteSessionCreationIntents
   readonly recovery?: WorkspaceStoreRecovery | undefined
   load(): WorkspaceSnapshot
-  loadProject?(projectId: string): ProjectWorkspaceState | undefined
+  loadProject?(projectId: string, machine?: WorkspaceSnapshot["machine"]): ProjectWorkspaceState | undefined
   save(snapshot: WorkspaceSnapshot): void
   saveAsync?(snapshot: WorkspaceSnapshot): Promise<void>
   saveTransferredSnapshot?(
@@ -606,6 +606,10 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   #writerFactory: WorkspaceStoreOptions["writerFactory"]
   #writerClosed = false
   #databaseClosed = false
+  // The constructor has already read and migrated the stored snapshot, so the
+  // first load hands that copy over instead of reading it all again. Any
+  // write drops it, and every later load reads the row.
+  #migratedAtOpen: WorkspaceSnapshot | undefined
 
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
@@ -679,10 +683,14 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     }
     else if (isLegacySeed) this.save(initial)
     else if (existingSnapshot) this.#seedProjectRow(existingSnapshot)
+    if (!recovery && !isLegacySeed && existingSnapshot) this.#migratedAtOpen = existingSnapshot
     this.#restrictFilePermissions()
   }
 
   load(): WorkspaceSnapshot {
+    const migratedAtOpen = this.#migratedAtOpen
+    this.#migratedAtOpen = undefined
+    if (migratedAtOpen) return this.transferConflicts.restore(migratedAtOpen)
     const row = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
       .get() as StoredWorkspace | undefined
@@ -705,6 +713,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 
   async saveAsync(snapshot: WorkspaceSnapshot): Promise<void> {
+    this.#migratedAtOpen = undefined
     if (this.path === ":memory:") {
       await new Promise<void>((resolve) => setImmediate(resolve))
       this.#writeValidated(workspaceSnapshotSchema.parse(redactWorkspaceCopies(snapshot)))
@@ -844,7 +853,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     `).run(sessionId, queueId).changes === 1
   }
 
-  loadProject(projectId: string): ProjectWorkspaceState | undefined {
+  loadProject(projectId: string, machine?: WorkspaceSnapshot["machine"]): ProjectWorkspaceState | undefined {
     const row = this.#database
       .prepare("SELECT state FROM workspace_projects WHERE project_id = ?")
       .get(projectId) as StoredProjectWorkspace | undefined
@@ -853,7 +862,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const candidate = {
       ...stored,
       protocolVersion,
-      machine: this.load().machine,
+      machine: machine ?? this.load().machine,
       skillEnablements: [],
     } as unknown as WorkspaceSnapshot
     return projectWorkspaceState(this.transferConflicts.restore(
@@ -880,6 +889,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   }
 
   #writeValidatedRows(snapshot: WorkspaceSnapshot, updatedAt: string): void {
+    this.#migratedAtOpen = undefined
     this.#database
       .prepare(`
         INSERT INTO workspace_state (id, snapshot, updated_at)

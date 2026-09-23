@@ -6963,7 +6963,7 @@ export class DomovoiDaemon {
           await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
           if (this.#snapshot.project) await this.#persistSnapshot()
-          const restored = this.#store.loadProject?.(projectId)
+          const restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
