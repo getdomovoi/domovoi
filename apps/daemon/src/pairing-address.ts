@@ -12,6 +12,20 @@ export type PairingAddressProblem = { problem: string }
 
 const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"])
 
+// A problem travels in the issueCode result, which bounds it at 512
+// characters. A certificate's names and a configured path are the unbounded
+// parts, so they are shortened here rather than failing the code's issue.
+const maximumProblemLength = 512
+const namedHosts = 3
+
+function boundedPath(path: string): string {
+  return path.length <= 160 ? path : `…${path.slice(-159)}`
+}
+
+function bounded(problem: string): string {
+  return problem.length <= maximumProblemLength ? problem : `${problem.slice(0, maximumProblemLength - 1)}…`
+}
+
 export function isLoopbackHost(host: string): boolean {
   return loopbackHosts.has(host)
 }
@@ -42,7 +56,7 @@ export function pairingAddressFor(
 
   let certificate: string
   try { certificate = read(config.tls.certPath) } catch {
-    return { problem: `This daemon's certificate could not be read at ${config.tls.certPath}, so there is no name to put in a pairing code.` }
+    return { problem: bounded(`This daemon's certificate could not be read at ${boundedPath(config.tls.certPath)}, so there is no name to put in a pairing code.`) }
   }
   const names = certificateHostNames(certificate)
   if (names.length === 0) {
@@ -50,7 +64,12 @@ export function pairingAddressFor(
   }
   if (names.length > 1) {
     // Picking one would be a guess about which name the device can resolve.
-    return { problem: `This daemon's certificate names more than one host (${names.join(", ")}), so which one a device should dial is not this command's to choose.` }
+    const listed = names.length <= namedHosts
+      ? names.join(", ")
+      : `${names.slice(0, namedHosts).join(", ")} and ${names.length - namedHosts} more`
+    return { problem: bounded(`This daemon's certificate names more than one host (${listed}), so which one a device should dial is not this command's to choose.`) }
   }
-  return { url: `wss://${names[0]!}:${config.port}/rpc`, label: names[0]!, loopback: false }
+  // Who can reach the listener is a fact about where it is bound, not about
+  // TLS: a certificate served on 127.0.0.1 still answers only this machine.
+  return { url: `wss://${names[0]!}:${config.port}/rpc`, label: names[0]!, loopback: isLoopbackHost(config.host) }
 }
