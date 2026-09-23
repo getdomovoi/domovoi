@@ -177,9 +177,10 @@ Application verification for the right team and `stapler validate` success. Down
 onto a clean Mac. Verify
 the extracted app with `codesign --verify --deep --strict`, `xcrun stapler validate` and
 `spctl --assess --type execute --verbose`. Open the DMG/ZIP distribution through Finder so
-quarantine and Gatekeeper are exercised. Confirm the native PTY, keyring worker, bundled agent
-processes and production daemon actually run with the hardened runtime. A green submit alone
-does not prove these behaviors.
+quarantine and Gatekeeper are exercised. Confirm the native PTY, keyring worker and production
+daemon actually run with the hardened runtime, and that the daemon starts the person's own
+installed agent CLIs from outside the app. The app bundles no agent binary, so signing never
+re-signs one. A green submit alone does not prove these behaviors.
 
 For Windows, retain the successful `DOMOVOI_AUTHENTICODE_OK` lines for the application and
 installer, then verify the downloaded EXE with `Get-AuthenticodeSignature` on a clean machine.

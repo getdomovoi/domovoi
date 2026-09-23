@@ -6,7 +6,7 @@ Domovoi prefers a provider's subscription CLI when that CLI already supplies the
 
 | Provider | Integration | Direct API adapter | Reason |
 | --- | --- | --- | --- |
-| Claude | Claude Agent SDK / Claude Code credentials | No | The SDK supplies the coding loop and subscription authentication. |
+| Claude | Claude Agent SDK driving the installed `claude` / Claude Code credentials | No | The SDK supplies the coding loop and subscription authentication. The daemon passes it the `claude` found on the tool PATH. |
 | Codex | Codex app server / Codex credentials | No | The app server supplies sessions, tools, approvals, and model selection. |
 | Cursor | ACP over `agent acp` | No | ACP supplies the coding loop and Cursor subscription authentication. |
 | Grok | ACP over `grok agent stdio` | No | ACP supplies the coding loop and Grok subscription authentication. |

@@ -697,6 +697,8 @@ it is not a promise about every musl version or architecture.
 ## License
 
 Apache-2.0 for this package. The Claude Code session adapter has a runtime dependency on
-`@anthropic-ai/claude-agent-sdk`, which is proprietary. Domovoi does not redistribute it; npm
-installs it under Anthropic's terms. The recorded exception is documented at
+`@anthropic-ai/claude-agent-sdk`, which is proprietary. This package does not include a copy of
+it; npm installs it under Anthropic's terms. The adapter runs the person's own installed `claude`,
+found on the tool PATH, and never the SDK's bundled agent binary. Without `claude` installed,
+Claude Code sessions do not start. The recorded exception is documented at
 https://github.com/getdomovoi/domovoi/blob/main/docs/licensing.md.
