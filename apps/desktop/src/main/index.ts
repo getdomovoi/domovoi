@@ -3,7 +3,6 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { access, cp, realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { acquireLocalDaemon, installDaemonService, readDaemonServiceStatus, removeDaemonService, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
@@ -11,6 +10,7 @@ import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { DesktopDaemonService, stageDaemonRuntime } from "./daemon-service.js"
+import { loadDaemonModule } from "./daemon-module.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonEnvironment,
@@ -115,6 +115,12 @@ const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
   isPackaged: false,
   environment: process.env,
 })
+// One copy of the daemon (fetzy, 2026-09-23): a packaged app runs its in-app
+// daemon from the runtime it ships in resources, the files the login service
+// runs; the archive carries none of it.
+const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath })
+const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, removeDaemonService } = daemonModule.module
+if (launchSmoke) console.info(`DOMOVOI_DESKTOP_DAEMON_MODULE ${daemonModule.from}`)
 const daemonSeam = developmentLoopModule
   ? developmentLoopModule.resolveDesktopDaemonSeam({
       isPackaged: false,

@@ -167,9 +167,6 @@ importers:
       '@getdomovoi/credential-store':
         specifier: workspace:*
         version: link:../../packages/credential-store
-      '@getdomovoi/daemon':
-        specifier: workspace:*
-        version: link:../daemon
       '@getdomovoi/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -180,6 +177,9 @@ importers:
         specifier: ^19.1.1
         version: 19.2.8(react@19.2.8)
     devDependencies:
+      '@getdomovoi/daemon':
+        specifier: workspace:*
+        version: link:../daemon
       '@getdomovoi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

@@ -9,7 +9,7 @@ import { constants } from "node:fs"
 import { access, readFile, rm } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 import {
   launchSmokeElectronArgs,
@@ -88,7 +88,7 @@ const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: proces
 // the cause is a binding the archive never unpacked.
 const probe = await runSmokeProcess({
   command: executablePath,
-  args: [join(desktopRoot, "scripts", "packaged-native-probe.cjs"), asar],
+  args: [join(desktopRoot, "scripts", "packaged-native-probe.cjs"), asar, join(resourcesDirectory, "daemon-runtime", "daemon")],
   cwd: desktopRoot,
   env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
   timeoutMs,
@@ -114,12 +114,14 @@ if (!report.keyringInWorker?.loaded) {
 if (!report.daemonKeyringWorker?.replied) {
   failures.push(`the daemon keyring worker did not answer from the archive: ${report.daemonKeyringWorker?.error ?? "unknown"}`)
 }
+if (report.daemonInArchive) failures.push("the archive still carries @getdomovoi/daemon; the app and the service must share the shipped runtime")
+if (report.nodePtyInArchive) failures.push("the archive still carries node-pty, a second copy of the runtime's")
 if (failures.length > 0) throw new Error(`${description} native modules: ${failures.join("; ")}`)
 // The keychain itself is a machine fact, not a packaging one. A build host
 // without a secret service still proves every module loaded.
 process.stdout.write(
   `packaged native modules loaded from ${asar}: node-pty pid ${report.nodePty.pid}, `
-  + `@napi-rs/keyring on the main thread and in a worker, daemon keyring worker replied `
+  + `@napi-rs/keyring on the main thread and in a worker, daemon keyring worker replied from the shipped runtime, no daemon in the archive `
   + `(keychain answered: ${report.daemonKeyringWorker.keychainAnswered})\n`,
 )
 
@@ -139,6 +141,15 @@ try {
     timeoutMs,
   })
   assertSmokeProcess(result, { timeoutMs, description })
+  // The in-app daemon must have been loaded from the same files the
+  // --version check above ran.
+  const loadedFrom = result.stdout.split(/\r?\n/u).find((line) => line.startsWith("DOMOVOI_DESKTOP_DAEMON_MODULE "))?.slice("DOMOVOI_DESKTOP_DAEMON_MODULE ".length)
+  const expectedModule = pathToFileURL(join(resourcesDirectory, "daemon-runtime", "daemon", "dist", "public.js")).href
+  if (loadedFrom !== expectedModule) {
+    reportSmokeOutput(result)
+    throw new Error(`${description} in-app daemon loaded from ${loadedFrom ?? "nowhere reported"}, expected ${expectedModule}`)
+  }
+  process.stdout.write(`in-app daemon loaded from ${loadedFrom}\n`)
   await assertDaemonProfile(profileRoot, description)
   process.stdout.write(`${executablePath}\n${successMarker}\n`)
 } catch (error) {

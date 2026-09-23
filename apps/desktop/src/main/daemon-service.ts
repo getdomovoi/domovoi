@@ -1,7 +1,24 @@
-import { DaemonServiceRuntimeMissingError, type DaemonServiceInstallResult, type DaemonServiceOptions, type DaemonServiceRemovalResult, type DaemonServiceRuntime, type DaemonServiceStatus } from "@getdomovoi/daemon"
+import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceStatus } from "@getdomovoi/daemon"
 import { posix, win32 } from "node:path"
 
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
+
+// The daemon's own runtime-missing refusal, made here for the shipped parts
+// this module checks itself. The daemon is loaded at run time (daemon-module),
+// so its class is not importable here; both are recognised by name and shape.
+export class DaemonServiceRuntimeMissingError extends Error {
+  constructor(readonly part: "node" | "daemon", readonly path: string) {
+    super(`${part === "node" ? "The Node runtime this app ships" : "The Domovoi daemon this app ships"} was not found at ${path}. No service was installed and no service files were changed.`)
+    this.name = "DaemonServiceRuntimeMissingError"
+  }
+}
+
+function runtimeMissing(cause: unknown): { part: "node" | "daemon"; path: string; message: string } | undefined {
+  if (!(cause instanceof Error) || cause.name !== "DaemonServiceRuntimeMissingError") return undefined
+  const { part, path } = cause as Error & { part?: unknown; path?: unknown }
+  if ((part !== "node" && part !== "daemon") || typeof path !== "string") return undefined
+  return { part, path, message: cause.message }
+}
 
 // J24 (2026-09-23): keep Domovoi running after the app quits. The app ships
 // Node and the daemon under its resources, copies them under the profile so
@@ -65,7 +82,7 @@ export async function stageDaemonRuntime(input: {
 }): Promise<DaemonServiceRuntime> {
   const shipped = daemonRuntimeLayout(input.resourcesPath, input.platform)
   for (const [part, path] of [["node", shipped.nodePath], ["daemon", shipped.daemonEntryPath]] as const) {
-    if (!(await input.exists(path))) throw new DaemonServiceRuntimeMissingError(part, path, "missing")
+    if (!(await input.exists(path))) throw new DaemonServiceRuntimeMissingError(part, path)
   }
   const pathApi = input.platform === "win32" ? win32 : posix
   const destination = profileRuntimeDirectory(input.home, input.version, input.platform)
@@ -114,9 +131,8 @@ export class DesktopDaemonService {
         ? { ok: true, kind: "file", target: installed.path, configurationPath: installed.configurationPath }
         : { ok: true, kind: "task", target: installed.name, configurationPath: installed.configurationPath }
     } catch (cause) {
-      if (cause instanceof DaemonServiceRuntimeMissingError) {
-        return { ok: false, reason: "runtime-missing", part: cause.part, path: cause.path, message: cause.message }
-      }
+      const missing = runtimeMissing(cause)
+      if (missing) return { ok: false, reason: "runtime-missing", ...missing }
       let restarted = false
       if (released) {
         // The stop happened and the install did not finish: the profile is
