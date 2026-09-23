@@ -1866,7 +1866,11 @@ export class DomovoiDaemon {
     try {
       await new Promise<void>((resolve, reject) => {
         if (!this.#http) return resolve()
-        this.#http.close((error) => (error ? reject(error) : resolve()))
+        // A listener that never started (a port already in use, say) has
+        // nothing to close; failing here would keep the profile lease held.
+        this.#http.close((error) => (
+          error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()
+        ))
       })
     } catch (error) {
       failures.push(error)

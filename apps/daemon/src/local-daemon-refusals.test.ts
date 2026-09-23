@@ -11,20 +11,30 @@ import { productionDaemonDependencies } from "./production-daemon.js"
 import { claimProfile } from "./profile-lease.js"
 import { CliProviderProbe } from "./providers.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { waitForDaemon } from "./test-wait-for.js"
 
 const homes: string[] = []
 const handles: LocalDaemonHandle[] = []
 const servers: Server[] = []
 beforeEach(() => { vi.spyOn(CliProviderProbe.prototype, "inspect").mockResolvedValue([]) })
 afterEach(async () => {
+  // Restore first: a failed cleanup below must not leave a throwing daemon
+  // factory in place for the next test.
+  vi.restoreAllMocks()
   await Promise.all(handles.splice(0).map(async (handle) => {
     if (handle.kind === "owned") await handle.stop()
     else if (handle.kind === "attached") handle.detach()
   }))
   await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve))))
   await removeScratchDirectories(homes)
-  vi.restoreAllMocks()
 })
+
+// A refused start stops the runtime it built without waiting for it, and that
+// runtime holds the profile lease until it has stopped. Windows cannot remove
+// a lease file that is still open, so the test waits for the lease itself.
+async function leaseReleased(homeDirectory: string): Promise<void> {
+  await waitForDaemon(() => claimProfile(homeDirectory).release())
+}
 
 async function home() {
   const directory = await mkdtemp(join(tmpdir(), "domovoi-local-refusal-"))
@@ -45,7 +55,9 @@ it("names a port another program holds instead of calling the profile invalid", 
   servers.push(blocker)
   await new Promise<void>((resolve) => blocker.listen(0, "127.0.0.1", resolve))
   const port = (blocker.address() as { port: number }).port
-  const { handle, errorSink } = await acquire(await home(), { DOMOVOI_PORT: String(port) })
+  const homeDirectory = await home()
+  const { handle, errorSink } = await acquire(homeDirectory, { DOMOVOI_PORT: String(port) })
+  await leaseReleased(homeDirectory)
   expect(handle).toMatchObject({ kind: "refused", reason: "port-in-use" })
   expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
     context: "Domovoi could not start its local daemon",
