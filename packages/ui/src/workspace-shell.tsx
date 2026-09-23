@@ -54,7 +54,7 @@ import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
-import { lazySurface, prefetchWhenIdle } from "./lazy-surface"
+import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
@@ -447,6 +447,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Once the shell has painted, the secondary surfaces are fetched while the
   // browser is idle, so opening one rarely shows the loading frame at all.
   useEffect(() => prefetchWhenIdle(lazySurfaces), [])
+  // The web reloads the page for a surface whose chunk failed to load; the
+  // desktop leaves it unset and loads the chunk again.
+  const reloadForNewCode = platform?.code?.reloadForNewCode
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
@@ -1220,6 +1223,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [])
 
   return (
+    <SurfaceCodeReload.Provider value={reloadForNewCode}>
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={() => snapshot?.project ? setLauncherMode("session") : requestOpenProject()} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => { if (!watching) setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" })) }} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={connected ? attached ? "remote" : "local" : "unreachable"} theme={resolvedTheme} />
@@ -1505,5 +1509,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : null}
       </div>
     </TooltipProvider>
+    </SurfaceCodeReload.Provider>
   )
 }

@@ -1,12 +1,14 @@
 import { CircleStopIcon } from "lucide-react"
 import {
   Component,
+  createContext,
   lazy,
   Suspense,
   useEffect,
   useRef,
   useState,
   type ComponentType,
+  type ContextType,
   type ErrorInfo,
   type LazyExoticComponent,
   type ReactNode,
@@ -19,6 +21,12 @@ import { Button } from "./components/ui/button"
 // opened, and at idle once the shell has painted. Loading shows the v2 States
 // loading frame, a failed load shows the failed-to-load frame with Try again,
 // and focus follows the person from the control they used to the surface.
+
+// How this client gets new code after a chunk failed to load, when the plain
+// retry cannot. A browser keeps a failed dynamic import for the life of the
+// page, and after a deploy the old chunk is gone, so the web reloads the page.
+// The desktop loads local files and leaves this unset, so Try again loads again.
+export const SurfaceCodeReload = createContext<(() => void) | undefined>(undefined)
 
 export class SurfaceLoadError extends Error {
   constructor(readonly surface: string, options?: ErrorOptions) {
@@ -126,6 +134,8 @@ function SurfaceLoading({ name }: { name: string }) {
 type BoundaryState = { error: Error | undefined }
 
 class SurfaceLoadBoundary extends Component<{ children: ReactNode, onRetry: () => void }, BoundaryState> {
+  static override contextType = SurfaceCodeReload
+  declare context: ContextType<typeof SurfaceCodeReload>
   override state: BoundaryState = { error: undefined }
 
   static getDerivedStateFromError(error: Error): BoundaryState {
@@ -152,7 +162,9 @@ class SurfaceLoadBoundary extends Component<{ children: ReactNode, onRetry: () =
             </div>
           </div>
           <div>
-            <Button onClick={this.props.onRetry}>Try again</Button>
+            {/* Only the person's click reloads, never the failure itself, so
+                a build that keeps failing cannot reload in a loop. */}
+            <Button onClick={() => (this.context ?? this.props.onRetry)()}>Try again</Button>
           </div>
         </section>
       </main>

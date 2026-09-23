@@ -35,6 +35,11 @@ export type WorkspacePlatform = {
     state(): WorkspaceInstallState
     prompt(): Promise<WorkspaceInstallState>
   }
+  // How the client gets new code when a surface's chunk failed to load. A
+  // browser answers with a page reload; absent, Try again loads the chunk again.
+  code?: {
+    reloadForNewCode(): void
+  } | undefined
 }
 
 export type WorkspaceClientCapabilities = {

@@ -361,3 +361,21 @@ describe("browser environment", () => {
     }
   })
 })
+
+describe("browser code reload", () => {
+  // Chromium keeps a failed dynamic import for the life of the page, and after
+  // a deploy the old chunk is gone from the server, so only a reload brings
+  // the code a surface needs.
+  it("reloads the page when the shell asks for new code", () => {
+    const reload = vi.fn()
+    const platform = createBrowserPlatform(browserPlatformEnvironment(fakeGlobals({ location: { reload } }).globals))
+
+    expect(reload).not.toHaveBeenCalled()
+    platform.code?.reloadForNewCode()
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it("offers no reload where the host gives it no page to reload", () => {
+    expect(createBrowserPlatform(browserPlatformEnvironment(fakeGlobals().globals)).code).toBeUndefined()
+  })
+})
