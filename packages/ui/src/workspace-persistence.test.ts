@@ -39,6 +39,7 @@ describe("workspace UI persistence", () => {
       layouts: {
         "drawer.dock": { thread: 68, dock: 32 },
       },
+      previewBuildBasis: { "session-1": "preview-b" },
       rpcToken: "must-not-persist",
       providerApiKey: "must-not-persist",
       editorToken: "also-must-not-persist",
@@ -52,7 +53,7 @@ describe("workspace UI persistence", () => {
       version: 5,
       dockCollapsed: false,
       dockPinned: true,
-      surface: "skills",
+      surface: "workspace",
       projectId: "project-1",
       sessionId: "session-1",
       externalEditor: "cursor",
@@ -62,6 +63,7 @@ describe("workspace UI persistence", () => {
       layouts: {
         "drawer.dock": { thread: 68, dock: 32 },
       },
+      previewBuildBasis: { "session-1": "preview-b" },
     })
   })
 
@@ -125,7 +127,7 @@ describe("workspace UI persistence", () => {
     })
     expect(loadWorkspaceUiState(memoryStorage(versionOne))).toMatchObject({
       version: 5,
-      surface: "skills",
+      surface: "workspace",
       externalEditor: "system",
       theme: "system",
       windowDecoration: "domovoi",
@@ -137,7 +139,7 @@ describe("workspace UI persistence", () => {
       externalEditor: "../../token.txt?token=secret",
     })
     expect(loadWorkspaceUiState(memoryStorage(invalidEditor))).toMatchObject({
-      surface: "skills",
+      surface: "workspace",
       externalEditor: "system",
     })
   })
@@ -152,10 +154,13 @@ describe("workspace UI persistence", () => {
     expect(loadWorkspaceUiState(memoryStorage(raw))).toEqual(defaultWorkspaceUiState())
   })
 
-  it("restores the fleet surface", () => {
-    const raw = JSON.stringify({ ...defaultWorkspaceUiState(), surface: "fleet" })
-    expect(loadWorkspaceUiState(memoryStorage(raw)).surface).toBe("fleet")
-  })
+  it.each(["providers", "skills", "fleet", "audit"] as const)(
+    "normalizes the retired persisted %s navigation surface to the workspace",
+    (surface) => {
+      const raw = JSON.stringify({ ...defaultWorkspaceUiState(), surface })
+      expect(loadWorkspaceUiState(memoryStorage(raw)).surface).toBe("workspace")
+    },
+  )
 
   it("survives unavailable browser storage", () => {
     const storage = {

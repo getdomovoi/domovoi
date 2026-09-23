@@ -23,7 +23,7 @@ it("keeps controls unadmitted until identity and a client receipt both succeed",
   completeHandshake(sockets.socket(0))
   await vi.advanceTimersByTimeAsync(0)
   expect(access.access(machineId)).toBeUndefined()
-  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web" })
+  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   await pending
   expect(access.snapshot()[machineId]).toEqual({ state: "admitted", deviceId })
   expect(access.access(machineId)?.credential).toBe("a".repeat(43))
@@ -40,7 +40,7 @@ it("does not resurrect an access check cancelled after hello", async () => {
   completeHandshake(sockets.socket(0))
   await vi.advanceTimersByTimeAsync(0)
   cancel.abort()
-  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web" })
+  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   await pending
   expect(access.access(machineId)).toBeUndefined()
   expect(access.snapshot()[machineId]).toBeUndefined()
@@ -56,7 +56,7 @@ it("uses the admitted client for inventory and withdraws access on revocation du
   await vi.advanceTimersByTimeAsync(0)
   completeHandshake(sockets.socket(0))
   await vi.advanceTimersByTimeAsync(0)
-  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web" })
+  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   await pending
   const opening = access.inventory(machineId, new AbortController().signal)
   await vi.advanceTimersByTimeAsync(0)
@@ -65,7 +65,7 @@ it("uses the admitted client for inventory and withdraws access on revocation du
   await vi.advanceTimersByTimeAsync(0)
   expect(sentRequests(readerSocket, "skill.inventory")).toHaveLength(0)
   expect(sentRequests(readerSocket, "system.hello")[0]?.params).toMatchObject({ client: "web", authToken: "a".repeat(43) })
-  respond(readerSocket, "device.current", { kind: "client", machineId, deviceId, client: "web" })
+  respond(readerSocket, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   const reader = await opening
   const inventory = reader.inventory().catch((error: unknown) => error)
   expect(sentRequests(readerSocket, "skill.inventory")).toHaveLength(1)

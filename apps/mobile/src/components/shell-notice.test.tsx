@@ -44,6 +44,11 @@ const restoring = unreachable(shellState({
 async function draw(overrides: Partial<Parameters<typeof ShellNotice>[0]> = {}) {
   const props = {
     shell: reaching,
+    phases: [
+      { label: "Saved pairing", state: "found", tone: "complete" as const },
+      { label: "studio-arch", state: "trying direct route", tone: "active" as const },
+      { label: "Workspace", state: "waiting for route", tone: "waiting" as const },
+    ],
     address: "ws://studio-arch:7433",
     bottomInset: 0,
     onOpenSettings: jest.fn<() => void>(),
@@ -61,6 +66,7 @@ describe("ShellNotice", () => {
     await draw()
     expect(screen.getByText("No daemon reachable")).toBeOnTheScreen()
     expect(screen.getByText("ws://studio-arch:7433")).toBeOnTheScreen()
+    expect(screen.getByText("Reaching your machines over the routes you configured. No spinner, because the phase is knowable.")).toBeOnTheScreen()
   })
 
   it("asks for a connection now when the retry is pressed", async () => {

@@ -86,9 +86,7 @@ it("folds a group away and back, keeping its count on the header", async () => {
   expect(screen.getByText("Migrate billing webhooks")).toBeTruthy()
 })
 
-// Each row carries the session's own actions. Stop is only offered while a
-// turn runs; the protocol has no worktree delete, so none is drawn.
-it("offers each session's actions from its row, stop only while it runs", async () => {
+it("keeps supported row actions reachable, while offering stop only for a running turn", async () => {
   const user = userEvent.setup()
   const onAction = vi.fn()
   function WithActions() {
@@ -97,21 +95,24 @@ it("offers each session's actions from its row, stop only while it runs", async 
   }
   render(<WithActions />)
   await user.click(screen.getByRole("button", { name: "Actions for Migrate billing webhooks" }))
-  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-    "Stop the agent", "Fork from a checkpoint", "Move to another machine", "Archive session",
-  ])
+  expect(screen.getByRole("menuitem", { name: "Stop the agent" })).toBeTruthy()
+  expect(screen.getByRole("menuitem", { name: "Fork from a checkpoint" })).toBeTruthy()
+  expect(screen.getByRole("menuitem", { name: "Move to another machine" })).toBeTruthy()
+  expect(screen.getByRole("menuitem", { name: "Archive session" })).toBeTruthy()
   await user.click(screen.getByRole("menuitem", { name: "Stop the agent" }))
   expect(onAction).toHaveBeenCalledWith("stop", "s1")
 
   await user.click(screen.getByRole("button", { name: "Actions for Document the replay table" }))
-  expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-    "Fork from a checkpoint", "Move to another machine", "Archive session",
-  ])
+  expect(screen.queryByRole("menuitem", { name: "Stop the agent" })).toBeNull()
+  await user.click(screen.getByRole("menuitem", { name: "Resume session" }))
+  expect(onAction).toHaveBeenCalledWith("resume", "s3")
+
+  await user.click(screen.getByRole("button", { name: "Actions for Document the replay table" }))
   await user.click(screen.getByRole("menuitem", { name: "Archive session" }))
   expect(onAction).toHaveBeenCalledWith("archive", "s3")
 })
 
-it("keeps its actions reachable when the list is long", async () => {
+it("keeps long session lists scrollable and reserves the drawer footer for machine availability", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
   const base = snapshot.sessions[0]!
@@ -125,19 +126,15 @@ it("keeps its actions reachable when the list is long", async () => {
 
   function Long() {
     const [open, setOpen] = useState(false)
-    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onNewSession={vi.fn()} />
+    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} machineAvailability="3 machines · 1 unreachable" />
   }
   render(<Long />)
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
 
-  // Measured in a real browser at 1280x800: 43 sessions rendered 2440px tall
-  // with no cap and no scroll, putting New session 1679px below the fold. The
-  // column scrolls its list and keeps its actions in a footer outside it.
   const surface = screen.getByRole("complementary", { name: "Sessions" })
-  const scroller = surface.querySelector(".overflow-y-auto")
-  expect(scroller).not.toBeNull()
-  const action = screen.getByRole("button", { name: "New session" })
-  expect(scroller!.contains(action)).toBe(false)
+  expect(surface.querySelector(".overflow-y-auto")).not.toBeNull()
+  expect(screen.queryByRole("button", { name: "New session" })).toBeNull()
+  expect(screen.getByText(/machines.*unreachable/u)).toBeTruthy()
 })
 
 it("closes again when its own trigger is clicked", async () => {
@@ -170,7 +167,7 @@ function Twins({ activeSessionId }: { activeSessionId: string }) {
   return <SessionsDrawer snapshot={twinSnapshot(activeSessionId)} open={open} onOpenChange={setOpen} onActivate={vi.fn()} />
 }
 
-it("says which session is open, in text and to a reader, never in tint alone", async () => {
+it("retains aria-current while leaving the active state to the drawer row", async () => {
   const user = userEvent.setup()
   const view = render(<Twins activeSessionId="t1" />)
   await user.click(screen.getByRole("button", { name: /^Sessions / }))
@@ -179,12 +176,10 @@ it("says which session is open, in text and to a reader, never in tint alone", a
   const other = () => screen.getByRole("button", { name: /Trim the audit retention/ })
   expect(open().getAttribute("aria-current")).toBe("true")
   expect(other().getAttribute("aria-current")).toBeNull()
-  expect(open().textContent).toContain("Current")
-  expect(other().textContent).not.toContain("Current")
+  expect(open().textContent).not.toContain("Current")
 
   view.rerender(<Twins activeSessionId="t2" />)
   expect(other().getAttribute("aria-current")).toBe("true")
-  expect(other().textContent).toContain("Current")
   expect(open().getAttribute("aria-current")).toBeNull()
-  expect(open().textContent).not.toContain("Current")
+  expect(other().textContent).not.toContain("Current")
 })

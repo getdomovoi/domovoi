@@ -58,3 +58,53 @@ it("shows today's count for a session with no usage of its own, and asks for no 
   expect(screen.getByText("TODAY")).toBeTruthy()
   expect(loadLatestTurn).not.toHaveBeenCalled()
 })
+
+it("renders provider quota windows as progress rows", async () => {
+  render(<UsageChip usage={{
+    ...usage,
+    providerLimits: {
+      provider: "codex",
+      windows: [
+        { kind: "primary", usedPercent: 23, windowDurationMinutes: 300, resetsAt: "2026-09-20T22:00:00.000Z" },
+        { kind: "secondary", usedPercent: 41, windowDurationMinutes: 10_080, resetsAt: "2026-09-24T22:00:00.000Z" },
+      ],
+    },
+  }} today={null} />)
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  expect(screen.getByText("5-HOUR LIMIT")).toBeTruthy()
+  expect(screen.getByText("WEEKLY LIMIT")).toBeTruthy()
+  expect(screen.getByRole("progressbar", { name: "5-hour limit share" }).getAttribute("aria-valuenow")).toBe("23")
+  expect(screen.getByRole("progressbar", { name: "Weekly limit share" }).getAttribute("aria-valuenow")).toBe("41")
+  expect(screen.queryByText("not reported")).toBeNull()
+})
+
+// The chip itself, not the popover: the ring is what a person sees without
+// opening anything, so it has to carry the window on the closed chip.
+it("draws the ring and its separator on the closed chip", () => {
+  render(<UsageChip usage={{
+    ...usage,
+    providerLimits: {
+      provider: "codex",
+      windows: [
+        { kind: "primary", usedPercent: 68, windowDurationMinutes: 300, resetsAt: "2026-09-20T17:40:00.000Z" },
+        { kind: "secondary", usedPercent: 82, windowDurationMinutes: 10_080, resetsAt: "2026-09-24T09:00:00.000Z" },
+      ],
+    },
+  }} today={null} />)
+
+  const chip = screen.getByRole("button", { name: "Usage" })
+  expect(chip.textContent).toContain("·")
+  const ring = screen.getByRole("img", { name: /82 percent of the weekly window/ })
+  const arc = ring.querySelectorAll("circle")[1]!
+  expect(arc.getAttribute("stroke-dasharray")).toBe("34.56")
+  expect(Number(arc.getAttribute("stroke-dashoffset"))).toBeCloseTo(6.22, 2)
+})
+
+it("draws no ring and no separator while no provider window is reported", () => {
+  render(<UsageChip usage={usage} today={null} />)
+
+  const chip = screen.getByRole("button", { name: "Usage" })
+  expect(chip.textContent).not.toContain("·")
+  expect(screen.queryByRole("img", { name: /percent of the/ })).toBeNull()
+})

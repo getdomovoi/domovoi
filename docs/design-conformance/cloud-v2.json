@@ -1,0 +1,52 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Cloud.dc.html",
+  "sha256": "27cdb07fb6b1b7cd26d343f217bbcd8332a816af2d69261e384f4f235f84a5c5",
+  "derivedOn": "2026-09-20",
+  "sources": [
+    "apps/web/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts"
+  ],
+  "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "elements": [
+    {
+      "id": "cloud.shell",
+      "name": "Cloud shell and route ownership",
+      "where": "cloud surface shell",
+      "copy": [
+        "Domovoi",
+        "Domovoi Cloud",
+        "Cloud holds identity, route ownership and entitlement. It is the last transport tried, and authority over a daemon stays with that daemon.",
+        "How each machine is reached right now",
+        "WHAT CLOUD CARRIES",
+        "WHAT IT NEVER HOLDS",
+        "STILL WORKS",
+        "DOES NOT WORK"
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "platform",
+        "reason": "Cloud identity, relay routes and entitlement are Phase 2 platform work; the current client has no Cloud surface."
+      }
+    },
+    {
+      "id": "cloud.billing",
+      "name": "Cloud billing and plan",
+      "where": "billing section",
+      "copy": [
+        "Copy",
+        "Plan and billing",
+        "The daemon, protocol, clients and local transports are Apache 2.0. What is metered is machines, in buckets. Clients never are.",
+        "What counts against the plan",
+        "Machines, in buckets. An extra machine is free inside a tier and costs only at a boundary.",
+        "If a payment fails",
+        "Four retries, then a grace period you choose. Enforcement is one soft point.",
+        "A fourteen day Enthusiast trial, no card, once per account. Loopback, WSL, LAN, tailnet and SSH were never gated and do not become gated by a billing state, so a lapse while you are at your desk changes nothing."
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "platform",
+        "reason": "Account billing, metering and trials are Phase 5 platform work and are not implemented in M1."
+      }
+    }
+  ]
+}

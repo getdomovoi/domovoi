@@ -24,6 +24,9 @@
     "markdownCharactersPerItem": 32768,
     "markdownLinesPerItem": 500
   },
+  "workspaceDelta": {
+    "batchDelayMilliseconds": 32
+  },
   "terminalThroughput": {
     "outputChunkCharacters": 65536,
     "batchDelayMilliseconds": 16,

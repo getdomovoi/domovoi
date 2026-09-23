@@ -3,6 +3,7 @@ import { AppState } from "react-native"
 import {
   applyWorkspaceDelta,
   workspaceSnapshotSchema,
+  type ClientAccess,
   type FleetEntry,
   type WorkspaceDelta,
   type WorkspaceSnapshot,
@@ -27,6 +28,7 @@ export function useDaemon(
   // Only a hello that said true. Missing or false means this daemon strips
   // the field and a text-only success would pass for an image delivery.
   const [imageAttachments, setImageAttachments] = useState(false)
+  const [clientAccess, setClientAccess] = useState<ClientAccess>("watching")
   const connection = useRef<DaemonConnection | undefined>(undefined)
   const attempt = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -67,6 +69,7 @@ export function useDaemon(
         // decides the connection.
         onHello: (next) => {
           setImageAttachments(next.sessionImageAttachments === true)
+          setClientAccess(next.clientAccess ?? "full")
           void reconcileRelayPin({
             store: openRelayPinStore(next.machine.id),
             machineId: next.machine.id,
@@ -80,7 +83,10 @@ export function useDaemon(
         onFleet: (entries) => fleetSink.current(entries),
         onStatus: (next) => {
           // A closed or reconnecting connection has not said what it can do.
-          if (next !== "open") setImageAttachments(false)
+          if (next !== "open") {
+            setImageAttachments(false)
+            setClientAccess("watching")
+          }
           setStatus(next)
         },
         onError: (cause) => {
@@ -149,5 +155,5 @@ export function useDaemon(
   // still wrong however many times it is asked.
   const reconnect = useCallback(() => reopen.current?.(), [])
 
-  return { snapshot, status, fault, call, refresh, reconnect, imageAttachments }
+  return { snapshot, status, fault, call, refresh, reconnect, imageAttachments, clientAccess }
 }

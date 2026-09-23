@@ -113,10 +113,23 @@ function renderDialog(overrides: {
   return { user, onPreview, onTransfer, onTransferred, onOutcome }
 }
 
-it("names the machine the session would move to", () => {
+it("matches the v2 transfer preflight contract", async () => {
   renderDialog()
 
-  expect(screen.getByRole("heading", { name: "Move session to studio" })).toBeTruthy()
+  expect(screen.getByRole("heading", { name: "Move this session to another machine" })).toBeTruthy()
+  expect(screen.getByText("PRE-FLIGHT ON STUDIO")).toBeTruthy()
+  expect(screen.getByText("Running processes are not moved", { exact: false })).toBeTruthy()
+  expect(await screen.findByRole("group", { name: "Travels with the session" })).toBeTruthy()
+  expect(screen.getByText(
+    "Not sent either way: shell history, background processes, anything written outside the worktree, and credentials. The target authenticates its own providers.",
+  )).toBeTruthy()
+  expect(screen.getByText("Move to studio")).toBeTruthy()
+})
+
+it("names the target machine in the preflight", () => {
+  renderDialog()
+
+  expect(screen.getByText("studio can receive it")).toBeTruthy()
 })
 
 it("reports that both ends are ready before the move", () => {
@@ -294,6 +307,9 @@ it("says which stage an unfinished move reached and what answers it", async () =
   expect(alert.textContent).toContain("The move failed")
   expect(alert.textContent).toContain("artifacts and attachments could not be imported")
   expect(alert.textContent).toContain("workshop")
+  expect(screen.getByRole("region", { name: "Half-failed move" })).toBeTruthy()
+  expect(screen.getByText("Recover the source and keep working here")).toBeTruthy()
+  expect(screen.getByText("Retry the move")).toBeTruthy()
 })
 
 it("explains a refusal caused by moving a session back where it came from", async () => {

@@ -5,6 +5,7 @@ import { performanceBudgets } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
 import { cn } from "./lib/utils"
+import { splitMarkdownBlocks } from "./markdown-blocks"
 
 export const maximumMarkdownCharacters = performanceBudgets.longThreads.markdownCharactersPerItem
 export const maximumMarkdownLines = performanceBudgets.longThreads.markdownLinesPerItem
@@ -41,6 +42,21 @@ const markdownComponents: Components = {
   code: ({ className, children }) => <code className={cn(className, "font-machine text-[0.92em]")}>{children}</code>,
 }
 
+// One block per parse. A streaming reply only changes its last block, so every
+// finished block above it keeps the same source string and this memo holds.
+const MarkdownBlock = memo(function MarkdownBlock({ source }: { source: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      skipHtml
+      urlTransform={safeMarkdownUrl}
+      components={markdownComponents}
+    >
+      {source}
+    </ReactMarkdown>
+  )
+})
+
 export const MarkdownQuickView = memo(function MarkdownQuickView({
   source,
   canonicalAvailable = false,
@@ -51,16 +67,10 @@ export const MarkdownQuickView = memo(function MarkdownQuickView({
   onOpenCanonical?: () => void
 }) {
   const bounded = useMemo(() => boundedMarkdownSource(source), [source])
+  const blocks = useMemo(() => splitMarkdownBlocks(bounded.source), [bounded.source])
   return (
     <div className="flex min-w-0 flex-col gap-2 text-[13px] leading-relaxed [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h1]:text-[17px] [&_h1]:font-semibold [&_h2]:text-[15px] [&_h2]:font-semibold [&_h3]:text-[13px] [&_h3]:font-semibold [&_li]:ml-5 [&_ol]:list-decimal [&_p]:m-0 [&_pre]:max-h-72 [&_pre]:overflow-auto [&_pre]:rounded-md [&_pre]:bg-code [&_pre]:p-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:p-2 [&_th]:border [&_th]:p-2 [&_ul]:list-disc">
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        skipHtml
-        urlTransform={safeMarkdownUrl}
-        components={markdownComponents}
-      >
-        {bounded.source}
-      </ReactMarkdown>
+      {blocks.map((block, index) => <MarkdownBlock key={index} source={block} />)}
       {bounded.truncated ? (
         <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
           <span>Quick view truncated.</span>

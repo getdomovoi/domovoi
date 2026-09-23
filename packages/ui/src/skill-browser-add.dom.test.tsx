@@ -80,8 +80,8 @@ function props(overrides: Partial<Parameters<typeof SkillBrowser>[0]> = {}) {
 }
 
 async function openReview(user: ReturnType<typeof userEvent.setup>, path = preview.source.path) {
-  await user.click(screen.getByRole("button", { name: "Add skill" }))
-  const dialog = screen.getByRole("dialog", { name: "Add a skill" })
+  await user.click(screen.getByRole("button", { name: "Install from a path" }))
+  const dialog = screen.getByRole("dialog", { name: "Install from a path on this machine" })
   await user.type(within(dialog).getByLabelText("Folder on this machine"), path)
   await user.click(within(dialog).getByRole("button", { name: "Review" }))
   return dialog
@@ -165,5 +165,5 @@ it("shows refusals from the review and from the install in place", async () => {
   const refusal = within(again).getByRole("alert")
   expect(refusal.textContent).toContain("Install refused")
   expect(refusal.textContent).toContain("The folder changed since it was reviewed. Review it again.")
-  expect(screen.getByRole("dialog", { name: "Add a skill" })).toBeTruthy()
+  expect(screen.getByRole("dialog", { name: "Install from a path on this machine" })).toBeTruthy()
 })

@@ -16,7 +16,7 @@ import {
   withoutReason,
 } from "../deny-reasons"
 import { cn } from "../lib/cn"
-import { colors } from "../theme/tokens.generated"
+import { useTheme } from "../theme/theme-provider"
 
 export function DenyExplainScreen({
   approval,
@@ -26,11 +26,12 @@ export function DenyExplainScreen({
 }: {
   approval: ApprovalRequest
   pending: boolean
-  onSend: (explanation: string) => void
+  onSend: (explanation?: string) => void
   onBack: () => void
 }) {
   const [explanation, setExplanation] = useState("")
   const [problem, setProblem] = useState("")
+  const { palette } = useTheme()
   const [footprint, setFootprint] = useState(0)
 
   const send = () => {
@@ -95,8 +96,8 @@ export function DenyExplainScreen({
             value={explanation}
             onChangeText={write}
             placeholder="Why this is not running, and what to do instead."
-            placeholderTextColor={colors.dark.faint}
-            selectionColor={colors.dark.primary}
+            placeholderTextColor={palette.faint}
+            selectionColor={palette.primary}
             accessibilityLabel="Reason sent to the agent"
             className="mt-[7px] max-h-40 min-h-tap font-sans text-[12.5px] leading-[20px] text-foreground"
           />
@@ -150,8 +151,15 @@ export function DenyExplainScreen({
           onPress={send}
         />
         <Button
-          title="Back to the decision"
+          title="Deny without explanation"
           variant="quiet"
+          shape="wide"
+          disabled={pending}
+          onPress={() => onSend()}
+        />
+        <Button
+          title="Back to the decision"
+          variant="ghost"
           shape="wide"
           disabled={pending}
           onPress={onBack}

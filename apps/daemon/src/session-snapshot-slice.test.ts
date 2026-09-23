@@ -14,6 +14,7 @@ describe("session snapshot slice", () => {
   it("classifies every workspace key as session-owned or deliberately preserved", () => {
     const everyOptionalKey = workspaceSnapshotSchema.parse({
       ...structuredClone(demoWorkspace),
+      queuedSends: [],
       historyTruncated: true,
     })
 
@@ -33,6 +34,7 @@ describe("session snapshot slice", () => {
       workingPlans: "session-slice",
       annotations: "session-slice",
       skillEnablements: "preserve",
+      queuedSends: "preserve",
       historyTruncated: "preserve",
     })
   })

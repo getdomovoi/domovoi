@@ -42,6 +42,7 @@ describe("pairing by camera", () => {
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={onPaired} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
     )
     expect(screen.getByText(/djs-macbook-pro-1/)).toBeTruthy()
+    expect(screen.queryByTestId("tab-bar")).toBeNull()
     expect(screen.queryByText(credential.token)).toBeNull()
     // The phone checks shape, not scope; the promise is conditional.
     for (const line of phoneAndTabletPromise) expect(screen.getByText(line.text)).toBeTruthy()
@@ -55,6 +56,16 @@ describe("pairing by camera", () => {
     )
     expect(screen.getByText("This is not a Domovoi pairing code")).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Pair with this machine" })).toBeNull()
+  })
+
+  it("keeps the typed fallback explicit beside the camera", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
+    )
+
+    expect(screen.getByText("Point at the pairing code that domovoid pair prints on the machine.")).toBeTruthy()
+    expect(screen.getByText("Or type the code")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Paste" })).toBeTruthy()
   })
 
   it("offers the pasted code when the camera is refused, and reads it the same way", async () => {

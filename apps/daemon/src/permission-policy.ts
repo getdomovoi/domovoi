@@ -1,8 +1,26 @@
-import type { ApprovalRisk, ExecutionResolution, HardGateCategory, Runtime } from "@getdomovoi/protocol"
+import type {
+  ApprovalRisk,
+  ExecutionResolution,
+  HardGateCategory,
+  PolicyRefusalThreadItem,
+  Runtime,
+} from "@getdomovoi/protocol"
 
 export type PermissionDecision = {
   action: "allow" | "review"
   risk: ApprovalRisk
+}
+
+type PolicyRefusalFacts = Pick<PolicyRefusalThreadItem, "rule" | "setBy" | "scope" | "remedy">
+
+export function permissionPolicyRefusalFor(runtime: Runtime): PolicyRefusalFacts | undefined {
+  if (runtime.permissionMode !== "ask") return undefined
+  return {
+    rule: "Ask mode is read-only",
+    setBy: "Domovoi permission mode",
+    scope: "This session",
+    remedy: "Switch to Plan or Build mode before asking the agent to write files.",
+  }
 }
 
 const secretPathStart = String.raw`(?:^|[\s:=/\\'"])`

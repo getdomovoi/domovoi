@@ -88,17 +88,26 @@ async function openWorkspace(platform: WorkspacePlatform, snapshot = workspaceSn
   return socket
 }
 
-async function openCommandPalette() {
+  async function openCommandPalette() {
   await userEvent.click(screen.getByRole("button", { name: "Open command palette" }))
   await settle()
-}
+  }
 
 async function openNotificationSettings() {
   await userEvent.click(screen.getByRole("button", { name: "Settings" }))
   await settle()
-  await userEvent.click(screen.getAllByRole("button", { name: "Notifications" })[0]!)
-  await settle()
+  expect(screen.getByRole("heading", { name: "Notifications" })).toBeTruthy()
 }
+
+it("names the command palette scope", async () => {
+  await openWorkspace(browserPlatform(), workspaceSnapshot())
+
+  await openCommandPalette()
+
+  expect(screen.getByText("sessions, machines, commands, skills")).toBeTruthy()
+  expect(screen.getByText("SESSIONS")).toBeTruthy()
+  expect(screen.getByText("COMMANDS")).toBeTruthy()
+})
 
 it("raises a workspace notification through the browser when there is no desktop bridge", async () => {
   const platform = browserPlatform()

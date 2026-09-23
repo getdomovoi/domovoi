@@ -5,7 +5,7 @@ import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { sessionDetail } from "../session-detail"
-import { SessionScreen } from "./session"
+import { keyboardAvoidance, SessionScreen } from "./session"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -30,6 +30,10 @@ async function draw() {
         sending={false}
         sendProblem=""
         skillLabel=""
+        access="full"
+        onWatchReceipt={jest.fn<() => void>()}
+        onCancelQueuedSend={jest.fn<(queueId: string) => void>()}
+        onComposerFocusChange={jest.fn<(focused: boolean) => void>()}
         onBack={jest.fn<() => void>()}
         onOpenApproval={jest.fn<(approvalId: string) => void>()}
         onOpenArtifact={jest.fn<(artifactId: string) => void>()}
@@ -56,9 +60,13 @@ async function draw() {
 }
 
 describe("SessionScreen thread", () => {
-  // Found on a real phone during the S3.0 run: a reply that landed stayed
-  // below the fold. The keyboard offset fixed in the same pass has no host
-  // prop to assert against; it is checked on a device.
+  it("offsets the iOS keyboard by the signed 390 by 844 safe-area top", () => {
+    expect(keyboardAvoidance("ios", metrics.insets.top)).toEqual({
+      behavior: "padding",
+      keyboardVerticalOffset: metrics.insets.top,
+    })
+  })
+
   it("follows the end of the thread when a reply lands", async () => {
     const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
     await draw()

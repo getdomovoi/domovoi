@@ -88,7 +88,7 @@ it("shows every category when no focus is requested", async () => {
   render(panel(undefined, onLoad))
   await settle()
 
-  expect(pressed()).toHaveLength(9)
+  expect(pressed()).toHaveLength(10)
 })
 
 // The design draws an Everything control beside the named filters. Widening
@@ -108,6 +108,7 @@ it("widens back to every category from the Everything control", async () => {
     "Everything",
     "Turns",
     "Approvals",
+    "Policy refusals",
     "Checkpoints",
     "Transfers",
     "Handoffs",

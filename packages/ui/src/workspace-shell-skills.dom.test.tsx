@@ -110,7 +110,9 @@ describe("workspace skill catalog refresh", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }))
     await settle()
-    await user.click(screen.getByRole("button", { name: "Sessions" }))
+    await user.click(screen.getByRole("button", { name: /^Sessions / }))
+    await settle()
+    await user.click(screen.getByRole("button", { name: /^Migrate billing webhooks to idempotent handlers/ }))
     await settle()
 
     expect(sentRequests(socket, "skill.list")).toHaveLength(1)

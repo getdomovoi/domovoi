@@ -116,7 +116,8 @@ source's assertion of durable storage, not cryptographic proof of another machin
 Spoken-code admission limits apply to claims, not full-strength bearer confirmations; failed
 confirmation authentication uses the ordinary failed-authentication limit.
 
-This exchange requires protocol 0.5.0. Update both peers before enrollment. Existing active bound
+This exchange needs both peers on the same protocol minor version (`protocolVersion` in
+`packages/protocol/src/protocol-version.ts`). Update both peers before enrollment. Existing active bound
 credentials are unchanged and do not require pairing again. A pending claim is not a paired
 device and is not listed in Devices; the local source shows its existing pending enrollment row.
 

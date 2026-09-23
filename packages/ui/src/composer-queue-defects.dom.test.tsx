@@ -81,7 +81,7 @@ it("keeps the message the person typed while a turn runs", async () => {
   // Queued, not sent: a message never cancels or joins a turn in flight.
   expect(onSend).not.toHaveBeenCalled()
   expect(screen.getByText("also update the changelog")).toBeTruthy()
-  expect(screen.getByText(/sends at the next turn boundary/)).toBeTruthy()
+  expect(screen.getByText(/queued, sends when this turn ends/)).toBeTruthy()
 })
 
 it("holds the queue when this session is stopped", async () => {
@@ -91,7 +91,7 @@ it("holds the queue when this session is stopped", async () => {
   render(<Harness snapshot={withTurn(true)} onSend={onSend} onPauseSession={onPauseSession} />)
   await queueMessage(user, "run the migration")
 
-  await user.click(screen.getByRole("button", { name: "Stop" }))
+  await user.click(screen.getByRole("button", { name: "Stop the agent" }))
 
   await waitFor(() => expect(onPauseSession).toHaveBeenCalled())
   // The stop ends the turn, so without the hold the queue would leave at the
@@ -115,5 +115,6 @@ it("offers a held message back to the person rather than sending it", async () =
   await user.click(screen.getByRole("button", { name: "Send" }))
 
   // The person moved it back to waiting; the shell is what actually sends.
-  await waitFor(() => expect(screen.getByText(/sends at the next turn boundary/)).toBeTruthy())
+  // No turn is running here, so the row says only that it is queued.
+  await waitFor(() => expect(screen.getByText("queued")).toBeTruthy())
 })

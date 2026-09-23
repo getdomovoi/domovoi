@@ -3,7 +3,7 @@ import { Text } from "react-native"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
-import { FloatingBar, floatingBarInset } from "./floating-bar"
+import { FloatingBar } from "./floating-bar"
 
 const notched: Metrics = {
   frame: { x: 0, y: 0, width: 390, height: 844 },
@@ -11,8 +11,8 @@ const notched: Metrics = {
 }
 
 const flat: Metrics = {
-  frame: { x: 0, y: 0, width: 390, height: 844 },
-  insets: { top: 20, left: 0, right: 0, bottom: 0 },
+  frame: { x: 0, y: 0, width: 412, height: 892 },
+  insets: { top: 24, left: 0, right: 0, bottom: 0 },
 }
 
 async function draw(
@@ -56,9 +56,9 @@ describe("FloatingBar", () => {
     expect(barStyle().bottom).toBe(notched.insets.bottom)
   })
 
-  it("keeps the handoff's own footing where a device reserves nothing", async () => {
+  it("keeps the signed Android footing on a 412 by 892 frame", async () => {
     await draw({}, flat)
-    expect(barStyle().bottom).toBe(floatingBarInset)
+    expect(barStyle().bottom).toBe(14)
   })
 
   // The invariant the whole component exists to keep: a scroller running under
@@ -69,10 +69,10 @@ describe("FloatingBar", () => {
     expect(onFootprint).toHaveBeenCalledWith(60 + notched.insets.bottom)
   })
 
-  it("reports a smaller footprint on a phone that reserves nothing", async () => {
+  it("reports the signed Android footprint on a 412 by 892 frame", async () => {
     const { onFootprint } = await draw({}, flat)
     await layOut(60)
-    expect(onFootprint).toHaveBeenCalledWith(60 + floatingBarInset)
+    expect(onFootprint).toHaveBeenCalledWith(60 + 14)
   })
 
   it("draws what it was given", async () => {

@@ -6,7 +6,6 @@ import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
-import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
@@ -23,6 +22,23 @@ const badgeTone: Record<MachineRow["health"], "neutral" | "warning" | "destructi
   ok: "neutral",
   busy: "warning",
   gone: "destructive",
+}
+
+function PairingCard({ onScan, onType }: { onScan: () => void, onType: () => void }) {
+  return (
+    <Card className="gap-3 border-info-border bg-info-bg">
+      <View>
+        <Text className="font-sans-medium text-[15px] text-info-fg">Pair this phone</Text>
+        <Text className="mt-[7px] text-[13px] leading-[20px] text-info-dim">
+          Pairing exchanges keys with one machine directly, over your tailnet. Nothing passes through a server, and the phone stores no code.
+        </Text>
+      </View>
+      <View className="flex-row gap-2">
+        <Button title="Scan a code" variant="primary" className="flex-1" onPress={onScan} />
+        <Button title="Type it" variant="outline" className="flex-1" onPress={onType} />
+      </View>
+    </Card>
+  )
 }
 
 function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
@@ -69,7 +85,7 @@ function MachineCard({ row, onOpen }: { row: MachineRow, onOpen: () => void }) {
   )
 }
 
-export function FleetScreen({
+export function MachinesScreen({
   fleet,
   activity,
   loading,
@@ -79,6 +95,8 @@ export function FleetScreen({
   now,
   onRefresh,
   onOpen,
+  onScanPairingCode,
+  onTypePairingCode,
   bottomInset,
 }: {
   fleet: FleetEntry[] | undefined
@@ -94,6 +112,8 @@ export function FleetScreen({
   now: number
   onRefresh: () => void
   onOpen: () => void
+  onScanPairingCode: () => void
+  onTypePairingCode: () => void
   // What the floating tab bar covers, so the list can pad by exactly that.
   bottomInset: number
 }) {
@@ -104,7 +124,7 @@ export function FleetScreen({
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-2.5 px-4 pb-3 pt-2">
         <View className="flex-1">
-          <Text variant="heading">Fleet</Text>
+          <Text variant="heading">Machines</Text>
           {summary ? <Text variant="meta" className="mt-[3px]">{summary}</Text> : null}
         </View>
         <Button title="Refresh" onPress={onRefresh} disabled={loading || !connected} />
@@ -130,34 +150,7 @@ export function FleetScreen({
                 : "The fleet has not been read on this connection."}
           </Text>
         ) : null}
-        {/* The phone never runs an agent itself, so an empty fleet is a fact
-            about the machines rather than a phone that has failed to look. */}
-        {empty ? (
-          <View className="items-center gap-3 px-4">
-            <Icon name="server" tone="faint" size={24} />
-            <Text className="font-sans-medium text-[14.5px] text-foreground">
-              Nothing paired to this phone
-            </Text>
-            <Text variant="meta" className="text-center leading-[19px]">
-              A machine appears here once its daemon is running and has accepted this device. The
-              phone never runs an agent itself, so an empty fleet means there is nothing to show.
-            </Text>
-            <Card className="w-full bg-code">
-              <Text variant="label">On the machine</Text>
-              <Text variant="machine" className="mt-1.5 text-[10.5px] leading-[19px] text-strong">
-                domovoid pair --client phone --label "this phone"
-              </Text>
-              <Text variant="note" className="mt-1.5">
-                Then scan the code it draws from Settings on this phone.
-              </Text>
-            </Card>
-            <Text variant="note" className="text-center text-faint">
-              Pairing is a direct exchange with the machine. It is done on the machine, which holds
-              the credential, and this phone reaches one daemon at a time by the address under
-              Settings.
-            </Text>
-          </View>
-        ) : null}
+        {empty ? <PairingCard onScan={onScanPairingCode} onType={onTypePairingCode} /> : null}
         {/* A list read before the connection dropped is not a claim about now. */}
         {fleet && rows.length > 0 && !connected
           ? <Text variant="meta">Last read while connected.</Text>
@@ -165,20 +158,7 @@ export function FleetScreen({
 
         {rows.map((row) => <MachineCard key={row.id} row={row} onOpen={onOpen} />)}
 
-        {/* The handoff offers to scan a pairing code here. Enrolling a machine is
-            the daemon's to do and no credential reaches a client, so the card says
-            where it happens rather than starting something this phone cannot
-            finish. */}
-        {fleet && !empty ? (
-          <Card className="border-dashed">
-            <Text className="text-[12px]">Pair a machine</Text>
-            <Text variant="note" className="mt-1">
-              Pairing is done from the desktop on the daemon's machine, which holds the credential.
-              This phone reaches one daemon at a time, by the address and pairing token under
-              Settings.
-            </Text>
-          </Card>
-        ) : null}
+        {fleet && !empty ? <PairingCard onScan={onScanPairingCode} onType={onTypePairingCode} /> : null}
       </PageScroller>
     </View>
   )

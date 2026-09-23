@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html",
   "sha256": "e10f42ddc4f703ddde57a3e09a91a15ab0ee4f1e2a29b25e503818c82444cb0c",
-  "derivedOn": "2026-09-18",
+  "derivedOn": "2026-09-20",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
@@ -15,7 +15,7 @@
     "no writes to a production database",
     "Set by dana@acme.dev as org policy, on every machine on this account.",
     "mac-mini-m4",
-    "Step 3 of 4 · writing the migration",
+    "Step 3 of 4 \u00b7 writing the migration",
     "4m",
     "Steps 1 and 2 are done. replay.spec.ts asserts exactly-once delivery and passes.",
     "Also cover the claim-expiry case in replay.spec.ts",
@@ -138,20 +138,11 @@
       ],
       "evidence": [
         "\"Sessions\"",
-        "\"Fleet\"",
+        "\"Machines\"",
         "\"Settings\"",
         "tab-bar",
         "label: \"Machines\""
-      ],
-      "presence": [
-        "\"Sessions\"",
-        "\"Settings\"",
-        "tab-bar"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the middle tab is labelled Fleet; the design labels it Machines"
-      }
+      ]
     },
     {
       "id": "shell.platform-toggle",
@@ -216,11 +207,7 @@
       ],
       "presence": [
         "Allowed once"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the receipt decides and names the outcome; RECORDED AS, the watch action and the revert note are not drawn"
-      }
+      ]
     },
     {
       "id": "watching.screen",
@@ -257,13 +244,10 @@
       ],
       "evidence": [
         "Nothing to approve",
+        "Refused by policy",
         "THE RULE IT BROKE",
         "WHAT YOU CAN DO"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "the phone has no policy refusal screen; a refused gate arrives as a resolved approval"
-      }
+      ]
     },
     {
       "id": "launch.screen",
@@ -274,14 +258,7 @@
       ],
       "evidence": [
         "Reaching your machines over the routes you configured"
-      ],
-      "presence": [
-        "Looking for a saved daemon"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the splash names its phase with its own copy; the design's line is not drawn"
-      }
+      ]
     },
     {
       "id": "sessions.unpaired",
@@ -298,11 +275,7 @@
       ],
       "presence": [
         "Nothing paired to this phone"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the unpaired screen exists per tab with its own copy"
-      }
+      ]
     },
     {
       "id": "machines.unpaired",
@@ -325,11 +298,7 @@
       ],
       "presence": [
         "No machines paired"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the machines tab says it is unpaired; the pairing entry points and the unavailable list are not drawn as designed"
-      }
+      ]
     },
     {
       "id": "pairing.camera",
@@ -344,14 +313,7 @@
         "Point at the pairing code",
         "Or type the code",
         "Paste"
-      ],
-      "presence": [
-        "Paste"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "camera pairing exists with a typed fallback; the viewfinder line and the fallback label are not the design's"
-      }
+      ]
     },
     {
       "id": "sessions.idle",
@@ -368,11 +330,7 @@
       ],
       "presence": [
         "No sessions running"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the empty state names the cause with its own copy; the Start a session action is not drawn"
-      }
+      ]
     },
     {
       "id": "thread.screen",
@@ -383,14 +341,7 @@
       ],
       "evidence": [
         "Steer it, or queue a message"
-      ],
-      "presence": [
-        "Reply…"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the thread and composer exist; the composer placeholder and the plan step line in the header are not the design's"
-      }
+      ]
     },
     {
       "id": "composer.keyboard",
@@ -405,19 +356,12 @@
       ],
       "evidence": [
         "A turn is running, so this will queue and send at the boundary"
-      ],
-      "presence": [
-        "tab-bar"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the composer and keyboard behaviour exist; the queue note is not drawn"
-      }
+      ]
     },
     {
       "id": "attach.sheet",
       "name": "What you can attach",
-      "where": "frame 13: Photo or screenshot with its bound, Take a photo, and three dimmed sources that say what each waits on",
+      "where": "frame 13: Photo or screenshot with its bound, Take a photo, and three dimmed sources. Terminal output is dimmed because the phone receives no terminal stream to select from; bounded text attachment transport through session.send already exists.",
       "copy": [
         "What you can attach",
         "Photo or screenshot",
@@ -449,15 +393,9 @@
       ],
       "evidence": [
         "uploads to",
-        "Images only, up to 1.5 MB and 2048"
-      ],
-      "presence": [
-        "attachmentsAllowed"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "attachments queue and send (#474, #475); the upload line copy is not the design's"
-      }
+        "Images only, up to",
+        "maximumImageUploadDimension"
+      ]
     },
     {
       "id": "plan.sheet",
@@ -473,14 +411,7 @@
         "Editing a step here applies at the next turn boundary",
         "Edit a step",
         "Looks right"
-      ],
-      "presence": [
-        "Edit a step"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the plan sheet edits steps; Looks right is not drawn"
-      }
+      ]
     },
     {
       "id": "plan.rendered",
@@ -506,14 +437,7 @@
         "The render stays on",
         "builds on",
         "Comment"
-      ],
-      "presence": [
-        "Comment"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the render and variants show; the two lines are not drawn"
-      }
+      ]
     },
     {
       "id": "artifact.comment",
@@ -529,14 +453,7 @@
         "ANCHORED TO",
         "Save for later",
         "Send to the agent"
-      ],
-      "presence": [
-        "ANCHORED TO"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "commenting on an element exists; Save for later is not drawn"
-      }
+      ]
     },
     {
       "id": "plan.pinned",

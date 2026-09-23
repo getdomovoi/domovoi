@@ -1,0 +1,95 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Onboarding.dc.html",
+  "sha256": "a55724831e09e5f9a944db23d648a9b3ecd40b2c26b51a12a9d1af00519a4da1",
+  "derivedOn": "2026-09-20",
+  "sources": [
+    "apps/mobile/src/**/*.{ts,tsx}",
+    "apps/desktop/src/**/*.{ts,tsx}",
+    "packages/ui/src/**/*.{ts,tsx}"
+  ],
+  "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "elements": [
+    {
+      "id": "onboarding.daemon",
+      "name": "Daemon discovery and account choice",
+      "where": "first-run daemon state",
+      "copy": [
+        "Domovoi",
+        "No daemon is running on this computer",
+        "Agents run through a background service on each machine. This window is only a client.",
+        "Copy",
+        "Install it for me",
+        "WHAT THE DAEMON DOES",
+        "My machine is somewhere else",
+        "Sign in to Domovoi Cloud and connect from here instead.",
+        "Daemon 0.9.4 is running as a login service. It starts with the machine and answers on loopback only until you pair something.",
+        "Sign in to Domovoi Cloud",
+        "So your machines can find each other off-network. Not where code, tokens or sessions live.",
+        "You probably do not need this. A tailnet is up on this machine and two of its nodes already run a daemon, so they reach each other directly. Domovoi Cloud would only add the phone app when you are off the tailnet.",
+        "Use the tailnet, skip the account"
+      ],
+      "missing": {
+        "since": "2026-09-20",
+        "reason": "The current clients do not implement the signed-in onboarding flow drawn by this design."
+      }
+    },
+    {
+      "id": "onboarding.account",
+      "name": "Account sign-in and pairing",
+      "where": "account and pairing flow",
+      "copy": [
+        "EMAIL",
+        "dana@acme.dev",
+        "Send a sign-in code",
+        "Or continue with GitHub, Google or a passkey.",
+        "HJ4K-9QZ2",
+        "Enter this at domovoi.sh/device on any signed-in browser. This window is waiting.",
+        "expires in 9m 41s \u00b7 this machine will be named mac-mini-m4",
+        "Simulate approval",
+        "WHAT THE ACCOUNT DOES AND DOES NOT DO",
+        "Skip, use this machine only",
+        "Loopback works with no account. You can sign in later from Settings.",
+        "Connect an agent on mac-mini-m4",
+        "Agents you already have. Tokens stay in this machine's keychain, so each machine authenticates separately.",
+        "Add another machine",
+        "One machine is enough for now",
+        "Add a machine",
+        "Each machine holds its own code and credentials. Pick how this client reaches it.",
+        "NODES ON TAIL9C2F.TS.NET",
+        "Domovoi did not configure this network",
+        "Paste into your ACLs and tag the machines",
+        "tag:domovoi",
+        "Open a repository on mac-mini-m4"
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "platform",
+        "reason": "Cloud account sign-in and off-network pairing are Phase 2 platform work."
+      }
+    },
+    {
+      "id": "onboarding.repository",
+      "name": "Repository selection and access",
+      "where": "repository selection flow",
+      "copy": [
+        "Sessions run in a worktree, so your checkout is never modified.",
+        "Choose a folder on mac-mini-m4",
+        "Browse hetzner-cx42",
+        "Clone from a URL",
+        "The first is this computer's dialog. The second asks that machine's daemon.",
+        "FOUND ON THIS MACHINE",
+        "A dirty checkout is fine: the worktree comes off the last commit.",
+        "Nothing here that the daemon may read. One level at a time, no recursive scan.",
+        "~/Documents is outside the roots you allowed on this machine. Reading it needs an approval, and your answer becomes a rule.",
+        "Ask for access",
+        "Not now",
+        "Open this directory",
+        "A directory that is not a repository is fine, the agent can git init it."
+      ],
+      "missing": {
+        "since": "2026-09-20",
+        "reason": "The current first-run clients do not implement this repository browser and access prompt as drawn."
+      }
+    }
+  ]
+}

@@ -33,7 +33,7 @@ it("says a filtered audit log matched nothing, and names the filters to change",
   render(<AuditLogView connected initialPage={emptyAudit} onQuery={vi.fn(async () => emptyAudit)} onExport={vi.fn()} onOpenSkills={vi.fn()} />)
   await settle()
 
-  await user.type(screen.getByPlaceholderText("Actor, target, action, or redacted detail"), "prisma")
+  await user.type(screen.getByPlaceholderText("Search the audit log"), "prisma")
   await settle()
 
   expect(screen.getByText("No matching audit entries")).toBeTruthy()

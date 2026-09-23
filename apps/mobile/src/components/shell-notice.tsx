@@ -1,7 +1,9 @@
 import { View } from "react-native"
 
 import { cn } from "../lib/cn"
+import type { LaunchPhase } from "../launch-state"
 import type { UnreachableShell } from "../shell-state"
+import { LaunchPhases } from "./launch-phases"
 import { PageScroller } from "./page-scroller"
 import { Button } from "./ui/button"
 import { Card } from "./ui/card"
@@ -27,12 +29,14 @@ const retriable: ReadonlySet<UnreachableShell["kind"]> = new Set(["reaching"])
 
 export function ShellNotice({
   shell,
+  phases,
   address,
   bottomInset,
   onOpenSettings,
   onRetry,
 }: {
   shell: UnreachableShell
+  phases: readonly LaunchPhase[]
   // The one route this phone has. Named on screen because a wrong address and
   // a machine that is asleep look identical from here.
   address: string
@@ -63,6 +67,12 @@ export function ShellNotice({
           {shell.headline}
         </Text>
         <Text variant="meta" className="text-center leading-[19px]">{shell.detail}</Text>
+        {shell.kind === "reaching" ? (
+          <Text variant="note" className="text-center leading-[18px] text-faint">
+            Reaching your machines over the routes you configured. No spinner, because the phase is knowable.
+          </Text>
+        ) : null}
+        <LaunchPhases phases={phases} />
 
         {address ? (
           <Card flush className="w-full">

@@ -282,6 +282,84 @@ describe("CodexAppServerAdapter permissions", () => {
 })
 
 describe("CodexAppServerAdapter", () => {
+  it("initializes without experimental APIs when capability negotiation is unavailable", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+
+    transport.receive({ id: 1, error: { message: "unknown capability experimentalApi" } })
+    await Promise.resolve()
+    expect(transport.sent[1]).toMatchObject({
+      id: 2,
+      method: "initialize",
+      params: { clientInfo: { name: "domovoi", title: "Domovoi", version: "9.8.7-test" } },
+    })
+    expect(transport.sent[1]?.params).not.toHaveProperty("capabilities")
+    transport.receive({ id: 2, result: {} })
+
+    await expect(connecting).resolves.toBeUndefined()
+    expect(transport.sent[2]).toEqual({ method: "initialized", params: {} })
+    await adapter.close()
+  })
+
+  it("reads provider-reported primary and secondary quota windows", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const reading = adapter.usageLimits()
+    expect(transport.sent.at(-1)).toEqual({
+      id: 2,
+      method: "account/rateLimits/read",
+      params: { excludeResetCreditDetails: true },
+    })
+    transport.receive({
+      id: 2,
+      result: {
+        rateLimits: {
+          planType: "plus",
+          primary: { usedPercent: 23, windowDurationMins: 300, resetsAt: 1_758_405_600 },
+          secondary: { usedPercent: 41, windowDurationMins: 10_080, resetsAt: 1_758_751_200 },
+        },
+      },
+    })
+
+    await expect(reading).resolves.toEqual({
+      provider: "codex",
+      planType: "plus",
+      windows: [
+        { kind: "primary", usedPercent: 23, windowDurationMinutes: 300, resetsAt: "2025-09-20T22:00:00.000Z" },
+        { kind: "secondary", usedPercent: 41, windowDurationMinutes: 10_080, resetsAt: "2025-09-24T22:00:00.000Z" },
+      ],
+    })
+    await adapter.close()
+  })
+
+  it("omits absent or malformed quota windows", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const reading = adapter.usageLimits()
+    transport.receive({
+      id: 2,
+      result: {
+        rateLimits: {
+          planType: "plus",
+          primary: null,
+          secondary: { usedPercent: -1, windowDurationMins: 10_080, resetsAt: 1_758_751_200 },
+        },
+      },
+    })
+
+    await expect(reading).resolves.toBeUndefined()
+    await adapter.close()
+  })
+
   it("resets timed-out initialization without reviving the stale transport", async () => {
     const first = new FakeTransport()
     const second = new FakeTransport()
@@ -713,7 +791,10 @@ describe("CodexAppServerAdapter", () => {
     expect(transport.sent[0]).toMatchObject({
       id: 1,
       method: "initialize",
-      params: { clientInfo: { name: "domovoi", title: "Domovoi", version: "9.8.7-test" } },
+      params: {
+        clientInfo: { name: "domovoi", title: "Domovoi", version: "9.8.7-test" },
+        capabilities: { experimentalApi: true },
+      },
     })
     transport.receive({ id: 1, result: {} })
     await connecting
@@ -754,6 +835,14 @@ describe("CodexAppServerAdapter", () => {
       params: {
         threadId: "thread-1",
         input: [{ type: "text", text: "Run the tests" }],
+        collaborationMode: {
+          mode: "default",
+          settings: {
+            model: "gpt-5.6-sol",
+            reasoning_effort: "medium",
+            developer_instructions: null,
+          },
+        },
         approvalPolicy: "on-request",
         sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/worktree"] },
       },
@@ -811,6 +900,70 @@ describe("CodexAppServerAdapter", () => {
 
     adapter.resolveApproval(41, "always-project")
     expect(transport.sent.at(-1)).toEqual({ id: 41, result: { decision: "accept" } })
+    await adapter.close()
+  })
+
+  it("starts Plan turns in Codex's native plan collaboration mode", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({
+      threadId: "thread-plan",
+      cwd: "/worktree",
+      prompt: "Plan the work",
+      runtime: runtime("plan", false),
+    })
+    expect(transport.sent[2]).toMatchObject({
+      id: 2,
+      method: "turn/start",
+      params: {
+        collaborationMode: {
+          mode: "plan",
+          settings: {
+            model: "gpt-5.6-sol",
+            reasoning_effort: "medium",
+            developer_instructions: null,
+          },
+        },
+      },
+    })
+    transport.receive({ id: 2, result: { turn: { id: "turn-plan" } } })
+    await expect(turning).resolves.toBe("turn-plan")
+    await adapter.close()
+  })
+
+  it("falls back to a plain Plan turn when collaboration mode is unavailable", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({
+      threadId: "thread-plan-fallback",
+      cwd: "/worktree",
+      prompt: "Plan the work",
+      runtime: runtime("plan", false),
+    })
+    transport.receive({
+      id: 2,
+      error: { message: "turn/start.collaborationMode requires experimentalApi capability" },
+    })
+    await Promise.resolve()
+    expect(transport.sent[3]).toMatchObject({
+      id: 3,
+      method: "turn/start",
+      params: {
+        threadId: "thread-plan-fallback",
+        input: [{ type: "text", text: "Plan the work" }],
+      },
+    })
+    expect(transport.sent[3]?.params).not.toHaveProperty("collaborationMode")
+    transport.receive({ id: 3, result: { turn: { id: "turn-plan-fallback" } } })
+    await expect(turning).resolves.toBe("turn-plan-fallback")
     await adapter.close()
   })
 
@@ -899,6 +1052,42 @@ describe("CodexAppServerAdapter", () => {
         costSource: "unavailable",
       },
     })
+    await adapter.close()
+  })
+
+  it("carries the provider item id on an agent message delta", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "message-1", delta: "first" },
+    })
+    transport.receive({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "message-2", delta: "second" },
+    })
+
+    expect(event).toHaveBeenNthCalledWith(1, {
+      type: "text-delta",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "message-1",
+      delta: "first",
+    })
+    expect(event).toHaveBeenNthCalledWith(2, {
+      type: "text-delta",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "message-2",
+      delta: "second",
+    })
+
     await adapter.close()
   })
 })

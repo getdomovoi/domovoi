@@ -55,7 +55,7 @@ it("queues a message sent while a turn is running rather than sending it", async
   await user.click(screen.getByRole("button", { name: "Send message" }))
 
   expect(onSend).not.toHaveBeenCalled()
-  expect(screen.getByText("sends at the next turn boundary")).toBeTruthy()
+  expect(screen.getByText("queued, sends when this turn ends")).toBeTruthy()
   expect(screen.getByText("also update the changelog")).toBeTruthy()
 })
 

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { checkConformance, designCopy } from "./design-conformance.mjs"
+import { checkConformance, checkV2Manifest, designCopy } from "./design-conformance.mjs"
 
 // A small design in the .dc.html shape: literal copy in the template, copy
 // under aria-label, a binding that is not copy, and sample data.
@@ -150,4 +150,31 @@ test("absent-in-file evidence holds when the named file lacks the string, and a 
   assert.ok(!result.failures.some((line) => line.includes("titlebar.mark:")))
   assert.ok(result.failures.some((line) => line.includes("humanRead names nope")))
   assert.equal(result.humanRead.length, 2)
+})
+
+test("v2 manifest requires all design inventories, approved exceptions, and scoped desktop and phone contracts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "design-conformance-manifest-"))
+  await mkdir(join(root, "src"), { recursive: true })
+  await writeFile(join(root, "src", "desktop.tsx"), "export const chrome = 'WorkspaceRail --shell-rail permanent inspector'\n")
+  await writeFile(join(root, "src", "phone.tsx"), "export const chrome = 'Fleet Review'\n")
+  await writeFile(join(root, "manifest.json"), JSON.stringify({
+    version: 2,
+    precedence: ["current design HTML", "approved exception ledger", "production behavior"],
+    designs: [
+      { id: "desktop", design: "design/Desktop.dc.html", inventory: "docs/desktop.json", sources: ["src/desktop.tsx"] },
+      { id: "phone", design: "design/Phone.dc.html", inventory: "docs/phone.json", sources: ["src/phone.tsx"] },
+    ],
+    exceptions: [
+      { id: "UX-001", surface: "Desktop composer", allowance: "Visible Enter/Shift+Enter hint", constraint: "Keep exact existing behavior" },
+    ],
+    contracts: [
+      { id: "desktop-v2", sources: ["src/desktop.tsx"], forbidden: ["WorkspaceRail", "--shell-rail", "permanent inspector"] },
+      { id: "phone-v2", sources: ["src/phone.tsx"], forbidden: ["Fleet", "Review"] },
+    ],
+  }))
+  const result = await checkV2Manifest(root, "manifest.json")
+  assert.ok(result.failures.some((line) => line.includes("requires exactly 9 designs")))
+  assert.ok(result.failures.some((line) => line.includes("SAF-001") && line.includes("missing approved exception")))
+  assert.ok(result.failures.some((line) => line.includes("desktop-v2") && line.includes("WorkspaceRail")))
+  assert.ok(result.failures.some((line) => line.includes("phone-v2") && line.includes("Fleet")))
 })

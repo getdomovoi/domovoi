@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { imageUploadSchema, maximumSessionAttachments } from "./image-upload.js"
+import { imageUploadSchema, maximumSessionAttachments, sessionAttachmentSchema } from "./image-upload.js"
 
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
@@ -66,6 +66,7 @@ import {
   workspaceSnapshotSchema,
 } from "./schema.js"
 import {
+  clientAccessSchema,
   deviceClaimParamsSchema,
   deviceCurrentResultSchema,
   deviceClaimResultSchema,
@@ -293,6 +294,7 @@ export const sessionHistoryCategorySchema = z.enum([
   "messages",
   "tools",
   "approvals",
+  "policy-refusals",
   "handoffs",
   "transfers",
   "checkpoints",
@@ -343,6 +345,16 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     explanation: z.string().min(1).optional(),
     decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
   }),
+  z.object({
+    ...historyEntryBase,
+    category: z.literal("policy-refusals"),
+    operation: z.string().trim().min(1).check(utf16MaxLength(4_096)),
+    command: z.string().trim().min(1).check(utf16MaxLength(16_384)),
+    rule: z.string().trim().min(1).check(utf16MaxLength(4_096)),
+    setBy: z.string().trim().min(1).check(utf16MaxLength(1_024)),
+    scope: z.string().trim().min(1).check(utf16MaxLength(1_024)),
+    remedy: z.string().trim().min(1).check(utf16MaxLength(4_096)),
+  }).strict(),
   z.object({
     ...historyEntryBase,
     category: z.literal("handoffs"),
@@ -840,6 +852,7 @@ export const helloParamsSchema = z.discriminatedUnion("client", [
 export const systemHelloResultSchema = workspaceSnapshotSchema.extend({
   connectionId: connectionIdSchema.optional(),
   sessionImageAttachments: z.boolean().optional(),
+  clientAccess: clientAccessSchema.optional(),
 })
 
 export const artifactAccessPurposeSchema = z.enum(["preview", "print", "download"])
@@ -1079,7 +1092,14 @@ export const sessionSendParamsSchema = z.object({
   prompt: z.string().trim().min(1).check(utf16MaxLength(maximumSessionPromptCharacters)),
   client: clientKindSchema,
   skillSelection: turnSkillSelectionSchema.optional(),
-  attachments: z.array(imageUploadSchema).max(maximumSessionAttachments).optional(),
+  attachments: z.array(sessionAttachmentSchema).max(maximumSessionAttachments).optional(),
+  delivery: z.literal("next-turn-replace").optional(),
+}).strict()
+
+export const sessionCancelQueuedSendParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  queueId: z.string().trim().min(1).check(utf16MaxLength(128)),
+  client: clientKindSchema,
 }).strict()
 
 export const checkpointCreateParamsSchema = z.object({
@@ -1208,6 +1228,28 @@ const usageTotalsSchema = z.object({
   costMicros: z.number().int().nonnegative(),
   currency: z.string().check(utf16Length(3)).optional(),
 }).strict()
+const providerUsageLimitsSchema = z.object({
+  provider: z.string().min(1).check(utf16MaxLength(128)),
+  planType: z.string().min(1).check(utf16MaxLength(128)).optional(),
+  windows: z.array(z.object({
+    kind: z.enum(["primary", "secondary"]),
+    usedPercent: z.number().min(0).max(100),
+    windowDurationMinutes: z.number().int().positive().optional(),
+    resetsAt: dateTimeSchema.optional(),
+  }).strict()).min(1).max(2),
+}).strict().superRefine((limits, context) => {
+  const kinds = new Set<string>()
+  for (const [index, window] of limits.windows.entries()) {
+    if (kinds.has(window.kind)) {
+      context.addIssue({
+        code: "custom",
+        path: ["windows", index, "kind"],
+        message: "Provider usage window kinds must be unique",
+      })
+    }
+    kinds.add(window.kind)
+  }
+})
 export const sessionUsageSchema = usageTotalsSchema.extend({
   sessionId: z.string().min(1),
   coverage: usageCoverageSchema.optional(),
@@ -1216,6 +1258,7 @@ export const sessionUsageSchema = usageTotalsSchema.extend({
   unavailableCostTurns: z.number().int().nonnegative(),
   contextTokens: z.number().int().nonnegative().optional(),
   contextWindowTokens: z.number().int().positive().optional(),
+  providerLimits: providerUsageLimitsSchema.optional(),
   byRuntime: z.array(usageTotalsSchema.extend({
     provider: z.string().min(1),
     model: z.string().min(1),
@@ -1468,6 +1511,7 @@ export const rpcMethods = {
   "session.create": { params: sessionCreateParamsSchema, result: workspaceSnapshotSchema },
   "session.fork": { params: sessionForkParamsSchema, result: workspaceSnapshotSchema },
   "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
+  "session.cancelQueuedSend": { params: sessionCancelQueuedSendParamsSchema, result: workspaceSnapshotSchema },
   "session.revertFile": { params: sessionRevertFileParamsSchema, result: workspaceSnapshotSchema },
   "checkpoint.create": {
     params: checkpointCreateParamsSchema,
@@ -1480,6 +1524,90 @@ export const rpcMethods = {
 } as const
 
 export type RpcMethod = keyof typeof rpcMethods
+
+export type RpcMethodAuthorization = "observe" | "control"
+
+export const rpcMethodAuthorizations = {
+  "system.hello": "observe",
+  "relay.recovery": "observe",
+  "artifact.authorize": "observe",
+  "terminal.create": "control",
+  "terminal.claim": "control",
+  "terminal.input": "control",
+  "terminal.resize": "control",
+  "terminal.close": "control",
+  "fleet.list": "observe",
+  "fleet.clientRoute": "control",
+  "fleet.enroll": "control",
+  "fleet.forget": "control",
+  "fleet.heartbeat": "control",
+  "device.pair": "control",
+  "device.current": "observe",
+  "device.claim": "control",
+  "device.confirmClaim": "control",
+  "device.issueCode": "control",
+  "device.redeemCode": "control",
+  "session.transfer": "control",
+  "session.transferPreview": "control",
+  "session.transferRecoverSource": "control",
+  "session.transferResolveConflict": "control",
+  "transfer.prepare": "control",
+  "transfer.preflight": "control",
+  "transfer.member": "control",
+  "transfer.commit": "control",
+  "transfer.status": "control",
+  "transfer.abort": "control",
+  "device.list": "observe",
+  "device.revoke": "control",
+  "device.revokeCurrent": "control",
+  "device.rotate": "control",
+  "device.rename": "control",
+  "system.pauseAll": "control",
+  "system.emergencyStop": "control",
+  "workspace.get": "observe",
+  "session.evidence": "observe",
+  "session.history": "observe",
+  "audit.query": "observe",
+  "audit.export": "observe",
+  "skill.list": "observe",
+  "skill.inventory": "observe",
+  "skill.read": "observe",
+  "skill.reviewRevision": "observe",
+  "skill.setEnabled": "control",
+  "skill.review": "control",
+  "skill.installPreview": "control",
+  "skill.install": "control",
+  "runtime.models": "observe",
+  "runtime.discover": "observe",
+  "update.status": "observe",
+  "update.check": "control",
+  "update.activate": "control",
+  "provider.refresh": "control",
+  "provider.secret.list": "observe",
+  "session.usage": "observe",
+  "usage.window": "observe",
+  "annotation.create": "control",
+  "annotation.reply": "control",
+  "annotation.setStatus": "control",
+  "plan.edit": "control",
+  "plan.discardEdit": "control",
+  "approval.resolve": "control",
+  "approvalRule.revoke": "control",
+  "permission.hardGates": "observe",
+  "session.setRuntime": "control",
+  "session.restartProviderThread": "control",
+  "project.open": "control",
+  "session.activate": "control",
+  "session.pause": "control",
+  "session.archive": "control",
+  "session.create": "control",
+  "session.fork": "control",
+  "session.send": "control",
+  "session.cancelQueuedSend": "control",
+  "session.revertFile": "control",
+  "checkpoint.create": "control",
+  "checkpoint.restore": "control",
+} as const satisfies Record<RpcMethod, RpcMethodAuthorization>
 
 export type RpcMethodMutation = "mutating" | "read-only"
 
@@ -1565,6 +1693,7 @@ export const rpcMethodMutations = {
   "session.create": "mutating",
   "session.fork": "mutating",
   "session.send": "mutating",
+  "session.cancelQueuedSend": "mutating",
   "checkpoint.create": "mutating",
   "checkpoint.restore": "mutating",
 } as const satisfies Record<RpcMethod, RpcMethodMutation>
@@ -1633,6 +1762,7 @@ export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   "session.activate",
   "session.pause",
   "session.send",
+  "session.cancelQueuedSend",
   "session.setRuntime",
   "system.pauseAll",
   "system.emergencyStop",
@@ -1695,6 +1825,7 @@ export type PlanDiscardEditParams = z.infer<typeof planDiscardEditParamsSchema>
 export type PlanEditDisposition = z.infer<typeof planEditDispositionSchema>
 export type PlanEditReceipt = z.infer<typeof planEditReceiptSchema>
 export type PlanMutationResult = z.infer<typeof planMutationResultSchema>
+export type ProviderUsageLimits = z.infer<typeof providerUsageLimitsSchema>
 export type SessionUsage = z.infer<typeof sessionUsageSchema>
 export type UsageWindowParams = z.infer<typeof usageWindowParamsSchema>
 export type UsageWindow = z.infer<typeof usageWindowSchema>

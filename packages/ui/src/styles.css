@@ -1,12 +1,6 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/instrument-sans";
-@import "@fontsource-variable/jetbrains-mono";
-
-@source "./**/*.{ts,tsx}";
-@source "../../../apps/web/src/**/*.{ts,tsx}";
-@source "../../../apps/desktop/src/**/*.{ts,tsx}";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -170,11 +164,9 @@
   --text-phone-note-lh: 16px;
   --text-phone-label: 10.5px;
   --text-phone-machine: 10px;
-  --shell-rail: 62px;
-  --shell-sidebar: 240px;
+  --shell-sidebar: 268px;
   --shell-thread: 760px;
-  --shell-inspector: 280px;
-  --shell-titlebar: 38px;
+  --shell-titlebar: 46px;
   --shell-header: 62px;
   --shell-control: 34px;
   --shadow-md: 0 10px 30px oklch(0.45 0.02 285 / 0.12);
@@ -339,6 +331,13 @@
     animation: none;
     background-position: 0 0;
   }
+
+  /* The working bar is the same kind of loop. It parks at the head of its
+     track, and the label beside it says the turn is alive. */
+  .sweep-bar {
+    animation: none;
+    transform: translateX(0);
+  }
 }
 
 @media (forced-colors: active) {
@@ -397,6 +396,18 @@
   animation: dv-shimmer 1.6s linear infinite;
 }
 
+/* The working bar. A short segment travels the whole track and leaves it, so a
+   turn that has produced nothing yet still says it is alive. Fading in place
+   reads the same as a render that has stopped. */
+@keyframes dv-sweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(460%); }
+}
+
+@utility sweep-bar {
+  animation: dv-sweep 1.5s linear infinite;
+}
+
 @utility text-micro {
   font-size: var(--text-micro);
 }
@@ -417,3 +428,38 @@
 @utility electron-no-drag {
   -webkit-app-region: no-drag;
 }
+
+@keyframes dv-composer-caret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@font-face {
+  font-family: "Instrument Sans Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 700;
+  src: url("@fontsource-variable/instrument-sans/files/instrument-sans-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+@source "./**/*.ts";
+@source "./**/*.tsx";
+@source "../../../apps/web/src/**/*.ts";
+@source "../../../apps/web/src/**/*.tsx";
+@source "../../../apps/desktop/src/**/*.ts";
+@source "../../../apps/desktop/src/**/*.tsx";
+@source not "./**/*.test.ts";
+@source not "./**/*.test.tsx";
+@source not "../../../apps/web/src/**/*.test.ts";
+@source not "../../../apps/web/src/**/*.test.tsx";
+@source not "../../../apps/desktop/src/**/*.test.ts";
+@source not "../../../apps/desktop/src/**/*.test.tsx";
+@source not "./test-support/**";

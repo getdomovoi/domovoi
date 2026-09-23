@@ -3,7 +3,7 @@ import type { FleetEntry, FleetMachine } from "@getdomovoi/protocol"
 import { fireEvent, render, screen, within } from "@testing-library/react-native"
 
 import type { MachineActivity } from "../machine-activity"
-import { FleetScreen } from "./fleet"
+import { MachinesScreen } from "./fleet"
 
 const lastSeenAt = "2026-09-04T12:00:00.000Z"
 const now = Date.parse("2026-09-04T12:12:00.000Z")
@@ -44,7 +44,7 @@ function fleetOf(...machines: FleetMachine[]): FleetEntry[] {
   return machines.map((machine) => ({ kind: "machine", machine }))
 }
 
-async function draw(overrides: Partial<Parameters<typeof FleetScreen>[0]> = {}) {
+async function draw(overrides: Partial<Parameters<typeof MachinesScreen>[0]> = {}) {
   const props = {
     fleet: fleetOf(daemon, remote),
     activity,
@@ -55,10 +55,12 @@ async function draw(overrides: Partial<Parameters<typeof FleetScreen>[0]> = {}) 
     now,
     onRefresh: jest.fn<() => void>(),
     onOpen: jest.fn<() => void>(),
+    onScanPairingCode: jest.fn<() => void>(),
+    onTypePairingCode: jest.fn<() => void>(),
     bottomInset: 0,
     ...overrides,
   }
-  await render(<FleetScreen {...props} />)
+  await render(<MachinesScreen {...props} />)
   return props
 }
 
@@ -73,7 +75,7 @@ function buttons(): string[] {
   })
 }
 
-describe("FleetScreen", () => {
+describe("MachinesScreen", () => {
   it("says how each machine is reached and what it is", async () => {
     await draw()
 
@@ -105,7 +107,7 @@ describe("FleetScreen", () => {
   it("opens only the daemon this phone is connected to", async () => {
     const { onOpen } = await draw()
 
-    expect(buttons()).toEqual(["Refresh", "Open macbook-pro-m3"])
+    expect(buttons()).toEqual(["Refresh", "Open macbook-pro-m3", "Scan a code", "Type it"])
 
     await fireEvent.press(screen.getByRole("button", { name: "Open macbook-pro-m3" }))
     expect(onOpen).toHaveBeenCalledTimes(1)
@@ -120,20 +122,26 @@ describe("FleetScreen", () => {
     expect(screen.getByText("Offline")).toBeOnTheScreen()
     expect(screen.getByText("hetzner-cx42 cannot be reached. Last seen 12m ago.")).toBeOnTheScreen()
     // Nothing in the protocol wakes a machine, so no button claims it can.
-    expect(buttons()).toEqual(["Refresh"])
+    expect(buttons()).toEqual(["Refresh", "Scan a code", "Type it"])
+    expect(screen.queryByRole("button", { name: /wake/i })).toBeNull()
   })
 
-  it("counts the fleet under the title", async () => {
+  it("names the v2 Machines surface and counts its fleet", async () => {
     await draw({ fleet: fleetOf(daemon, remote, { ...remote, id: `machine-${"c".repeat(32)}`, health: "unreachable" }) })
 
+    expect(screen.getByText("Machines")).toBeOnTheScreen()
     expect(screen.getByText("2 reachable · 1 offline")).toBeOnTheScreen()
   })
 
-  it("does not offer pairing this phone cannot carry out", async () => {
-    await draw()
+  it("owns pairing with the signed camera and typed entry points", async () => {
+    const { onScanPairingCode, onTypePairingCode } = await draw()
 
-    expect(screen.getByText("Pair a machine")).toBeOnTheScreen()
-    expect(buttons()).not.toContain("Pair a machine")
+    expect(screen.getByText("Pair this phone")).toBeOnTheScreen()
+    expect(buttons()).toEqual(expect.arrayContaining(["Scan a code", "Type it"]))
+    await fireEvent.press(screen.getByRole("button", { name: "Scan a code" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Type it" }))
+    expect(onScanPairingCode).toHaveBeenCalledTimes(1)
+    expect(onTypePairingCode).toHaveBeenCalledTimes(1)
   })
 
   it("draws no list, and no pairing card, before the daemon has been asked", async () => {
@@ -154,14 +162,14 @@ describe("FleetScreen", () => {
 
   // A fleet the daemon has answered with nothing in it is not the same as a
   // fleet nobody has asked for. Only the answered one names the two commands.
-  it("tells an answered empty fleet how a machine is made", async () => {
+  it("turns an answered empty fleet into the v2 pairing surface", async () => {
     await draw({ fleet: [] })
 
-    expect(screen.getByText("Nothing paired to this phone")).toBeOnTheScreen()
-    // The command the machine runs, and no installer: nothing serves one yet.
-    expect(screen.getByText('domovoid pair --client phone --label "this phone"')).toBeOnTheScreen()
-    expect(screen.queryByText(/curl/)).toBeNull()
-    expect(screen.queryByText("Pair a machine")).toBeNull()
+    expect(screen.getByText("Pair this phone")).toBeOnTheScreen()
+    expect(screen.getByText(/Nothing passes through a server/)).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Scan a code" })).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Type it" })).toBeOnTheScreen()
+    expect(screen.queryByText(/domovoid pair/)).toBeNull()
   })
 
   it("claims nothing about an empty fleet before the daemon has answered", async () => {

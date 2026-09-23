@@ -12,6 +12,7 @@ import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
+  type ImageUpload,
   type MachineCapability,
   type MachineWslFacts,
   type FleetMachine,
@@ -38,6 +39,7 @@ import {
   skillInstallErrorCode,
   maximumEmergencyStopFailureMessageLength,
   maximumProviderPromptCodeUnits,
+  maximumWorkingPlanSteps,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
   protocolCompatibility,
@@ -47,6 +49,7 @@ import {
   projectSwitchConfirmationErrorCode,
   protocolVersionMismatchErrorCode,
   type ProtocolMismatch,
+  rpcMethodAuthorizations,
   rpcMethods,
   rpcRequestSchema,
   sessionHistoryCategorySchema,
@@ -61,6 +64,7 @@ import {
   type AuditOutcome,
   type ProviderModel,
   type ProjectSwitchConfirmation,
+  type QueuedSessionSend,
   type RpcParams,
   type RpcResult,
   type RpcMethod,
@@ -78,15 +82,17 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type ToolFileEntry,
   type SkillInstallRefusal,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
+  workspaceDeltaBatchDelayMilliseconds,
   versionlessClientProtocol,
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { SqliteWorkspaceStore, type WorkspaceStore } from "./store.js"
+import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
@@ -145,7 +151,7 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
-import { prepareSessionAttachments, SessionAttachmentError } from "./session-attachments.js"
+import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -187,7 +193,11 @@ import {
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
-import { permissionDecisionFor, permissionHardGates } from "./permission-policy.js"
+import {
+  permissionDecisionFor,
+  permissionHardGates,
+  permissionPolicyRefusalFor,
+} from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
@@ -288,6 +298,7 @@ const sessionResourceMethods = new Set([
   "plan.discardEdit",
   "plan.edit",
   "session.archive",
+  "session.cancelQueuedSend",
   "session.pause",
   "session.evidence",
   "session.fork",
@@ -438,6 +449,16 @@ export function appendPlanDelta(
   sessionId: string,
   delta: string,
 ): Artifact {
+  return writePlanArtifact(artifacts, annotations, sessionId, delta, true)
+}
+
+function writePlanArtifact(
+  artifacts: Artifact[],
+  annotations: Annotation[],
+  sessionId: string,
+  content: string,
+  append: boolean,
+): Artifact {
   const artifactId = `plan-${sessionId}`
   const legacyPrefix = `${artifactId}-`
   const matching = artifacts.filter((artifact) =>
@@ -454,7 +475,7 @@ export function appendPlanDelta(
       type: "plan",
       revision: 1,
       mimeType: "text/markdown",
-      content: delta,
+      content,
     }
     artifacts.push(artifact)
     return artifact
@@ -465,7 +486,9 @@ export function appendPlanDelta(
   artifact.id = artifactId
   artifact.title = "Working plan"
   artifact.mimeType = "text/markdown"
-  artifact.content = `${matching.map((candidate) => candidate.content ?? "").join("")}${delta}`
+  artifact.content = append
+    ? `${matching.map((candidate) => candidate.content ?? "").join("")}${content}`
+    : content
   artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {
@@ -479,12 +502,253 @@ export function appendPlanDelta(
   return artifact
 }
 
+function planModePrompt(prompt: string): string {
+  return [
+    "<domovoi_plan_mode>",
+    "Create a plan and do not implement it. Use the provider's native plan mechanism when available. The complete plan must include a title, problem, approach, numbered steps, files for each step when known, whether each step stops for approval, risks, and open questions. If the native plan mechanism is unavailable, return the complete Markdown plan as the final assistant response.",
+    "</domovoi_plan_mode>",
+    "",
+    prompt,
+  ].join("\n")
+}
+
+function finalizedPlanMarkdown(body: string): {
+  content: string
+  tagged: boolean
+  threadContent: string
+} {
+  const blocks = [...body.matchAll(
+    /(^|\r?\n)[ \t]*<proposed_plan>[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*<\/proposed_plan>[ \t]*(?=\r?\n|$)/gu,
+  )]
+  const block = blocks.at(-1)
+  if (!block || block.index === undefined) {
+    const content = body.trim()
+    return { content, tagged: false, threadContent: content }
+  }
+  const content = block[2]?.trim() ?? ""
+  return {
+    content,
+    tagged: true,
+    threadContent: [
+      body.slice(0, block.index).trim(),
+      content,
+      body.slice(block.index + block[0].length).trim(),
+    ].filter(Boolean).join("\n\n"),
+  }
+}
+
+function pendingPlanStepsFromMarkdown(content: string): Array<{
+  text: string
+  status: "pending"
+}> {
+  const numbered = /^ {0,3}\d+[.)]\s+(?:\[[ xX]\]\s*)?(.+?)\s*$/u
+  const numberedHeading = /^#{2,6}\s+(?:(?:step\s+)?\d+\s*[:.)-]\s*)(.+?)\s*#*\s*$/iu
+  const heading = /^#{1,6}\s+(.+?)\s*#*\s*$/u
+  const lines = content.split(/\r?\n/u)
+  let inFence = false
+  const outsideFence = lines.map((line) => {
+    if (/^ {0,3}(?:```|~~~)/u.test(line)) {
+      inFence = !inFence
+      return false
+    }
+    return !inFence
+  })
+  const isStepSection = (line: string): boolean => {
+    const title = heading.exec(line)?.[1]
+      ?.replaceAll(/[*_`]/gu, "")
+      .replace(/\s*\([^)]*\)\s*$/u, "")
+      .trim()
+      .toLowerCase()
+    return title === "steps"
+      || title === "numbered steps"
+      || title === "plan"
+      || title === "implementation"
+      || title === "implementation steps"
+      || title === "implementation plan"
+      || title === "implementation changes"
+      || title === "key changes"
+  }
+  const hasStepSection = lines.some((line, index) => outsideFence[index] && isStepSection(line))
+  const steps: Array<{ text: string, status: "pending" }> = []
+  let collecting = false
+  let startedFallback = false
+  for (const [index, line] of lines.entries()) {
+    if (!outsideFence[index]) continue
+    const headingMatch = heading.exec(line)
+    const match = headingMatch ? numberedHeading.exec(line) : numbered.exec(line)
+    if (headingMatch) {
+      if (!match) {
+        if (hasStepSection) {
+          collecting = isStepSection(line)
+          continue
+        }
+        if (startedFallback) break
+        continue
+      }
+      if (hasStepSection && !collecting) continue
+    } else {
+      if (hasStepSection && !collecting) continue
+    }
+    const text = match?.[1]?.trim()
+    if (!text) continue
+    steps.push({ text, status: "pending" })
+    startedFallback = true
+    if (steps.length === maximumWorkingPlanSteps) break
+  }
+  return steps
+}
+
+function reportedDiffCounts(diff: unknown): Pick<ToolFileEntry, "additions" | "deletions"> | undefined {
+  if (typeof diff !== "string") return undefined
+  let additions = 0
+  let deletions = 0
+  let oldRemaining = 0
+  let newRemaining = 0
+  let sawHunk = false
+
+  for (const line of diff.split(/\r?\n/u)) {
+    const header = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/u.exec(line)
+    if (header) {
+      if (oldRemaining !== 0 || newRemaining !== 0) return undefined
+      oldRemaining = header[1] === undefined ? 1 : Number(header[1])
+      newRemaining = header[2] === undefined ? 1 : Number(header[2])
+      sawHunk = true
+      continue
+    }
+    if (oldRemaining === 0 && newRemaining === 0) continue
+    if (line.startsWith("\\ No newline at end of file")) continue
+    if (line.startsWith("+")) {
+      additions += 1
+      newRemaining -= 1
+    } else if (line.startsWith("-")) {
+      deletions += 1
+      oldRemaining -= 1
+    } else if (line.startsWith(" ")) {
+      oldRemaining -= 1
+      newRemaining -= 1
+    } else {
+      return undefined
+    }
+    if (oldRemaining < 0 || newRemaining < 0) return undefined
+  }
+
+  if (!sawHunk || oldRemaining !== 0 || newRemaining !== 0) return undefined
+  return { additions, deletions }
+}
+
+function reportedFileChangePaths(item: Record<string, unknown>): (string | ToolFileEntry)[] {
+  if (!Array.isArray(item.changes)) return []
+  const paths: (string | ToolFileEntry)[] = []
+  const seen = new Set<string>()
+  for (const change of item.changes) {
+    if (!change || typeof change !== "object" || !("path" in change)) continue
+    const reported = typeof change.path === "string" ? change.path : ""
+    if (!reported.trim() || reported.length > 1_024) continue
+    const path = redactDurableText(reported).value
+    if (!path || path.length > 1_024 || seen.has(path)) continue
+    seen.add(path)
+    const counts = reportedDiffCounts("diff" in change ? change.diff : undefined)
+    paths.push(counts ? { path, ...counts } : path)
+    if (paths.length === 256) break
+  }
+  return paths
+}
+
+function providerTurnIdentity(provider: string, threadId: string, turnId: string): string {
+  return `${provider}\u0000${threadId}\u0000${turnId}`
+}
+
+function providerThreadIdentityPrefix(provider: string, threadId: string): string {
+  return `${provider}\u0000${threadId}\u0000`
+}
+
 export function workspaceDeltaChunks(value: string): string[] {
   const chunks: string[] = []
   for (let offset = 0; offset < value.length; offset += maximumWorkspaceDeltaChunkLength) {
     chunks.push(value.slice(offset, offset + maximumWorkspaceDeltaChunkLength))
   }
   return chunks
+}
+
+export function coalesceWorkspaceDeltas(deltas: readonly WorkspaceDelta[]): WorkspaceDelta[] {
+  const batches: WorkspaceDelta[] = []
+  let current: WorkspaceDelta | undefined
+  const finishCurrent = () => {
+    if (current) batches.push(current)
+    current = undefined
+  }
+
+  for (const delta of deltas) {
+    for (const operation of delta.operations) {
+      if (
+        !current
+        || current.sessionId !== delta.sessionId
+        || current.operations.length === maximumWorkspaceDeltaOperations
+      ) {
+        finishCurrent()
+        current = { sessionId: delta.sessionId, updatedAt: delta.updatedAt, operations: [] }
+      }
+      current.operations.push(operation)
+      current.updatedAt = delta.updatedAt
+    }
+  }
+  finishCurrent()
+  return batches
+}
+
+export function validWorkspaceDeltaBatches(
+  pending: readonly WorkspaceDelta[],
+): { ok: true, batches: WorkspaceDelta[] } | { ok: false, error: unknown } {
+  const batches: WorkspaceDelta[] = []
+  for (const delta of coalesceWorkspaceDeltas(pending)) {
+    const parsed = workspaceDeltaSchema.safeParse(delta)
+    if (!parsed.success) return { ok: false, error: parsed.error }
+    batches.push(parsed.data)
+  }
+  return { ok: true, batches }
+}
+
+type AssistantThreadItem = Extract<WorkspaceSnapshot["thread"][number], { kind: "assistant" }>
+
+export class ActiveAssistantItemCache {
+  #entries = new Map<string, {
+    thread: WorkspaceSnapshot["thread"]
+    itemId: string
+    item: AssistantThreadItem
+  }>()
+
+  find(
+    thread: WorkspaceSnapshot["thread"],
+    sessionId: string,
+    itemId: string,
+  ): AssistantThreadItem | undefined {
+    const cached = this.#entries.get(sessionId)
+    if (cached?.thread === thread && cached.itemId === itemId) return cached.item
+    const item = thread.find(
+      (candidate): candidate is AssistantThreadItem => candidate.id === itemId
+        && candidate.sessionId === sessionId
+        && candidate.kind === "assistant",
+    )
+    if (item) this.remember(thread, sessionId, item)
+    else this.#entries.delete(sessionId)
+    return item
+  }
+
+  remember(
+    thread: WorkspaceSnapshot["thread"],
+    sessionId: string,
+    item: AssistantThreadItem,
+  ): void {
+    this.#entries.set(sessionId, { thread, itemId: item.id, item })
+  }
+
+  delete(sessionId: string): void {
+    this.#entries.delete(sessionId)
+  }
+
+  clear(): void {
+    this.#entries.clear()
+  }
 }
 
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
@@ -564,6 +828,17 @@ export function sessionHistoryEntries(
         ...(item.explanation ? { explanation: item.explanation } : {}),
         ...(item.decisionDurationMs === undefined ? {} : { decisionDurationMs: item.decisionDurationMs }),
       })
+    } else if (item.kind === "policy-refusal") {
+      entries.push({
+        ...base,
+        category: "policy-refusals",
+        operation: item.operation,
+        command: item.command,
+        rule: item.rule,
+        setBy: item.setBy,
+        scope: item.scope,
+        remedy: item.remedy,
+      })
     } else {
       entries.push({
         ...base,
@@ -618,6 +893,9 @@ function sessionHistorySearchText(entry: SessionHistoryEntry): string {
   }
   if (entry.category === "approvals") {
     return `${entry.operation}\n${entry.decision}\n${entry.checkpoint}\n${entry.client}\n${entry.explanation ?? ""}`
+  }
+  if (entry.category === "policy-refusals") {
+    return `${entry.operation}\n${entry.command}\n${entry.rule}\n${entry.setBy}\n${entry.scope}\n${entry.remedy}`
   }
   if (entry.category === "handoffs") return `${entry.body}\n${entry.detail ?? ""}`
   if (entry.category === "transfers") {
@@ -958,6 +1236,7 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
@@ -982,6 +1261,11 @@ export class DomovoiDaemon {
     this.#reportError("Domovoi mutation failed", error)
   })
   #deltaFlush: ReturnType<typeof setTimeout> | undefined
+  #persistFlush: ReturnType<typeof setTimeout> | undefined
+  #pendingWorkspaceDeltas: WorkspaceDelta[] = []
+  #activeAssistantItems = new ActiveAssistantItemCache()
+  #providerPlanTurns = new Set<string>()
+  #planModeTurns = new Set<string>()
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #auditReadTimeoutMs: number
@@ -1200,6 +1484,7 @@ export class DomovoiDaemon {
       },
     )
     this.#snapshot = this.#store.load()
+    this.#loadQueuedSessionSends(true)
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
       // Picking either identity would silently reassign the ownership of every
       // stored session. Fail before providers or listeners can do any work.
@@ -1565,7 +1850,7 @@ export class DomovoiDaemon {
         this.#mutations.cancelAll(error)
         failures.push(error)
       }
-      if (this.#deltaFlush) await this.#saveAgentState(false)
+      if (this.#deltaFlush || this.#persistFlush) await this.#saveAgentState(false)
     } catch (error) {
       failures.push(error)
     }
@@ -1800,6 +2085,7 @@ export class DomovoiDaemon {
   }
 
   #broadcastSnapshot(): void {
+    this.#flushPendingWorkspaceDeltas()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
         ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }]
@@ -1854,11 +2140,14 @@ export class DomovoiDaemon {
           client,
           method,
           message,
-          () => JSON.stringify({
-            jsonrpc: "2.0",
-            method: "workspace.changed",
-            params: workspaceSnapshotForClient(this.#snapshot),
-          }),
+          () => {
+            this.#flushPendingWorkspaceDeltas()
+            return JSON.stringify({
+              jsonrpc: "2.0",
+              method: "workspace.changed",
+              params: workspaceSnapshotForClient(this.#snapshot),
+            })
+          },
         )
       }
     }
@@ -2079,6 +2368,217 @@ export class DomovoiDaemon {
     }
   }
 
+  #queuedSendMetadata(queued: StoredQueuedSessionSend): QueuedSessionSend {
+    return {
+      id: queued.id,
+      sessionId: queued.sessionId,
+      state: queued.state === "releasing" ? "unconfirmed" : queued.state,
+      createdAt: queued.createdAt,
+      origin: queued.origin,
+      skillIds: queued.skillIds,
+      attachments: queued.attachments,
+      ...(queued.reason ? { reason: queued.reason } : {}),
+    }
+  }
+
+  // Queued sends are stored for every project. Only the open project's
+  // sessions hold them in memory and in the snapshot. A release interrupted
+  // by a restart is unconfirmed; one still running during a project switch
+  // belongs to the project being left and is not loaded.
+  #loadQueuedSessionSends(afterRestart: boolean): void {
+    this.#queuedSessionSends.clear()
+    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+      if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
+      const queued = afterRestart && loaded.state === "releasing"
+        ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
+        : loaded
+      if (afterRestart && loaded.state === "releasing") {
+        this.#store.transitionQueuedSessionSend?.(
+          loaded.sessionId,
+          loaded.id,
+          ["releasing"],
+          "unconfirmed",
+          queued.reason,
+        )
+      }
+      if (this.#snapshot.sessions.some((session) => session.id === queued.sessionId)) {
+        this.#queuedSessionSends.set(queued.sessionId, queued)
+      }
+    }
+    this.#syncQueuedSendMetadata()
+  }
+
+  #syncQueuedSendMetadata(): void {
+    const durable = [...this.#queuedSessionSends.values()].map((queued) => this.#queuedSendMetadata(queued))
+    const durableSessions = new Set(durable.map((queued) => queued.sessionId))
+    const sessions = new Set(this.#snapshot.sessions.map((session) => session.id))
+    const delivered = (this.#snapshot.queuedSends ?? []).filter(
+      (queued) => queued.state === "delivered"
+        && !durableSessions.has(queued.sessionId)
+        && sessions.has(queued.sessionId),
+    )
+    this.#snapshot.queuedSends = [...durable, ...delivered]
+      .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
+  }
+
+  #replaceQueuedSessionSend(
+    params: RpcParams<"session.send">,
+    actor: Extract<AuditActor, { kind: "client" }>,
+    connectionId: string,
+    credentialDeviceId: string | undefined,
+  ): void {
+    const createdAt = new Date().toISOString()
+    const queued: StoredQueuedSessionSend = {
+      id: `queued-send-${randomUUID()}`,
+      sessionId: params.sessionId,
+      state: "waiting",
+      createdAt,
+      origin: {
+        client: actor.client,
+        ...(actor.clientId ? { clientId: actor.clientId } : {}),
+        connectionId,
+      },
+      skillIds: params.skillSelection?.skills.map((skill) => skill.skillId) ?? [],
+      attachments: params.attachments?.map((attachment) => {
+        if ("kind" in attachment) {
+          return attachment.kind === "text"
+            ? { kind: "text" as const, name: attachment.name, bytes: Buffer.byteLength(attachment.content, "utf8") }
+            : { kind: "workspace-file" as const, path: attachment.path }
+        }
+        return {
+          kind: "image" as const,
+          mimeType: attachment.mimeType,
+          width: attachment.width,
+          height: attachment.height,
+          bytes: canonicalBase64DecodedByteLength(attachment.data)!,
+        }
+      }) ?? [],
+      prompt: params.prompt,
+      ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
+      ...(params.attachments ? { uploads: params.attachments } : {}),
+      ...(credentialDeviceId ? { credentialDeviceId } : {}),
+    }
+    this.#store.replaceQueuedSessionSend?.(queued)
+    this.#queuedSessionSends.set(params.sessionId, queued)
+    this.#snapshot.queuedSends = (this.#snapshot.queuedSends ?? []).filter(
+      (candidate) => candidate.sessionId !== params.sessionId,
+    )
+    this.#syncQueuedSendMetadata()
+  }
+
+  #transitionQueuedSessionSend(
+    sessionId: string,
+    queueId: string,
+    from: StoredQueuedSessionSend["state"][],
+    state: StoredQueuedSessionSend["state"],
+    reason?: string,
+  ): boolean {
+    const queued = this.#queuedSessionSends.get(sessionId)
+    if (!queued || queued.id !== queueId || !from.includes(queued.state)) return false
+    if (this.#store.transitionQueuedSessionSend
+      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, reason)) return false
+    const updated = { ...queued, state }
+    if (reason) updated.reason = reason
+    else delete updated.reason
+    this.#queuedSessionSends.set(sessionId, updated)
+    this.#syncQueuedSendMetadata()
+    return true
+  }
+
+  #holdQueuedSessionSend(sessionId: string, reason: string): boolean {
+    const queued = this.#queuedSessionSends.get(sessionId)
+    if (!queued || queued.state === "held" || queued.state === "refused" || queued.state === "unconfirmed") return false
+    return this.#transitionQueuedSessionSend(
+      sessionId,
+      queued.id,
+      ["waiting", "releasing"],
+      "held",
+      reason,
+    )
+  }
+
+  #queuedOriginStillControls(queued: StoredQueuedSessionSend): boolean {
+    if (!queued.credentialDeviceId) return true
+    const device = this.#store.devices?.list().find((candidate) => candidate.id === queued.credentialDeviceId)
+    if (!device || device.revokedAt !== undefined || device.binding.kind !== "client") return false
+    return device.binding.client === queued.origin.client
+      && device.binding.clientAccess === "full"
+  }
+
+  async #releaseQueuedSessionSend(sessionId: string): Promise<void> {
+    const queued = this.#queuedSessionSends.get(sessionId)
+    if (!queued || queued.state !== "waiting") return
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    if (!session || sessionIsReadOnly(session)) {
+      this.#holdQueuedSessionSend(sessionId, sessionReadOnlyMessage(session) ?? "Session access no longer permits delivery.")
+      return
+    }
+    if (!session.workspacePath || !session.providerThreadId || this.#emergencyStopInProgress) {
+      this.#holdQueuedSessionSend(sessionId, "Session is not ready to release the queued send.")
+      return
+    }
+    if (!this.#queuedOriginStillControls(queued)) {
+      this.#holdQueuedSessionSend(sessionId, "The originating credential no longer has control access.")
+      return
+    }
+    if (!this.#transitionQueuedSessionSend(sessionId, queued.id, ["waiting"], "releasing")) return
+    let resolveResponse!: (response: Record<string, unknown>) => void
+    const response = new Promise<Record<string, unknown>>((resolve) => { resolveResponse = resolve })
+    const internalSocket: RpcOutboundSocket = {
+      bufferedAmount: 0,
+      readyState: 1,
+      send: (message) => resolveResponse(JSON.parse(message) as Record<string, unknown>),
+      close: () => {},
+    }
+    this.#authenticatedClients.add(internalSocket)
+    this.#authenticatedActors.set(internalSocket, {
+      kind: "client",
+      client: queued.origin.client,
+      ...(queued.origin.clientId ? { clientId: queued.origin.clientId } : {}),
+    })
+    this.#connectionIds.set(internalSocket, queued.origin.connectionId)
+    await this.#handle(internalSocket, JSON.stringify({
+      jsonrpc: "2.0",
+      id: queued.id,
+      method: "session.send",
+      params: {
+        sessionId: queued.sessionId,
+        prompt: queued.prompt,
+        client: queued.origin.client,
+        ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
+        ...(queued.uploads ? { attachments: queued.uploads } : {}),
+      },
+    }))
+    const result = await response
+    if (!("error" in result)) {
+      this.#store.deleteQueuedSessionSend?.(sessionId, queued.id)
+      this.#queuedSessionSends.delete(sessionId)
+      this.#snapshot.queuedSends = (this.#snapshot.queuedSends ?? []).filter(
+        (candidate) => candidate.sessionId !== sessionId,
+      )
+      this.#snapshot.queuedSends.push({
+        ...this.#queuedSendMetadata({ ...queued, state: "waiting" }),
+        state: "delivered",
+      })
+      await this.#persistSnapshot()
+      this.#broadcastSnapshot()
+      return
+    }
+    const current = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    const rpcError = result.error as { data?: { kind?: unknown }; message?: unknown }
+    const refused = rpcError.data?.kind === "turn-skill-selection-refused"
+      || rpcError.data?.kind === "session-attachment-refused"
+    const state = current?.activeTurnId ? "unconfirmed" : refused ? "refused" : "held"
+    const reason = typeof rpcError.message === "string"
+      ? rpcError.message
+      : state === "unconfirmed"
+        ? "Delivery could not be confirmed."
+        : "Queued delivery was held."
+    this.#transitionQueuedSessionSend(sessionId, queued.id, ["releasing"], state, reason)
+    await this.#persistSnapshot()
+    this.#broadcastSnapshot()
+  }
+
   #serializeSnapshotPersistence<T>(operation: () => Promise<T>): Promise<T> {
     const running = this.#snapshotPersistenceTail.then(operation, operation)
     this.#snapshotPersistenceTail = running.then(() => undefined, () => undefined)
@@ -2110,6 +2610,7 @@ export class DomovoiDaemon {
       this.#snapshot = workspaceSnapshotSchema.parse(
         mergeSessionSnapshotSlice(this.#snapshot, persisted, sessionId),
       )
+      this.#activeAssistantItems.clear()
       this.#sessionHistory.invalidate(sessionId)
       this.#syncArtifactWatchers()
       this.#broadcastSnapshot()
@@ -2321,6 +2822,7 @@ export class DomovoiDaemon {
     // Target ownership evidence changes authority immediately. The source is
     // frozen in memory before any fallible journal, cleanup, or snapshot write.
     this.#snapshot = authoritative
+    this.#activeAssistantItems.clear()
     this.#sessionHistory.invalidate(source.id)
     this.#syncArtifactWatchers()
     this.#broadcastSnapshot()
@@ -2752,6 +3254,7 @@ export class DomovoiDaemon {
     // any fallible cleanup or disk write. The machine that made the unverified
     // recovery claim stops, even when persistence or provider cleanup fails.
     this.#snapshot = authoritative
+    this.#activeAssistantItems.clear()
     this.#sessionHistory.invalidate(session.id)
     this.#syncArtifactWatchers()
     this.#broadcastSnapshot()
@@ -2850,6 +3353,7 @@ export class DomovoiDaemon {
     const sourceSession = this.#snapshot.sessions.find(
       (candidate) => candidate.id === params.sessionId,
     )!
+    this.#holdQueuedSessionSend(sourceSession.id, "Session transfer held the queued send.")
     const frozen = freezeSourceSessionTransfer(
       this.#snapshot,
       prepared.intent,
@@ -3088,6 +3592,11 @@ export class DomovoiDaemon {
       })
       return rpcMethods["session.transfer"].result.parse({ outcome: "refused", reason })
     }
+  }
+
+  #watchingOnly(socket: RpcOutboundSocket): boolean {
+    const credential = this.#deviceCredentials.get(socket)?.verified
+    return credential?.binding.kind === "client" && credential.binding.clientAccess === "watching"
   }
 
   #reportError(context: string, error: unknown): void {
@@ -3617,6 +4126,14 @@ export class DomovoiDaemon {
     // nothing more. The refusal comes before parameter parsing so that no
     // shape of request reaches a handler the card did not name.
     const handheld = this.#deviceCredentials.get(socket)?.verified
+    if (
+      handheld?.binding.kind === "client"
+      && handheld.binding.clientAccess === "watching"
+      && rpcMethodAuthorizations[method] === "control"
+    ) {
+      this.#error(socket, request.id, daemonAuthenticationErrorCode, "Watching-only credentials may only observe")
+      return
+    }
     if (handheld?.binding.kind === "client" && (handheld.binding.client === "phone" || handheld.binding.client === "tablet") && !phoneAndTabletRpcMethods.has(method)) {
       this.#error(
         socket,
@@ -3631,6 +4148,10 @@ export class DomovoiDaemon {
       this.#error(socket, request.id, invalidParams, "Method parameters are invalid")
       return
     }
+
+    // Streaming mutates the canonical snapshot before its delta reaches the
+    // wire. Flush that delta before any RPC can return the newer snapshot.
+    this.#flushPendingWorkspaceDeltas()
 
     if (method === "system.hello") {
       if (!this.#authenticatedClients.has(socket)) {
@@ -3977,7 +4498,13 @@ export class DomovoiDaemon {
       if (method === "device.current") {
         const verified = this.#deviceCredentials.get(socket)?.verified
         const result = verified?.binding.kind === "client"
-          ? { kind: "client", machineId: this.#snapshot.machine.id, deviceId: verified.device.id, client: verified.binding.client }
+          ? {
+              kind: "client",
+              machineId: this.#snapshot.machine.id,
+              deviceId: verified.device.id,
+              client: verified.binding.client,
+              clientAccess: verified.binding.clientAccess,
+            }
           : { kind: "daemon", machineId: this.#snapshot.machine.id }
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
         return
@@ -4048,11 +4575,28 @@ export class DomovoiDaemon {
           model: session.runtime.model,
           ...(session.providerThreadId ? { threadId: session.providerThreadId } : {}),
         }
+        const usage = this.#usageLedger.session(params.sessionId, activeUsageContext)
+        let providerLimits
+        try {
+          const agent = this.#agents.require(session.runtime.provider)
+          // A usage read never starts a provider. Limits come from a provider
+          // that is already connected, or not at all.
+          if (agent.usageLimits && this.#connectedAgents.has(session.runtime.provider)) {
+            providerLimits = await this.#withAbortTimeout(
+              async (signal) => agent.usageLimits?.(signal),
+              this.#agentTimeoutMs,
+              "Provider usage limits timed out",
+            )
+          }
+        } catch {
+          // Provider quota reporting is optional. Ledger usage remains useful
+          // when the provider does not support it or cannot answer this read.
+        }
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(
-            this.#usageLedger.session(params.sessionId, activeUsageContext),
+            providerLimits ? { ...usage, providerLimits } : usage,
           ),
         })
         return
@@ -4385,7 +4929,9 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"runtime.models">
         let models: ProviderModel[]
         try {
-          models = await this.#listProviderModels(params.provider)
+          models = this.#watchingOnly(socket) && !this.#connectedAgents.has(params.provider)
+            ? this.#providerModels.get(params.provider)?.models ?? []
+            : await this.#listProviderModels(params.provider)
         } catch (error) {
           if (!(error instanceof AgentProviderUnavailableError)) throw error
           this.#error(socket, request.id, invalidParams, error.message)
@@ -4750,6 +5296,7 @@ export class DomovoiDaemon {
             // disposable transaction journal. A later journal failure cannot
             // make the target overwrite its now-authoritative imported state.
             this.#snapshot = candidate
+            this.#activeAssistantItems.clear()
             this.#sessionHistory.invalidate(manifest.sessionId)
             this.#syncArtifactWatchers()
             this.#broadcastSnapshot()
@@ -4758,6 +5305,7 @@ export class DomovoiDaemon {
         })
         if (committed.snapshot !== before && this.#snapshot !== committed.snapshot) {
           this.#snapshot = committed.snapshot
+          this.#activeAssistantItems.clear()
           this.#sessionHistory.invalidate(manifest.sessionId)
           this.#syncArtifactWatchers()
           this.#broadcastSnapshot()
@@ -5159,11 +5707,12 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "Device pairing is unavailable")
           return
         }
+        const params = paramsResult.data as RpcParams<"device.issueCode">
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(
-            this.#pairing.issue(Date.now(), (paramsResult.data as RpcParams<"device.issueCode">).targetClient),
+            this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
           ),
         })
         return
@@ -5211,6 +5760,7 @@ export class DomovoiDaemon {
                 binding: {
                   kind: "client",
                   client: (params as RpcParams<"device.pair">).targetClient ?? (params as RpcParams<"device.pair">).client,
+                  clientAccess: (params as RpcParams<"device.pair">).clientAccess ?? "full",
                 },
               })
             : method === "device.list"
@@ -5830,6 +6380,7 @@ export class DomovoiDaemon {
         })
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
+        this.#flushPendingWorkspaceDeltas()
         const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -5917,6 +6468,7 @@ export class DomovoiDaemon {
         })
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
+        this.#flushPendingWorkspaceDeltas()
         const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -6325,6 +6877,7 @@ export class DomovoiDaemon {
           }
           this.#persistenceSucceeded()
           this.#snapshot = candidate
+          this.#activeAssistantItems.clear()
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
           changed = true
           alreadyPersisted = true
@@ -6425,6 +6978,9 @@ export class DomovoiDaemon {
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
+          this.#snapshot.queuedSends = []
+          this.#loadQueuedSessionSends(false)
+          this.#activeAssistantItems.clear()
           await this.#recoverSessionCreations()
           changed = true
         }
@@ -6780,6 +7336,7 @@ export class DomovoiDaemon {
           throw error
         }
         this.#snapshot = candidate
+        this.#activeAssistantItems.clear()
         this.#clearCommittedSessionCreations()
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#send(socket, {
@@ -6789,6 +7346,25 @@ export class DomovoiDaemon {
         })
         this.#broadcastSnapshot()
         return
+      }
+
+      if (method === "session.cancelQueuedSend") {
+        const params = paramsResult.data as RpcParams<"session.cancelQueuedSend">
+        const queued = this.#queuedSessionSends.get(params.sessionId)
+        if (!queued || queued.id !== params.queueId) {
+          this.#error(socket, request.id, invalidParams, "Queued send ID does not match the current entry")
+          return
+        }
+        if (this.#store.deleteQueuedSessionSend
+          && !this.#store.deleteQueuedSessionSend(params.sessionId, params.queueId)) {
+          this.#error(socket, request.id, invalidParams, "Queued send changed before cancellation")
+          return
+        }
+        this.#queuedSessionSends.delete(params.sessionId)
+        this.#snapshot.queuedSends = (this.#snapshot.queuedSends ?? []).filter(
+          (candidate) => candidate.sessionId !== params.sessionId || candidate.id !== params.queueId,
+        )
+        changed = true
       }
 
       if (method === "session.send") {
@@ -6802,6 +7378,31 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session is not ready for agent turns")
           return
         }
+        if (params.delivery === "next-turn-replace") {
+          const actor = this.#authenticatedActors.get(socket)
+          const connectionId = this.#connectionIds.get(socket)
+          if (!actor || actor.kind !== "client" || !connectionId) {
+            this.#error(socket, request.id, invalidParams, "Queued sends require an authenticated connection identity")
+            return
+          }
+          this.#replaceQueuedSessionSend(
+            params,
+            actor,
+            connectionId,
+            this.#deviceCredentials.get(socket)?.verified.device.id,
+          )
+          if (!session.activeTurnId) {
+            const queued = this.#queuedSessionSends.get(session.id)!
+            this.#transitionQueuedSessionSend(
+              session.id,
+              queued.id,
+              ["waiting"],
+              "held",
+              "No provider turn is active, so no successful boundary can release this send.",
+            )
+          }
+          changed = true
+        } else {
         const registeredAgent = this.#agents.require(session.runtime.provider)
         const violation = permissionViolation(session.runtime, registeredAgent)
         if (violation) {
@@ -6830,11 +7431,16 @@ export class DomovoiDaemon {
           && workingPlanNeedsProviderDelivery(boundaryPlan, providerTarget)
         let preparedTurn
         try {
-          const attachments = prepareSessionAttachments(params.attachments, registeredAgent.capabilities)
+          const images = params.attachments?.filter((attachment): attachment is ImageUpload => !("kind" in attachment))
+          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities)
+          const attachmentText = await prepareSessionAttachmentText(params.attachments, session.workspacePath)
+          const userPrompt = attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt
           preparedTurn = await composeProviderPrompt({
             snapshot: this.#snapshot,
             sessionId: session.id,
-            userPrompt: params.prompt,
+            userPrompt: dispatchRuntime.permissionMode === "plan"
+              ? planModePrompt(userPrompt)
+              : userPrompt,
             budgetCodeUnits: this.#providerPromptBudgetCodeUnits,
             ...(deliversPlan ? { workingPlan: boundaryPlan } : {}),
             capabilities: registeredAgent.capabilities,
@@ -7040,9 +7646,13 @@ export class DomovoiDaemon {
         currentSession.state = "active"
         currentSession.updatedAt = createdAt
         currentSession.activeTurnId = turnId
+        if (dispatchRuntime.permissionMode === "plan") {
+          this.#planModeTurns.add(providerTurnIdentity(dispatchRuntime.provider, providerThreadId, turnId))
+        }
         delete currentSession.providerFailure
         this.#snapshot.activeSessionId = currentSession.id
         changed = true
+        }
       }
 
       if (method === "checkpoint.create") {
@@ -7276,11 +7886,13 @@ export class DomovoiDaemon {
       if (changed) this.#syncArtifactWatchers()
       workspaceSnapshotSchema.parse(this.#snapshot)
       if (changed && !alreadyPersisted) await this.#persistSnapshot()
+      this.#flushPendingWorkspaceDeltas()
       const clientSnapshot = changed
         ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
         : workspaceSnapshotForClient(this.#snapshot)
       const helloConnectionId = this.#connectionIds.get(socket)
       const actor = this.#authenticatedActors.get(socket)
+      const helloCredential = this.#deviceCredentials.get(socket)?.verified
       const visibleSnapshot = method === "system.hello" && actor?.kind === "machine"
         ? workspaceSnapshotForClient(createEmptyWorkspace(this.#snapshot.machine))
         : clientSnapshot
@@ -7288,6 +7900,13 @@ export class DomovoiDaemon {
         ? {
             ...visibleSnapshot,
             sessionImageAttachments: true,
+            ...(actor?.kind === "client"
+              ? {
+                  clientAccess: helloCredential?.binding.kind === "client"
+                    ? helloCredential.binding.clientAccess
+                    : "full",
+                }
+              : {}),
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
           }
         : clientSnapshot
@@ -7372,22 +7991,27 @@ export class DomovoiDaemon {
       operations: [],
     }
     let requiresFullSnapshot = false
+    let releaseQueuedSend = false
 
     if (event.type === "text-delta") {
-      const itemId = `assistant-message-${turnLink.turnId ?? event.turnId ?? session.id}`
-      const existing = this.#snapshot.thread.find(
-        (item) => item.id === itemId && item.kind === "assistant",
-      )
+      const itemId = `assistant-message-${
+        event.itemId === undefined
+          ? turnLink.turnId ?? event.turnId ?? session.id
+          : boundedProviderItemId(event.itemId)
+      }`
+      const existing = this.#activeAssistantItems.find(this.#snapshot.thread, session.id, itemId)
       if (existing?.kind === "assistant") existing.body += event.delta
       else {
-        this.#snapshot.thread.push({
+        const item: AssistantThreadItem = {
           id: itemId,
           sessionId: session.id,
           kind: "assistant",
           ...turnLink,
           body: event.delta,
           createdAt,
-        })
+        }
+        this.#snapshot.thread.push(item)
+        this.#activeAssistantItems.remember(this.#snapshot.thread, session.id, item)
       }
       delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
         kind: "assistant.append" as const,
@@ -7399,6 +8023,9 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "plan-delta") {
+      if (reportedTurnId) {
+        this.#providerPlanTurns.add(providerTurnIdentity(provider, threadId, reportedTurnId))
+      }
       const canonical = this.#snapshot.workingPlans.some(
         (plan) => plan.sessionId === session.id,
       )
@@ -7425,6 +8052,9 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "plan-updated") {
+      if (reportedTurnId) {
+        this.#providerPlanTurns.add(providerTurnIdentity(provider, threadId, reportedTurnId))
+      }
       const currentIndex = this.#snapshot.workingPlans.findIndex(
         (plan) => plan.sessionId === session.id,
       )
@@ -7517,6 +8147,31 @@ export class DomovoiDaemon {
           revision: 1,
           mimeType: "text/x-diff",
           content: event.diff,
+        })
+      }
+    }
+
+    if (event.type === "policy-refused") {
+      const refusal = permissionPolicyRefusalFor(session.runtime)
+      if (refusal) {
+        this.#snapshot.thread.push({
+          id: `policy-refusal-${randomUUID()}`,
+          sessionId: session.id,
+          kind: "policy-refusal",
+          ...turnLink,
+          operation: redactDurableText(event.reason).value,
+          command: redactDurableCommand(event.command).value,
+          ...refusal,
+          createdAt,
+        })
+        this.#appendAudit({
+          actor: { kind: "provider", provider, providerThreadId: threadId },
+          action: "provider.policy-refused",
+          outcome: "denied",
+          sessionId: session.id,
+          ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
+          ...(event.itemId ? { target: event.itemId } : {}),
+          detail: refusal.rule,
         })
       }
     }
@@ -7674,6 +8329,23 @@ export class DomovoiDaemon {
         ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
         ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
       })
+      if (event.phase === "completed" && itemRecord?.type === "contextCompaction") {
+        const id = providerContextCompactionRowId(
+          String(itemRecord.id ?? randomUUID()),
+          turnLink.turnId,
+        )
+        if (!this.#snapshot.thread.some((threadItem) => threadItem.id === id)) {
+          this.#snapshot.thread.push({
+            id,
+            sessionId: session.id,
+            kind: "system",
+            ...turnLink,
+            body: "Context compacted.",
+            notice: "context-compaction",
+            createdAt,
+          })
+        }
+      }
       if (item && typeof item === "object" && "type" in item && item.type === "commandExecution") {
         const commandItem = item as Record<string, unknown>
         const id = providerToolRowId(String(commandItem.id ?? randomUUID()), turnLink.turnId)
@@ -7721,6 +8393,33 @@ export class DomovoiDaemon {
       if (item && typeof item === "object" && "type" in item && item.type === "fileChange") {
         const fileChange = item as Record<string, unknown>
         const changes = Array.isArray(fileChange.changes) ? fileChange.changes : []
+        const files = reportedFileChangePaths(fileChange)
+        const id = providerToolRowId(String(fileChange.id ?? randomUUID()), turnLink.turnId)
+        const status = fileChange.status === "failed"
+          ? "failed"
+          : fileChange.status === "declined"
+            ? "declined"
+            : event.phase === "completed"
+              ? "completed"
+              : "running"
+        const existingTool = this.#snapshot.thread.find((threadItem) => threadItem.id === id)
+        if (existingTool?.kind === "tool") {
+          existingTool.status = status
+          existingTool.title = files.length === 1 ? "File change" : "File changes"
+          if (files.length > 0) existingTool.files = files
+        } else {
+          this.#snapshot.thread.push({
+            id,
+            sessionId: session.id,
+            kind: "tool",
+            tool: "file-change",
+            ...turnLink,
+            status,
+            title: files.length === 1 ? "File change" : "File changes",
+            ...(files.length > 0 ? { files } : {}),
+            createdAt,
+          })
+        }
         for (const change of changes) {
           if (!change || typeof change !== "object" || !("path" in change)) continue
           const path = String(change.path)
@@ -7754,6 +8453,80 @@ export class DomovoiDaemon {
 
     if (event.type === "turn-completed") {
       const { failed, failure } = providerTurnCompletion(event.params)
+      let receivedProviderPlan = false
+      if (reportedTurnId) {
+        receivedProviderPlan = this.#providerPlanTurns.delete(
+          providerTurnIdentity(provider, threadId, reportedTurnId),
+        )
+      } else {
+        const prefix = providerThreadIdentityPrefix(provider, threadId)
+        for (const identity of this.#providerPlanTurns) {
+          if (!identity.startsWith(prefix)) continue
+          this.#providerPlanTurns.delete(identity)
+          receivedProviderPlan = true
+        }
+      }
+      const completedTurnLink = turnLink.turnId
+        ? turnLink
+        : this.#turnLink(session.id, provider, threadId, session.activeTurnId)
+      let sentInPlanMode = false
+      const planTurnId = reportedTurnId ?? session.activeTurnId
+      if (planTurnId) {
+        sentInPlanMode = this.#planModeTurns.delete(providerTurnIdentity(provider, threadId, planTurnId))
+      } else {
+        const prefix = providerThreadIdentityPrefix(provider, threadId)
+        for (const identity of this.#planModeTurns) {
+          if (!identity.startsWith(prefix)) continue
+          this.#planModeTurns.delete(identity)
+          sentInPlanMode = true
+        }
+      }
+      if (
+        !failed
+        && !receivedProviderPlan
+        && sentInPlanMode
+        && completedTurnLink.turnId
+      ) {
+        const finalReply = this.#snapshot.thread.findLast((item): item is AssistantThreadItem => (
+          item.kind === "assistant"
+          && item.sessionId === session.id
+          && item.turnId === completedTurnLink.turnId
+        ))
+        const finalized = finalReply ? finalizedPlanMarkdown(finalReply.body) : undefined
+        const content = finalized?.content
+        if (content) {
+          const safeContent = redactDurableText(content).value
+          if (finalized.tagged && finalReply) {
+            finalReply.body = redactDurableText(finalized.threadContent).value
+          }
+          const steps = pendingPlanStepsFromMarkdown(safeContent)
+          if (steps.length > 0) {
+            const currentIndex = this.#snapshot.workingPlans.findIndex(
+              (plan) => plan.sessionId === session.id,
+            )
+            const current = currentIndex === -1
+              ? undefined
+              : this.#snapshot.workingPlans[currentIndex]
+            const mutation = updateWorkingPlanFromProvider(current, {
+              sessionId: session.id,
+              provider,
+              model: session.runtime.model,
+              providerThreadId: threadId,
+              steps,
+              updatedAt: createdAt,
+            })
+            if (currentIndex === -1) this.#snapshot.workingPlans.push(mutation.plan)
+            else this.#snapshot.workingPlans[currentIndex] = mutation.plan
+          }
+          writePlanArtifact(
+            this.#snapshot.artifacts,
+            this.#snapshot.annotations,
+            session.id,
+            safeContent,
+            false,
+          )
+        }
+      }
       if (eventTurnId) this.#updateUsageAccounting(() => this.#usageLedger.finish?.(
         { provider, threadId, turnId: eventTurnId }, failed ? "failed" : "completed",
       ))
@@ -7769,6 +8542,8 @@ export class DomovoiDaemon {
         sessionId: session.id,
         ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
       })
+      if (failed) this.#holdQueuedSessionSend(session.id, "The provider turn failed before the queued boundary could release.")
+      else releaseQueuedSend = true
     }
 
     session.updatedAt = createdAt
@@ -7779,18 +8554,12 @@ export class DomovoiDaemon {
       event.type === "command-output"
     ) {
       if (requiresFullSnapshot) this.#broadcastSnapshot()
-      else {
-        for (let offset = 0; offset < delta.operations.length; offset += maximumWorkspaceDeltaOperations) {
-          this.#broadcastNotification("workspace.delta", workspaceDeltaSchema.parse({
-            ...delta,
-            operations: delta.operations.slice(offset, offset + maximumWorkspaceDeltaOperations),
-          }))
-        }
-      }
+      else if (delta.operations.length > 0) this.#pendingWorkspaceDeltas.push(delta)
       this.#scheduleDeltaFlush()
     } else {
       await this.#flushAgentState()
     }
+    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id)
   }
 
   async #handleProviderDisconnect(provider: string, reason: string): Promise<void> {
@@ -7815,6 +8584,7 @@ export class DomovoiDaemon {
     for (const session of this.#snapshot.sessions) {
       if (session.runtime.provider !== provider || !session.providerThreadId) continue
       affectedSessionIds.add(session.id)
+      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
       session.state = "failed"
       session.providerFailure = classifyProviderFailure(new Error(reason))
       this.#flushCommandOutputStreams(session.id)
@@ -7912,6 +8682,9 @@ export class DomovoiDaemon {
 
   async #runEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
     const requestedAt = new Date().toISOString()
+    for (const sessionId of this.#queuedSessionSends.keys()) {
+      this.#holdQueuedSessionSend(sessionId, "Emergency stop held the queued send.")
+    }
     const stopId = `stop-${randomUUID()}`
     const failures: SystemEmergencyStopResult["failures"] = []
     const affectedSessionIds = new Set<string>()
@@ -8211,6 +8984,7 @@ export class DomovoiDaemon {
       const sessionId = active[index]!.id
       const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
       if (!session) continue
+      this.#holdQueuedSessionSend(session.id, "The session was paused before the queued send could release.")
       session.updatedAt = createdAt
       if (result.status === "fulfilled") {
         session.state = "idle"
@@ -8327,6 +9101,7 @@ export class DomovoiDaemon {
         }
         this.#persistenceSucceeded()
         this.#snapshot = candidate
+        this.#activeAssistantItems.clear()
         this.#sessionHistory.invalidate()
       })
     }
@@ -8358,6 +9133,9 @@ export class DomovoiDaemon {
     )
     if (interrupted.length === 0) return
 
+    for (const session of interrupted) {
+      this.#holdQueuedSessionSend(session.id, "Daemon restart interrupted the turn before the queued boundary.")
+    }
     const recoveredAt = new Date().toISOString()
     const candidate = structuredClone(this.#snapshot)
     const recoveredTurns: Array<{ sessionId: string; turnId: string }> = []
@@ -8397,6 +9175,7 @@ export class DomovoiDaemon {
     workspaceSnapshotSchema.parse(candidate)
     this.#store.save(candidate)
     this.#snapshot = candidate
+    this.#activeAssistantItems.clear()
     for (const recovered of recoveredTurns) {
       this.#appendAudit({
         actor: { kind: "daemon", component: "startup-recovery" },
@@ -8422,6 +9201,7 @@ export class DomovoiDaemon {
   async #archiveSession(sessionId: string, client?: ClientKind): Promise<void> {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
     if (!session || session.state === "archived") return
+    this.#holdQueuedSessionSend(sessionId, "The session was archived before the queued send could release.")
     this.#flushCommandOutputStreams(sessionId)
     if (session.state !== "archiving") {
       const requestedAt = new Date().toISOString()
@@ -8586,6 +9366,7 @@ export class DomovoiDaemon {
     session.state = "archived"
     session.archivedAt = archivedAt
     session.updatedAt = archivedAt
+    this.#activeAssistantItems.delete(sessionId)
     this.#snapshot.thread.push({
       id: `system-${randomUUID()}`,
       sessionId,
@@ -8800,11 +9581,32 @@ export class DomovoiDaemon {
   }
 
   #scheduleDeltaFlush(): void {
-    if (this.#deltaFlush) clearTimeout(this.#deltaFlush)
+    if (this.#persistFlush) clearTimeout(this.#persistFlush)
+    this.#persistFlush = setTimeout(() => {
+      this.#persistFlush = undefined
+      void this.#flushAgentState(false)
+    }, workspaceDeltaBatchDelayMilliseconds)
+    if (this.#deltaFlush) return
     this.#deltaFlush = setTimeout(() => {
       this.#deltaFlush = undefined
-      void this.#flushAgentState(false)
-    }, 32)
+      this.#flushPendingWorkspaceDeltas()
+    }, workspaceDeltaBatchDelayMilliseconds)
+  }
+
+  #flushPendingWorkspaceDeltas(): void {
+    if (this.#pendingWorkspaceDeltas.length === 0) return
+    const pending = this.#pendingWorkspaceDeltas
+    this.#pendingWorkspaceDeltas = []
+    const validated = validWorkspaceDeltaBatches(pending)
+    if (!validated.ok) {
+      this.#reportError("Domovoi could not stream a workspace delta", validated.error)
+      this.#broadcastNotification(
+        "workspace.changed",
+        structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+      )
+      return
+    }
+    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch)
   }
 
   async #flushAgentState(broadcast = true): Promise<void> {
@@ -8833,6 +9635,7 @@ export class DomovoiDaemon {
       ).value,
       createdAt: new Date().toISOString(),
     })
+    this.#flushPendingWorkspaceDeltas()
     this.#broadcastNotification(
       "workspace.changed",
       structuredClone(workspaceSnapshotForClient(this.#snapshot)),
@@ -8871,9 +9674,14 @@ export class DomovoiDaemon {
   }
 
   async #saveAgentState(broadcast = true): Promise<void> {
+    this.#flushPendingWorkspaceDeltas()
     if (this.#deltaFlush) {
       clearTimeout(this.#deltaFlush)
       this.#deltaFlush = undefined
+    }
+    if (this.#persistFlush) {
+      clearTimeout(this.#persistFlush)
+      this.#persistFlush = undefined
     }
     await this.#persistSnapshot()
     if (broadcast) this.#broadcastSnapshot()
@@ -8888,6 +9696,7 @@ export class DomovoiDaemon {
     const threadId = session.providerThreadId
     if (!threadId) return
     const provider = session.runtime.provider
+    this.#holdQueuedSessionSend(sessionId, "Provider quarantine held the queued send.")
     this.#flushCommandOutputStreams(sessionId)
     delete session.providerThreadId
     delete session.activeTurnId
@@ -8942,6 +9751,7 @@ export class DomovoiDaemon {
           }
         }
         delete session.activeTurnId
+        this.#holdQueuedSessionSend(session.id, "Switching projects interrupted the turn before the queued boundary.")
         if (session.state !== "archiving" && session.state !== "archived") {
           session.state = "idle"
         }
@@ -9027,6 +9837,21 @@ function providerToolRowId(providerItemId: string, turnId: string | undefined): 
     ? createHash("sha256").update(JSON.stringify([turnId, providerItemId])).digest("hex")
     : providerItemId
   return `tool-${identity}`
+}
+
+const maximumProviderItemIdLength = 128
+
+function boundedProviderItemId(providerItemId: string): string {
+  return providerItemId.length <= maximumProviderItemIdLength
+    ? providerItemId
+    : createHash("sha256").update(providerItemId).digest("hex")
+}
+
+function providerContextCompactionRowId(providerItemId: string, turnId: string | undefined): string {
+  const identity = turnId
+    ? createHash("sha256").update(JSON.stringify([turnId, providerItemId])).digest("hex")
+    : providerItemId
+  return `context-compaction-${identity}`
 }
 
 function secureTokenMatch(expected: string, supplied: unknown): boolean {

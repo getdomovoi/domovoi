@@ -74,13 +74,31 @@ export function FloatingSurface({
     if (!anchor || !element) return
     const place = () => setPosition(positionFor(anchor, element, placement, align))
     place()
+    // Measuring the anchor forces layout, and a scrolling pane fires many events
+    // per frame. The first event in a frame is measured at once so the surface
+    // keeps up with the chip, the rest are dropped, and one trailing measure on
+    // the next frame lands it where the pane came to rest.
+    let framePending = false
+    const onScroll = () => {
+      if (framePending) return
+      framePending = true
+      place()
+      if (typeof requestAnimationFrame !== "function") {
+        framePending = false
+        return
+      }
+      requestAnimationFrame(() => {
+        framePending = false
+        place()
+      })
+    }
     window.addEventListener("resize", place)
     // Capture: a surface anchored to a chip inside a scrolling pane has to
     // follow it, and scroll does not bubble.
-    window.addEventListener("scroll", place, true)
+    window.addEventListener("scroll", onScroll, true)
     return () => {
       window.removeEventListener("resize", place)
-      window.removeEventListener("scroll", place, true)
+      window.removeEventListener("scroll", onScroll, true)
     }
   }, [open, trigger, placement, align])
 

@@ -55,6 +55,18 @@ describe("threadEntries", () => {
     const snapshot = workspace()
     snapshot.thread = [
       {
+        id: "t-refusal",
+        sessionId: "session-billing",
+        kind: "policy-refusal",
+        operation: "Apply a production database migration",
+        command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+        rule: "no writes to a production database",
+        setBy: "dana@acme.dev",
+        scope: "every machine on this account",
+        remedy: "Run it against acme_dev instead.",
+        createdAt: "2026-08-25T21:51:00.000Z",
+      },
+      {
         id: "t-receipt",
         sessionId: "session-billing",
         kind: "receipt",
@@ -77,13 +89,20 @@ describe("threadEntries", () => {
 
     const { entries } = threadEntries(snapshot, "session-billing")
 
-    expect(entries[0]).toEqual({
-      id: "t-receipt",
-      voice: "note",
-      body: "Denied: Apply a production database migration",
-      meta: "decided from phone · ckpt_7f21",
+    expect(entries[0]).toMatchObject({
+      id: "t-refusal",
+      kind: "policy-refusal",
+      rule: "no writes to a production database",
     })
-    expect(entries[1]?.meta).toBe("command · failed")
+    expect(entries[1]).toMatchObject({
+      id: "t-receipt",
+      kind: "receipt",
+      operation: "Apply a production database migration",
+      checkpoint: "ckpt_7f21",
+    })
+    const note = entries[2]
+    expect(note?.kind).toBe("note")
+    expect(note?.kind === "note" ? note.meta : undefined).toBe("command · failed")
   })
 })
 
@@ -105,10 +124,16 @@ describe("threadEntries receipt", () => {
 
     const { entries } = threadEntries(snapshot, "session-billing")
 
-    expect(entries[0]?.body).toBe("Allowed once: pnpm -w prisma migrate deploy")
-    expect(entries[0]?.meta).toBe(
-      "decided from phone · credential device-fcbd4c3f99c7294586f0c5ca22f9cdf8 · 8f3c1de · in 38s",
-    )
+    expect(entries[0]).toEqual({
+      id: "t-receipt",
+      kind: "receipt",
+      decision: "Allowed once",
+      operation: "pnpm -w prisma migrate deploy",
+      explanation: undefined,
+      attribution: "phone · device fcbd…cdf8",
+      checkpoint: "8f3c1de",
+      duration: "38s",
+    })
   })
 
   it("keeps the explanation with the decision and the facts with the record", () => {
@@ -127,8 +152,15 @@ describe("threadEntries receipt", () => {
 
     const { entries } = threadEntries(snapshot, "session-billing")
 
-    expect(entries[0]?.body).toBe("Denied with an explanation: rm -rf node_modules\nNot on the release branch.")
-    expect(entries[0]?.meta).toBe("decided from web · no checkpoint")
+    expect(entries[0]).toMatchObject({
+      kind: "receipt",
+      decision: "Denied with an explanation",
+      operation: "rm -rf node_modules",
+      explanation: "Not on the release branch.",
+      attribution: "web",
+      checkpoint: "no checkpoint",
+      duration: undefined,
+    })
   })
 })
 
@@ -138,6 +170,37 @@ describe("sessionDetail", () => {
 
     expect(sessionDetail(snapshot, "session-billing")?.approvalId).toBe("approval-migrate")
     expect(sessionDetail(snapshot, "session-audit")?.approvalId).toBeUndefined()
+  })
+
+  it("carries the daemon-owned queued send and latest policy refusal", () => {
+    const snapshot = workspace()
+    snapshot.queuedSends = [{
+      id: "queue-1",
+      sessionId: "session-billing",
+      state: "held",
+      createdAt: "2026-08-25T21:52:00.000Z",
+      origin: { client: "phone", clientId: "device-1", connectionId: "connection-1" },
+      skillIds: [],
+      attachments: [],
+      reason: "Waiting for the current turn boundary.",
+    }]
+    snapshot.thread.push({
+      id: "refusal-1",
+      sessionId: "session-billing",
+      kind: "policy-refusal",
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+      createdAt: "2026-08-25T21:53:00.000Z",
+    })
+
+    expect(sessionDetail(snapshot, "session-billing")).toMatchObject({
+      queuedSend: { id: "queue-1", state: "held" },
+      policyRefusal: { id: "refusal-1", kind: "policy-refusal" },
+    })
   })
 
   it("returns nothing for a session this snapshot does not have", () => {
@@ -194,15 +257,25 @@ describe("sendReadiness", () => {
     }
   })
 
-  it("says a message will steer a running turn rather than refusing it", () => {
+  it("describes next-turn replacement without steer copy during an active turn", () => {
     const snapshot = workspace()
     const session = ready(snapshot)
     session.activeTurnId = "turn-1"
 
     const readiness = sendReadiness(session, false)
 
-    expect(readiness.can).toBe(true)
-    expect(readiness.can && readiness.hint).toContain("steers it")
+    expect(readiness).toEqual({
+      can: true,
+      hint: "A turn is running, so this will queue and send at the boundary.",
+    })
+    expect(readiness.can && readiness.hint).not.toContain("steer")
+  })
+
+  it("locks the composer for authoritative watching-only access", () => {
+    expect(sendReadiness(ready(workspace()), false, "watching")).toEqual({
+      can: false,
+      reason: "Watching only. This phone can read the session but cannot change it.",
+    })
   })
 
   it("points at the waiting approval first, because that is the faster answer", () => {
@@ -247,5 +320,39 @@ describe("isPausable", () => {
     session.state = "archiving"
 
     expect(isPausable(session)).toBe(false)
+  })
+})
+
+describe("context compaction", () => {
+  it("says what survived a compaction", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "system-compaction",
+      sessionId: snapshot.activeSessionId!,
+      kind: "system",
+      body: "Context compacted.",
+      notice: "context-compaction",
+      createdAt: "2026-09-08T09:00:01.000Z",
+    }]
+    const { entries } = threadEntries(snapshot, snapshot.activeSessionId!)
+    expect(entries[0]).toMatchObject({
+      kind: "note",
+      body: "Context compacted.",
+      meta: "Domovoi kept the thread above.",
+    })
+  })
+
+  it("leaves another system row's detail alone", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "system-handoff",
+      sessionId: snapshot.activeSessionId!,
+      kind: "system",
+      body: "Handed off to another provider.",
+      detail: "Hidden reasoning did not transfer.",
+      createdAt: "2026-09-08T09:00:01.000Z",
+    }]
+    const { entries } = threadEntries(snapshot, snapshot.activeSessionId!)
+    expect(entries[0]).toMatchObject({ meta: "Hidden reasoning did not transfer." })
   })
 })

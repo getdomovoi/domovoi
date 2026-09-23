@@ -35,6 +35,7 @@ export default defineConfig({
           name: "dom",
           environment: "happy-dom",
           include: [domTests],
+          setupFiles: ["src/test-setup.dom.ts"],
         },
       },
     ],

@@ -766,6 +766,8 @@ describe("ClaudeAgentSdkAdapter", () => {
   it("isolates Ask from inherited approvals and exposes only read-only tools", async () => {
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory)
+    const event = vi.fn()
+    adapter.onEvent(event)
 
     await adapter.resumeThread({
       threadId: "22222222-2222-4222-8222-222222222222",
@@ -787,6 +789,13 @@ describe("ClaudeAgentSdkAdapter", () => {
         requestId: "request-denied",
       },
     )).resolves.toEqual({ behavior: "deny", message: "Ask mode is read-only" })
+    expect(event).toHaveBeenCalledWith({
+      type: "policy-refused",
+      threadId: "22222222-2222-4222-8222-222222222222",
+      itemId: "tool-denied",
+      command: "touch escaped",
+      reason: "Bash",
+    })
     await expect(calls[0]!.options.canUseTool!(
       "Read",
       { file_path: "README.md" },

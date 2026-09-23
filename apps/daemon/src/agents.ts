@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ProviderModel,
+  ProviderUsageLimits,
   Runtime,
   WorkingPlanStepStatus,
 } from "@getdomovoi/protocol"
@@ -15,7 +16,7 @@ export type AgentWorkingPlanStep = {
 
 export type AgentEvent =
   | { type: "provider-disconnected"; reason: string }
-  | { type: "text-delta"; threadId?: string; turnId?: string; delta: string }
+  | { type: "text-delta"; threadId?: string; turnId?: string; itemId?: string; delta: string }
   | { type: "plan-delta"; threadId?: string; turnId?: string; delta: string }
   | { type: "plan-updated"; threadId: string; turnId?: string; steps: AgentWorkingPlanStep[] }
   | { type: "command-output"; threadId?: string; turnId?: string; itemId?: string; delta: string }
@@ -31,6 +32,14 @@ export type AgentEvent =
       path?: string
       blockedPath?: string
       reason?: string
+    }
+  | {
+      type: "policy-refused"
+      threadId: string
+      turnId?: string
+      itemId?: string
+      command: string
+      reason: string
     }
   | { type: "item"; phase: "started" | "completed"; params: Record<string, unknown> }
   | { type: "usage"; threadId: string; turnId: string; usage: NormalizedUsage; source?: UsageSource }
@@ -55,6 +64,7 @@ export interface AgentAdapter {
   /** Discard connection state while keeping the adapter reusable. */
   resetConnection?(): Promise<void>
   listModels(signal?: AbortSignal): Promise<ProviderModel[]>
+  usageLimits?(signal?: AbortSignal): Promise<ProviderUsageLimits | undefined>
   startThread(input: { cwd: string; runtime: Runtime }): Promise<string>
   resumeThread(input: { threadId: string; cwd: string; runtime: Runtime }): Promise<void>
   stopThread(threadId: string): Promise<void>

@@ -31,7 +31,7 @@ export function JumpPill({
     <View pointerEvents="box-none" style={{ position: "absolute", left: 0, right: 0, bottom: above + 10, zIndex: 5, alignItems: "center" }}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={gate ? "Jump to the waiting decision" : `Jump to the ${text}`}
+        accessibilityLabel={gate ? "Jump to the waiting decision" : unseen > 0 ? `Jump to the ${text}` : "Jump to the latest output"}
         onPress={onPress}
         className={cn(
           "h-11 flex-row items-center gap-2.5 rounded-full border px-[17px]",

@@ -9,8 +9,13 @@ import {
   executionResolutionSchema,
   machineIdSchema,
   protocolVersion,
+  queuedSessionSendSchema,
   resolvedExecutionSchema,
+  sessionSendParamsSchema,
   workspaceSnapshotSchema,
+  type QueuedSessionSend,
+  type SessionAttachment,
+  type TurnSkillSelection,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -43,6 +48,21 @@ export type WorkspaceStoreRecovery = {
 
 type StoredProjectWorkspace = {
   state: string
+}
+
+type StoredQueuedSessionSendRow = {
+  session_id: string
+  queue_id: string
+  state: string
+  payload: string
+}
+
+export type StoredQueuedSessionSend = Omit<QueuedSessionSend, "state"> & {
+  state: "waiting" | "held" | "refused" | "releasing" | "unconfirmed"
+  prompt: string
+  skillSelection?: TurnSkillSelection
+  uploads?: SessionAttachment[]
+  credentialDeviceId?: string
 }
 
 export type ProjectWorkspaceState = {
@@ -93,6 +113,16 @@ export interface WorkspaceStore {
     snapshot: WorkspaceSnapshot,
     ownership: CommittedTransferOwnership,
   ): void | Promise<void>
+  loadQueuedSessionSends?(): StoredQueuedSessionSend[]
+  replaceQueuedSessionSend?(queued: StoredQueuedSessionSend): void
+  transitionQueuedSessionSend?(
+    sessionId: string,
+    queueId: string,
+    from: StoredQueuedSessionSend["state"][],
+    to: StoredQueuedSessionSend["state"],
+    reason?: string,
+  ): boolean
+  deleteQueuedSessionSend?(sessionId: string, queueId: string): boolean
   close(): void | Promise<void>
 }
 
@@ -150,6 +180,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // throw away every stored session, so the legacy value is folded into the
 // canonical shape instead. The derivation is deterministic, so the same legacy
 // workspace keeps one identity across restarts.
+function parseStoredQueuedSessionSend(row: StoredQueuedSessionSendRow): StoredQueuedSessionSend {
+  if (!["waiting", "held", "refused", "releasing", "unconfirmed"].includes(row.state)) {
+    throw new Error("Queued send state is invalid")
+  }
+  const payload = JSON.parse(row.payload) as Record<string, unknown>
+  const state = row.state as StoredQueuedSessionSend["state"]
+  const metadata = queuedSessionSendSchema.parse({
+    id: row.queue_id,
+    sessionId: row.session_id,
+    state: state === "releasing" ? "unconfirmed" : state,
+    createdAt: payload.createdAt,
+    origin: payload.origin,
+    skillIds: payload.skillIds,
+    attachments: payload.attachments,
+    ...(payload.reason === undefined ? {} : { reason: payload.reason }),
+  })
+  const send = sessionSendParamsSchema.parse({
+    sessionId: row.session_id,
+    prompt: payload.prompt,
+    client: metadata.origin.client,
+    ...(payload.skillSelection === undefined ? {} : { skillSelection: payload.skillSelection }),
+    ...(payload.uploads === undefined ? {} : { attachments: payload.uploads }),
+    delivery: "next-turn-replace",
+  })
+  const credentialDeviceId = typeof payload.credentialDeviceId === "string"
+    ? payload.credentialDeviceId
+    : undefined
+  return {
+    ...metadata,
+    state,
+    prompt: send.prompt,
+    ...(send.skillSelection ? { skillSelection: send.skillSelection } : {}),
+    ...(send.attachments ? { uploads: send.attachments } : {}),
+    ...(credentialDeviceId ? { credentialDeviceId } : {}),
+  }
+}
+
 function canonicalizeLegacyMachineId(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length === 0) return undefined
   if (machineIdSchema.safeParse(value).success) return undefined
@@ -196,7 +263,7 @@ function migrateStoredWorkspace(value: unknown): {
   let repaired = false
   // These reviewed predecessors retain their state. Rules from 0.6 gain a zero
   // use count below; full validation still runs before any migrated write.
-  if (typeof migrated.protocolVersion === "string" && /^0\.(?:3|6)\.\d+$/.test(migrated.protocolVersion)) {
+  if (typeof migrated.protocolVersion === "string" && /^0\.(?:3|6|7)\.\d+$/.test(migrated.protocolVersion)) {
     migrated.protocolVersion = protocolVersion
     repaired = true
   }
@@ -571,6 +638,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.transferConflicts = new SqliteTransferConflicts(this.#database)
     this.skillReviews = new SqliteSkillReviews(this.#database)
     this.sessionCreations = new SqliteSessionCreationIntents(this.#database)
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS queued_session_sends (
+        session_id TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `)
 
     const existing = this.#database
       .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
@@ -681,6 +757,91 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       throw error
     }
     this.#restrictFilePermissions()
+  }
+
+  loadQueuedSessionSends(): StoredQueuedSessionSend[] {
+    return (this.#database.prepare(`
+      SELECT session_id, queue_id, state, payload
+      FROM queued_session_sends
+      ORDER BY created_at, queue_id
+    `).all() as StoredQueuedSessionSendRow[]).map(parseStoredQueuedSessionSend)
+  }
+
+  replaceQueuedSessionSend(queued: StoredQueuedSessionSend): void {
+    const metadata = queuedSessionSendSchema.parse({
+      id: queued.id,
+      sessionId: queued.sessionId,
+      state: queued.state === "releasing" ? "unconfirmed" : queued.state,
+      createdAt: queued.createdAt,
+      origin: queued.origin,
+      skillIds: queued.skillIds,
+      attachments: queued.attachments,
+      ...(queued.reason ? { reason: queued.reason } : {}),
+    })
+    sessionSendParamsSchema.parse({
+      sessionId: queued.sessionId,
+      prompt: queued.prompt,
+      client: queued.origin.client,
+      ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
+      ...(queued.uploads ? { attachments: queued.uploads } : {}),
+      delivery: "next-turn-replace",
+    })
+    this.#database.prepare(`
+      INSERT INTO queued_session_sends (session_id, queue_id, state, payload, created_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        queue_id = excluded.queue_id,
+        state = excluded.state,
+        payload = excluded.payload,
+        created_at = excluded.created_at
+    `).run(
+      queued.sessionId,
+      queued.id,
+      queued.state,
+      JSON.stringify({
+        createdAt: queued.createdAt,
+        origin: queued.origin,
+        skillIds: queued.skillIds,
+        attachments: queued.attachments,
+        prompt: queued.prompt,
+        ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
+        ...(queued.uploads ? { uploads: queued.uploads } : {}),
+        ...(queued.credentialDeviceId ? { credentialDeviceId: queued.credentialDeviceId } : {}),
+        ...(queued.reason ? { reason: queued.reason } : {}),
+      }),
+      metadata.createdAt,
+    )
+    this.#restrictFilePermissions()
+  }
+
+  transitionQueuedSessionSend(
+    sessionId: string,
+    queueId: string,
+    from: StoredQueuedSessionSend["state"][],
+    to: StoredQueuedSessionSend["state"],
+    reason?: string,
+  ): boolean {
+    const row = this.#database.prepare(`
+      SELECT session_id, queue_id, state, payload
+      FROM queued_session_sends
+      WHERE session_id = ? AND queue_id = ?
+    `).get(sessionId, queueId) as StoredQueuedSessionSendRow | undefined
+    if (!row || !from.includes(row.state as StoredQueuedSessionSend["state"])) return false
+    const payload = JSON.parse(row.payload) as Record<string, unknown>
+    if (reason === undefined) delete payload.reason
+    else payload.reason = reason
+    const result = this.#database.prepare(`
+      UPDATE queued_session_sends
+      SET state = ?, payload = ?
+      WHERE session_id = ? AND queue_id = ? AND state = ?
+    `).run(to, JSON.stringify(payload), sessionId, queueId, row.state)
+    return result.changes === 1
+  }
+
+  deleteQueuedSessionSend(sessionId: string, queueId: string): boolean {
+    return this.#database.prepare(`
+      DELETE FROM queued_session_sends WHERE session_id = ? AND queue_id = ?
+    `).run(sessionId, queueId).changes === 1
   }
 
   loadProject(projectId: string): ProjectWorkspaceState | undefined {

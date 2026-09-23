@@ -30,6 +30,10 @@ function props(detail: SessionDetail, snapshot: WorkspaceSnapshot) {
     sending: false,
     sendProblem: "",
     skillLabel: "",
+    access: "full" as const,
+    onWatchReceipt: jest.fn<() => void>(),
+    onCancelQueuedSend: jest.fn<(queueId: string) => void>(),
+    onComposerFocusChange: jest.fn<(focused: boolean) => void>(),
     onBack: jest.fn<() => void>(),
     onOpenApproval: jest.fn<(approvalId: string) => void>(),
     onOpenArtifact: jest.fn<(artifactId: string) => void>(),
@@ -55,7 +59,7 @@ function props(detail: SessionDetail, snapshot: WorkspaceSnapshot) {
 }
 
 function grown(detail: SessionDetail, count: number): SessionDetail {
-  const extra = Array.from({ length: count }, (_, index) => ({ id: `late-${index}`, voice: "agent" as const, body: `line ${index}`, meta: undefined }))
+  const extra = Array.from({ length: count }, (_, index) => ({ id: `late-${index}`, kind: "message" as const, voice: "agent" as const, body: `line ${index}` }))
   return { ...detail, entries: [...detail.entries, ...extra] }
 }
 

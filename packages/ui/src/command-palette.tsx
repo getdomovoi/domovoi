@@ -5,6 +5,7 @@ import {
   CpuIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
+  GitCommitHorizontalIcon,
   HistoryIcon,
   MessageSquarePlusIcon,
   PanelTopIcon,
@@ -141,6 +142,8 @@ export function buildWorkspaceCommands({
   openSkill,
   startSessionOn,
   openCheckpoints,
+  takeCheckpoint,
+  checkpointBlocked,
   previewTransferTo,
   currentMachineId,
   transferEntries,
@@ -176,6 +179,10 @@ export function buildWorkspaceCommands({
   // Checkpoints is a view of the History pane, not a pane of its own, so the
   // command opens History already narrowed to that one category.
   openCheckpoints?: (() => void) | undefined
+  // The daemon refuses a checkpoint while a turn is running, so the command is
+  // locked for that time rather than offered and then refused.
+  takeCheckpoint?: (() => void) | undefined
+  checkpointBlocked?: boolean | undefined
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
@@ -188,6 +195,9 @@ export function buildWorkspaceCommands({
     ] : []),
     { id: "pause-all", label: "Pause everything", section: "Session", keywords: ["pause", "turn boundary"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
     { id: "emergency-stop", label: "Emergency stop", section: "Session", keywords: ["kill", "stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: emergencyStop },
+    ...(takeCheckpoint ? [
+      { id: "take-checkpoint", label: "Take a checkpoint", section: "Session" as const, keywords: ["checkpoint", "save", "commit", "snapshot"], icon: GitCommitHorizontalIcon, disabled: !connected || Boolean(checkpointBlocked), run: takeCheckpoint },
+    ] : []),
     { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, run: () => setSurface("workspace") },
     { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, run: () => setSurface("providers") },
     { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },
@@ -335,7 +345,12 @@ export function CommandPalette({
   const elsewhere = rows.find((command) => command.id === current
     && (command.openElsewhere || canChooseMachine(command))
     && !command.disabled)
-  const sections = commandSections
+  const groups = choosing
+    ? [{ label: "MACHINES", items: rows }]
+    : [
+        { label: "SESSIONS", items: rows.filter((command) => command.kind === "SESSION") },
+        { label: "COMMANDS", items: rows.filter((command) => command.kind !== "SESSION") },
+      ]
   const reset = () => { setQuery(""); setChoosingId(null); setHighlighted("") }
   // Every way out closes the same way: nothing chosen and nothing typed is
   // left behind for the next open, whichever side asked for the close.
@@ -403,12 +418,16 @@ export function CommandPalette({
           value={query}
           onValueChange={setQuery}
         />
+        {!choosing ? (
+          <p className="m-0 border-b px-3 py-1.5 text-eyebrow text-faint">
+            sessions, machines, commands, skills
+          </p>
+        ) : null}
         <CommandList>
           <CommandEmpty>No matching commands.</CommandEmpty>
-          {(choosing ? ["Machines" as const] : sections).map((section) => {
-            const items = rows.filter((command) => choosing ? true : command.section === section)
+          {groups.map(({ label, items }) => {
             return items.length ? (
-              <CommandGroup key={section} heading={section}>
+              <CommandGroup key={label} heading={label}>
                 {items.map((command) => {
                   const Icon = command.icon
                   return (

@@ -110,6 +110,7 @@ export const sessionHistoryCategories: ReadonlyArray<{
 }> = [
   { value: "messages", label: "Turns" },
   { value: "approvals", label: "Approvals" },
+  { value: "policy-refusals", label: "Policy refusals" },
   { value: "checkpoints", label: "Checkpoints" },
   { value: "transfers", label: "Transfers" },
   { value: "handoffs", label: "Handoffs" },
@@ -157,6 +158,7 @@ export function sessionHistoryEntryTitle(entry: SessionHistoryEntry): string {
   }
   if (entry.category === "tools" || entry.category === "tests") return entry.title
   if (entry.category === "approvals") return `${entry.operation}: ${entry.decision}`
+  if (entry.category === "policy-refusals") return `Refused by policy: ${entry.operation}`
   if (entry.category === "handoffs" || entry.category === "transfers") return entry.body
   if (entry.category === "checkpoints") return `Checkpoint: ${withoutCommitPrefix(entry.label, entry.commit)}`
   return entry.action === "created" ? "Annotation created" : "Annotation reply"
@@ -177,6 +179,7 @@ export function sessionHistoryEntryBody(entry: SessionHistoryEntry): string | un
   // line now carries the turn instead.
   if (entry.category === "messages") return entry.detail ? `${entry.body}\n${entry.detail}` : entry.body
   if (entry.category === "tools" || entry.category === "tests") return entry.output
+  if (entry.category === "policy-refusals") return `${entry.command}\n\n${entry.rule}\n${entry.remedy}`
   return undefined
 }
 
@@ -201,6 +204,7 @@ export function sessionHistoryEntryOutcome(
     const denied = entry.decision === "deny" || entry.decision === "deny-explain"
     return { meaning: denied ? "offline" : "online", label: entry.decision }
   }
+  if (entry.category === "policy-refusals") return { meaning: "offline", label: "refused" }
   return { meaning: "idle", label: "recorded" }
 }
 
@@ -271,6 +275,7 @@ export function sessionHistoryEntryDetail(
       : entry.clientId ? ` · declared client ${entry.clientId}` : ""
     return `checkpoint ${entry.checkpoint} · decided on ${entry.client}${from}${decidedIn}${entry.explanation ? ` · ${entry.explanation}` : ""}`
   }
+  if (entry.category === "policy-refusals") return `${entry.rule} · ${entry.setBy} · ${entry.scope}`
   if (entry.category === "handoffs") return entry.detail
   if (entry.category === "transfers") {
     if (entry.detail !== undefined) return entry.detail

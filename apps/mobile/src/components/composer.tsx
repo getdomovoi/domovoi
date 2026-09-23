@@ -1,10 +1,11 @@
+import { useState } from "react"
 import { Pressable, TextInput, View } from "react-native"
 
 import type { Attachment } from "../attachments"
 import { cn } from "../lib/cn"
-import { FloatingBar } from "./floating-bar"
-import { colors } from "../theme/tokens.generated"
 import type { SendReadiness } from "../session-detail"
+import { useTheme } from "../theme/theme-provider"
+import { FloatingBar } from "./floating-bar"
 import { Icon } from "./ui/icon"
 import { Text } from "./ui/text"
 
@@ -17,56 +18,60 @@ export function Composer({
   attachments,
   attachmentSummary,
   attachmentsAllowed,
+  planAvailable,
   onChangeDraft,
   onSend,
   onOpenSkills,
+  onOpenPlan,
   onOpenAttach,
   onRemoveAttachment,
+  onFocusChange,
+  bottomInset,
   onFootprint,
 }: {
   draft: string
   readiness: SendReadiness
-  // True from the tap until the daemon answers. The button is disabled on it,
-  // and the caller holds a latch as well, because two taps in one frame both
-  // see the old value of this.
   sending: boolean
   problem: string
   skillLabel: string
-  // Frame 14: what the turn will carry, each removable, with the size line
-  // under them saying where the bytes go and the bound they were held to.
   attachments: readonly Attachment[]
   attachmentSummary: string | undefined
-  // False when the daemon's hello did not say it takes images. The plus is
-  // absent then rather than present and refusing.
   attachmentsAllowed: boolean
+  planAvailable: boolean
   onChangeDraft: (draft: string) => void
   onSend: () => void
   onOpenSkills: () => void
+  onOpenPlan: () => void
   onOpenAttach: () => void
   onRemoveAttachment: (index: number) => void
-  // The thread scrolls underneath the composer, so it has to be told what the
-  // composer covers or the newest turn is unreadable.
+  onFocusChange: (focused: boolean) => void
+  bottomInset?: number
   onFootprint?: (footprint: number) => void
 }) {
+  const [focused, setFocused] = useState(false)
+  const { palette } = useTheme()
   const blocked = !readiness.can
-  // The daemon takes images beside a prompt, never instead of one: an image
-  // with no words is a turn that says nothing about what it is for.
+  const expanded = focused || attachments.length > 0 || Boolean(problem) || blocked
   const wordless = attachments.length > 0 && draft.trim().length === 0
   const canSend = readiness.can && !sending && draft.trim().length > 0
+  const focus = (next: boolean) => {
+    setFocused(next)
+    onFocusChange(next)
+  }
 
   return (
-    // The handoff grows the composer from a pill into a card as soon as it has
-    // more than a field to hold. This one always has: what the turn will carry
-    // is stated before it is sent, the way the attachment draft states its
-    // bytes.
-    <FloatingBar shape="card" padding="stack" onFootprint={onFootprint} className="gap-2">
+    <FloatingBar
+      shape={expanded ? "card" : "pill"}
+      padding={expanded ? "stack" : "composer"}
+      bottomInset={bottomInset}
+      onFootprint={onFootprint}
+      className={expanded ? "gap-2" : undefined}
+    >
       {problem ? <Text className="text-[11px] text-destructive">{problem}</Text> : null}
-      {readiness.can && readiness.hint
-        ? <Text variant="note">{readiness.hint}</Text>
-        : null}
+      {readiness.can && readiness.hint ? <Text variant="note">{readiness.hint}</Text> : null}
       {blocked ? <Text variant="note">{readiness.reason}</Text> : null}
 
-      {!blocked ? (
+      {expanded && !blocked ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Skills for this turn: ${skillLabel}`}
@@ -101,7 +106,34 @@ export function Composer({
         </View>
       ) : null}
 
-      <View className="flex-row items-end gap-2.5">
+      <View className="flex-row items-end gap-2">
+        <TextInput
+          multiline
+          editable={!blocked && !sending}
+          value={draft}
+          onChangeText={onChangeDraft}
+          onFocus={() => focus(true)}
+          onBlur={() => focus(false)}
+          placeholder={blocked ? "This session cannot take a message" : "Steer it, or queue a message"}
+          placeholderTextColor={palette.faint}
+          selectionColor={palette.primary}
+          accessibilityLabel="Reply to this session"
+          className={cn(
+            "max-h-32 min-h-tap flex-1 px-1 py-3 font-sans text-[12px] text-foreground",
+            blocked && "opacity-50",
+          )}
+        />
+        {!blocked && planAvailable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open plan"
+            onPress={onOpenPlan}
+            disabled={sending}
+            className="min-h-tap min-w-tap items-center justify-center rounded-full active:opacity-70"
+          >
+            <Icon name="list-checks" tone="primary" size={18} />
+          </Pressable>
+        ) : null}
         {!blocked && attachmentsAllowed ? (
           <Pressable
             accessibilityRole="button"
@@ -113,23 +145,6 @@ export function Composer({
             <Icon name="plus" tone="muted" size={18} />
           </Pressable>
         ) : null}
-        <TextInput
-          multiline
-          editable={!blocked && !sending}
-          value={draft}
-          onChangeText={onChangeDraft}
-          placeholder={blocked ? "This session cannot take a message" : "Reply…"}
-          placeholderTextColor={colors.dark.faint}
-          // Left unset, iOS tints the caret and the selection with its own
-          // system blue, which is the one accent on the screen that is not this
-          // product's.
-          selectionColor={colors.dark.primary}
-          accessibilityLabel="Reply to this session"
-          className={cn(
-            "max-h-32 min-h-tap flex-1 px-1 py-3 font-sans text-[12px] text-foreground",
-            blocked && "opacity-50",
-          )}
-        />
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={sending ? "Sending" : "Send"}

@@ -42,7 +42,7 @@ export function WorkspaceConnectionStatus(props: {
                   ? `The daemon on ${props.machineName} refused this connection: ${props.authenticationRequired}`
                   : `The daemon refused this connection: ${props.authenticationRequired}`)
                 : props.machineName
-                  ? `Lost the daemon on ${props.machineName}. Existing session state remains on that machine.`
+                  ? `Lost the daemon on ${props.machineName}. The worktree and this thread are intact on the machine. Nothing was rolled back.`
                   : "Cannot reach the daemon. Workspace state is waiting for a verified response."}
           </span>
           {props.authenticationRequired ? null : props.reconnecting ? (
@@ -54,7 +54,7 @@ export function WorkspaceConnectionStatus(props: {
             </Button>
           ) : null}
           <Button variant="destructive" size="sm" onClick={props.onReconnect}>
-            Reconnect now
+            Retry now
           </Button>
         </div>
       ) : null}
