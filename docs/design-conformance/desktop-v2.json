@@ -74,7 +74,7 @@
         "Domovoi"
       ],
       "evidence": [
-        "DomovoiMark"
+        "<DomovoiMark reduced className=\"size-5 shrink-0 text-primary\""
       ]
     },
     {
@@ -134,7 +134,7 @@
         "offline (danger border and background)"
       ],
       "evidence": [
-        "Connected to",
+        "Machines: ",
         "Disconnected from"
       ]
     },
@@ -150,8 +150,7 @@
         "STOP EVERYTHING, ON EVERY MACHINE"
       ],
       "evidence": [
-        "Stop everything",
-        "Emergency stop"
+        "Stop everything"
       ]
     },
     {
@@ -185,7 +184,7 @@
       "evidence": [
         "aria-label=\"Minimize\"",
         "aria-label=\"Maximize\"",
-        "aria-label=\"Close\""
+        "onClick={bridge.close}"
       ]
     },
     {
@@ -209,7 +208,7 @@
         "active"
       ],
       "evidence": [
-        "sessions-drawer"
+        "aria-label={`Actions for"
       ]
     },
     {
@@ -293,8 +292,7 @@
       "name": "Drawer footer to Fleet",
       "where": "foot of the drawer: N machines · M unreachable, opens Fleet",
       "evidence": [
-        "machineAvailability",
-        "onOpenMachines"
+        "<button type=\"button\" className=\"font-machine text-[10.5px] text-muted-foreground\" disabled={!onOpenMachines}"
       ]
     },
     {
@@ -327,7 +325,7 @@
         "Move a session here"
       ],
       "presence": [
-        "fleet-view"
+        "Move a session here"
       ]
     },
     {
@@ -355,7 +353,7 @@
         "Every decision this machine recorded"
       ],
       "presence": [
-        "Audit log"
+        "Every decision this machine recorded"
       ]
     },
     {
@@ -364,9 +362,9 @@
       "where": "audit surface: Every actor, Clients, Daemon, Providers, Machines chips; a query field; a time window",
       "evidence": [
         "Every actor",
-        "Clients",
-        "Daemon",
-        "Providers"
+        "[\"client\", \"Clients\"]",
+        "[\"daemon\", \"Daemon\"]",
+        "[\"provider\", \"Providers\"]"
       ],
       "presence": [
         "Audit entries"
@@ -377,7 +375,7 @@
       "name": "Audit rows",
       "where": "audit surface: when, what, actor, detail, who, outcome",
       "evidence": [
-        "Audit outcome"
+        "AuditEntryRow"
       ]
     },
     {
@@ -413,7 +411,7 @@
         "This machine holds its own settings"
       ],
       "presence": [
-        "Settings sections"
+        "This machine holds its own settings"
       ]
     },
     {
@@ -496,12 +494,9 @@
         "Phone and tablet",
         "Rename, rotate and unpair them on Machines"
       ],
-      "presence": [
-        "Pairing"
-      ],
-      "partial": {
+      "missing": {
         "since": "2026-09-23",
-        "reason": "pairing exists as a dialog; the settings section and the imported pairing card (J23) are not drawn in Settings"
+        "reason": "no client surface on the desktop shows a device pairing code (device.issueCode has no caller outside the daemon's own CLI); the earlier presence string Pairing matched code comments, and the pairing dialog that exists pairs this client to another machine"
       }
     },
     {
@@ -524,15 +519,12 @@
       ],
       "evidence": [
         "Paired devices",
-        "Rename",
-        "Rotate",
         "Copy once",
         "Each daemon keeps its own list"
       ],
       "presence": [
         "Paired devices",
-        "Rename",
-        "Rotate"
+        "Copy once"
       ],
       "partial": {
         "since": "2026-09-23",
@@ -551,7 +543,7 @@
         "Providers and tokens"
       ],
       "presence": [
-        "Provider readiness"
+        "Providers and tokens"
       ]
     },
     {
@@ -592,7 +584,7 @@
         "Every tool call"
       ],
       "presence": [
-        "Notifications"
+        "<NotificationSettings"
       ],
       "partial": {
         "since": "2026-09-18",
@@ -608,12 +600,19 @@
         "These live on their own screens."
       ],
       "evidence": [
-        "Machines and daemons",
-        "Permissions and rules"
+        "<span>Machines and daemons</span>",
+        "<span>Skills</span>",
+        "<span>Audit log</span>",
+        "<span>Permissions and rules</span>",
+        "<span>Checkpoints</span>"
       ],
       "presence": [
-        "Elsewhere"
-      ]
+        "id=\"settings-elsewhere\""
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "Machines and daemons, Skills and Audit log are links in Elsewhere; Permissions and rules is an inline settings section, not a link, and Checkpoints has no link"
+      }
     },
     {
       "id": "settings.appearance",
@@ -626,7 +625,7 @@
         "Follows your OS appearance"
       ],
       "presence": [
-        "Appearance"
+        "Follows your OS appearance"
       ]
     },
     {
@@ -654,7 +653,7 @@
         "archived"
       ],
       "evidence": [
-        "session-recovery",
+        "SessionReadOnlyNotice",
         "The worktree was removed"
       ],
       "copy": [
@@ -662,7 +661,7 @@
         "and its final checkpoint are kept."
       ],
       "presence": [
-        "session-recovery"
+        "SessionReadOnlyNotice"
       ],
       "partial": {
         "since": "2026-09-23",
@@ -736,11 +735,19 @@
         "MODEL ON MAC-MINI-M4"
       ],
       "evidence": [
-        "MODEL ON"
+        "aria-label=\"Execution provider\"",
+        "aria-label=\"Model\"",
+        "MODEL ON",
+        "takes image input",
+        "Locked for this model"
       ],
-      "missing": {
+      "presence": [
+        "aria-label=\"Execution provider\"",
+        "aria-label=\"Model\""
+      ],
+      "partial": {
         "since": "2026-09-23",
-        "reason": "the launcher has no model menu of its own; the model is chosen in the composer after start"
+        "reason": "the launcher has provider and model dropdowns (launcher-dialog); the design's one MODEL ON <machine> menu grouped per agent, its image-input tags and its per-model lock reasons are not drawn"
       }
     },
     {
@@ -817,7 +824,7 @@
         "thread-header"
       ],
       "presence": [
-        "thread"
+        "ThreadStartLine"
       ],
       "partial": {
         "since": "2026-09-18",
@@ -829,10 +836,10 @@
       "name": "User message",
       "where": "right-aligned card",
       "evidence": [
-        "thread.tsx"
+        "data-testid=\"user-turn\""
       ],
       "presence": [
-        "thread"
+        "item.kind === \"user\""
       ],
       "partial": {
         "since": "2026-09-18",
@@ -848,7 +855,7 @@
         "done"
       ],
       "evidence": [
-        "aria-label=\"Prose\""
+        "<MarkdownQuickView source={stripPlanTags(item.body)} />"
       ]
     },
     {
@@ -862,12 +869,9 @@
         "Wrote a",
         "Read it"
       ],
-      "presence": [
-        "Read it"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a plan link exists; the row's wording and the revised time are not the design's"
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no plan link row under the prose; the earlier presence string matched the credential prompt's Read it from, not this element"
       }
     },
     {
@@ -964,7 +968,7 @@
         "What you can do instead"
       ],
       "presence": [
-        "Policy refusal"
+        "aria-label=\"Policy refusal\""
       ],
       "partial": {
         "since": "2026-09-18",
@@ -985,11 +989,15 @@
       ],
       "evidence": [
         "Decision receipt",
-        "Move this session to another machine"
+        ">Move this session to another machine</Button>"
       ],
       "presence": [
         "Decision receipt"
-      ]
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "the receipt exists; its Move this session to another machine action is not on the receipt (the string matched the transfer dialog's title)"
+      }
     },
     {
       "id": "conversation.offline-actions",
@@ -1002,12 +1010,9 @@
         "Reconnect to",
         "Reviewing and moving this session both need the daemon"
       ],
-      "presence": [
-        "Reconnect to"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "reconnect exists; the explanation line is not drawn"
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no Reconnect to <machine> action or explanation in the thread; the earlier presence string matched the audit log's error text, not this element"
       }
     },
     {
@@ -1039,9 +1044,7 @@
         "Plan preview"
       ],
       "evidence": [
-        "plan-strip",
-        "Discard",
-        "Plan preview"
+        "<PlanStrip"
       ]
     },
     {
@@ -1050,7 +1053,7 @@
       "where": "top of the composer: mark, name, meta, remove; a more count",
       "evidence": [
         "Image or file from this device",
-        "Attachments",
+        "setAttachments",
         "attachmentMeta"
       ]
     },
@@ -1103,9 +1106,9 @@
         "No sends, approvals, terminal or writes. Reads stream as normal."
       ],
       "blocked": {
-        "since": "2026-09-22",
-        "needs": "design",
-        "reason": "The drawn reason names a Free plan, and plans are Phase 5; M1 may not claim account behaviour. The composer says This device was paired to watch only. until the design draws a reason with a source on the wire."
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "the drawn reason names a Free plan and a reads-only route; nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
       }
     },
     {
@@ -1213,11 +1216,10 @@
         "Ends this turn at its next tool boundary. The session, plan and worktree stay as they are."
       ],
       "evidence": [
-        "Stop the agent",
         "Ends this turn at its next tool boundary"
       ],
       "presence": [
-        "Stop the agent"
+        "Ends this turn at its next tool boundary"
       ]
     },
     {
@@ -1261,14 +1263,12 @@
       "where": "dock header: seven 28px icon tabs (Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules); the label and its note are drawn in the hover tip, the count is not drawn; pin and close",
       "evidence": [
         "dockTabDefinitions",
-        "Plan preview",
-        "Preview",
-        "Changes",
-        "Terminal",
-        "History",
-        "Checkpoints",
-        "Rules",
-        "Close"
+        "label: \"Plan preview\"",
+        "label: \"Preview\"",
+        "label: \"Changes\"",
+        "label: \"Terminal\"",
+        "label: \"History\"",
+        "label: \"Rules\""
       ]
     },
     {
@@ -1291,8 +1291,7 @@
         "Looks right, carry on"
       ],
       "presence": [
-        "Working plan",
-        "Comments on the plan"
+        "<WorkingPlanCard"
       ],
       "partial": {
         "since": "2026-09-18",
@@ -1464,10 +1463,8 @@
         "Fork from here"
       ],
       "evidence": [
-        "Everything",
-        "Turns",
-        "Approvals",
-        "Transfers",
+        "label: \"Turns\"",
+        "label: \"Transfers\"",
         "Fork from here"
       ]
     },
@@ -1513,9 +1510,8 @@
         "NEVER COVERED BY A RULE"
       ],
       "evidence": [
-        "What you have already allowed",
-        "Revoke",
-        "NEVER COVERED BY A RULE"
+        "NEVER COVERED BY A RULE",
+        "<RulesPanel"
       ]
     },
     {
@@ -1614,7 +1610,7 @@
         "The thread, the plan and the worktree are recreated on the target"
       ],
       "presence": [
-        "transfer-session-dialog"
+        "<TransferSessionDialog"
       ]
     },
     {
@@ -1647,7 +1643,7 @@
         "Retry the move"
       ],
       "presence": [
-        "session-recovery"
+        "sessionRecoveryOffer"
       ]
     },
     {
@@ -1773,8 +1769,8 @@
         "MD"
       ],
       "evidence": [
-        "Prose",
-        "Markdown"
+        "aria-label=\"Prose\"",
+        "aria-label=\"Markdown\""
       ]
     },
     {
