@@ -208,7 +208,9 @@
     "Rule: the roster carries the same payload as 21, nothing more. Four sessions share no denominator, so there is no combined progress bar.",
     "What the collapsed notification could say. Bodies are encrypted to the phone. On iOS a Live Activity cannot decrypt, so 21 to 23 stay at A there.",
     "A locked screen shows",
-    "The push service sees"
+    "The push service sees",
+    "iOS",
+    "Android"
   ],
   "elements": [
     {
@@ -227,18 +229,6 @@
         "\"Settings\"",
         "tab-bar",
         "label: \"Machines\""
-      ]
-    },
-    {
-      "id": "shell.platform-toggle",
-      "name": "iOS and Android drawn from one design",
-      "where": "design chrome: the platform switch above the frames",
-      "copy": [
-        "iOS",
-        "Android"
-      ],
-      "evidence": [
-        "Platform.OS"
       ]
     },
     {
@@ -299,12 +289,22 @@
         "Deny"
       ],
       "evidence": [
-        "Waiting on you",
+        "Waiting on you</Text>",
         "Allow once",
         "Always allow this",
         "Deny",
         "Nothing has run yet"
-      ]
+      ],
+      "presence": [
+        "Allow once",
+        "Always allow this",
+        "Deny",
+        "Nothing has run yet"
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "the gate screen decides; its title reads Approval, not the design's Waiting on you. The earlier evidence for that line matched the protocol's follow pill text, not the phone"
+      }
     },
     {
       "id": "receipt.screen",
@@ -675,7 +675,7 @@
       ],
       "evidence": [
         "agent-markdown",
-        "Acceptance"
+        "AgentMarkdown"
       ]
     },
     {

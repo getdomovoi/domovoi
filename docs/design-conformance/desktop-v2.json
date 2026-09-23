@@ -74,7 +74,7 @@
         "Domovoi"
       ],
       "evidence": [
-        "DomovoiMark"
+        "<DomovoiMark reduced className=\"size-5 shrink-0 text-primary\""
       ]
     },
     {
@@ -185,7 +185,7 @@
       "evidence": [
         "aria-label=\"Minimize\"",
         "aria-label=\"Maximize\"",
-        "aria-label=\"Close\""
+        "onClick={bridge.close}"
       ]
     },
     {
@@ -364,9 +364,9 @@
       "where": "audit surface: Every actor, Clients, Daemon, Providers, Machines chips; a query field; a time window",
       "evidence": [
         "Every actor",
-        "Clients",
-        "Daemon",
-        "Providers"
+        "[\"client\", \"Clients\"]",
+        "[\"daemon\", \"Daemon\"]",
+        "[\"provider\", \"Providers\"]"
       ],
       "presence": [
         "Audit entries"
@@ -845,7 +845,7 @@
         "done"
       ],
       "evidence": [
-        "aria-label=\"Prose\""
+        "<MarkdownQuickView source={stripPlanTags(item.body)} />"
       ]
     },
     {
@@ -1031,7 +1031,7 @@
       ],
       "evidence": [
         "plan-strip",
-        "Discard",
+        "onDiscardEdit",
         "Plan preview"
       ]
     },
@@ -1041,7 +1041,7 @@
       "where": "top of the composer: mark, name, meta, remove; a more count",
       "evidence": [
         "Image or file from this device",
-        "Attachments",
+        "setAttachments",
         "attachmentMeta"
       ]
     },
@@ -1094,9 +1094,9 @@
         "No sends, approvals, terminal or writes. Reads stream as normal."
       ],
       "blocked": {
-        "since": "2026-09-22",
-        "needs": "design",
-        "reason": "The drawn reason names a Free plan, and plans are Phase 5; M1 may not claim account behaviour. The composer says This device was paired to watch only. until the design draws a reason with a source on the wire."
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "the drawn reason names a Free plan and a reads-only route; nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
       }
     },
     {
@@ -1252,14 +1252,13 @@
       "where": "dock header: seven 28px icon tabs (Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules); the label and its note are drawn in the hover tip, the count is not drawn; pin and close",
       "evidence": [
         "dockTabDefinitions",
-        "Plan preview",
-        "Preview",
-        "Changes",
-        "Terminal",
-        "History",
-        "Checkpoints",
-        "Rules",
-        "Close"
+        "label: \"Plan preview\"",
+        "label: \"Preview\"",
+        "label: \"Changes\"",
+        "label: \"Terminal\"",
+        "label: \"History\"",
+        "label: \"Checkpoints\"",
+        "label: \"Rules\""
       ]
     },
     {
@@ -1455,10 +1454,8 @@
         "Fork from here"
       ],
       "evidence": [
-        "Everything",
-        "Turns",
-        "Approvals",
-        "Transfers",
+        "label: \"Turns\"",
+        "label: \"Transfers\"",
         "Fork from here"
       ]
     },
@@ -1509,7 +1506,7 @@
       ],
       "evidence": [
         "What you have already allowed",
-        "Revoke",
+        "onRevoke",
         "NEVER COVERED BY A RULE"
       ]
     },
@@ -1776,8 +1773,8 @@
         "MD"
       ],
       "evidence": [
-        "Prose",
-        "Markdown"
+        "aria-label=\"Prose\"",
+        "aria-label=\"Markdown\""
       ]
     },
     {
