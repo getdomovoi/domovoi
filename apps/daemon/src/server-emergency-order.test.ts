@@ -24,7 +24,7 @@ async function connect(daemon: DomovoiDaemon, port: number, client: "desktop" | 
   const notifications: Array<{ method: string; params: unknown }> = []
   const responses = new Map<number, (message: { result?: unknown; error?: unknown }) => void>()
   socket.on("message", (data) => {
-    const message = JSON.parse(data.toString()) as { id?: number; method?: string; params?: unknown }
+    const message = JSON.parse(data.toString()) as { id?: number; method?: string; params?: unknown; result?: unknown; error?: unknown }
     if (message.id !== undefined) responses.get(message.id)?.(message)
     else if (message.method) notifications.push({ method: message.method, params: message.params })
   })
