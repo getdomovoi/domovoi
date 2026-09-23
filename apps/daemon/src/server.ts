@@ -8577,36 +8577,51 @@ export class DomovoiDaemon {
     }
     if (!hadConnection) return
 
+    // A frozen transfer source or an unfinished archive keeps its provider
+    // thread, but its lifecycle is not the provider's to change: marking it
+    // failed leaves transfer or archive metadata on a state that cannot hold
+    // it, and the invalid snapshot then refuses every save and every RPC.
+    const affected = this.#snapshot.sessions.filter((session) =>
+      session.runtime.provider === provider
+      && session.providerThreadId !== undefined
+      && !sessionIsReadOnly(session))
+    if (affected.length === 0) return
+
     const createdAt = new Date().toISOString()
     const providerName = provider === "codex" ? "Codex" : provider
-    let changed = false
-    const affectedSessionIds = new Set<string>()
-    for (const session of this.#snapshot.sessions) {
-      if (session.runtime.provider !== provider || !session.providerThreadId) continue
-      affectedSessionIds.add(session.id)
+    const affectedSessionIds = new Set(affected.map((session) => session.id))
+    const notices = affected.map((session) => ({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system" as const,
+      body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
+      detail: redactDurableText(reason).value,
+      createdAt,
+    }))
+    const markFailed = (snapshot: WorkspaceSnapshot) => {
+      for (const session of snapshot.sessions) {
+        if (!affectedSessionIds.has(session.id)) continue
+        session.state = "failed"
+        session.providerFailure = classifyProviderFailure(new Error(reason))
+        delete session.activeTurnId
+        session.updatedAt = createdAt
+      }
+      snapshot.thread.push(...structuredClone(notices))
+    }
+    const candidate = structuredClone(this.#snapshot)
+    markFailed(candidate)
+    workspaceSnapshotSchema.parse(candidate)
+
+    for (const session of affected) {
       this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
-      session.state = "failed"
-      session.providerFailure = classifyProviderFailure(new Error(reason))
       this.#flushCommandOutputStreams(session.id)
-      delete session.activeTurnId
-      session.updatedAt = createdAt
-      this.#snapshot.thread.push({
-        id: `system-${randomUUID()}`,
-        sessionId: session.id,
-        kind: "system",
-        body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
-        detail: redactDurableText(reason).value,
-        createdAt,
-      })
-      changed = true
     }
-    if (affectedSessionIds.size > 0) {
-      this.#removeApprovals(
-        (approval) => affectedSessionIds.has(approval.sessionId),
-        createdAt,
-      )
-    }
-    if (changed) await this.#flushAgentState()
+    markFailed(this.#snapshot)
+    this.#removeApprovals(
+      (approval) => affectedSessionIds.has(approval.sessionId),
+      createdAt,
+    )
+    await this.#flushAgentState()
   }
 
   #removeApprovals(
