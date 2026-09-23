@@ -278,13 +278,17 @@ export class CodexAppServerAdapter implements AgentAdapter {
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
     const policy = codexPolicyFor(runtime)
     const sandbox = policy.permissions === "domovoi-read" ? "read-only" : "workspace-write"
+    // thread/start developerInstructions replaces the person's own
+    // developer_instructions rather than adding to them, so Domovoi reads the
+    // value Codex resolved for this worktree and sends both.
+    const own = resolvedDeveloperInstructions(await this.#request("config/read", { cwd }))
     const result = await this.#request("thread/start", {
       cwd,
       model: runtime.model,
       approvalPolicy: policy.approvalPolicy,
       sandbox,
       serviceName: "domovoi",
-      developerInstructions: codexDeveloperInstructions,
+      developerInstructions: own ? `${own}\n\n${codexDeveloperInstructions}` : codexDeveloperInstructions,
     })
     const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
@@ -612,6 +616,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
+}
+
+function resolvedDeveloperInstructions(result: unknown): string | undefined {
+  const instructions = asRecord(asRecord(result)?.config)?.developer_instructions
+  return typeof instructions === "string" && instructions.trim() ? instructions.trim() : undefined
 }
 
 function collaborationModeUnavailable(error: unknown): boolean {
