@@ -846,7 +846,7 @@ describe("subagents and current permission events", () => {
   })
 
   it("does not attach a child's late events to the parent's next turn", async () => {
-    const { adapter, events, stream, threadId, child } = await childAskedInFirstTurn()
+    const { adapter, client, events, stream, threadId, child } = await childAskedInFirstTurn()
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
 
     stream.emit({ type: "session.updated", properties: { sessionID: child, info: { id: child, parentID: threadId, directory: "/worktree" } } })
@@ -878,6 +878,31 @@ describe("subagents and current permission events", () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(events.filter((event) => JSON.stringify(event).includes("turn-2"))).toEqual([])
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: child, permissionID: "per_late" }, body: { response: "reject" } }),
+    )
+    await adapter.close()
+  })
+
+  it("refuses at once, with no card, a child's approval request that arrives after its turn ended", async () => {
+    const { adapter, client, events, stream, child } = await childAskedInFirstTurn()
+
+    stream.emit({
+      type: "permission.asked",
+      properties: {
+        id: "per_after",
+        sessionID: child,
+        permission: "bash",
+        patterns: ["echo after"],
+        metadata: { command: "echo after" },
+        always: [],
+        tool: { messageID: "msg_after", callID: "call_after" },
+      },
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: child, permissionID: "per_after" }, body: { response: "reject" } }),
+    ))
+    expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(1)
     await adapter.close()
   })
 

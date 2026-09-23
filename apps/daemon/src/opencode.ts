@@ -494,8 +494,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const session = this.#sessions.get(subagentTurn?.threadId ?? sessionId)
     if (!session || session.cwd !== cwd) return
     // A subagent outlives nothing: once the turn that started it has ended,
-    // whatever it still sends is dropped rather than attached to a later turn.
-    if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) return
+    // whatever it still sends is dropped rather than attached to a later turn,
+    // and an approval it asks for is refused at once, with no card.
+    if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) {
+      if (event.type !== "permission.updated" && event.type !== "permission.asked") return
+      const request = permissionRequest(properties, this.#identity.providerName)
+      if (request) this.#respond({ providerSessionId: sessionId, cwd, permissionId: request.permissionId }, "reject")
+      return
+    }
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
