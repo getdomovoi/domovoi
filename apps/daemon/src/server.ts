@@ -6648,12 +6648,21 @@ export class DomovoiDaemon {
           ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
           approvalRules: withRule(latest.approvalRules),
         })
+        const stillPending = () => this.#snapshot.approvals.some((pending) => pending.id === approval.id)
+        let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
         try {
           await this.#serializeSnapshotPersistence(async () => {
+            if (!stillPending()) return
             const persisted = decided(this.#snapshot, candidate)
             if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
             else this.#store.save(persisted)
+            if (!stillPending()) {
+              outcome = "cancelled-after-write"
+              return
+            }
             this.#snapshot = decided(this.#snapshot, persisted)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            outcome = "committed"
           })
         } catch (error) {
           this.#persistenceFailed(error)
@@ -6666,7 +6675,18 @@ export class DomovoiDaemon {
           )
           return
         }
-        this.#persistenceSucceeded()
+        if (outcome !== "cancelled") this.#persistenceSucceeded()
+        if (outcome !== "committed") {
+          if (outcome === "cancelled-after-write") {
+            try {
+              await this.#persistSnapshot()
+            } catch (error) {
+              this.#reportError("Domovoi could not save state after a cancelled approval decision", error)
+            }
+          }
+          this.#error(socket, request.id, invalidParams, "Approval does not exist")
+          return
+        }
         this.#activeAssistantItems.clear()
         if (approval.providerRequestId !== undefined && session) {
           this.#agents.require(session.runtime.provider)

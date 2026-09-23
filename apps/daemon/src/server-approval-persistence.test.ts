@@ -127,4 +127,84 @@ describe("approval decisions", () => {
     expect(decided.approvalRules).toEqual([expect.objectContaining({ status: "active", command: "pnpm prisma migrate deploy" })])
     expect(decided.sessions.find((session) => session.id === "session-billing")?.state).toBe("active")
   })
+  it("keeps an emergency stop that lands while the decision is being saved", async () => {
+    const provider = agent()
+    let parkNext = false
+    let parked = () => {}
+    let release = () => {}
+    const parkedWrite = new Promise<void>((resolve) => { parked = resolve })
+    const saved: WorkspaceSnapshot[] = []
+    const store = {
+      load: () => pendingApproval(),
+      save: vi.fn(),
+      saveAsync: vi.fn(async (snapshot: WorkspaceSnapshot) => {
+        if (parkNext) {
+          parkNext = false
+          await new Promise<void>((resolve) => {
+            release = resolve
+            parked()
+          })
+        }
+        saved.push(structuredClone(snapshot))
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+
+    parkNext = true
+    const decision = rpc("approval.resolve", {
+      approvalId: "approval-migrate", decision: "always-project", client: "desktop",
+    })
+    await parkedWrite
+    const other = await connect(daemon, port)
+    const stop = other("system.emergencyStop", { client: "desktop" })
+    await vi.waitFor(() => expect(provider.resolveApproval).toHaveBeenCalledWith(41, "deny"))
+    release()
+    expect((await decision).error).toBeDefined()
+    expect((await stop).error).toBeUndefined()
+
+    expect(provider.resolveApproval.mock.calls).toEqual([[41, "deny"]])
+    const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(live.approvals).toEqual([])
+    expect(live.approvalRules).toEqual([])
+    const receipts = live.thread.filter((item) => item.kind === "receipt")
+    expect(receipts).toEqual([expect.objectContaining({ decision: "deny", explanation: "Emergency stop" })])
+    expect(live.sessions.find((session) => session.id === "session-billing")?.state).not.toBe("active")
+    const last = saved.at(-1)!
+    expect(last.approvalRules).toEqual([])
+    expect(last.thread.filter((item) => item.kind === "receipt"))
+      .toEqual([expect.objectContaining({ decision: "deny", explanation: "Emergency stop" })])
+  })
+
+  it("shows the new receipt in cached session history", async () => {
+    const provider = agent()
+    const store = {
+      load: () => pendingApproval(),
+      save: vi.fn(),
+      saveAsync: vi.fn(async () => {}),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+    const history = async () => {
+      const page = await rpc("session.history", { sessionId: "session-billing" })
+      expect(page.error).toBeUndefined()
+      return (page.result as { items: Array<{ id: string }> }).items.map(({ id }) => id)
+    }
+
+    const before = await history()
+    const resolved = await rpc("approval.resolve", {
+      approvalId: "approval-migrate", decision: "allow-once", client: "desktop",
+    })
+    expect(resolved.error).toBeUndefined()
+    const receipt = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result).thread
+      .find((item) => item.kind === "receipt")!
+    expect(before.some((id) => id.includes(receipt.id))).toBe(false)
+    expect((await history()).some((id) => id.includes(receipt.id))).toBe(true)
+  })
 })
