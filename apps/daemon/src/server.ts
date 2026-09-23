@@ -7100,6 +7100,7 @@ export class DomovoiDaemon {
           workspacePath: workspace.path,
           providerThreadId,
           baseCommit: workspace.baseCommit,
+          branch: workspace.branch,
         })
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#snapshot.activeSessionId = sessionId
@@ -7292,6 +7293,7 @@ export class DomovoiDaemon {
           workspacePath: workspace.path,
           providerThreadId,
           baseCommit: checkpoint.commit,
+          branch: workspace.branch,
         })
         candidate.thread.push({
           id: `checkpoint-${randomUUID()}`,
@@ -9358,6 +9360,22 @@ export class DomovoiDaemon {
       }
       const workspacePath = session.workspacePath
       await this.#awaitTerminalExits(terminalExits)
+      // The archived notice names the kept branch and what the source never
+      // received; both are read while the worktree still exists. A failure
+      // here does not stop the archive: the notice then says less.
+      if (this.#workspaceService.sessionBranchFacts) {
+        try {
+          const facts = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.sessionBranchFacts!(workspacePath, signal),
+            this.#agentTimeoutMs,
+            "Archive branch facts timed out",
+          )
+          session.branch = facts.branch
+          session.unmergedFiles = facts.unmergedFiles
+        } catch (error) {
+          this.#reportError("Domovoi could not read the archived session's branch", error)
+        }
+      }
       await this.#withAbortTimeout(
         (signal) => this.#workspaceService.archiveSessionWorkspace!(workspacePath, signal),
         this.#agentTimeoutMs,

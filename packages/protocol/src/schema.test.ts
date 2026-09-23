@@ -14,6 +14,7 @@ import {
   createEmptyWorkspace,
   daemonShuttingDownErrorCode,
   demoWorkspace,
+  sessionSummarySchema,
   projectOpenParamsSchema,
   providerModelSchema,
   providerFailureSchema,
@@ -1786,5 +1787,17 @@ describe("context compaction notice", () => {
 
   it("rejects an unknown notice", () => {
     expect(() => threadItemSchema.parse({ ...base, notice: "something-else" })).toThrow()
+  })
+})
+
+describe("session branch and unmerged files", () => {
+  it("names the kept branch and how many files never merged", () => {
+    const session = demoWorkspace.sessions[0]!
+    expect(sessionSummarySchema.parse({ ...session, branch: "domovoi/session-billing", unmergedFiles: 7 }))
+      .toMatchObject({ branch: "domovoi/session-billing", unmergedFiles: 7 })
+    expect(sessionSummarySchema.parse(session)).not.toHaveProperty("branch")
+    expect(sessionSummarySchema.safeParse({ ...session, branch: "" }).success).toBe(false)
+    expect(sessionSummarySchema.safeParse({ ...session, unmergedFiles: -1 }).success).toBe(false)
+    expect(sessionSummarySchema.safeParse({ ...session, unmergedFiles: 1.5 }).success).toBe(false)
   })
 })

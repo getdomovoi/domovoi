@@ -84,6 +84,32 @@ describe("GitWorkspaceService", () => {
     )
   })
 
+  it("names the session branch and counts the files the source never received", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-unmerged-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    const worktreeRoot = join(scratch, "worktrees")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
+    await writeFile(join(repositoryPath, "README.md"), "source\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+
+    const service = new GitWorkspaceService(worktreeRoot)
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-unmerged")
+    expect(await service.sessionBranchFacts(workspace.path)).toEqual({ branch: workspace.branch, unmergedFiles: 0 })
+
+    await writeFile(join(workspace.path, "README.md"), "session work\n")
+    await writeFile(join(workspace.path, "handler.ts"), "export const handler = 1\n")
+    await service.checkpoint(workspace.path, "before archive")
+    expect(await service.sessionBranchFacts(workspace.path)).toEqual({ branch: workspace.branch, unmergedFiles: 2 })
+
+    // Once the source has the branch, nothing on it is unmerged.
+    await execute("git", ["-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "merge", "--ff-only", workspace.branch])
+    expect(await service.sessionBranchFacts(workspace.path)).toEqual({ branch: workspace.branch, unmergedFiles: 0 })
+  })
+
   it("creates an isolated session worktree and checkpoint", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
     scratchDirectories.push(scratch)

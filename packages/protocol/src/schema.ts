@@ -312,6 +312,13 @@ export const sessionSummarySchema = z.object({
   activeTurnId: z.string().min(1).optional(),
   providerFailure: providerFailureSchema.optional(),
   baseCommit: z.string().min(1).optional(),
+  // The branch the session's worktree is on, kept after archive; and, filled
+  // at archive, how many files that branch changed that the source checkout
+  // never received (files changed since the merge base with the source's
+  // HEAD, so a branch merged before archive says 0). Desktop V2 archived
+  // notice: "Branch <b> and its final checkpoint are kept", "7 files never merged".
+  branch: z.string().min(1).optional(),
+  unmergedFiles: z.number().int().nonnegative().optional(),
   archiveRequestedAt: dateTimeSchema.optional(),
   archiveCheckpoint: commitShaSchema.optional(),
   archivedAt: dateTimeSchema.optional(),
