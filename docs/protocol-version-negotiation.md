@@ -19,7 +19,10 @@ JSON Schema of every schema the protocol package exports and of every RPC's para
 and result. `node scripts/protocol-wire.mjs check --base <ref>` fails when that
 record is stale against the built package, or when it differs from the record at
 the last protocol release tag (or, with no tag yet, the pull request's base)
-without a minor or major increase of `protocolVersion`. After a schema change, run
+without a minor or major increase of `protocolVersion`. A base from before the
+record existed, such as the tag of the last shipped protocol, cannot say which
+schemas changed, so against it the check passes only when `protocolVersion` is
+above the version that base declares, and says which case applied. After a schema change, run
 `pnpm --filter @getdomovoi/protocol build`, then `node scripts/protocol-wire.mjs write`.
 
 For example, with a daemon on `0.6.0`:

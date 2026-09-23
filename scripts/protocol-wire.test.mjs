@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import test from "node:test"
 
-import { currentWire, wireChangeRefusal, wireSchemaPath } from "./protocol-wire.mjs"
+import { currentWire, protocolVersionIn, unrecordedBaseRefusal, wireChangeRefusal, wireSchemaPath } from "./protocol-wire.mjs"
 
 const base = {
   protocolVersion: "0.8.0",
@@ -40,4 +40,17 @@ test("refuses a version that moved backwards even with an unchanged wire", () =>
 test("keeps the committed wire schema in step with the built protocol", async () => {
   const committed = JSON.parse(await readFile(new URL(`../${wireSchemaPath}`, import.meta.url), "utf8"))
   assert.deepEqual(committed, await currentWire())
+})
+
+test("passes a base with no record only when the protocol version rose", () => {
+  assert.equal(unrecordedBaseRefusal("0.7.0", "0.8.0"), undefined)
+  assert.equal(unrecordedBaseRefusal("0.7.3", "1.0.0"), undefined)
+  assert.match(unrecordedBaseRefusal("0.8.0", "0.8.0"), /was not raised/)
+  assert.match(unrecordedBaseRefusal("0.8.0", "0.8.2"), /was not raised/)
+  assert.match(unrecordedBaseRefusal(undefined, "0.8.0"), /cannot read/)
+})
+
+test("reads the protocol version a base declared in its source", () => {
+  assert.equal(protocolVersionIn('export const protocolVersion = "0.7.0" as const\n'), "0.7.0")
+  assert.equal(protocolVersionIn("export const somethingElse = 1\n"), undefined)
 })

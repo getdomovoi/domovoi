@@ -75,6 +75,23 @@ export function wireChangeRefusal(base, current) {
     "Every wire change is a minor bump; raise protocolVersion in packages/protocol/src/protocol-version.ts."
 }
 
+// A base from before this record existed (the last shipped protocol, for
+// example) cannot say which schemas changed. Only a raised protocol version
+// covers every change since it, so that is what such a base requires.
+export function unrecordedBaseRefusal(baseVersion, currentVersion) {
+  if (baseVersion === undefined) {
+    return "The base has no wire record and this check cannot read its protocol version, so it cannot tell whether the wire changed."
+  }
+  const [baseMajor, baseMinor] = versionParts(baseVersion)
+  const [major, minor] = versionParts(currentVersion)
+  if (major > baseMajor || (major === baseMajor && minor > baseMinor)) return undefined
+  return `The base has no wire record and the protocol version was not raised (${baseVersion} to ${currentVersion}), so this check cannot tell whether the wire changed.`
+}
+
+export function protocolVersionIn(source) {
+  return /export const protocolVersion = "(\d+\.\d+\.\d+)"/.exec(source)?.[1]
+}
+
 function git(args) {
   return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 }
@@ -118,7 +135,19 @@ async function main(argv) {
   const ref = baseline(fallback)
   const base = readBase(ref)
   if (!base) {
-    process.stdout.write(`${ref} has no ${wireSchemaPath}; nothing to compare yet.\n`)
+    let source
+    try {
+      source = git(["show", `${ref}:packages/protocol/src/protocol-version.ts`])
+    } catch {
+      source = ""
+    }
+    const baseVersion = protocolVersionIn(source)
+    const refusal = unrecordedBaseRefusal(baseVersion, current.protocolVersion)
+    if (refusal) {
+      process.stderr.write(`${refusal}\nCompared against ${ref}.\n`)
+      return 1
+    }
+    process.stdout.write(`${ref} has no ${wireSchemaPath}; protocol ${current.protocolVersion} is above its ${baseVersion}, which covers any wire change since it.\n`)
     return 0
   }
   const refusal = wireChangeRefusal(base, current)
