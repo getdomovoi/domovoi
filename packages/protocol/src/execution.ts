@@ -128,9 +128,22 @@ const workspaceFileToolExecutionRecordSchema = z.object({
   scope: z.literal("workspace"),
 }).strict()
 
+// A file tool's effect is the file it writes, so a standing rule for one is
+// scoped to that file. Workspace-scoped records stay readable for rules
+// created before this, and no new request resolves to one.
+const fileToolExecutionRecordSchema = z.object({
+  ...executionRecordFields,
+  kind: z.literal("workspace-file-tool"),
+  coverage: z.literal("tool-and-file"),
+  tool: z.enum(["Edit", "Write", "MultiEdit", "NotebookEdit"]),
+  scope: z.literal("file"),
+  path: projectRelativePathSchema.refine((path) => path !== ".", "A file tool names a file"),
+}).strict()
+
 export const executionRecordSchema = z.union([
   shellExecutionRecordSchema,
   workspaceFileToolExecutionRecordSchema,
+  fileToolExecutionRecordSchema,
 ])
 
 export const unresolvedExecutionReasonSchema = z.enum([

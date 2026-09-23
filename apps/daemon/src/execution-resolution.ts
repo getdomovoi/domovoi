@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { lstat, readFile, realpath } from "node:fs/promises"
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import {
   executionRecordSchema,
@@ -21,6 +21,8 @@ type ExecutionInput = {
   command?: string
   filePath?: string
   blockedPath?: string
+  // The provider tool behind a request that is not a shell command.
+  tool?: string
 }
 
 type ParsedPart = {
@@ -85,6 +87,23 @@ async function canonicalCwd(
     }
   } catch {
     return undefined
+  }
+}
+
+// The real location of a path that may not exist yet: its nearest existing
+// ancestor resolved, with the rest of the path appended.
+async function canonicalTarget(path: string): Promise<string> {
+  const missing: string[] = []
+  let current = path
+  for (;;) {
+    try {
+      return join(await realpath(current), ...missing)
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return path
+      missing.unshift(basename(current))
+      current = parent
+    }
   }
 }
 
@@ -417,15 +436,21 @@ export async function resolveExecution(input: ExecutionInput): Promise<Execution
     ) return unresolved(input.filePath === undefined || input.blockedPath !== undefined
       ? "unsupported-syntax"
       : "cwd-outside-project")
+    const target = await canonicalTarget(resolve(directory.absolute, input.filePath))
+    const path = relative(directory.root, target).split(sep).join("/")
     return fingerprint({
       version: 1,
-      coverage: "tool-and-workspace-scope",
+      coverage: "tool-and-file",
       cwd: directory.relative,
       kind: "workspace-file-tool",
       tool: command as "Edit" | "Write" | "MultiEdit" | "NotebookEdit",
-      scope: "workspace",
+      scope: "file",
+      path,
     })
   }
+  // WebFetch, MCP tools and the like act through inputs a command record cannot
+  // hold (a URL, arguments), so no rule may stand for all of them at once.
+  if (input.tool !== undefined) return unresolved("unsupported-syntax")
   const parts = parseCommand(command)
   if (!parts) return unresolved("unsupported-syntax")
   const needsManifest = parts.some((part) => packageInvocation(part.argv) !== undefined)

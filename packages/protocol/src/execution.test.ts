@@ -99,6 +99,22 @@ describe("resolved execution records", () => {
     }).success).toBe(false)
   })
 
+  it("accepts a file operation scoped to one project file, and only a project-relative one", () => {
+    const fileScoped = {
+      version: 1,
+      coverage: "tool-and-file",
+      cwd: ".",
+      kind: "workspace-file-tool",
+      tool: "Edit",
+      scope: "file",
+      path: "src/index.ts",
+    } as const
+    expect(executionRecordSchema.parse(fileScoped)).toEqual(fileScoped)
+    for (const path of ["/etc/hosts", "../outside.ts", "src/./index.ts", ""]) {
+      expect(executionRecordSchema.safeParse({ ...fileScoped, path }).success, path).toBe(false)
+    }
+  })
+
   it("accepts a project-scoped file operation", () => {
     expect(executionRecordSchema.parse({
       version: 1,

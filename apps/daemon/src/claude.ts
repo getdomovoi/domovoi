@@ -23,6 +23,7 @@ import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 const maximumClaudeStderrBytes = 16_384
+const claudeFileTools = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 const claudeAskTools = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const
 const claudeContextUsageTimeoutMs = 250
 
@@ -408,6 +409,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(filePath ? { path: isAbsolute(filePath) ? filePath : resolve(cwd, filePath) } : {}),
       ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),
+      ...(toolName !== "Bash" && !claudeFileTools.has(toolName) ? { tool: toolName } : {}),
     })
     return new Promise((resolve) => {
       this.#pendingApprovals.set(requestId, {

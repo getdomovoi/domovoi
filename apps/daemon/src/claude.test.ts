@@ -1038,3 +1038,26 @@ describe("changing the mode on a live session", () => {
     ).resolves.toBeTruthy()
   })
 })
+
+describe("the tool behind an approval request", () => {
+  it("names a provider tool that is neither a command nor a file tool, so no rule can stand for all its uses", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (toolName: string, input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!(toolName, input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask("WebFetch", { url: "https://docs.example.com/page", prompt: "Summarise" }, "fetch")
+    ask("mcp__github__create_issue", { title: "x" }, "mcp")
+    ask("Edit", { file_path: "/worktree/src/index.ts", old_string: "a", new_string: "b" }, "edit")
+    ask("Bash", { command: "pnpm test" }, "bash")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(4))
+    const tools = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested" ? [[event.itemId, event.tool]] : []))
+    expect(tools).toEqual({ fetch: "WebFetch", mcp: "mcp__github__create_issue", edit: undefined, bash: undefined })
+    await adapter.close()
+  })
+})

@@ -8185,6 +8185,7 @@ export class DomovoiDaemon {
         ...(event.command === undefined ? {} : { command: event.command }),
         ...(event.path === undefined ? {} : { filePath: event.path }),
         ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
+        ...(event.tool === undefined ? {} : { tool: event.tool }),
       })
       const decision = permissionDecisionFor({
         runtime: session.runtime,

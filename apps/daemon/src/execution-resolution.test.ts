@@ -176,7 +176,7 @@ describe("resolveExecution", () => {
       .resolves.toEqual({ state: "unresolved", reason: "sensitive-content" })
   })
 
-  it("records a contained file tool by workspace scope, not target path", async () => {
+  it("records a contained file tool by its target file", async () => {
     const root = await project()
     const target = join(root, "src", "new-file.ts")
     await mkdir(join(root, "src"))
@@ -189,13 +189,36 @@ describe("resolveExecution", () => {
       state: "resolved",
       record: {
         kind: "workspace-file-tool",
-        coverage: "tool-and-workspace-scope",
+        coverage: "tool-and-file",
         cwd: ".",
         tool: "Write",
-        scope: "workspace",
+        scope: "file",
+        path: "src/new-file.ts",
       },
     })
   })
+
+  it("gives each target file its own digest, so a rule for one edit covers no other file", async () => {
+    const root = await project()
+    const digest = async (filePath: string) => {
+      const execution = await resolveExecution({ workspaceRoot: root, cwd: root, command: "Edit", filePath })
+      return execution.state === "resolved" ? execution.digest : undefined
+    }
+    const source = await digest(join(root, "src", "index.ts"))
+    expect(source).toBeDefined()
+    expect(await digest(join(root, "package.json"))).not.toBe(source)
+    expect(await digest(join(root, "vitest.config.ts"))).not.toBe(source)
+    expect(await digest(join(root, "src", "index.ts"))).toBe(source)
+  })
+
+  it.each(["WebFetch", "WebSearch", "mcp__github__create_issue", "Task"])(
+    "never fingerprints the provider tool %s, whose effect lives in inputs the record cannot hold",
+    async (tool) => {
+      const root = await project()
+      await expect(resolveExecution({ workspaceRoot: root, cwd: root, command: tool, tool }))
+        .resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+    },
+  )
 
   it("accepts a contained file target addressed through the worktree alias", async () => {
     const root = await project()
@@ -213,10 +236,11 @@ describe("resolveExecution", () => {
       state: "resolved",
       record: {
         kind: "workspace-file-tool",
-        coverage: "tool-and-workspace-scope",
+        coverage: "tool-and-file",
         cwd: ".",
         tool: "Write",
-        scope: "workspace",
+        scope: "file",
+        path: "src/new-file.ts",
       },
     })
   })
