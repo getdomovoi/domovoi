@@ -1,5 +1,5 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -707,6 +707,25 @@ describe("repository instruction files", () => {
     expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
       body: expect.not.objectContaining({ system: expect.anything() }),
     }))
+    await adapter.close()
+  })
+})
+
+describe("Kilo legacy repository configuration", () => {
+  it("opens and prompts a Kilo session even when the worktree has Kilo's legacy files", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-kilo-legacy-"))
+    scratchDirectories.push(worktree)
+    for (const file of [".kilo/mcp.json", ".kilocode/mcp.json", ".kilocodemodes"]) {
+      await mkdir(join(worktree, file, ".."), { recursive: true })
+      await writeFile(join(worktree, file), "{}\n")
+    }
+    const { client, factory } = harness()
+    const adapter = new KiloSdkAdapter(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+    expect(client.session.create).toHaveBeenCalled()
+    expect(client.session.promptAsync).toHaveBeenCalled()
     await adapter.close()
   })
 })

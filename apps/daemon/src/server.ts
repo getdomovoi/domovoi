@@ -92,6 +92,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { kiloRepositoryConfigNotice } from "./kilo-repository-config.js"
 import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
@@ -6789,6 +6790,10 @@ export class DomovoiDaemon {
               : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
+          const kiloNotice = currentSession.workspacePath
+            ? await kiloRepositoryConfigNotice(runtime.provider, currentSession.workspacePath)
+            : undefined
+          if (kiloNotice) this.#snapshot.thread.push({ id: `system-${randomUUID()}`, sessionId: currentSession.id, kind: "system", ...kiloNotice, createdAt })
         } else {
           currentSession.runtime = runtime
           delete currentSession.providerFailure
@@ -7119,6 +7124,8 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
+        const kiloNotice = await kiloRepositoryConfigNotice(runtime.provider, workspace.path)
+        if (kiloNotice) this.#snapshot.thread.push({ id: `system-${randomUUID()}`, sessionId: sessionId, kind: "system", ...kiloNotice, createdAt })
         changed = true
       }
 
@@ -7309,6 +7316,8 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
+        const kiloNotice = await kiloRepositoryConfigNotice(runtime.provider, workspace.path)
+        if (kiloNotice) candidate.thread.push({ id: `system-${randomUUID()}`, sessionId: sessionId, kind: "system", ...kiloNotice, createdAt })
         try {
           if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
           else this.#store.save(candidate)

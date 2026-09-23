@@ -471,6 +471,13 @@ code or settings the repository brings:
   `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
   and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
   runs in those directories. Your global provider configuration still applies.
+- Kilo is the exception. Kilo 7.7.6 still reads `.kilo/mcp.json`, `.kilocode/mcp.json` and
+  `.kilocodemodes` from the worktree with project configuration switched off: it starts the MCP
+  servers those files list and loads the agents in `.kilocodemodes`, with no approval card. The
+  daemon cannot switch this off, so for Kilo in such a repository, repository code does not wait
+  for your trust. When a session starts on Kilo, or is handed or forked to Kilo, in a worktree
+  with one of these files, the thread shows a notice that names them. Kilo also reads
+  `.kilocode/rules/`, `.kilocode/workflows/` and `.kilocodeignore`.
 
 Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
 Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and
