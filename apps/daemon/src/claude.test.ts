@@ -1,9 +1,10 @@
 import { waitForDaemon } from "./test-wait-for.js"
+import { execFileSync } from "node:child_process"
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -1046,12 +1047,19 @@ describe("changing the mode on a live session", () => {
 })
 
 describe("reads Claude would approve before Domovoi sees them", () => {
+  beforeEach(() => {
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null")
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1")
+  })
+  afterEach(() => { vi.unstubAllEnvs() })
+
   async function session(mode: Runtime["permissionMode"]) {
     const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-claude-reads-")))
     scratchDirectories.push(scratch)
     const worktree = join(scratch, "worktree")
     await mkdir(join(worktree, "src"), { recursive: true })
     await writeFile(join(worktree, "src", "index.ts"), "export {}\n")
+    execFileSync("git", ["-C", worktree, "init", "-q"])
     await writeFile(join(scratch, "credentials"), "secret\n")
     const { calls, factory } = factoryHarness()
     const adapter = new ClaudeAgentSdkAdapter(factory)
@@ -1156,6 +1164,34 @@ describe("reads Claude would approve before Domovoi sees them", () => {
     })))
     adapter.resolveApproval(1, "deny")
     await expect(approval).resolves.toMatchObject({ behavior: "deny" })
+    await adapter.close()
+  })
+
+  it.each([
+    ["core.fsmonitor", "helper"],
+    ["diff.external", "differ"],
+  ])("sends a read-only Git command to an approval in Build when %s can run a program", async (key, value) => {
+    const { adapter, screen, worktree } = await session("build")
+    execFileSync("git", ["-C", worktree, "config", key, join(worktree, value)])
+
+    await expect(screen("Bash", { command: "git status --short" })).resolves.toMatchObject({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" },
+    })
+    await expect(screen("Bash", { command: "git diff --stat" })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
+    await adapter.close()
+  })
+
+  it.each([
+    "GIT_PAGER=cat git status --short",
+    "git -c core.fsmonitor=helper status --short",
+  ])("asks when the command itself sets Git configuration: %s", async (command) => {
+    const { adapter, screen } = await session("build")
+
+    await expect(screen("Bash", { command })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
     await adapter.close()
   })
 

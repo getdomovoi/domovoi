@@ -18,6 +18,7 @@ import type {
   AgentWorkingPlanStep,
 } from "./agents.js"
 import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } from "./claude-read-scope.js"
+import { gitReadCanRunProgram } from "./git-read-config.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { resolveCommandPathSync } from "./tool-path.js"
@@ -427,7 +428,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const secret = permissionDecisionFor({ runtime: session.runtime, command: operation }).risk === "hard-gate"
     // Outside the short list, a Bash read may reach paths only known at run
     // time, so it asks even when every path it names stays inside.
-    const unresolved = toolName === "Bash" && !claudeShellReadIsListed(command)
+    const listed = toolName !== "Bash" || claudeShellReadIsListed(command)
+    // A listed Git read still runs any program Git is configured to run.
+    const unresolved = !listed || (toolName === "Bash" && /(?:^|[;&|]\s*)git\s/.test(command)
+      && await gitReadCanRunProgram(resolve(cwd, hookInput.cwd ?? cwd)))
     if (outside === undefined && !secret && !unresolved) return {}
     const reason = outside !== undefined
       ? `Reads outside the session worktree: ${outside}`
