@@ -7,8 +7,6 @@ export const clientVersion = buildVersion
 
 // The same app runs on a phone and on a tablet, and the pairing code decides
 // which one it is to the daemon. The daemon binds the kind greeted at hello and
-// refuses any later call that claims another, so every call names the kind
-// the stored credential carries. A credential stored before the kind was kept
-// was paired with a phone code, because only those ever connected.
+// refuses any later call that claims another, so every call names the kind the
+// connection greeted as.
 export type HandheldClient = Extract<ClientKind, "phone" | "tablet">
-export const legacyHandheldClient: HandheldClient = "phone"

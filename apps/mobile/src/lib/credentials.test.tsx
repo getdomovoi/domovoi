@@ -20,11 +20,13 @@ describe("the stored daemon credential", () => {
     await expect(loadCredential()).resolves.toEqual({ url: "wss://desk/rpc", token: "t".repeat(43), client: "tablet" })
   })
 
-  it("reads a credential stored before the kind was kept as a phone's, the only kind that connected then", async () => {
+  // A tablet code could be spent before the kind was kept, so a credential
+  // with no kind is not assumed to be a phone's. The connection finds out.
+  it("reads a credential stored before the kind was kept as one of unknown kind", async () => {
     mockHeld.set("domovoi.daemon.url", "wss://desk/rpc")
     mockHeld.set("domovoi.daemon.token", "t".repeat(43))
 
-    await expect(loadCredential()).resolves.toEqual({ url: "wss://desk/rpc", token: "t".repeat(43), client: "phone" })
+    await expect(loadCredential()).resolves.toEqual({ url: "wss://desk/rpc", token: "t".repeat(43), client: undefined })
   })
 
   it("forgets the kind with the rest of the credential", async () => {

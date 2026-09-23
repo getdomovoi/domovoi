@@ -1,9 +1,11 @@
 import * as SecureStore from "expo-secure-store"
 
-import { legacyHandheldClient, type HandheldClient } from "./protocol-facts"
+import type { HandheldClient } from "./protocol-facts"
 import { createRelayPinStore, type PhoneRelayPinStore } from "./relay-pin"
 
-export type DaemonCredential = { url: string, token: string, client: HandheldClient }
+// The kind is undefined for a credential stored before the app kept it, and for
+// a token typed into Settings. The connection finds it out; see useDaemon.
+export type DaemonCredential = { url: string, token: string, client: HandheldClient | undefined }
 
 const urlKey = "domovoi.daemon.url"
 const tokenKey = "domovoi.daemon.token"
@@ -19,13 +21,13 @@ export async function loadCredential(): Promise<DaemonCredential | undefined> {
     SecureStore.getItemAsync(clientKey),
   ])
   if (!url || !token) return undefined
-  return { url, token, client: client === "tablet" || client === "phone" ? client : legacyHandheldClient }
+  return { url, token, client: client === "tablet" || client === "phone" ? client : undefined }
 }
 
 export async function saveCredential(credential: DaemonCredential): Promise<void> {
   await Promise.all([
     SecureStore.setItemAsync(urlKey, credential.url),
-    SecureStore.setItemAsync(clientKey, credential.client),
+    credential.client ? SecureStore.setItemAsync(clientKey, credential.client) : SecureStore.deleteItemAsync(clientKey),
     SecureStore.setItemAsync(tokenKey, credential.token, {
       keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     }),

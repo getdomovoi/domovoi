@@ -29,7 +29,6 @@ import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { normalizeTab, TabBar, type Tab } from "./components/tab-bar"
 import { clearCredential, loadCredential, saveCredential, type DaemonCredential } from "./lib/credentials"
-import { legacyHandheldClient } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
@@ -73,9 +72,6 @@ export function App() {
   const [url, setUrl] = useState("")
   const [token, setToken] = useState("")
   const [connectTo, setConnectTo] = useState<DaemonCredential | undefined>(undefined)
-  // What the daemon knows this device as. The pairing code decided it, and
-  // every call names it, because the daemon refuses one that names another.
-  const client = connectTo?.client ?? legacyHandheldClient
   const [pairingMode, setPairingMode] = useState<"scan" | "type" | undefined>(undefined)
   const [cameraPermission, requestCameraPermission] = usePairCameraPermission()
   const [restoring, setRestoring] = useState(true)
@@ -186,11 +182,17 @@ export function App() {
     setProblem: setFleetProblem,
   }))
 
-  const { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess } = useDaemon(
+  // What the daemon knows this device as. The pairing code decided it, and
+  // every call names it, because the daemon refuses one that names another. A
+  // credential of unknown kind is kept with the kind the daemon accepted.
+  const { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess, client } = useDaemon(
     connectTo?.url,
     connectTo?.token,
-    client,
+    connectTo?.client,
     fleetLoads.accept,
+    (kind) => {
+      if (connectTo) void saveCredential({ ...connectTo, client: kind })
+    },
   )
   const mutate = useCallback(
     (method: string, params: unknown) => mutationCall(clientAccess, call, method, params),
@@ -913,7 +915,8 @@ export function App() {
               onChangeUrl={setUrl}
               onChangeToken={setToken}
               onConnect={() => {
-                const next = { url: url.trim(), token: token.trim(), client }
+                // A typed token carries no kind; the connection finds it out.
+                const next = { url: url.trim(), token: token.trim(), client: undefined }
                 setConnectTo(next)
                 void saveCredential(next)
               }}

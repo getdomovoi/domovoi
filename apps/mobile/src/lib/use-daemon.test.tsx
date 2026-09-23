@@ -111,4 +111,68 @@ describe("useDaemon", () => {
     expect(streamed(result.current.snapshot)).toBeUndefined()
     await unmount()
   })
+
+  function refuseHello(socket: FakeSocket) {
+    const hello = JSON.parse(socket.sent[0]!) as { id: number }
+    socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: hello.id, error: { code: -32001, message: "Paired client credential does not match this client" } }) })
+  }
+
+  function greetedAs(socket: FakeSocket): unknown {
+    return (JSON.parse(socket.sent[0]!) as { params: { client: unknown } }).params.client
+  }
+
+  // A tablet paired before the app kept the kind stored a credential that
+  // greets as a phone and is refused. Such a credential gets one try as a
+  // tablet, and the kind that works is kept.
+  it("tries a credential of unknown kind as a tablet once, and keeps the kind the daemon accepted", async () => {
+    const learned = jest.fn<(kind: "phone" | "tablet") => void>()
+    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", undefined, () => {}, learned))
+    const first = FakeSocket.made[0]!
+    await act(async () => { first.open() })
+    expect(greetedAs(first)).toBe("phone")
+    await act(async () => { refuseHello(first) })
+    await flush()
+
+    expect(FakeSocket.made).toHaveLength(2)
+    const second = FakeSocket.made[1]!
+    await act(async () => { second.open() })
+    expect(greetedAs(second)).toBe("tablet")
+    await act(async () => { second.answerHello() })
+    await flush()
+
+    expect(result.current.status).toBe("open")
+    expect(result.current.fault).toBeUndefined()
+    expect(result.current.client).toBe("tablet")
+    expect(learned).toHaveBeenCalledWith("tablet")
+    await unmount()
+  })
+
+  it("does not guess for a credential whose kind is stored", async () => {
+    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", "phone", () => {}))
+    const first = FakeSocket.made[0]!
+    await act(async () => { first.open() })
+    await act(async () => { refuseHello(first) })
+    await flush()
+
+    expect(FakeSocket.made).toHaveLength(1)
+    expect(result.current.fault?.retriable).toBe(false)
+    await unmount()
+  })
+
+  it("says the credential was refused once both kinds were", async () => {
+    const learned = jest.fn<(kind: "phone" | "tablet") => void>()
+    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", undefined, () => {}, learned))
+    await act(async () => { FakeSocket.made[0]!.open() })
+    await act(async () => { refuseHello(FakeSocket.made[0]!) })
+    await flush()
+    await act(async () => { FakeSocket.made[1]!.open() })
+    await act(async () => { refuseHello(FakeSocket.made[1]!) })
+    await flush()
+
+    expect(FakeSocket.made).toHaveLength(2)
+    expect(result.current.fault?.headline).toBe("The daemon refused this credential")
+    expect(learned).not.toHaveBeenCalled()
+    await unmount()
+  })
 })
+
