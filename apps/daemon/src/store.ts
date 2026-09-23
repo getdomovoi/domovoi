@@ -8,7 +8,9 @@ import { Worker } from "node:worker_threads"
 import {
   executionResolutionSchema,
   machineIdSchema,
+  protocolCompatibility,
   protocolVersion,
+  protocolVersionSchema,
   queuedSessionSendSchema,
   resolvedExecutionSchema,
   sessionSendParamsSchema,
@@ -403,6 +405,39 @@ function openWorkspaceDatabase(path: string): DatabaseSync {
   return database
 }
 
+// State a newer daemon wrote is left exactly as it is. Reading it would mean
+// guessing at fields this daemon does not know, and moving it aside would
+// replace a person's sessions with the seed. The daemon does not start.
+export class NewerWorkspaceStateError extends Error {
+  constructor(
+    readonly path: string,
+    readonly storedProtocolVersion: string,
+    readonly daemonProtocolVersion: string,
+  ) {
+    super(`Workspace state at ${path} uses protocol ${storedProtocolVersion}, newer than this daemon's ${daemonProtocolVersion}`)
+    this.name = "NewerWorkspaceStateError"
+  }
+}
+
+// The protocol version stored state records, when it is one this daemon is
+// behind. A state it cannot read at all is not answered here.
+function newerStoredProtocolVersion(database: DatabaseSync): string | undefined {
+  const row = database
+    .prepare("SELECT snapshot FROM workspace_state WHERE id = 1")
+    .get() as StoredWorkspace | undefined
+  if (!row) return undefined
+  let stored: unknown
+  try {
+    stored = JSON.parse(row.snapshot)
+  } catch {
+    return undefined
+  }
+  if (!isRecord(stored)) return undefined
+  const version = protocolVersionSchema.safeParse(stored.protocolVersion)
+  if (!version.success) return undefined
+  return protocolCompatibility(protocolVersion, version.data) === "machine-behind" ? version.data : undefined
+}
+
 function quarantineStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-")
 }
@@ -627,6 +662,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       }
       prepareStatePath(path, manageDirectoryPermissions)
       database = openWorkspaceDatabase(path)
+    }
+    const newer = newerStoredProtocolVersion(database)
+    if (newer !== undefined) {
+      database.close()
+      throw new NewerWorkspaceStateError(path, newer, protocolVersion)
     }
     this.#database = database
     this.#writerFactory = options.writerFactory
