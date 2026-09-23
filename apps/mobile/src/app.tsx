@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { View } from "react-native"
+import { useWindowDimensions, View } from "react-native"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
   artifactAuthorizeResultSchema,
@@ -13,6 +13,7 @@ import {
   type FleetEntry,
   type PermissionMode,
   type SkillSummary,
+  type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 import { artifactRows, findArtifact, previewVariants } from "./artifact-rows"
@@ -53,6 +54,7 @@ import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
+import { TabletShell } from "./tablet-shell"
 import { useTheme } from "./theme/theme-provider"
 import {
   missingSkillProblem,
@@ -64,6 +66,8 @@ import "./global.css"
 
 export function App() {
   const { preference, setPreference } = useTheme()
+  const { width } = useWindowDimensions()
+  const tablet = width >= 768
   const [tab, setTab] = useState<Tab>(() => normalizeTab("sessions"))
   const selectTab = useCallback((value: unknown) => setTab(normalizeTab(value)), [])
   const [url, setUrl] = useState("")
@@ -400,13 +404,16 @@ export function App() {
 
   useEffect(() => () => fleetLoads.invalidate(), [fleetLoads])
 
-  const decide = async (decision: ApprovalDecision, explanation?: string) => {
-    if (!openApproval) return
+  const resolveApproval = async (
+    approval: WorkspaceSnapshot["approvals"][number],
+    decision: ApprovalDecision,
+    explanation?: string,
+  ) => {
     setDeciding(true)
     setDecideProblem("")
     try {
       await mutate("approval.resolve", {
-        approvalId: openApproval.id,
+        approvalId: approval.id,
         decision,
         client: clientKind,
         ...(explanation ? { explanation } : {}),
@@ -420,6 +427,11 @@ export function App() {
     } finally {
       setDeciding(false)
     }
+  }
+
+  const decide = async (decision: ApprovalDecision, explanation?: string) => {
+    if (!openApproval) return
+    await resolveApproval(openApproval, decision, explanation)
   }
 
   // The edit is built against the plan in the snapshot the phone holds now.
@@ -586,7 +598,7 @@ export function App() {
 
   // An approval is the reason the phone exists, so it takes the whole screen
   // and the tab bar goes away until it is answered or dismissed.
-  if (openApproval) {
+  if (openApproval && (!tablet || explaining)) {
     return (
       <SafeAreaProvider>
         <SafeAreaView className="flex-1 bg-background">
@@ -625,10 +637,60 @@ export function App() {
             comments={openArtifactComments}
             render={previewRender}
             variants={openVariants}
+            machine={snapshot?.machine.name ?? "the machine"}
             onBack={() => setOpenArtifactId(undefined)}
             onRetryRender={() => setRenderAttempt((attempt) => attempt + 1)}
             onOpenVariant={setOpenArtifactId}
             onComment={(anchor, body) => commentOnElement(openArtifact.id, anchor, body)}
+          />
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
+  if (tablet && snapshot && tab === "sessions") {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView edges={["top", "left", "right", "bottom"]} className="flex-1 bg-background">
+          <TabletShell
+            snapshot={snapshot}
+            selectedSessionId={openSessionId ?? snapshot.activeSessionId ?? undefined}
+            draft={draft}
+            access={clientAccess}
+            sending={sending || deciding}
+            onSelectSession={(sessionId) => {
+              setOpenSessionId(sessionId)
+              setOpenApprovalId(undefined)
+              setDraft("")
+              setSendProblem("")
+            }}
+            onNewSession={() => {
+              setFreshProblem("")
+              setFreshOpen(true)
+            }}
+            onOpenMachines={() => selectTab("machines")}
+            onChangeDraft={(next) => {
+              setDraft(next)
+              if (sendProblem) setSendProblem("")
+            }}
+            onSend={(sessionId) => void sendMessage(sessionId)}
+            onResolve={(approvalId, decision) => {
+              const approval = snapshot.approvals.find((candidate) => candidate.id === approvalId)
+              if (approval) void resolveApproval(approval, decision)
+            }}
+            onDenyExplain={(approvalId) => {
+              setOpenApprovalId(approvalId)
+              setExplaining(true)
+            }}
+            onPostReview={(artifactId, body) => void commentOnElement(artifactId, { cssSelector: "body" }, body)}
+          />
+          <FreshSessionSheet
+            open={freshOpen}
+            project={snapshot.project?.name ?? snapshot.project?.path ?? "the open project"}
+            starting={freshStarting}
+            problem={freshProblem}
+            onStart={(prompt) => void startFresh(prompt)}
+            onClose={() => { if (!freshStarting) setFreshOpen(false) }}
           />
         </SafeAreaView>
       </SafeAreaProvider>

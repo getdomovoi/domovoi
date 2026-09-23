@@ -138,20 +138,11 @@
       ],
       "evidence": [
         "\"Sessions\"",
-        "\"Fleet\"",
+        "\"Machines\"",
         "\"Settings\"",
         "tab-bar",
         "label: \"Machines\""
-      ],
-      "presence": [
-        "\"Sessions\"",
-        "\"Settings\"",
-        "tab-bar"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the middle tab is labelled Fleet; the design labels it Machines"
-      }
+      ]
     },
     {
       "id": "shell.platform-toggle",
@@ -267,14 +258,7 @@
       ],
       "evidence": [
         "Reaching your machines over the routes you configured"
-      ],
-      "presence": [
-        "Looking for a saved daemon"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the splash names its phase with its own copy; the design's line is not drawn"
-      }
+      ]
     },
     {
       "id": "sessions.unpaired",
@@ -329,14 +313,7 @@
         "Point at the pairing code",
         "Or type the code",
         "Paste"
-      ],
-      "presence": [
-        "Paste"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "camera pairing exists with a typed fallback; the viewfinder line and the fallback label are not the design's"
-      }
+      ]
     },
     {
       "id": "sessions.idle",
@@ -364,14 +341,7 @@
       ],
       "evidence": [
         "Steer it, or queue a message"
-      ],
-      "presence": [
-        "Reply to this session"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the thread and composer exist; the composer placeholder and the plan step line in the header are not the design's"
-      }
+      ]
     },
     {
       "id": "composer.keyboard",
@@ -386,19 +356,12 @@
       ],
       "evidence": [
         "A turn is running, so this will queue and send at the boundary"
-      ],
-      "presence": [
-        "tab-bar"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the composer and keyboard behaviour exist; the queue note is not drawn"
-      }
+      ]
     },
     {
       "id": "attach.sheet",
       "name": "What you can attach",
-      "where": "frame 13: Photo or screenshot with its bound, Take a photo, and three dimmed sources that say what each waits on",
+      "where": "frame 13: Photo or screenshot with its bound, Take a photo, and three dimmed sources. Terminal output is dimmed because the phone receives no terminal stream to select from; bounded text attachment transport through session.send already exists.",
       "copy": [
         "What you can attach",
         "Photo or screenshot",
@@ -430,15 +393,9 @@
       ],
       "evidence": [
         "uploads to",
-        "Images only, up to 1.5 MB and 2048"
-      ],
-      "presence": [
-        "attachmentsAllowed"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "attachments queue and send (#474, #475); the upload line copy is not the design's"
-      }
+        "Images only, up to",
+        "maximumImageUploadDimension"
+      ]
     },
     {
       "id": "plan.sheet",
@@ -454,14 +411,7 @@
         "Editing a step here applies at the next turn boundary",
         "Edit a step",
         "Looks right"
-      ],
-      "presence": [
-        "Edit a step"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the plan sheet edits steps; Looks right is not drawn"
-      }
+      ]
     },
     {
       "id": "plan.rendered",
@@ -487,14 +437,7 @@
         "The render stays on",
         "builds on",
         "Comment"
-      ],
-      "presence": [
-        "Comment"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the render and variants show; the two lines are not drawn"
-      }
+      ]
     },
     {
       "id": "artifact.comment",
@@ -510,14 +453,7 @@
         "ANCHORED TO",
         "Save for later",
         "Send to the agent"
-      ],
-      "presence": [
-        "ANCHORED TO"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "commenting on an element exists; Save for later is not drawn"
-      }
+      ]
     },
     {
       "id": "plan.pinned",

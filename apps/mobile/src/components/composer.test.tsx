@@ -44,9 +44,20 @@ async function draw(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 describe("Composer attachments", () => {
   it("rests as the compact v2 composer without desktop-only skill chrome", async () => {
     await draw()
-    expect(screen.getByPlaceholderText("Message for the next turn")).toBeOnTheScreen()
+    expect(screen.getByPlaceholderText("Steer it, or queue a message")).toBeOnTheScreen()
     expect(screen.queryByText("Skills")).toBeNull()
     expect(screen.getByRole("button", { name: "Open plan" })).toBeOnTheScreen()
+  })
+
+  it("names the boundary when a running turn will queue the message", async () => {
+    await draw({
+      readiness: {
+        can: true,
+        hint: "A turn is running, so this will queue and send at the boundary.",
+      },
+    })
+
+    expect(screen.getByText("A turn is running, so this will queue and send at the boundary.")).toBeOnTheScreen()
   })
 
   it("expands on focus and reports when tabs must hide", async () => {

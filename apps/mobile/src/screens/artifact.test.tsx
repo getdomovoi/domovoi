@@ -43,6 +43,7 @@ async function draw(overrides: Partial<Parameters<typeof ArtifactScreen>[0]> = {
     comments: [],
     render: undefined as PreviewRender | undefined,
     variants: [],
+    machine: "mac-mini-m4",
     onBack: jest.fn<() => void>(),
     onRetryRender: jest.fn<() => void>(),
     onOpenVariant: jest.fn<(artifactId: string) => void>(),
@@ -108,7 +109,7 @@ describe("ArtifactScreen preview", () => {
 
     const frame = screen.getByTestId("preview-render")
     expect(frame.props.source).toEqual({ uri: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s" })
-    expect(screen.getByText(/The render stays on the machine\./)).toBeOnTheScreen()
+    expect(screen.getByText("The render stays on mac-mini-m4. This phone displays it and never downloads the repository.")).toBeOnTheScreen()
     expect(screen.queryByText(/signed fetch/)).toBeNull()
   })
 
@@ -149,6 +150,7 @@ describe("ArtifactScreen preview", () => {
     expect(props.onOpenVariant).toHaveBeenCalledWith("artifact-preview-b")
     expect(screen.getByRole("button", { name: "Variant A" }).props.accessibilityState).toEqual({ selected: true })
     expect(screen.getByText("Viewing a variant does not change the build basis. Choose the build basis on desktop.")).toBeOnTheScreen()
+    expect(screen.getByText("Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.")).toBeOnTheScreen()
   })
 
 })
@@ -173,6 +175,21 @@ describe("ArtifactScreen comment on an element", () => {
       "Fifteen minutes is too long.",
     )
     expect(screen.queryByText("ANCHORED TO")).toBeNull()
+  })
+
+  it("saves a comment draft for the same element without sending it", async () => {
+    const props = await draw({ render: { state: "ready", url: "https://x/y", channel } })
+
+    await fireEvent.press(screen.getByRole("button", { name: "Comment" }))
+    await fireEvent(screen.getByTestId("preview-render"), "message", { nativeEvent: { data: selection(props.artifact.id) } })
+    await fireEvent.changeText(screen.getByLabelText("Comment on this element"), "Keep this thought")
+    await fireEvent.press(screen.getByRole("button", { name: "Save for later" }))
+    expect(props.onComment).not.toHaveBeenCalled()
+    expect(screen.queryByText("ANCHORED TO")).toBeNull()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Comment" }))
+    await fireEvent(screen.getByTestId("preview-render"), "message", { nativeEvent: { data: selection(props.artifact.id) } })
+    expect(screen.getByDisplayValue("Keep this thought")).toBeOnTheScreen()
   })
 
   it("ignores a selection for another render and will not send an empty comment", async () => {

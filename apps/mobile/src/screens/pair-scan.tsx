@@ -1,5 +1,6 @@
 import { decodePairingPayload, phoneAndTabletPromise, type PairingPayload } from "@getdomovoi/protocol"
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
+import * as Clipboard from "expo-clipboard"
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
 
@@ -57,6 +58,7 @@ export function PairScanScreen({
   deviceName = "",
   mode = "scan",
   bottomInset = 0,
+  readClipboard = Clipboard.getStringAsync,
 }: {
   permission: PermissionResponse | null
   requestPermission: () => Promise<PermissionResponse>
@@ -71,6 +73,7 @@ export function PairScanScreen({
   // What the machine's device list will call this phone.
   deviceName?: string
   mode?: "scan" | "type"
+  readClipboard?: () => Promise<string>
 }) {
   const [read, setRead] = useState<PairScanResult>()
   const [pasted, setPasted] = useState("")
@@ -158,6 +161,11 @@ export function PairScanScreen({
         ) : mode === "type" ? null : cameraReady && !cameraRefused ? (
           <View className="h-[300px] overflow-hidden rounded-xl border border-border">
             <Scanner onScanned={onScanned} />
+            <View pointerEvents="none" className="absolute inset-x-3 bottom-3 rounded-lg bg-desk/80 px-3 py-2.5">
+              <Text className="text-center text-[12px] text-foreground">
+                Point at the pairing code that domovoid pair prints on the machine.
+              </Text>
+            </View>
           </View>
         ) : cameraRefused ? (
           <Card className="gap-2">
@@ -175,21 +183,30 @@ export function PairScanScreen({
         ) : null}
         {found ? null : (
           <Card className="gap-1.5">
-            <Text variant="label">Or paste the pairing code</Text>
-            <TextInput
-              accessibilityLabel="Pairing code"
-              value={pasted}
-              onChangeText={(text) => {
-                setPasted(text)
-                setRead(text.trim() ? readPairingScan(text) : undefined)
-              }}
-              autoCapitalize="none"
-              autoCorrect={false}
-              placeholder="domovoi-pair:1:…"
-              placeholderTextColor={palette.faint}
-              selectionColor={palette.primary}
-              className="min-h-tap rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
-            />
+            <Text variant="label">Or type the code</Text>
+            <View className="flex-row items-center gap-2">
+              <TextInput
+                accessibilityLabel="Pairing code"
+                value={pasted}
+                onChangeText={(text) => {
+                  setPasted(text)
+                  setRead(text.trim() ? readPairingScan(text) : undefined)
+                }}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder="domovoi-pair:1:…"
+                placeholderTextColor={palette.faint}
+                selectionColor={palette.primary}
+                className="min-h-tap flex-1 rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
+              />
+              <Button
+                title="Paste"
+                onPress={() => void readClipboard().then((text) => {
+                  setPasted(text)
+                  setRead(text.trim() ? readPairingScan(text) : undefined)
+                })}
+              />
+            </View>
           </Card>
         )}
         <Button title="Cancel" variant="ghost" shape="block" onPress={() => { attempt.current += 1; onCancel() }} />

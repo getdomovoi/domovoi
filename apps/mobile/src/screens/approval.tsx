@@ -16,7 +16,7 @@ import { cn } from "../lib/cn"
 
 // The facts the handoff puts on this screen, in its order. A decision made
 // without them is a decision made blind, so none of them are behind a tap.
-function facts(approval: ApprovalRequest): Array<{ key: string, value: string, tone?: string }> {
+export function approvalFacts(approval: ApprovalRequest): Array<{ key: string, value: string, tone?: string }> {
   return [
     { key: "Machine", value: approval.machine },
     { key: "Agent", value: approval.agent },
@@ -85,7 +85,7 @@ export function ApprovalScreen({
         </Card>
 
         <Card flush>
-          {facts(approval).map((fact, index) => (
+          {approvalFacts(approval).map((fact, index) => (
             <View
               key={fact.key}
               className={cn(

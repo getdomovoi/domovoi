@@ -58,6 +58,16 @@ describe("pairing by camera", () => {
     expect(screen.queryByRole("button", { name: "Pair with this machine" })).toBeNull()
   })
 
+  it("keeps the typed fallback explicit beside the camera", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" />,
+    )
+
+    expect(screen.getByText("Point at the pairing code that domovoid pair prints on the machine.")).toBeTruthy()
+    expect(screen.getByText("Or type the code")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Paste" })).toBeTruthy()
+  })
+
   it("offers the pasted code when the camera is refused, and reads it the same way", async () => {
     const onPaired = jest.fn()
     await render(

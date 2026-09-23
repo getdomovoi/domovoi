@@ -114,7 +114,7 @@ export function Composer({
           onChangeText={onChangeDraft}
           onFocus={() => focus(true)}
           onBlur={() => focus(false)}
-          placeholder={blocked ? "This session cannot take a message" : "Message for the next turn"}
+          placeholder={blocked ? "This session cannot take a message" : "Steer it, or queue a message"}
           placeholderTextColor={palette.faint}
           selectionColor={palette.primary}
           accessibilityLabel="Reply to this session"

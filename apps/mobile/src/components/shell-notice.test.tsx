@@ -66,6 +66,7 @@ describe("ShellNotice", () => {
     await draw()
     expect(screen.getByText("No daemon reachable")).toBeOnTheScreen()
     expect(screen.getByText("ws://studio-arch:7433")).toBeOnTheScreen()
+    expect(screen.getByText("Reaching your machines over the routes you configured. No spinner, because the phase is knowable.")).toBeOnTheScreen()
   })
 
   it("asks for a connection now when the retry is pressed", async () => {

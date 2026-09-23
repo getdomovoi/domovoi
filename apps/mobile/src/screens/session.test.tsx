@@ -136,11 +136,21 @@ describe("SessionScreen pinned plan", () => {
     for (const step of plan.steps) expect(screen.getByText(step.text)).toBeOnTheScreen()
     expect(screen.getByText("Pinned stays pinned across screens. Unpin and it collapses back into the thread.")).toBeOnTheScreen()
     expect(screen.getByRole("button", { name: "Edit a step" })).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Looks right" })).toBeOnTheScreen()
     // The conversation is still there under the sheet.
     expect(screen.getByLabelText("Reply to this session")).toBeOnTheScreen()
 
     await fireEvent.press(screen.getByRole("button", { name: "Unpin" }))
     expect(props.onPinPlan).toHaveBeenCalledWith(false)
+  })
+
+  it("accepts the pinned plan without unpinning it", async () => {
+    const { props } = await draw({ planPinned: true })
+    await fireEvent.press(screen.getByRole("button", { name: /^Step 3 of 4 · / }))
+    await fireEvent.press(screen.getByRole("button", { name: "Looks right" }))
+
+    expect(screen.queryByText("The plan")).toBeNull()
+    expect(props.onPinPlan).not.toHaveBeenCalled()
   })
 
   it("edits a step from the sheet with the same sender", async () => {

@@ -37,11 +37,7 @@
       ],
       "evidence": [
         "TabletSessionsPane"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5: the tablet is not started; the phone has these groups as a single-column list"
-      }
+      ]
     },
     {
       "id": "thread.header",
@@ -49,11 +45,7 @@
       "where": "right pane top: title, repo · branch · worktree · clock, the files button opening the sheet, theme toggle",
       "evidence": [
         "TabletThreadHeader"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "thread.turns",
@@ -61,11 +53,7 @@
       "where": "right pane: the user message, prose, Worked for N with tools and files",
       "evidence": [
         "TabletThread"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "thread.gate",
@@ -80,11 +68,7 @@
       "evidence": [
         "TabletGateCard",
         "Always here"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5; the phone's approval screen decides with its own copy and layout"
-      }
+      ]
     },
     {
       "id": "thread.receipt",
@@ -92,11 +76,7 @@
       "where": "in the thread after the decision: what ran, how long, that a checkpoint exists",
       "evidence": [
         "TabletReceipt"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "composer",
@@ -108,11 +88,7 @@
       "evidence": [
         "TabletComposer",
         "Reply, or steer the plan"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "sheet",
@@ -126,11 +102,7 @@
       "evidence": [
         "TabletReviewSheet",
         "Say what is wrong with this element"
-      ],
-      "missing": {
-        "since": "2026-09-18",
-        "reason": "S3.5"
-      }
+      ]
     },
     {
       "id": "cellular-banner",

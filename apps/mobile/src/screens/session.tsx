@@ -349,6 +349,7 @@ function PlanSheet({ plan, open, onClose, onUnpin, onEditStep }: {
           </Text>
           <View className="flex-row gap-2">
             <Button title="Unpin" onPress={onUnpin} className="flex-1" />
+            <Button title="Looks right" variant="primary" onPress={onClose} className="flex-1" />
           </View>
         </PageScroller>
       </View>

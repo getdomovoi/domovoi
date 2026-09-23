@@ -63,9 +63,10 @@ function Comment({ row }: { row: AnnotationRow }) {
   )
 }
 
-function Render({ render, artifactId, picking, onSelect, onRetry }: {
+function Render({ render, artifactId, machine, picking, onSelect, onRetry }: {
   render: PreviewRender
   artifactId: string
+  machine: string
   onRetry: () => void
   // While picking, the bridge in the render highlights what is under the
   // finger and reports the element tapped instead of letting the tap through.
@@ -117,7 +118,7 @@ function Render({ render, artifactId, picking, onSelect, onRetry }: {
         />
       </View>
       <Text variant="note">
-        The render stays on the machine. This phone displays it and never downloads the repository.
+        The render stays on {machine}. This phone displays it and never downloads the repository.
       </Text>
     </View>
   )
@@ -126,13 +127,15 @@ function Render({ render, artifactId, picking, onSelect, onRetry }: {
 // Frame 18. The comment travels as a reference to the element, coordinates
 // plus text, never as a flattened screenshot; a re-render says whether it
 // still points anywhere.
-function CommentComposer({ selection, sending, onSend, onCancel }: {
+function CommentComposer({ selection, sending, initialBody, onSend, onSave, onCancel }: {
   selection: PreviewSelection
   sending: boolean
+  initialBody: string
   onSend: (body: string) => void
+  onSave: (body: string) => void
   onCancel: () => void
 }) {
-  const [body, setBody] = useState("")
+  const [body, setBody] = useState(initialBody)
   const { palette } = useTheme()
   const usable = body.trim().length > 0
   return (
@@ -158,6 +161,7 @@ function CommentComposer({ selection, sending, onSend, onCancel }: {
       </Text>
       <View className="flex-row justify-end gap-2">
         <Button title="Cancel" onPress={onCancel} disabled={sending} />
+        <Button title="Save for later" onPress={() => onSave(body)} disabled={sending || !usable} />
         <Button title="Send to the agent" variant="primary" onPress={() => { if (usable) onSend(body.trim()) }} disabled={sending || !usable} />
       </View>
     </Card>
@@ -170,6 +174,7 @@ export function ArtifactScreen({
   comments,
   render,
   variants,
+  machine,
   onBack,
   onRetryRender,
   onOpenVariant,
@@ -183,6 +188,7 @@ export function ArtifactScreen({
   // The other renders in this one's variant group, this one included, in the
   // order the person named them. Empty when the render stands alone.
   variants: PreviewVariant[]
+  machine: string
   onBack: () => void
   // Asks for the render again after a failed fetch.
   onRetryRender: () => void
@@ -195,6 +201,7 @@ export function ArtifactScreen({
   const [picking, setPicking] = useState(false)
   const [selection, setSelection] = useState<PreviewSelection | undefined>(undefined)
   const [sending, setSending] = useState(false)
+  const [savedDrafts, setSavedDrafts] = useState<ReadonlyMap<string, string>>(() => new Map())
   const send = async (text: string) => {
     if (!selection) return
     setSending(true)
@@ -252,6 +259,7 @@ export function ArtifactScreen({
               })}
             </View>
             <Text variant="note" className="text-center">Viewing a variant does not change the build basis. Choose the build basis on desktop.</Text>
+            <Text variant="note" className="text-center">Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.</Text>
           </View>
         ) : null}
 
@@ -259,6 +267,7 @@ export function ArtifactScreen({
           <Render
             render={render}
             artifactId={artifact.id}
+            machine={machine}
             onRetry={onRetryRender}
             picking={picking}
             onSelect={(picked) => { setPicking(false); setSelection(picked) }}
@@ -280,7 +289,12 @@ export function ArtifactScreen({
           <CommentComposer
             selection={selection}
             sending={sending}
+            initialBody={savedDrafts.get(selection.label) ?? ""}
             onSend={(text) => void send(text)}
+            onSave={(text) => {
+              setSavedDrafts((current) => new Map(current).set(selection.label, text))
+              setSelection(undefined)
+            }}
             onCancel={() => setSelection(undefined)}
           />
         ) : null}
