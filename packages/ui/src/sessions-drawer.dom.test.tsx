@@ -183,3 +183,26 @@ it("retains aria-current while leaving the active state to the drawer row", asyn
   expect(open().getAttribute("aria-current")).toBeNull()
   expect(other().textContent).not.toContain("Current")
 })
+
+// I69: an archived session has no worktree, so its row offers none of the
+// worktree actions and says why. The one way forward is drawn disabled.
+it("gives an archived row a menu that says what archive did", async () => {
+  const user = userEvent.setup()
+  const snapshot = snapshotWith()
+  const archived = snapshot.sessions[2]!
+  Object.assign(archived, { state: "archived", archiveRequestedAt: "2026-09-23T13:59:00.000Z", archiveCheckpoint: "b".repeat(40), archivedAt: "2026-09-23T14:09:00.000Z" })
+  function WithArchived() {
+    const [open, setOpen] = useState(true)
+    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onAction={vi.fn()} />
+  }
+  render(<WithArchived />)
+  expect(screen.getByText(/· archived$/)).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: `Actions for ${archived.title}` }))
+  const later = screen.getByRole("menuitem", { name: /Start a new session from this branch/ })
+  expect(later.getAttribute("aria-disabled")).toBe("true")
+  expect(later.textContent).toContain("later")
+  expect(screen.getByText("Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.")).toBeTruthy()
+  for (const name of ["Archive session", "Fork from a checkpoint", "Move to another machine", "Resume session"]) {
+    expect(screen.queryByRole("menuitem", { name })).toBeNull()
+  }
+})

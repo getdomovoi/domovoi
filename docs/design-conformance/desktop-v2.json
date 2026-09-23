@@ -252,11 +252,7 @@
       "evidence": [
         "Start a new session from this branch",
         "Archived, so there is no worktree to delete"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for I69; archived rows have no menu that says why fork, unarchive and delete are absent"
-      }
+      ]
     },
     {
       "id": "drawer.archive-confirm",
@@ -274,19 +270,12 @@
         "Archive and remove the worktree",
         "Keep the session"
       ],
-      "presence": [
-        "Archive this session?"
-      ],
       "evidence": [
         "Archive this session?",
         "Archive and remove the worktree",
         "Keep the session",
         "then removes the worktree directory"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for I69; a confirmation exists; it does not list what is removed and kept, and its actions are not the design's"
-      }
+      ]
     },
     {
       "id": "drawer.footer",
@@ -657,14 +646,7 @@
       "copy": [
         "Archived and read-only. The worktree was removed. Branch",
         "and its final checkpoint are kept."
-      ],
-      "presence": [
-        "session-recovery"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "the archived notice does not yet say the worktree was removed and which branch and checkpoint are kept (I69)"
-      }
+      ]
     },
     {
       "id": "conversation.subagent",
@@ -1823,6 +1805,16 @@
       "id": "palette",
       "since": "2026-09-23",
       "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "thread.session-notice",
+      "since": "2026-09-23",
+      "note": "The branch name in mono and the count of files never merged wait on sessionSummarySchema carrying them (ND3, daemon lane); until then the line says the session branch without naming it."
+    },
+    {
+      "id": "drawer.archive-confirm",
+      "since": "2026-09-23",
+      "note": "Same as thread.session-notice: the kept-branch row names no branch and no file count yet. The removed list names the worktree path from the session summary."
     }
   ],
   "annotations": [

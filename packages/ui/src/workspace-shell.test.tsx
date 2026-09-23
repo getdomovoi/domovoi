@@ -474,10 +474,10 @@ describe("Thread", () => {
       <ArchiveSessionAction disabled={false} onArchive={vi.fn()} />,
     )
 
+    // I69, 2026-09-23: the description is the design's one line; what is
+    // removed and kept is listed by the dialog body, not restated here.
     expect(markup).toContain("Archive session")
-    expect(archiveSessionDescription).toContain("final checkpoint")
-    expect(archiveSessionDescription).toContain("provider and terminal")
-    expect(archiveSessionDescription).toContain("source checkout's branch, HEAD, status, and files remain unchanged")
+    expect(archiveSessionDescription).toBe("Domovoi takes a final checkpoint, stops the agent and its terminals, then removes the worktree directory. Nothing is merged.")
   })
 
   it("renders archived sessions read-only with history still visible", () => {
@@ -511,6 +511,12 @@ describe("Thread", () => {
     expect(markup).toContain("Archived")
     expect(markup).toContain("The Stripe retries are double-charging")
     expect(markup).toContain("Archived, so the daemon accepts reads only.")
+    // I69: the notice at the head of the thread says what archive did, names
+    // the checkpoint kept, and draws the one way forward disabled and later.
+    expect(markup).toContain("Archived and read-only. The worktree was removed. The session branch and its final checkpoint are kept.")
+    expect(markup).toMatch(/archived \d\d:\d\d · aaaaaaa/)
+    expect(markup).toMatch(/Start a new session from this branch[\s\S]{0,200}later/)
+    expect(markup).not.toContain("Unarchive")
     expect(markup).toMatch(/aria-label="Message"[^>]*disabled=""/)
     expect(markup).toContain("data-workspace-composer-actions")
   })

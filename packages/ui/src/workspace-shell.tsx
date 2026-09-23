@@ -125,7 +125,7 @@ import {
 } from "./workspace-selectors"
 import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
 import { AppBar, useUsageToday } from "./app-bar"
-import { Thread, archiveSessionDescription } from "./thread"
+import { ArchiveConfirmBody, Thread, archiveSessionDescription } from "./thread"
 
 export { ArchiveSessionAction, CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
 
@@ -1256,8 +1256,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 <AlertDialogTitle>Archive {snapshot.sessions.find((session) => session.id === archiveTarget)?.title ?? "this session"}?</AlertDialogTitle>
                 <AlertDialogDescription>{archiveSessionDescription}</AlertDialogDescription>
               </AlertDialogHeader>
+              <ArchiveConfirmBody worktreePath={snapshot.sessions.find((session) => session.id === archiveTarget)?.workspacePath} />
               <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogCancel>Keep the session</AlertDialogCancel>
                 <AlertDialogAction
                   variant="destructive"
                   disabled={watching}
@@ -1268,7 +1269,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     if (target) void archiveSession(target).catch((cause: unknown) => setConnectionError(cause instanceof Error ? cause.message : "The session could not be archived"))
                   }}
                 >
-                  Archive session
+                  Archive and remove the worktree
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>

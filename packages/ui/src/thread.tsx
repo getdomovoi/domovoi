@@ -465,14 +465,48 @@ export const CheckpointThreadItem = memo(function CheckpointThreadItem({
   )
 })
 
-export const archiveSessionDescription = "Domovoi creates a final checkpoint, stops provider and terminal resources, and removes the isolated session worktree. Durable history, checkpoint refs, artifact and annotation records, audit refs, and the archive branch are retained. The source checkout's branch, HEAD, status, and files remain unchanged."
+// I69, 2026-09-23: the confirmation says exactly what archive does. The
+// daemon takes a final checkpoint, stops the agent and its terminals and
+// removes the worktree directory; the branch, that checkpoint and the thread
+// stay. The branch name and the count of files never merged are not on the
+// wire yet, so the kept list names them without numbers.
+export const archiveSessionDescription = "Domovoi takes a final checkpoint, stops the agent and its terminals, then removes the worktree directory. Nothing is merged."
+
+export function ArchiveConfirmBody({ worktreePath }: { worktreePath?: string | undefined }) {
+  const eyebrow = "text-[10.5px] tracking-[0.13em] text-faint"
+  return (
+    <div className="flex flex-col gap-3 text-[12px] leading-[1.5]">
+      <div className="overflow-hidden rounded-lg border">
+        <p className={`m-0 border-b px-3 py-2 ${eyebrow}`} id="archive-removed">REMOVED</p>
+        <ul aria-labelledby="archive-removed" className="m-0 list-none p-0">
+          <li className="flex flex-col gap-0.5 px-3 py-2">
+            <span>The worktree directory</span>
+            {worktreePath ? <span className="truncate font-machine text-[10.5px] text-faint" title={worktreePath}>{worktreePath}</span> : null}
+          </li>
+          <li className="border-t px-3 py-2">The agent and its terminals, stopped</li>
+        </ul>
+      </div>
+      <div className="overflow-hidden rounded-lg border">
+        <p className={`m-0 border-b px-3 py-2 ${eyebrow}`} id="archive-kept">KEPT</p>
+        <ul aria-labelledby="archive-kept" className="m-0 list-none p-0">
+          <li className="px-3 py-2">The session branch, with the files that were never merged</li>
+          <li className="border-t px-3 py-2">The final checkpoint, taken on that branch</li>
+          <li className="border-t px-3 py-2">The thread, readable here</li>
+        </ul>
+      </div>
+      <p className="m-0 text-[11.5px] text-muted-foreground">This cannot be undone. An archived session cannot be forked, unarchived or sent to.</p>
+    </div>
+  )
+}
 
 export function ArchiveSessionAction({
   disabled,
   onArchive,
+  worktreePath,
 }: {
   disabled: boolean
   onArchive: () => void
+  worktreePath?: string | undefined
 }) {
   return (
     <AlertDialog>
@@ -489,12 +523,33 @@ export function ArchiveSessionAction({
             {archiveSessionDescription}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <ArchiveConfirmBody worktreePath={worktreePath} />
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction variant="destructive" onClick={onArchive}>Archive session</AlertDialogAction>
+          <AlertDialogCancel>Keep the session</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onArchive}>Archive and remove the worktree</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  )
+}
+
+// I69: the head of an archived thread says what archive did. The kept
+// branch's name is not on the wire yet, so the line names it without one.
+function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
+  const time = session.archivedAt ? threadClock.format(new Date(session.archivedAt)) : undefined
+  const meta = [time ? `archived ${time}` : undefined, session.archiveCheckpoint?.slice(0, 7)].filter(Boolean).join(" · ")
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-accent px-4 py-3" role="status">
+      <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-muted-foreground" />
+      <span className="min-w-0 flex-1 text-[12px] leading-[1.5]">
+        Archived and read-only. The worktree was removed. The session branch and its final checkpoint are kept.
+      </span>
+      {meta ? <span className="font-machine text-[10.5px] text-faint">{meta}</span> : null}
+      <Button variant="outline" size="sm" disabled title="Not built yet">
+        Start a new session from this branch
+        <span className="font-machine text-[10.5px] text-faint">later</span>
+      </Button>
+    </div>
   )
 }
 
@@ -1150,6 +1205,7 @@ export function Thread({
             {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
             {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
           />
+          {active.state === "archived" ? <ArchivedSessionNotice session={active} /> : null}
           {providerRestartRequired ? (
             <FailedReadState
               message={active.providerFailure?.message ?? "The provider stopped answering before this session could be read completely."}

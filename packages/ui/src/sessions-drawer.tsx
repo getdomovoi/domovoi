@@ -1,4 +1,4 @@
-import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
+import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
 import { useState } from "react"
 
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
@@ -21,7 +21,9 @@ import { cn } from "./lib/utils"
 // its count, and every row carrying the session's own actions in a menu:
 // stop or resume the agent, fork from a checkpoint, move to another machine,
 // and archive. Direct worktree deletion has no protocol method, so the menu
-// cannot safely offer it. The count that matters stays on the button,
+// cannot safely offer it. An archived row (I69) has no worktree left: its menu
+// says so and draws the one way forward, a new session from the kept branch,
+// disabled and marked later. The count that matters stays on the button,
 // because a session waiting on a person blocks work and a closed drawer hides
 // it.
 
@@ -151,14 +153,28 @@ export function SessionsDrawerColumn({
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-[214px]">
-                          {entry.running ? (
-                            <DropdownMenuItem onSelect={() => onAction("stop", entry.id)}><PauseIcon />Stop the agent</DropdownMenuItem>
+                          {entry.archived ? (
+                            <>
+                              <DropdownMenuItem disabled title="Not built yet" className="justify-between">
+                                <span className="flex items-center gap-2"><GitBranchIcon />Start a new session from this branch</span>
+                                <span className="font-machine text-[10.5px] text-faint">later</span>
+                              </DropdownMenuItem>
+                              <p className="m-0 px-2 py-1.5 text-[11px] leading-[1.5] text-muted-foreground">
+                                Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.
+                              </p>
+                            </>
                           ) : (
-                            <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("resume", entry.id)}><PlayIcon />Resume session</DropdownMenuItem>
+                            <>
+                              {entry.running ? (
+                                <DropdownMenuItem onSelect={() => onAction("stop", entry.id)}><PauseIcon />Stop the agent</DropdownMenuItem>
+                              ) : (
+                                <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("resume", entry.id)}><PlayIcon />Resume session</DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("archive", entry.id)}><ArchiveIcon />Archive session</DropdownMenuItem>
+                            </>
                           )}
-                          <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
-                          <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
-                          <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("archive", entry.id)}><ArchiveIcon />Archive session</DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     ) : null}
