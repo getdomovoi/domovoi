@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { randomBytes } from "node:crypto"
 
 import {
   createOpencodeClient,
@@ -96,6 +96,25 @@ type PendingSessionLoad = {
   cancelled: boolean
 }
 
+// OpenCode and Kilo refuse a message id that does not start with "msg" and
+// order a session's messages by id. This is their ascending scheme: "msg_",
+// six bytes of milliseconds times 4096 plus a per-millisecond counter as hex,
+// then fourteen random base62 characters.
+const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+let lastMessageTimestamp = 0
+let messageCounter = 0
+
+export function openCodeMessageId(now = Date.now()): string {
+  if (now !== lastMessageTimestamp) {
+    lastMessageTimestamp = now
+    messageCounter = 0
+  }
+  messageCounter += 1
+  const ordered = (BigInt(now) * 0x1000n + BigInt(messageCounter)) & 0xffff_ffff_ffffn
+  const random = Array.from(randomBytes(14), (byte) => base62[byte % 62]).join("")
+  return `msg_${ordered.toString(16).padStart(12, "0")}${random}`
+}
+
 export function openCodeAgentFor(runtime: Runtime): string {
   if (runtime.permissionMode === "ask") return "domovoi-ask"
   if (runtime.permissionMode === "plan") return "plan"
@@ -120,7 +139,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
-    id: () => string = randomUUID,
+    id: () => string = openCodeMessageId,
     identity: OpenCodeAdapterIdentity = { providerId: "opencode", providerName: "OpenCode" },
   ) {
     this.#factory = factory

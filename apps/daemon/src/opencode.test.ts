@@ -10,6 +10,7 @@ import {
   OpenCodeSdkAdapter,
   domovoiOpenCodeConfig,
   openCodeAgentFor,
+  openCodeMessageId,
   type OpenCodeClient,
   type OpenCodeEvent,
   type OpenCodeFactory,
@@ -658,5 +659,40 @@ describe("KiloSdkAdapter", () => {
       }),
     }))
     await adapter.close()
+  })
+})
+
+describe("message ids", () => {
+  it.each([
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ])("sends %s ascending msg_ ids, the only message ids its server accepts", async (_name, create) => {
+    const { client, factory } = harness()
+    const adapter = create(factory)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const steered = await adapter.steerTurn(threadId, first, "Also")
+    const ids = client.session.promptAsync.mock.calls.map((call) => (call as unknown as [{ body: { messageID: string } }])[0].body.messageID)
+
+    expect(ids).toHaveLength(2)
+    for (const id of ids) expect(id).toMatch(/^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/)
+    expect(ids[0]).toBe(first)
+    expect(ids[1]).toBe(steered.providerMessageId)
+    expect(ids[1]! > ids[0]!).toBe(true)
+    await adapter.close()
+  })
+})
+
+describe("openCodeMessageId", () => {
+  it("orders ids made in the same millisecond and encodes the time the server reads back", () => {
+    const now = 1_790_000_000_123
+    const first = openCodeMessageId(now)
+    const second = openCodeMessageId(now)
+    const later = openCodeMessageId(now + 1)
+
+    expect(second > first).toBe(true)
+    expect(later > second).toBe(true)
+    expect(Number(BigInt(`0x${first.slice(4, 16)}`) / 0x1000n)).toBe(now % 2 ** 36)
   })
 })
