@@ -15,6 +15,7 @@ import {
   rpcMethodAuthorizations,
   maximumJsonValueDepth,
   persistenceRecoveryRpcMethods,
+  maximumTerminalReplayCharacters,
   phoneAndTabletPromise,
   phoneAndTabletRpcMethods,
   projectSwitchConfirmationErrorCode,
@@ -22,6 +23,12 @@ import {
   rpcMethodMutations,
   protocolVersionMismatchErrorCode,
   rpcMethods,
+  terminalClosedRetentionMilliseconds,
+  terminalListParamsSchema,
+  terminalListResultSchema,
+  terminalUnwatchParamsSchema,
+  terminalWatchParamsSchema,
+  terminalWatchResultSchema,
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -1353,6 +1360,55 @@ describe("RPC method authorization classification", () => {
       expect(rpcMethodMutations[method]).toBe("read-only")
       expect(rpcMethodAuthorizations[method]).toBe("control")
     }
+    for (const method of ["terminal.list", "terminal.watch", "terminal.unwatch"] as const) {
+      expect(rpcMethodMutations[method]).toBe("read-only")
+      expect(rpcMethodAuthorizations[method]).toBe("observe")
+    }
+  })
+})
+
+describe("read-only terminal methods", () => {
+  it("take a terminal or session id and nothing else", () => {
+    expect(terminalWatchParamsSchema.parse({ terminalId: "terminal-1" })).toEqual({ terminalId: "terminal-1" })
+    expect(terminalUnwatchParamsSchema.parse({ terminalId: "terminal-1" })).toEqual({ terminalId: "terminal-1" })
+    expect(terminalListParamsSchema.parse({ sessionId: "session-1" })).toEqual({ sessionId: "session-1" })
+    // A watcher names no client identity: it types nothing, so nothing it
+    // says about itself could authorize anything.
+    expect(terminalWatchParamsSchema.safeParse({ terminalId: "terminal-1", client: "phone", clientId: "p" }).success).toBe(false)
+    expect(terminalWatchParamsSchema.safeParse({ terminalId: "" }).success).toBe(false)
+    expect(terminalListParamsSchema.safeParse({}).success).toBe(false)
+  })
+
+  it("describe a terminal without its buffer in a list, and with it in a watch", () => {
+    const summary = {
+      terminalId: "terminal-1", sessionId: "session-1", cols: 120, rows: 34, shell: "zsh", cwd: "/worktrees/wt",
+      owner: { client: "desktop", clientId: "desktop-1", device: { id: `device-${"7f24".repeat(8)}`, label: "MacBook Pro" } },
+      claimHeld: true, openedAt: "2026-09-23T13:52:04.000Z", state: "live",
+    }
+    expect(terminalListResultSchema.parse({ terminals: [summary] })).toEqual({ terminals: [summary] })
+    // A root bearer names no device; a closed terminal names its end and holds no claim.
+    const rootOwned = { ...summary, owner: { client: "desktop", clientId: "desktop-1" } }
+    expect(terminalListResultSchema.parse({ terminals: [rootOwned] })).toEqual({ terminals: [rootOwned] })
+    const closed = { ...summary, state: "closed", claimHeld: false, closedAt: "2026-09-23T14:09:40.000Z", exitCode: 0 }
+    expect(terminalListResultSchema.parse({ terminals: [closed] })).toEqual({ terminals: [closed] })
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...closed, closedAt: undefined }] }).success).toBe(false)
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...closed, claimHeld: true }] }).success).toBe(false)
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...summary, exitCode: 0 }] }).success).toBe(false)
+    expect(terminalClosedRetentionMilliseconds).toBe(3_600_000)
+    expect(terminalListResultSchema.safeParse({ terminals: [{ ...summary, buffer: "x" }] }).success).toBe(false)
+    const watched = {
+      ...summary, buffer: "$ pnpm vitest run\r\n", bufferStartsAt: "2026-09-23T13:52:04.000Z",
+      earlierOutputDropped: false, watchedAt: "2026-09-23T14:07:18.000Z",
+    }
+    expect(terminalWatchResultSchema.parse(watched)).toEqual(watched)
+    const empty = { ...summary, buffer: "", earlierOutputDropped: false, watchedAt: "2026-09-23T14:07:18.000Z" }
+    expect(terminalWatchResultSchema.parse(empty)).toEqual(empty)
+    expect(terminalWatchResultSchema.safeParse({ ...watched, buffer: "x".repeat(maximumTerminalReplayCharacters + 1) }).success).toBe(false)
+    expect(terminalWatchResultSchema.safeParse({ ...watched, claimHeld: "yes" }).success).toBe(false)
+    expect(terminalWatchResultSchema.safeParse({ ...watched, state: "closed", claimHeld: false }).success).toBe(false)
+    expect(terminalWatchResultSchema.parse({ ...watched, state: "closed", claimHeld: false, closedAt: watched.watchedAt, signal: 15 }))
+      .toMatchObject({ state: "closed", signal: 15 })
+    expect(terminalWatchResultSchema.safeParse({ ...watched, watchedAt: "yesterday" }).success).toBe(false)
   })
 })
 
@@ -1384,11 +1440,22 @@ describe("phone and tablet credential scope", () => {
   it("names only registered methods and keeps file and machine reach out", () => {
     for (const method of phoneAndTabletRpcMethods) expect(Object.hasOwn(rpcMethods, method), method).toBe(true)
     for (const method of [
-      "terminal.create", "terminal.input", "terminal.claim", "session.revertFile", "checkpoint.restore",
+      "terminal.create", "terminal.input", "terminal.claim", "terminal.resize", "terminal.close",
+      "session.revertFile", "checkpoint.restore",
       "skill.read", "skill.install", "audit.export", "device.pair", "device.revoke",
       "device.rotate", "device.rename", "device.issueCode", "device.list", "fleet.enroll", "fleet.forget",
       "session.transfer", "provider.secret.list",
     ] as const) expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
+  })
+
+  it("lets a phone read a terminal and never type into one", () => {
+    // Phone v2 frame 04: the phone reads the shell, and only the device
+    // holding the claim types into it. The read is three methods; the claim
+    // model is untouched.
+    for (const method of ["terminal.list", "terminal.watch", "terminal.unwatch"] as const) {
+      expect(phoneAndTabletRpcMethods.has(method), method).toBe(true)
+      expect(rpcMethodAuthorizations[method]).toBe("observe")
+    }
   })
 
   it("carries the pairing card's list", () => {
@@ -1396,8 +1463,9 @@ describe("phone and tablet credential scope", () => {
     // daemon does not keep yet marked rather than dropped.
     expect(phoneAndTabletPromise).toHaveLength(5)
     expect(phoneAndTabletPromise.at(-1)).toEqual({ text: "It cannot pull the repository down. Files stay here.", tone: "limit" })
+    // The short form, ruled 2026-09-23; the line goes when the phone reads terminals.
     expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
-      { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+      { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
     ])
   })
 })

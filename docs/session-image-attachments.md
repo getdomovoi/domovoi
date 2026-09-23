@@ -59,4 +59,6 @@ an adapter without vision still refuses the entire image send. The flag is not
 persisted in workspace state. Larger sends also require updated transport endpoints.
 
 The phone UI is a separate slice. Its queue must state: two images, 1.5 MB each,
-2048 pixels on a side. `terminal.watch` remains deferred until after Phase 1.
+2048 pixels on a side. The daemon answers `terminal.list`, `terminal.watch` and
+`terminal.unwatch` to phone and tablet credentials; attaching a terminal selection
+to a turn is not built.

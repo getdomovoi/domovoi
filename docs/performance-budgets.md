@@ -36,7 +36,7 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 | Surface | Alpha budget | Stable gate |
 | --- | --- | --- |
 | Startup | Web JS 1,250,000 startup bytes and 400,000 lazy bytes; web CSS 124,000; desktop renderer JS 1,250,000 startup bytes and 400,000 lazy bytes; renderer CSS 124,000; main 36,864; preload 8,192 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
-| Memory | 100 thread items in a client snapshot; 200 retained history items; 262,144 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
+| Memory | 100 thread items in a client snapshot; 200 retained history items; 65,536 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
 | Long threads | 100 snapshot/rendered items; 100 items per history page; 32,768 Markdown characters and 500 lines per item | Durable history remains daemon-owned and pageable; client and quick-view tests enforce windows |
 | Terminal throughput | 65,536 characters per notification; 16 ms batching; WebSocket pause/resume at 1,048,576/262,144 buffered bytes | Fake-clock batching and backpressure tests plus protocol payload validation; bytes remain ordered and lossless |
 | Large previews | 4,194,304 source bytes; 50,000 printable nodes; depth 64; 2 stages; 24 variants/thumbnails; 400,000 decoded thumbnail bytes | Bounded file-descriptor read at serve time, sanitizer limits, iframe/variant/cache invariants |

@@ -1422,6 +1422,10 @@ describe("terminal RPC", () => {
       protocolVersion,
       clientId: "tablet-watcher",
     })
+    // Terminal notifications go to the connections that opened, claimed or
+    // watch the terminal, so the watcher reads it before the owner drops.
+    await expect(watcher.rpc("terminal.watch", { terminalId: "terminal-reconnect" }))
+      .resolves.toMatchObject({ result: { owner: { clientId: "desktop-owner" }, state: "live" } })
 
     owner.socket.close()
     await new Promise<void>((resolve) => owner.socket.once("close", resolve))

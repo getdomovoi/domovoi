@@ -82,6 +82,8 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type TerminalSummary,
+  terminalClosedRetentionMilliseconds,
   type ToolFileEntry,
   type SkillInstallRefusal,
   type TurnSkillSelectionRefusal,
@@ -226,7 +228,7 @@ import { testEvidence } from "./test-evidence.js"
 import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
-import { TerminalReplayBuffer } from "./terminal-replay.js"
+import { TerminalReplayBuffer, type TerminalReplayRecord } from "./terminal-replay.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -352,6 +354,7 @@ function isEncrypted(socket: IncomingMessage["socket"]): boolean {
 
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
+  "terminal.list",
   "runtime.models",
   "runtime.discover",
   "skill.list",
@@ -1150,6 +1153,7 @@ export type DaemonServerOptions = {
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
   terminalReapGraceMs?: number
+  terminalClosedRetentionMs?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   providerSecrets?: Pick<ProviderSecretManager, "status">
@@ -1197,6 +1201,15 @@ export type DaemonErrorEntry = {
 
 export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
 
+type ClosedTerminal = {
+  summary: Omit<TerminalSummary, "state" | "claimHeld" | "closedAt" | "exitCode" | "signal">
+  record: TerminalReplayRecord
+  closedAt: number
+  exitCode: number | undefined
+  signal: number | undefined
+  timer: ReturnType<typeof setTimeout>
+}
+
 type ActiveTerminal = {
   sessionId: string
   process: TerminalProcess
@@ -1215,6 +1228,11 @@ type ActiveTerminal = {
   // A released ownership waits through a grace window for the next connection
   // to re-claim it, then the terminal is reaped rather than stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  // The connections that opened, claimed or watch this terminal. Its output,
+  // owner changes and close go to these and nowhere else. A phone or tablet
+  // credential can only join by terminal.watch, which types nothing.
+  audience: Set<RpcOutboundSocket>
+  openedAt: number
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -1273,6 +1291,11 @@ export class DomovoiDaemon {
   #providerPromptBudgetCodeUnits: number
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
+  #terminalClosedRetentionMs: number
+  // Closed is a state, not an error: a closed terminal's record stays
+  // readable for the retention window, then is dropped. Held in memory only;
+  // a daemon restart forgets it.
+  #closedTerminals = new Map<string, ClosedTerminal>()
   #authToken: string
   #authenticatedClients = new WeakSet<RpcOutboundSocket>()
   #deviceCredentials = new WeakMap<RpcOutboundSocket, {
@@ -1534,6 +1557,7 @@ export class DomovoiDaemon {
     this.#authToken = authToken
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalReapGraceMs = options.terminalReapGraceMs ?? 30_000
+    this.#terminalClosedRetentionMs = options.terminalClosedRetentionMs ?? terminalClosedRetentionMilliseconds
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#providerProbe = options.providerProbe
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
@@ -1856,6 +1880,7 @@ export class DomovoiDaemon {
       failures.push(error)
     }
     this.#closeAllTerminals()
+    this.#dropClosedTerminals()
     this.#rpcOutbound.dispose()
     for (const client of this.#rpcClients) client.close(1001, "daemon stopping")
 
@@ -2128,9 +2153,82 @@ export class DomovoiDaemon {
   }
 
   #broadcastNotification(method: string, params: unknown): void {
+    this.#notifyClients(this.#rpcClients, method, params)
+  }
+
+  #notifyTerminalAudience(terminal: ActiveTerminal, method: string, params: unknown): void {
+    this.#notifyClients(terminal.audience, method, params)
+  }
+
+  #terminalSummary(terminalId: string, terminal: ActiveTerminal): TerminalSummary {
+    return {
+      terminalId,
+      sessionId: terminal.sessionId,
+      cols: terminal.cols,
+      rows: terminal.rows,
+      shell: terminal.shell,
+      cwd: terminal.cwd,
+      owner: terminal.owner,
+      claimHeld: terminal.ownerSocket !== undefined,
+      openedAt: new Date(terminal.openedAt).toISOString(),
+      state: "live",
+    }
+  }
+
+  #closedTerminalSummary(closed: ClosedTerminal): TerminalSummary {
+    return {
+      ...closed.summary,
+      claimHeld: false,
+      state: "closed",
+      closedAt: new Date(closed.closedAt).toISOString(),
+      ...(closed.exitCode === undefined ? {} : { exitCode: closed.exitCode }),
+      ...(closed.signal === undefined ? {} : { signal: closed.signal }),
+    }
+  }
+
+  // The claimant as the receipt names a decider: what the connection said of
+  // itself, and the paired device the daemon verified on it, when there is one.
+  #terminalOwner(socket: RpcOutboundSocket, params: { client: TerminalOwner["client"], clientId: string }): TerminalOwner {
+    const device = this.#deviceCredentials.get(socket)?.verified.device
+    return {
+      client: params.client,
+      clientId: params.clientId,
+      ...(device ? { device: { id: device.id, label: device.label } } : {}),
+    }
+  }
+
+  // Called once the terminal has left #terminals and its last output has been
+  // pushed to the replay, so the record is the whole of what was kept.
+  #retainClosedTerminal(terminalId: string, terminal: ActiveTerminal, end: { exitCode?: number | undefined, signal?: number | undefined }): void {
+    this.#dropClosedTerminal(terminalId)
+    const { state: _state, claimHeld: _claimHeld, ...summary } = this.#terminalSummary(terminalId, terminal)
+    const timer = setTimeout(() => this.#dropClosedTerminal(terminalId), this.#terminalClosedRetentionMs)
+    timer.unref?.()
+    this.#closedTerminals.set(terminalId, {
+      summary,
+      record: terminal.replay.record(),
+      closedAt: Date.now(),
+      exitCode: end.exitCode,
+      signal: end.signal,
+      timer,
+    })
+  }
+
+  #dropClosedTerminal(terminalId: string): void {
+    const closed = this.#closedTerminals.get(terminalId)
+    if (!closed) return
+    clearTimeout(closed.timer)
+    this.#closedTerminals.delete(terminalId)
+  }
+
+  #dropClosedTerminals(): void {
+    for (const terminalId of [...this.#closedTerminals.keys()]) this.#dropClosedTerminal(terminalId)
+  }
+
+  #notifyClients(clients: Iterable<RpcOutboundSocket>, method: string, params: unknown): void {
     const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
-    for (const client of this.#rpcClients) {
+    for (const client of clients) {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
@@ -4655,17 +4753,19 @@ export class DomovoiDaemon {
             existing.cols = params.cols
             existing.rows = params.rows
           } else if (existing.ownerSocket === undefined) {
-            existing.owner = { client: params.client, clientId: params.clientId }
+            existing.owner = this.#terminalOwner(socket, params)
             existing.ownerSocket = socket
             if (existing.reapTimer !== undefined) {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
             }
-            this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+            existing.audience.add(socket)
+            this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
             }))
           }
+          existing.audience.add(socket)
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -4682,6 +4782,7 @@ export class DomovoiDaemon {
           })
           return
         }
+        this.#dropClosedTerminal(params.terminalId)
         const process = this.#terminalService.spawn({
           cwd: session.workspacePath,
           cols: params.cols,
@@ -4695,7 +4796,7 @@ export class DomovoiDaemon {
           () => output.resume(params.terminalId),
         )
         const output = new TerminalOutputBatcher((terminalId, data) => {
-          this.#broadcastNotification("terminal.output", { terminalId, data })
+          this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
           return outputBackpressure.observe()
         })
         const activeTerminal: ActiveTerminal = {
@@ -4708,8 +4809,10 @@ export class DomovoiDaemon {
           replay: new TerminalReplayBuffer(),
           redactor: new TerminalOutputRedactor(),
           redactorFlush: undefined,
-          owner: { client: params.client, clientId: params.clientId },
+          owner: this.#terminalOwner(socket, params),
           ownerSocket: socket,
+          audience: new Set([socket]),
+          openedAt: Date.now(),
           reapTimer: undefined,
           output,
           outputBackpressure,
@@ -4768,7 +4871,8 @@ export class DomovoiDaemon {
           active.outputBackpressure.dispose()
           active.disposeData()
           active.disposeExit()
-          this.#broadcastNotification("terminal.closed", {
+          this.#retainClosedTerminal(params.terminalId, active, { exitCode, signal })
+          this.#notifyTerminalAudience(active, "terminal.closed", {
             terminalId: params.terminalId,
             exitCode,
             ...(signal === undefined ? {} : { signal }),
@@ -4800,8 +4904,9 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        terminal.owner = { client: params.client, clientId: params.clientId }
+        terminal.owner = this.#terminalOwner(socket, params)
         terminal.ownerSocket = socket
+        terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -4810,8 +4915,62 @@ export class DomovoiDaemon {
           terminalId: params.terminalId,
           owner: terminal.owner,
         })
-        this.#broadcastNotification("terminal.ownership", ownership)
+        this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: ownership })
+        return
+      }
+
+      // Reading a terminal. A watcher joins the audience and receives what the
+      // shell prints from here on; the reply carries what the daemon kept,
+      // redacted before it was kept. Nothing here reaches the process.
+      if (method === "terminal.list") {
+        const params = paramsResult.data as RpcParams<"terminal.list">
+        const terminals: TerminalSummary[] = []
+        for (const [terminalId, terminal] of this.#terminals) {
+          if (terminal.sessionId === params.sessionId) terminals.push(this.#terminalSummary(terminalId, terminal))
+        }
+        for (const closed of this.#closedTerminals.values()) {
+          if (closed.summary.sessionId === params.sessionId) terminals.push(this.#closedTerminalSummary(closed))
+        }
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ terminals }) })
+        return
+      }
+
+      if (method === "terminal.watch") {
+        const params = paramsResult.data as RpcParams<"terminal.watch">
+        const terminal = this.#terminals.get(params.terminalId)
+        const closed = this.#closedTerminals.get(params.terminalId)
+        if (!terminal && !closed) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        if (terminal) terminal.audience.add(socket)
+        const record = terminal ? terminal.replay.record() : closed!.record
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            ...(terminal ? this.#terminalSummary(params.terminalId, terminal) : this.#closedTerminalSummary(closed!)),
+            buffer: record.text,
+            ...(record.startsAt === undefined ? {} : { bufferStartsAt: new Date(record.startsAt).toISOString() }),
+            earlierOutputDropped: record.dropped,
+            watchedAt: new Date().toISOString(),
+          }),
+        })
+        return
+      }
+
+      if (method === "terminal.unwatch") {
+        const params = paramsResult.data as RpcParams<"terminal.unwatch">
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal && !this.#closedTerminals.has(params.terminalId)) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        // The holder of the claim stays in the audience: its output is part
+        // of holding the shell, and only closing or releasing the claim ends it.
+        if (terminal && terminal.ownerSocket !== socket) terminal.audience.delete(socket)
+        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ accepted: true }) })
         return
       }
 
@@ -9432,12 +9591,14 @@ export class DomovoiDaemon {
     terminal.output.flush(terminalId)
     terminal.outputBackpressure.dispose()
     terminal.process.kill()
-    this.#broadcastNotification("terminal.closed", { terminalId })
+    this.#retainClosedTerminal(terminalId, terminal, {})
+    this.#notifyTerminalAudience(terminal, "terminal.closed", { terminalId })
     return true
   }
 
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
+      terminal.audience.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
