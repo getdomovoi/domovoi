@@ -5,7 +5,6 @@ import { connectionKindSchema } from "./schema.js"
 import {
   directTransportEndpointSchema,
   orderedTransports,
-  selectTransport,
   transportCandidateSchema,
   transportContract,
   transportPreference,
@@ -37,7 +36,7 @@ describe("transport kind contract", () => {
     for (const configured of [false, true]) {
       const value = { ...candidate(kind, endpoint), configured }
       expect(transportCandidateSchema.safeParse(value).success).toBe(false)
-      expect(() => selectTransport([value as never])).toThrow()
+      expect(() => usableTransports([value as never])).toThrow()
     }
   })
 
@@ -76,11 +75,9 @@ describe("transport kind contract", () => {
     expect(transportCandidateSchema.safeParse(candidate("lan", endpoint)).success).toBe(false)
   })
 
-  it("cannot enable the reserved relay by claiming it is available", () => {
+  it("never offers the reserved relay as a usable route", () => {
     const relay = { kind: "relay" as const, endpoint: "wss://relay.example/rpc", authenticated: true as const }
-    for (const options of [{}, { relayAvailable: true }, { relayAvailable: false }]) {
-      expect(selectTransport([relay], options)).toBeUndefined()
-    }
+    expect(usableTransports([relay])).toEqual([])
   })
 
   it("defines capability, protection, configuration and availability for every variant", () => {
