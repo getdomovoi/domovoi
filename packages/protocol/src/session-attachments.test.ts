@@ -60,4 +60,19 @@ describe("session image attachments", () => {
     }
     expect(sessionAttachmentRefusalSchema.safeParse({ kind: "session-attachment-refused", reason: "ignored" }).success).toBe(false)
   })
+
+  it("names the model that takes no image input, with the design's code", () => {
+    // Phone v2 frame 13b: "refused by <machine> · attach.image.model_no_input";
+    // frame 14b: "2 images cannot go to <model>". The fields are optional so a
+    // refusal from an older daemon still parses.
+    const refusal = {
+      kind: "session-attachment-refused", reason: "image-input-unsupported",
+      code: "attach.image.model_no_input", model: "qwen3-coder-72b", imageCount: 2,
+    }
+    expect(sessionAttachmentRefusalSchema.parse(refusal)).toEqual(refusal)
+    expect(sessionAttachmentRefusalSchema.safeParse({ ...refusal, code: "attach.image.too_large" }).success).toBe(false)
+    expect(sessionAttachmentRefusalSchema.safeParse({ ...refusal, imageCount: 0 }).success).toBe(false)
+    expect(sessionAttachmentRefusalSchema.safeParse({ ...refusal, model: "" }).success).toBe(false)
+    expect(sessionAttachmentRefusalSchema.safeParse({ ...refusal, reason: "invalid-image" }).success).toBe(false)
+  })
 })

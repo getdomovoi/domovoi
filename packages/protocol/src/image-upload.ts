@@ -47,10 +47,23 @@ export const sessionAttachmentSchema = z.union([
   workspaceFileAttachmentSchema,
 ])
 
-export const sessionAttachmentRefusalSchema = z.object({
-  kind: z.literal("session-attachment-refused"),
-  reason: z.enum(["image-input-unsupported", "invalid-image", "invalid-text", "invalid-workspace-file"]),
-}).strict()
+export const sessionAttachmentRefusalSchema = z.union([
+  // The selected model takes no image input. The daemon names the model and
+  // the count so the composer can say "2 images cannot go to <model>"; the
+  // code is the one the attach sheet shows beside the lock. The three fields
+  // are absent from an older daemon.
+  z.object({
+    kind: z.literal("session-attachment-refused"),
+    reason: z.literal("image-input-unsupported"),
+    code: z.literal("attach.image.model_no_input").optional(),
+    model: z.string().min(1).check(utf16MaxLength(256)).optional(),
+    imageCount: z.number().int().positive().max(maximumSessionAttachments).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("session-attachment-refused"),
+    reason: z.enum(["invalid-image", "invalid-text", "invalid-workspace-file"]),
+  }).strict(),
+])
 
 export type ImageUpload = z.infer<typeof imageUploadSchema>
 export type TextAttachment = z.infer<typeof textAttachmentSchema>

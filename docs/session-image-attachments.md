@@ -27,12 +27,19 @@ a later send. A provider may retain its own transcript under its own rules.
 
 Both a new turn and steering an active turn use this path. If the registered
 adapter does not explicitly declare `capabilities.vision`, the entire send refuses
-before thread resume, provider dispatch or prompt persistence. Error data validates
-with `sessionAttachmentRefusalSchema`:
+before thread resume, provider dispatch or prompt persistence. The refusal names
+the session's model and the number of images, with the code the attach sheet
+shows. Error data validates with `sessionAttachmentRefusalSchema`:
 
 ```json
-{"kind":"session-attachment-refused","reason":"image-input-unsupported"}
+{"kind":"session-attachment-refused","reason":"image-input-unsupported","code":"attach.image.model_no_input","model":"qwen3-coder-72b","imageCount":2}
 ```
+
+`runtime.models` says the same per model ahead of a send: `imageInput` is `true` when an image
+attachment on a send to that model is delivered, `false` when it is not. Today it comes from the
+adapter's vision capability, so it is `true` for every model of an adapter that delivers images
+and `false` for the rest, whatever their harness could take. A missing field is an older daemon,
+which a client treats as not known rather than as no.
 
 Invalid decoded images use `invalid-image`. A text file over its byte limit uses
 `invalid-text`. A worktree file that is missing, outside the worktree, not a regular file or

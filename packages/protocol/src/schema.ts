@@ -75,6 +75,10 @@ export const providerModelSchema = z.object({
   description: z.string(),
   supportedReasoningEfforts: z.array(reasoningEffortSchema),
   defaultReasoningEffort: reasoningEffortSchema,
+  // Whether an image attachment on a send to this model is delivered. Absent
+  // when the daemon did not say, which a client treats as not known rather
+  // than as no. Phone v2 frames 13 and 13b.
+  imageInput: z.boolean().optional(),
   isDefault: z.boolean(),
 }).superRefine((model, context) => {
   if (

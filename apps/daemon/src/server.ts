@@ -151,7 +151,7 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
-import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
+import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -3825,6 +3825,7 @@ export class DomovoiDaemon {
       }).finally(() => modelDeadline.clear()).then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
           .filter((model) => model.provider === provider)
+          .map((model) => ({ ...model, imageInput: model.imageInput ?? modelImageInput(agent.capabilities) }))
         if (parsed.length > 0 && this.#providerEpoch(provider) === epoch
           && this.#providerModelRequests.get(provider) === discovery) {
           this.#providerModels.set(provider, { models: parsed, cachedAt: Date.now() })
@@ -7433,7 +7434,7 @@ export class DomovoiDaemon {
         let preparedTurn
         try {
           const images = params.attachments?.filter((attachment): attachment is ImageUpload => !("kind" in attachment))
-          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities)
+          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities, session.runtime.model)
           const attachmentText = await prepareSessionAttachmentText(params.attachments, session.workspacePath)
           const userPrompt = attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt
           preparedTurn = await composeProviderPrompt({
