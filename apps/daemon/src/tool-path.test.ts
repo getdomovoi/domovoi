@@ -10,6 +10,7 @@ import {
   mergeToolPath,
   readLoginShellPath,
   resolveCommandPath,
+  resolveCommandPathSync,
   resolveToolPath,
   toolPathFileName,
 } from "./tool-path.js"
@@ -62,6 +63,8 @@ describe("resolveCommandPath", () => {
     const searched = [guiLaunchPath.split(":").join(delimiter), bin].join(delimiter)
     await expect(resolveCommandPath("claude", searched, process.platform)).resolves.toBe(join(bin, name))
     await expect(resolveCommandPath("claude", guiLaunchPath.split(":").join(delimiter), process.platform)).resolves.toBeUndefined()
+    expect(resolveCommandPathSync("claude", searched, process.platform)).toBe(join(bin, name))
+    expect(resolveCommandPathSync("claude", guiLaunchPath.split(":").join(delimiter), process.platform)).toBeUndefined()
   })
 })
 
