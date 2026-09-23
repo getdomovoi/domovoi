@@ -53,7 +53,11 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
-reuses a high-entropy credential at `<profile>/daemon.token`. On POSIX, private state files are
+reuses a high-entropy credential at `<profile>/daemon.token`. When it is set, the daemon reads it
+and then removes it and `DOMOVOI_CREDENTIAL_PATH` from its own environment, so providers, agent
+servers and terminals the daemon starts do not inherit the bearer. A connection that
+authenticates with the bearer cannot use a paired device's id as its client id, and audit entries
+record whether a client connected with the daemon bearer or a device credential. On POSIX, private state files are
 `0600` inside a `0700` state directory and permissive files are repaired on startup. On Windows,
 the default profile is `.domovoi` in the user directory and no additional ACL restriction is
 applied yet. Remote

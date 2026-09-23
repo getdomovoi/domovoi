@@ -102,6 +102,31 @@ describe("createProductionDaemon", () => {
     expect(createDaemon).not.toHaveBeenCalled()
   })
 
+  it("takes the bearer out of its own environment, so no provider or terminal it starts inherits it", async () => {
+    const authToken = testToken("environment bearer")
+    const previous = { token: process.env.DOMOVOI_AUTH_TOKEN, path: process.env.DOMOVOI_CREDENTIAL_PATH }
+    process.env.DOMOVOI_AUTH_TOKEN = authToken
+    process.env.DOMOVOI_CREDENTIAL_PATH = join(await temporaryHome(), "daemon.token")
+    try {
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const handle = await createProductionDaemonWithDependencies({ homeDirectory: await temporaryHome() }, {
+        ...productionDaemonDependencies,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon,
+      })
+      running.push(handle)
+
+      expect(handle.authToken).toBe(authToken)
+      expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+      expect(process.env.DOMOVOI_CREDENTIAL_PATH).toBeUndefined()
+    } finally {
+      if (previous.token === undefined) delete process.env.DOMOVOI_AUTH_TOKEN
+      else process.env.DOMOVOI_AUTH_TOKEN = previous.token
+      if (previous.path === undefined) delete process.env.DOMOVOI_CREDENTIAL_PATH
+      else process.env.DOMOVOI_CREDENTIAL_PATH = previous.path
+    }
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))

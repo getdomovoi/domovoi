@@ -121,6 +121,12 @@ export async function createProductionDaemonWithDependencies(
   let relayResult: ProvisionedRelayChannel | undefined
   try {
     const config = dependencies.parseEnvironment(environment, homeDirectory)
+    // Every provider, agent server and terminal the daemon starts inherits its
+    // environment, and this bearer resolves approvals. Once read, it is gone.
+    if (options.environment === undefined) {
+      delete process.env.DOMOVOI_AUTH_TOKEN
+      delete process.env.DOMOVOI_CREDENTIAL_PATH
+    }
     profile = profileLocation(homeDirectory, config.profileDirectory)
     if (options.owner === "desktop" && options.serviceRegistrationId !== undefined) throw new Error("Desktop cannot claim a service registration")
     // Validate transport before any secret or listener side effect. Store

@@ -54,6 +54,14 @@ describe("audit RPC contracts", () => {
     expect(auditActorSchema.parse(actor)).toEqual(actor)
   })
 
+  it("records which credential a client actor connected with", () => {
+    for (const credential of ["daemon", "device"] as const) {
+      const actor = { kind: "client", client: "phone", clientId: "phone-1", credential } as const
+      expect(auditActorSchema.parse(actor)).toEqual(actor)
+    }
+    expect(auditActorSchema.safeParse({ kind: "client", client: "phone", credential: "stolen" }).success).toBe(false)
+  })
+
   it("strictly describes project switch confirmation", () => {
     const confirmation = {
       kind: "project-switch-confirmation",

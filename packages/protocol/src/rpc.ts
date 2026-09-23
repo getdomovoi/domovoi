@@ -474,6 +474,9 @@ export const auditActorSchema = z.discriminatedUnion("kind", [
     client: clientKindSchema,
     clientId: auditActorReferenceSchema.optional(),
     connectionId: connectionIdSchema.optional(),
+    // The daemon bearer, or a paired device's credential. A bearer connection
+    // names its own client kind, so the credential says who could have acted.
+    credential: z.enum(["daemon", "device"]).optional(),
   }).strict(),
   z.object({
     kind: z.literal("provider"),

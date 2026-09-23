@@ -25,6 +25,7 @@ import {
   daemonPersistenceUnavailableErrorCode,
   deviceLabelMismatchErrorCode,
   devicePairingLimitErrorCode,
+  deviceIdSchema,
   type DeviceLabelMismatch,
   sourcePreflight,
   transferPreflight,
@@ -4230,6 +4231,18 @@ export class DomovoiDaemon {
           )
           return
         }
+        // A paired device's id belongs to that device's credential. The bearer
+        // is readable by any process of the owner's user, and must not put
+        // its actions under a device's name.
+        if (!credential && hello.clientId !== undefined && deviceIdSchema.safeParse(hello.clientId).success) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "A daemon credential cannot use a paired device's id",
+          )
+          return
+        }
         if (credential) this.#store.devices?.markSeen(credential.device.id, new Date().toISOString())
         this.#authenticatedActors.set(socket, {
           kind: "client",
@@ -4239,6 +4252,7 @@ export class DomovoiDaemon {
           ...(credential
             ? { clientId: credential.device.id }
             : hello.clientId ? { clientId: hello.clientId } : {}),
+          credential: credential ? "device" : "daemon",
         })
       }
       this.#connectionIds.set(socket, randomUUID())
