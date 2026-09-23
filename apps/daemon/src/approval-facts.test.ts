@@ -1,4 +1,4 @@
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
@@ -20,7 +20,7 @@ describe("approvalFacts", () => {
     expect(approvalFacts({ workspace, path: join(workspace, "src", "index.ts"), scope: undefined }).affects)
       .toBe("The file src/index.ts in the session worktree.")
     expect(approvalFacts({ workspace, path: join("/", "etc", "hosts"), scope: undefined }).affects)
-      .toBe(`The file ${join("/", "etc", "hosts")}, outside the session worktree.`)
+      .toBe(`The file ${resolve(join("/", "etc", "hosts"))}, outside the session worktree.`)
   })
 
   it("describes the Codex sandbox and what running outside it means", () => {
