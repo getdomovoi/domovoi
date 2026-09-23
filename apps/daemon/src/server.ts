@@ -1240,6 +1240,7 @@ export class DomovoiDaemon {
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
+  #pendingSnapshotPersist: Promise<void> | undefined
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -9642,8 +9643,13 @@ export class DomovoiDaemon {
     )
   }
 
+  // Each write carries the whole live snapshot as it stands when the write
+  // starts, so every change that arrives while a write is still waiting to
+  // start is carried by that write. Sharing it keeps the backlog to one
+  // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
-    await this.#serializeSnapshotPersistence(async () => {
+    const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
+      this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()
       try {
         if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
@@ -9655,6 +9661,7 @@ export class DomovoiDaemon {
       this.#persistenceSucceeded()
       this.#clearCommittedSessionCreations()
     })
+    await pending
   }
 
   #persistenceFailed(error: unknown): void {
