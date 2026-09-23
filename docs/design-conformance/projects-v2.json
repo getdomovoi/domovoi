@@ -1,0 +1,122 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi Projects.dc.html",
+  "sha256": "82b44c1245551bdc8a3c58a15a12d4f91973740eaff292b3ed8aa18a8c905101",
+  "derivedOn": "2026-09-23",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts",
+    "apps/mobile/src/**/*.{ts,tsx}"
+  ],
+  "note": "J31, drawn as a proposal: several active projects on one machine, up to a cap the daemon states, with sessions grouped by project and needs-you first (option B, section headers, marked decided in the design). The shell around it repeats Desktop V2 and Phone v2 and is held here only so every drawn string is claimed.",
+  "sample": [
+    "claude-code",
+    "38 percent of the 5 hour window, resets 17:40",
+    "mac-mini-m4",
+    "loopback",
+    "3 machines · 1 unreachable",
+    "main",
+    "Invoices with Cyrillic line items render boxes instead of letters. Fix the font fallback and add a render test.",
+    "14:07",
+    "sonnet 4.6",
+    "Medium",
+    "42.1k",
+    "pdf",
+    "9:41",
+    "fresh worktree off main",
+    "listed by the daemon on mac-mini-m4 · 14:07:12"
+  ],
+  "annotations": [
+    "Several projects on one machine",
+    "Proposal. Today a daemon has one active project, and opening another stops the first. Here each machine holds up to 3, as its daemon states.",
+    "iOS",
+    "Android",
+    "01",
+    "Sessions, needs-you first, then by project",
+    "Project headers are labels, not controls. There is no open or close here, because the phone answers yes or no to what a machine proposed.",
+    "Decided: B, section headers",
+    "The cap keeps headers to 3 per machine, so B stays short, and a row's position answers where it runs without reading its meta line. A hides the other projects' running work behind a filter, and its chips get ambiguous once the same repo is active on two machines.",
+    "?"
+  ],
+  "elements": [
+    {
+      "id": "projects.shell",
+      "name": "The shell around the proposal",
+      "where": "desktop titlebar, drawer, launcher, gate and composer, and the phone tab bar, as in Desktop V2 and Phone v2",
+      "copy": [
+        "Switch theme",
+        "Domovoi",
+        "Sessions",
+        "New session",
+        "Session actions",
+        "Stop the agent",
+        "Send",
+        "What should the agent work on?",
+        "It runs on",
+        ". Nothing touches your checkout.",
+        "Start the session",
+        "PICK UP WHERE YOU LEFT OFF",
+        "Waiting on your decision",
+        "Allow once",
+        "Deny",
+        "Edit",
+        "Plan preview",
+        "Ask",
+        "Machines",
+        "Settings",
+        "Cancel",
+        "Keep Domovoi open to answer gates. Nothing is pushed to this phone yet."
+      ],
+      "evidence": [
+        "Plan preview",
+        "Stop the agent"
+      ]
+    },
+    {
+      "id": "projects.active",
+      "name": "Several active projects",
+      "where": "drawer and phone grouped by project under needs-you; ACTIVE ON <machine> with Close; OPEN ANOTHER ON THIS MACHINE refused at the cap; the close confirmation with WHAT STOPS and WHAT STAYS; the launcher's project line and picker; palette rows naming the project",
+      "states": [
+        "under the cap",
+        "cap reached",
+        "closing",
+        "closed",
+        "daemon silent"
+      ],
+      "copy": [
+        "ACTIVE ON",
+        "Close",
+        "OPEN ANOTHER ON THIS MACHINE",
+        "refused by the daemon · project_cap 3",
+        "Opening or closing one project stops nothing in the others.",
+        "Close this project",
+        "Closed",
+        "Ask the daemon again",
+        "in",
+        ", in a fresh worktree off",
+        "Open another project",
+        "Only projects active on the chosen machine are listed.",
+        "sessions, projects, machines, commands",
+        "on",
+        "WHAT STOPS",
+        "WHAT STAYS"
+      ],
+      "evidence": [
+        "project_cap",
+        "OPEN ANOTHER ON THIS MACHINE",
+        "Close this project"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "a daemon holds one active project and opening another stops the first; several active projects and a stated cap need a daemon and protocol change (J31)"
+      }
+    }
+  ],
+  "humanRead": [
+    {
+      "id": "projects.shell",
+      "since": "2026-09-23",
+      "note": "The shell is held for claim completeness; its conformance is judged in desktop-v2.json and phone-v2.json."
+    }
+  ]
+}

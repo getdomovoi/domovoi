@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Web v2.dc.html",
-  "sha256": "6dbf4c5554b10cf9ce8061ea78d71189137c0bf2cd7ac285d6e3d5c935511ad1",
-  "derivedOn": "2026-09-18",
+  "sha256": "c6dd3265c3df0ceac75b708d53af3e50a88392c06033b72ebbdb9ee7d3d16f7c",
+  "derivedOn": "2026-09-23",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
@@ -11,9 +11,7 @@
   "sample": [
     "acme-api · pull requests",
     "no extension, no install",
-    "hetzner-cx42",
     "round trip 3.4s · 3 messages queued · the agent is unaffected",
-    "acme-api · main · wt-billing-idem · on hetzner-cx42",
     "Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.",
     "Claim-then-commit is in, on a replay table keyed by event id. One spec still asserts the old at-least-once behaviour. Step 3 needs a migration on that machine, so I stopped and asked.",
     "pnpm -w prisma migrate deploy",
@@ -23,7 +21,9 @@
     "design-studio · read-only",
     "webhook_replay",
     "One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.",
-    "open"
+    "open",
+    "mac-mini-m4",
+    "claude-code"
   ],
   "elements": [
     {
@@ -57,6 +57,39 @@
       }
     },
     {
+      "id": "connect",
+      "name": "Connect this browser with a web code",
+      "where": "first screen over the tailnet (J26): Connect this browser to <machine>, the reopened-tab note, the Web code field with its one-time bound, filled from the QR, Pair this browser with its hint, the outcome card, HOW THIS TAB IS TRUSTED facts",
+      "states": [
+        "typed code",
+        "filled from the QR",
+        "reopened tab",
+        "paired",
+        "refused outcomes from the design data"
+      ],
+      "copy": [
+        "This tab has no credential",
+        "sessionStorage · cleared when the last tab closed",
+        "Domovoi keeps a browser credential for one tab session, so a reopened tab pairs again. Nothing on mac-mini-m4 stopped.",
+        "Web code",
+        "Works once, for 180 seconds",
+        "DVOI-XXXX-XXXX",
+        "Filled from the QR on mac-mini-m4. Removed from the address bar when this page loaded.",
+        "Pair this browser",
+        "HOW THIS TAB IS TRUSTED"
+      ],
+      "evidence": [
+        "Works once, for 180 seconds",
+        "Pair this browser",
+        "HOW THIS TAB IS TRUSTED",
+        "device.redeemCode"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J26; the web still asks for the daemon credential file instead of a one-time web code, although device.issueCode and device.redeemCode exist"
+      }
+    },
+    {
       "id": "attach",
       "name": "Pick a machine to attach to",
       "where": "first screen: heading, the no-daemon line, machine rows with reachability and reason, HOW THIS TAB IS AUTHENTICATED facts",
@@ -84,6 +117,24 @@
       "evidence": [
         "sessions-drawer"
       ]
+    },
+    {
+      "id": "sessions-column.tab-credential",
+      "name": "Paired for this tab",
+      "where": "sessions column over the tailnet: this machine only beside the machine name, Paired for this tab and ends when it closes at the foot",
+      "copy": [
+        "this machine only",
+        "Paired for this tab",
+        "ends when it closes"
+      ],
+      "evidence": [
+        "Paired for this tab",
+        "ends when it closes"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J26; the sessions column does not say the credential lasts for this tab"
+      }
     },
     {
       "id": "degraded-banner",
@@ -196,6 +247,21 @@
         "needs": "platform",
         "reason": "a capability refused by route exists (S3.2, capability-refused real rather than drawn); the tier framing and the two tier lists are Phase 5 and may not ship in M1"
       }
+    },
+    {
+      "id": "cert-explainer",
+      "name": "Where Domovoi explains a certificate warning",
+      "where": "beside the web code in desktop Settings, phone and tablet, because the browser stops before any Domovoi page loads",
+      "copy": [
+        "A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through."
+      ],
+      "evidence": [
+        "A certificate warning means the address is not this machine's full tailnet name"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J26; the desktop pairing card carries no certificate line"
+      }
     }
   ],
   "humanRead": [
@@ -203,6 +269,22 @@
       "id": "limits",
       "since": "2026-09-18",
       "note": "the panel reports real browser state; whether its rows are the design's seven, with what, state and why, is not verified by this gate"
+    },
+    {
+      "id": "connect",
+      "since": "2026-09-23",
+      "note": "The connect title and sub-line, the pair hint, the outcome cards and the five trust facts live in the design's data (connectTitle, connectSub, pairHint, outcomes, tailFacts), so the gate cannot hold them as drawn copy. Read them against the connect page."
     }
+  ],
+  "annotations": [
+    "Not secure",
+    "This connection is not private",
+    "The site's certificate is for a different name than the one in the address bar.",
+    "NET::ERR_CERT_COMMON_NAME_INVALID",
+    "address mac-mini-m4 · certificate mac-mini-m4.tail4c2e.ts.net",
+    "Back to safety",
+    "Advanced",
+    "WHERE DOMOVOI EXPLAINS IT",
+    "The browser stops before any Domovoi page loads, so the line sits beside the web code in desktop Settings, Phone and tablet."
   ]
 }
