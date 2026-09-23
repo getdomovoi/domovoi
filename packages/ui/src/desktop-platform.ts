@@ -32,6 +32,18 @@ export function workspaceWindowDecorationLabel(decoration: WorkspaceWindowDecora
   return decoration === "domovoi" ? "Domovoi" : "System"
 }
 
+// What the main process answers about the login service, as the renderer
+// draws it. Plain data: the desktop keeps the paths and errors, the page keeps
+// the words.
+export type DaemonServiceOutcome =
+  | { ok: true; kind: "file" | "task"; target: string }
+  | { ok: false; reason: "runtime-missing"; part: "node" | "daemon"; path: string; message: string }
+  | { ok: false; reason: "busy" | "failed"; message: string; restarted: boolean }
+
+export type DaemonServiceStatusReport =
+  | { installed: boolean | null; running: boolean; detail: string }
+  | { unavailable: string }
+
 export type DesktopWindowBridge = {
   fleetRoute?(machineId: string, budgetMs: number): Promise<unknown>
   forgetFleetRoute?(machineId: string): Promise<unknown>
@@ -56,6 +68,12 @@ export type DesktopWindowBridge = {
   readClipboardText(): Promise<string>
   writeClipboardText(value: string): Promise<boolean>
   openExternal(request: DesktopOpenExternalRequest): Promise<boolean>
+  // J24: the login service, on desktops that ship a daemon runtime.
+  daemonService?: {
+    status(): Promise<DaemonServiceStatusReport>
+    install(): Promise<DaemonServiceOutcome>
+    remove(): Promise<DaemonServiceOutcome>
+  }
   onDeepLink(listener: (sessionId: string) => void): () => void
   getWindowDecoration(): Promise<WorkspaceWindowDecoration>
   setWindowDecoration(decoration: WorkspaceWindowDecoration): Promise<boolean>

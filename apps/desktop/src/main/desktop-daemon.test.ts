@@ -397,3 +397,42 @@ describe("DesktopDaemon", () => {
     })
   })
 })
+
+// J24 handoff (2026-09-23): the service installer stops the in-app daemon
+// only after its checks pass, through releaseInAppDaemon; afterwards the app
+// attaches to the service and never starts a daemon of its own again unless
+// the handoff failed after the stop.
+describe("DesktopDaemon handoff", () => {
+  it("stops the owned daemon on request, then attaches only", async () => {
+    const mine = owned()
+    const service = attached("daemon", restarted)
+    const { seam, modes } = scriptedSeam([mine, service])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    await daemon.stopOwned()
+    expect(mine.stop).toHaveBeenCalledOnce()
+    expect(daemon.current()).toBeUndefined()
+    await expect(daemon.attachOnly()).resolves.toEqual({ kind: "attached", owner: "daemon", url: restarted.url, token: restarted.token })
+    expect(modes()).toEqual(["start-or-attach", "attach-only"])
+    expect(daemon.current()?.kind).toBe("attached")
+  })
+
+  it("does nothing on stopOwned while attached, and starts its own daemon again after a failed handoff", async () => {
+    const service = attached("daemon")
+    const mine = owned()
+    const { seam, modes } = scriptedSeam([service, refused("owner-unreachable"), mine])
+    const daemon = new DesktopDaemon(seam, () => factoryOptions)
+    await daemon.acquire()
+    await daemon.stopOwned()
+    expect(service.detach).not.toHaveBeenCalled()
+    expect(daemon.current()?.kind).toBe("attached")
+    // A stop that the handoff did not complete: the next acquire may start
+    // an in-app daemon again, because the profile is free.
+    const own = new DesktopDaemon(scriptedSeam([owned(), refused("owner-unreachable"), owned(restarted)]).seam, () => factoryOptions)
+    await own.acquire()
+    await own.stopOwned()
+    await expect(own.attachOnly()).resolves.toMatchObject({ kind: "refused", reason: "owner-unreachable" })
+    await expect(own.restart()).resolves.toMatchObject({ kind: "owned", url: restarted.url })
+    expect(modes()).toEqual(["start-or-attach"])
+  })
+})

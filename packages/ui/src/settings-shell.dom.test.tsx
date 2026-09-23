@@ -233,3 +233,44 @@ it("draws the installed service as running, with what it wrote", () => {
   expect(within(section).getByRole("button", { name: "Stop, disable and delete the user unit" }).hasAttribute("disabled")).toBe(true)
   expect(within(section).getByText("domovoid service remove")).toBeTruthy()
 })
+
+// J24 handoff: when the desktop can install the service, Install is live,
+// refuses while a turn runs or a gate waits (naming the sessions), reports
+// the installer's own answer, and Remove is live once installed.
+it("installs the login service when idle, and refuses by name while work is in flight", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
+  const daemon = { title: "Running Domovoi inside this app", detail: "", owner: "app" as const, platform: "darwin" as const }
+  const { rerender } = render(<SettingsShell {...shellProps()} localDaemon={{ ...daemon, service: { install, remove: vi.fn(), refusal: "1 turn is running (Migrate billing webhooks) and 1 gate is waiting (Port the CLI auth flow)." } }} />)
+  const section = () => screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section()).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+  expect(section().textContent).toContain("The switch waits: 1 turn is running (Migrate billing webhooks) and 1 gate is waiting (Port the CLI auth flow). Nothing is interrupted.")
+  expect(section().textContent).not.toContain("domovoid service install")
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ ...daemon, service: { install, remove: vi.fn() } }} />)
+  await user.click(within(section()).getByRole("button", { name: "Install" }))
+  expect(install).toHaveBeenCalledOnce()
+  expect(await within(section()).findByText("Installed. Quitting this app now leaves the daemon and its sessions running.")).toBeTruthy()
+  expect(section().textContent).toContain("/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist")
+})
+
+it("says what the installer refused, and that nothing changed", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn(async () => ({ ok: false as const, reason: "runtime-missing" as const, part: "node" as const, path: "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/node/bin/node", message: "The Node runtime this app ships was not found at /Applications/Domovoi.app/Contents/Resources/daemon-runtime/node/bin/node. No service was installed and no service files were changed." }))
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app", platform: "darwin", service: { install, remove: vi.fn() } }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  await user.click(within(section).getByRole("button", { name: "Install" }))
+  expect(await within(section).findByText("Could not install the service")).toBeTruthy()
+  expect(section.textContent).toContain("No service was installed and no service files were changed.")
+  expect(section.textContent).toContain("To finish by hand, run this in a terminal.")
+  expect(within(section).getByText("domovoid service install")).toBeTruthy()
+})
+
+it("removes the installed service and says the daemon is back inside this app", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "service", platform: "darwin", service: { install: vi.fn(), remove } }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  expect(remove).toHaveBeenCalledOnce()
+  expect(await within(section).findByText("Removed. Quitting Domovoi now stops the daemon and every session on it.")).toBeTruthy()
+})

@@ -1,5 +1,7 @@
 import type {
   DesktopDirectoryResult,
+  DaemonServiceOutcome,
+  DaemonServiceStatusReport,
   DesktopOpenExternalRequest,
   DesktopWindowBridge,
   WorkspaceWindowDecoration,
@@ -72,6 +74,39 @@ function captureResult(value: unknown): DesktopAnnotationCapture {
     || result.data.length > maximumCaptureDataLength
   ) throw new Error("Desktop returned an invalid annotation capture response")
   return { mimeType: "image/png", width: result.width, height: result.height, data: result.data }
+}
+
+const maximumServiceTextLength = 4_096
+
+function serviceText(value: unknown): value is string {
+  return typeof value === "string" && value.length <= maximumServiceTextLength
+}
+
+// The main process answers with plain data; the renderer reads only the
+// fields it draws, and refuses a shape it does not know.
+function serviceOutcome(value: unknown): DaemonServiceOutcome {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid service outcome")
+  const result = value as Record<string, unknown>
+  if (result.ok === true && (result.kind === "file" || result.kind === "task") && serviceText(result.target)) {
+    return { ok: true, kind: result.kind, target: result.target }
+  }
+  if (result.ok === false && result.reason === "runtime-missing" && (result.part === "node" || result.part === "daemon") && serviceText(result.path) && serviceText(result.message)) {
+    return { ok: false, reason: "runtime-missing", part: result.part, path: result.path, message: result.message }
+  }
+  if (result.ok === false && (result.reason === "busy" || result.reason === "failed") && serviceText(result.message)) {
+    return { ok: false, reason: result.reason, message: result.message, restarted: result.restarted === true }
+  }
+  throw new Error("Desktop returned an invalid service outcome")
+}
+
+function serviceStatusReport(value: unknown): DaemonServiceStatusReport {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid service status")
+  const result = value as Record<string, unknown>
+  if (serviceText(result.unavailable)) return { unavailable: result.unavailable }
+  if ((result.installed === true || result.installed === false || result.installed === null) && typeof result.running === "boolean" && serviceText(result.detail)) {
+    return { installed: result.installed, running: result.running, detail: result.detail }
+  }
+  throw new Error("Desktop returned an invalid service status")
 }
 
 function externalRequest(value: DesktopOpenExternalRequest, platform: DesktopPlatform): DesktopOpenExternalRequest {
@@ -184,6 +219,11 @@ export function createDesktopWindowBridge(
       await ipc.invoke("domovoi:open-external", externalRequest(request, platform)),
       "external editor",
     ),
+    daemonService: {
+      status: async () => serviceStatusReport(await ipc.invoke("domovoi:daemon-service-status")),
+      install: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-install")),
+      remove: async () => serviceOutcome(await ipc.invoke("domovoi:daemon-service-remove")),
+    },
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {
         if (typeof sessionId === "string" && sessionIdPattern.test(sessionId)) listener(sessionId)

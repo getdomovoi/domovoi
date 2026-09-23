@@ -125,6 +125,7 @@ import {
 } from "./workspace-selectors"
 import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
 import { AppBar, useUsageToday } from "./app-bar"
+import { serviceHandoffRefusal } from "./service-handoff"
 import { Thread, archiveSessionDescription } from "./thread"
 
 export { ArchiveSessionAction, CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
@@ -168,6 +169,9 @@ export type WorkspaceShellProps = {
   rpcToken?: string
   resolveRpcEndpoint?: () => Promise<{ url: string; token: string }>
   localDaemon?: LocalDaemonDescription
+  // J24: told after the login service is installed or removed, so the desktop
+  // can resolve its daemon again and hand the shell the new endpoint.
+  onLocalDaemonChanged?: (() => void) | undefined
   windowBridge?: DesktopWindowBridge
   platform?: WorkspacePlatform
   onChangeCredential?: () => void
@@ -201,7 +205,7 @@ export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type Pr
 export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
 
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // The queue outlives the thread view and is not limited to the session on
   // screen. Thread is keyed by session, so a switch unmounts it; and a message
@@ -1278,7 +1282,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
             readOnly={watching}
-            {...(localDaemon && !attached ? { localDaemon: { ...localDaemon, ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}) } } : {})}
+            {...(localDaemon && !attached ? { localDaemon: {
+              ...localDaemon,
+              ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
+              ...(windowBridge?.daemonService && !watching ? { service: {
+                install: async () => { const outcome = await windowBridge.daemonService!.install(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                remove: async () => { const outcome = await windowBridge.daemonService!.remove(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                refusal: serviceHandoffRefusal(snapshot),
+              } } : {}),
+            } } : {})}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {

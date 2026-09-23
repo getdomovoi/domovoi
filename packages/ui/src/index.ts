@@ -4,6 +4,8 @@ export {
   type DesktopExternalEditor,
   type DesktopOpenExternalRequest,
   type DesktopWindowBridge,
+  type DaemonServiceOutcome,
+  type DaemonServiceStatusReport,
   type WorkspaceWindowDecoration,
 } from "./desktop-platform"
 export { applyStoredAppearanceTheme } from "./workspace-persistence"

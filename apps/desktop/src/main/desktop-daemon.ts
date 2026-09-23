@@ -59,6 +59,35 @@ export class DesktopDaemon {
     return this.#handle ? describeAcquisition(this.#handle) : undefined
   }
 
+  // The J24 handoff (2026-09-23). The service installer calls this once its
+  // checks pass: the app stops the daemon it owns so the service can claim
+  // the profile. An attached daemon is not this app's to stop.
+  async stopOwned(): Promise<void> {
+    await this.#attempt?.catch(() => {})
+    const handle = this.#handle
+    if (handle?.kind !== "owned") return
+    this.#handle = undefined
+    this.#failed = false
+    this.#fresh = false
+    await handle.stop()
+  }
+
+  // After the service is installed: attach to it, and publish the endpoint so
+  // the renderer's next reconnect reads it.
+  attachOnly(): Promise<DesktopDaemonAcquisition> {
+    if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
+    if (this.#attempt) return this.#attempt.then(describeAcquisition)
+    return this.#acquireWith("attach-only", true)
+  }
+
+  // A handoff that failed after the stop leaves the profile free: start the
+  // app's own daemon again rather than sit on a refusal.
+  restart(): Promise<DesktopDaemonAcquisition> {
+    if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
+    if (this.#attempt) return this.#attempt.then(describeAcquisition)
+    return this.#acquireWith("start-or-attach", true)
+  }
+
   #serve(reconnect: boolean): Promise<DesktopDaemonAcquisition> {
     if (this.#releasing) return Promise.reject(new Error("Desktop is quitting"))
     if (this.#attempt) return this.#attempt.then(describeAcquisition)

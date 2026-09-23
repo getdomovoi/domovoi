@@ -1,15 +1,16 @@
 import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
-import { realpath, stat } from "node:fs/promises"
+import { access, cp, realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { acquireLocalDaemon, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
+import { acquireLocalDaemon, installDaemonService, readDaemonServiceStatus, removeDaemonService, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
 import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
+import { DesktopDaemonService, stageDaemonRuntime } from "./daemon-service.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonEnvironment,
@@ -137,6 +138,26 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
   const endpoint = desktopDaemon.current()
   if (!endpoint || endpoint.kind === "refused") return { outcome: "refused", reason: "machine-unavailable" }
   return verifyLocalFleetClientRoute({ endpoint, machineId, timeoutMs })
+})
+// J24: the login service. The shipped runtime is copied under the profile
+// first, so the service never points into the app bundle.
+const desktopDaemonService = new DesktopDaemonService({
+  stageRuntime: () => stageDaemonRuntime({
+    resourcesPath: process.resourcesPath,
+    home: homedir(),
+    version: app.getVersion(),
+    platform: process.platform,
+    exists: async (path) => { try { await access(path); return true } catch { return false } },
+    copy: (from, to) => cp(from, to, { recursive: true, force: true }),
+  }),
+  install: (options) => installDaemonService(options),
+  status: () => readDaemonServiceStatus(),
+  remove: () => removeDaemonService(),
+  daemon: {
+    stopOwned: () => desktopDaemon.stopOwned(),
+    attachOnly: () => desktopDaemon.attachOnly(),
+    restart: () => desktopDaemon.restart(),
+  },
 })
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
@@ -330,6 +351,11 @@ registerDesktopIpc(ipcMain, {
   },
   clipboard: safeClipboard,
   externalTargets,
+  daemonService: {
+    status: () => desktopDaemonService.status(),
+    install: () => desktopDaemonService.install(),
+    remove: () => desktopDaemonService.remove(),
+  },
   notifications: desktopNotifications,
   deepLinks,
   rendererDeepLinkSink: {

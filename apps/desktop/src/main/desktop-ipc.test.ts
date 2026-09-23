@@ -74,6 +74,9 @@ const channels: readonly ChannelSpec[] = [
     unauthorized: { rejects: notAuthorized },
     argument: externalRequest,
   },
+  { channel: "domovoi:daemon-service-status", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:daemon-service-install", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:daemon-service-remove", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:window-decoration-get", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   {
     channel: "domovoi:window-decoration-set",
@@ -150,6 +153,9 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "clipboard.writeText": vi.fn(async () => true),
     "externalTargets.allowRoot": vi.fn(),
     "externalTargets.open": vi.fn(async () => true),
+    "daemonService.status": vi.fn(async () => ({ installed: false, running: false, detail: "" })),
+    "daemonService.install": vi.fn(async () => ({ ok: true, kind: "file", target: "/p", configurationPath: "/c" })),
+    "daemonService.remove": vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "not-needed" })),
     "notifications.notify": vi.fn((_input: unknown, _activate: (sessionId: string) => void) => true),
     "deepLinks.enqueue": vi.fn(),
     "deepLinks.ready": vi.fn(),
@@ -179,6 +185,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     openDirectoryDialog: { showOpenDirectory: effects["openDirectoryDialog.showOpenDirectory"] },
     clipboard: { readText: effects["clipboard.readText"], writeText: effects["clipboard.writeText"] },
     externalTargets: { allowRoot: effects["externalTargets.allowRoot"], open: effects["externalTargets.open"] },
+    daemonService: { status: effects["daemonService.status"], install: effects["daemonService.install"], remove: effects["daemonService.remove"] },
     notifications: { notify: effects["notifications.notify"] },
     deepLinks: {
       enqueue: effects["deepLinks.enqueue"],
@@ -307,6 +314,10 @@ describe("registerDesktopIpc", () => {
     expect(target.effects["clipboard.writeText"]).toHaveBeenCalledWith("copy me")
     expect(await target.listener("handle", "domovoi:open-external")(target.event, externalRequest)).toBe(true)
     expect(target.effects["externalTargets.open"]).toHaveBeenCalledWith(externalRequest)
+    expect(await target.listener("handle", "domovoi:daemon-service-install")(target.event)).toMatchObject({ ok: true, kind: "file" })
+    expect(target.effects["daemonService.install"]).toHaveBeenCalledOnce()
+    expect(await target.listener("handle", "domovoi:daemon-service-remove")(target.event)).toMatchObject({ ok: true })
+    expect(await target.listener("handle", "domovoi:daemon-service-status")(target.event)).toMatchObject({ installed: false })
 
     const capture = await target.listener("handle", "domovoi:capture-annotation")(target.event, rect)
     expect(target.effects["webContents.capturePage"]).toHaveBeenCalledWith(rect)
