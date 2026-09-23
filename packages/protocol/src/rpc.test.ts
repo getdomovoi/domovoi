@@ -542,9 +542,12 @@ describe("authenticated client identity", () => {
       reason: "ZodError: protocolVersion is invalid",
       occurredAt: "2026-09-22T12:00:00.000Z",
       pairedDevicesKept: true,
+      workspaceKept: false,
     }
     expect(schema.parse(demoWorkspace).stateRecovery).toBeUndefined()
     expect(schema.parse({ ...demoWorkspace, stateRecovery }).stateRecovery).toEqual(stateRecovery)
+    const { quarantinedPath: _path, reason: _reason, ...flag } = stateRecovery
+    expect(schema.parse({ ...demoWorkspace, stateRecovery: flag }).stateRecovery).toEqual(flag)
     expect(schema.parse({ ...demoWorkspace, stateRecovery: { ...stateRecovery, kind: "database", pairedDevicesKept: false } })
       .stateRecovery?.kind).toBe("database")
     for (const invalid of [
@@ -552,6 +555,7 @@ describe("authenticated client identity", () => {
       { ...stateRecovery, quarantinedPath: "" },
       { ...stateRecovery, occurredAt: "yesterday" },
       { ...stateRecovery, pairedDevicesKept: "yes" },
+      { ...stateRecovery, workspaceKept: undefined },
       { ...stateRecovery, reason: "x".repeat(4_097) },
       { ...stateRecovery, extra: true },
     ]) {

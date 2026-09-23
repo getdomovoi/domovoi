@@ -444,7 +444,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
   const [workspaceError, setWorkspaceError] = useState("")
   const [dismissedStateRecovery, setDismissedStateRecovery] = useState<string | null>(null)
-  const visibleStateRecovery = stateRecovery && stateRecovery.quarantinedPath !== dismissedStateRecovery
+  const visibleStateRecovery = stateRecovery && stateRecovery.occurredAt !== dismissedStateRecovery
     ? stateRecovery
     : null
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
@@ -1421,7 +1421,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             {visibleStateRecovery ? (
               <StateRecoveryNotice
                 recovery={visibleStateRecovery}
-                onDismiss={() => setDismissedStateRecovery(visibleStateRecovery.quarantinedPath)}
+                onDismiss={() => setDismissedStateRecovery(visibleStateRecovery.occurredAt)}
                 className="w-auto shadow-[var(--shadow-md)]"
               />
             ) : null}

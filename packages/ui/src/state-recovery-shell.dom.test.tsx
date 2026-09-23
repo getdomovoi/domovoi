@@ -29,6 +29,7 @@ it("shows the stored state the daemon moved aside until it is dismissed", async 
         reason: "ZodError: sessions is invalid",
         occurredAt: "2026-09-22T12:00:00.000Z",
         pairedDevicesKept: true,
+        workspaceKept: false,
       },
     })
   })

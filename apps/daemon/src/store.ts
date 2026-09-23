@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync, type SQLInputValue } from "node:sqlite"
 import { fileURLToPath } from "node:url"
@@ -23,7 +23,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
-import { SqliteDeviceRegistry, type DeviceRegistry } from "./device-registry.js"
+import { SqliteDeviceRegistry, storedDeviceRowIsValid, type DeviceRegistry } from "./device-registry.js"
 import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
 import { SqliteFleetRegistry, type FleetRegistry } from "./fleet-registry.js"
 import { SqliteSkillReviews, type SkillReviews } from "./skill-reviews.js"
@@ -43,7 +43,7 @@ type StoredWorkspace = {
   snapshot: string
 }
 
-export type WorkspaceStoreRecovery = StateRecovery
+export type WorkspaceStoreRecovery = StateRecovery & { quarantinedPath: string; reason: string }
 
 type StoredProjectWorkspace = {
   state: string
@@ -449,38 +449,125 @@ function quotedColumn(name: string): string {
   return `"${name.replaceAll("\"", "\"\"")}"`
 }
 
-// A database is moved aside whole, but its pairing table is often still
-// readable. Copying it keeps every paired phone, and every revocation, working
-// instead of refusing them all as if they had been revoked.
-function salvagePairedDevices(database: DatabaseSync, quarantinedPath: string): boolean {
+// Reading the stored version must not change the file an older build is
+// about to refuse. A read-only connection to a WAL database leaves -wal and
+// -shm files behind, so the ones this read created are removed again.
+function storedProtocolVersion(path: string): string | undefined {
+  if (path === ":memory:" || !existsSync(path)) return undefined
+  const sidecars = [`${path}-wal`, `${path}-shm`].filter((sidecar) => !existsSync(sidecar))
+  let database: DatabaseSync | undefined
+  try {
+    database = new DatabaseSync(path, { readOnly: true })
+    const row = database
+      .prepare("SELECT json_extract(snapshot, '$.protocolVersion') AS version FROM workspace_state WHERE id = 1")
+      .get() as { version?: unknown } | undefined
+    return typeof row?.version === "string" ? row.version : undefined
+  } catch {
+    return undefined
+  } finally {
+    database?.close()
+    for (const sidecar of sidecars) {
+      try {
+        if (existsSync(sidecar) && (sidecar.endsWith("-shm") || statSync(sidecar).size === 0)) unlinkSync(sidecar)
+      } catch {
+        // A sidecar this read could not remove is left for SQLite to reuse.
+      }
+    }
+  }
+}
+
+function openQuarantined<T>(quarantinedPath: string, read: (source: DatabaseSync) => T): T | undefined {
   let source: DatabaseSync | undefined
   try {
     source = new DatabaseSync(quarantinedPath, { readOnly: true })
+    return read(source)
+  } catch {
+    return undefined
+  } finally {
+    source?.close()
+  }
+}
+
+// A database is moved aside whole, but its pairing table is often still
+// readable. Copying it keeps every paired phone, and every revocation, working
+// instead of refusing them all as if they had been revoked. Copied rows go
+// through the registry's migrations again and each one must still read as a
+// paired device; a row that does not is dropped and reported as not kept.
+function salvagePairedDevices(database: DatabaseSync, quarantinedPath: string): boolean {
+  const copied = openQuarantined(quarantinedPath, (source) => {
     const sourceColumns = (source.prepare("PRAGMA table_info(paired_devices)").all() as Array<{ name: string }>)
       .map(({ name }) => name)
-    if (sourceColumns.length === 0) return true
+    if (sourceColumns.length === 0) return { columns: [], rows: [] }
     const targetColumns = new Set(
       (database.prepare("PRAGMA table_info(paired_devices)").all() as Array<{ name: string }>).map(({ name }) => name),
     )
     const columns = sourceColumns.filter((name) => targetColumns.has(name)).map(quotedColumn)
     const rows = source.prepare(`SELECT ${columns.join(", ")} FROM paired_devices`).all() as Array<Record<string, SQLInputValue>>
-    const insert = database.prepare(
-      `INSERT INTO paired_devices (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-    )
-    database.exec("BEGIN IMMEDIATE")
-    try {
-      for (const row of rows) insert.run(...Object.values(row))
-      database.exec("COMMIT")
-    } catch (error) {
-      database.exec("ROLLBACK")
-      throw error
-    }
-    return true
+    return { columns, rows }
+  })
+  if (!copied) return false
+  if (copied.rows.length === 0) return true
+  const insert = database.prepare(
+    `INSERT INTO paired_devices (${copied.columns.join(", ")}) VALUES (${copied.columns.map(() => "?").join(", ")})`,
+  )
+  database.exec("BEGIN IMMEDIATE")
+  try {
+    for (const row of copied.rows) insert.run(...Object.values(row))
+    void new SqliteDeviceRegistry(database)
+    const invalid = (database.prepare("SELECT * FROM paired_devices").all() as Array<{ id: string }>)
+      .filter((row) => !storedDeviceRowIsValid(row))
+    const remove = database.prepare("DELETE FROM paired_devices WHERE id = ?")
+    for (const row of invalid) remove.run(row.id)
+    database.exec("COMMIT")
+    return invalid.length === 0
   } catch {
+    database.exec("ROLLBACK")
     return false
-  } finally {
-    source?.close()
   }
+}
+
+// Damage elsewhere in the file can leave the workspace itself readable. Only a
+// snapshot that passes the same migration and validation as a normal start is
+// kept; project rows for other projects are kept when they validate the way
+// loadProject reads them.
+function salvageWorkspace(
+  database: DatabaseSync,
+  quarantinedPath: string,
+): ReturnType<typeof migrateStoredWorkspace> | undefined {
+  const stored = openQuarantined(quarantinedPath, (source) => ({
+    snapshot: source.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as StoredWorkspace | undefined,
+    projects: source.prepare("SELECT project_id, state FROM workspace_projects").all() as Array<{ project_id: string; state: string }>,
+  }))
+  if (!stored?.snapshot) return undefined
+  let migrated: ReturnType<typeof migrateStoredWorkspace>
+  try {
+    const value: unknown = JSON.parse(stored.snapshot.snapshot)
+    if (newerStoredProtocol(value) !== undefined) return undefined
+    migrated = migrateStoredWorkspace(value)
+  } catch {
+    return undefined
+  }
+  const insert = database.prepare(`
+    INSERT INTO workspace_projects (project_id, state, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(project_id) DO NOTHING
+  `)
+  const updatedAt = new Date().toISOString()
+  for (const project of stored.projects) {
+    if (project.project_id === migrated.snapshot.project?.id) continue
+    try {
+      const candidate = {
+        ...JSON.parse(project.state) as Record<string, unknown>,
+        protocolVersion,
+        machine: migrated.snapshot.machine,
+        skillEnablements: [],
+      }
+      workspaceSnapshotSchema.parse(redactWorkspaceCopies(candidate as unknown as WorkspaceSnapshot))
+      insert.run(project.project_id, project.state, updatedAt)
+    } catch {
+      continue
+    }
+  }
+  return migrated
 }
 
 type OpenedState = {
@@ -501,6 +588,12 @@ type OpenedState = {
 function openState(path: string): OpenedState {
   const database = openWorkspaceDatabase(path)
   try {
+    if (path !== ":memory:") {
+      const problems = (database.prepare("PRAGMA quick_check").all() as Array<{ quick_check: string }>)
+        .map((row) => row.quick_check)
+        .filter((result) => result !== "ok")
+      if (problems.length > 0) throw new Error(`database disk image is malformed: ${problems[0]}`)
+    }
     const auditLog = new SqliteAuditLog(database)
     const opened = {
       database,
@@ -537,7 +630,10 @@ function recoveryReceiptDetail(recovery: WorkspaceStoreRecovery): string {
   const devices = recovery.pairedDevicesKept
     ? "Paired devices were kept."
     : "Paired devices could not be read from it and must be paired again."
-  return `The stored ${subject} could not be read and was moved aside. ${devices} ${recovery.reason}`
+  const workspace = recovery.workspaceKept
+    ? "Its workspace was readable and was kept."
+    : "The workspace started empty."
+  return `The stored ${subject} could not be read and was moved aside. ${workspace} ${devices} ${recovery.reason}`
 }
 
 function recoveredWorkspace(
@@ -723,8 +819,12 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
   constructor(path: string, initial: WorkspaceSnapshot, options: WorkspaceStoreOptions = {}) {
     this.path = path
     const manageDirectoryPermissions = options.manageDirectoryPermissions === true
+    const storedVersion = storedProtocolVersion(path)
+    const newerVersion = storedVersion === undefined ? undefined : newerStoredProtocol({ protocolVersion: storedVersion })
+    if (newerVersion !== undefined) throw refuseNewerStoredState(path, newerVersion)
     if (path !== ":memory:") prepareStatePath(path, manageDirectoryPermissions)
     let recovery: WorkspaceStoreRecovery | undefined
+    let salvagedWorkspace: ReturnType<typeof migrateStoredWorkspace> | undefined
     let opened: OpenedState
     try {
       opened = openState(path)
@@ -736,12 +836,14 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       const quarantinedPath = quarantineDatabase(path)
       prepareStatePath(path, manageDirectoryPermissions)
       opened = openState(path)
+      salvagedWorkspace = salvageWorkspace(opened.database, quarantinedPath)
       recovery = {
         kind: "database",
         quarantinedPath,
         reason: describeFailure(error),
         occurredAt: new Date().toISOString(),
         pairedDevicesKept: salvagePairedDevices(opened.database, quarantinedPath),
+        workspaceKept: salvagedWorkspace !== undefined,
       }
     }
     this.#database = opened.database
@@ -779,6 +881,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           reason: describeFailure(error),
           occurredAt: new Date().toISOString(),
           pairedDevicesKept: true,
+          workspaceKept: false,
         }
       }
     }
@@ -799,7 +902,12 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         target: recovery.quarantinedPath,
         detail: recoveryReceiptDetail(recovery),
       })
-      this.save(recoveredWorkspace(initial, recovery))
+      if (salvagedWorkspace) {
+        this.save(salvagedWorkspace.snapshot)
+        this.#recordRuleInactivations(salvagedWorkspace.inactivatedRules)
+      } else {
+        this.save(recoveredWorkspace(initial, recovery))
+      }
     }
     else if (!existing) this.save(initial)
     else if (migratedExisting?.repaired) {

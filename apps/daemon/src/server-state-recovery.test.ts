@@ -62,7 +62,7 @@ async function open(port: number): Promise<WebSocket> {
 }
 
 describe("stored state recovery", () => {
-  it("tells every client which file was moved aside and keeps paired phones", async () => {
+  it("tells the owner which file was moved aside and a paired phone only what survived", async () => {
     const { statePath, token } = await damagedState()
     const errorSink = vi.fn()
     const daemon = new DomovoiDaemon({ port: 0, statePath, errorSink, agents: {} })
@@ -75,6 +75,7 @@ describe("stored state recovery", () => {
       reason: expect.stringContaining("ZodError"),
       occurredAt: expect.any(String),
       pairedDevicesKept: true,
+      workspaceKept: false,
     }
     const desktop = await hello(await open(port), {
       client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken,
@@ -82,13 +83,18 @@ describe("stored state recovery", () => {
     expect(desktop.error).toBeUndefined()
     const desktopHello = rpcMethods["system.hello"].result.parse(desktop.result)
     expect(desktopHello.stateRecovery).toEqual(expected)
-    expect(await readFile(desktopHello.stateRecovery!.quarantinedPath, "utf8")).toContain("not sessions")
+    expect(await readFile(desktopHello.stateRecovery!.quarantinedPath!, "utf8")).toContain("not sessions")
 
     const phone = await hello(await open(port), {
       client: "phone", clientVersion: "0.0.1", protocolVersion, authToken: token,
     })
     expect(phone.error).toBeUndefined()
-    expect(rpcMethods["system.hello"].result.parse(phone.result).stateRecovery).toEqual(desktopHello.stateRecovery)
+    expect(rpcMethods["system.hello"].result.parse(phone.result).stateRecovery).toEqual({
+      kind: "snapshot",
+      occurredAt: desktopHello.stateRecovery!.occurredAt,
+      pairedDevicesKept: true,
+      workspaceKept: false,
+    })
 
     expect(errorSink).toHaveBeenCalledWith({
       context: "Domovoi moved unreadable stored state aside",

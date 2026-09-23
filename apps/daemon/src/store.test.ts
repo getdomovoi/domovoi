@@ -1067,6 +1067,7 @@ describe("SqliteWorkspaceStore", () => {
         reason: expect.stringContaining("JSON"),
         occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
         pairedDevicesKept: true,
+        workspaceKept: false,
       })
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(damaged)
       expect(await readdir(scratch)).toContain(join(recovery!.quarantinedPath).slice(scratch.length + 1))
@@ -1094,6 +1095,7 @@ describe("SqliteWorkspaceStore", () => {
         reason: expect.stringContaining("ZodError"),
         occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
         pairedDevicesKept: true,
+        workspaceKept: false,
       })
       expect(damaged).toBe(incompatible)
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(incompatible)
@@ -1123,6 +1125,7 @@ describe("SqliteWorkspaceStore", () => {
         reason: expect.stringContaining("not a database"),
         occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
         pairedDevicesKept: false,
+        workspaceKept: false,
       })
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(garbage)
       const freshSidecar = await readFile(`${databasePath}-wal`, "utf8").catch(() => "")
@@ -1158,6 +1161,7 @@ describe("SqliteWorkspaceStore", () => {
         reason: expect.stringContaining("ZodError"),
         occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
         pairedDevicesKept: true,
+        workspaceKept: false,
       })
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(damaged)
       expect(store.load()).toEqual(empty)
@@ -1183,19 +1187,105 @@ describe("SqliteWorkspaceStore", () => {
       const [major, minor] = protocolVersion.split(".").map(Number)
       const newer = `${major}.${minor! + 1}.0`
       const written = JSON.stringify({ ...demoWorkspace, protocolVersion: newer })
-      const { scratch, databasePath } = await seedThenDamage("newer-protocol", async (path) =>
-        replaceSnapshotRow(path, written),
-      )
+      const { scratch, databasePath } = await seedThenDamage("newer-protocol", async (path) => {
+        // A newer build may have retired a table this build would create.
+        const database = new DatabaseSync(path)
+        database.exec("DROP TABLE queued_session_sends")
+        database.close()
+        return replaceSnapshotRow(path, written)
+      })
       const entriesBefore = (await readdir(scratch)).sort()
+      const bytesBefore = await readFile(databasePath)
 
       expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine)))
         .toThrow(`was written by Domovoi protocol ${newer}, which is newer than this build's protocol ${protocolVersion}`)
       expect((await readdir(scratch)).sort()).toEqual(entriesBefore)
+      expect((await readFile(databasePath)).equals(bytesBefore)).toBe(true)
       const database = new DatabaseSync(databasePath)
       try {
         const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
         expect(row.snapshot).toBe(written)
       } finally { database.close() }
+    })
+
+    function corruptOverflowPage(bytes: Buffer, marker: string): Buffer {
+      const offset = bytes.indexOf(marker)
+      expect(offset).toBeGreaterThan(0)
+      // The marker sits on an overflow page; pointing that page past the end
+      // of the file makes its record unreadable and leaves other tables.
+      bytes.writeUInt32BE(0x7fff_ffff, Math.floor(offset / 4_096) * 4_096)
+      return bytes
+    }
+
+    function insertLargeAuditRow(path: string, marker: string): void {
+      const database = new DatabaseSync(path)
+      database.prepare(`
+        INSERT INTO audit_log (id, occurred_at, actor_kind, action, outcome, detail)
+        VALUES ('audit-large', '2026-08-29T12:00:00.000Z', 'daemon', 'test.large', 'succeeded', ?)
+      `).run(`${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`)
+      database.close()
+    }
+
+    it("moves a database damaged outside the workspace aside and keeps its workspace and devices", async () => {
+      const marker = "unreadable-audit-page"
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath } = await seedThenDamage(
+        "audit-page",
+        async (path) => {
+          insertLargeAuditRow(path, marker)
+          await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+          return ""
+        },
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+      try {
+        expect(store.recovery).toEqual({
+          kind: "database",
+          quarantinedPath: expect.stringMatching(/state\.sqlite\.corrupt-[0-9TZ-]+$/),
+          reason: expect.stringContaining("malformed"),
+          occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+          pairedDevicesKept: true,
+          workspaceKept: true,
+        })
+        expect(store.load()).toEqual(demoWorkspace)
+        expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+        expect(store.auditLog.query({ action: "state.quarantine" }).entries).toEqual([
+          expect.objectContaining({ target: store.recovery!.quarantinedPath }),
+        ])
+      } finally { store.close() }
+    })
+
+    it("keeps only the salvaged devices that still read as paired devices", async () => {
+      const marker = "unreadable-audit-page"
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath } = await seedThenDamage(
+        "invalid-device",
+        async (path) => {
+          const database = new DatabaseSync(path)
+          database.prepare(`
+            INSERT INTO paired_devices (id, label, token_hash, paired_at, credential_role, client_kind, client_access)
+            VALUES ('device-damaged', 'damaged', ?, 'yesterday', 'client', 'phone', 'full')
+          `).run("f".repeat(64))
+          database.close()
+          insertLargeAuditRow(path, marker)
+          await writeFile(path, corruptOverflowPage(await readFile(path), marker))
+          return ""
+        },
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine))
+      try {
+        expect(store.recovery).toMatchObject({ kind: "database", pairedDevicesKept: false })
+        expect(store.devices.list()).toEqual([paired!.device])
+        expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+      } finally { store.close() }
     })
 
     it("moves a database with an unreadable snapshot page aside and keeps its paired devices", async () => {
@@ -1228,6 +1318,7 @@ describe("SqliteWorkspaceStore", () => {
           reason: expect.stringContaining("malformed"),
           occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
           pairedDevicesKept: true,
+          workspaceKept: false,
         })
         expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
         expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)

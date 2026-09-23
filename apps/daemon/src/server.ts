@@ -432,6 +432,17 @@ function sessionReadOnlyMessage(
   return undefined
 }
 
+// A paired device learns that stored state was moved aside and what survived,
+// not where the kept file lives on this machine or why it failed to read.
+function stateRecoveryFlag(recovery: StateRecovery): StateRecovery {
+  return {
+    kind: recovery.kind,
+    occurredAt: recovery.occurredAt,
+    pairedDevicesKept: recovery.pairedDevicesKept,
+    workspaceKept: recovery.workspaceKept,
+  }
+}
+
 function sessionIsReadOnly(
   session: WorkspaceSnapshot["sessions"][number] | undefined,
 ): boolean {
@@ -7915,7 +7926,9 @@ export class DomovoiDaemon {
                   clientAccess: helloCredential?.binding.kind === "client"
                     ? helloCredential.binding.clientAccess
                     : "full",
-                  ...(this.#stateRecovery ? { stateRecovery: this.#stateRecovery } : {}),
+                  ...(this.#stateRecovery
+                    ? { stateRecovery: helloCredential ? stateRecoveryFlag(this.#stateRecovery) : this.#stateRecovery }
+                    : {}),
                 }
               : {}),
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),

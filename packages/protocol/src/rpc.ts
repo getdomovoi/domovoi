@@ -849,12 +849,15 @@ export const helloParamsSchema = z.discriminatedUnion("client", [
   machineHelloParamsSchema,
 ])
 
+// The kept path and failure text go only to the machine's own clients; a
+// paired device is told that a recovery happened and what survived it.
 export const stateRecoverySchema = z.object({
   kind: z.enum(["database", "snapshot"]),
-  quarantinedPath: z.string().min(1).check(utf16MaxLength(4_096)),
-  reason: z.string().check(utf16MaxLength(1_024)),
+  quarantinedPath: z.string().min(1).check(utf16MaxLength(4_096)).optional(),
+  reason: z.string().check(utf16MaxLength(1_024)).optional(),
   occurredAt: dateTimeSchema,
   pairedDevicesKept: z.boolean(),
+  workspaceKept: z.boolean(),
 }).strict()
 
 export const systemHelloResultSchema = workspaceSnapshotSchema.extend({

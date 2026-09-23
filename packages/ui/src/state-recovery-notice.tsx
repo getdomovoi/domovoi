@@ -20,8 +20,12 @@ export function StateRecoveryNotice({
       <AlertTitle>Stored {subject} could not be read</AlertTitle>
       <AlertDescription className="flex flex-col gap-1.5">
         <p className="m-0">
-          Domovoi started from an empty workspace. The unreadable copy was kept at{" "}
-          <code className="break-all font-machine text-[11px]">{recovery.quarantinedPath}</code>
+          {recovery.workspaceKept
+            ? "Its workspace was still readable and was kept."
+            : "Domovoi started from an empty workspace."}{" "}
+          {recovery.quarantinedPath
+            ? <>The unreadable copy was kept at{" "}<code className="break-all font-machine text-[11px]">{recovery.quarantinedPath}</code></>
+            : "The unreadable copy was kept on that machine."}
         </p>
         <p className="m-0">
           {recovery.pairedDevicesKept
