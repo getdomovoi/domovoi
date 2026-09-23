@@ -631,9 +631,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // the emergency stop is the other thing and has its own control.
   // Hold first: the pause's snapshot leaves every session idle, and an idle
   // session with a waiting queue would be resumed by the release effect.
+  // The hold is local and makes the screen look paused, so a pause the daemon
+  // refused or never answered is said out loud: its turns are still running.
   const pauseActiveTurns = () => {
     setQueues(holdAllAfterStop)
-    void pauseAll().catch(() => undefined)
+    setWorkspaceError("")
+    void pauseAll().catch((cause: unknown) => {
+      setWorkspaceError(`Pause everything failed: ${cause instanceof Error ? cause.message : "the daemon did not confirm the pause"}`)
+    })
   }
   const stopEverything = () => {
     void emergencyStop()
