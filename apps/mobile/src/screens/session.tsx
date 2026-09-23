@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
@@ -41,7 +41,10 @@ const textTone: Record<PlanRow["tone"], string> = {
   queued: "text-muted-foreground",
 }
 
-function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
+// Memoized, with a stable onWatch from the screen: a keystroke or a streamed
+// batch re-renders the screen, and a row that has not changed is not drawn or
+// parsed again.
+const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
   if (entry.kind === "receipt") {
     return (
       <Card className="gap-3 border-ok-border bg-ok-bg">
@@ -89,7 +92,7 @@ function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) 
       </View>
     </View>
   )
-}
+})
 
 function PolicyRefusal({ refusal }: {
   refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
@@ -499,6 +502,10 @@ export function SessionScreen({
   // itself instead of a count. Back at the bottom, by hand or by the pill,
   // the count clears.
   const thread = useRef<PageScrollerHandle>(null)
+  const watchReceipt = useCallback(() => {
+    onWatchReceipt()
+    thread.current?.scrollToEnd()
+  }, [onWatchReceipt])
   const [atEnd, setAtEnd] = useState(true)
   const [unseen, setUnseen] = useState(0)
   const seenEntries = useRef(detail.entries.length)
@@ -604,14 +611,7 @@ export function SessionScreen({
           />
         ) : null}
         {detail.entries.map((entry) => (
-          <Entry
-            key={entry.id}
-            entry={entry}
-            onWatch={() => {
-              onWatchReceipt()
-              thread.current?.scrollToEnd()
-            }}
-          />
+          <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
         ))}
 
         {access === "full" ? <Card className="gap-2">

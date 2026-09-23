@@ -151,6 +151,8 @@ export function App() {
   const [freshStarting, setFreshStarting] = useState(false)
   const [freshProblem, setFreshProblem] = useState("")
   const [composerFocused, setComposerFocused] = useState(false)
+  // Stable, so the thread's memoized rows are not redrawn on every keystroke.
+  const watchReceipt = useCallback(() => setComposerFocused(false), [])
   // How long an approval has been waiting is only true for as long as the
   // clock it was measured against. It ticks while the list is on screen and
   // stops when it is not, because nothing off screen needs a fresh minute.
@@ -711,7 +713,7 @@ export function App() {
             sendProblem={sendProblem}
             skillLabel={skillSelectionLabel(chosenSkills)}
             access={clientAccess}
-            onWatchReceipt={() => setComposerFocused(false)}
+            onWatchReceipt={watchReceipt}
             onCancelQueuedSend={(queueId) => void cancelQueuedSend(openSession.id, queueId)}
             onComposerFocusChange={setComposerFocused}
             composerBottomInset={!composerFocused && tabFootprint > 0 ? tabFootprint + 8 : undefined}
