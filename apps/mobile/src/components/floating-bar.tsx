@@ -35,9 +35,6 @@ const paddings: Record<FloatingBarPadding, string> = {
   stack: "gap-2 p-2.5",
 }
 
-export const floatingBarInset = 14
-export const floatingBarSide = 14
-
 export function FloatingBar({
   shape = "pill",
   padding = "composer",
