@@ -76,6 +76,10 @@ type Session = {
   cwd: string
   runtime: Runtime
   activeTurnId?: string
+  // Set once the server shows the active turn's own messages. The server ends
+  // an aborted run before it takes the next prompt, so an idle or error that
+  // comes before them is the interrupted turn's, not this one's.
+  activeTurnStarted?: true
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
@@ -257,6 +261,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const turnId = this.#id()
     session.runtime = runtime
     session.activeTurnId = turnId
+    delete session.activeTurnStarted
     try {
       await this.#sendPrompt(session, turnId, prompt, runtime)
     } catch (error) {
@@ -452,6 +457,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
+      if (session.activeTurnId !== undefined && (info?.id === session.activeTurnId || info?.parentID === session.activeTurnId)) {
+        session.activeTurnStarted = true
+      }
       if (info?.role === "assistant" && typeof info.id === "string") {
         const turnId = typeof info.parentID === "string" ? info.parentID : undefined
         if (!turnId) return
@@ -523,6 +531,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       })
       return
     }
+    if ((event.type === "session.error" || event.type === "session.idle") && !session.activeTurnStarted) return
     if (event.type === "session.error") {
       const error = asRecord(properties.error)
       this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
@@ -599,6 +608,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       },
     })
     delete session.activeTurnId
+    delete session.activeTurnStarted
     session.toolPhases.clear()
   }
 

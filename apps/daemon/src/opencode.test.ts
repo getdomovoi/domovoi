@@ -272,9 +272,11 @@ describe("OpenCodeSdkAdapter", () => {
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "First", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "turn-1", sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Second", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: "turn-2", sessionID: threadId, role: "user" } } })
     for (const info of [
       { id: "late", parentID: "turn-1" }, { id: "unassociated" },
     ]) stream.emit({ type: "message.updated", properties: { info: {
@@ -508,6 +510,7 @@ describe("OpenCodeSdkAdapter", () => {
       prompt: "Try again",
       runtime: runtime("build"),
     })).resolves.toBe("turn-2")
+    reopened.emit({ type: "message.updated", properties: { info: { id: "turn-2", sessionID: threadId, role: "user" } } })
     reopened.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
@@ -657,6 +660,35 @@ describe("KiloSdkAdapter", () => {
         parts: [{ type: "text", text: "Use repo-audit" }],
       }),
     }))
+    await adapter.close()
+  })
+})
+
+describe("an interrupted turn's end that arrives late", () => {
+  it("does not complete the turn sent after the interrupt", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    // The server ends the aborted run before it takes the next prompt, so its
+    // idle comes before the new turn's own user message.
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
+    })))
     await adapter.close()
   })
 })

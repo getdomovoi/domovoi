@@ -1038,3 +1038,38 @@ describe("changing the mode on a live session", () => {
     ).resolves.toBeTruthy()
   })
 })
+
+describe("a result that arrives after its turn was interrupted", () => {
+  it("does not complete the turn sent after the interrupt", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "error_during_execution", session_id: threadId, is_error: true,
+      user_message_uuid: first, user_message_uuids: [first],
+    } as ClaudeSdkMessage)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: second, user_message_uuids: [second],
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: { threadId, turnId: second, turn: { id: second, status: "completed" } },
+    }))
+    await adapter.close()
+  })
+})
