@@ -313,12 +313,16 @@ group in `.changeset/config.json`, and `pnpm release:invariants` fails the build
 drifts out of lockstep or the built protocol export advertises another release.
 
 Four of those manifests are not private: `@getdomovoi/protocol`, `@getdomovoi/daemon`,
-`@getdomovoi/cli` (since 2026-09-11) and `@getdomovoi/credential-store` (since 2026-09-13). The
-release workflow, `publishablePackages` in `scripts/release-artifacts.mjs` and the rest of this
-document publish only the first two, because they were written before the other two existed.
-Which set the first release publishes is not decided. Until it is, the publish plan Changesets
-builds and the set the release tooling accepts can disagree; settle it by marking the two newer
-packages private or by naming all four here and in the tooling.
+`@getdomovoi/cli` (since 2026-09-11) and `@getdomovoi/credential-store` (since 2026-09-13).
+Ruled 2026-09-22: the first release publishes all four. `@getdomovoi/cli` depends on
+`@getdomovoi/protocol` and `@getdomovoi/credential-store` through `workspace:*`, so both publish
+before it, the same reason the protocol publishes before the daemon.
+
+The release tooling does not do this yet. `release.yml`, `publishablePackages` in
+`scripts/release-artifacts.mjs` and the publish-order check in `scripts/publish-order.mjs` name
+protocol and daemon only, and parts of this document describe that two-package publish. Until the
+tooling names all four, the publish plan Changesets builds and the set the tooling accepts
+disagree, so do not run a first publish before that change lands.
 
 `@getdomovoi/protocol` exports `buildVersion`, compiled directly from its package manifest.
 Daemon machine facts, every daemon and client greeting, and provider initialization use that
@@ -428,8 +432,9 @@ or assets are never overwritten. Alpha releases are prereleases, not GitHub's la
 Ordinary publishing has no stored npm token. The `publish` job requests
 `id-token: write`, and pnpm exchanges the GitHub OIDC token for a short-lived npm credential
 scoped to this repository and workflow. npm records the workflow run as the publisher and
-generates a provenance attestation; both packages also declare `publishConfig.provenance`, so a
-publish that cannot produce an attestation fails instead of shipping unattested. The job runs in
+generates a provenance attestation. Protocol, daemon and credential-store declare
+`publishConfig.provenance`, so a publish of those that cannot produce an attestation fails
+instead of shipping unattested; `@getdomovoi/cli` does not declare it yet. The job runs in
 the `npm` GitHub environment so that the trusted publisher on npm can be bound to that
 environment name and so a maintainer can require a reviewer before the job starts.
 

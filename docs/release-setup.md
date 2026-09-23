@@ -19,8 +19,9 @@ Read-only checks against `getdomovoi/domovoi` and the public npm registry found:
 
 Since that check, `@getdomovoi/cli` (2026-09-11) and `@getdomovoi/credential-store` (2026-09-13)
 were added as non-private packages, so eight manifests exist and four are publishable by their
-manifests. Steps 8 and 9 below cover only protocol and daemon. Which packages the first release
-publishes is undecided; see [distribution](distribution.md#versioning-and-release-metadata).
+manifests. Ruled 2026-09-22: the first release publishes all four. Steps 8 and 9 below and the
+release tooling still cover only protocol and daemon; do not run them until the tooling names all
+four. See [distribution](distribution.md#versioning-and-release-metadata).
 
 npm organization ownership and name availability were not established by those package 404s.
 Do not treat missing packages as proof that the organization is available.
