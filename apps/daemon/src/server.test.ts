@@ -9852,6 +9852,76 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  it("names the files in the repository history that Codex can still read through Git", async () => {
+    const { execFileSync } = await import("node:child_process")
+    const repository = await realpath(await mkdtemp(join(tmpdir(), "domovoi-codex-history-")))
+    scratchDirectories.push(repository)
+    const git = (...args: string[]) => execFileSync("git", ["-C", repository, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args], { stdio: "ignore" })
+    git("init", "-q")
+    await writeFile(join(repository, ".env"), "TOKEN=1\n")
+    git("add", ".")
+    git("commit", "-qm", "one")
+    git("rm", "-q", ".env")
+    git("commit", "-qm", "two")
+    const codex = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "codex-thread"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(async () => ({ root: "/code/domovoi", name: "domovoi", branch: "main", head: "a".repeat(40) })),
+      createSessionWorkspace: vi.fn(async () => ({ path: repository, branch: "domovoi/history", baseCommit: "a".repeat(40) })),
+      removeSessionWorkspace: vi.fn(async () => {}),
+      checkpoint: vi.fn(async () => ({ commit: "b".repeat(40), changedFiles: [] })),
+      restore: vi.fn(async () => ({ restoredCommit: "b".repeat(40), recoveryCommit: "c".repeat(40) })),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", agents: { codex }, workspaceService })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let requestId = 0
+    const rpc = async (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      const message = await response
+      expect(message).not.toHaveProperty("error")
+      return message.result as WorkspaceSnapshot
+    }
+
+    await rpc("project.open", { path: "/code/domovoi", client: "desktop" })
+    const created = await rpc("session.create", {
+      title: "Codex session",
+      runtime: { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", permissionMode: "build", auto: false },
+      client: "desktop",
+    })
+    const notice = created.thread.find((item) => item.sessionId === created.activeSessionId
+      && item.kind === "system" && item.body === "Codex cannot read secret files in this worktree.")
+    expect(notice).toMatchObject({ detail: expect.stringMatching(/ Codex can still read these through Git: \.env\.$/) })
+    socket.close()
+  })
+
   it("routes model discovery and sessions through the requested provider adapter", async () => {
     const makeAgent = (models: ProviderModel[], threadId: string) => ({
       connect: vi.fn(async () => {}),

@@ -140,8 +140,9 @@ import {
 } from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
-  codexWorktreeSecretNotice,
+  codexSandboxNotice,
 } from "./codex.js"
+import { committedCodexSecretPaths } from "./codex-git-secrets.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
@@ -774,9 +775,14 @@ function codexSandboxNoticeFor(
   sessionId: string,
   runtime: Runtime,
   createdAt: string,
+  committed: readonly string[] | undefined,
 ): WorkspaceSnapshot["thread"] {
   if (runtime.provider !== "codex") return []
-  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexWorktreeSecretNotice, createdAt }]
+  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexSandboxNotice(committed ?? []), createdAt }]
+}
+
+function committedSecretsFor(runtime: Runtime, worktree: string): Promise<string[] | undefined> {
+  return runtime.provider === "codex" ? committedCodexSecretPaths(worktree) : Promise.resolve(undefined)
 }
 
 function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { kind: "system" }>): boolean {
@@ -6762,6 +6768,9 @@ export class DomovoiDaemon {
             }
             throw error
           }
+          const committed = previousRuntime.provider !== runtime.provider
+            ? await committedSecretsFor(runtime, currentSession.workspacePath)
+            : undefined
           const createdAt = new Date().toISOString()
           currentSession.runtime = runtime
           currentSession.providerThreadId = nextThreadId
@@ -6800,7 +6809,7 @@ export class DomovoiDaemon {
             createdAt,
           })
           if (previousRuntime.provider !== runtime.provider) {
-            this.#snapshot.thread.push(...codexSandboxNoticeFor(currentSession.id, runtime, createdAt))
+            this.#snapshot.thread.push(...codexSandboxNoticeFor(currentSession.id, runtime, createdAt, committed))
           }
         } else {
           currentSession.runtime = runtime
@@ -7104,6 +7113,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         this.#snapshot.sessions.push({
           ...creationDraft,
@@ -7132,7 +7142,7 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
-        this.#snapshot.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt))
+        this.#snapshot.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         changed = true
       }
 
@@ -7296,6 +7306,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         const candidate = structuredClone(this.#snapshot)
         candidate.sessions.push({
@@ -7323,7 +7334,7 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
-        candidate.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt))
+        candidate.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         try {
           if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
           else this.#store.save(candidate)

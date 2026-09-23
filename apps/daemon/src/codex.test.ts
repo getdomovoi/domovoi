@@ -17,7 +17,9 @@ import {
   codexAppServerArguments,
   codexDeveloperInstructions,
   codexPolicyFor,
+  codexSandboxNotice,
   codexSecretLocations,
+  codexWorktreeSecretNotice,
   codexWorktreeSecretPatterns,
   type CodexTransport,
   type JsonRpcMessage,
@@ -154,6 +156,16 @@ describe("codexAppServerArguments", () => {
       expect(settings.get(`permissions.${profile}.filesystem`)).toContain(`${JSON.stringify(location)}="deny"`)
     }
     expect(codexSecretLocations).toContain(location)
+  })
+})
+
+describe("codexSandboxNotice", () => {
+  it("names committed files Codex can still read through Git", () => {
+    expect(codexSandboxNotice([".env.example", "certs/dev.pem"]).detail).toBe(
+      `${codexWorktreeSecretNotice.detail} Codex can still read these through Git: .env.example and certs/dev.pem.`,
+    )
+    expect(codexSandboxNotice([".env"]).detail).toBe(`${codexWorktreeSecretNotice.detail} Codex can still read these through Git: .env.`)
+    expect(codexSandboxNotice([])).toEqual(codexWorktreeSecretNotice)
   })
 })
 

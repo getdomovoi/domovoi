@@ -89,6 +89,19 @@ export const codexWorktreeSecretNotice = {
   detail: `The Codex sandbox refuses reads of ${codexWorktreeSecretFiles.slice(0, -1).join(", ")} and ${codexWorktreeSecretFiles.at(-1)} at any depth. A test or build that loads .env fails with "Operation not permitted". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply.`,
 } as const
 
+// The notice names committed copies of those files too, which Codex can
+// still read through Git.
+export function codexSandboxNotice(committed: readonly string[]): { body: string; detail: string } {
+  if (committed.length === 0) return codexWorktreeSecretNotice
+  const list = committed.length === 1
+    ? committed[0]!
+    : `${committed.slice(0, -1).join(", ")} and ${committed.at(-1)!}`
+  return {
+    body: codexWorktreeSecretNotice.body,
+    detail: `${codexWorktreeSecretNotice.detail} Codex can still read these through Git: ${list}.`,
+  }
+}
+
 export const codexDeveloperInstructions = `Domovoi runs you in a sandbox that refuses reads of these files anywhere in the worktree: ${codexWorktreeSecretFiles.join(", ")}. A command that opens one of them fails with "Operation not permitted", for example a test or build that loads .env. Domovoi cannot see that failure. When a command fails on one of these files, say so in your reply and name the file.`
 
 const codexSandboxContext = {
