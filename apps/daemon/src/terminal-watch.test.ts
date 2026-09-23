@@ -67,7 +67,7 @@ function terminalMethods(connection: Connection): string[] {
 const hello = (client: string, clientId: string, authToken: string) =>
   ({ client, clientId, clientVersion: "0.0.1", protocolVersion, authToken })
 
-async function start(options: { terminalClosedRetentionMs?: number } = {}) {
+async function start(options: { terminalClosedRetentionMs?: number, terminalClosedRetentionCharacters?: number } = {}) {
   let print: (data: string) => void = () => {}
   let exit: (event: { exitCode: number, signal?: number }) => void = () => {}
   const process = {
@@ -95,7 +95,7 @@ async function start(options: { terminalClosedRetentionMs?: number } = {}) {
   await daemon.start()
   const owner = await connect(daemon)
   expect(await owner.call("system.hello", hello("desktop", "desktop-owner", daemon.authToken))).not.toHaveProperty("error")
-  const pair = async (targetClient: "phone" | "tablet", clientAccess: "full" | "watching") => {
+  const pair = async (targetClient: "phone" | "tablet" | "desktop", clientAccess: "full" | "watching") => {
     const minted = await owner.call("device.pair", { label: `${targetClient} ${clientAccess}`, client: "desktop", targetClient, clientAccess })
     expect(minted).not.toHaveProperty("error")
     const connection = await connect(daemon)
@@ -244,6 +244,76 @@ describe("a phone reading a terminal", () => {
     expect(await phone.call("terminal.list", { sessionId: session.id })).toMatchObject({
       result: { terminals: [{ terminalId: "terminal-4", owner: { device }, claimHeld: true }] },
     })
+  })
+})
+
+describe("the boundary between a watch's record and its live output", () => {
+  it("hands each printed line to a new watcher once, in the record or live, never both", async () => {
+    const { session, print, owner, pair } = await start()
+    const create = { terminalId: "terminal-boundary", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "desktop-owner" }
+    expect(await owner.call("terminal.create", create)).not.toHaveProperty("error")
+    for (let round = 0; round < 5; round += 1) {
+      const phone = await pair("phone", "full")
+      // Printed and still waiting in the output batch when the watch arrives.
+      print(`line-${round}\r\n`)
+      const watched = await phone.call("terminal.watch", { terminalId: "terminal-boundary" })
+      print(`after-${round}\r\n`)
+      await waitForDaemon(() => expect(outputs(phone).join("")).toContain(`after-${round}`))
+      const seen = `${(watched.result as { buffer: string }).buffer}${outputs(phone).join("")}`
+      expect(seen.split(`line-${round}\r\n`).length - 1, `round ${round}`).toBe(1)
+      expect(seen.split(`after-${round}\r\n`).length - 1, `round ${round}`).toBe(1)
+    }
+  })
+})
+
+describe("closed records within one budget", () => {
+  it("evicts the oldest closed records first until the new one fits", async () => {
+    const { session, print, exit, owner, pair } = await start({ terminalClosedRetentionCharacters: 20 })
+    const phone = await pair("phone", "full")
+    for (const [index, text] of ["aaaaaaa\r\n", "bbbbbbb\r\n", "ccccccc\r\n"].entries()) {
+      const create = { terminalId: `terminal-${index}`, sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "desktop-owner" }
+      expect(await owner.call("terminal.create", create)).not.toHaveProperty("error")
+      print(text)
+      await waitForDaemon(() => expect(outputs(owner).join("")).toContain(text))
+      exit({ exitCode: 0 })
+      await waitForDaemon(() => expect(terminalMethods(owner).filter((method) => method === "terminal.closed")).toHaveLength(index + 1))
+    }
+    // Three records of 9 characters against 20: the oldest went first.
+    const listed = await phone.call("terminal.list", { sessionId: session.id })
+    expect((listed.result as { terminals: { terminalId: string }[] }).terminals.map(({ terminalId }) => terminalId).sort()).toEqual(["terminal-1", "terminal-2"])
+    expect(await phone.call("terminal.watch", { terminalId: "terminal-0" })).toMatchObject({ error: { message: "Terminal does not exist" } })
+    expect(await phone.call("terminal.watch", { terminalId: "terminal-2" })).toMatchObject({ result: { buffer: "ccccccc\r\n", state: "closed" } })
+  })
+})
+
+describe("redaction across an idle flush", () => {
+  it("never shows a value typed after its name was released on an idle beat, live, in a watch, or after close", async () => {
+    const { session, print, exit, owner, pair } = await start()
+    const phone = await pair("phone", "full")
+    const create = { terminalId: "terminal-idle", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "desktop-owner" }
+    expect(await owner.call("terminal.create", create)).not.toHaveProperty("error")
+    expect(await phone.call("terminal.watch", { terminalId: "terminal-idle" })).not.toHaveProperty("error")
+    // A prompt with no newline is released on the idle beat; the value arrives after it.
+    for (const [name, value] of [["export API_KEY=", "hunter2-live-value"], ["Password: ", "correct-horse-staple"]] as const) {
+      print(name)
+      await waitForDaemon(() => expect(outputs(owner).join("")).toContain(name))
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      print(`${value}\r\n`)
+      await waitForDaemon(() => expect(outputs(owner).join("")).toContain("\r\n"))
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      print("$ \r\n")
+    }
+    await waitForDaemon(() => expect(outputs(phone).join("")).toContain("$ "))
+    const watched = await phone.call("terminal.watch", { terminalId: "terminal-idle" })
+    exit({ exitCode: 0 })
+    await waitForDaemon(() => expect(terminalMethods(phone)).toContain("terminal.closed"))
+    const closed = await phone.call("terminal.watch", { terminalId: "terminal-idle" })
+    for (const text of [outputs(owner).join(""), outputs(phone).join(""), (watched.result as { buffer: string }).buffer, (closed.result as { buffer: string }).buffer]) {
+      expect(text).not.toContain("hunter2-live-value")
+      expect(text).not.toContain("correct-horse-staple")
+      expect(text).toContain("export API_KEY=")
+      expect(text).toContain("[REDACTED]")
+    }
   })
 })
 

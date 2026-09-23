@@ -238,18 +238,40 @@ const valueDelimiter = /[\s;&|\r\n]/
 
 export class TerminalOutputRedactor {
   #carry = ""
+  // How many leading characters of the carry were already handed out by an
+  // idle release. They stay in the carry as context, so a name released on an
+  // idle beat still governs what arrives after it, and are not handed out twice.
+  #released = 0
   // Set once an assignment's value has outgrown what can be carried. From then
   // on the value's bytes are dropped rather than held, until its delimiter, so
   // a token of any length is redacted without anything being buffered for it.
   #droppingValue = false
+  // Set when an idle release handed out an assignment whose value may still be
+  // arriving: what comes next, up to a delimiter, is that value and is dropped,
+  // with one replacement shown in its place when none was shown yet.
+  #valueAfterRelease = false
+  #replacementOwed = false
 
   // Everything held back plus the new read is redacted as one string, so an
   // assignment split across two reads is seen whole.
   push(chunk: string): string {
     let input = chunk
+    let shown = ""
+    if (this.#valueAfterRelease) {
+      const delimiter = valueDelimiter.exec(input)
+      const value = delimiter ? input.slice(0, delimiter.index) : input
+      if (value && this.#replacementOwed) {
+        shown = replacement
+        this.#replacementOwed = false
+      }
+      if (!delimiter) return shown
+      input = input.slice(delimiter.index)
+      this.#valueAfterRelease = false
+      this.#replacementOwed = false
+    }
     if (this.#droppingValue) {
       const delimiter = valueDelimiter.exec(input)
-      if (!delimiter) return ""
+      if (!delimiter) return shown
       input = input.slice(delimiter.index)
       this.#droppingValue = false
     }
@@ -263,19 +285,66 @@ export class TerminalOutputRedactor {
       // replacement, and drop the rest of it as it arrives.
       this.#carry = ""
       this.#droppingValue = true
-      return redactStreamText(combined)
+      return shown + this.#withoutReleased(combined, redactStreamText(combined))
     }
 
+    if (holdFrom < this.#released) {
+      // Only characters already handed out are ready; keep them as context.
+      this.#carry = combined.slice(holdFrom)
+      this.#released -= holdFrom
+      return shown
+    }
     this.#carry = combined.slice(holdFrom)
-    return redactStreamText(combined.slice(0, holdFrom))
+    const ready = combined.slice(0, holdFrom)
+    return shown + this.#withoutReleased(ready, redactStreamText(ready))
   }
 
+  // An idle beat: hand out what is held, so a prompt with no newline shows,
+  // while keeping what the held text means for what arrives next.
+  release(): string {
+    if (this.#carry === "") return ""
+    const pending = this.#carry
+    const redacted = redactStreamText(pending)
+    if (redacted === pending && /[A-Za-z0-9_-]$/.test(pending)) {
+      // A word that may still become a sensitive name, or a bare name whose
+      // separator has not arrived: shown, and kept as context.
+      const shown = pending.slice(this.#released)
+      this.#released = pending.length
+      return shown
+    }
+    const shown = this.#withoutReleased(pending, redacted)
+    this.#carry = ""
+    if (danglingSecret.test(pending)) {
+      this.#valueAfterRelease = true
+      this.#replacementOwed = !redacted.endsWith(replacement)
+    }
+    return shown
+  }
+
+  // The end of the stream: hand out what is held and forget everything.
   flush(): string {
     this.#droppingValue = false
-    if (this.#carry === "") return ""
+    this.#valueAfterRelease = false
+    this.#replacementOwed = false
+    if (this.#carry === "") {
+      this.#released = 0
+      return ""
+    }
     const remainder = this.#carry
     this.#carry = ""
-    return redactStreamText(remainder)
+    return this.#withoutReleased(remainder, redactStreamText(remainder))
+  }
+
+  // Drops the characters an idle release already handed out. They were a
+  // name or a word, which redaction leaves as they are; if redaction changed
+  // them after all, the whole redacted text is shown again rather than risk
+  // cutting into a replacement.
+  #withoutReleased(raw: string, redacted: string): string {
+    const released = this.#released
+    this.#released = 0
+    if (released === 0) return redacted
+    const prefix = raw.slice(0, released)
+    return redacted.startsWith(prefix) ? redacted.slice(released) : redacted
   }
 
   // Only a tail that could still become a secret is worth withholding, so a

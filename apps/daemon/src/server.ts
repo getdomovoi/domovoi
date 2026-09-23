@@ -84,6 +84,7 @@ import {
   type TerminalOwner,
   type TerminalSummary,
   terminalClosedRetentionMilliseconds,
+  maximumTerminalReplayCharacters,
   type ToolFileEntry,
   type SkillInstallRefusal,
   type TurnSkillSelectionRefusal,
@@ -1154,6 +1155,7 @@ export type DaemonServerOptions = {
   authTimeoutMs?: number
   terminalReapGraceMs?: number
   terminalClosedRetentionMs?: number
+  terminalClosedRetentionCharacters?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   providerSecrets?: Pick<ProviderSecretManager, "status">
@@ -1200,6 +1202,11 @@ export type DaemonErrorEntry = {
 }
 
 export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
+
+// All closed terminal records together: sixteen full records at the replay
+// budget, 1,048,576 characters, the same figure as the WebSocket high-water
+// mark in the terminal throughput budget.
+const closedTerminalRetentionCharacters = 16 * maximumTerminalReplayCharacters
 
 type ClosedTerminal = {
   summary: Omit<TerminalSummary, "state" | "claimHeld" | "closedAt" | "exitCode" | "signal">
@@ -1292,6 +1299,7 @@ export class DomovoiDaemon {
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
   #terminalClosedRetentionMs: number
+  #terminalClosedRetentionCharacters: number
   // Closed is a state, not an error: a closed terminal's record stays
   // readable for the retention window, then is dropped. Held in memory only;
   // a daemon restart forgets it.
@@ -1558,6 +1566,7 @@ export class DomovoiDaemon {
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalReapGraceMs = options.terminalReapGraceMs ?? 30_000
     this.#terminalClosedRetentionMs = options.terminalClosedRetentionMs ?? terminalClosedRetentionMilliseconds
+    this.#terminalClosedRetentionCharacters = options.terminalClosedRetentionCharacters ?? closedTerminalRetentionCharacters
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#providerProbe = options.providerProbe
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
@@ -2197,16 +2206,36 @@ export class DomovoiDaemon {
     }
   }
 
+  // A connection joins at a boundary: output still waiting in the batch goes
+  // to the audience it was printed for before the newcomer is added, so what
+  // it reads next from the record and what reaches it live never overlap.
+  #joinTerminalAudience(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): void {
+    if (terminal.audience.has(socket)) return
+    terminal.output.flush(terminalId)
+    terminal.audience.add(socket)
+  }
+
   // Called once the terminal has left #terminals and its last output has been
-  // pushed to the replay, so the record is the whole of what was kept.
+  // pushed to the replay, so the record is the whole of what was kept. Closed
+  // records share one budget, ruled 2026-09-23: the oldest go first until the
+  // new one fits.
   #retainClosedTerminal(terminalId: string, terminal: ActiveTerminal, end: { exitCode?: number | undefined, signal?: number | undefined }): void {
     this.#dropClosedTerminal(terminalId)
+    const record = terminal.replay.record()
+    let retained = 0
+    for (const closed of this.#closedTerminals.values()) retained += closed.record.text.length
+    for (const [oldestId, oldest] of this.#closedTerminals) {
+      if (retained + record.text.length <= this.#terminalClosedRetentionCharacters) break
+      retained -= oldest.record.text.length
+      this.#dropClosedTerminal(oldestId)
+    }
+    if (retained + record.text.length > this.#terminalClosedRetentionCharacters) return
     const { state: _state, claimHeld: _claimHeld, ...summary } = this.#terminalSummary(terminalId, terminal)
     const timer = setTimeout(() => this.#dropClosedTerminal(terminalId), this.#terminalClosedRetentionMs)
     timer.unref?.()
     this.#closedTerminals.set(terminalId, {
       summary,
-      record: terminal.replay.record(),
+      record,
       closedAt: Date.now(),
       exitCode: end.exitCode,
       signal: end.signal,
@@ -4759,13 +4788,13 @@ export class DomovoiDaemon {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
             }
-            existing.audience.add(socket)
+            this.#joinTerminalAudience(params.terminalId, existing, socket)
             this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
             }))
           }
-          existing.audience.add(socket)
+          this.#joinTerminalAudience(params.terminalId, existing, socket)
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -4850,7 +4879,7 @@ export class DomovoiDaemon {
               const current = this.#terminals.get(params.terminalId)
               if (current !== active) return
               active.redactorFlush = undefined
-              emit(active.redactor.flush())
+              emit(active.redactor.release())
             }, terminalOutputBatchDelayMilliseconds)
             active.redactorFlush.unref?.()
           }
@@ -4944,7 +4973,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal) terminal.audience.add(socket)
+        if (terminal) this.#joinTerminalAudience(params.terminalId, terminal, socket)
         const record = terminal ? terminal.replay.record() : closed!.record
         this.#send(socket, {
           jsonrpc: "2.0",
