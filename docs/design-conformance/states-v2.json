@@ -84,8 +84,12 @@
         "Worktree ready",
         "Nothing has run yet"
       ],
+      "partial": {
+        "since": "2026-09-22",
+        "reason": "The phone draws Nothing has run yet on an empty session. Desktop and web draw no session start state, and no client draws the Worktree ready header."
+      },
       "presence": [
-        "Worktree ready"
+        "Nothing has run yet"
       ]
     }
   ]
