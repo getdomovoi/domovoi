@@ -1256,7 +1256,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 <AlertDialogTitle>Archive {snapshot.sessions.find((session) => session.id === archiveTarget)?.title ?? "this session"}?</AlertDialogTitle>
                 <AlertDialogDescription>{archiveSessionDescription}</AlertDialogDescription>
               </AlertDialogHeader>
-              <ArchiveConfirmBody worktreePath={snapshot.sessions.find((session) => session.id === archiveTarget)?.workspacePath} />
+              <ArchiveConfirmBody
+                worktreePath={snapshot.sessions.find((session) => session.id === archiveTarget)?.workspacePath}
+                branch={snapshot.sessions.find((session) => session.id === archiveTarget)?.branch}
+                unmergedFiles={snapshot.sessions.find((session) => session.id === archiveTarget)?.unmergedFiles}
+              />
               <AlertDialogFooter>
                 <AlertDialogCancel>Keep the session</AlertDialogCancel>
                 <AlertDialogAction

@@ -487,6 +487,8 @@ describe("Thread", () => {
     active.archiveRequestedAt = "2026-08-29T11:59:00.000Z"
     active.archiveCheckpoint = "a".repeat(40)
     active.archivedAt = "2026-08-29T12:00:00.000Z"
+    active.branch = "domovoi/session-billing"
+    active.unmergedFiles = 7
     delete active.workspacePath
     delete active.providerThreadId
     delete active.activeTurnId
@@ -513,8 +515,8 @@ describe("Thread", () => {
     expect(markup).toContain("Archived, so the daemon accepts reads only.")
     // I69: the notice at the head of the thread says what archive did, names
     // the checkpoint kept, and draws the one way forward disabled and later.
-    expect(markup).toContain("Archived and read-only. The worktree was removed. The session branch and its final checkpoint are kept.")
-    expect(markup).toMatch(/archived \d\d:\d\d · aaaaaaa/)
+    expect(markup).toContain("Archived and read-only. The worktree was removed. Branch <span class=\"font-machine\">domovoi/session-billing</span> and its final checkpoint are kept.")
+    expect(markup).toMatch(/archived \d\d:\d\d · aaaaaaa · 7 files never merged/)
     expect(markup).toMatch(/Start a new session from this branch[\s\S]{0,200}later/)
     expect(markup).not.toContain("Unarchive")
     expect(markup).toMatch(/aria-label="Message"[^>]*disabled=""/)

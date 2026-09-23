@@ -1782,11 +1782,6 @@
   ],
   "humanRead": [
     {
-      "id": "thread.session-notice",
-      "since": "2026-09-18",
-      "note": "paused and archived banners with a resume action are not verified against the design"
-    },
-    {
       "id": "composer.send-hint",
       "since": "2026-09-19",
       "note": "The design defines kSend in its data and draws it nowhere. Enter alone now sends, so the hint is rendered rather than left out; read it against the design as an addition, not a match."
@@ -1809,12 +1804,7 @@
     {
       "id": "thread.session-notice",
       "since": "2026-09-23",
-      "note": "The branch name in mono and the count of files never merged wait on sessionSummarySchema carrying them (ND3, daemon lane); until then the line says the session branch without naming it."
-    },
-    {
-      "id": "drawer.archive-confirm",
-      "since": "2026-09-23",
-      "note": "Same as thread.session-notice: the kept-branch row names no branch and no file count yet. The removed list names the worktree path from the session summary."
+      "note": "Branch name and files-never-merged count come from sessionSummary.branch and unmergedFiles (daemon lane, #568); a part the daemon did not report is left out rather than guessed."
     }
   ],
   "annotations": [
