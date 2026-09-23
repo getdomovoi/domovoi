@@ -833,7 +833,9 @@ describe("working plan RPC", () => {
       prompt: "Continue",
       client: "desktop",
     })
-    expect(refused).toMatchObject({ error: { code: -32603 } })
+    // A provider that refuses to start the turn is a classified provider
+    // failure the person can act on, not an internal error.
+    expect(refused).toMatchObject({ error: { code: -32602, message: "Provider request failed" } })
     expect(context.durable().workingPlans[0]).toMatchObject({
       revision: 2,
       structureRevision: 1,
