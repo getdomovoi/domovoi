@@ -37,9 +37,13 @@ export function ApprovalScreen({
   onDecide,
   onDenyExplain,
   onBack,
+  watching = false,
 }: {
   approval: ApprovalRequest
   pending: boolean
+  // A watching phone reads the gate in full and answers nothing. The daemon
+  // refuses its decisions; the screen does not offer them.
+  watching?: boolean
   // The route can die while a gate is open. What is drawn is then the last
   // state the phone was sent, and the screen says so above the decision.
   notice?: ConnectionNotice | undefined
@@ -109,6 +113,11 @@ export function ApprovalScreen({
           at the end of a scroll, and the affirmative one wears the warning the
           request wears, so neither answer reads as the safe default. */}
       <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
+        {watching ? (
+          <Text variant="note" className="px-1 text-center">
+            Watching only. A device paired with full access answers this gate.
+          </Text>
+        ) : <>
         {problem ? (
           <Text accessibilityRole="alert" className="px-1 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
         ) : null}
@@ -144,6 +153,7 @@ export function ApprovalScreen({
           disabled={pending}
           onPress={onDenyExplain}
         />
+        </>}
       </FloatingBar>
     </View>
   )

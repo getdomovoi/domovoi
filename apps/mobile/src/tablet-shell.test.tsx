@@ -10,7 +10,7 @@ const metrics: Metrics = {
   insets: { top: 24, left: 0, right: 0, bottom: 20 },
 }
 
-async function draw(risk?: "normal" | "hard-gate") {
+async function draw(risk?: "normal" | "hard-gate", access: "full" | "watching" = "full") {
   const snapshot = structuredClone(demoWorkspace)
   const approval = snapshot.approvals[0]
   if (!approval) throw new Error("fixture needs an approval")
@@ -24,7 +24,7 @@ async function draw(risk?: "normal" | "hard-gate") {
     snapshot,
     selectedSessionId: approval.sessionId,
     draft: "Ready to send",
-    access: "full" as const,
+    access,
     sending: false,
     onSelectSession: jest.fn<(id: string) => void>(),
     onNewSession: jest.fn<() => void>(),
@@ -53,6 +53,15 @@ describe("TabletShell", () => {
     expect(screen.getByRole("button", { name: "New session" })).toBeOnTheScreen()
     expect(screen.getByRole("button", { name: "Machines" })).toBeOnTheScreen()
     expect(screen.getByText("NEEDS YOU")).toBeOnTheScreen()
+  })
+
+  it("shows a watching tablet the gate without decisions", async () => {
+    await draw("hard-gate", "watching")
+
+    expect(screen.getByText("Apply a production database migration")).toBeOnTheScreen()
+    expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Deny" })).toBeNull()
   })
 
   it("keeps the hard gate inline with tablet-sized decisions", async () => {

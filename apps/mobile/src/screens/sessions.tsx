@@ -1,5 +1,5 @@
 import { RefreshControl, View } from "react-native"
-import type { ClientAccess, FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { ConnectionBanner } from "../components/connection-banner"
 import { PageScroller } from "../components/page-scroller"
@@ -80,7 +80,6 @@ export function SessionsScreen({
   fleet,
   notice,
   refreshing,
-  access = "full",
   now,
   onOpenSession,
   onOpenApproval,
@@ -96,7 +95,6 @@ export function SessionsScreen({
   fleet: FleetEntry[] | undefined
   notice: ConnectionNotice | undefined
   refreshing: boolean
-  access?: ClientAccess
   // Passed in rather than read from the clock here, so what the screen draws is
   // a function of what it was given.
   now: number
@@ -162,7 +160,7 @@ export function SessionsScreen({
               <SessionCard
                 key={row.id}
                 row={row}
-                approvalId={access === "full" ? snapshot.approvals.find((approval) => approval.sessionId === row.id)?.id : undefined}
+                approvalId={snapshot.approvals.find((approval) => approval.sessionId === row.id)?.id}
                 onOpen={onOpenSession}
                 onOpenApproval={onOpenApproval}
               />

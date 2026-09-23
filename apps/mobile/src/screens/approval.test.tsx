@@ -43,6 +43,17 @@ function buttons(): string[] {
 }
 
 describe("ApprovalScreen", () => {
+  it("shows a watching phone every fact and no decision", async () => {
+    await draw({ watching: true })
+
+    expect(screen.getByText("Apply a production database migration")).toBeOnTheScreen()
+    expect(screen.getByText("pnpm prisma migrate deploy")).toBeOnTheScreen()
+    expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Deny" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Always allow this" })).toBeNull()
+  })
+
   it("shows every fact of the request without a tap", async () => {
     const { approval: request } = await draw()
 

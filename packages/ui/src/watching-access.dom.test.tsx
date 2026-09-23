@@ -107,3 +107,17 @@ it("blocks stale mutation handlers after access changes to watching", async () =
   expect(onSetRuntime).not.toHaveBeenCalled()
   expect(onPauseSession).not.toHaveBeenCalled()
 })
+
+it("shows a watching device every approval fact without decision controls", () => {
+  render(<WatchingThread />)
+
+  expect(screen.getByText("Apply a production database migration")).toBeTruthy()
+  expect(screen.getByText("pnpm prisma migrate deploy")).toBeTruthy()
+  expect(screen.getByText("macbook-pro-m3")).toBeTruthy()
+  expect(screen.getByText("Production database schema: replay_events and webhook idempotency index.")).toBeTruthy()
+  expect(screen.getByText("api.stripe.com and production PostgreSQL")).toBeTruthy()
+  expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Deny" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
+})

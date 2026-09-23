@@ -248,6 +248,14 @@ describe("SessionScreen policy and queue states", () => {
     expect(screen.queryByRole("button", { name: "Pause this session" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Edit a step" })).toBeNull()
   })
+
+  it("keeps the waiting approval in reach of a watching phone", async () => {
+    const { props } = await draw({ access: "watching" })
+
+    expect(screen.getByText("An approval is waiting on a full-access device")).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Open the waiting approval" }))
+    expect(props.onOpenApproval).toHaveBeenCalledWith("approval-migrate")
+  })
 })
 
 describe("SessionScreen start another", () => {

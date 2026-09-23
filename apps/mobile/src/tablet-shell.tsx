@@ -123,10 +123,11 @@ export function TabletThreadHeader({ snapshot, detail, artifactCount, onOpenRevi
   )
 }
 
-export function TabletGateCard({ approval, onResolve, onDenyExplain }: {
+export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = false }: {
   approval: ApprovalRequest
   onResolve: (approvalId: string, decision: TabletDecision) => void
   onDenyExplain: (approvalId: string) => void
+  watching?: boolean
 }) {
   const hardGate = approval.risk === "hard-gate"
   return (
@@ -152,6 +153,11 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain }: {
           </View>
         ))}
       </View>
+      {watching ? (
+        <Text variant="note" className="px-4 py-3.5 text-warn-dim">
+          Watching only. A device paired with full access answers this gate.
+        </Text>
+      ) : (
       <View className="gap-2 px-4 py-3.5">
         <Button
           title="Allow once"
@@ -166,6 +172,7 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain }: {
           <Button title="Deny" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onDenyExplain(approval.id)} />
         </View>
       </View>
+      )}
     </Card>
   )
 }
@@ -226,8 +233,8 @@ export function TabletThread({ snapshot, detail, approval, access, onResolve, on
           <Text variant="machine" className="text-faint">{tools} tools · {files} files</Text>
         </View>
       ) : null}
-      {approval && access === "full"
-        ? <TabletGateCard approval={approval} onResolve={onResolve} onDenyExplain={onDenyExplain} />
+      {approval
+        ? <TabletGateCard approval={approval} onResolve={onResolve} onDenyExplain={onDenyExplain} watching={access !== "full"} />
         : null}
     </PageScroller>
   )

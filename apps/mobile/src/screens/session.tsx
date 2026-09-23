@@ -555,7 +555,7 @@ export function SessionScreen({
         {detail.policyRefusal ? <PolicyRefusal refusal={detail.policyRefusal} /> : <>
         {/* The reason the phone was picked up goes above the reading, because
             scrolling a thread to find the decision is the slow path. */}
-        {approvalId && access === "full" ? (
+        {approvalId ? (
           <PressableCard
             className="border-warn-border bg-warn-bg"
             accessibilityLabel="Open the waiting approval"
@@ -563,7 +563,7 @@ export function SessionScreen({
           >
             <View className="flex-row items-center gap-2">
               <Text className="flex-1 font-sans-medium text-[12.5px] text-warn-fg">
-                An approval is waiting
+                {access === "full" ? "An approval is waiting" : "An approval is waiting on a full-access device"}
               </Text>
               <Icon name="chevron-right" tone="warn-fg" size={16} />
             </View>

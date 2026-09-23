@@ -238,9 +238,7 @@ export function App() {
   }, [openApproval])
 
   useEffect(() => {
-    if (clientAccess !== "watching") return
-    setExplaining(false)
-    setOpenApprovalId(undefined)
+    if (clientAccess === "watching") setExplaining(false)
   }, [clientAccess])
 
   const openSession = useMemo(
@@ -602,7 +600,7 @@ export function App() {
     return (
       <SafeAreaProvider>
         <SafeAreaView className="flex-1 bg-background">
-          {explaining ? (
+          {explaining && clientAccess !== "watching" ? (
             <DenyExplainScreen
               approval={openApproval}
               pending={deciding}
@@ -618,6 +616,7 @@ export function App() {
               onDecide={(decision) => void decide(decision)}
               onDenyExplain={() => setExplaining(true)}
               onBack={() => setOpenApprovalId(undefined)}
+              watching={clientAccess === "watching"}
             />
           )}
         </SafeAreaView>
@@ -838,7 +837,6 @@ export function App() {
                 fleet={fleet}
                 notice={notice}
                 refreshing={refreshing}
-                access={clientAccess}
                 now={now}
                 onOpenApproval={setOpenApprovalId}
                 onRefresh={() => void refreshWorkspace()}

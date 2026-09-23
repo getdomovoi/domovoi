@@ -340,6 +340,7 @@ function ApprovalCard({
   approval,
   onResolve,
   surface,
+  watching = false,
 }: {
   approval: ApprovalRequest
   onResolve: (
@@ -347,6 +348,9 @@ function ApprovalCard({
     explanation?: string,
   ) => void
   surface: "desktop" | "web"
+  // A watching device is shown the gate in full and answers nothing. The
+  // daemon refuses its decisions; the card does not offer them.
+  watching?: boolean
 }) {
   const explainTriggerRef = useRef<HTMLButtonElement>(null)
   const [explainOpen, setExplainOpen] = useState(false)
@@ -390,7 +394,9 @@ function ApprovalCard({
             </div>
           ))}
         </dl>
-        {explainOpen ? (
+        {watching ? (
+          <p className="text-[11px] text-warn-dim">Watching only. A device paired with full access answers this gate.</p>
+        ) : explainOpen ? (
           <div className="flex flex-col gap-2 rounded-md border border-warning/30 bg-background/40 p-3">
             <label htmlFor={`denial-${approval.id}`} className="text-[11px] font-medium text-warn-foreground">
               Tell the agent why this command was denied
@@ -744,7 +750,9 @@ export function Thread({
     gated: Boolean(approval),
     threadKey: activeThreadKey(snapshot),
   })
-  const followPill = threadFollowPillText(follow.state, follow.unseen)
+  const followPill = watching && follow.state === "gate"
+    ? "Waiting on a full-access device"
+    : threadFollowPillText(follow.state, follow.unseen)
   const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(() => sessionDraftStore.read(draftSessionId).skillSelection)
   const [promptEditorOpen, setPromptEditorOpen] = useState(() => sessionDraftStore.read(draftSessionId).promptEditorOpen)
   // A send clears the prompt, which writes an empty draft, which the store reads
@@ -1237,7 +1245,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !readOnly ? <ApprovalCard surface={surface} approval={approval} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (
