@@ -47,23 +47,18 @@ export const sessionAttachmentSchema = z.union([
   workspaceFileAttachmentSchema,
 ])
 
-export const sessionAttachmentRefusalSchema = z.union([
-  // The selected model takes no image input. The daemon names the model and
-  // the count so the composer can say "2 images cannot go to <model>"; the
-  // code is the one the attach sheet shows beside the lock. The three fields
-  // are absent from an older daemon.
-  z.object({
-    kind: z.literal("session-attachment-refused"),
-    reason: z.literal("image-input-unsupported"),
-    code: z.literal("attach.image.model_no_input").optional(),
-    model: z.string().min(1).check(utf16MaxLength(256)).optional(),
-    imageCount: z.number().int().positive().max(maximumSessionAttachments).optional(),
-  }).strict(),
-  z.object({
-    kind: z.literal("session-attachment-refused"),
-    reason: z.enum(["invalid-image", "invalid-text", "invalid-workspace-file"]),
-  }).strict(),
-])
+// Released clients parse this strictly, so it keeps exactly this shape. For
+// image-input-unsupported the client already knows the session's model and
+// how many images it sent; the daemon's message names both.
+export const sessionAttachmentRefusalSchema = z.object({
+  kind: z.literal("session-attachment-refused"),
+  reason: z.enum(["image-input-unsupported", "invalid-image", "invalid-text", "invalid-workspace-file"]),
+}).strict()
+
+// What the attach sheet shows beside a locked image source when the selected
+// model takes no image input (Phone v2 frame 13b). A client constant, not a
+// wire field.
+export const modelImageInputRefusalCode = "attach.image.model_no_input"
 
 export type ImageUpload = z.infer<typeof imageUploadSchema>
 export type TextAttachment = z.infer<typeof textAttachmentSchema>

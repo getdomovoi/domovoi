@@ -5,6 +5,7 @@
 
 Each model says whether it takes image input. `runtime.models` entries carry `imageInput`,
 `true` when an image attachment on a send to that model is delivered and `false` when it is not;
-today that follows the adapter's vision capability. A send with images to a model that takes
-none is still refused whole, and the refusal now names the model and the image count with the
-code `attach.image.model_no_input`, so a composer can say which model the images cannot go to.
+the daemon fills it from the same rule the send uses, the adapter's vision capability. A send with
+images to a model that takes none is still refused whole. The error message now names the model
+and the image count, and the error data keeps the shape released clients parse. The attach sheet's
+code is the exported constant `modelImageInputRefusalCode`.

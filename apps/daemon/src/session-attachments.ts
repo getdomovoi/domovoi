@@ -21,9 +21,7 @@ export class SessionAttachmentError extends Error {
         : reason === "invalid-workspace-file"
           ? "The attached path must name a bounded file inside the session worktree."
           : "An attachment is not a bounded PNG or JPEG matching its declared dimensions.")
-    this.refusal = reason === "image-input-unsupported" && target
-      ? { kind: "session-attachment-refused", reason, code: "attach.image.model_no_input", model: target.model, imageCount: target.imageCount }
-      : { kind: "session-attachment-refused", reason: reason as Exclude<typeof reason, "image-input-unsupported"> }
+    this.refusal = { kind: "session-attachment-refused", reason }
   }
 }
 

@@ -3825,7 +3825,9 @@ export class DomovoiDaemon {
       }).finally(() => modelDeadline.clear()).then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
           .filter((model) => model.provider === provider)
-          .map((model) => ({ ...model, imageInput: model.imageInput ?? modelImageInput(agent.capabilities) }))
+          // The send decides by this rule alone, so the list says the same,
+          // whatever an adapter listed.
+          .map((model) => ({ ...model, imageInput: modelImageInput(agent.capabilities) }))
         if (parsed.length > 0 && this.#providerEpoch(provider) === epoch
           && this.#providerModelRequests.get(provider) === discovery) {
           this.#providerModels.set(provider, { models: parsed, cachedAt: Date.now() })

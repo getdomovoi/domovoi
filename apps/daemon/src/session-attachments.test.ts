@@ -25,6 +25,7 @@ async function fixture(
   vision: boolean | "unknown" = true,
   client: "phone" | "tablet" = "phone",
   statePath = ":memory:",
+  adapterImageInput?: boolean,
 ) {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions[0]!
@@ -48,6 +49,7 @@ async function fixture(
     listModels: async () => [{
       provider: session.runtime.provider, id: session.runtime.model, displayName: session.runtime.model, description: "",
       supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: true,
+      ...(adapterImageInput === undefined ? {} : { imageInput: adapterImageInput }),
     }],
     startThread: async () => "thread-images", resumeThread: vi.fn(async () => {}),
     stopThread: async () => {}, interruptTurn: async () => {},
@@ -157,16 +159,24 @@ describe("session attachments over a paired socket", () => {
   it.each([false, "unknown"] as const)("refuses the entire image send without vision capability: %s", async (vision) => {
     const f = await fixture(vision)
     const before = f.store.load().thread
-    // Phone v2 frame 14b: the refusal names the model and the count, and
-    // carries the code the attach sheet shows.
-    expect(await f.send([image, image])).toMatchObject({ error: { code: -32602, message: "2 images cannot go to sonnet-4.6. Remove them or pick another model.", data: {
-      kind: "session-attachment-refused", reason: "image-input-unsupported",
-      code: "attach.image.model_no_input", model: "sonnet-4.6", imageCount: 2,
-    } } })
+    // Phone v2 frame 14b: the message names the model and the count. The data
+    // keeps exactly the shape an older client's strict parser accepts; the
+    // client knows the session's model and what it sent.
+    const refused = await f.send([image, image])
+    expect(refused).toMatchObject({ error: { code: -32602, message: "2 images cannot go to sonnet-4.6. Remove them or pick another model." } })
+    expect((refused.error as { data: unknown }).data).toEqual({ kind: "session-attachment-refused", reason: "image-input-unsupported" })
     expect(f.startTurn).not.toHaveBeenCalled()
     expect(f.agent.resumeThread).not.toHaveBeenCalled()
     expect(f.store.load().thread).toEqual(before)
     expect(await f.send()).not.toHaveProperty("error")
+  })
+
+  it.each([[true, false], [false, true]] as const)("reports image input from the rule the send uses, whatever the adapter listed: vision %s, listed %s", async (vision, listed) => {
+    const f = await fixture(vision, "phone", ":memory:", listed)
+    const models = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })
+    expect(models.result).toEqual([expect.objectContaining({ id: "sonnet-4.6", imageInput: vision })])
+    const sent = await f.send([image])
+    expect(sent.error === undefined).toBe(vision)
   })
 
   it.each([true, false, "unknown"] as const)("reports per model whether images are delivered, from the adapter's capability: %s", async (vision) => {
