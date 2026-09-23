@@ -3297,11 +3297,8 @@ export class DomovoiDaemon {
       ))
     }
     try {
-      if (this.#store.saveAsync) await this.#store.saveAsync(authoritative)
-      else this.#store.save(authoritative)
-      this.#persistenceSucceeded()
+      await this.#persistSnapshot()
     } catch (error) {
-      this.#persistenceFailed(error)
       this.#reportError("Domovoi could not persist a detected ownership conflict", error)
     }
   }
@@ -6859,35 +6856,40 @@ export class DomovoiDaemon {
             )
             signal.throwIfAborted()
           }
-          const candidate = structuredClone(this.#snapshot)
-          const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
-          if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
-            throw new PublicRpcError(invalidParams, "Session is no longer ready to restart its provider")
-          }
-          const createdAt = new Date().toISOString()
-          currentSession.runtime = runtime
-          currentSession.providerThreadId = threadId
-          currentSession.state = "idle"
-          currentSession.updatedAt = createdAt
-          delete currentSession.activeTurnId
-          delete currentSession.providerFailure
-          candidate.thread.push({
-            id: `system-${randomUUID()}`,
-            sessionId: currentSession.id,
-            kind: "system",
-            body: `Provider thread restarted by ${client}.`,
-            detail: `Connection ${connectionId}. The existing worktree, history, checkpoints, artifacts, and annotations were preserved.`,
-            createdAt,
+          // The synchronous write joins the persistence serializer, so a
+          // worker write posted before it cannot land afterwards and put the
+          // provider thread it records back out of the stored snapshot.
+          await this.#serializeSnapshotPersistence(async () => {
+            const candidate = structuredClone(this.#snapshot)
+            const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
+            if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
+              throw new PublicRpcError(invalidParams, "Session is no longer ready to restart its provider")
+            }
+            const createdAt = new Date().toISOString()
+            currentSession.runtime = runtime
+            currentSession.providerThreadId = threadId
+            currentSession.state = "idle"
+            currentSession.updatedAt = createdAt
+            delete currentSession.activeTurnId
+            delete currentSession.providerFailure
+            candidate.thread.push({
+              id: `system-${randomUUID()}`,
+              sessionId: currentSession.id,
+              kind: "system",
+              body: `Provider thread restarted by ${client}.`,
+              detail: `Connection ${connectionId}. The existing worktree, history, checkpoints, artifacts, and annotations were preserved.`,
+              createdAt,
+            })
+            workspaceSnapshotSchema.parse(candidate)
+            try {
+              this.#store.save(candidate)
+            } catch (error) {
+              this.#persistenceFailed(error)
+              throw error
+            }
+            this.#persistenceSucceeded()
+            this.#snapshot = candidate
           })
-          workspaceSnapshotSchema.parse(candidate)
-          try {
-            this.#store.save(candidate)
-          } catch (error) {
-            this.#persistenceFailed(error)
-            throw error
-          }
-          this.#persistenceSucceeded()
-          this.#snapshot = candidate
           this.#activeAssistantItems.clear()
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
           changed = true
@@ -7321,8 +7323,19 @@ export class DomovoiDaemon {
           createdAt,
         })
         try {
-          if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
-          else this.#store.save(candidate)
+          // Other sessions keep streaming while the fork is written, so only
+          // the fork's own slice is merged into the live snapshot, before and
+          // after the write, on the same serializer as every other write.
+          await this.#serializeSnapshotPersistence(async () => {
+            const persisted = workspaceSnapshotSchema.parse(
+              mergeSessionSnapshotSlice(this.#snapshot, candidate, sessionId),
+            )
+            if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+            else this.#store.save(persisted)
+            this.#snapshot = workspaceSnapshotSchema.parse(
+              mergeSessionSnapshotSlice(this.#snapshot, persisted, sessionId),
+            )
+          })
           this.#persistenceSucceeded()
         } catch (error) {
           this.#persistenceFailed(error)
@@ -7346,7 +7359,6 @@ export class DomovoiDaemon {
           }
           throw error
         }
-        this.#snapshot = candidate
         this.#activeAssistantItems.clear()
         this.#clearCommittedSessionCreations()
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
