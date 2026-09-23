@@ -99,6 +99,14 @@ export function providerFirstRunRecovery(
       copyLabel: "Copy sign-in command",
     }
   }
+  if (provider.problem !== undefined) {
+    return {
+      kind: "adapter-unavailable",
+      title: `${providerDisplayName(provider.id)} cannot start sessions`,
+      description: provider.problem,
+      canComplete: false,
+    }
+  }
   if (!provider.sessionCapable) {
     return {
       kind: "adapter-unavailable",

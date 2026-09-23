@@ -38,7 +38,7 @@ describe("CliProviderProbe", () => {
   it("reports versions and known authentication states without exposing account data", async () => {
     const run = vi.fn(async (command: string, args: string[]): Promise<CommandResult> => {
       const key = `${command} ${args.join(" ")}`
-      if (key === "claude --version") return { exitCode: 0, stdout: "2.1.247 (Claude Code)\n", stderr: "" }
+      if (key === "claude --version") return { exitCode: 0, stdout: "2.1.280 (Claude Code)\n", stderr: "" }
       if (key === "claude auth status") {
         return {
           exitCode: 0,
@@ -54,11 +54,35 @@ describe("CliProviderProbe", () => {
     const providers = await new CliProviderProbe(run).inspect()
 
     expect(providers).toEqual(expect.arrayContaining([
-      { id: "claude-code", command: "claude", status: "ready", version: "2.1.247" },
+      { id: "claude-code", command: "claude", status: "ready", version: "2.1.280" },
       { id: "codex", command: "codex", status: "ready", version: "0.149.0" },
       { id: "opencode", command: "opencode", status: "missing" },
     ]))
     expect(JSON.stringify(providers)).not.toContain("secret@example.com")
+  })
+
+  it("says what to install when the claude found cannot run SDK sessions", async () => {
+    const run = (version: string, native = true) => vi.fn(async (command: string, args: string[]): Promise<CommandResult> => {
+      const key = `${command} ${args.join(" ")}`
+      if (!native && command === "claude.exe") throw Object.assign(new Error("missing"), { code: "ENOENT" })
+      if (key.endsWith("--version")) return { exitCode: 0, stdout: `${version} (Claude Code)\n`, stderr: "" }
+      if (key.endsWith("auth status")) return { exitCode: 0, stdout: JSON.stringify({ loggedIn: true }), stderr: "" }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" })
+    }) satisfies ProviderCommandRunner
+
+    await expect(new CliProviderProbe(run("2.1.100")).inspectProvider("claude-code")).resolves.toMatchObject({
+      status: "ready",
+      version: "2.1.100",
+      problem: "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.",
+    })
+    await expect(new CliProviderProbe(run("2.1.280", false), { platform: "win32" }).inspectProvider("claude-code")).resolves.toMatchObject({
+      command: "claude",
+      problem: expect.stringMatching(/native claude\.exe/),
+    })
+    const native = await new CliProviderProbe(run("2.1.280"), { platform: "win32" }).inspectProvider("claude-code")
+    expect(native).toMatchObject({ command: "claude.exe", status: "ready" })
+    expect(native).not.toHaveProperty("problem")
+    await expect(new CliProviderProbe(run("2.1.280")).inspectProvider("claude-code")).resolves.not.toHaveProperty("problem")
   })
 
   it("separates missing binaries, expired login, and unknown authentication", async () => {

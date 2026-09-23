@@ -18,7 +18,7 @@ import type {
   AgentWorkingPlanStep,
 } from "./agents.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
-import { resolveCommandPathSync } from "./tool-path.js"
+import { claudeInstallProblem, installedClaudeVersion, resolveClaudeSdkExecutable } from "./claude-install.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
@@ -828,12 +828,16 @@ function toolOutput(result: unknown, fallback: unknown): string {
 }
 
 const defaultClaudeQueryFactory: ClaudeQueryFactory = (input, options) => {
-  const executable = resolveCommandPathSync("claude", process.env.PATH ?? "", process.platform)
-  if (executable === undefined) {
-    throw new Error("Claude Code is not installed: no claude executable was found on the tool PATH")
-  }
+  const resolved = resolveClaudeSdkExecutable(process.env.PATH ?? "", process.platform)
+  if ("problem" in resolved) throw new Error(resolved.problem)
+  const problem = claudeInstallProblem({
+    command: resolved.executable,
+    version: installedClaudeVersion(resolved.executable),
+    platform: process.platform,
+  })
+  if (problem !== undefined) throw new Error(problem)
   return query({
     prompt: input satisfies AsyncIterable<SDKUserMessage>,
-    options: { ...options, pathToClaudeCodeExecutable: executable } satisfies Options,
+    options: { ...options, pathToClaudeCodeExecutable: resolved.executable } satisfies Options,
   })
 }
