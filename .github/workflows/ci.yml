@@ -2,14 +2,24 @@ name: ci
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+
+# A newer push to a pull request replaces the run for the older one. Pushes to
+# main are grouped by commit, so a main run is never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   verify:
+    # Draft pull requests are still under review; the run starts when the pull
+    # request is marked ready. A draft cannot be merged, so the skip gates nothing.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       fail-fast: false
       matrix:
@@ -88,6 +98,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 10
   audit:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
