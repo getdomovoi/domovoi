@@ -14,7 +14,9 @@ vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
 import {
   CodexAppServerAdapter,
   StdioCodexTransport,
+  codexAppServerArguments,
   codexPolicyFor,
+  codexSecretLocations,
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
@@ -104,15 +106,41 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto: boolean): Runt
 
 describe("codexPolicyFor", () => {
   it.each([
-    [runtime("ask", false), "on-request", "readOnly"],
-    [runtime("plan", false), "never", "readOnly"],
-    [runtime("build", false), "on-request", "workspaceWrite"],
-    [runtime("build", true), "never", "workspaceWrite"],
-  ] as const)("maps Domovoi runtime to Codex enforcement", (input, approvalPolicy, sandboxType) => {
-    expect(codexPolicyFor(input, "/worktree")).toMatchObject({
-      approvalPolicy,
-      sandboxPolicy: { type: sandboxType },
-    })
+    [runtime("ask", false), "on-request", "domovoi-read"],
+    [runtime("plan", false), "never", "domovoi-read"],
+    [runtime("build", false), "on-request", "domovoi-build"],
+    [runtime("build", true), "never", "domovoi-build"],
+  ] as const)("maps Domovoi runtime to Codex enforcement", (input, approvalPolicy, permissions) => {
+    const policy = codexPolicyFor(input)
+    expect(policy).toEqual({ approvalPolicy, permissions })
+  })
+})
+
+describe("codexAppServerArguments", () => {
+  const settings = new Map<string, string>()
+  const argumentsList = codexAppServerArguments()
+  for (let index = 0; index < argumentsList.length; index += 1) {
+    if (argumentsList[index] !== "-c") continue
+    const setting = argumentsList[index + 1]!
+    const separator = setting.indexOf("=")
+    settings.set(setting.slice(0, separator), setting.slice(separator + 1))
+  }
+
+  it("serves stdio and defines the two profiles Domovoi selects per turn", () => {
+    expect(argumentsList.slice(0, 3)).toEqual(["app-server", "--listen", "stdio://"])
+    expect(settings.get("permissions.domovoi-read.extends")).toBe('":read-only"')
+    expect(settings.get("permissions.domovoi-build.extends")).toBe('":workspace"')
+    expect(settings.get("permissions.domovoi-read.network.enabled")).toBe("false")
+    expect(settings.get("permissions.domovoi-build.network.enabled")).toBe("false")
+  })
+
+  it.each([
+    "~/.ssh", "~/.aws", "~/.domovoi", "~/.config/gh", "~/.kube", "~/.docker", "~/.netrc", "~/.gnupg",
+  ])("denies reads of %s in both profiles", (location) => {
+    for (const profile of ["domovoi-read", "domovoi-build"]) {
+      expect(settings.get(`permissions.${profile}.filesystem`)).toContain(`${JSON.stringify(location)}="deny"`)
+    }
+    expect(codexSecretLocations).toContain(location)
   })
 })
 
@@ -844,9 +872,10 @@ describe("CodexAppServerAdapter", () => {
           },
         },
         approvalPolicy: "on-request",
-        sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/worktree"] },
+        permissions: "domovoi-build",
       },
     })
+    expect(transport.sent[4]?.params).not.toHaveProperty("sandboxPolicy")
     transport.receive({ id: 4, result: { turn: { id: "turn-1" } } })
     await expect(turning).resolves.toBe("turn-1")
 

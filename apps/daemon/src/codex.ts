@@ -25,16 +25,62 @@ export interface CodexTransport {
   close(): Promise<void>
 }
 
+export type CodexPermissionProfile = "domovoi-read" | "domovoi-build"
+
 export type CodexPolicy = {
   approvalPolicy: "on-request" | "never"
-  sandboxPolicy:
-    | { type: "readOnly"; access: { type: "fullAccess" } }
-    | {
-        type: "workspaceWrite"
-        writableRoots: string[]
-        readOnlyAccess: { type: "fullAccess" }
-        networkAccess: false
-      }
+  permissions: CodexPermissionProfile
+}
+
+// Codex reads anywhere its sandbox allows without asking. Until a strict
+// allow-list exists (it needs a survey of the toolchains commands load), both
+// Domovoi profiles keep today's read access and refuse these credential
+// stores. Every other read outside the worktree still runs without a card.
+export const codexSecretLocations = [
+  "~/.ssh",
+  "~/.aws",
+  "~/.domovoi",
+  "~/.config/gh",
+  "~/.kube",
+  "~/.docker",
+  "~/.netrc",
+  "~/.gnupg",
+  "~/.azure",
+  "~/.config/gcloud",
+  "~/.git-credentials",
+  "~/.config/git/credentials",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.password-store",
+  "~/.terraform.d",
+  "~/.vault-token",
+  "~/.pgpass",
+  "~/.my.cnf",
+  "~/.cargo/credentials.toml",
+  "~/.gem/credentials",
+  "~/.config/op",
+  "~/.local/share/keyrings",
+  "~/Library/Keychains",
+  "~/.codex/auth.json",
+  "~/.claude/.credentials.json",
+] as const
+
+export function codexAppServerArguments(): string[] {
+  const denied = `{${codexSecretLocations.map((location) => `${JSON.stringify(location)}="deny"`).join(",")}}`
+  const profile = (name: CodexPermissionProfile, base: string) => [
+    "-c", `permissions.${name}.extends=${JSON.stringify(base)}`,
+    "-c", `permissions.${name}.filesystem=${denied}`,
+    "-c", `permissions.${name}.network.enabled=false`,
+  ]
+  return [
+    "app-server",
+    "--listen",
+    "stdio://",
+    "-c",
+    `default_permissions=${JSON.stringify(":workspace")}`,
+    ...profile("domovoi-read", ":read-only"),
+    ...profile("domovoi-build", ":workspace"),
+  ]
 }
 
 type PendingRequest = {
@@ -44,27 +90,12 @@ type PendingRequest = {
 
 const STDERR_TAIL_BYTES = 16_384
 
-export function codexPolicyFor(runtime: Runtime, cwd: string): CodexPolicy {
-  if (runtime.permissionMode === "ask") {
-    return {
-      approvalPolicy: "on-request",
-      sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" } },
-    }
-  }
-  if (runtime.permissionMode === "plan") {
-    return {
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "readOnly", access: { type: "fullAccess" } },
-    }
-  }
+export function codexPolicyFor(runtime: Runtime): CodexPolicy {
+  if (runtime.permissionMode === "ask") return { approvalPolicy: "on-request", permissions: "domovoi-read" }
+  if (runtime.permissionMode === "plan") return { approvalPolicy: "never", permissions: "domovoi-read" }
   return {
     approvalPolicy: runtime.permissionMode === "build" && runtime.auto ? "never" : "on-request",
-    sandboxPolicy: {
-      type: "workspaceWrite",
-      writableRoots: [cwd],
-      readOnlyAccess: { type: "fullAccess" },
-      networkAccess: false,
-    },
+    permissions: "domovoi-build",
   }
 }
 
@@ -80,7 +111,7 @@ export class StdioCodexTransport implements CodexTransport {
 
   constructor(childFactory: () => ChildProcessWithoutNullStreams = () => spawn(
     "codex",
-    ["app-server", "--listen", "stdio://"],
+    codexAppServerArguments(),
     { stdio: ["pipe", "pipe", "pipe"] },
   ), shutdownGraceMs = 2_000) {
     this.#child = childFactory()
@@ -215,8 +246,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
-    const policy = codexPolicyFor(runtime, cwd)
-    const sandbox = policy.sandboxPolicy.type === "readOnly" ? "read-only" : "workspace-write"
+    const policy = codexPolicyFor(runtime)
+    const sandbox = policy.permissions === "domovoi-read" ? "read-only" : "workspace-write"
     const result = await this.#request("thread/start", {
       cwd,
       model: runtime.model,
@@ -325,7 +356,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     prompt: string
     runtime: Runtime
   }): Promise<string> {
-    const policy = codexPolicyFor(runtime, cwd)
+    const policy = codexPolicyFor(runtime)
     const params = {
       threadId,
       input: [{ type: "text", text: prompt }],
