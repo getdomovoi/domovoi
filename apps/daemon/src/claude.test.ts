@@ -1,7 +1,9 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { resolve } from "node:path"
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -17,6 +19,10 @@ import {
   type ClaudeUserMessage,
 } from "./claude.js"
 import { providerTurnCompletion } from "./provider-failures.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+const scratchDirectories: string[] = []
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 class MessageStream implements AsyncIterable<ClaudeSdkMessage> {
   #messages: ClaudeSdkMessage[] = []
@@ -1036,5 +1042,107 @@ describe("changing the mode on a live session", () => {
     await expect(
       adapter.startTurn({ threadId, cwd: "/worktree", prompt: "retry", runtime: runtime("build") }),
     ).resolves.toBeTruthy()
+  })
+})
+
+describe("reads Claude would approve before Domovoi sees them", () => {
+  async function session(mode: Runtime["permissionMode"]) {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-claude-reads-")))
+    scratchDirectories.push(scratch)
+    const worktree = join(scratch, "worktree")
+    await mkdir(join(worktree, "src"), { recursive: true })
+    await writeFile(join(worktree, "src", "index.ts"), "export {}\n")
+    await writeFile(join(scratch, "credentials"), "secret\n")
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime(mode) })
+    const options = calls[0]!.options
+    const hook = options.hooks?.PreToolUse?.[0]?.hooks[0]
+    const screen = (toolName: string, toolInput: Record<string, unknown>, toolUseId = "tool-1") => {
+      if (!hook) throw new Error("No PreToolUse hook registered")
+      return hook({
+        hook_event_name: "PreToolUse",
+        cwd: worktree,
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_use_id: toolUseId,
+      }, toolUseId, { signal: new AbortController().signal })
+    }
+    return { adapter, events, options, scratch, screen, threadId, worktree }
+  }
+
+  it.each([
+    ["Bash", (scratch: string) => ({ command: `cat ${join(scratch, "credentials")}` })],
+    ["Bash", () => ({ command: "cat ~/.aws/credentials" })],
+    ["Bash", () => ({ command: "grep -r AKIA ../" })],
+    ["Bash", () => ({ command: "echo $HOME" })],
+    ["Bash", () => ({ command: "cd && cat .gitconfig" })],
+    ["Read", (scratch: string) => ({ file_path: join(scratch, "credentials") })],
+    ["Grep", (scratch: string) => ({ pattern: "secret", path: scratch })],
+    ["Glob", () => ({ pattern: "../**/*.pem" })],
+  ] as const)("sends a %s read outside the worktree to an approval in Build", async (toolName, input) => {
+    const { adapter, events, options, scratch, screen } = await session("build")
+    const toolInput = input(scratch)
+
+    await expect(screen(toolName, toolInput)).resolves.toMatchObject({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" },
+    })
+    const approval = options.canUseTool!(toolName, toolInput, {
+      signal: new AbortController().signal,
+      toolUseID: "tool-1",
+      requestId: "claude-request-1",
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested",
+      itemId: "tool-1",
+      reason: expect.stringContaining("outside the session worktree"),
+    })))
+    adapter.resolveApproval(1, "deny")
+    await expect(approval).resolves.toMatchObject({ behavior: "deny" })
+    await adapter.close()
+  })
+
+  it("sends a read-only command that names a secret to an approval even inside the worktree", async () => {
+    const { adapter, screen } = await session("build")
+
+    await expect(screen("Bash", { command: "git show HEAD:.env" })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
+    await expect(screen("Read", { file_path: ".env" })).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "ask" },
+    })
+    await adapter.close()
+  })
+
+  it.each([
+    ["Bash", { command: "ls -la src 2>/dev/null" }],
+    ["Bash", { command: "git status --short" }],
+    ["Bash", { command: "cd src && cat index.ts" }],
+    ["Read", { file_path: "src/index.ts" }],
+    ["Grep", { pattern: "export", path: "src" }],
+    ["Glob", { pattern: "**/*.ts" }],
+    ["Edit", { file_path: "/elsewhere/file.ts" }],
+  ] as const)("leaves %s to Claude when it reads only inside the worktree or is not a read", async (toolName, toolInput) => {
+    const { adapter, screen } = await session("build")
+
+    await expect(screen(toolName, toolInput)).resolves.toEqual({})
+    await adapter.close()
+  })
+
+  it("refuses a read outside the worktree in Ask, which has no approvals", async () => {
+    const { adapter, events, screen, threadId } = await session("ask")
+
+    await expect(screen("Bash", { command: "cat ~/.ssh/id_ed25519" }, "tool-ask")).resolves.toMatchObject({
+      hookSpecificOutput: { permissionDecision: "deny" },
+    })
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "policy-refused",
+      threadId,
+      itemId: "tool-ask",
+      command: "cat ~/.ssh/id_ed25519",
+    }))
+    await adapter.close()
   })
 })
