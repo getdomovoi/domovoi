@@ -657,6 +657,7 @@ export function App() {
         <SafeAreaView edges={["top", "left", "right", "bottom"]} className="flex-1 bg-background">
           <TabletShell
             snapshot={snapshot}
+            notice={notice}
             selectedSessionId={openSessionId ?? snapshot.activeSessionId ?? undefined}
             draft={draft}
             access={clientAccess}
@@ -685,7 +686,7 @@ export function App() {
               setOpenApprovalId(approvalId)
               setExplaining(true)
             }}
-            onPostReview={(artifactId, body) => void commentOnElement(artifactId, { cssSelector: "body" }, body)}
+            onPostReview={(artifactId, body) => commentOnElement(artifactId, { cssSelector: "body" }, body)}
           />
           <FreshSessionSheet
             open={freshOpen}

@@ -10,7 +10,12 @@ const metrics: Metrics = {
   insets: { top: 24, left: 0, right: 0, bottom: 20 },
 }
 
-async function draw(risk?: "normal" | "hard-gate", access: "full" | "watching" = "full", adjust?: (snapshot: WorkspaceSnapshot) => void) {
+async function draw(
+  risk?: "normal" | "hard-gate",
+  access: "full" | "watching" = "full",
+  adjust?: (snapshot: WorkspaceSnapshot) => void,
+  extra: { notice?: { tone: "warning" | "destructive", headline: string, detail: string }, onPostReview?: (artifactId: string, body: string) => Promise<void> } = {},
+) {
   const snapshot = structuredClone(demoWorkspace)
   const approval = snapshot.approvals[0]
   if (!approval) throw new Error("fixture needs an approval")
@@ -34,7 +39,8 @@ async function draw(risk?: "normal" | "hard-gate", access: "full" | "watching" =
     onSend: jest.fn<(sessionId: string) => void>(),
     onResolve: jest.fn<(approvalId: string, decision: "allow-once" | "always-project" | "deny") => void>(),
     onDenyExplain: jest.fn<(approvalId: string) => void>(),
-    onPostReview: jest.fn<(artifactId: string, body: string) => void>(),
+    onPostReview: extra.onPostReview ?? jest.fn<(artifactId: string, body: string) => Promise<void>>(async () => {}),
+    ...(extra.notice ? { notice: extra.notice } : {}),
   }
   await render(
     <SafeAreaProvider initialMetrics={metrics}>
@@ -175,4 +181,37 @@ describe("TabletShell", () => {
     expect(screen.getByText(refusal.scope)).toBeOnTheScreen()
     expect(screen.getByText(refusal.remedy)).toBeOnTheScreen()
   })
+
+  it("shows the connection notice, so a tablet hears when the daemon sent something it could not read", async () => {
+    await draw("normal", "full", undefined, { notice: {
+      tone: "warning",
+      headline: "This app is out of date with the daemon",
+      detail: "The daemon sent a workspace.changed notification this app could not read, so what is on screen may be missing a change. Update the app.",
+    } })
+
+    expect(screen.getByText("This app is out of date with the daemon")).toBeOnTheScreen()
+  })
+
+  it("offers a watching tablet no review controls and says who can post one", async () => {
+    await draw("normal", "watching")
+    await fireEvent.press(screen.getByRole("button", { name: /Open review sheet/ }))
+    await fireEvent.press(screen.getByRole("button", { name: "Review" }))
+
+    expect(screen.queryByPlaceholderText("Say what is wrong with this element")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Post" })).toBeNull()
+    expect(screen.getByText("Watching only. A device paired with full access can post a review.")).toBeOnTheScreen()
+  })
+
+  it("keeps a review draft and says why when posting it fails", async () => {
+    const onPostReview = jest.fn<(artifactId: string, body: string) => Promise<void>>(async () => { throw new Error("The daemon connection is not open") })
+    await draw("normal", "full", undefined, { onPostReview })
+    await fireEvent.press(screen.getByRole("button", { name: /Open review sheet/ }))
+    await fireEvent.press(screen.getByRole("button", { name: "Review" }))
+    await fireEvent.changeText(screen.getByPlaceholderText("Say what is wrong with this element"), "The retry window is too long")
+    await fireEvent.press(screen.getByRole("button", { name: "Post" }))
+
+    expect(await screen.findByText("Not posted: The daemon connection is not open")).toBeOnTheScreen()
+    expect(screen.getByDisplayValue("The retry window is too long")).toBeOnTheScreen()
+  })
 })
+
