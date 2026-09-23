@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -64,6 +64,38 @@ describe("committedCodexSecretPaths", () => {
 
     await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 3 })).resolves.toBeUndefined()
     await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 4 })).resolves.toEqual([".env", ".env.local", "server.pem"])
+  })
+
+  it("does not scan a repository whose Git settings could run a program, and reports that it could not finish", async () => {
+    const { root, run } = await repository()
+    await writeFile(join(root, ".env"), "x\n")
+    await run("add", ".")
+    await run("commit", "-qm", "x")
+    await expect(committedCodexSecretPaths(root)).resolves.toEqual([".env"])
+    await run("config", "core.fsmonitor", join(root, "helper"))
+
+    await expect(committedCodexSecretPaths(root)).resolves.toBeUndefined()
+  })
+
+  it("does not scan a partial clone, where git log could fetch through the remote's programs", async () => {
+    const server = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-secrets-server-")))
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-secrets-partial-")))
+    scratchDirectories.push(server, parent)
+    const g = (cwd: string, ...args: string[]) => git("git", ["-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", ...args])
+    await g(server, "init", "-q")
+    await g(server, "config", "uploadpack.allowFilter", "true")
+    await mkdir(join(server, "d"))
+    await writeFile(join(server, "d", ".env"), "x\n")
+    await g(server, "add", "d/.env")
+    await g(server, "commit", "-qm", "x")
+    await g(parent, "clone", "-q", "--no-checkout", "--filter=tree:0", `file://${server}`, "clone")
+    const marker = join(parent, "uploadpack-ran")
+    await writeFile(join(parent, "up"), `#!/bin/sh\necho ran >> "${marker}"\nexec git-upload-pack "$@"\n`)
+    await chmod(join(parent, "up"), 0o755)
+    await g(join(parent, "clone"), "config", "remote.origin.uploadpack", join(parent, "up"))
+
+    await expect(committedCodexSecretPaths(join(parent, "clone"))).resolves.toBeUndefined()
+    await expect(access(marker)).rejects.toThrow()
   })
 
   it("bounds the scan", () => {
