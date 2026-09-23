@@ -1541,15 +1541,7 @@
         "Revert this file",
         "Keep it",
         "Open in editor"
-      ],
-      "presence": [
-        "session-evidence",
-        "Revert this file"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "evidence per file and revert exist; the header, the keep/revert ask and the dock-local editor action are not the design's"
-      }
+      ]
     },
     {
       "id": "dock.commits",
@@ -1833,6 +1825,11 @@
       "id": "dock.checkpoint-take",
       "since": "2026-09-23",
       "note": "The design lets a checkpoint be asked for mid-turn and taken at the next tool boundary. The daemon refuses a checkpoint while a turn runs, so the button is disabled with that reason instead."
+    },
+    {
+      "id": "dock.changes",
+      "since": "2026-09-23",
+      "note": "Copy and actions match; the arrangement does not. The design folds each file's runs, diff and revert ask into its row, and asks inline; the implementation keeps a separate worktree diff and observed runs below the list and asks in a dialog. Read against the design."
     }
   ],
   "annotations": [
