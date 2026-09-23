@@ -74,6 +74,29 @@ describe("SqliteWorkspaceStore", () => {
     }
   })
 
+  it("keeps a daemon's 0.8 state across the 0.9 bump", async () => {
+    // 0.9 adds only optional fields, so stored 0.8 state loads as it is.
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-minor-migration-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seeded = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    await seeded.close()
+    const old = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    old.protocolVersion = "0.8.0"
+    ;(old.sessions as Array<{ title: string }>)[0]!.title = "Kept across the 0.9 bump"
+    const database = new DatabaseSync(databasePath)
+    database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(old))
+    database.close()
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    try {
+      const loaded = reopened.load()
+      expect(loaded.protocolVersion).toBe(protocolVersion)
+      expect(loaded.sessions[0]!.title).toBe("Kept across the 0.9 bump")
+    } finally {
+      await reopened.close()
+    }
+  })
+
   it("reopens persisted minute-precision state and pairing timestamps without quarantine", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-timestamp-compat-"))
     scratchDirectories.push(scratch)
