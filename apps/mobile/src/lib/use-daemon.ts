@@ -12,12 +12,14 @@ import {
 import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { openRelayPinStore } from "./credentials"
 import { DaemonConnection, DaemonNotSentError, type DaemonStatus } from "./daemon"
+import type { HandheldClient } from "./protocol-facts"
 import { reconcileRelayPin } from "./relay-pin"
 import { retryDelayMs } from "./reconnect"
 
 export function useDaemon(
   url: string | undefined,
   token: string | undefined,
+  client: HandheldClient,
   // Where a pushed fleet goes. Held in a ref so the connection is not torn down
   // and rebuilt every time the caller renders a new closure.
   onFleet: (entries: FleetEntry[]) => void,
@@ -60,7 +62,7 @@ export function useDaemon(
       // A connection this one replaced can still deliver a late frame or its
       // close. Only the current one speaks for the screen.
       const current = () => connection.current === daemon
-      const daemon: DaemonConnection = new DaemonConnection(url, token, {
+      const daemon: DaemonConnection = new DaemonConnection(url, token, client, {
         onSnapshot: (next) => {
           if (!current()) return
           // A greeting that answers is the only proof the connection works, so
@@ -153,7 +155,7 @@ export function useDaemon(
       connection.current?.close()
       connection.current = undefined
     }
-  }, [token, url])
+  }, [client, token, url])
 
   const call = useCallback((method: string, params: unknown) => {
     const daemon = connection.current

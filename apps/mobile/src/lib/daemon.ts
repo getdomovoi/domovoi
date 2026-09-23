@@ -9,7 +9,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import { clientKind, clientVersion, protocolVersionForClient } from "./protocol-facts"
+import { clientVersion, protocolVersionForClient, type HandheldClient } from "./protocol-facts"
 import { DaemonTimeoutError, requestTimeoutMs } from "./request-timeout"
 
 type Pending = {
@@ -73,6 +73,7 @@ export class DaemonConnection {
   constructor(
     private readonly url: string,
     private readonly token: string,
+    private readonly client: HandheldClient,
     private readonly handlers: {
       onSnapshot: (snapshot: WorkspaceSnapshot) => void
       // Only after the daemon accepted this connection's token. A snapshot
@@ -105,8 +106,8 @@ export class DaemonConnection {
 
     socket.onopen = () => {
       void this.call("system.hello", {
-        client: clientKind,
-        clientId: `phone-${Math.random().toString(16).slice(2, 10)}`,
+        client: this.client,
+        clientId: `${this.client}-${Math.random().toString(16).slice(2, 10)}`,
         clientVersion,
         protocolVersion: protocolVersionForClient,
         authToken: this.token,

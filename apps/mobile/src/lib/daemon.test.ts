@@ -37,7 +37,7 @@ function connection(handlers: {
   onError?: (cause: unknown) => void
   onProtocolError?: (reason: string) => void
 } = {}) {
-  return new DaemonConnection("ws://desk:8787", "token", {
+  return new DaemonConnection("ws://desk:8787", "token", "phone", {
     onSnapshot: handlers.onSnapshot ?? (() => {}),
     ...(handlers.onHello ? { onHello: handlers.onHello } : {}),
     onDelta: handlers.onDelta ?? (() => {}),
@@ -64,6 +64,22 @@ describe("DaemonConnection.call", () => {
       socket.onopen?.()
       expect(JSON.parse(send.mock.calls[0]?.[0] as string)).toMatchObject({
         method: "system.hello", params: { client: "phone", clientVersion: "9.8.7-test" },
+      })
+    } finally { daemon.close() }
+  })
+
+  it("greets as the kind the credential was paired as", () => {
+    const send = vi.fn()
+    const socket = withSocket(send)
+    const daemon = new DaemonConnection("ws://desk:8787", "token", "tablet", {
+      onSnapshot: () => {}, onDelta: () => {}, onFleet: () => {}, onStatus: () => {},
+      onError: () => {}, onProtocolError: () => {}, onClosed: () => {},
+    })
+    daemon.connect()
+    try {
+      socket.onopen?.()
+      expect(JSON.parse(send.mock.calls[0]?.[0] as string)).toMatchObject({
+        method: "system.hello", params: { client: "tablet" },
       })
     } finally { daemon.close() }
   })

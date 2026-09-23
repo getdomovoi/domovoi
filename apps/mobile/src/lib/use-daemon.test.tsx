@@ -71,7 +71,7 @@ async function flush() {
 
 describe("useDaemon", () => {
   it("keeps one connection when the app wakes while a dial is still connecting", async () => {
-    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", () => {}))
+    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", "phone", () => {}))
     expect(FakeSocket.made).toHaveLength(1)
 
     await act(async () => { appStateListener?.("active") })
@@ -88,7 +88,7 @@ describe("useDaemon", () => {
   })
 
   it("ignores a replaced connection, so its close cannot turn the live one into watching", async () => {
-    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", () => {}))
+    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", "phone", () => {}))
     const first = FakeSocket.made[0]!
     await act(async () => { first.open() })
     await act(async () => { first.answerHello({ ...demoWorkspace, clientAccess: "full" }) })

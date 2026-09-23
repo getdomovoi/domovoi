@@ -1,6 +1,16 @@
-import { deviceLabelSchema, devicePairResultSchema, rpcResponseSchema, type PairingPayload } from "@getdomovoi/protocol"
+import {
+  daemonAuthenticationErrorCode,
+  devicePairingLimitErrorCode,
+  deviceLabelSchema,
+  devicePairResultSchema,
+  protocolMismatchSchema,
+  protocolVersionMismatchErrorCode,
+  rpcResponseSchema,
+  type ClientKind,
+  type PairingPayload,
+} from "@getdomovoi/protocol"
 
-import { protocolVersionForClient } from "./protocol-facts"
+import { protocolVersionForClient, type HandheldClient } from "./protocol-facts"
 
 // Spending a pairing code is one call on a socket that holds no credential
 // yet, so it does not go through DaemonConnection: there is nothing to
@@ -8,7 +18,32 @@ import { protocolVersionForClient } from "./protocol-facts"
 // The code is spent whether or not this reply arrives, so a failure here means
 // scanning a fresh code rather than retrying this one.
 
-export type PairedCredential = { url: string; token: string }
+export type PairedCredential = { url: string; token: string; client: HandheldClient }
+
+const otherKinds: Record<Exclude<ClientKind, HandheldClient>, string> = {
+  desktop: "a desktop",
+  web: "a web browser",
+  cli: "the command line",
+}
+
+function refusal(error: { code: number, message: string, data?: unknown }): string {
+  if (error.code === protocolVersionMismatchErrorCode) {
+    const mismatch = protocolMismatchSchema.safeParse(error.data)
+    const versions = mismatch.success
+      ? `This app speaks protocol ${mismatch.data.clientProtocolVersion}; the machine speaks protocol ${mismatch.data.daemonProtocolVersion}`
+      : error.message
+    return `${versions}. Update whichever of the two is older. The code was not used, so it still works until it expires.`
+  }
+  if (error.code === devicePairingLimitErrorCode) {
+    return "The machine has too many paired devices. Revoke one on the machine, then show a fresh code and scan again."
+  }
+  // The daemon refuses every bad code the same way on purpose, so this
+  // says what to do rather than guessing which part was wrong.
+  if (error.code === daemonAuthenticationErrorCode) {
+    return "The machine would not take this code. It may already have been used. Show a fresh one and scan again."
+  }
+  return `The machine refused pairing: ${error.message}`
+}
 
 
 const redeemDeadlineMs = 10_000
@@ -75,10 +110,9 @@ export function redeemPairingCode(
       const reply = rpcResponseSchema.safeParse(received)
       if (!reply.success) return
       const message = reply.data
-      if ("error" in message) {
-        // The daemon refuses every bad code the same way on purpose, so this
-        // says what to do rather than guessing which part was wrong.
-        settle(() => reject(new PairingRefusedError("The machine would not take this code. It may already have been used. Show a fresh one and scan again.")))
+      if (message.error) {
+        const { error } = message
+        settle(() => reject(new PairingRefusedError(refusal(error))))
         return
       }
       const parsed = devicePairResultSchema.safeParse("result" in message ? message.result : undefined)
@@ -86,7 +120,21 @@ export function redeemPairingCode(
         settle(() => reject(new PairingRefusedError("The machine answered with something this phone could not read.")))
         return
       }
-      settle(() => resolve({ url: payload.url, token: parsed.data.token }))
+      // The code decides the kind, and the daemon refuses a greeting that names
+      // another. A credential this app could never greet with is not kept.
+      const binding = parsed.data.device.binding
+      if (binding.kind !== "client") {
+        settle(() => reject(new PairingRefusedError("This code did not pair a device this app can use. Show a code for a phone or tablet.")))
+        return
+      }
+      const client = binding.client
+      if (client !== "phone" && client !== "tablet") {
+        settle(() => reject(new PairingRefusedError(
+          `This code was issued for ${otherKinds[client]}, so this app did not keep it. Revoke "${parsed.data.device.label}" on the machine, then show a code for a phone or tablet.`,
+        )))
+        return
+      }
+      settle(() => resolve({ url: payload.url, token: parsed.data.token, client }))
     }
     // A socket that fails says "could not reach" for a name that will not
     // resolve, a route that is blocked and a certificate that was rejected

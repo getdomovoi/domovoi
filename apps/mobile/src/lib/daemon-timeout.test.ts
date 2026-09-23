@@ -37,7 +37,7 @@ const handlers = {
 }
 
 function connect(): DaemonConnection {
-  const daemon = new DaemonConnection("ws://daemon/rpc", "t".repeat(43), handlers)
+  const daemon = new DaemonConnection("ws://daemon/rpc", "t".repeat(43), "phone", handlers)
   daemon.connect()
   return daemon
 }
