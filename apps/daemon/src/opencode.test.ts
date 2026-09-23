@@ -867,6 +867,79 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  it("refuses a child's pending approval when its thread is stopped, so a later answer sends nothing", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId } } })
+    stream.emit(askFrom("ses_child", "per_child"))
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "approval-requested", requestId: 1 })))
+
+    await adapter.stopThread(threadId)
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
+    ))
+    adapter.resolveApproval(1, "allow-once")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
+      expect.objectContaining({ body: { response: "once" } }),
+    )
+    await adapter.close()
+  })
+
+  it("fails the turn and unloads the thread when the provider deletes its session", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    stream.emit({ type: "session.deleted", properties: { info: { id: threadId } } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turn: expect.objectContaining({ status: "failed", error: "OpenCode deleted the session" }) }),
+    })))
+    await expect(adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Again", runtime: runtime("build") }))
+      .rejects.toThrow("is not loaded")
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
+  it("drops a deleted child's pending and failed refusals instead of retrying them every turn", async () => {
+    const { adapter, client, stream, threadId } = await childAskedInFirstTurn((client) => {
+      client.postSessionIdPermissionsPermissionId.mockRejectedValueOnce(new Error("provider busy"))
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1))
+
+    stream.emit({ type: "session.deleted", properties: { info: { id: "ses_child", parentID: threadId } } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    adapter.resolveApproval(1, "allow-once")
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
+  it("adopts an unknown session only on session.created, never on session.updated", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+    stream.emit({ type: "session.updated", properties: { sessionID: "ses_evicted", info: { id: "ses_evicted", parentID: threadId } } })
+    stream.emit(askFrom("ses_evicted", "per_evicted"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(events.filter((event) => event.type === "approval-requested")).toEqual([])
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
   it("forgets a deleted child without ever adopting it again", async () => {
     const { client, factory, stream } = harness()
     const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")

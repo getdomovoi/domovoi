@@ -501,6 +501,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const session of this.#sessions.values()) {
       if (session.cwd !== cwd) continue
       this.#complete(session, "failed", reason)
+      this.#refusePendingFor(session.threadId)
       this.#forgetSubagents(session.threadId)
       this.#sessions.delete(session.threadId)
     }
@@ -514,7 +515,29 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
   }
 
+  // An unloaded thread's approvals cannot be answered any more: refuse what is
+  // still pending on the provider and forget it, so a later card answer sends
+  // nothing to a session that is gone.
+  #refusePendingFor(threadId: string): void {
+    for (const [requestId, pending] of this.#pendingApprovals) {
+      if (pending.providerSessionId !== threadId && pending.subagentTurn?.threadId !== threadId) continue
+      this.#pendingApprovals.delete(requestId)
+      this.#respond(pending, "reject", requestId)
+    }
+  }
+
+  // A deleted provider session cannot take an answer: drop what waits on it.
+  #forgetProviderSession(sessionId: string): void {
+    for (const [requestId, pending] of this.#pendingApprovals) {
+      if (pending.providerSessionId === sessionId) this.#pendingApprovals.delete(requestId)
+    }
+    for (const [requestId, pending] of this.#failedRefusals) {
+      if (pending.providerSessionId === sessionId) this.#failedRefusals.delete(requestId)
+    }
+  }
+
   #unloadSession(session: Session): void {
+    this.#refusePendingFor(session.threadId)
     this.#forgetSubagents(session.threadId)
     this.#sessions.delete(session.threadId)
     const directory = this.#directories.get(session.cwd)
@@ -581,10 +604,22 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // Kilo also streams events with no properties at all, such as `sync`.
     const properties = asRecord(event.properties)
     if (!properties) return
-    if (event.type === "session.created" || event.type === "session.updated") this.#adoptSubagent(cwd, properties)
+    // Only session.created adopts an unknown session: a session.updated for an
+    // id nothing remembers (a deleted one whose tombstone aged out) is stale.
+    if (event.type === "session.created") this.#adoptSubagent(cwd, properties)
     if (event.type === "session.deleted") {
       const deleted = asRecord(properties.info)?.id
-      if (typeof deleted === "string") this.#subagents.delete(deleted)
+      if (typeof deleted !== "string") return
+      const root = this.#sessions.get(deleted)
+      if (root && root.cwd === cwd) {
+        // The provider removed the thread itself; nothing can be sent to it.
+        this.#complete(root, "failed", `${this.#identity.providerName} deleted the session`)
+        this.#forgetProviderSession(deleted)
+        this.#unloadSession(root)
+        return
+      }
+      this.#forgetProviderSession(deleted)
+      this.#subagents.delete(deleted)
       return
     }
     const sessionId = eventSessionId(properties)
