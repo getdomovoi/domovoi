@@ -1501,11 +1501,7 @@
       ],
       "evidence": [
         "Take checkpoint"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "checkpoint.create is reachable from the palette only; the tab has no take action"
-      }
+      ]
     },
     {
       "id": "dock.rules",
@@ -1832,6 +1828,11 @@
       "id": "palette",
       "since": "2026-09-23",
       "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "dock.checkpoint-take",
+      "since": "2026-09-23",
+      "note": "The design lets a checkpoint be asked for mid-turn and taken at the next tool boundary. The daemon refuses a checkpoint while a turn runs, so the button is disabled with that reason instead."
     }
   ],
   "annotations": [

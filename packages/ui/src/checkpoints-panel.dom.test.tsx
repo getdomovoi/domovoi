@@ -182,3 +182,45 @@ it("names the newest checkpoint item the snapshot holds for the session", async 
   expect(latestCheckpointRevision(snapshot, "session-none")).toBeUndefined()
   expect(latestCheckpointRevision(snapshot, null)).toBeUndefined()
 })
+
+// v2 puts Take a checkpoint at the head of the tab, with an optional label and
+// a note saying what it commits, so the person does not go to the palette for it.
+it("takes a labelled checkpoint from the head of the tab", async () => {
+  const user = userEvent.setup()
+  const onTakeCheckpoint = vi.fn(async () => {})
+  render(panel(vi.fn(async () => page()), { onTakeCheckpoint }))
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Take a checkpoint" }))
+  expect(screen.getByText("Optional label. It commits the worktree as it is now, on the session branch, and reverts like the others.")).toBeTruthy()
+  await user.type(screen.getByRole("textbox", { name: "Checkpoint label" }), "Before I shorten the claim expiry")
+  await user.click(screen.getByRole("button", { name: "Take checkpoint" }))
+  expect(onTakeCheckpoint).toHaveBeenCalledWith("Before I shorten the claim expiry")
+  await settle()
+  expect(screen.queryByRole("textbox", { name: "Checkpoint label" })).toBeNull()
+})
+
+it("takes an unlabelled checkpoint and keeps the form open when the daemon refuses", async () => {
+  const user = userEvent.setup()
+  const onTakeCheckpoint = vi.fn(async () => { throw new Error("The worktree is busy") })
+  render(panel(vi.fn(async () => page()), { onTakeCheckpoint }))
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Take a checkpoint" }))
+  await user.click(screen.getByRole("button", { name: "Take checkpoint" }))
+  expect(onTakeCheckpoint).toHaveBeenCalledWith(undefined)
+  expect((await screen.findByRole("alert")).textContent).toContain("The worktree is busy")
+  expect(screen.getByRole("textbox", { name: "Checkpoint label" })).toBeTruthy()
+})
+
+it("says why a checkpoint cannot be taken while a turn runs", async () => {
+  render(panel(vi.fn(async () => page()), { onTakeCheckpoint: vi.fn(), takeBlockedReason: "Stop the active turn before creating a checkpoint" }))
+  await settle()
+  const take = screen.getByRole("button", { name: "Take a checkpoint" })
+  expect(take.hasAttribute("disabled")).toBe(true)
+  expect(screen.getByText("Stop the active turn before creating a checkpoint")).toBeTruthy()
+})
+
+it("offers no checkpoint to a client that cannot take one", async () => {
+  render(panel(vi.fn(async () => page())))
+  await settle()
+  expect(screen.queryByRole("button", { name: "Take a checkpoint" })).toBeNull()
+})
