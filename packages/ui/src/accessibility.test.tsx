@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
-import { SessionsDrawer } from "./sessions-drawer"
+import { ComposedSessionsDrawer as SessionsDrawer } from "./test-support/sessions-drawer"
 import { demoWorkspace } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"

@@ -76,7 +76,6 @@ export const workspaceBudgets: DomovoiClientBudgets = {
   requestMs: 120_000,
 }
 export const pairingBudgetMs = 60_000
-export const machineDialBudgetMs = 45_000
 
 export type WorkspaceEndpointResolver = (deadline: Deadline) => Promise<DomovoiEndpoint>
 export type WorkspaceClientConnection = { state: "disabled" } | {

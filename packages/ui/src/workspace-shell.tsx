@@ -12,7 +12,6 @@ import type {
   ClientKind,
   PermissionMode,
   ProjectSwitchConfirmation,
-  Runtime,
   SkillSummary,
   SkillInventorySource,
   SessionUsage,
@@ -60,7 +59,6 @@ import { type ProviderSecretStatus } from "./provider-settings"
 import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
-import { withPermissionMode } from "./permission-mode"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { latestTurnFromHistory } from "./usage-chip.js"
 import {
@@ -170,8 +168,6 @@ export type WorkspaceShellProps = {
 
 
 
-export const providerSettingsNavigationLabel = "Provider settings"
-
 export function skillInventoryRefreshKey(snapshot: WorkspaceSnapshot | null): string {
   const machine = snapshot?.machine
   return machine
@@ -190,10 +186,6 @@ export function skillProjectRefreshKey(snapshot: WorkspaceSnapshot | null): stri
 
 
 export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type ProviderChoice } from "./provider-choice-dialog.js"
-
-export function normalizePermissionMode(runtime: Runtime, permissionMode: PermissionMode): Runtime {
-  return withPermissionMode(runtime, permissionMode)
-}
 
 export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
 
