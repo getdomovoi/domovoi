@@ -1484,24 +1484,7 @@ export class DomovoiDaemon {
       },
     )
     this.#snapshot = this.#store.load()
-    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
-      const queued = loaded.state === "releasing"
-        ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
-        : loaded
-      if (loaded.state === "releasing") {
-        this.#store.transitionQueuedSessionSend?.(
-          loaded.sessionId,
-          loaded.id,
-          ["releasing"],
-          "unconfirmed",
-          queued.reason,
-        )
-      }
-      if (this.#snapshot.sessions.some((session) => session.id === queued.sessionId)) {
-        this.#queuedSessionSends.set(queued.sessionId, queued)
-      }
-    }
-    this.#syncQueuedSendMetadata()
+    this.#loadQueuedSessionSends(true)
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
       // Picking either identity would silently reassign the ownership of every
       // stored session. Fail before providers or listeners can do any work.
@@ -2398,11 +2381,41 @@ export class DomovoiDaemon {
     }
   }
 
+  // Queued sends are stored for every project. Only the open project's
+  // sessions hold them in memory and in the snapshot. A release interrupted
+  // by a restart is unconfirmed; one still running during a project switch
+  // belongs to the project being left and is not loaded.
+  #loadQueuedSessionSends(afterRestart: boolean): void {
+    this.#queuedSessionSends.clear()
+    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+      if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
+      const queued = afterRestart && loaded.state === "releasing"
+        ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
+        : loaded
+      if (afterRestart && loaded.state === "releasing") {
+        this.#store.transitionQueuedSessionSend?.(
+          loaded.sessionId,
+          loaded.id,
+          ["releasing"],
+          "unconfirmed",
+          queued.reason,
+        )
+      }
+      if (this.#snapshot.sessions.some((session) => session.id === queued.sessionId)) {
+        this.#queuedSessionSends.set(queued.sessionId, queued)
+      }
+    }
+    this.#syncQueuedSendMetadata()
+  }
+
   #syncQueuedSendMetadata(): void {
     const durable = [...this.#queuedSessionSends.values()].map((queued) => this.#queuedSendMetadata(queued))
     const durableSessions = new Set(durable.map((queued) => queued.sessionId))
+    const sessions = new Set(this.#snapshot.sessions.map((session) => session.id))
     const delivered = (this.#snapshot.queuedSends ?? []).filter(
-      (queued) => queued.state === "delivered" && !durableSessions.has(queued.sessionId),
+      (queued) => queued.state === "delivered"
+        && !durableSessions.has(queued.sessionId)
+        && sessions.has(queued.sessionId),
     )
     this.#snapshot.queuedSends = [...durable, ...delivered]
       .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
@@ -6965,6 +6978,8 @@ export class DomovoiDaemon {
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
+          this.#snapshot.queuedSends = []
+          this.#loadQueuedSessionSends(false)
           this.#activeAssistantItems.clear()
           await this.#recoverSessionCreations()
           changed = true
