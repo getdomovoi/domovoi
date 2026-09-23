@@ -124,7 +124,7 @@ describe("queued sends across a project switch", () => {
     expect(errors).toEqual([])
   })
 
-  it("keeps a waiting queued send with its project across a switch", async () => {
+  it("holds a waiting queued send with its project across a switch", async () => {
     const { rpc, openProject, errors } = await fixture()
     await openProject("/code/one")
     const created = await rpc("session.create", { title: "One", runtime, client: "desktop" })
@@ -141,7 +141,7 @@ describe("queued sends across a project switch", () => {
 
     const back = await openProject("/code/one")
     expect(back.error).toBeUndefined()
-    expect(back.result?.queuedSends).toEqual([expect.objectContaining({ id: queueId, sessionId })])
+    expect(back.result?.queuedSends).toEqual([expect.objectContaining({ id: queueId, sessionId, state: "held" })])
     expect(errors).toEqual([])
   })
 })

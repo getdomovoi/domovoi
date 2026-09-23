@@ -9751,6 +9751,7 @@ export class DomovoiDaemon {
           }
         }
         delete session.activeTurnId
+        this.#holdQueuedSessionSend(session.id, "Switching projects interrupted the turn before the queued boundary.")
         if (session.state !== "archiving" && session.state !== "archived") {
           session.state = "idle"
         }
