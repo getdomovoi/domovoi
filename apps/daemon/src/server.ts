@@ -312,13 +312,14 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
-type CommandOutputRemainder = { itemId: string, remainder: string }
+type CommandOutputRemainder = { key: string, itemId: string, remainder: string }
 
 function appendCommandOutputRemainders(
   snapshot: WorkspaceSnapshot,
   remainders: readonly CommandOutputRemainder[],
 ): void {
   for (const { itemId, remainder } of remainders) {
+    if (!remainder) continue
     const item = snapshot.thread.find((candidate) => candidate.id === itemId)
     if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
   }
@@ -2450,15 +2451,22 @@ export class DomovoiDaemon {
   }
 
   #syncQueuedSendMetadata(): void {
-    const durable = [...this.#queuedSessionSends.values()].map((queued) => this.#queuedSendMetadata(queued))
+    this.#snapshot.queuedSends = this.#queuedSendsFor(this.#snapshot, this.#queuedSessionSends.values())
+  }
+
+  #queuedSendsFor(
+    snapshot: WorkspaceSnapshot,
+    queuedSends: Iterable<StoredQueuedSessionSend>,
+  ): QueuedSessionSend[] {
+    const durable = [...queuedSends].map((queued) => this.#queuedSendMetadata(queued))
     const durableSessions = new Set(durable.map((queued) => queued.sessionId))
-    const sessions = new Set(this.#snapshot.sessions.map((session) => session.id))
-    const delivered = (this.#snapshot.queuedSends ?? []).filter(
+    const sessions = new Set(snapshot.sessions.map((session) => session.id))
+    const delivered = (snapshot.queuedSends ?? []).filter(
       (queued) => queued.state === "delivered"
         && !durableSessions.has(queued.sessionId)
         && sessions.has(queued.sessionId),
     )
-    this.#snapshot.queuedSends = [...durable, ...delivered]
+    return [...durable, ...delivered]
       .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
   }
 
@@ -8641,7 +8649,14 @@ export class DomovoiDaemon {
       detail: redactDurableText(reason).value,
       createdAt,
     }))
-    const remainders = affected.flatMap((session) => this.#takeCommandOutputRemainders(session.id))
+    const remainders = affected.flatMap((session) => this.#peekCommandOutputStreams(session.id))
+    const holdReason = "The provider disconnected before the queued send could release."
+    const holds = failing.flatMap((session) => {
+      const queued = this.#queuedSessionSends.get(session.id)
+      return queued && (queued.state === "waiting" || queued.state === "releasing")
+        ? [{ ...queued, state: "held" as const, reason: holdReason }]
+        : []
+    })
     const heldByAffected = (approval: WorkspaceSnapshot["approvals"][number]) =>
       affectedSessionIds.has(approval.sessionId)
     const markDisconnected = (snapshot: WorkspaceSnapshot) => {
@@ -8668,10 +8683,16 @@ export class DomovoiDaemon {
       candidate.approvals = candidateApprovals.approvals
       candidate.workingPlans = candidateApprovals.workingPlans
     }
+    if (holds.length > 0) {
+      const candidateQueue = new Map(this.#queuedSessionSends)
+      for (const held of holds) candidateQueue.set(held.sessionId, held)
+      candidate.queuedSends = this.#queuedSendsFor(candidate, candidateQueue.values())
+    }
     workspaceSnapshotSchema.parse(candidate)
 
-    for (const session of failing) {
-      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    for (const held of holds) {
+      this.#transitionQueuedSessionSend(held.sessionId, held.id, ["waiting", "releasing"], "held", holdReason)
     }
     markDisconnected(this.#snapshot)
     this.#removeApprovals(heldByAffected, createdAt)
@@ -8706,19 +8727,16 @@ export class DomovoiDaemon {
   }
 
   #flushCommandOutputStreams(sessionId: string): void {
-    appendCommandOutputRemainders(this.#snapshot, this.#takeCommandOutputRemainders(sessionId))
+    const remainders = this.#peekCommandOutputStreams(sessionId)
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    appendCommandOutputRemainders(this.#snapshot, remainders)
   }
 
-  #takeCommandOutputRemainders(sessionId: string): CommandOutputRemainder[] {
+  #peekCommandOutputStreams(sessionId: string): CommandOutputRemainder[] {
     const prefix = `${sessionId}\u0000`
-    const remainders: CommandOutputRemainder[] = []
-    for (const [key, stream] of this.#commandOutputRedactors) {
-      if (!key.startsWith(prefix)) continue
-      const remainder = stream.redactor.flush()
-      this.#commandOutputRedactors.delete(key)
-      if (remainder) remainders.push({ itemId: stream.itemId, remainder })
-    }
-    return remainders
+    return [...this.#commandOutputRedactors]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, stream]) => ({ key, itemId: stream.itemId, remainder: stream.redactor.peek() }))
   }
 
   #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {

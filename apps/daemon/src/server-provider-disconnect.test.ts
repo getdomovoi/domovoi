@@ -284,4 +284,94 @@ describe("provider disconnect", () => {
     expect(live.thread).toEqual(before.thread)
     for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
   })
+  it("keeps buffered command output and the queued send when the disconnect cannot complete", async () => {
+    const snapshot = frozenWorkspace()
+    const session = snapshot.sessions[2]!
+    const approval = {
+      ...structuredClone(demoWorkspace.approvals[0]!),
+      id: "approval-ordinary",
+      sessionId: session.id,
+      providerRequestId: 41,
+    }
+    const saved: Array<typeof snapshot> = []
+    const store = {
+      load: () => snapshot,
+      save: (next: typeof snapshot) => { saved.push(structuredClone(next)) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const live = snapshot.sessions.find(({ id }) => id === session.id)!
+    live.state = "active"
+    live.activeTurnId = "turn-ordinary"
+    snapshot.approvals.push(approval)
+    snapshot.workingPlans.push({
+      sessionId: session.id,
+      revision: Number.MAX_SAFE_INTEGER,
+      structureRevision: 1,
+      steps: [{
+        id: "plan-step-ordinary",
+        text: "Wait for the approval",
+        status: "pending",
+        blocker: { kind: "approval", approvalId: approval.id },
+      }],
+      createdAt: "2026-09-03T18:00:00.000Z",
+      updatedAt: "2026-09-03T18:00:00.000Z",
+    })
+    workspaceSnapshotSchema.parse(snapshot)
+    const { socket } = await client(daemon, port)
+    await call(socket, "runtime.models", { provider: "codex", client: "desktop" })
+    emit({
+      type: "command-output",
+      threadId: session.providerThreadId!,
+      turnId: "turn-ordinary",
+      itemId: "command-ordinary",
+      delta: "partial line without a newline",
+    })
+    const queued = await call(socket, "session.send", {
+      sessionId: session.id,
+      prompt: "Run the checks next",
+      client: "desktop",
+      delivery: "next-turn-replace",
+    })
+    expect(queued.error).toBeUndefined()
+    const queuedBefore = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result).queuedSends ?? []
+    expect(queuedBefore.find(({ sessionId }) => sessionId === session.id)?.state).toBe("waiting")
+
+    emit({ type: "provider-disconnected", reason: "Codex app-server exited with code 1" })
+    const failed = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+    expect(failed.queuedSends ?? []).toEqual(queuedBefore)
+    expect(failed.sessions.find(({ id }) => id === session.id)?.state).toBe("active")
+
+    const plan = snapshot.workingPlans.find(({ sessionId }) => sessionId === session.id)!
+    plan.revision = 5
+    await call(socket, "runtime.models", { provider: "codex", client: "desktop" })
+    emit({ type: "provider-disconnected", reason: "Codex app-server exited with code 1" })
+
+    const after = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+    expect(after.sessions.find(({ id }) => id === session.id)?.state).toBe("failed")
+    expect(after.queuedSends?.find(({ sessionId }) => sessionId === session.id)?.state).toBe("held")
+    const tool = after.thread.find((item) => item.id === "tool-command-ordinary")
+    expect(tool).toMatchObject({ kind: "tool", output: expect.stringContaining("partial line without a newline") })
+    for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
+  })
 })
