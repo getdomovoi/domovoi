@@ -54,14 +54,14 @@ export function FloatingBar({
   // dropped one, because they sit over a scrolling wall of diff rather than
   // over a list and have to read as a separate plane.
   lifted?: boolean
-  bottomInset?: number
+  bottomInset?: number | undefined
   // A bar floats over the scroller, so the scroller has to be told how much of
   // its own bottom the bar is covering. This reports the drawn height plus the
   // gap under it; a screen that scrolls underneath must pad by at least that
   // much or its last row can never be read. The home indicator is not a bar
   // and is not part of this: three screens in the handoff float nothing and
   // reserve nothing.
-  onFootprint?: (footprint: number) => void
+  onFootprint?: ((footprint: number) => void) | undefined
 }) {
   const insets = useSafeAreaInsets()
   const window = useWindowDimensions()

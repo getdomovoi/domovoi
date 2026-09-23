@@ -455,7 +455,7 @@ export function SessionScreen({
   onWatchReceipt: () => void
   onCancelQueuedSend: (queueId: string) => void
   onComposerFocusChange: (focused: boolean) => void
-  composerBottomInset?: number
+  composerBottomInset?: number | undefined
   onOpenApproval: (approvalId: string) => void
   onOpenArtifact: (artifactId: string) => void
   onPause: () => void

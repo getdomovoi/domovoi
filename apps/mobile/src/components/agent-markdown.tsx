@@ -28,7 +28,7 @@ function Inline({ spans }: { spans: InlineSpan[] }) {
 export function AgentMarkdown({ body, className }: { body: string; className?: string }) {
   const blocks = parseAgentMarkdown(body)
   return (
-    <View className={className}>
+    <View className={className ?? ""}>
       {blocks.map((block, index) => {
         if (block.kind === "code") {
           return (
