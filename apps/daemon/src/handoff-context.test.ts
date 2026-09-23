@@ -42,6 +42,21 @@ describe("agentPromptWithHandoff", () => {
     expect(serialized!.length).toBeLessThanOrEqual(24_000)
   })
 
+  it("reports the test runs the session actually made before the handoff", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.thread = snapshot.thread.slice(0, 3)
+    const createdAt = "2026-08-29T11:00:00.000Z"
+    snapshot.thread.unshift(
+      { id: "tool-tests-passed", sessionId: "session-billing", kind: "tool", tool: "command", status: "completed", title: "pnpm test", output: "42 passed", createdAt },
+      { id: "tool-tests-failed", sessionId: "session-billing", kind: "tool", tool: "command", status: "failed", title: "pnpm vitest run", output: "1 failed", createdAt },
+      { id: "tool-build", sessionId: "session-billing", kind: "tool", tool: "command", status: "completed", title: "pnpm build", output: "built", createdAt },
+    )
+
+    const prompt = agentPromptWithHandoff(snapshot, "session-billing", "Continue")
+    const serialized = prompt.match(/<domovoi_handoff_context>\n([\s\S]+)\n<\/domovoi_handoff_context>/)?.[1]
+    expect(JSON.parse(serialized!).tests).toEqual({ passed: 1, failed: 1 })
+  })
+
   it("does not replay handoff state after the new provider responds", () => {
     expect(agentPromptWithHandoff(
       structuredClone(demoWorkspace),
