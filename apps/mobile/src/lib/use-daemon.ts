@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { AppState } from "react-native"
 import {
   applyWorkspaceDelta,
+  daemonAuthenticationErrorCode,
   type ClientAccess,
   type FleetEntry,
   type WorkspaceDelta,
@@ -10,7 +11,7 @@ import {
 
 import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { openRelayPinStore } from "./credentials"
-import { DaemonConnection, DaemonNotSentError, type DaemonCall, type DaemonStatus } from "./daemon"
+import { DaemonConnection, DaemonError, DaemonNotSentError, type DaemonCall, type DaemonStatus } from "./daemon"
 import type { HandheldClient } from "./protocol-facts"
 import { reconcileRelayPin } from "./relay-pin"
 import { retryDelayMs } from "./reconnect"
@@ -18,10 +19,14 @@ import { retryDelayMs } from "./reconnect"
 export function useDaemon(
   url: string | undefined,
   token: string | undefined,
-  client: HandheldClient,
+  // Undefined for a credential whose kind was never stored: one paired before
+  // the app kept it, or a token typed into Settings.
+  client: HandheldClient | undefined,
   // Where a pushed fleet goes. Held in a ref so the connection is not torn down
   // and rebuilt every time the caller renders a new closure.
   onFleet: (entries: FleetEntry[]) => void,
+  // Told the kind the daemon accepted for a credential of unknown kind, once.
+  onKindLearned?: (kind: HandheldClient) => void,
 ) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | undefined>(undefined)
   const [status, setStatus] = useState<DaemonStatus>("closed")
@@ -44,6 +49,10 @@ export function useDaemon(
   const reopen = useRef<(() => void) | undefined>(undefined)
   const fleetSink = useRef(onFleet)
   fleetSink.current = onFleet
+  const kindSink = useRef(onKindLearned)
+  kindSink.current = onKindLearned
+  // The kind the connection greets as, which every call must name.
+  const [greetedAs, setGreetedAs] = useState<HandheldClient>(client ?? "phone")
 
   useEffect(() => {
     if (!url || !token) {
@@ -54,6 +63,12 @@ export function useDaemon(
     attempt.current = 0
     givenUp.current = false
     setFault(undefined)
+    // A credential of unknown kind greets as a phone first. A tablet code
+    // spent before the app kept the kind is refused that way, so it gets one
+    // try as a tablet before the refusal is shown.
+    let kind: HandheldClient = client ?? "phone"
+    let guessing = client === undefined
+    setGreetedAs(kind)
 
     const open = () => {
       if (!live || givenUp.current) return
@@ -61,7 +76,7 @@ export function useDaemon(
       // A connection this one replaced can still deliver a late frame or its
       // close. Only the current one speaks for the screen.
       const current = () => connection.current === daemon
-      const daemon: DaemonConnection = new DaemonConnection(url, token, client, {
+      const daemon: DaemonConnection = new DaemonConnection(url, token, kind, {
         onSnapshot: (next) => {
           if (!current()) return
           // A greeting that answers is the only proof the connection works, so
@@ -76,6 +91,10 @@ export function useDaemon(
         // decides the connection.
         onHello: (next) => {
           if (!current()) return
+          if (guessing) {
+            guessing = false
+            kindSink.current?.(kind)
+          }
           setProtocolProblem(undefined)
           setImageAttachments(next.sessionImageAttachments === true)
           setClientAccess(next.clientAccess ?? "full")
@@ -105,6 +124,13 @@ export function useDaemon(
         },
         onError: (cause) => {
           if (!current()) return
+          if (guessing && kind === "phone" && cause instanceof DaemonError && cause.code === daemonAuthenticationErrorCode) {
+            kind = "tablet"
+            setGreetedAs(kind)
+            if (timer.current) clearTimeout(timer.current)
+            timer.current = setTimeout(open, 0)
+            return
+          }
           const next = connectionFault(cause)
           setFault(next)
           if (!next.retriable) givenUp.current = true
@@ -175,5 +201,5 @@ export function useDaemon(
   // still wrong however many times it is asked.
   const reconnect = useCallback(() => reopen.current?.(), [])
 
-  return { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess }
+  return { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess, client: greetedAs }
 }
