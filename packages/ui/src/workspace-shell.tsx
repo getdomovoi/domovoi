@@ -12,7 +12,6 @@ import type {
   ClientKind,
   PermissionMode,
   ProjectSwitchConfirmation,
-  Runtime,
   SkillSummary,
   SkillInventorySource,
   SessionUsage,
@@ -53,14 +52,11 @@ import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
-import { SkillBrowser } from "./skill-browser"
-import { AuditLogView } from "./audit-log-view"
-import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
-import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
+import type { LocalDaemonDescription } from "./settings-shell"
+import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
-import { withPermissionMode } from "./permission-mode"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { latestTurnFromHistory } from "./usage-chip.js"
 import {
@@ -153,6 +149,19 @@ const watchingMutationCommands = new Set([
   "reconnect",
 ])
 
+// The shell opens on a thread. These surfaces load when one is first opened,
+// or at idle after the shell has painted, so a launch does not download, parse
+// and compile them first.
+const settingsSurface = lazySurface("Settings", async () => (await import("./settings-shell")).SettingsShell)
+const skillsSurface = lazySurface("Skills", async () => (await import("./skill-browser")).SkillBrowser)
+const machinesSurface = lazySurface("Machines", async () => (await import("./fleet-view")).FleetView)
+const auditSurface = lazySurface("Audit log", async () => (await import("./audit-log-view")).AuditLogView)
+const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface]
+const SettingsShell = settingsSurface.Surface
+const SkillBrowser = skillsSurface.Surface
+const FleetView = machinesSurface.Surface
+const AuditLogView = auditSurface.Surface
+
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
   rpcUrl?: string
@@ -169,8 +178,6 @@ export type WorkspaceShellProps = {
 
 
 
-
-export const providerSettingsNavigationLabel = "Provider settings"
 
 export function skillInventoryRefreshKey(snapshot: WorkspaceSnapshot | null): string {
   const machine = snapshot?.machine
@@ -190,10 +197,6 @@ export function skillProjectRefreshKey(snapshot: WorkspaceSnapshot | null): stri
 
 
 export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type ProviderChoice } from "./provider-choice-dialog.js"
-
-export function normalizePermissionMode(runtime: Runtime, permissionMode: PermissionMode): Runtime {
-  return withPermissionMode(runtime, permissionMode)
-}
 
 export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
 
@@ -441,6 +444,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
   const [workspaceError, setWorkspaceError] = useState("")
+  // Once the shell has painted, the secondary surfaces are fetched while the
+  // browser is idle, so opening one rarely shows the loading frame at all.
+  useEffect(() => prefetchWhenIdle(lazySurfaces), [])
+  // The web reloads the page for a surface whose chunk failed to load; the
+  // desktop leaves it unset and loads the chunk again.
+  const reloadForNewCode = platform?.code?.reloadForNewCode
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
@@ -639,9 +648,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // the emergency stop is the other thing and has its own control.
   // Hold first: the pause's snapshot leaves every session idle, and an idle
   // session with a waiting queue would be resumed by the release effect.
+  // The hold is local and makes the screen look paused, so a pause the daemon
+  // refused or never answered is said out loud: its turns are still running.
   const pauseActiveTurns = () => {
     setQueues(holdAllAfterStop)
-    void pauseAll().catch(() => undefined)
+    setWorkspaceError("")
+    void pauseAll().catch((cause: unknown) => {
+      setWorkspaceError(`Pause everything failed: ${cause instanceof Error ? cause.message : "the daemon did not confirm the pause"}`)
+    })
   }
   const stopEverything = () => {
     void emergencyStop()
@@ -1209,6 +1223,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [])
 
   return (
+    <SurfaceCodeReload.Provider value={reloadForNewCode}>
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={() => snapshot?.project ? setLauncherMode("session") : requestOpenProject()} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => { if (!watching) setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" })) }} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={connected ? attached ? "remote" : "local" : "unreachable"} theme={resolvedTheme} />
@@ -1494,5 +1509,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : null}
       </div>
     </TooltipProvider>
+    </SurfaceCodeReload.Provider>
   )
 }

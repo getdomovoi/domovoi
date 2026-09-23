@@ -76,7 +76,6 @@ export const workspaceBudgets: DomovoiClientBudgets = {
   requestMs: 120_000,
 }
 export const pairingBudgetMs = 60_000
-export const machineDialBudgetMs = 45_000
 
 export type WorkspaceEndpointResolver = (deadline: Deadline) => Promise<DomovoiEndpoint>
 export type WorkspaceClientConnection = { state: "disabled" } | {
@@ -261,10 +260,12 @@ export function useWorkspace(
     client.addEventListener("reconnecting", onReconnecting)
     client.addEventListener("protocol-error", onProtocolError)
     client.addEventListener("authentication-required", onAuthenticationRequired)
+    // The client has already dispatched the hello as a "snapshot" event and
+    // replayed what arrived during admission after it. Applying the resolved
+    // hello again here would put the older state back over those changes.
     client.connect().then(
-      (next) => {
+      () => {
         if (!active) return
-        updateSnapshotFrom(client, next)
         setConnected(true)
       },
       () => {
@@ -821,11 +822,10 @@ export function useWorkspace(
     const client = clientRef.current
     if (!client) throw new Error("Daemon client is not ready")
     setConnected(false)
-    const next = await client.connect()
+    await client.connect()
     if (!isCurrentConnection(clientRef.current, client)) return
-    updateSnapshotFrom(client, next)
     setConnected(true)
-  }, [updateSnapshotFrom])
+  }, [])
 
   return {
     fleetClientRoute,
