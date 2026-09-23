@@ -204,7 +204,7 @@ it("renders the v2 Machines hierarchy without a settings rail", () => {
   expect(screen.getByText("Each one runs its own daemon. Code, credentials and Git state stay where the work happens.")).toBeTruthy()
   expect(screen.queryByRole("complementary", { name: "Settings navigation" })).toBeNull()
   const content = document.body.textContent ?? ""
-  expect(content.indexOf("Machines")).toBeLessThan(content.indexOf("Paired devices"))
+  expect(content.indexOf("Machines")).toBeLessThan(content.indexOf("Devices paired with"))
 })
 
 it("offers the active session as a transfer intent on another machine", async () => {
@@ -1033,4 +1033,14 @@ it("shows no overflow notice when the daemon listed the fleet", () => {
   renderFleet()
 
   expect(screen.queryByText("Fleet list withheld")).toBeNull()
+})
+
+// v2 names whose list this is, because each daemon keeps its own and a person
+// who pairs from Settings should not look for the device on another machine.
+it("names the daemon that keeps the paired-device list", async () => {
+  renderFleet()
+  const section = screen.getByRole("region", { name: "Paired devices" })
+  expect(within(section).getByRole("heading", { name: `Devices paired with ${local.label}` })).toBeTruthy()
+  expect(section.textContent).toContain("Each daemon keeps its own list. Pair a new one from Settings.")
+  expect(await within(section).findByText(device.label)).toBeTruthy()
 })
