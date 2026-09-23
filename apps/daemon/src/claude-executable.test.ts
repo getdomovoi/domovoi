@@ -54,7 +54,7 @@ afterEach(async () => {
 
 describe("the Claude executable", () => {
   it("runs the person's own claude from PATH", async () => {
-    const executable = join(directory, "claude")
+    const executable = join(directory, process.platform === "win32" ? "claude.exe" : "claude")
     await writeFile(executable, "#!/bin/sh\n")
     await chmod(executable, 0o755)
     const adapter = new ClaudeAgentSdkAdapter()

@@ -51,7 +51,7 @@ describe("CliProviderProbe", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" })
     }) satisfies ProviderCommandRunner
 
-    const providers = await new CliProviderProbe(run).inspect()
+    const providers = await new CliProviderProbe(run, { platform: "linux" }).inspect()
 
     expect(providers).toEqual(expect.arrayContaining([
       { id: "claude-code", command: "claude", status: "ready", version: "2.1.280" },

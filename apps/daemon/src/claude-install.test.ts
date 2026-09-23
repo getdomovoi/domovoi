@@ -45,7 +45,7 @@ describe("resolveClaudeSdkExecutable on Windows", () => {
 })
 
 describe("resolveClaudeSdkExecutable elsewhere", () => {
-  it("takes claude from PATH and says when there is none", async () => {
+  it.runIf(process.platform !== "win32")("takes claude from PATH and says when there is none", async () => {
     const directory = await pathWith("claude")
 
     expect(resolveClaudeSdkExecutable(directory, "darwin")).toEqual({ executable: join(directory, "claude") })
