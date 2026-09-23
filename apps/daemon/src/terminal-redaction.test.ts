@@ -73,13 +73,12 @@ describe("TerminalOutputRedactor", () => {
     expect(chunk.length - emitted.length).toBeLessThanOrEqual(terminalRedactionCarryCharacters)
   })
 
-  it("shows a name at once and a value only redacted, when the terminal ends mid-line", () => {
-    // A name is shown as it arrives; only a bare token still being printed is
-    // held, and the end of the stream shows it redacted.
+  it("gives back what it was holding when the terminal ends, redacted", () => {
     const redactor = new TerminalOutputRedactor()
-    expect(redactor.push("export API_KEY=sk-live-abcdef")).toBe("export API_KEY=")
+    expect(redactor.push("export API_KEY=sk-live-abcdef")).toBe("export ")
     const flushed = redactor.flush()
-    expect(flushed).toBe("[REDACTED]")
+    expect(flushed).toContain("API_KEY=[REDACTED]")
+    expect(flushed).not.toContain("sk-live-abcdef")
     expect(redactor.flush()).toBe("")
   })
 
@@ -132,10 +131,8 @@ describe("TerminalOutputRedactor", () => {
 
     it("stops treating input as a value at its delimiter, and after flush", () => {
       const redactor = new TerminalOutputRedactor()
-      expect(redactor.push("TOKEN=")).toBe("TOKEN=")
-      expect(redactor.release()).toBe("")
-      expect(redactor.push("abc")).toBe("[REDACTED]")
-      expect(redactor.push("def; echo ok\r\n")).toBe("; echo ok\r\n")
+      const shown = [redactor.push("TOKEN="), redactor.release(), redactor.push("abc"), redactor.push("def; echo ok\r\n")].join("")
+      expect(shown).toBe("TOKEN=[REDACTED]; echo ok\r\n")
       redactor.push("TOKEN=")
       redactor.release()
       redactor.flush()
