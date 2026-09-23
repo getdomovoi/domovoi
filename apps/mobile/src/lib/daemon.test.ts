@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
-import { DaemonConnection, DaemonNotSentError, DaemonUnconfirmedError } from "./daemon"
+import { DaemonConnection, DaemonNotSentError, DaemonProtocolError, DaemonUnconfirmedError } from "./daemon"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
   ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
@@ -33,14 +33,18 @@ function connection(handlers: {
   onFleet?: (entries: unknown[]) => void
   onSnapshot?: (snapshot: unknown) => void
   onHello?: (snapshot: unknown) => void
+  onDelta?: (delta: unknown) => void
+  onError?: (cause: unknown) => void
+  onProtocolError?: (reason: string) => void
 } = {}) {
-  return new DaemonConnection("ws://desk:8787", "token", {
+  return new DaemonConnection("ws://desk:8787", "token", "phone", {
     onSnapshot: handlers.onSnapshot ?? (() => {}),
     ...(handlers.onHello ? { onHello: handlers.onHello } : {}),
-    onDelta: () => {},
+    onDelta: handlers.onDelta ?? (() => {}),
     onFleet: handlers.onFleet ?? (() => {}),
     onStatus: () => {},
-    onError: () => {},
+    onError: handlers.onError ?? (() => {}),
+    onProtocolError: handlers.onProtocolError ?? (() => {}),
     onClosed: () => {},
   })
 }
@@ -60,6 +64,22 @@ describe("DaemonConnection.call", () => {
       socket.onopen?.()
       expect(JSON.parse(send.mock.calls[0]?.[0] as string)).toMatchObject({
         method: "system.hello", params: { client: "phone", clientVersion: "9.8.7-test" },
+      })
+    } finally { daemon.close() }
+  })
+
+  it("greets as the kind the credential was paired as", () => {
+    const send = vi.fn()
+    const socket = withSocket(send)
+    const daemon = new DaemonConnection("ws://desk:8787", "token", "tablet", {
+      onSnapshot: () => {}, onDelta: () => {}, onFleet: () => {}, onStatus: () => {},
+      onError: () => {}, onProtocolError: () => {}, onClosed: () => {},
+    })
+    daemon.connect()
+    try {
+      socket.onopen?.()
+      expect(JSON.parse(send.mock.calls[0]?.[0] as string)).toMatchObject({
+        method: "system.hello", params: { client: "tablet" },
       })
     } finally { daemon.close() }
   })
@@ -168,6 +188,66 @@ describe("DaemonConnection notifications", () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
       expect(onHello).toHaveBeenCalledTimes(1)
       expect(onSnapshot).toHaveBeenCalledTimes(2)
+    } finally { daemon.close() }
+  })
+})
+
+describe("DaemonConnection messages it cannot read", () => {
+  function pushed(data: string) {
+    const socket = withSocket(() => {})
+    const onProtocolError = vi.fn()
+    const onSnapshot = vi.fn()
+    const onDelta = vi.fn()
+    const onFleet = vi.fn()
+    const daemon = connection({ onProtocolError, onSnapshot, onDelta, onFleet })
+    daemon.connect()
+    try {
+      socket.onmessage?.({ data })
+    } finally { daemon.close() }
+    return { onProtocolError, onSnapshot, onDelta, onFleet }
+  }
+
+  it("reports a frame that is not JSON rather than dropping it without a trace", () => {
+    const { onProtocolError } = pushed("{not json")
+    expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("not valid JSON"))
+  })
+
+  it("reports a pushed snapshot it cannot read and keeps it off the screen", () => {
+    const { onProtocolError, onSnapshot } = pushed(JSON.stringify({ jsonrpc: "2.0", method: "workspace.changed", params: { sessions: "none" } }))
+    expect(onSnapshot).not.toHaveBeenCalled()
+    expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("workspace.changed"))
+  })
+
+  it("reports a streamed delta it cannot read", () => {
+    const { onProtocolError, onDelta } = pushed(JSON.stringify({ jsonrpc: "2.0", method: "workspace.delta", params: { sessionId: "s", operations: [] } }))
+    expect(onDelta).not.toHaveBeenCalled()
+    expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("workspace.delta"))
+  })
+
+  it("reports a pushed fleet it cannot read", () => {
+    const { onProtocolError, onFleet } = pushed(JSON.stringify({ jsonrpc: "2.0", method: "fleet.changed", params: { entries: [{ kind: "unenrolled", machineId: "not-a-machine-id" }] } }))
+    expect(onFleet).not.toHaveBeenCalled()
+    expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("fleet.changed"))
+  })
+
+  it("refuses a hello answer that is not a snapshot instead of seeding the screen with it", async () => {
+    const sent: string[] = []
+    const socket = withSocket((payload) => { sent.push(payload) })
+    const onSnapshot = vi.fn()
+    const onHello = vi.fn()
+    const onError = vi.fn()
+    const onProtocolError = vi.fn()
+    const daemon = connection({ onSnapshot, onHello, onError, onProtocolError })
+    daemon.connect()
+    try {
+      socket.onopen?.()
+      const hello = JSON.parse(sent[0]!) as { id: number }
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: hello.id, result: { machine: {} } }) })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(onSnapshot).not.toHaveBeenCalled()
+      expect(onHello).not.toHaveBeenCalled()
+      expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("system.hello"))
+      expect(onError).toHaveBeenCalledWith(expect.any(DaemonProtocolError))
     } finally { daemon.close() }
   })
 })

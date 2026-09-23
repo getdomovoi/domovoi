@@ -19,13 +19,15 @@ import { Icon } from "./components/ui/icon"
 import { Text } from "./components/ui/text"
 import { PageScroller } from "./components/page-scroller"
 import { approvalFacts } from "./screens/approval"
+import { PolicyRefusalCards } from "./screens/session"
 
 type TabletDecision = Extract<ApprovalDecision, "allow-once" | "always-project">
 type ReviewTab = "changes" | "diff" | "plan" | "review"
 
-function TabletSessionRow({ row, selected, onPress }: {
+function TabletSessionRow({ row, selected, access, onPress }: {
   row: SessionRow
   selected: boolean
+  access: ClientAccess
   onPress: () => void
 }) {
   return (
@@ -46,16 +48,19 @@ function TabletSessionRow({ row, selected, onPress }: {
       <View className="min-w-0 flex-1">
         <Text className="text-[13px] leading-[18px] text-strong" numberOfLines={2}>{row.title}</Text>
         <Text variant="machine" className="mt-1 text-faint">
-          {row.attention === "approval" ? "waiting on you" : row.dot === "active" ? "running" : "quiet"}
+          {row.attention === "approval"
+            ? access === "full" ? "waiting on you" : "waiting on a full-access device"
+            : row.dot === "active" ? "running" : "quiet"}
         </Text>
       </View>
     </Pressable>
   )
 }
 
-export function TabletSessionsPane({ snapshot, selectedSessionId, onSelectSession, onNewSession, onOpenMachines }: {
+export function TabletSessionsPane({ snapshot, selectedSessionId, access, onSelectSession, onNewSession, onOpenMachines }: {
   snapshot: WorkspaceSnapshot
   selectedSessionId: string | undefined
+  access: ClientAccess
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
   onOpenMachines: () => void
@@ -82,6 +87,7 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, onSelectSessio
                 key={row.id}
                 row={row}
                 selected={row.id === selectedSessionId}
+                access={access}
                 onPress={() => onSelectSession(row.id)}
               />
             ))}
@@ -204,7 +210,12 @@ function TabletThreadEntry({ entry }: { entry: ThreadEntry }) {
     ) : <Text className="text-[14px] leading-[22px]">{entry.body}</Text>
   }
   if (entry.kind === "policy-refusal") {
-    return <Card><Text className="text-destructive">{entry.operation}</Text><Text variant="machine">{entry.command}</Text></Card>
+    return (
+      <View className="gap-3">
+        <Text variant="nav">{entry.operation}</Text>
+        <PolicyRefusalCards refusal={entry} />
+      </View>
+    )
   }
   return <Text variant="note">{entry.body}{entry.meta ? ` · ${entry.meta}` : ""}</Text>
 }
@@ -393,6 +404,7 @@ export function TabletShell({
       <TabletSessionsPane
         snapshot={snapshot}
         selectedSessionId={sessionId}
+        access={access}
         onSelectSession={onSelectSession}
         onNewSession={onNewSession}
         onOpenMachines={onOpenMachines}

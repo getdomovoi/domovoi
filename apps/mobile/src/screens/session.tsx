@@ -100,6 +100,16 @@ function PolicyRefusal({ refusal }: {
   return (
     <View className="gap-3">
       <Text variant="title" className="text-[24px] leading-[30px]">Nothing to approve</Text>
+      <PolicyRefusalCards refusal={refusal} />
+    </View>
+  )
+}
+
+export function PolicyRefusalCards({ refusal }: {
+  refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
+}) {
+  return (
+    <>
       <Card className="gap-2 border-danger-border bg-danger-bg">
         <Text variant="nav" className="text-danger-fg">Refused by policy</Text>
         <Text variant="meta" className="text-danger-fg">The daemon refused before the command ran. No approval can override it.</Text>
@@ -117,7 +127,7 @@ function PolicyRefusal({ refusal }: {
         <Text variant="label">WHAT YOU CAN DO</Text>
         <Text variant="meta">{refusal.remedy}</Text>
       </Card>
-    </View>
+    </>
   )
 }
 
@@ -655,7 +665,7 @@ export function SessionScreen({
         />
       ) : null}
 
-      <JumpPill state={follow} unseen={unseen} above={composerFootprint} onPress={() => thread.current?.scrollToEnd()} />
+      <JumpPill state={follow} unseen={unseen} above={composerFootprint} watching={access !== "full"} onPress={() => thread.current?.scrollToEnd()} />
       {!detail.policyRefusal ? <Composer
         draft={draft}
         readiness={detail.sending}
