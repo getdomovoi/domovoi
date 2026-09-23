@@ -30,6 +30,7 @@ module.exports = {
   transform: { ...preset.transform, "\\.mjs$": preset.transform["\\.[jt]sx?$"] },
   transformIgnorePatterns,
   // See jest.setup.js: the components every screen draws are loaded before the
-  // first test, not inside it.
-  setupFiles: [...preset.setupFiles, "<rootDir>/jest.setup.js"],
+  // first test, not inside it. Jest appends this to the preset's own setup
+  // files, so they are not listed again here.
+  setupFiles: ["<rootDir>/jest.setup.js"],
 }
