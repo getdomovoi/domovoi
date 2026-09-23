@@ -137,3 +137,7 @@ function safeString(value: unknown, maximumLength: number): string {
     return "[Unprintable error detail]".slice(0, maximumLength)
   }
 }
+
+// project.open answers a folder that is not a repository with this fixed text,
+// which quotes nothing from the machine, so a CLI may repeat it.
+export const notARepositoryMessage = "That folder is not a Git repository with at least one commit"

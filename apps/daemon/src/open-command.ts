@@ -1,6 +1,7 @@
 import type { WslDistribution } from "./wsl-distributions.js"
 import { resolveOpenTarget, type OpenTarget } from "./wsl-open-target.js"
 import { WslError } from "./wsl-run.js"
+import { notARepositoryMessage } from "./rpc-errors.js"
 
 export type OpenCommandDependencies = {
   cwd: () => string
@@ -15,11 +16,13 @@ const usage = "Usage: domovoid open [path]\n"
 
 // A refusal that names the distribution and what to do about it is worth
 // repeating, and so is a classified wsl.exe failure, which repeats nothing
-// read out of a distribution; anything else from the daemon can quote a path
+// read out of a distribution, and so is the daemon's fixed answer for a folder
+// that is not a repository; anything else from the daemon can quote a path
 // someone is watching the screen for, so only the fact of the failure is
 // reported.
 function isNamedRefusal(error: unknown): error is Error {
-  return error instanceof WslError || (error instanceof Error && /domovoid|wsl\.exe/.test(error.message))
+  return error instanceof WslError
+    || (error instanceof Error && (/domovoid|wsl\.exe/.test(error.message) || error.message === notARepositoryMessage))
 }
 
 export async function runOpenCommand(

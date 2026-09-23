@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { CliDeadlineError } from "./cli-rpc.js"
 import { runOpenCommand, type OpenCommandDependencies } from "./open-command.js"
+import { notARepositoryMessage } from "./rpc-errors.js"
 import type { WslDistribution } from "./wsl-distributions.js"
 import { listWslDistributions } from "./wsl-list.js"
 
@@ -29,6 +30,26 @@ function dependencies(overrides: Partial<OpenCommandDependencies> = {}) {
 }
 
 describe("runOpenCommand", () => {
+  it("repeats the daemon's refusal of a folder that is not a repository", async () => {
+    const deps = dependencies({
+      open: vi.fn<OpenCommandDependencies["open"]>(async () => {
+        throw new Error(notARepositoryMessage)
+      }),
+    })
+    expect(await runOpenCommand(["open", "C:\\notes"], deps)).toBe(1)
+    expect(deps.stderr).toHaveBeenCalledWith(`${notARepositoryMessage}\n`)
+  })
+
+  it("still reports only the fact of any other daemon failure", async () => {
+    const deps = dependencies({
+      open: vi.fn<OpenCommandDependencies["open"]>(async () => {
+        throw new Error("Internal detail naming C:\\Users\\me\\secret")
+      }),
+    })
+    expect(await runOpenCommand(["open", "C:\\notes"], deps)).toBe(1)
+    expect(deps.stderr).toHaveBeenCalledWith("Could not open C:\\notes\n")
+  })
+
   it("opens the current directory when no path is given", async () => {
     const deps = dependencies()
     expect(await runOpenCommand(["open"], deps)).toBe(0)

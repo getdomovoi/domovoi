@@ -190,6 +190,7 @@ import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
   internalRpcErrorMessage,
+  notARepositoryMessage,
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
@@ -6914,11 +6915,20 @@ export class DomovoiDaemon {
           )
           return
         }
-        const repository = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.inspect(params.path, signal),
-          this.#agentTimeoutMs,
-          "Repository inspection timed out",
-        )
+        let repository: Awaited<ReturnType<WorkspaceService["inspect"]>>
+        try {
+          repository = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.inspect(params.path, signal),
+            this.#agentTimeoutMs,
+            "Repository inspection timed out",
+          )
+        } catch (error) {
+          if (error instanceof OperationTimeoutError || signal?.aborted) throw error
+          // The git error quotes the machine's paths and output, which stay in
+          // the daemon log; the caller gets the one thing it can act on.
+          this.#reportError("RPC project.open failed", error)
+          throw new PublicRpcError(invalidParams, notARepositoryMessage)
+        }
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         if (this.#snapshot.project?.path === repository.root) {
           if (
@@ -7493,12 +7503,29 @@ export class DomovoiDaemon {
         }
         this.#emergencyBlockedThreads.delete(emergencyThread)
         this.#inFlightProviderThreads.set(emergencyThread, session.id)
+        // A provider that cannot connect, resume or start a turn is something
+        // the person can act on: record the classified failure on the session,
+        // where the sign-in, quota and model guidance is shown, and answer with
+        // its fixed message. Timeouts and cancellations keep their own paths.
+        const providerRefusal = async (error: unknown): Promise<never> => {
+          if (error instanceof PublicRpcError || signal?.aborted) throw error
+          this.#reportError("RPC session.send failed", error)
+          const failure = classifyProviderFailure(error)
+          const failed = this.#snapshot.sessions.find((candidate) => candidate.id === session.id)
+          if (failed) {
+            failed.providerFailure = failure
+            failed.updatedAt = new Date().toISOString()
+            await this.#persistSnapshot()
+            this.#broadcastSnapshot()
+          }
+          throw new PublicRpcError(invalidParams, failure.message)
+        }
         let agent: AgentAdapter
         try {
           agent = await this.#ensureAgentConnected(session.runtime.provider)
         } catch (error) {
           this.#inFlightProviderThreads.delete(emergencyThread)
-          throw error
+          return await providerRefusal(error)
         }
         if (signal?.aborted) {
           this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7521,7 +7548,7 @@ export class DomovoiDaemon {
             if (error instanceof OperationTimeoutError) {
               await this.#quarantineProviderThread(session.id, error.message)
             }
-            throw error
+            return await providerRefusal(error)
           }
           if (signal?.aborted) {
             this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7568,7 +7595,7 @@ export class DomovoiDaemon {
           if (error instanceof OperationTimeoutError) {
             await this.#quarantineProviderThread(session.id, error.message)
           }
-          throw error
+          return await providerRefusal(error)
         }
         if (signal?.aborted) {
           if (turnId) await this.#stopCancelledProviderTurn(session, turnId, providerThreadId)
