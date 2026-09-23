@@ -546,8 +546,12 @@ not exist is refused; the path round trip and the drive refusal need a running d
 skip there.
 
 A separate `wsl-native` workflow (`.github/workflows/wsl.yml`) provisions a real WSL 2 Ubuntu
-guest on Windows 2025 and requires exactly fifteen named proofs, six discovery, four transport and
-five repository boundary tests, with none skipped (`requiredWslProofs` in `scripts/wsl-ci.mjs`).
+guest on Windows 2025 (`scripts/wsl-ci.mjs`, run by `.github/workflows/wsl.yml`). It requires two
+exact sets of named proofs, each passed once with none skipped: fifteen discovery, transport and
+repository boundary tests (`requiredWslProofs`: six discovery, four transport, five repository),
+then, in a separate run, two service proofs (`requiredWslServiceProofs`): installing and removing
+the guest supervisor through the daemon CLI, and propagating a guest failure, restarting it and
+removing only its WSL task.
 It runs on pull requests that touch its path list, nightly at 09:23 UTC, and by manual dispatch.
 It still does not cover two distribution identities, Windows 11 mirrored networking or VPNs, the
 host keychain, or multi-distribution port collisions. [Native WSL CI](../../docs/wsl-ci.md) has
