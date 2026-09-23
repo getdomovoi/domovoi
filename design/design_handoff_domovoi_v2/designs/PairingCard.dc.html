@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+</helmet>
+<div style="display: flex; flex-direction: column; font-family: 'Instrument Sans', system-ui, sans-serif; color: var(--foreground);">
+
+    <div style="display: flex; gap: 18px; padding: 16px 15px; align-items: flex-start; flex-wrap: wrap;">
+      <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 9px; align-items: center;">
+        <sc-if value="{{ showQR }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ qrStyle }}">
+            <sc-for list="{{ qrCells }}" as="c" hint-placeholder-count="40"><span style="{{ c.style }}"></span></sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ showSlot }}" hint-placeholder-val="{{ true }}">
+          <div style="width: 165px; height: 165px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 18px; border: 1px dashed var(--border); border-radius: calc(var(--radius) - 3px); text-align: center;">
+            <span style="display: inline-flex; color: var(--muted-foreground);">{{ slotIcon }}</span>
+            <span style="font-size: 11.5px; color: var(--muted-foreground); line-height: 1.5;">{{ slotText }}</span>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 14px;">
+        <sc-if value="{{ showIdle }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 11px;">
+            <div style="{{ kindBarStyle }}">
+              <sc-for list="{{ kinds }}" as="k" hint-placeholder-count="3">
+                <div onClick="{{ k.pick }}" style="{{ k.style }}"><span style="display: inline-flex;">{{ k.icon }}</span><span>{{ k.label }}</span></div>
+              </sc-for>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+              <div onClick="{{ showCode }}" style="{{ showBtnStyle }}"><span style="display: inline-flex;">{{ showBtnIcon }}</span><span>Show a pairing code</span></div>
+              <span style="font-size: 11.5px; color: var(--muted-foreground);">A code lasts 180 seconds. Showing another cancels it.</span>
+            </div>
+            <sc-if value="{{ isLocked }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                <span style="font-size: 11.5px; color: var(--strong); line-height: 1.5;">Locked: this window is watching only, and only a full client can ask for a code.</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">pair.issue refused · watch_only_client</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{ notLocked }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;">
+                <span style="font-size: 11px; color: var(--muted-foreground);">The same code as</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ cli }}</span>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showQR }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <span style="font-size: 12.5px; color: var(--strong);">{{ codeHow }}</span>
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span style="padding: 7px 12px; border-radius: calc(var(--radius) - 3px); background: var(--code); border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 14px; color: var(--foreground); letter-spacing: .04em;">{{ code }}</span>
+              <div onClick="{{ copy }}" style="display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);"><span style="display: inline-flex;">{{ copyIcon }}</span><span>{{ copyLabel }}</span></div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ leftText }}</span>
+              <div onClick="{{ showAnother }}" style="display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);"><span style="display: inline-flex;">{{ againIcon }}</span><span>Show another</span></div>
+              <sc-if value="{{ replaced }}" hint-placeholder-val="{{ false }}">
+                <span style="font-size: 11px; color: var(--muted-foreground);">The previous code no longer works.</span>
+              </sc-if>
+            </div>
+            <div style="display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;">
+              <span style="font-size: 11px; color: var(--muted-foreground);">The QR holds this address and the code, never a credential:</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ host }}</span>
+            </div>
+            <sc-if value="{{ isBrowserKind }}" hint-placeholder-val="{{ false }}">
+              <span style="font-size: 11px; color: var(--muted-foreground); line-height: 1.5;">A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.</span>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ hasProblem }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); background: var(--background);">
+            <div style="display: flex; align-items: flex-start; gap: 9px;">
+              <span style="{{ problem.dot }}"></span>
+              <span style="font-size: 12.5px; color: var(--foreground); line-height: 1.5;">{{ problem.title }}</span>
+            </div>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); padding-left: 15px;">{{ problem.mono }}</span>
+            <sc-if value="{{ problem.busy }}" hint-placeholder-val="{{ false }}">
+              <span style="margin-left: 15px; position: relative; width: 60px; height: 3px; border-radius: 3px; background: var(--muted); overflow: hidden; display: block;"><span style="position: absolute; inset: 0; width: 30%; border-radius: 3px; background: var(--primary); animation: dvSweep 1.5s linear infinite; display: block;"></span></span>
+            </sc-if>
+            <div style="display: flex; flex-direction: column; gap: 3px; padding-left: 15px;">
+              <span style="font-size: 11.5px; color: var(--muted-foreground); line-height: 1.5;">{{ problem.still }}</span>
+              <span style="font-size: 11.5px; color: var(--strong); line-height: 1.5;">{{ problem.next }}</span>
+            </div>
+            <sc-if value="{{ problem.hasActions }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-left: 15px;">
+                <sc-for list="{{ problem.actions }}" as="a" hint-placeholder-count="1">
+                  <div onClick="{{ a.act }}" style="{{ a.style }}">{{ a.label }}</div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isPaired }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 13px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); background: var(--background);">
+            <div style="display: flex; align-items: center; gap: 9px;">
+              <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--success);"></span>
+              <span style="font-size: 12.5px; color: var(--foreground);">{{ receiptTitle }}</span>
+            </div>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); padding-left: 15px;">{{ receiptMono }}</span>
+            <span style="font-size: 11.5px; color: var(--strong); line-height: 1.5; padding-left: 15px;">{{ receiptBody }}</span>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-left: 15px;">
+              <div onClick="{{ goMachines }}" style="padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Open Machines</div>
+              <div onClick="{{ pairAnother }}" style="padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Pair another</div>
+            </div>
+          </div>
+        </sc-if>
+
+        <div style="display: flex; flex-direction: column; gap: 7px;">
+          <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">A PAIRED DEVICE CAN</div>
+          <sc-for list="{{ grants }}" as="g" hint-placeholder-count="6">
+            <div style="display: flex; align-items: flex-start; gap: 9px;">
+              <span style="{{ g.dot }}"></span>
+              <span style="font-size: 12px; color: var(--strong); line-height: 1.5;">{{ g.text }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ inApp }}" hint-placeholder-val="{{ false }}">
+          <div style="padding: 10px 12px; border: 1px solid var(--info-border); border-radius: calc(var(--radius) - 3px); background: var(--info-bg); font-size: 11.5px; color: var(--info-fg); line-height: 1.55;">While the daemon runs inside this app, quitting the app disconnects every paired device.</div>
+        </sc-if>
+      </div>
+    </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:760,&quot;height&quot;:520},&quot;phase&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;idle&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;code&quot;,&quot;paired&quot;,&quot;expired&quot;,&quot;version-app&quot;,&quot;version-daemon&quot;,&quot;full&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;kind&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;phone&quot;,&quot;options&quot;:[&quot;phone&quot;,&quot;tablet&quot;,&quot;browser&quot;],&quot;tsType&quot;:&quot;\&quot;phone\&quot; | \&quot;tablet\&quot; | \&quot;browser\&quot;&quot;},&quot;reach&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;tailnet&quot;,&quot;options&quot;:[&quot;tailnet&quot;,&quot;loopback&quot;,&quot;nocert&quot;,&quot;unreachable&quot;],&quot;tsType&quot;:&quot;\&quot;tailnet\&quot; | \&quot;loopback\&quot; | \&quot;nocert\&quot;&quot;},&quot;certState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;none&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;fetching&quot;,&quot;off&quot;],&quot;tsType&quot;:&quot;\&quot;none\&quot; | \&quot;fetching\&quot; | \&quot;off\&quot;&quot;},&quot;reachState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;off&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;off&quot;,&quot;turning&quot;,&quot;certoff&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;access&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;full&quot;,&quot;options&quot;:[&quot;full&quot;,&quot;watching&quot;],&quot;tsType&quot;:&quot;\&quot;full\&quot; | \&quot;watching\&quot;&quot;},&quot;inApp&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;frozen&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;frozenLeft&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:158,&quot;tsType&quot;:&quot;number&quot;},&quot;onGoMachines&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onGoTailnet&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;},&quot;onGetCert&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+// The pairing card for Settings > Phone and tablet. The desktop asks its own daemon for the
+// same code `domovoid pair` prints, with the credential it already holds. A code lives 180s and
+// asking for another cancels it. The QR carries the address and the code, never a credential.
+// When a phone could not reach or trust the daemon, the card says so instead of drawing a QR.
+const HOST = "mac-mini-m4.tail4c2e.ts.net";
+const CODES = ["DVOI-4K7Q-91XZ", "DVOI-8M2R-T4JC", "DVOI-Q61W-7HPD"];
+// Shared word for word with the command line and the phone. Do not rewrite it here.
+const GRANTS = [
+  { text: "Watch every session and its diffs", k: "success" },
+  { text: "Answer gates, with the same three decisions", k: "success" },
+  { text: "Start and stop sessions, and steer one mid-run", k: "success" },
+  { text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", k: "info" },
+  { text: "Terminal output is not on a phone yet.", k: "info" },
+  { text: "It cannot pull the repository down. Files stay here.", k: "info" }
+];
+const KINDS = {
+  phone: { label: "Phone", icon: "Smartphone", flag: "phone", device: "iPhone 16 Pro", noun: "the phone", how: "Scan it with the Domovoi app, or paste the code." },
+  tablet: { label: "Tablet", icon: "Tablet", flag: "tablet", device: "iPad Pro", noun: "the tablet", how: "Scan it with the Domovoi app, or paste the code." },
+  browser: { label: "Web browser", icon: "Globe", flag: "browser", device: "Firefox on thinkpad-x1", noun: "the browser", how: "Open the address in the browser and type the code." }
+};
+
+class Component extends DCLogic {
+  state = { phase: null, kind: null, left: null, codeIdx: 0, replaced: false, copied: false, lucide: !!window.lucide };
+
+  componentDidMount() {
+    if (!window.lucide) this._lt = setInterval(() => { if (window.lucide) { clearInterval(this._lt); this.setState({ lucide: true }); } }, 150);
+    this.sync();
+  }
+  componentDidUpdate(prev) {
+    if (prev.phase !== this.props.phase || prev.kind !== this.props.kind) {
+      this.setState({ phase: null, kind: null, left: null, replaced: false });
+    }
+    this.sync();
+  }
+  componentWillUnmount() { clearInterval(this._lt); clearInterval(this._tick); clearTimeout(this._copyT); }
+
+  phase() { return this.state.phase ?? this.props.phase ?? "idle"; }
+  live() { return this.phase() === "code" && !this.props.frozen && (this.props.access ?? "full") !== "watching" && (this.props.reach ?? "tailnet") === "tailnet"; }
+  sync() {
+    if (this.live() && !this._tick) {
+      this._tick = setInterval(() => this.setState(s => {
+        const left = (s.left ?? 180) - 1;
+        return left <= 0 ? { left: 0, phase: "expired" } : { left: left };
+      }), 1000);
+    } else if (!this.live() && this._tick) { clearInterval(this._tick); this._tick = null; }
+  }
+
+  icon(name, size) {
+    const L = window.lucide;
+    const node = L && L.icons && L.icons[name];
+    if (!node) return null;
+    const kids = Array.isArray(node[0]) ? node : (node[2] || []);
+    return React.createElement("svg", {
+      width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", style: { display: "block" }
+    }, kids.map((c, i) => React.createElement(c[0], Object.assign({ key: i }, c[1]))));
+  }
+
+  qr(cell) {
+    const n = 21;
+    const on = (x, y) => {
+      const finder = (fx, fy) => {
+        const dx = x - fx, dy = y - fy;
+        if (dx < 0 || dy < 0 || dx > 6 || dy > 6) return null;
+        return Math.max(Math.abs(dx - 3), Math.abs(dy - 3)) !== 2;
+      };
+      for (const f of [finder(0, 0), finder(n - 7, 0), finder(0, n - 7)]) if (f !== null) return f;
+      if (x === 6 || y === 6) return (x + y) % 2 === 0;
+      const h = (x * 73856093 ^ y * 19349663 ^ (0x5f3a + this.state.codeIdx * 977)) % 97;
+      return h % 3 !== 0;
+    };
+    const cells = [];
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++)
+      cells.push({ style: "display: block; width: " + cell + "px; height: " + cell + "px; background: " + (on(x, y) ? "oklch(0.16 0.004 285)" : "transparent") + ";" });
+    return {
+      style: "display: grid; grid-template-columns: repeat(21, " + cell + "px); grid-auto-rows: " + cell + "px; padding: 9px; border-radius: calc(var(--radius) - 3px); background: oklch(0.985 0 0);",
+      cells: cells
+    };
+  }
+
+  renderVals() {
+    const st = this.state, p = this.props;
+    const access = p.access ?? "full";
+    const reach = p.reach ?? "tailnet";
+    const certState = p.certState ?? "none";
+    const kindId = st.kind ?? p.kind ?? "phone";
+    const K = KINDS[kindId] || KINDS.phone;
+    const phase = this.phase();
+    const status = access === "watching" ? "locked"
+      : reach === "loopback" ? "loopback"
+      : reach === "nocert" ? "cert-" + certState
+      : reach === "unreachable" ? "reach-" + (p.reachState ?? "off")
+      : phase;
+    const code = CODES[st.codeIdx % CODES.length];
+    const left = p.frozen ? (p.frozenLeft ?? 158) : (st.left ?? 180);
+    const locked = status === "locked";
+    const idle = status === "idle" || locked;
+
+    const showCode = locked ? undefined : () => this.setState({ phase: "code", left: 180, replaced: false });
+    const showAnother = () => this.setState(s => ({ phase: "code", left: 180, codeIdx: s.codeIdx + 1, replaced: s.phase === "code" || phase === "code" }));
+    const goMachines = p.onGoMachines || (() => {});
+    const btn = (primary) => primary
+      ? "flex: 0 0 auto; padding: 6px 12px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 11.5px; font-weight: 500; cursor: pointer; white-space: nowrap;"
+      : "flex: 0 0 auto; padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer; white-space: nowrap;";
+    const again = { label: "Show another", primary: true, act: showAnother };
+
+    const problems = {
+      loopback: { k: "faint", title: "No code: a phone cannot reach this daemon", mono: "listening on 127.0.0.1 only",
+        still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code.",
+        actions: [{ label: "Go to the tailnet setting", primary: true, act: p.onGoTailnet }] },
+      "cert-none": { k: "faint", title: "No code: a phone would not trust this daemon", mono: "no certificate for " + HOST,
+        still: "The tailnet address works. Only the certificate is missing.", next: "Ask Tailscale for one. The key stays on this machine.",
+        actions: [{ label: "Get it from Tailscale", primary: true, act: p.onGetCert }] },
+      "cert-fetching": { k: "primary", title: "Asking Tailscale for a certificate", mono: "tailscale cert " + HOST, busy: true,
+        still: "Nothing else changes while it runs.", next: "The code button comes back when the certificate arrives.", actions: [] },
+      "cert-off": { k: "destructive", title: "No code: HTTPS certificates are off for this tailnet", mono: HOST,
+        still: "The tailnet address works. Only the certificate is missing.", next: "A tailnet admin turns them on under DNS in the Tailscale admin console.",
+        actions: [{ label: "Try again", primary: false, act: p.onGetCert }] },
+      "reach-off": { k: "faint", title: "No code: a phone cannot reach this machine yet", mono: "not reachable from your tailnet",
+        still: "Sessions and this window are unaffected.", next: "Turn on Reach this machine from my tailnet, then show a code.",
+        actions: [{ label: "Go to the setting", primary: true, act: p.onGoTailnet }] },
+      "reach-none": { k: "faint", title: "No code: there is no tailnet on this machine", mono: "tailscale status · no tailnet interface",
+        still: "Sessions and this window are unaffected.", next: "Domovoi does not set one up for you. Bring Tailscale up, then come back.", actions: [] },
+      "reach-turning": { k: "primary", title: "Making this machine reachable from your tailnet", mono: "tailscale cert " + HOST, busy: true,
+        still: "Nothing else changes while it runs.", next: "The code button comes back when the service has restarted.", actions: [] },
+      "reach-turningoff": { k: "primary", title: "Turning tailnet reach off", mono: HOST, busy: true,
+        still: "Paired devices disconnect until it is on again.", next: "Nothing to do here.", actions: [] },
+      "reach-certoff": { k: "destructive", title: "No code: HTTPS certificates are off for this tailnet", mono: HOST,
+        still: "Domovoi stopped and changed nothing.", next: "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.",
+        actions: [{ label: "Go to the setting", primary: false, act: p.onGoTailnet }] },
+      expired: { k: "faint", title: "The code expired", mono: code + " · 180s",
+        still: "No device paired with it.", next: "Show another code to try again.", actions: [again] },
+      "version-app": { k: "destructive", title: K.device + " was refused: its app is older than this daemon", mono: "pair.refused · protocol_mismatch · app 3, daemon 4",
+        still: "Nothing was paired, and this daemon is unaffected.",
+        next: kindId === "browser" ? "Reload Domovoi in the browser, then show another code." : "Update the Domovoi app on " + K.noun + ", then show another code.",
+        actions: [again] },
+      "version-daemon": { k: "destructive", title: K.device + " was refused: this daemon is older than its app", mono: "pair.refused · protocol_mismatch · app 5, daemon 4",
+        still: "Nothing was paired, and this daemon is unaffected.", next: "Update the daemon on this machine, then show another code.",
+        actions: [again] },
+      full: { k: "destructive", title: K.device + " was refused: the device list is full", mono: "pair.refused · device_limit",
+        still: "Nothing was paired, and every paired device keeps working.", next: "Unpair one on Machines, then show another code.",
+        actions: [{ label: "Open Machines", primary: false, act: goMachines }, again] }
+    };
+    const pr = problems[status];
+    const slot = locked ? ["Lock", "Locked for this window"]
+      : status === "paired" ? ["Check", "Paired"]
+      : status === "expired" ? ["QrCode", "Expired"]
+      : pr ? ["QrCode", "No code shown"]
+      : ["QrCode", "The code shows here"];
+    const qrA = this.qr(7);
+    const kindBar = "display: inline-flex; align-self: flex-start; flex-wrap: wrap; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--background);" + (locked ? " opacity: .45;" : "");
+
+    return {
+      showIdle: idle, isLocked: locked, notLocked: !locked,
+      showQR: status === "code",
+      isBrowserKind: kindId === "browser",
+      showSlot: status !== "code",
+      slotIcon: this.icon(slot[0], 24), slotText: slot[1],
+      hasProblem: !!pr,
+      problem: pr ? {
+        title: pr.title, mono: pr.mono, still: pr.still, next: pr.next, busy: !!pr.busy,
+        dot: "width: 6px; height: 6px; flex: 0 0 6px; margin-top: 6px; border-radius: 50%; background: var(--" + pr.k + ");",
+        hasActions: pr.actions.length > 0,
+        actions: pr.actions.map(a => ({ label: a.label, act: a.act, style: btn(a.primary) }))
+      } : { actions: [] },
+      isPaired: status === "paired",
+      receiptTitle: K.device + " paired just now",
+      receiptMono: "tailnet · credential 7c3e…a90",
+      receiptBody: "Listed on Machines with the other devices. " + (kindId === "browser" ? "Gates reach it only while the page is open." : "Gates reach it only while Domovoi is open on it."),
+      goMachines: goMachines,
+      pairAnother: () => this.setState({ phase: "idle", left: 180, replaced: false }),
+      kinds: Object.keys(KINDS).map(id => ({
+        label: KINDS[id].label, icon: this.icon(KINDS[id].icon, 16),
+        pick: locked ? undefined : () => this.setState({ kind: id }),
+        style: "display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: calc(var(--radius) - 4px); font-size: 11.5px; " +
+          (locked ? "cursor: default; " : "cursor: pointer; ") +
+          (id === kindId ? "background: var(--accent); color: var(--foreground);" : "color: var(--muted-foreground);")
+      })),
+      kindBarStyle: kindBar,
+      showCode: showCode,
+      showBtnIcon: this.icon(locked ? "Lock" : "QrCode", 16),
+      showBtnStyle: "flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 11.5px; font-weight: 500; white-space: nowrap; " +
+        (locked ? "opacity: .45; cursor: default;" : "cursor: pointer;"),
+      cli: "domovoid pair --client " + K.flag,
+      codeHow: K.how,
+      code: code,
+      copy: () => { clearTimeout(this._copyT); this.setState({ copied: true }); this._copyT = setTimeout(() => this.setState({ copied: false }), 1400); },
+      copyLabel: st.copied ? "Copied" : "Copy",
+      copyIcon: this.icon(st.copied ? "Check" : "Copy", 16),
+      againIcon: this.icon("RotateCw", 16),
+      leftText: Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") + " left",
+      replaced: !!st.replaced,
+      showAnother: showAnother,
+      host: HOST,
+      qrStyle: qrA.style, qrCells: qrA.cells,
+      grants: GRANTS.map(g => ({ text: g.text, dot: "width: 6px; height: 6px; flex: 0 0 6px; margin-top: 6px; border-radius: 50%; background: var(--" + g.k + ");" })),
+      inApp: !!p.inApp
+    };
+  }
+}
+</script>
+</body>
+</html>

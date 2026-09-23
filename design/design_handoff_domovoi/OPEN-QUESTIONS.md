@@ -3,28 +3,36 @@
 Decisions deliberately deferred during design. Carry these into the handoff package
 and the engineering spec; each one changes daemon behavior, not just UI.
 
-## 1. Machine transfer to an unreachable target — queue or refuse?
+## 1. Machine transfer to an unreachable target: refuse
 
-**Context.** In the desktop workspace, the composer machine chip opens a device menu;
-picking a different machine runs a transfer preflight (commit to `refs/domovoi/ckpt/<session>`,
-then either an incremental git bundle streamed daemon→daemon, or a pushed Domovoi ref on origin).
+**Settled 2026-09-14.** A session transfer is refused at the moment it is requested rather than
+queued, so a session never changes hands later and unattended. Transfer preflight refuses an
+unreachable target, a target that is not answering, a target on an incompatible protocol in
+either direction, a target that needs an upgrade, a target that does not run sessions, and the
+machine already holding the session.
 
-**Undecided.** What happens when the chosen target is offline at the moment of transfer.
+**Original question, kept for the record.** Machine transfer to an unreachable target — queue or refuse?
 
-- **Queue it** — friendlier, matches "agent runner" expectations, works well for a laptop
-  that wakes up later. Risk: a session can move *silently*, minutes or hours after the user
-  asked, on a machine they may no longer be near. Needs an explicit pending-transfer state
-  in the UI, a cancel affordance, an expiry, and a notification on completion.
-- **Refuse outright** — predictable and auditable; the session never changes hands without
-  a live confirmation on both ends. Cost: the user has to come back and redo it.
-
-**If queued, still to specify:** where the pending transfer is visible (fleet card badge?
-session row state? both), TTL before it's dropped, whether the source worktree stays
-writable while a transfer is pending, and what happens if the source diverges before the
-target wakes up (re-bundle from the newer checkpoint, or abort).
-
-Currently the design shows offline machines as `UNREACHABLE` and unselectable — i.e. the
-refuse path — but only because it needed *a* behavior, not because it was chosen.
+> **Context.** In the desktop workspace, the composer machine chip opens a device menu;
+> picking a different machine runs a transfer preflight (commit to `refs/domovoi/ckpt/<session>`,
+> then either an incremental git bundle streamed daemon→daemon, or a pushed Domovoi ref on origin).
+>
+> **Undecided.** What happens when the chosen target is offline at the moment of transfer.
+>
+> - **Queue it** — friendlier, matches "agent runner" expectations, works well for a laptop
+>   that wakes up later. Risk: a session can move *silently*, minutes or hours after the user
+>   asked, on a machine they may no longer be near. Needs an explicit pending-transfer state
+>   in the UI, a cancel affordance, an expiry, and a notification on completion.
+> - **Refuse outright** — predictable and auditable; the session never changes hands without
+>   a live confirmation on both ends. Cost: the user has to come back and redo it.
+>
+> **If queued, still to specify:** where the pending transfer is visible (fleet card badge?
+> session row state? both), TTL before it's dropped, whether the source worktree stays
+> writable while a transfer is pending, and what happens if the source diverges before the
+> target wakes up (re-bundle from the newer checkpoint, or abort).
+>
+> Currently the design shows offline machines as `UNREACHABLE` and unselectable — i.e. the
+> refuse path — but only because it needed *a* behavior, not because it was chosen.
 
 ## 2. Model handoff — what the UI is allowed to promise
 
@@ -55,17 +63,23 @@ privileged command (they arguably should be), what the capability manifest looks
 unsigned skills can run in Build auto at all, and how a skill installed on one machine is
 declared to the fleet without silently distributing executables.
 
-## 4. Guest browser session scope
+## 4. Guest browser session scope: out of scope
 
-**Context.** The hosted web client supports short-lived, revocable guest sessions for a
-borrowed computer. The design already prevents guests from creating standing permission rules.
+**Settled 2026-09-14.** Guest sessions are not a product feature. Domovoi sells reachability to a
+person's own machines, so a guest login, guest attribution, and a guest hard-gate policy are out
+of scope.
 
-**Undecided.** Whether a guest session may approve a hard gate at all — a migration, a deploy,
-a secret read — or only view, deny and defer to a paired device.
+**Original question, kept for the record.** Guest browser session scope
 
-**To specify:** the guest capability set, whether hard-gate approval requires a second factor
-per decision, TTL defaults, and how the audit log distinguishes a guest approval from a
-paired-device approval (it currently records originating client, which may be enough).
+> **Context.** The hosted web client supports short-lived, revocable guest sessions for a
+> borrowed computer. The design already prevents guests from creating standing permission rules.
+>
+> **Undecided.** Whether a guest session may approve a hard gate at all — a migration, a deploy,
+> a secret read — or only view, deny and defer to a paired device.
+>
+> **To specify:** the guest capability set, whether hard-gate approval requires a second factor
+> per decision, TTL defaults, and how the audit log distinguishes a guest approval from a
+> paired-device approval (it currently records originating client, which may be enough).
 
 ## 5. Public site — unfinished, needs design iteration
 
