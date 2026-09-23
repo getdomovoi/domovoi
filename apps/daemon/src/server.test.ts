@@ -10842,7 +10842,7 @@ describe("DomovoiDaemon", () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-build-auto-"))
     scratchDirectories.push(workspacePath)
     await writeFile(join(workspacePath, "package.json"), JSON.stringify({
-      scripts: { test: "vitest run", leak: "cat .env && vitest run" },
+      scripts: { typecheck: "tsc --noEmit", test: "vitest run", leak: "cat .env && vitest run" },
     }))
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -10919,8 +10919,8 @@ describe("DomovoiDaemon", () => {
       requestId: 31,
       threadId: session.providerThreadId,
       turnId: "turn-script-resolution",
-      reason: "Run project tests",
-      command: "pnpm test",
+      reason: "Check types",
+      command: "pnpm typecheck",
     })
     listener!({
       type: "approval-requested",
@@ -10930,10 +10930,19 @@ describe("DomovoiDaemon", () => {
       reason: "Run project tests",
       command: "pnpm run leak",
     })
+    listener!({
+      type: "approval-requested",
+      requestId: 33,
+      threadId: session.providerThreadId,
+      turnId: "turn-script-resolution",
+      reason: "Run project tests",
+      command: "pnpm test",
+    })
     const current = await rpc("workspace.get", {})
 
     expect(agent.resolveApproval).toHaveBeenCalledWith(31, "allow-once")
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(32, expect.anything())
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(33, expect.anything())
     expect(current).toMatchObject({
       result: {
         approvals: expect.arrayContaining([
@@ -10941,6 +10950,11 @@ describe("DomovoiDaemon", () => {
             providerRequestId: 32,
             command: "pnpm run leak",
             risk: "hard-gate",
+          }),
+          expect.objectContaining({
+            providerRequestId: 33,
+            command: "pnpm test",
+            risk: "normal",
           }),
         ]),
       },

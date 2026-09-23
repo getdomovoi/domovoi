@@ -171,11 +171,10 @@ type BodyDecision = "allow" | "review" | "hard-gate"
 // patterns describe what is known dangerous rather than what is known safe.
 // Anything outside this list is reviewed, so an unrecognised runner cannot ride
 // in on a script name a human once trusted.
-const boundedScriptRunners = new Set([
-  "vitest", "jest", "mocha", "ava", "tsc", "tsd", "eslint", "biome", "prettier",
-  "stylelint", "oxlint", "tsup", "vite", "rollup", "esbuild", "swc", "webpack",
-  "next", "astro", "changeset", "attw", "publint", "knip", "madge",
-])
+// A runner that loads worktree code (test files, a JavaScript config, plugins or
+// lifecycle scripts) runs whatever the agent last wrote there, so vitest, jest,
+// eslint, vite and the like ask on every Build-auto run and are not listed.
+const boundedScriptRunners = new Set(["tsc", "tsd", "biome"])
 
 // Only these flags may appear before the runner. Anything else can change what
 // actually executes: `npx --package=@attacker/payload vitest` runs the attacker's
@@ -210,6 +209,7 @@ function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision
     return execution.reason === "sensitive-content" ? "hard-gate" : "review"
   }
   if (execution.record.kind !== "shell") return "review"
+  let decision: BodyDecision = "allow"
   for (const entry of execution.record.entries) {
     for (const part of entry.parts) {
       const command = part.argv.join(" ")
@@ -219,13 +219,13 @@ function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision
       ) return "hard-gate"
       if (part.expandsTo.length > 0) continue
       if (entry.source.kind === "request") {
-        if (!safeBuildAutoPatterns.some((pattern) => pattern.test(command))) return "review"
+        if (!safeBuildAutoPatterns.some((pattern) => pattern.test(command))) decision = "review"
       } else if (!boundedLeafCommand(part.argv)) {
-        return "review"
+        decision = "review"
       }
     }
   }
-  return "allow"
+  return decision
 }
 
 export function permissionDecisionFor(input: {
