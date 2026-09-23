@@ -312,6 +312,47 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+type CommandOutputRemainder = { itemId: string, remainder: string }
+
+function appendCommandOutputRemainders(
+  snapshot: WorkspaceSnapshot,
+  remainders: readonly CommandOutputRemainder[],
+): void {
+  for (const { itemId, remainder } of remainders) {
+    const item = snapshot.thread.find((candidate) => candidate.id === itemId)
+    if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
+  }
+}
+
+function withoutApprovals(
+  snapshot: WorkspaceSnapshot,
+  predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
+  updatedAt: string,
+): {
+  removed: WorkspaceSnapshot["approvals"]
+  blockedIds: ReadonlySet<string>
+  approvals: WorkspaceSnapshot["approvals"]
+  workingPlans: WorkspaceSnapshot["workingPlans"]
+} | undefined {
+  const removed = snapshot.approvals.filter(predicate)
+  if (removed.length === 0) return undefined
+  const removedIds = new Set(removed.map((approval) => approval.id))
+  const blockedIds = new Set(snapshot.workingPlans.flatMap((plan) =>
+    plan.steps.flatMap((step) => (
+      step.blocker && removedIds.has(step.blocker.approvalId)
+        ? [step.blocker.approvalId]
+        : []
+    )),
+  ))
+  const cleared = clearWorkingPlanApprovalBlockers(snapshot.workingPlans, removedIds, updatedAt)
+  return {
+    removed,
+    blockedIds,
+    approvals: snapshot.approvals.filter((approval) => !removedIds.has(approval.id)),
+    workingPlans: cleared.plans,
+  }
+}
+
 function skillInstallAuditDetail(values: Record<string, unknown>): string {
   const source = values.source && typeof values.source === "object"
     ? (values.source as Record<string, unknown>).path
@@ -8600,7 +8641,11 @@ export class DomovoiDaemon {
       detail: redactDurableText(reason).value,
       createdAt,
     }))
+    const remainders = affected.flatMap((session) => this.#takeCommandOutputRemainders(session.id))
+    const heldByAffected = (approval: WorkspaceSnapshot["approvals"][number]) =>
+      affectedSessionIds.has(approval.sessionId)
     const markDisconnected = (snapshot: WorkspaceSnapshot) => {
+      appendCommandOutputRemainders(snapshot, remainders)
       for (const session of snapshot.sessions) {
         if (!affectedSessionIds.has(session.id)) continue
         if (!failingSessionIds.has(session.id)) {
@@ -8618,19 +8663,18 @@ export class DomovoiDaemon {
     }
     const candidate = structuredClone(this.#snapshot)
     markDisconnected(candidate)
+    const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
+    if (candidateApprovals) {
+      candidate.approvals = candidateApprovals.approvals
+      candidate.workingPlans = candidateApprovals.workingPlans
+    }
     workspaceSnapshotSchema.parse(candidate)
 
-    for (const session of affected) {
-      if (failingSessionIds.has(session.id)) {
-        this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
-      }
-      this.#flushCommandOutputStreams(session.id)
+    for (const session of failing) {
+      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
     }
     markDisconnected(this.#snapshot)
-    this.#removeApprovals(
-      (approval) => affectedSessionIds.has(approval.sessionId),
-      createdAt,
-    )
+    this.#removeApprovals(heldByAffected, createdAt)
     await this.#flushAgentState()
   }
 
@@ -8638,25 +8682,11 @@ export class DomovoiDaemon {
     predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
     updatedAt: string,
   ): WorkspaceSnapshot["approvals"] {
-    const removed = this.#snapshot.approvals.filter(predicate)
-    if (removed.length === 0) return []
-    const removedIds = new Set(removed.map((approval) => approval.id))
-    const blockedIds = new Set(this.#snapshot.workingPlans.flatMap((plan) =>
-      plan.steps.flatMap((step) => (
-        step.blocker && removedIds.has(step.blocker.approvalId)
-          ? [step.blocker.approvalId]
-          : []
-      )),
-    ))
-    this.#snapshot.approvals = this.#snapshot.approvals.filter(
-      (approval) => !removedIds.has(approval.id),
-    )
-    const cleared = clearWorkingPlanApprovalBlockers(
-      this.#snapshot.workingPlans,
-      removedIds,
-      updatedAt,
-    )
-    this.#snapshot.workingPlans = cleared.plans
+    const next = withoutApprovals(this.#snapshot, predicate, updatedAt)
+    if (!next) return []
+    const { removed, blockedIds } = next
+    this.#snapshot.approvals = next.approvals
+    this.#snapshot.workingPlans = next.workingPlans
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
       this.#appendAudit({
@@ -8676,15 +8706,19 @@ export class DomovoiDaemon {
   }
 
   #flushCommandOutputStreams(sessionId: string): void {
+    appendCommandOutputRemainders(this.#snapshot, this.#takeCommandOutputRemainders(sessionId))
+  }
+
+  #takeCommandOutputRemainders(sessionId: string): CommandOutputRemainder[] {
     const prefix = `${sessionId}\u0000`
+    const remainders: CommandOutputRemainder[] = []
     for (const [key, stream] of this.#commandOutputRedactors) {
       if (!key.startsWith(prefix)) continue
       const remainder = stream.redactor.flush()
       this.#commandOutputRedactors.delete(key)
-      if (!remainder) continue
-      const item = this.#snapshot.thread.find((candidate) => candidate.id === stream.itemId)
-      if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
+      if (remainder) remainders.push({ itemId: stream.itemId, remainder })
     }
+    return remainders
   }
 
   #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {

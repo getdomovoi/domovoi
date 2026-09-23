@@ -215,4 +215,73 @@ describe("provider disconnect", () => {
     expect(store.snapshot.approvals.map(({ id }) => id)).not.toContain(approval.id)
     for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
   })
+  it("changes nothing live when the approval cleanup cannot complete", async () => {
+    const snapshot = frozenWorkspace()
+    const session = snapshot.sessions[2]!
+    const approval = {
+      ...structuredClone(demoWorkspace.approvals[0]!),
+      id: "approval-ordinary",
+      sessionId: session.id,
+      providerRequestId: 41,
+    }
+    const saved: Array<typeof snapshot> = []
+    const store = {
+      load: () => snapshot,
+      save: (next: typeof snapshot) => { saved.push(structuredClone(next)) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    snapshot.approvals.push(approval)
+    snapshot.workingPlans.push({
+      sessionId: session.id,
+      revision: Number.MAX_SAFE_INTEGER,
+      structureRevision: 1,
+      steps: [{
+        id: "plan-step-ordinary",
+        text: "Wait for the approval",
+        status: "pending",
+        blocker: { kind: "approval", approvalId: approval.id },
+      }],
+      createdAt: "2026-09-03T18:00:00.000Z",
+      updatedAt: "2026-09-03T18:00:00.000Z",
+    })
+    workspaceSnapshotSchema.parse(snapshot)
+    const { socket } = await client(daemon, port)
+    await call(socket, "runtime.models", { provider: "codex", client: "desktop" })
+    const before = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+
+    for (const listener of listeners) {
+      listener({ type: "provider-disconnected", reason: "Codex app-server exited with code 1" })
+    }
+
+    const { hello } = await client(daemon, port)
+    expect(hello.error).toBeUndefined()
+    const after = await call(socket, "workspace.get")
+    expect(after.error).toBeUndefined()
+    const live = workspaceSnapshotSchema.parse(after.result)
+    expect(live.approvals).toEqual(before.approvals)
+    expect(live.workingPlans).toEqual(before.workingPlans)
+    expect(live.sessions).toEqual(before.sessions)
+    expect(live.thread).toEqual(before.thread)
+    for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
+  })
 })
