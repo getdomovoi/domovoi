@@ -369,13 +369,23 @@ function isWorktreeRelativePath(path: string): boolean {
     .every((segment) => segment.length > 0 && segment !== ".." && segment !== ".")
 }
 
+// Daemon bookkeeping is not the person's own Git work. A relative
+// core.hooksPath resolves inside the session worktree, where the agent can
+// write, so every command points hooks at a path that can never be a directory.
+const inertHooksPath = process.platform === "win32" ? join(process.execPath, "hooks") : "/dev/null"
+const inertRepositoryConfig = ["-c", `core.hooksPath=${inertHooksPath}`, "-c", "core.fsmonitor=false"] as const
+
+function gitArguments(repositoryPath: string, arguments_: readonly string[]): string[] {
+  return ["-C", repositoryPath, ...inertRepositoryConfig, ...arguments_]
+}
+
 async function git(
   repositoryPath: string,
   arguments_: string[],
   signal?: AbortSignal,
 ): Promise<string> {
   signal?.throwIfAborted()
-  const result = await trackRestoreCommand(() => execute("git", ["-C", repositoryPath, ...arguments_], {
+  const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
     encoding: "utf8",
     maxBuffer: maximumGitOutputBytes,
     signal,
@@ -418,7 +428,7 @@ async function gitDirectory(
   signal?: AbortSignal,
 ): Promise<string> {
   signal?.throwIfAborted()
-  const result = await execute("git", [`--git-dir=${directory}`, ...arguments_], {
+  const result = await execute("git", [`--git-dir=${directory}`, ...inertRepositoryConfig, ...arguments_], {
     encoding: "utf8",
     signal,
   })
@@ -433,7 +443,7 @@ async function boundedGit(
 ): Promise<{ output: string; truncated: boolean }> {
   signal?.throwIfAborted()
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("git", ["-C", repositoryPath, ...arguments_], {
+    const child = spawn("git", gitArguments(repositoryPath, arguments_), {
       stdio: ["ignore", "pipe", "pipe"],
     })
     const output: Buffer[] = []
@@ -498,7 +508,7 @@ async function hashGit(
 ): Promise<string> {
   signal?.throwIfAborted()
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("git", ["-C", repositoryPath, ...arguments_], {
+    const child = spawn("git", gitArguments(repositoryPath, arguments_), {
       stdio: ["ignore", "pipe", "pipe"],
     })
     const hash = createHash("sha256")
@@ -631,26 +641,18 @@ async function transferWorktreeFingerprint(
   signal?.throwIfAborted()
   const [headCommit, listed, staged] = await Promise.all([
     git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
-    execute("git", [
-      "-C",
-      worktreePath,
-      "-c",
-      "core.fsmonitor=false",
+    execute("git", gitArguments(worktreePath, [
       "ls-files",
       "-z",
       "--cached",
       "--others",
       "--exclude-standard",
-    ], { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
-    execute("git", [
-      "-C",
-      worktreePath,
-      "-c",
-      "core.fsmonitor=false",
+    ]), { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
+    execute("git", gitArguments(worktreePath, [
       "ls-files",
       "--stage",
       "-z",
-    ], { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
+    ]), { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
   ])
   const paths = utf8GitPaths(Buffer.from(listed.stdout))
   const gitlinks = indexedGitlinks(Buffer.from(staged.stdout))
@@ -1035,10 +1037,9 @@ export class GitWorkspaceService implements WorkspaceService {
         })
         if (canonical) promoted.add(Buffer.from(relative(root, canonical).split(sep).join("/")).toString("hex"))
       }
-      const { stdout } = await execute("git", [
-        "-C", root, "-c", "core.fsmonitor=false", "ls-files", "-z",
-        "--others", "--ignored", "--exclude-standard",
-      ], { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
+      const { stdout } = await execute("git", gitArguments(root, [
+        "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+      ]), { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
       let count = 0
       let start = 0
       // NUL framing also counts filenames containing newlines or non-UTF-8
@@ -1200,15 +1201,23 @@ export class GitWorkspaceService implements WorkspaceService {
       return { commit, changedFiles }
     }
 
-    await git(worktreePath, [
-      "-c",
-      "user.name=Domovoi",
-      "-c",
-      "user.email=domovoi@localhost",
-      "commit",
-      "-m",
-      `chore(domovoi): checkpoint ${label}`,
-    ], signal)
+    try {
+      await git(worktreePath, [
+        "-c",
+        "user.name=Domovoi",
+        "-c",
+        "user.email=domovoi@localhost",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--no-verify",
+        "-m",
+        `chore(domovoi): checkpoint ${label}`,
+      ], signal)
+    } catch (error) {
+      await git(worktreePath, ["reset", "-q"]).catch(() => undefined)
+      throw error
+    }
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     return { commit, changedFiles }

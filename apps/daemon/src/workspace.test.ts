@@ -667,6 +667,113 @@ describe("GitWorkspaceService", () => {
 
     expect(await observe()).toEqual(before)
   })
+
+  it("never runs hooks the session worktree can edit during checkpoint, restore or revert", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-hooks-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "README.md"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await execute("git", ["-C", repositoryPath, "config", "core.hooksPath", ".githooks"])
+
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-hooks")
+    const markerPath = join(scratch, "hook-ran").replaceAll("\\", "/")
+    await mkdir(join(workspace.path, ".githooks"))
+    for (const hook of [
+      "pre-commit",
+      "prepare-commit-msg",
+      "commit-msg",
+      "post-commit",
+      "post-checkout",
+      "post-index-change",
+      "reference-transaction",
+    ]) {
+      await writeFile(
+        join(workspace.path, ".githooks", hook),
+        `#!/bin/sh\necho ${hook} >> "${markerPath}"\n`,
+        { mode: 0o755 },
+      )
+    }
+    await execute("git", [
+      "-C", workspace.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "--allow-empty", "-m", "control",
+    ])
+    await expect(readFile(markerPath, "utf8")).resolves.toContain("pre-commit")
+    await rm(markerPath)
+
+    await writeFile(join(workspace.path, "README.md"), "after\n")
+    const checkpoint = await service.checkpoint(workspace.path, "before-agent-turn")
+    await writeFile(join(workspace.path, "README.md"), "later\n")
+    await service.restore(workspace.path, checkpoint.commit)
+    await writeFile(join(workspace.path, "README.md"), "edited again\n")
+    await service.revertFile(workspace.path, "README.md")
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  it("checkpoints past a failing commit hook and a signing setup it cannot use", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-signing-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await writeFile(join(repositoryPath, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    await execute("git", ["-C", repositoryPath, "config", "commit.gpgsign", "true"])
+    await execute("git", ["-C", repositoryPath, "config", "gpg.program", join(scratch, "missing-signer")])
+    await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
+
+    const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees"))
+      .checkpoint(repositoryPath, "signed repository")
+
+    expect(checkpoint.changedFiles).toEqual(["tracked.txt"])
+    expect((await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim()).toBe(checkpoint.commit)
+    expect((await execute("git", ["-C", repositoryPath, "cat-file", "commit", "HEAD"])).stdout).not.toContain("gpgsig")
+  })
+
+  it("leaves nothing staged when the checkpoint commit itself fails", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-commit-fails-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
+    await writeFile(join(repositoryPath, "remove.txt"), "remove me\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
+    await rm(join(repositoryPath, "remove.txt"))
+    await writeFile(join(repositoryPath, "fresh.txt"), "fresh\n")
+    const observe = async () => ({
+      head: (await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim(),
+      staged: (await execute("git", ["-C", repositoryPath, "diff", "--cached", "--name-only"])).stdout,
+      status: (await execute("git", ["-C", repositoryPath, "status", "--porcelain"])).stdout,
+    })
+    const before = await observe()
+    expect(before.staged).toBe("")
+
+    const branchLock = join(repositoryPath, ".git", "refs", "heads", "main.lock")
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterCheckpointStaging: () => writeFile(branchLock, ""),
+    })
+    await expect(service.checkpoint(repositoryPath, "blocked")).rejects.toThrow()
+    await rm(branchLock)
+
+    expect(await observe()).toEqual(before)
+  })
 })
 
 describe("GitWorkspaceService session bundles", () => {
