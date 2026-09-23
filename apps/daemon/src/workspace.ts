@@ -218,6 +218,51 @@ export class FileRevertIncompleteError extends Error {
   }
 }
 
+// A filter driver runs a command on every add, checkout and reset. One the
+// person set in their global or system config is their own tool (Git LFS). One
+// the repository's own config sets can point at a file the agent edits, and
+// switching it off would change what a checkpoint stores (git-crypt plaintext),
+// so the actions that would run it are refused until repositories can be
+// trusted.
+const trustedFilterScopes = new Set(["system", "global", "command"])
+
+export class RepositoryFilterRefusedError extends Error {
+  readonly filters: readonly string[]
+
+  constructor(entries: readonly { scope: string; key: string }[]) {
+    const filters = [...new Set(entries.map(({ key }) => key.slice("filter.".length, key.lastIndexOf("."))))]
+    const settings = entries.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")
+    super(
+      `This repository's own Git config sets the filter ${filters.map((name) => `"${name}"`).join(", ")} (${settings}). `
+      + "Checkpoint, restore, revert, archive and transfer would run its command, and Domovoi does not run "
+      + "commands a repository's own config supplies until that repository can be trusted. "
+      + "Filters from your global or system Git config still run.",
+    )
+    this.name = "RepositoryFilterRefusedError"
+    this.filters = filters
+  }
+}
+
+async function refuseRepositoryFilters(repositoryPath: string, signal?: AbortSignal): Promise<void> {
+  let output: string
+  try {
+    output = await git(repositoryPath, [
+      "config", "--show-scope", "-z", "--get-regexp", String.raw`^filter\..+\.(clean|smudge|process)$`,
+    ], signal)
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) return
+    throw error
+  }
+  const fields = output.split("\0")
+  const entries: { scope: string; key: string }[] = []
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const scope = fields[index]!
+    const key = fields[index + 1]!.split("\n")[0]!
+    if (!trustedFilterScopes.has(scope)) entries.push({ scope, key })
+  }
+  if (entries.length > 0) throw new RepositoryFilterRefusedError(entries)
+}
+
 export class WorkspaceEvidenceUnstableError extends Error {
   constructor() {
     super("Workspace changed while evidence was collected")
@@ -1215,6 +1260,7 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
+    await refuseRepositoryFilters(worktreePath, signal)
     // A failed checkpoint must leave the index exactly as it found it,
     // including anything the person had staged themselves.
     const index = await snapshotIndex(worktreePath, signal)
@@ -1286,6 +1332,7 @@ export class GitWorkspaceService implements WorkspaceService {
     // A remote name that begins with a dash would be read as an option by git.
     if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
 
+    await refuseRepositoryFilters(worktreePath, signal)
     const remotes = await git(worktreePath, ["remote"], signal)
     if (!remotes.split("\n").map((name) => name.trim()).includes(remote)) {
       throw new Error(`Repository has no remote named ${remote}`)
@@ -1331,6 +1378,7 @@ export class GitWorkspaceService implements WorkspaceService {
       ? signal
       : expectedCommitOrSignal ?? signal
     if (!safeSessionId.test(sessionId)) throw new Error("Session id is not safe for a worktree")
+    await refuseRepositoryFilters(repositoryPath, operationSignal)
     if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
     if (expectedCommit !== undefined && !/^[a-f0-9]{40}$/u.test(expectedCommit)) {
       throw new Error("Expected remote session commit is invalid")
@@ -1411,6 +1459,7 @@ export class GitWorkspaceService implements WorkspaceService {
       throw new Error("Bundle path must not traverse")
     }
     const resolved = resolve(bundlePath)
+    await refuseRepositoryFilters(worktreePath, signal)
     if (sinceCommit !== undefined && !/^[a-f0-9]{40}$/.test(sinceCommit)) {
       throw new Error("Bundle base commit is invalid")
     }
@@ -1554,6 +1603,7 @@ export class GitWorkspaceService implements WorkspaceService {
     options: SessionBundleRestoreOptions,
     signal?: AbortSignal,
   ): Promise<SessionWorkspace> {
+    await refuseRepositoryFilters(options.repositoryPath, signal)
     const repository = await this.inspect(options.repositoryPath, signal)
     const path = join(this.worktreeRoot, sessionId)
     const branch = `domovoi/${sessionId}`
@@ -1651,6 +1701,7 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!/^[a-f0-9]{40}$/.test(commit)) {
       throw new Error("Checkpoint commit is invalid")
     }
+    await refuseRepositoryFilters(worktreePath, signal)
     let checkpointCommit: string
     try {
       checkpointCommit = await git(worktreePath, [
@@ -1682,6 +1733,7 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!isWorktreeRelativePath(path)) {
       throw new Error("File path must stay inside the session worktree")
     }
+    await refuseRepositoryFilters(worktreePath, signal)
     const pathspec = `:(literal)${path}`
     const baseCommit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     if (expectedBaseCommit !== undefined && baseCommit !== expectedBaseCommit) {
@@ -1741,6 +1793,7 @@ export class GitWorkspaceService implements WorkspaceService {
   async archiveSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
     const resolved = await this.#resolveManagedWorktree(worktreePath, signal)
     if (!resolved) return
+    await refuseRepositoryFilters(resolved.path, signal)
     await gitDirectory(
       resolved.commonDirectory,
       ["worktree", "remove", "--force", resolved.path],

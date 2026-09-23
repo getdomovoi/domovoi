@@ -7,7 +7,12 @@ import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { GitWorkspaceService, utf8GitPaths, WorkspaceEvidenceUnstableError } from "./workspace.js"
+import {
+  GitWorkspaceService,
+  RepositoryFilterRefusedError,
+  utf8GitPaths,
+  WorkspaceEvidenceUnstableError,
+} from "./workspace.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
@@ -740,6 +745,76 @@ describe("GitWorkspaceService", () => {
     expect(checkpoint.changedFiles).toEqual(["tracked.txt"])
     expect((await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim()).toBe(checkpoint.commit)
     expect((await execute("git", ["-C", repositoryPath, "cat-file", "commit", "HEAD"])).stdout).not.toContain("gpgsig")
+  })
+
+  it("refuses checkpoint, restore, revert, archive and transfer while the repository's own config sets a filter, and never runs it", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-repository-filter-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "victim.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-filter")
+    const checkpoint = await service.checkpoint(workspace.path, "before the filter")
+    const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.clean", "sh ./payload.sh"])
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.smudge", "sh ./payload.sh"])
+    await writeFile(join(workspace.path, "payload.sh"), `echo ran >> "${markerPath}"\ncat\n`)
+    await writeFile(join(workspace.path, ".gitattributes"), "victim.txt filter=agent\n")
+    await writeFile(join(workspace.path, "victim.txt"), "changed\n")
+    await execute("git", ["-C", workspace.path, "add", "victim.txt"])
+    await expect(readFile(markerPath, "utf8")).resolves.toContain("ran")
+    await rm(markerPath)
+    await execute("git", ["-C", workspace.path, "reset", "-q"])
+    await rm(markerPath, { force: true })
+
+    const refused = expect.objectContaining({
+      name: "RepositoryFilterRefusedError",
+      message: expect.stringContaining("filter.agent.clean in local Git config"),
+    })
+    await expect(service.checkpoint(workspace.path, "after the filter")).rejects.toEqual(refused)
+    await expect(service.restore(workspace.path, checkpoint.commit)).rejects.toEqual(refused)
+    await expect(service.revertFile(workspace.path, "victim.txt")).rejects.toEqual(refused)
+    await expect(service.bundleSession(workspace.path, join(scratch, "session.bundle"))).rejects.toEqual(refused)
+    await expect(service.archiveSessionWorkspace(workspace.path)).rejects.toBeInstanceOf(RepositoryFilterRefusedError)
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+    await expect(readFile(join(workspace.path, "victim.txt"), "utf8")).resolves.toBe("changed\n")
+  })
+
+  it("keeps running a filter the person set in their global Git config", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-global-filter-"))
+    scratchDirectories.push(scratch)
+    const globalConfig = join(scratch, "global.gitconfig")
+    await writeFile(globalConfig, "[filter \"upper\"]\n\tclean = tr a-z A-Z\n\tsmudge = cat\n")
+    const previous = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = globalConfig
+    try {
+      const repositoryPath = join(scratch, "project")
+      await execute("git", ["init", "--initial-branch=main", repositoryPath])
+      await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+      await writeFile(join(repositoryPath, ".gitattributes"), "*.txt filter=upper\n")
+      await writeFile(join(repositoryPath, "note.txt"), "base\n")
+      await execute("git", ["-C", repositoryPath, "add", "."])
+      await execute("git", [
+        "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+        "commit", "-m", "initial",
+      ])
+      await writeFile(join(repositoryPath, "note.txt"), "changed\n")
+
+      const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees")).checkpoint(repositoryPath, "global filter")
+
+      expect((await execute("git", ["-C", repositoryPath, "show", `${checkpoint.commit}:note.txt`])).stdout).toBe("CHANGED\n")
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = previous
+    }
   })
 
   it.each([
