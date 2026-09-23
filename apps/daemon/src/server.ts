@@ -1209,11 +1209,14 @@ type ActiveTerminal = {
   redactor: TerminalOutputRedactor
   redactorFlush: ReturnType<typeof setTimeout> | undefined
   owner: TerminalOwner
-  // Ownership is the connection that holds it. The owner's identity is
-  // broadcast to every client, so a caller-supplied one authorizes nothing.
-  // A released ownership waits through a grace window for the next connection
-  // to re-claim it, then the terminal is reaped rather than stranded forever.
+  // Ownership is the connection that holds it, and any later direct connection
+  // that authenticated as the same client (its hello identity, or its paired
+  // device). The owner broadcast to every client is caller-supplied and
+  // authorizes nothing. A released ownership waits through a grace window for
+  // that client to reconnect, then the terminal is reaped rather than
+  // stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  ownerKey: string | undefined
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -4242,6 +4245,7 @@ export class DomovoiDaemon {
         })
       }
       this.#connectionIds.set(socket, randomUUID())
+      this.#reattachTerminals(socket)
       const deadline = this.#authenticationDeadlines.get(socket)
       if (deadline) clearTimeout(deadline)
       this.#authenticationDeadlines.delete(socket)
@@ -4649,13 +4653,14 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (existing.ownerSocket === socket) {
+          if (this.#ownsTerminal(existing, socket)) {
             existing.process.resize(params.cols, params.rows)
             existing.cols = params.cols
             existing.rows = params.rows
           } else if (existing.ownerSocket === undefined) {
             existing.owner = { client: params.client, clientId: params.clientId }
             existing.ownerSocket = socket
+            existing.ownerKey = this.#terminalClientKey(socket)
             if (existing.reapTimer !== undefined) {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
@@ -4709,6 +4714,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
+          ownerKey: this.#terminalClientKey(socket),
           reapTimer: undefined,
           output,
           outputBackpressure,
@@ -4801,6 +4807,7 @@ export class DomovoiDaemon {
         }
         terminal.owner = { client: params.client, clientId: params.clientId }
         terminal.ownerSocket = socket
+        terminal.ownerKey = this.#terminalClientKey(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -4821,7 +4828,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -4841,7 +4848,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -4863,7 +4870,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal.ownerSocket !== socket) {
+        if (!this.#ownsTerminal(terminal, socket)) {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
@@ -9443,9 +9450,53 @@ export class DomovoiDaemon {
     return true
   }
 
+  // Relay channels stay bound to the channel that admitted them; only direct
+  // connections share a terminal across a reconnect of the same client.
+  #terminalClientKey(socket: RpcOutboundSocket): string | undefined {
+    if (socket instanceof DaemonRelaySocket) return undefined
+    const actor = this.#authenticatedActors.get(socket)
+    if (actor?.kind !== "client" || actor.clientId === undefined) return undefined
+    return `${actor.client}\u0000${actor.clientId}`
+  }
+
+  // A connection that authenticated as the owning client holds the terminal,
+  // so the owner's reconnect is not refused as another client's.
+  #ownsTerminal(terminal: ActiveTerminal, socket: RpcOutboundSocket): boolean {
+    if (terminal.ownerSocket === socket) return true
+    const key = this.#terminalClientKey(socket)
+    if (key === undefined || terminal.ownerKey !== key) return false
+    terminal.ownerSocket = socket
+    if (terminal.reapTimer !== undefined) {
+      clearTimeout(terminal.reapTimer)
+      terminal.reapTimer = undefined
+    }
+    return true
+  }
+
+  #reattachTerminals(socket: RpcOutboundSocket): void {
+    const key = this.#terminalClientKey(socket)
+    if (key === undefined) return
+    for (const [terminalId, terminal] of this.#terminals) {
+      if (terminal.ownerSocket !== undefined || terminal.ownerKey !== key) continue
+      this.#ownsTerminal(terminal, socket)
+      this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+        terminalId,
+        owner: terminal.owner,
+      }))
+    }
+  }
+
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
+    const key = this.#terminalClientKey(socket)
+    const sameClient = key === undefined
+      ? undefined
+      : [...this.#rpcClients].find((candidate) => candidate !== socket && this.#terminalClientKey(candidate) === key)
     for (const [terminalId, terminal] of this.#terminals) {
       if (terminal.ownerSocket !== socket) continue
+      if (sameClient) {
+        terminal.ownerSocket = sameClient
+        continue
+      }
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
       terminal.reapTimer = setTimeout(() => {
