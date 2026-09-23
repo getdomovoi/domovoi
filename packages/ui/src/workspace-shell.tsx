@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -52,11 +54,8 @@ import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
-import { SkillBrowser } from "./skill-browser"
-import { AuditLogView } from "./audit-log-view"
-import { FleetView } from "./fleet-view"
 import { type ProviderSecretStatus } from "./provider-settings"
-import { SettingsShell, type LocalDaemonDescription } from "./settings-shell"
+import type { LocalDaemonDescription } from "./settings-shell"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
@@ -150,6 +149,21 @@ const watchingMutationCommands = new Set([
   "emergency-stop",
   "reconnect",
 ])
+
+// The shell opens on a thread. These surfaces load when one is first opened,
+// so a launch does not download, parse and compile them.
+const SettingsShell = lazy(async () => ({ default: (await import("./settings-shell")).SettingsShell }))
+const SkillBrowser = lazy(async () => ({ default: (await import("./skill-browser")).SkillBrowser }))
+const FleetView = lazy(async () => ({ default: (await import("./fleet-view")).FleetView }))
+const AuditLogView = lazy(async () => ({ default: (await import("./audit-log-view")).AuditLogView }))
+
+function SurfaceLoading({ name }: { name: string }) {
+  return (
+    <main className="flex min-h-0 flex-1 items-center justify-center bg-background">
+      <p role="status" className="font-machine text-mono-xs text-faint">Opening {name}</p>
+    </main>
+  )
+}
 
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
@@ -1256,6 +1270,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             </AlertDialogContent>
           </AlertDialog>
           {surface === "providers" ? (
+          <Suspense fallback={<SurfaceLoading name="Settings" />}>
           <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
@@ -1297,7 +1312,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onWindowDecorationChange: changeWindowDecoration,
             } : {})}
           />
+          </Suspense>
         ) : surface === "skills" ? (
+          <Suspense fallback={<SurfaceLoading name="Skills" />}>
           <SkillBrowser
             skills={skills}
             inventorySources={skillInventories}
@@ -1323,7 +1340,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
+          </Suspense>
         ) : surface === "fleet" ? (
+          <Suspense fallback={<SurfaceLoading name="Machines" />}>
           <FleetView
             connected={home.connected}
             entries={fleet?.entries ?? (home.snapshot ? [localFleetEntry(home.snapshot)] : [])}
@@ -1361,13 +1380,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               openDockTab("terminal")
             }}
           />
+          </Suspense>
         ) : surface === "audit" ? (
+          <Suspense fallback={<SurfaceLoading name="Audit log" />}>
           <AuditLogView
             connected={connected}
             onOpenSkills={() => setSurface("skills")}
             onQuery={queryAudit}
             onExport={exportAudit}
           />
+          </Suspense>
         ) : (
           <div className="relative flex min-h-0 flex-1">
             <ResizablePanelGroup

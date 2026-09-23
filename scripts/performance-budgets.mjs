@@ -34,34 +34,59 @@ function startupScriptReferences(html) {
   return references
 }
 
-async function sumStartupScripts(indexHtmlPath) {
+async function startupScripts(indexHtmlPath) {
   const html = await readFile(indexHtmlPath, "utf8")
   const root = dirname(indexHtmlPath)
+  const paths = new Set()
   let total = 0
   for (const reference of new Set(startupScriptReferences(html))) {
     const path = reference.startsWith("/")
       ? join(root, reference.slice(1))
       : resolve(root, reference)
+    paths.add(path)
     total += (await readFile(path)).byteLength
   }
-  return total
+  return { paths, total }
+}
+
+async function scriptFiles(root) {
+  const files = []
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name)
+    if (entry.isDirectory()) files.push(...await scriptFiles(path))
+    else if (entry.isFile() && [".js", ".mjs"].includes(extname(entry.name))) files.push(path)
+  }
+  return files
+}
+
+// A lazy chunk is paid for only when the surface that needs it opens, so each
+// one is held to the ceiling on its own. A sum would charge a surface split out
+// of startup against every other lazy chunk and push splitting back into the
+// startup graph.
+async function largestLazyScript(root, startup) {
+  let largest = 0
+  for (const path of await scriptFiles(root)) {
+    if (startup.has(path)) continue
+    largest = Math.max(largest, (await readFile(path)).byteLength)
+  }
+  return largest
 }
 
 export async function collectArtifactMeasurements(root = repositoryRoot) {
   const web = join(root, "apps", "web", "dist")
   const desktop = join(root, "apps", "desktop", "out")
   const renderer = join(desktop, "renderer")
-  const webStartupBytes = await sumStartupScripts(join(web, "index.html"))
-  const rendererStartupBytes = await sumStartupScripts(join(renderer, "index.html"))
+  const webStartup = await startupScripts(join(web, "index.html"))
+  const rendererStartup = await startupScripts(join(renderer, "index.html"))
   return {
     web: {
-      javascriptBytes: webStartupBytes,
-      lazyJavascriptBytes: (await sumExtensions(web, new Set([".js", ".mjs"]))) - webStartupBytes,
+      javascriptBytes: webStartup.total,
+      lazyJavascriptBytes: await largestLazyScript(web, webStartup.paths),
       stylesheetBytes: await sumExtensions(web, new Set([".css"])),
     },
     desktop: {
-      rendererJavascriptBytes: rendererStartupBytes,
-      rendererLazyJavascriptBytes: (await sumExtensions(renderer, new Set([".js", ".mjs"]))) - rendererStartupBytes,
+      rendererJavascriptBytes: rendererStartup.total,
+      rendererLazyJavascriptBytes: await largestLazyScript(renderer, rendererStartup.paths),
       rendererStylesheetBytes: await sumExtensions(renderer, new Set([".css"])),
       mainBytes: (await readFile(join(desktop, "main", "index.js"))).byteLength,
       preloadBytes: (await readFile(join(desktop, "preload", "index.cjs"))).byteLength,

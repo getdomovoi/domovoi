@@ -121,3 +121,19 @@ test("counts only the startup graph and reports lazy chunks separately", async (
     },
   })
 })
+
+// A lazy chunk is paid for only when its surface opens, so each one is held to
+// the ceiling on its own. Splitting a surface out of startup must not be
+// charged against every other lazy chunk.
+test("holds each lazy chunk to the ceiling on its own rather than their sum", async (t) => {
+  const root = await buildFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, "apps", "web", "dist", "assets", "settings.js"), "s".repeat(40))
+  await writeFile(join(root, "apps", "desktop", "out", "renderer", "assets", "renderer-settings.js"), "s".repeat(30))
+
+  const measurements = await collectArtifactMeasurements(root)
+
+  assert.equal(measurements.web.lazyJavascriptBytes, 50)
+  assert.equal(measurements.desktop.rendererLazyJavascriptBytes, 30)
+})
+
