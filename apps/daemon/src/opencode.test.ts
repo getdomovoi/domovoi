@@ -660,3 +660,152 @@ describe("KiloSdkAdapter", () => {
     await adapter.close()
   })
 })
+
+describe("subagents and current permission events", () => {
+  it.each([
+    ["OpenCode", domovoiOpenCodeConfig],
+    ["Kilo", domovoiKiloConfig],
+  ])("makes every %s agent, built-in subagents included, ask before it edits, runs or fetches", (_name, config) => {
+    expect(config.permission).toEqual({
+      edit: "ask",
+      bash: "ask",
+      webfetch: "ask",
+      doom_loop: "ask",
+      external_directory: "ask",
+    })
+  })
+
+  async function buildTurn() {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Explore", runtime: runtime("build") })
+    return { adapter, client, events, stream, threadId }
+  }
+
+  it("raises an approval for the permission.asked event the current server sends", async () => {
+    const { adapter, client, events, stream, threadId } = await buildTurn()
+
+    stream.emit({
+      type: "permission.asked",
+      properties: {
+        id: "per_1",
+        sessionID: threadId,
+        permission: "bash",
+        patterns: ["pnpm test"],
+        metadata: { command: "pnpm test" },
+        always: ["pnpm *"],
+        tool: { messageID: "msg_1", callID: "call_1" },
+      },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested",
+      threadId,
+      turnId: "turn-1",
+      itemId: "call_1",
+      command: "pnpm test",
+    })))
+    adapter.resolveApproval(1, "deny")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: threadId, permissionID: "per_1" }, body: { response: "reject" } }),
+    ))
+    await adapter.close()
+  })
+
+  it("routes a subagent's approvals and commands to the parent thread and answers the child session", async () => {
+    const { adapter, client, events, stream, threadId } = await buildTurn()
+    const child = "ses_child"
+
+    stream.emit({ type: "session.created", properties: { sessionID: child, info: { id: child, parentID: threadId, directory: "/worktree" } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: {
+        id: "per_child",
+        sessionID: child,
+        permission: "bash",
+        patterns: ["rm -rf build"],
+        metadata: { command: "rm -rf build" },
+        always: ["rm *"],
+        tool: { messageID: "msg_child", callID: "call_child" },
+      },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "approval-requested",
+      threadId,
+      turnId: "turn-1",
+      itemId: "call_child",
+      command: "rm -rf build",
+    })))
+    adapter.resolveApproval(1, "allow-once")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: child, permissionID: "per_child" }, body: { response: "once" } }),
+    ))
+
+    stream.emit({ type: "message.updated", properties: { info: { id: "msg_child", sessionID: child, role: "assistant", parentID: "child-user" } } })
+    stream.emit({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          type: "tool",
+          sessionID: child,
+          messageID: "msg_child",
+          callID: "call_child",
+          tool: "bash",
+          state: { status: "completed", input: { command: "rm -rf build" }, output: "" },
+        },
+      },
+    })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "item",
+      phase: "completed",
+      params: expect.objectContaining({
+        threadId,
+        turnId: "turn-1",
+        item: expect.objectContaining({ type: "commandExecution", id: "call_child", command: ["rm -rf build"] }),
+      }),
+    })))
+
+    stream.emit({ type: "session.idle", properties: { sessionID: child } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "turn-completed" }))
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed" })))
+    await adapter.close()
+  })
+
+  it("ignores a session whose parent it does not hold", async () => {
+    const { adapter, events, stream } = await buildTurn()
+
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_other", info: { id: "ses_other", parentID: "ses_unknown" } } })
+    stream.emit({
+      type: "permission.asked",
+      properties: { id: "per_other", sessionID: "ses_other", permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [] },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "approval-requested" }))
+    await adapter.close()
+  })
+})
+
+describe("event stream shapes", () => {
+  it("keeps the stream open past an event that carries no properties", async () => {
+    const { factory, stream } = harness()
+    const adapter = new KiloSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    stream.emit({ type: "sync" } as unknown as OpenCodeEvent)
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turn: expect.objectContaining({ status: "completed" }) }),
+    })))
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "provider-disconnected" }))
+    await adapter.close()
+  })
+})

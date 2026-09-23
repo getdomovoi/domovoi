@@ -86,7 +86,9 @@ type DirectoryStream = {
 }
 
 type PendingApproval = {
-  threadId: string
+  // The session that asked: the Domovoi thread itself, or a subagent session
+  // the thread's task tool started. The reply goes to that session.
+  providerSessionId: string
   cwd: string
   permissionId: string
 }
@@ -116,6 +118,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #directories = new Map<string, DirectoryStream>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
+  // Subagent sessions the task tool started, by session id, with the thread
+  // whose turn they belong to.
+  #subagentSessions = new Map<string, string>()
   #nextApprovalId = 0
 
   constructor(
@@ -318,7 +323,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       : "reject"
     void this.#client().then(async (client) => {
       unwrap(await client.postSessionIdPermissionsPermissionId({
-        path: { id: pending.threadId, permissionID: pending.permissionId },
+        path: { id: pending.providerSessionId, permissionID: pending.permissionId },
         query: { directory: pending.cwd },
         body: { response },
         throwOnError: true,
@@ -338,6 +343,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const directory of this.#directories.values()) directory.controller.abort()
     this.#directories.clear()
     this.#sessions.clear()
+    this.#subagentSessions.clear()
     this.#pendingApprovals.clear()
     this.#runtime?.server.close()
     this.#runtime = undefined
@@ -403,12 +409,20 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const session of this.#sessions.values()) {
       if (session.cwd !== cwd) continue
       this.#complete(session, "failed", reason)
+      this.#forgetSubagents(session.threadId)
       this.#sessions.delete(session.threadId)
     }
     this.#emit({ type: "provider-disconnected", reason })
   }
 
+  #forgetSubagents(threadId: string): void {
+    for (const [sessionId, owner] of this.#subagentSessions) {
+      if (owner === threadId) this.#subagentSessions.delete(sessionId)
+    }
+  }
+
   #unloadSession(session: Session): void {
+    this.#forgetSubagents(session.threadId)
     this.#sessions.delete(session.threadId)
     const directory = this.#directories.get(session.cwd)
     if (!directory) return
@@ -443,17 +457,34 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for await (const event of stream) this.#receive(cwd, event)
   }
 
+  // A subagent the task tool starts runs as its own session, with its own
+  // tools and approvals, in the same directory. Its session records its parent.
+  #adoptSubagent(cwd: string, properties: Record<string, unknown>): void {
+    const info = asRecord(properties.info)
+    if (typeof info?.id !== "string" || typeof info.parentID !== "string") return
+    if (this.#sessions.has(info.id) || this.#subagentSessions.has(info.id)) return
+    const owner = this.#subagentSessions.get(info.parentID) ?? info.parentID
+    if (this.#sessions.get(owner)?.cwd !== cwd) return
+    this.#subagentSessions.set(info.id, owner)
+  }
+
   #receive(cwd: string, event: OpenCodeEvent): void {
-    const properties = event.properties
-    const sessionId = eventSessionId(event)
+    // Kilo also streams events with no properties at all, such as `sync`.
+    const properties = asRecord(event.properties)
+    if (!properties) return
+    if (event.type === "session.created" || event.type === "session.updated") this.#adoptSubagent(cwd, properties)
+    const sessionId = eventSessionId(properties)
     if (!sessionId) return
-    const session = this.#sessions.get(sessionId)
+    const subagent = this.#subagentSessions.has(sessionId)
+    const session = this.#sessions.get(this.#subagentSessions.get(sessionId) ?? sessionId)
     if (!session || session.cwd !== cwd) return
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
       if (info?.role === "assistant" && typeof info.id === "string") {
-        const turnId = typeof info.parentID === "string" ? info.parentID : undefined
+        const turnId = subagent
+          ? session.activeTurnId
+          : typeof info.parentID === "string" ? info.parentID : undefined
         if (!turnId) return
         session.assistantMessageTurnIds.set(info.id, turnId)
         const tokens = asRecord(info.tokens)
@@ -472,10 +503,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
           reasoningTokens: 0, totalTokens: 0, costSource: "unavailable" as const }
         try {
           const usage = normalizeProviderUsage(info) ?? unavailable
-          this.#emit({ type: "usage", threadId: sessionId, turnId, usage, source })
+          this.#emit({ type: "usage", threadId: session.threadId, turnId, usage, source })
         } catch {
           this.#emit({
-            type: "usage", threadId: sessionId, turnId,
+            type: "usage", threadId: session.threadId, turnId,
             usage: unavailable,
             source: { ...source, tokens: "unavailable", invalid: true },
           })
@@ -492,37 +523,31 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         || !session.assistantMessageTurnIds.has(part.messageID)
       ) return
       const parentTurnId = session.assistantMessageTurnIds.get(part.messageID)!
-      if (part?.type === "text" && typeof properties.delta === "string") {
-        this.#emit({ type: "text-delta", threadId: sessionId, turnId: parentTurnId, delta: properties.delta })
+      if (!subagent && part?.type === "text" && typeof properties.delta === "string") {
+        this.#emit({ type: "text-delta", threadId: session.threadId, turnId: parentTurnId, delta: properties.delta })
       }
       if (part?.type === "tool") this.#receiveTool(session, parentTurnId, part)
       return
     }
-    if (event.type === "permission.updated") {
-      const permissionId = typeof properties.id === "string" ? properties.id : undefined
-      if (!permissionId) return
+    if (event.type === "permission.updated" || event.type === "permission.asked") {
+      const request = permissionRequest(properties, this.#identity.providerName)
+      if (!request) return
       const requestId = ++this.#nextApprovalId
-      const metadata = asRecord(properties.metadata)
-      const command = typeof metadata?.command === "string"
-        ? metadata.command
-        : typeof properties.title === "string"
-          ? properties.title
-          : typeof properties.type === "string"
-            ? properties.type
-            : `${this.#identity.providerName} tool`
-      this.#pendingApprovals.set(requestId, { threadId: sessionId, cwd, permissionId })
+      this.#pendingApprovals.set(requestId, { providerSessionId: sessionId, cwd, permissionId: request.permissionId })
       this.#emit({
         type: "approval-requested",
         requestId,
-        threadId: sessionId,
+        threadId: session.threadId,
         turnId,
-        ...(typeof properties.callID === "string" ? { itemId: properties.callID } : {}),
-        command,
+        ...(request.itemId ? { itemId: request.itemId } : {}),
+        command: request.command,
         cwd,
-        ...(typeof properties.title === "string" ? { reason: properties.title } : {}),
+        ...(request.reason ? { reason: request.reason } : {}),
       })
       return
     }
+    // A subagent finishing or failing ends its task tool call, not the turn.
+    if (subagent) return
     if (event.type === "session.error") {
       const error = asRecord(properties.error)
       this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
@@ -621,11 +646,43 @@ function openCodeModel(id: string): { providerID: string; modelID: string } | un
   return { providerID: id.slice(0, separator), modelID: id.slice(separator + 1) }
 }
 
-function eventSessionId(event: OpenCodeEvent): string | undefined {
-  if (typeof event.properties.sessionID === "string") return event.properties.sessionID
-  const part = asRecord(event.properties.part)
+// `permission.updated` is the shape older servers send; `permission.asked`
+// (opencode 1.18, kilo 7.7) names the permission and its patterns instead of a
+// title and type, and nests the call id under `tool`.
+function permissionRequest(
+  properties: Record<string, unknown>,
+  providerName: string,
+): { permissionId: string; command: string; reason?: string; itemId?: string } | undefined {
+  if (typeof properties.id !== "string") return undefined
+  const metadata = asRecord(properties.metadata)
+  const kind = typeof properties.permission === "string"
+    ? properties.permission
+    : typeof properties.type === "string" ? properties.type : undefined
+  const patterns = Array.isArray(properties.patterns)
+    ? properties.patterns.filter((pattern): pattern is string => typeof pattern === "string")
+    : []
+  const title = typeof properties.title === "string" ? properties.title : undefined
+  const command = typeof metadata?.command === "string"
+    ? metadata.command
+    : title ?? (kind ? [kind, ...patterns].join(" ") : `${providerName} tool`)
+  const reason = title ?? (kind && patterns.length > 0 ? `${kind}: ${patterns.join(", ")}` : kind)
+  const tool = asRecord(properties.tool)
+  const itemId = typeof properties.callID === "string"
+    ? properties.callID
+    : typeof tool?.callID === "string" ? tool.callID : undefined
+  return {
+    permissionId: properties.id,
+    command,
+    ...(reason ? { reason } : {}),
+    ...(itemId ? { itemId } : {}),
+  }
+}
+
+function eventSessionId(properties: Record<string, unknown>): string | undefined {
+  if (typeof properties.sessionID === "string") return properties.sessionID
+  const part = asRecord(properties.part)
   if (typeof part?.sessionID === "string") return part.sessionID
-  const info = asRecord(event.properties.info)
+  const info = asRecord(properties.info)
   return typeof info?.sessionID === "string" ? info.sessionID : undefined
 }
 
@@ -763,8 +820,20 @@ function ensureSuccess(result: OpenCodeResult<unknown>, action: string): void {
   if (result.error !== undefined) throw new Error(`${action} failed`)
 }
 
+// Every agent, including the built-in subagents the task tool starts, asks
+// before it edits, runs a command, fetches or leaves the project. A subagent
+// keeps only its parent's deny rules, so a per-agent "ask" does not reach it.
+export const domovoiAgentPermission = {
+  edit: "ask",
+  bash: "ask",
+  webfetch: "ask",
+  doom_loop: "ask",
+  external_directory: "ask",
+} as const
+
 export const domovoiOpenCodeConfig: Config = {
   autoupdate: false,
+  permission: domovoiAgentPermission,
   agent: {
     "domovoi-ask": {
       mode: "primary",
