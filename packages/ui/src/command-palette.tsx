@@ -5,6 +5,7 @@ import {
   CpuIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
+  GitCommitHorizontalIcon,
   HistoryIcon,
   MessageSquarePlusIcon,
   PanelTopIcon,
@@ -141,6 +142,8 @@ export function buildWorkspaceCommands({
   openSkill,
   startSessionOn,
   openCheckpoints,
+  takeCheckpoint,
+  checkpointBlocked,
   previewTransferTo,
   currentMachineId,
   transferEntries,
@@ -176,6 +179,10 @@ export function buildWorkspaceCommands({
   // Checkpoints is a view of the History pane, not a pane of its own, so the
   // command opens History already narrowed to that one category.
   openCheckpoints?: (() => void) | undefined
+  // The daemon refuses a checkpoint while a turn is running, so the command is
+  // locked for that time rather than offered and then refused.
+  takeCheckpoint?: (() => void) | undefined
+  checkpointBlocked?: boolean | undefined
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
@@ -188,6 +195,9 @@ export function buildWorkspaceCommands({
     ] : []),
     { id: "pause-all", label: "Pause everything", section: "Session", keywords: ["pause", "turn boundary"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
     { id: "emergency-stop", label: "Emergency stop", section: "Session", keywords: ["kill", "stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: emergencyStop },
+    ...(takeCheckpoint ? [
+      { id: "take-checkpoint", label: "Take a checkpoint", section: "Session" as const, keywords: ["checkpoint", "save", "commit", "snapshot"], icon: GitCommitHorizontalIcon, disabled: !connected || Boolean(checkpointBlocked), run: takeCheckpoint },
+    ] : []),
     { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, run: () => setSurface("workspace") },
     { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, run: () => setSurface("providers") },
     { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },

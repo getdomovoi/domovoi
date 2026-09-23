@@ -646,6 +646,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const stopEverything = () => {
     void emergencyStop()
   }
+  const takeActiveCheckpoint = () => {
+    const session = snapshot ? activeSession(snapshot) : undefined
+    if (!session) return
+    setWorkspaceError("")
+    void createCheckpoint(session.id).catch((cause: unknown) => {
+      setWorkspaceError(cause instanceof Error ? cause.message : "The checkpoint could not be created")
+    })
+  }
 
   // Any client's stop, not just this one's. The daemon broadcasts
   // system.emergencyStopped and use-workspace surfaces it here, so a stop
@@ -829,6 +837,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     activateSession: openSessionInWorkspace,
     selectMachine: switchMachine,
     openCheckpoints,
+    ...(!watching && snapshot && activeSession(snapshot) ? {
+      takeCheckpoint: takeActiveCheckpoint,
+      checkpointBlocked: Boolean(activeSession(snapshot)?.activeTurnId),
+    } : {}),
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
     // then open the launcher on it. The intent names the machine, and the
     // launcher opens only once that machine's snapshot is the one on screen;

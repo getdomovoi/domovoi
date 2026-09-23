@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
+  fail,
   installFakeWebSocket,
   sentRequests,
   workspaceSnapshot,
@@ -57,6 +58,31 @@ describe("workspace command palette keyboard path", () => {
     expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull()
     await settle()
     expect(document.activeElement).toBe(trigger)
+  })
+
+  it("takes a checkpoint of the active session and says why when the daemon refuses", async () => {
+    const user = userEvent.setup()
+    const snapshot = workspaceSnapshot()
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    delete active.activeTurnId
+    active.state = "idle"
+    render(<WorkspaceShell />)
+    const socket = harness.socket(0)
+    await act(async () => {
+      completeHandshake(socket, snapshot)
+    })
+
+    await user.keyboard("{Control>}k{/Control}")
+    await user.type(screen.getByRole("combobox"), "take a checkpoint")
+    await user.keyboard("{Enter}")
+    expect(sentRequests(socket, "checkpoint.create")).toEqual([
+      expect.objectContaining({ params: expect.objectContaining({ sessionId: active.id }) }),
+    ])
+    await act(async () => {
+      fail(socket, "checkpoint.create", { code: -32602, message: "Stop the active turn before creating a checkpoint" })
+    })
+    await settle()
+    expect(screen.getByText("Stop the active turn before creating a checkpoint")).toBeTruthy()
   })
 
   it("sends the kill only from the emergency stop command", async () => {
