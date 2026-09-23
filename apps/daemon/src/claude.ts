@@ -17,6 +17,7 @@ import type {
   AgentVisualContext,
   AgentWorkingPlanStep,
 } from "./agents.js"
+import { projectInstructions } from "./project-instructions.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { resolveCommandPathSync } from "./tool-path.js"
 import { normalizeProviderUsage } from "./usage.js"
@@ -86,7 +87,7 @@ export type ClaudeQueryOptions = {
   settingSources?: Array<"user" | "project" | "local">
   tools?: string[]
   disallowedTools?: string[]
-  systemPrompt?: { type: "preset"; preset: "claude_code" }
+  systemPrompt?: { type: "preset"; preset: "claude_code"; append?: string }
   stderr?: (data: string) => void
   canUseTool?: (
     toolName: string,
@@ -329,8 +330,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
+    const instructions = await projectInstructions(cwd, "claude")
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
+      ...(instructions
+        ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
+        : {}),
       cwd,
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
@@ -677,7 +682,7 @@ function baseOptions(): ClaudeQueryOptions {
   return {
     includePartialMessages: true,
     forwardSubagentText: true,
-    settingSources: ["user", "project", "local"],
+    settingSources: ["user"],
     systemPrompt: { type: "preset", preset: "claude_code" },
   }
 }

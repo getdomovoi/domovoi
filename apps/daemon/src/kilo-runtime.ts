@@ -64,6 +64,7 @@ export const createDefaultKiloRuntime: OpenCodeFactory = async () => {
     passwordEnvironment: "KILO_SERVER_PASSWORD",
     usernameEnvironment: "KILO_SERVER_USERNAME",
     username: "kilo",
+    environment: { KILO_DISABLE_PROJECT_CONFIG: "1" },
     config: domovoiKiloConfig,
     startServer: createKiloServer,
     createClient: createKiloClient,

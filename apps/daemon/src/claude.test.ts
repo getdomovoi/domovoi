@@ -1,7 +1,9 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { resolve } from "node:path"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -17,6 +19,10 @@ import {
   type ClaudeUserMessage,
 } from "./claude.js"
 import { providerTurnCompletion } from "./provider-failures.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+const scratchDirectories: string[] = []
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 class MessageStream implements AsyncIterable<ClaudeSdkMessage> {
   #messages: ClaudeSdkMessage[] = []
@@ -1036,5 +1042,51 @@ describe("changing the mode on a live session", () => {
     await expect(
       adapter.startTurn({ threadId, cwd: "/worktree", prompt: "retry", runtime: runtime("build") }),
     ).resolves.toBeTruthy()
+  })
+})
+
+describe("repository-brought configuration", () => {
+  it("loads no project or local settings and gives Claude the worktree's instruction files", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-project-"))
+    scratchDirectories.push(scratch)
+    const worktree = join(scratch, "worktree")
+    await mkdir(join(worktree, ".claude"), { recursive: true })
+    await writeFile(join(scratch, "outside.md"), "Outside the worktree\n")
+    await writeFile(join(worktree, "CLAUDE.md"), "@AGENTS.md\n@../outside.md\nClaude project rule\n")
+    await writeFile(join(worktree, "AGENTS.md"), "Shared agent rule\n")
+    await writeFile(join(worktree, ".claude", "settings.json"), JSON.stringify({
+      env: { PLANTED: "1" },
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "touch planted-hook" }] }] },
+    }))
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({
+      mcpServers: { planted: { command: "planted-server" } },
+    }))
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+
+    const options = calls[0]!.options
+    expect(options.settingSources).toEqual(["user"])
+    expect(options.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" })
+    const appended = options.systemPrompt?.append ?? ""
+    expect(appended).toContain("Claude project rule")
+    expect(appended).toContain("Shared agent rule")
+    expect(appended).not.toContain("Outside the worktree")
+    expect(JSON.stringify(options)).not.toContain("planted")
+    await adapter.close()
+  })
+
+  it("keeps the preset prompt unchanged for a worktree with no instruction files", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-bare-"))
+    scratchDirectories.push(scratch)
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    await adapter.startThread({ cwd: scratch, runtime: runtime("build") })
+
+    expect(calls[0]!.options.settingSources).toEqual(["user"])
+    expect(calls[0]!.options.systemPrompt).toEqual({ type: "preset", preset: "claude_code" })
+    await adapter.close()
   })
 })

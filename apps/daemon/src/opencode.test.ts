@@ -1,5 +1,9 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { describe, expect, it, vi } from "vitest"
+import { mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -14,6 +18,10 @@ import {
   type OpenCodeEvent,
   type OpenCodeFactory,
 } from "./opencode.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+const scratchDirectories: string[] = []
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 class EventStream implements AsyncIterable<OpenCodeEvent> {
   #events: OpenCodeEvent[] = []
@@ -656,6 +664,48 @@ describe("KiloSdkAdapter", () => {
         model: { providerID: "anthropic", modelID: "sonnet" },
         parts: [{ type: "text", text: "Use repo-audit" }],
       }),
+    }))
+    await adapter.close()
+  })
+})
+
+describe("repository instruction files", () => {
+  it.each([
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ])("sends %s the worktree's AGENTS.md itself, since project configuration stays off", async (_name, create) => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-instructions-"))
+    scratchDirectories.push(worktree)
+    await writeFile(join(worktree, "AGENTS.md"), "Shared agent rule\n")
+    await writeFile(join(worktree, "CLAUDE.md"), "Claude only rule\n")
+    const { client, factory } = harness()
+    const adapter = create(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        system: expect.stringMatching(/^Instructions from: .*AGENTS\.md\nShared agent rule/),
+      }),
+    }))
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ system: expect.not.stringContaining("Claude only rule") }),
+    }))
+    await adapter.close()
+  })
+
+  it("sends no system text for a worktree without instruction files", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-bare-"))
+    scratchDirectories.push(worktree)
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.not.objectContaining({ system: expect.anything() }),
     }))
     await adapter.close()
   })

@@ -10,6 +10,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { projectInstructions } from "./project-instructions.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
@@ -426,6 +427,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   ): Promise<void> {
     const client = await this.#client()
     const model = openCodeModel(runtime.model)
+    const system = await projectInstructions(session.cwd, "opencode")
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -433,6 +435,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         messageID: messageId,
         agent: openCodeAgentFor(runtime),
         ...(model ? { model } : {}),
+        ...(system ? { system } : {}),
         parts: [{ type: "text", text: prompt }],
       },
       throwOnError: true,
@@ -822,6 +825,7 @@ const defaultOpenCodeFactory: OpenCodeFactory = async () => {
     passwordEnvironment: "OPENCODE_SERVER_PASSWORD",
     usernameEnvironment: "OPENCODE_SERVER_USERNAME",
     username: "opencode",
+    environment: { OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
     config: domovoiOpenCodeConfig,
     startServer: createOpencodeServer,
     createClient: createOpencodeClient,
