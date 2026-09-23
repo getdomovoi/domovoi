@@ -788,6 +788,21 @@ describe("message order across processes", () => {
     await adapter.close()
   })
 
+  it("refuses a resume that was stopped while the history was being read", async () => {
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+    client.session.messages.mockImplementationOnce(async () => {
+      await adapter.stopThread("open-session")
+      return { data: [], response: new Response(null) }
+    })
+
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("OpenCode session stopped while resuming")
+    await expect(adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") }))
+      .rejects.toThrow("is not loaded")
+    await adapter.close()
+  })
+
   it("follows a message the server made after the last prompt", async () => {
     const { factory, stream } = harness()
     const adapter = new OpenCodeSdkAdapter(factory)

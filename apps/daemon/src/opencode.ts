@@ -292,8 +292,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       try {
         const greatest = await this.#greatestMessageId(client, threadId, cwd)
         const loaded = this.#sessions.get(threadId)
-        const newest = loaded ? laterMessageId(loaded.newestMessageId, greatest) : undefined
-        if (loaded && newest !== undefined) loaded.newestMessageId = newest
+        if (pending.cancelled || !loaded) {
+          throw new Error(`${this.#identity.providerName} session stopped while resuming`)
+        }
+        const newest = laterMessageId(loaded.newestMessageId, greatest)
+        if (newest !== undefined) loaded.newestMessageId = newest
       } catch (error) {
         const loaded = this.#sessions.get(threadId)
         if (loaded) this.#unloadSession(loaded)
