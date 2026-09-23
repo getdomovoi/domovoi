@@ -1549,7 +1549,7 @@ export class DomovoiDaemon {
         } else {
           void this.#mutations.enqueue(
             this.#resourceForAgentEvent(provider, event),
-            () => this.#handleAgentEvent(provider, event),
+            (signal) => this.#handleAgentEvent(provider, event, signal),
           )
         }
       }),
@@ -2505,7 +2505,7 @@ export class DomovoiDaemon {
       && device.binding.clientAccess === "full"
   }
 
-  async #releaseQueuedSessionSend(sessionId: string): Promise<void> {
+  async #releaseQueuedSessionSend(sessionId: string, signal?: AbortSignal): Promise<void> {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.state !== "waiting") return
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
@@ -2548,7 +2548,7 @@ export class DomovoiDaemon {
         ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
         ...(queued.uploads ? { attachments: queued.uploads } : {}),
       },
-    }))
+    }), signal)
     const result = await response
     if (!("error" in result)) {
       this.#store.deleteQueuedSessionSend?.(sessionId, queued.id)
@@ -6538,6 +6538,16 @@ export class DomovoiDaemon {
                 command: approval.command,
                 ...(cwd === undefined ? {} : { cwd }),
               })
+          // An emergency stop can deny and remove this approval while its
+          // package scripts are read; the stop's answer must stand.
+          if (
+            signal?.aborted
+            || this.#emergencyStopInProgress
+            || !this.#snapshot.approvals.some((candidate) => candidate.id === approval.id)
+          ) {
+            this.#error(socket, request.id, invalidParams, "The approval was withdrawn before it could be allowed")
+            return
+          }
           if (
             currentExecution.state !== "resolved"
             || currentExecution.digest !== resolvedApprovalExecution.digest
@@ -7938,7 +7948,7 @@ export class DomovoiDaemon {
     }
   }
 
-  async #handleAgentEvent(provider: string, event: AgentEvent): Promise<void> {
+  async #handleAgentEvent(provider: string, event: AgentEvent, signal?: AbortSignal): Promise<void> {
     if (event.type === "provider-disconnected") {
       this.#appendAudit({
         actor: { kind: "provider", provider },
@@ -8559,7 +8569,7 @@ export class DomovoiDaemon {
     } else {
       await this.#flushAgentState()
     }
-    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id)
+    if (releaseQueuedSend) await this.#releaseQueuedSessionSend(session.id, signal)
   }
 
   async #handleProviderDisconnect(provider: string, reason: string): Promise<void> {
