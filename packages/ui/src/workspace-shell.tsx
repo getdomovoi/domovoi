@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -56,6 +54,7 @@ import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
+import { lazySurface, prefetchWhenIdle } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
@@ -151,19 +150,17 @@ const watchingMutationCommands = new Set([
 ])
 
 // The shell opens on a thread. These surfaces load when one is first opened,
-// so a launch does not download, parse and compile them.
-const SettingsShell = lazy(async () => ({ default: (await import("./settings-shell")).SettingsShell }))
-const SkillBrowser = lazy(async () => ({ default: (await import("./skill-browser")).SkillBrowser }))
-const FleetView = lazy(async () => ({ default: (await import("./fleet-view")).FleetView }))
-const AuditLogView = lazy(async () => ({ default: (await import("./audit-log-view")).AuditLogView }))
-
-function SurfaceLoading({ name }: { name: string }) {
-  return (
-    <main className="flex min-h-0 flex-1 items-center justify-center bg-background">
-      <p role="status" className="font-machine text-mono-xs text-faint">Opening {name}</p>
-    </main>
-  )
-}
+// or at idle after the shell has painted, so a launch does not download, parse
+// and compile them first.
+const settingsSurface = lazySurface("Settings", async () => (await import("./settings-shell")).SettingsShell)
+const skillsSurface = lazySurface("Skills", async () => (await import("./skill-browser")).SkillBrowser)
+const machinesSurface = lazySurface("Machines", async () => (await import("./fleet-view")).FleetView)
+const auditSurface = lazySurface("Audit log", async () => (await import("./audit-log-view")).AuditLogView)
+const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface]
+const SettingsShell = settingsSurface.Surface
+const SkillBrowser = skillsSurface.Surface
+const FleetView = machinesSurface.Surface
+const AuditLogView = auditSurface.Surface
 
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
@@ -447,6 +444,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
   const [workspaceError, setWorkspaceError] = useState("")
+  // Once the shell has painted, the secondary surfaces are fetched while the
+  // browser is idle, so opening one rarely shows the loading frame at all.
+  useEffect(() => prefetchWhenIdle(lazySurfaces), [])
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
@@ -1270,7 +1270,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             </AlertDialogContent>
           </AlertDialog>
           {surface === "providers" ? (
-          <Suspense fallback={<SurfaceLoading name="Settings" />}>
           <SettingsShell
             providers={snapshot.machine.providers}
             secrets={providerSecrets}
@@ -1312,9 +1311,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onWindowDecorationChange: changeWindowDecoration,
             } : {})}
           />
-          </Suspense>
         ) : surface === "skills" ? (
-          <Suspense fallback={<SurfaceLoading name="Skills" />}>
           <SkillBrowser
             skills={skills}
             inventorySources={skillInventories}
@@ -1340,9 +1337,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }}
             onRetry={() => setSkillsRefresh((current) => current + 1)}
           />
-          </Suspense>
         ) : surface === "fleet" ? (
-          <Suspense fallback={<SurfaceLoading name="Machines" />}>
           <FleetView
             connected={home.connected}
             entries={fleet?.entries ?? (home.snapshot ? [localFleetEntry(home.snapshot)] : [])}
@@ -1380,16 +1375,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               openDockTab("terminal")
             }}
           />
-          </Suspense>
         ) : surface === "audit" ? (
-          <Suspense fallback={<SurfaceLoading name="Audit log" />}>
           <AuditLogView
             connected={connected}
             onOpenSkills={() => setSurface("skills")}
             onQuery={queryAudit}
             onExport={exportAudit}
           />
-          </Suspense>
         ) : (
           <div className="relative flex min-h-0 flex-1">
             <ResizablePanelGroup
