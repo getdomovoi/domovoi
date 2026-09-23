@@ -25,6 +25,17 @@ function message(id: string): ThreadItem {
   }
 }
 
+// A new object each call, standing in for the item a token append replaces.
+function growing(id: string, body: string): ThreadItem {
+  return {
+    id,
+    sessionId: "session-1",
+    kind: "assistant",
+    body,
+    createdAt: "2026-09-08T09:00:00.000Z",
+  }
+}
+
 describe("collapsing tool calls into one row", () => {
   it("groups a consecutive run into a single activity row", () => {
     const rows = groupThreadActivity([tool("a", "completed"), tool("b", "failed"), tool("c", "completed")])
@@ -56,4 +67,68 @@ describe("collapsing tool calls into one row", () => {
     const rows = groupThreadActivity(items)
     expect(rows.map((row) => row.kind === "item" ? row.item.id : row.kind)).toEqual(["m1", "activity", "m2"])
   })
+})
+
+// A streaming reply rebuilds the thread array on every token but keeps the
+// identity of every item it did not touch. Rebuilding each row from scratch
+// throws that away and makes memoisation on a row impossible.
+describe("reusing rows the delta did not touch", () => {
+  it("returns the same activity row object when its tool calls are unchanged", () => {
+    const toolA = tool("a", "completed")
+    const toolB = tool("b", "completed")
+    const before = groupThreadActivity([toolA, toolB, growing("m1", "Looking")])
+    const after = groupThreadActivity([toolA, toolB, growing("m1", "Looking at")], before)
+
+    const beforeRow = before[0]
+    const afterRow = after[0]
+    expect(afterRow).toBe(beforeRow)
+    if (beforeRow?.kind !== "activity" || afterRow?.kind !== "activity") throw new Error("expected an activity row")
+    expect(afterRow.items).toBe(beforeRow.items)
+  })
+
+  it("returns the same item row object when the item is unchanged", () => {
+    const first = message("m1")
+    const before = groupThreadActivity([first, growing("m2", "one")])
+    const after = groupThreadActivity([first, growing("m2", "one two")], before)
+
+    expect(after[0]).toBe(before[0])
+    expect(after[1]).not.toBe(before[1])
+  })
+
+  it("builds a fresh row when a tool call in the run changes", () => {
+    const toolA = tool("a", "completed")
+    const before = groupThreadActivity([toolA, tool("b", "running")])
+    const after = groupThreadActivity([toolA, tool("b", "failed")], before)
+
+    const afterRow = after[0]
+    expect(afterRow).not.toBe(before[0])
+    if (afterRow?.kind !== "activity") throw new Error("expected an activity row")
+    expect(afterRow.items[1]!.failed).toBe(true)
+  })
+
+  it("builds fresh rows when the shape of the thread changes under them", () => {
+    const toolA = tool("a", "completed")
+    const before = groupThreadActivity([message("m1"), toolA])
+    const after = groupThreadActivity([toolA], before)
+
+    expect(after).toHaveLength(1)
+    expect(after[0]!.kind).toBe("activity")
+    expect(after[0]).not.toBe(before[0])
+  })
+})
+
+it("carries the files a tool call reported", () => {
+  const tool: ThreadItem = {
+    id: "tool-files",
+    sessionId: "session-a",
+    kind: "tool",
+    tool: "command",
+    status: "completed",
+    title: "pnpm test",
+    files: ["src/a.ts"],
+    createdAt: "2026-09-08T09:00:00.000Z",
+  }
+  const rows = groupThreadActivity([tool])
+
+  expect(rows[0]!.kind === "activity" && rows[0]!.items[0]!.files).toEqual(["src/a.ts"])
 })

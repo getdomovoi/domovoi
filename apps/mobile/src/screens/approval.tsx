@@ -16,7 +16,7 @@ import { cn } from "../lib/cn"
 
 // The facts the handoff puts on this screen, in its order. A decision made
 // without them is a decision made blind, so none of them are behind a tap.
-function facts(approval: ApprovalRequest): Array<{ key: string, value: string, tone?: string }> {
+export function approvalFacts(approval: ApprovalRequest): Array<{ key: string, value: string, tone?: string }> {
   return [
     { key: "Machine", value: approval.machine },
     { key: "Agent", value: approval.agent },
@@ -37,9 +37,13 @@ export function ApprovalScreen({
   onDecide,
   onDenyExplain,
   onBack,
+  watching = false,
 }: {
   approval: ApprovalRequest
   pending: boolean
+  // A watching phone reads the gate in full and answers nothing. The daemon
+  // refuses its decisions; the screen does not offer them.
+  watching?: boolean
   // The route can die while a gate is open. What is drawn is then the last
   // state the phone was sent, and the screen says so above the decision.
   notice?: ConnectionNotice | undefined
@@ -85,7 +89,7 @@ export function ApprovalScreen({
         </Card>
 
         <Card flush>
-          {facts(approval).map((fact, index) => (
+          {approvalFacts(approval).map((fact, index) => (
             <View
               key={fact.key}
               className={cn(
@@ -109,6 +113,11 @@ export function ApprovalScreen({
           at the end of a scroll, and the affirmative one wears the warning the
           request wears, so neither answer reads as the safe default. */}
       <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
+        {watching ? (
+          <Text variant="note" className="px-1 text-center">
+            Watching only. A device paired with full access answers this gate.
+          </Text>
+        ) : <>
         {problem ? (
           <Text accessibilityRole="alert" className="px-1 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
         ) : null}
@@ -126,7 +135,7 @@ export function ApprovalScreen({
         {approval.risk === "hard-gate" ? null : (
           <View className="gap-1">
             <Button
-              title="Always allow this here"
+              title="Always allow this"
               variant="outline"
               shape="wide"
               disabled={pending}
@@ -137,24 +146,14 @@ export function ApprovalScreen({
             </Text>
           </View>
         )}
-        <View className="flex-row gap-2">
-          <Button
-            title="Deny"
-            variant="outline"
-            shape="wide"
-            className="flex-1"
-            disabled={pending}
-            onPress={() => onDecide("deny")}
-          />
-          <Button
-            title="Deny and explain"
-            variant="quiet"
-            shape="wide"
-            className="flex-1"
-            disabled={pending}
-            onPress={onDenyExplain}
-          />
-        </View>
+        <Button
+          title="Deny"
+          variant="outline"
+          shape="wide"
+          disabled={pending}
+          onPress={onDenyExplain}
+        />
+        </>}
       </FloatingBar>
     </View>
   )

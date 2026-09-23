@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, type FleetEntry, type FleetMachine, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { fireEvent, render, screen } from "@testing-library/react-native"
+import { fireEvent, render, screen, within } from "@testing-library/react-native"
 
 import { SessionsScreen } from "./sessions"
 
@@ -29,8 +29,9 @@ async function draw(overrides: Partial<Parameters<typeof SessionsScreen>[0]> = {
     now: Date.now(),
     onOpenSession: jest.fn<(sessionId: string) => void>(),
     onOpenApproval: jest.fn<(approvalId: string) => void>(),
-    onOpenStop: jest.fn<() => void>(),
     onRefresh: jest.fn<() => void>(),
+    onStartSession: jest.fn<() => void>(),
+    startDisabledReason: undefined as string | undefined,
     bottomInset: 0,
     ...overrides,
   }
@@ -41,41 +42,43 @@ async function draw(overrides: Partial<Parameters<typeof SessionsScreen>[0]> = {
 // Everything a person can tap, in the order it is drawn. The lead card and the
 // session cards are all buttons, so their order here is their order on screen.
 function tappable(): string[] {
-  return screen.getAllByRole("button").map((node) =>
-    typeof node.props.accessibilityLabel === "string"
-      ? node.props.accessibilityLabel
-      : node.props.children,
-  )
+  return screen.getAllByRole("button").map((node) => {
+    if (typeof node.props.accessibilityLabel === "string") return node.props.accessibilityLabel
+    return within(node).queryAllByText(/.+/).map((child) => String(child.props.children)).join(" ")
+  })
 }
 
 describe("SessionsScreen", () => {
-  it("leads with the waiting approval, above every session", async () => {
+  it("has no global stop control in its header", async () => {
+    await draw()
+    expect(screen.queryByRole("button", { name: "Stop everything" })).toBeNull()
+  })
+
+  it("leads with the waiting session once, inside NEEDS YOU", async () => {
     const { snapshot } = await draw()
-    const waiting = snapshot.approvals[0]
+    const waiting = snapshot.sessions.find((session) => session.id === snapshot.approvals[0]?.sessionId)
     if (!waiting) throw new Error("fixture needs a pending approval")
 
     const order = tappable()
-    const lead = order.findIndex((label) =>
-      typeof label === "string" && label.startsWith("1 approval waiting"))
     const firstSession = order.findIndex((label) =>
       snapshot.sessions.some((session) => session.title === label))
 
-    expect(lead).toBeGreaterThan(-1)
-    expect(firstSession).toBeGreaterThan(-1)
-    expect(lead).toBeLessThan(firstSession)
-    // The card says what is waiting and where, not just that something is.
-    expect(screen.getByText(waiting.command)).toBeOnTheScreen()
-    expect(screen.getByText(new RegExp(`^${waiting.machine} · `))).toBeOnTheScreen()
+    expect(screen.getByText("NEEDS YOU")).toBeOnTheScreen()
+    expect(order.filter((label) => label === waiting.title)).toHaveLength(1)
+    expect(order.some((label) => typeof label === "string" && label.startsWith("1 approval waiting"))).toBe(false)
+    expect(order[firstSession]).toBe(waiting.title)
   })
 
-  it("opens the waiting approval when its card is pressed", async () => {
-    const { snapshot, onOpenApproval } = await draw()
+  it("opens the waiting approval from its single session card", async () => {
+    const { snapshot, onOpenApproval, onOpenSession } = await draw()
     const waiting = snapshot.approvals[0]
-    if (!waiting) throw new Error("fixture needs a pending approval")
+    const session = snapshot.sessions.find((entry) => entry.id === waiting?.sessionId)
+    if (!waiting || !session) throw new Error("fixture needs a pending approval")
 
-    await fireEvent.press(screen.getByRole("button", { name: /^1 approval waiting/ }))
+    await fireEvent.press(screen.getByRole("button", { name: session.title }))
 
     expect(onOpenApproval).toHaveBeenCalledWith(waiting.id)
+    expect(onOpenSession).not.toHaveBeenCalled()
   })
 
   it("shows no approval card when nothing is waiting", async () => {
@@ -127,7 +130,7 @@ describe("SessionsScreen", () => {
   it("names the machine, and says how many of the fleet answered only once the fleet has been read", async () => {
     await draw({ fleet: undefined })
     expect(screen.queryByText(/reachable|offline/)).toBeNull()
-    expect(screen.getByText(/^macbook-pro-m3 · /)).toBeOnTheScreen()
+    expect(screen.getByText(/macbook-pro-m3 · 1 running$/)).toBeOnTheScreen()
 
     await draw({ fleet: [entry("a", "healthy"), entry("b", "healthy"), entry("c", "unreachable")] })
     expect(screen.getByText(/ · 2 reachable · 1 offline$/)).toBeOnTheScreen()
@@ -136,17 +139,26 @@ describe("SessionsScreen", () => {
 
   // The daemon answered and has nothing open. That is a fact about the machine,
   // not a phone that has failed to look, and the screen has to say which.
-  it("names an idle machine rather than counting to zero", async () => {
+  it("names the healthy idle state and offers one start action", async () => {
     const idle = workspace()
     idle.sessions = []
     idle.approvals = []
     await draw({ snapshot: idle, fleet: [entry("a", "healthy"), entry("b", "healthy")] })
 
-    expect(screen.getByText("No sessions running")).toBeOnTheScreen()
-    expect(screen.getByText("macbook-pro-m3 · none running · 2 reachable")).toBeOnTheScreen()
-    // No CLI command: the phone does not start sessions and the CLI has no such verb.
-    expect(screen.getByText(/Start one from the desktop or the web app/)).toBeOnTheScreen()
-    expect(screen.queryByText(/domovoi new/)).toBeNull()
+    expect(screen.getByText("Everything is idle")).toBeOnTheScreen()
+    expect(screen.getByText("Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.")).toBeOnTheScreen()
+    expect(tappable()).toEqual(["Start a session"])
+  })
+
+  it("keeps Start a session visible and disabled with the exact no-project reason", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const reason = "Open a project on the machine before starting a session."
+    await draw({ snapshot: idle, startDisabledReason: reason })
+
+    expect(screen.getByRole("button", { name: "Start a session" })).toBeDisabled()
+    expect(screen.getByText(reason)).toBeOnTheScreen()
   })
 
   it("says nothing about being empty while a session is listed", async () => {

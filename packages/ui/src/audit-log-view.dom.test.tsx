@@ -33,6 +33,50 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+it("matches the v2 audit surface contract", async () => {
+  render(
+    <AuditLogView
+      connected
+      initialPage={page}
+      onOpenSkills={vi.fn()}
+      onQuery={vi.fn(async () => page)}
+      onExport={vi.fn()}
+    />,
+  )
+  await settle()
+
+  expect(screen.getByRole("heading", { name: "Audit log" })).toBeTruthy()
+  expect(screen.getByText("Every decision this machine recorded, across every session.", { exact: false })).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Export this query" })).toBeTruthy()
+  expect(screen.getByText("WHAT THIS LOG IS, AND IS NOT")).toBeTruthy()
+  expect(screen.queryByRole("complementary", { name: "Settings navigation" })).toBeNull()
+})
+
+it("filters the audit log by signed actor groups", async () => {
+  const onQuery = vi.fn(async () => page)
+  render(
+    <AuditLogView
+      connected
+      initialPage={page}
+      onOpenSkills={vi.fn()}
+      onQuery={onQuery}
+      onExport={vi.fn()}
+    />,
+  )
+  await settle()
+
+  await act(async () => {
+    screen.getByRole("radio", { name: "Providers" }).click()
+  })
+  await settle()
+
+  expect(onQuery).toHaveBeenLastCalledWith(
+    expect.objectContaining({ actor: "provider", limit: 50 }),
+    expect.anything(),
+  )
+  expect(screen.getByRole("radio", { name: "Providers" }).getAttribute("data-state")).toBe("on")
+})
+
 it("stops the clock on an older-entries query once it settles", async () => {
   const onQuery = vi.fn(async (params: AuditQueryParams): Promise<AuditQueryPage> => params.before
     ? { entries: [older], hasMore: false }

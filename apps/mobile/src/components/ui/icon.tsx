@@ -19,7 +19,7 @@ import Settings from "lucide-react-native/icons/settings"
 import Unplug from "lucide-react-native/icons/unplug"
 import X from "lucide-react-native/icons/x"
 
-import { colors } from "../../theme/tokens.generated"
+import { useTheme } from "../../theme/theme-provider"
 
 // The design system draws Lucide, so the app draws Lucide rather than symbol
 // characters. Instrument Sans has no glyph for ✓, ◆, ◈, ⚙ or ⬡, and iOS answers
@@ -50,22 +50,7 @@ const glyphs = {
 
 export type IconName = keyof typeof glyphs
 
-// React Native has no currentColor, so an icon is told its colour outright and
-// reads it from the same generated table the class names are built from.
-const tones = {
-  primary: colors.dark.primary,
-  "primary-foreground": colors.dark["primary-foreground"],
-  faint: colors.dark.faint,
-  strong: colors.dark.strong,
-  muted: colors.dark["muted-foreground"],
-  success: colors.dark.success,
-  warning: colors.dark.warning,
-  destructive: colors.dark.destructive,
-  "danger-fg": colors.dark["danger-fg"],
-  "warn-fg": colors.dark["warn-fg"],
-}
-
-export type IconTone = keyof typeof tones
+export type IconTone = "primary" | "primary-foreground" | "faint" | "strong" | "muted" | "success" | "warning" | "destructive" | "danger-fg" | "warn-fg"
 
 export function Icon({
   name,
@@ -77,5 +62,7 @@ export function Icon({
   size?: number
 }) {
   const Glyph = glyphs[name]
-  return <Glyph size={size} strokeWidth={1.5} color={tones[tone]} />
+  const { palette } = useTheme()
+  const color = tone === "muted" ? palette["muted-foreground"] : palette[tone]
+  return <Glyph size={size} strokeWidth={1.5} color={color} />
 }

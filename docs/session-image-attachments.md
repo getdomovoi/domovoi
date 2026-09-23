@@ -1,13 +1,22 @@
-# Session image attachments
+# Session attachments
 
-`session.send` accepts optional `attachments`, at most two objects with `mimeType`,
-`width`, `height` and `data`. Existing text-only sends remain valid.
+`session.send` accepts optional `attachments`, at most two objects in total, of three kinds.
+Existing text-only sends remain valid. The schemas are in `packages/protocol/src/image-upload.ts`.
 
-- PNG and JPEG only, not WebP, URLs, file references or terminal ranges.
-- Each image: canonical Base64, at most 1,500,000 decoded bytes, positive integer
-  dimensions at most 2048 pixels on either side.
-- The same Base64 and dimension validators back annotation uploads. Annotations
-  remain PNG-only and retain their artifact revision field.
+- **Image:** `mimeType`, `width`, `height` and `data`. PNG and JPEG only, not WebP or URLs.
+  Canonical Base64, at most 1,500,000 decoded bytes, positive integer dimensions at most 2048
+  pixels on either side. The same Base64 and dimension validators back annotation uploads.
+  Annotations remain PNG-only and retain their artifact revision field.
+- **Text file:** `kind: "text"`, a `name` of at most 255 characters, `mimeType: "text/plain"`
+  and `content` of at most 262,144 UTF-8 bytes. The daemon writes it into the session worktree
+  under `.domovoi/attachments/` with owner-only permissions and gives the agent the path and the
+  first 40 lines.
+- **Worktree file:** `kind: "workspace-file"` and a relative `path` of at most 1,024 characters.
+  The path may not be absolute, start with `-`, contain `..` or `.` segments, or leave the session
+  worktree after symlinks are resolved. The file must be a regular file of at most 262,144 bytes.
+  Nothing is copied: the agent is told the path and reads the file itself.
+
+Terminal ranges and URLs are not attachments.
 
 The daemon bounds bytes before decoding Base64, checks the image header and its
 declared dimensions, then hands bytes to the adapter as turn-local `visualContexts`
@@ -25,8 +34,10 @@ with `sessionAttachmentRefusalSchema`:
 {"kind":"session-attachment-refused","reason":"image-input-unsupported"}
 ```
 
-Invalid decoded images use `invalid-image`. Invalid parameter shapes receive the
-normal invalid-params refusal. No image is silently omitted to make a send work.
+Invalid decoded images use `invalid-image`. A text file over its byte limit uses
+`invalid-text`. A worktree file that is missing, outside the worktree, not a regular file or
+too large, or any file attachment on a session with no worktree, uses
+`invalid-workspace-file`. Invalid parameter shapes receive the normal invalid-params refusal. No image is silently omitted to make a send work.
 The handheld method allowlist is unchanged; `session.send` was already allowed.
 
 ## Transport bounds

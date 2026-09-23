@@ -1,5 +1,6 @@
+import { toolFileEntries, type ToolFileEntry } from "@getdomovoi/protocol"
 import { ChevronRightIcon } from "lucide-react"
-import { useState } from "react"
+import { memo, useState } from "react"
 
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { cn } from "./lib/utils"
@@ -13,17 +14,48 @@ export type ToolActivity = {
   argument?: string
   outcome?: string
   failed?: boolean
+  files?: readonly (string | ToolFileEntry)[]
   log?: string
 }
 
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? "" : "s"}`
+}
+
+// The line beside the label: how much of the worktree the turn has moved, and
+// what it is doing right now. A count nobody can verify is worse than no count,
+// so files are the distinct paths the calls reported and nothing is inferred
+// from a title.
+export function activityMeta(items: readonly ToolActivity[], running: boolean): string | undefined {
+  if (items.length === 0) return undefined
+  const parts = [plural(items.length, "tool")]
+  const files = new Set(items.flatMap((item) => toolFileEntries(item.files).map((file) => file.path)))
+  if (files.size > 0) parts.push(plural(files.size, "file"))
+  const current = running ? items.find((item) => item.outcome === "running") : undefined
+  if (current) {
+    parts.push(`running ${current.argument ?? current.name}`)
+    return parts.join(" · ")
+  }
+  const failures = items.filter((item) => item.failed).length
+  if (failures > 0) parts.push(plural(failures, "failure"))
+  return parts.join(" · ")
+}
+
+// The label answers the turn, not the tool count. While the turn runs it says
+// so; a running row that counted its calls would read as a turn that had
+// already stopped. The count is what the row becomes once it is done.
 function activityLabel(items: readonly ToolActivity[], running: boolean): string {
-  if (items.length === 0) return running ? "Working" : "No tool calls"
+  if (running) return "Working"
+  if (items.length === 0) return "No tool calls"
   const failures = items.filter((item) => item.failed).length
   const counted = `${items.length} ${items.length === 1 ? "tool call" : "tool calls"}`
   return failures > 0 ? `${counted}, ${failures} failed` : counted
 }
 
-export function TurnActivity({
+// A streaming reply re-renders the thread once per token. Every row above the
+// growing one has the tool calls it already had, and groupThreadActivity hands
+// back the same objects for them, so this draws only when its own turn changes.
+export const TurnActivity = memo(function TurnActivity({
   items,
   running,
   meta,
@@ -36,23 +68,29 @@ export function TurnActivity({
 }) {
   const [open, setOpen] = useState(false)
   const [openLog, setOpenLog] = useState<string>()
+  const metaLine = meta ?? activityMeta(items, running)
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
       <button
         type="button"
         aria-expanded={open}
+        // Until the first tool call there is nothing to expand, and a chip that
+        // opens an empty list reads as a broken control.
+        disabled={items.length === 0}
         onClick={() => setOpen((current) => !current)}
-        className="flex w-fit items-center gap-2 rounded-full border border-border px-3 py-1 text-muted-foreground"
+        className="flex w-fit items-center gap-2 rounded-full border border-border px-3 py-1 text-muted-foreground disabled:cursor-default disabled:opacity-100"
       >
-        <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+        {items.length > 0 ? (
+          <ChevronRightIcon aria-hidden className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+        ) : null}
         <span className="text-[11.5px]">{activityLabel(items, running)}</span>
-        {meta ? <span className="font-mono text-[10.5px] text-faint">{meta}</span> : null}
+        {metaLine ? <span className="font-mono text-[10.5px] text-faint">{metaLine}</span> : null}
         {running ? (
           // The only moving thing on the screen, and it says the turn is alive
           // rather than estimating a duration nobody can know.
-          <span aria-hidden className="relative block h-[3px] w-8 overflow-hidden rounded-full bg-muted">
-            <span className="absolute inset-y-0 left-0 w-1/3 animate-pulse rounded-full bg-primary" />
+          <span aria-hidden className="relative block h-[3px] w-[34px] overflow-hidden rounded-[3px] bg-muted">
+            <span className="sweep-bar absolute inset-0 block w-[30%] rounded-[3px] bg-primary" />
           </span>
         ) : null}
       </button>
@@ -93,4 +131,4 @@ export function TurnActivity({
       ) : null}
     </div>
   )
-}
+})

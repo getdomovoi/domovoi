@@ -71,6 +71,17 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
           : { explanation: redactDurableText(item.explanation).value }),
       }
     }
+    if (item.kind === "policy-refusal") {
+      return {
+        ...item,
+        operation: redactDurableText(item.operation).value,
+        command: redactDurableCommand(item.command).value,
+        rule: redactDurableText(item.rule).value,
+        setBy: redactDurableText(item.setBy).value,
+        scope: redactDurableText(item.scope).value,
+        remedy: redactDurableText(item.remedy).value,
+      }
+    }
     if (item.kind === "checkpoint") {
       return { ...item, label: redactDurableText(item.label).value }
     }

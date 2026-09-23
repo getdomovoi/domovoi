@@ -12,9 +12,10 @@ export function isAtBottom(viewport: { scrollTop: number; clientHeight: number; 
   return viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - atBottomSlack
 }
 
-// itemCount is the number of rows the thread draws; growth while the person
-// is at the bottom scrolls to the end, growth while they are scrolled up is
-// counted for the pill and the viewport is left alone.
+// itemCount is the number of rows the thread draws. At the bottom the viewport
+// follows the scroll height, so a message that streams into one row keeps its
+// end in view. Scrolled up, only new rows are counted for the pill and the
+// viewport is left alone.
 export function useThreadFollow(
   viewport: RefObject<HTMLElement | null>,
   input: { itemCount: number; gated: boolean; threadKey: string },
@@ -24,15 +25,35 @@ export function useThreadFollow(
   const atBottomRef = useRef(true)
   const seenCount = useRef(input.itemCount)
   const seenKey = useRef(input.threadKey)
+  const seenHeight = useRef(0)
 
+  // A scroll gesture fires many events per frame and each read of the viewport
+  // forces layout. The first event in a frame is read inline, so the pill still
+  // answers the gesture at once; the rest are dropped and one trailing read on
+  // the next frame picks up where the gesture came to rest. Two reads a frame at
+  // worst, whatever the event rate.
+  const framePending = useRef(false)
   const onScroll = useCallback(() => {
-    const element = viewport.current
-    if (!element) return
-    const next = isAtBottom(element)
-    if (next === atBottomRef.current) return
-    atBottomRef.current = next
-    setAtBottom(next)
-    if (next) setUnseen(0)
+    const read = () => {
+      const element = viewport.current
+      if (!element) return
+      const next = isAtBottom(element)
+      if (next === atBottomRef.current) return
+      atBottomRef.current = next
+      setAtBottom(next)
+      if (next) setUnseen(0)
+    }
+    if (framePending.current) return
+    framePending.current = true
+    read()
+    if (typeof requestAnimationFrame !== "function") {
+      framePending.current = false
+      return
+    }
+    requestAnimationFrame(() => {
+      framePending.current = false
+      read()
+    })
   }, [viewport])
 
   const jumpToBottom = useCallback(() => {
@@ -44,24 +65,32 @@ export function useThreadFollow(
     setUnseen(0)
   }, [viewport])
 
+  // No dependency list: a streaming message grows the body while the row count
+  // holds still, so this runs every render and follows the height. It reads the
+  // viewport only while the person is at the bottom, so a reader who scrolled up
+  // pays no layout read.
   useEffect(() => {
+    const element = viewport.current
     // Another session's thread is a different scroll, not new output in this one.
     if (seenKey.current !== input.threadKey) {
       seenKey.current = input.threadKey
       seenCount.current = input.itemCount
+      seenHeight.current = element ? element.scrollHeight : 0
       jumpToBottom()
       return
     }
     const delta = input.itemCount - seenCount.current
     seenCount.current = input.itemCount
-    if (delta <= 0) return
     if (atBottomRef.current) {
-      const element = viewport.current
-      if (element) element.scrollTop = element.scrollHeight
+      if (element && element.scrollHeight !== seenHeight.current) {
+        seenHeight.current = element.scrollHeight
+        element.scrollTop = element.scrollHeight
+      }
       return
     }
-    setUnseen((count) => count + delta)
-  }, [input.itemCount, input.threadKey, jumpToBottom, viewport])
+    // Growth inside a message the person can already see is not a new row.
+    if (delta > 0) setUnseen((count) => count + delta)
+  })
 
   return { state: threadFollowState({ atBottom, unseen, gated: input.gated }), unseen, jumpToBottom, onScroll }
 }

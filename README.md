@@ -61,6 +61,54 @@ pnpm dev
 pnpm dev:desktop
 ```
 
+To work on the interface itself, run the desktop shell against a fixture daemon instead of a real
+one:
+
+```bash
+pnpm dev:fixture
+```
+
+This opens the real Electron window against `apps/desktop/scripts/dev-fixture-daemon.mjs`, a
+separate process that speaks the protocol and validates every frame against the schemas in
+`packages/protocol`. It never touches `~/.domovoi`, and it refuses any method it has no handler
+for, naming the method and the file to add it in, rather than answering with something plausible.
+Because it is its own process, its state survives a window relaunch.
+
+For hot-reloading UI against the real local daemon and its real sessions, gates, worktrees and
+provider credentials, start that daemon in one terminal:
+
+```bash
+pnpm --filter @getdomovoi/daemon start
+```
+
+Then, from the repository root, run:
+
+```bash
+pnpm dev:desktop:real
+```
+
+From `apps/desktop`, `pnpm dev:real` and `pnpm dev:desktop:real` are equivalent.
+
+This reads the endpoint and credential from the profile selected by `DOMOVOI_PROFILE_DIR`, or
+`~/.domovoi/endpoint.json` and `~/.domovoi/daemon.token` by default, then attaches without
+acquiring the profile or stopping the daemon.
+Only unpackaged loopback WebSocket endpoints are accepted. Set `DOMOVOI_DEV_DAEMON_URL` to an
+explicit loopback URL when the development daemon uses another port. Quit the installed Domovoi
+app first if it owns the default profile, or run the development daemon with a separate profile
+and port. The credential is passed only to the development Electron process and is never printed.
+
+Use `pnpm dev:desktop:fixture` for states that are hard to produce safely on demand, including
+policy refusals, unreachable machines, partial transfers and mid-turn disconnects. Both commands
+use the same watched Electron window: renderer edits apply in place, while main and preload edits
+relaunch onto the same selected daemon.
+
+The terminal prints one line for every saved file it watches. An edit under `packages/ui/src` or
+`apps/desktop/src/renderer` applies in place and keeps the window state. An edit under
+`apps/desktop/src/main` or `apps/desktop/src/preload` relaunches the window on the same selected
+daemon.
+An unchanged window therefore always has a line beside it saying which of the two was supposed to
+happen.
+
 Every daemon requires authentication. Standalone `domovoid` creates a user-private credential at
 `~/.domovoi/daemon.token` when `DOMOVOI_AUTH_TOKEN` is unset. Remote listeners additionally require
 `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` plus `DOMOVOI_TLS_CERT_PATH` and `DOMOVOI_TLS_KEY_PATH`; the

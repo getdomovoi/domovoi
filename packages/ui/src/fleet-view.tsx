@@ -30,6 +30,7 @@ import {
   type FleetSnapshotOverflow,
   type PairedDeviceSummary,
   type TransportCandidate,
+  type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 import {
@@ -41,6 +42,7 @@ import {
 import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
 import { machineAttachment } from "./machine-selection.js"
+import { providerDisplayName } from "./runtime.js"
 import { AuthorizeClientDialog } from "./authorize-client-dialog.js"
 import type { FleetAccessState } from "./fleet-access-session.js"
 import { deviceLabelMismatch, renamedElsewhereNotice } from "./rename-device.js"
@@ -93,7 +95,7 @@ const healthNote: Record<FleetHealth, ((label: string) => string) | undefined> =
   healthy: undefined,
   reconnecting: undefined,
   degraded: undefined,
-  unreachable: undefined,
+  unreachable: (label) => `The daemon reports ${label} as unreachable. Its sessions are not reported as stopped.`,
   "version-mismatch": undefined,
   "upgrade-required": undefined,
   "pairing-required": (label) =>
@@ -250,22 +252,26 @@ function MachineCard({
   inUse,
   connected,
   onUse,
+  onMoveSessionHere,
   onOpenTerminal,
   onForget,
   clientAccess,
   onAuthorize,
   onRemoveAccess,
+  providers,
 }: {
   machine: FleetMachine
   sessionCount: number | undefined
   inUse: boolean
   connected: boolean
   onUse?: ((machineId: string) => void) | undefined
+  onMoveSessionHere?: ((machineId: string) => void) | undefined
   onOpenTerminal?: ((machineId: string) => void) | undefined
   onForget?: ((machine: FleetMachine) => void) | undefined
   clientAccess?: FleetAccessState | undefined
   onAuthorize?: ((machine: FleetMachine) => void) | undefined
   onRemoveAccess?: ((machine: FleetMachine) => void) | undefined
+  providers?: WorkspaceSnapshot["machine"]["providers"] | undefined
 }) {
   const transports = orderedMachineTransports(machine)
   const note = healthNote[machine.health]?.(machine.label)
@@ -273,7 +279,7 @@ function MachineCard({
   const canControl = connected && attachment.selectable
   const showsTerminal = onOpenTerminal && machine.capabilities.includes("terminals")
   return (
-    <div role="group" aria-label={machine.label} className="rounded-xl border bg-card p-3.5">
+    <div role="group" aria-label={machine.label} className={`rounded-xl border bg-card p-3.5 ${machine.health === "unreachable" ? "opacity-60" : ""}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-semibold text-strong">{machine.label}</span>
         <Badge variant={healthVariant[machine.health]}>{healthLabel[machine.health]}</Badge>
@@ -284,6 +290,11 @@ function MachineCard({
           ) : onUse ? (
             <Button variant="outline" size="sm" disabled={!canControl} aria-label={`Use ${machine.label}`} onClick={() => onUse(machine.id)}>
               Use
+            </Button>
+          ) : null}
+          {!inUse && onMoveSessionHere ? (
+            <Button variant="outline" size="sm" disabled={!canControl} aria-label={`Move a session here on ${machine.label}`} onClick={() => onMoveSessionHere(machine.id)}>
+              Move a session here
             </Button>
           ) : null}
           {showsTerminal ? (
@@ -351,6 +362,20 @@ function MachineCard({
             <Badge key={capability} variant="machine">{capability}</Badge>
           ))}
       </div>
+      {machine.self && providers ? (
+        <section aria-label={`Agents and providers on ${machine.label}`} className="mt-3 border-t pt-3">
+          <p className="m-0 text-[11px] font-semibold">Agents and providers</p>
+          <p className="mt-1 m-0 text-[10px] text-muted-foreground">Installed per machine. Tokens live in that machine&apos;s OS keychain.</p>
+          <ul className="mt-2 m-0 grid gap-1 p-0">
+            {providers.map((provider) => (
+              <li key={provider.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-2 py-1.5">
+                <span className="text-[11px] text-strong">{providerDisplayName(provider.id)}</span>
+                <Badge variant={provider.status === "ready" ? "success" : provider.status === "auth-required" ? "warning" : "outline"}>{provider.status}</Badge>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <p className="mt-3 m-0 text-[11px] font-semibold" id={`transports-${machine.id}`}>
         Transports
       </p>
@@ -765,7 +790,7 @@ function CredentialPanel({ token }: { token: string }) {
         <div className="flex items-center gap-2">
           <Button className={primaryControl} onClick={() => void copy()}>
             {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
-            {copied ? "Copied" : "Copy"}
+            {copied ? "Copied" : "Copy once"}
           </Button>
           <Button
             variant="outline"
@@ -791,7 +816,7 @@ function CredentialPanel({ token }: { token: string }) {
 
 // The receipt is one live region, so a rotation announces itself and a copy
 // confirmation is announced through the same region rather than a nested one.
-function RotationReceipt({ device, token }: { device: PairedDeviceSummary; token: string }) {
+function RotationReceipt({ device, token, onDone }: { device: PairedDeviceSummary; token: string; onDone: () => void }) {
   return (
     <tr>
       <td colSpan={5} className="border-b py-2.5">
@@ -801,6 +826,9 @@ function RotationReceipt({ device, token }: { device: PairedDeviceSummary; token
             {rotationInstruction(device.binding)}
           </p>
           <CredentialPanel token={token} />
+          <div className="mt-3 flex justify-end">
+            <Button variant="outline" size="sm" onClick={onDone}>Done</Button>
+          </div>
         </div>
       </td>
     </tr>
@@ -975,7 +1003,7 @@ export function FleetView({
   fleetOverflow,
   currentMachineId,
   currentSessionCount,
-  onOpenSkills,
+  providers,
   onListDevices,
   onRevokeDevice,
   onRotateDevice,
@@ -983,17 +1011,20 @@ export function FleetView({
   onPairMachine,
   onForgetMachine,
   onUseMachine,
+  onMoveSessionHere,
   onOpenMachineTerminal,
   clientKind = "desktop",
   clientAccess = {},
   onAuthorizeClient,
   onRemoveClientAccess,
+  readOnly = false,
 }: {
   connected: boolean
   entries: FleetEntry[]
   fleetOverflow: FleetSnapshotOverflow | null
   currentMachineId: string
   currentSessionCount: number
+  providers?: WorkspaceSnapshot["machine"]["providers"] | undefined
   onOpenSkills: () => void
   onListDevices: (
     options?: DomovoiRequestOptions,
@@ -1004,11 +1035,13 @@ export function FleetView({
   onPairMachine?: ((request: PairMachineRequest) => Promise<PairedMachine>) | undefined
   onForgetMachine?: ((machineId: string) => Promise<FleetForgetResult>) | undefined
   onUseMachine?: ((machineId: string) => void) | undefined
+  onMoveSessionHere?: ((machineId: string) => void) | undefined
   onOpenMachineTerminal?: ((machineId: string) => void) | undefined
   clientKind?: ClientKind
   clientAccess?: Readonly<Record<string, FleetAccessState>>
   onAuthorizeClient?: (machineId: string, credential: string, signal: AbortSignal) => Promise<void>
   onRemoveClientAccess?: (machineId: string) => void
+  readOnly?: boolean
 }) {
   const [authorizing, setAuthorizing] = useState<FleetMachine | null>(null)
   const [removedAccess, setRemovedAccess] = useState<{ machineId: string; label: string } | null>(null)
@@ -1050,6 +1083,7 @@ export function FleetView({
   }
 
   const revokeDevice = async (device: PairedDeviceSummary) => {
+    if (readOnly) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
@@ -1064,6 +1098,7 @@ export function FleetView({
   }
 
   const renameDevice = async (device: PairedDeviceSummary, label: string) => {
+    if (readOnly) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
@@ -1084,7 +1119,7 @@ export function FleetView({
   // renamed the row in between, the daemon refuses and sends the row as it
   // stands, which replaces the stale one here instead of being overwritten.
   const undoRename = async () => {
-    if (!undo) return
+    if (readOnly || !undo) return
     setPendingDeviceId(undo.deviceId)
     setActionError("")
     try {
@@ -1106,7 +1141,7 @@ export function FleetView({
   }
 
   const forgetMachine = async (machine: FleetMachine) => {
-    if (!onForgetMachine) return
+    if (readOnly || !onForgetMachine) return
     setForgetPending(true)
     setForgetNotice(null)
     try {
@@ -1124,6 +1159,7 @@ export function FleetView({
   }
 
   const rotateDevice = async (device: PairedDeviceSummary) => {
+    if (readOnly) return
     setPendingDeviceId(device.id)
     setActionError("")
     setReceipt(null)
@@ -1140,36 +1176,24 @@ export function FleetView({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside aria-label="Settings navigation" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
-        <div className="px-2 py-2 text-base font-semibold">Settings</div>
-        <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
-        <Button variant="secondary" className="justify-start">Fleet</Button>
-      </aside>
-
       <ScrollArea className="min-h-0 min-w-0 flex-1">
-        <main className="mx-auto flex w-full max-w-[900px] flex-col px-4 py-5 sm:px-8 sm:py-7">
-          <nav aria-label="Settings" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 self-start sm:hidden">
-            <Button variant="ghost" className="min-h-11" onClick={onOpenSkills}>Skills</Button>
-          </nav>
-
+        <main className="mx-auto flex w-full max-w-[1180px] flex-col px-4 py-5 sm:px-[34px] sm:py-[30px]">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 className="m-0 text-[17px] font-semibold">Fleet</h1>
-              <p className="mt-1.5 max-w-[68ch] text-[12.5px] leading-relaxed text-muted-foreground">
-                Machines this daemon can reach, and the devices paired with it. Every connection is
-                direct between your own machines.
+            <div className="flex flex-wrap items-baseline gap-3">
+              <h1 className="m-0 text-[19px] font-semibold tracking-[-0.01em]">Machines</h1>
+              <p className="m-0 max-w-[72ch] text-[12.5px] leading-relaxed text-muted-foreground">
+                Each one runs its own daemon. Code, credentials and Git state stay where the work happens.
               </p>
             </div>
             {onPairMachine ? (
-              <Button variant="outline" onClick={() => setPairing(true)}>
+              <Button variant="outline" disabled={readOnly} onClick={() => { if (!readOnly) setPairing(true) }}>
                 <PlusIcon data-icon="inline-start" />
                 Pair a machine
               </Button>
             ) : null}
           </div>
 
-          <section className="mt-5 flex flex-col gap-2.5" aria-label="Machines">
-            <h2 className="m-0 text-[13px] font-semibold">Machines</h2>
+          <section className="mt-[22px] flex flex-col gap-3.5" aria-label="Machines">
             {removedAccess ? <Alert><AlertTitle>Local client access removed</AlertTitle><AlertDescription>
               This app no longer holds the credential for {removedAccess.label}. Revoke this device in {removedAccess.label}'s Devices list to end its authority there.
             </AlertDescription></Alert> : null}
@@ -1182,24 +1206,38 @@ export function FleetView({
               </Alert>
             ) : null}
             {forgetNotice && forgetNotice.outcome !== "refused" ? <ForgetReceipt notice={forgetNotice} /> : null}
-            {entries.map((entry) => entryCard(entry, (machine) => (
-              <MachineCard
-                key={machine.id}
-                machine={machine}
-                {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
-                inUse={machine.id === currentMachineId}
-                connected={connected}
-                clientAccess={clientAccess[machine.id]}
-                {...(onAuthorizeClient ? { onAuthorize: setAuthorizing } : {})}
-                {...(onRemoveClientAccess ? { onRemoveAccess: (target: FleetMachine) => {
-                  onRemoveClientAccess(target.id)
-                  setRemovedAccess({ machineId: target.id, label: target.label })
-                } } : {})}
-                {...(onUseMachine ? { onUse: onUseMachine } : {})}
-                {...(onOpenMachineTerminal ? { onOpenTerminal: onOpenMachineTerminal } : {})}
-                {...(onForgetMachine ? { onForget: (target: FleetMachine) => setForgetting(target) } : {})}
-              />
-            )))}
+            {entries.length === 0 && !fleetOverflow ? (
+              <Empty className="min-h-48 border">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon"><ServerIcon /></EmptyMedia>
+                  <EmptyTitle>No machines are enrolled</EmptyTitle>
+                  <EmptyDescription>Pair a machine to reach its sessions without moving its code or credentials.</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            ) : (
+              <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-3">
+                {entries.map((entry) => entryCard(entry, (machine) => (
+                  <MachineCard
+                    key={machine.id}
+                    machine={machine}
+                    {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
+                    inUse={machine.id === currentMachineId}
+                    connected={connected}
+                    clientAccess={clientAccess[machine.id]}
+                    {...(machine.self && providers ? { providers } : {})}
+                    {...(onAuthorizeClient && !readOnly ? { onAuthorize: setAuthorizing } : {})}
+                    {...(onRemoveClientAccess && !readOnly ? { onRemoveAccess: (target: FleetMachine) => {
+                      onRemoveClientAccess(target.id)
+                      setRemovedAccess({ machineId: target.id, label: target.label })
+                    } } : {})}
+                    {...(onUseMachine && !readOnly ? { onUse: onUseMachine } : {})}
+                    {...(onMoveSessionHere && !readOnly ? { onMoveSessionHere } : {})}
+                    {...(onOpenMachineTerminal && !readOnly ? { onOpenTerminal: onOpenMachineTerminal } : {})}
+                    {...(onForgetMachine && !readOnly ? { onForget: (target: FleetMachine) => setForgetting(target) } : {})}
+                  />
+                )))}
+              </div>
+            )}
           </section>
 
           <section className="mt-7" aria-label="Paired devices">
@@ -1220,13 +1258,21 @@ export function FleetView({
             {devicesError ? (
               <Alert variant="destructive" className="mt-4">
                 <CircleStopIcon />
-                <AlertTitle>Paired devices unavailable</AlertTitle>
+                <AlertTitle>Could not read paired devices</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-3">
-                  {devicesError}
+                  <span>Domovoi will not show a partial device list. {devicesError}</span>
                   <Button variant="outline" className={secondaryControl} onClick={() => void loadDevices()}>
-                    Retry
+                    Try again
                   </Button>
                 </AlertDescription>
+              </Alert>
+            ) : null}
+
+            {!connected ? (
+              <Alert variant="destructive" className="mt-4">
+                <CircleStopIcon />
+                <AlertTitle>Paired devices unavailable</AlertTitle>
+                <AlertDescription>Paired devices are unavailable while this daemon is unreachable.</AlertDescription>
               </Alert>
             ) : null}
 
@@ -1240,7 +1286,7 @@ export function FleetView({
                       <DeviceRow
                         key={paired.id}
                         device={paired}
-                        disabled={!connected || pendingDeviceId === paired.id}
+                         disabled={readOnly || !connected || pendingDeviceId === paired.id}
                         undoable={undo?.deviceId === paired.id}
                         onRotate={() => void rotateDevice(paired)}
                         onRevoke={() => setRevoking(paired)}
@@ -1251,7 +1297,7 @@ export function FleetView({
                     // Keyed by the credential, so a fresh receipt mounts fresh and
                     // never inherits the last one's revealed state.
                     return receipt?.device.id === paired.id
-                      ? [row, <RotationReceipt key={`${paired.id}:${receipt.token}`} device={receipt.device} token={receipt.token} />]
+                      ? [row, <RotationReceipt key={`${paired.id}:${receipt.token}`} device={receipt.device} token={receipt.token} onDone={() => setReceipt(null)} />]
                       : [row]
                   })}
                 </tbody>
@@ -1271,7 +1317,7 @@ export function FleetView({
               </Empty>
             ) : null}
 
-            {!devices && !devicesError ? (
+            {connected && !devices && !devicesError ? (
               <>
                 <table className="mt-4 w-full animate-pulse border-collapse">
                   <caption className="sr-only">Devices paired with this machine</caption>
@@ -1292,22 +1338,22 @@ export function FleetView({
       </ScrollArea>
 
       <RevokeConfirmation
-        device={revoking}
+        device={readOnly ? null : revoking}
         busy={pendingDeviceId !== ""}
         onConfirm={(device) => void revokeDevice(device)}
         onClose={() => setRevoking(null)}
       />
-      {authorizing && onAuthorizeClient ? <AuthorizeClientDialog key={authorizing.id} machine={authorizing} kind={clientKind}
+      {!readOnly && authorizing && onAuthorizeClient ? <AuthorizeClientDialog key={authorizing.id} machine={authorizing} kind={clientKind}
         onAuthorize={onAuthorizeClient} onClose={() => setAuthorizing(null)} /> : null}
 
       <ForgetConfirmation
-        machine={forgetting}
+        machine={readOnly ? null : forgetting}
         busy={forgetPending}
         onConfirm={(machine) => void forgetMachine(machine)}
         onClose={() => setForgetting(null)}
       />
 
-      {onPairMachine ? (
+      {onPairMachine && !readOnly ? (
         <PairMachineDialog
           open={pairing}
           onOpenChange={setPairing}

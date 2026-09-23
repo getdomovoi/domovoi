@@ -5,6 +5,7 @@ import { WebView } from "react-native-webview"
 
 import { ConnectionBanner } from "../components/connection-banner"
 import { PageScroller } from "../components/page-scroller"
+import { PlanMarkdown } from "../components/plan-markdown"
 import { Badge } from "../components/ui/badge"
 import { Card } from "../components/ui/card"
 import { Button } from "../components/ui/button"
@@ -15,7 +16,7 @@ import type { ConnectionNotice } from "../connection-notice"
 import { cn } from "../lib/cn"
 import { pickerScript, readSelection, webviewBridgeScript, type PreviewSelection } from "../preview-bridge"
 import { openAnnotationCount, type AnnotationRow } from "../review-rows"
-import { colors } from "../theme/tokens.generated"
+import { useTheme } from "../theme/theme-provider"
 
 // What the phone knows about fetching a preview's render. The bytes never
 // land here: a signed grant from the daemon becomes an address the frame
@@ -62,9 +63,10 @@ function Comment({ row }: { row: AnnotationRow }) {
   )
 }
 
-function Render({ render, artifactId, picking, onSelect, onRetry }: {
+function Render({ render, artifactId, machine, picking, onSelect, onRetry }: {
   render: PreviewRender
   artifactId: string
+  machine: string
   onRetry: () => void
   // While picking, the bridge in the render highlights what is under the
   // finger and reports the element tapped instead of letting the tap through.
@@ -116,7 +118,7 @@ function Render({ render, artifactId, picking, onSelect, onRetry }: {
         />
       </View>
       <Text variant="note">
-        The render stays on the machine. This phone displays it and never downloads the repository.
+        The render stays on {machine}. This phone displays it and never downloads the repository.
       </Text>
     </View>
   )
@@ -125,13 +127,16 @@ function Render({ render, artifactId, picking, onSelect, onRetry }: {
 // Frame 18. The comment travels as a reference to the element, coordinates
 // plus text, never as a flattened screenshot; a re-render says whether it
 // still points anywhere.
-function CommentComposer({ selection, sending, onSend, onCancel }: {
+function CommentComposer({ selection, sending, initialBody, onSend, onSave, onCancel }: {
   selection: PreviewSelection
   sending: boolean
+  initialBody: string
   onSend: (body: string) => void
+  onSave: (body: string) => void
   onCancel: () => void
 }) {
-  const [body, setBody] = useState("")
+  const [body, setBody] = useState(initialBody)
+  const { palette } = useTheme()
   const usable = body.trim().length > 0
   return (
     <Card className="gap-2.5">
@@ -146,8 +151,8 @@ function CommentComposer({ selection, sending, onSend, onCancel }: {
         value={body}
         onChangeText={setBody}
         placeholder="What should change here?"
-        placeholderTextColor={colors.dark.faint}
-        selectionColor={colors.dark.primary}
+        placeholderTextColor={palette.faint}
+        selectionColor={palette.primary}
         accessibilityLabel="Comment on this element"
         className="min-h-[72px] rounded-lg border border-border bg-code px-2.5 py-2 font-sans text-[12px] text-foreground"
       />
@@ -156,6 +161,7 @@ function CommentComposer({ selection, sending, onSend, onCancel }: {
       </Text>
       <View className="flex-row justify-end gap-2">
         <Button title="Cancel" onPress={onCancel} disabled={sending} />
+        <Button title="Save for later" onPress={() => onSave(body)} disabled={sending || !usable} />
         <Button title="Send to the agent" variant="primary" onPress={() => { if (usable) onSend(body.trim()) }} disabled={sending || !usable} />
       </View>
     </Card>
@@ -168,6 +174,7 @@ export function ArtifactScreen({
   comments,
   render,
   variants,
+  machine,
   onBack,
   onRetryRender,
   onOpenVariant,
@@ -181,6 +188,7 @@ export function ArtifactScreen({
   // The other renders in this one's variant group, this one included, in the
   // order the person named them. Empty when the render stands alone.
   variants: PreviewVariant[]
+  machine: string
   onBack: () => void
   // Asks for the render again after a failed fetch.
   onRetryRender: () => void
@@ -193,6 +201,7 @@ export function ArtifactScreen({
   const [picking, setPicking] = useState(false)
   const [selection, setSelection] = useState<PreviewSelection | undefined>(undefined)
   const [sending, setSending] = useState(false)
+  const [savedDrafts, setSavedDrafts] = useState<ReadonlyMap<string, string>>(() => new Map())
   const send = async (text: string) => {
     if (!selection) return
     setSending(true)
@@ -226,27 +235,31 @@ export function ArtifactScreen({
       <PageScroller contentContainerClassName="gap-3 px-3.5 pb-8">
         <ConnectionBanner notice={notice} />
         {variants.length > 1 ? (
-          <View className="flex-row gap-1.5">
-            {variants.map((variant) => {
-              const selected = variant.id === artifact.id
-              return (
-                <Pressable
-                  key={variant.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Variant ${variant.label}`}
-                  accessibilityState={{ selected }}
-                  onPress={() => { if (!selected) onOpenVariant(variant.id) }}
-                  className={cn(
-                    "min-h-tap flex-1 items-center justify-center rounded-lg border",
-                    selected ? "border-primary bg-primary/15" : "border-border bg-card",
-                  )}
-                >
-                  <Text className={cn("font-sans-medium text-[12.5px]", selected ? "text-primary" : "text-muted-foreground")}>
-                    {variant.label}
-                  </Text>
-                </Pressable>
-              )
-            })}
+          <View className="gap-2">
+            <View className="flex-row gap-1.5">
+              {variants.map((variant) => {
+                const selected = variant.id === artifact.id
+                return (
+                  <Pressable
+                    key={variant.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Variant ${variant.label}`}
+                    accessibilityState={{ selected }}
+                    onPress={() => { if (!selected) onOpenVariant(variant.id) }}
+                    className={cn(
+                      "min-h-tap flex-1 items-center justify-center rounded-lg border",
+                      selected ? "border-primary bg-primary/15" : "border-border bg-card",
+                    )}
+                  >
+                    <Text className={cn("font-sans-medium text-[12.5px]", selected ? "text-primary" : "text-muted-foreground")}>
+                      {variant.label}
+                    </Text>
+                  </Pressable>
+                )
+              })}
+            </View>
+            <Text variant="note" className="text-center">Viewing a variant does not change the build basis. Choose the build basis on desktop.</Text>
+            <Text variant="note" className="text-center">Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.</Text>
           </View>
         ) : null}
 
@@ -254,6 +267,7 @@ export function ArtifactScreen({
           <Render
             render={render}
             artifactId={artifact.id}
+            machine={machine}
             onRetry={onRetryRender}
             picking={picking}
             onSelect={(picked) => { setPicking(false); setSelection(picked) }}
@@ -275,7 +289,12 @@ export function ArtifactScreen({
           <CommentComposer
             selection={selection}
             sending={sending}
+            initialBody={savedDrafts.get(selection.label) ?? ""}
             onSend={(text) => void send(text)}
+            onSave={(text) => {
+              setSavedDrafts((current) => new Map(current).set(selection.label, text))
+              setSelection(undefined)
+            }}
             onCancel={() => setSelection(undefined)}
           />
         ) : null}
@@ -308,7 +327,11 @@ export function ArtifactScreen({
           </ScrollView>
         ) : null}
 
-        {body.readable && artifact.type !== "diff" ? (
+        {body.readable && artifact.type === "plan" ? (
+          <PlanMarkdown source={body.lines.join("\n")} />
+        ) : null}
+
+        {body.readable && artifact.type !== "diff" && artifact.type !== "plan" ? (
           <View className="rounded-xl border border-border bg-code p-3">
             {body.lines.map((line, index) => (
               <Text key={`${index}-${line}`} className="font-mono text-[10.5px] leading-4 text-foreground">

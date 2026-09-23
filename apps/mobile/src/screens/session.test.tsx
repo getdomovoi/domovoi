@@ -30,7 +30,11 @@ async function draw(overrides: Partial<Parameters<typeof SessionScreen>[0]> = {}
     sending: false,
     sendProblem: "",
     skillLabel: "",
+    access: "full" as const,
     onBack: jest.fn<() => void>(),
+    onWatchReceipt: jest.fn<() => void>(),
+    onCancelQueuedSend: jest.fn<(queueId: string) => void>(),
+    onComposerFocusChange: jest.fn<(focused: boolean) => void>(),
     onOpenApproval: jest.fn<(approvalId: string) => void>(),
     onOpenArtifact: jest.fn<(artifactId: string) => void>(),
     onPause: jest.fn<() => void>(),
@@ -132,11 +136,21 @@ describe("SessionScreen pinned plan", () => {
     for (const step of plan.steps) expect(screen.getByText(step.text)).toBeOnTheScreen()
     expect(screen.getByText("Pinned stays pinned across screens. Unpin and it collapses back into the thread.")).toBeOnTheScreen()
     expect(screen.getByRole("button", { name: "Edit a step" })).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Looks right" })).toBeOnTheScreen()
     // The conversation is still there under the sheet.
     expect(screen.getByLabelText("Reply to this session")).toBeOnTheScreen()
 
     await fireEvent.press(screen.getByRole("button", { name: "Unpin" }))
     expect(props.onPinPlan).toHaveBeenCalledWith(false)
+  })
+
+  it("accepts the pinned plan without unpinning it", async () => {
+    const { props } = await draw({ planPinned: true })
+    await fireEvent.press(screen.getByRole("button", { name: /^Step 3 of 4 · / }))
+    await fireEvent.press(screen.getByRole("button", { name: "Looks right" }))
+
+    expect(screen.queryByText("The plan")).toBeNull()
+    expect(props.onPinPlan).not.toHaveBeenCalled()
   })
 
   it("edits a step from the sheet with the same sender", async () => {
@@ -151,6 +165,96 @@ describe("SessionScreen pinned plan", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Save step" }))
 
     expect(props.onEditStep).toHaveBeenCalledWith(target.id, "Cover expiry in replay.spec.ts")
+  })
+})
+
+describe("SessionScreen decision receipt", () => {
+  it("turns an allowed receipt into the v2 receipt with its watch action and desktop boundary", async () => {
+    const { props } = await draw()
+    const detail = {
+      ...props.detail,
+      approvalId: undefined,
+      entries: [{
+        id: "receipt-1",
+        kind: "receipt" as const,
+        decision: "Allowed once",
+        operation: "pnpm -w prisma migrate deploy",
+        explanation: undefined,
+        attribution: "phone · device fcbd…cdf8",
+        checkpoint: "8f3c1de",
+        duration: "38s",
+      }],
+    }
+
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={detail} /></SafeAreaProvider>)
+
+    expect(screen.getByText("Allowed once")).toBeOnTheScreen()
+    expect(screen.getByText("RECORDED AS")).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Watch the rest of the turn" })).toBeOnTheScreen()
+    expect(screen.getByText(/Reverting happens on a desktop/)).toBeOnTheScreen()
+  })
+})
+
+describe("SessionScreen policy and queue states", () => {
+  it("renders a policy refusal as the full state with no approval controls", async () => {
+    const { props } = await draw()
+    const refusal = {
+      id: "refusal-1",
+      kind: "policy-refusal" as const,
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+    }
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined }} /></SafeAreaProvider>)
+
+    expect(screen.getByText("Refused by policy")).toBeOnTheScreen()
+    expect(screen.getByText(refusal.command)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.rule)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.setBy)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.scope)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.remedy)).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
+  })
+
+  it("shows canonical queued state and cancels by the daemon queue id", async () => {
+    const { props } = await draw()
+    const queuedSend = {
+      id: "queue-7",
+      sessionId: props.detail.id,
+      state: "held" as const,
+      createdAt: "2026-09-19T23:00:00.000Z",
+      origin: { client: "phone" as const, clientId: "phone-1", connectionId: "connection-1" },
+      skillIds: [],
+      attachments: [],
+      reason: "Waiting for the current turn boundary.",
+    }
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, queuedSend }} /></SafeAreaProvider>)
+
+    expect(screen.getByText("Held for the next turn")).toBeOnTheScreen()
+    expect(screen.getByText(queuedSend.reason)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Cancel queued message" }))
+    expect(props.onCancelQueuedSend).toHaveBeenCalledWith("queue-7")
+  })
+
+  it("shows authoritative watching-only access and removes mutation controls", async () => {
+    const { props } = await draw()
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} access="watching" detail={{ ...props.detail, sending: { can: false, reason: "Watching only. This phone can read the session but cannot change it." } }} /></SafeAreaProvider>)
+
+    expect(screen.getByText("watching")).toBeOnTheScreen()
+    expect(screen.getByText("Watching only. This phone can read the session but cannot change it.")).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: "Pause this session" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Edit a step" })).toBeNull()
+  })
+
+  it("keeps the waiting approval in reach of a watching phone", async () => {
+    const { props } = await draw({ access: "watching" })
+
+    expect(screen.getByText("An approval is waiting on a full-access device")).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Open the waiting approval" }))
+    expect(props.onOpenApproval).toHaveBeenCalledWith("approval-migrate")
   })
 })
 

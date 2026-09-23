@@ -3,7 +3,7 @@ import { Modal, Pressable, TextInput, View } from "react-native"
 import type { PermissionMode } from "@getdomovoi/protocol"
 
 import { cn } from "../lib/cn"
-import { colors } from "../theme/tokens.generated"
+import { useTheme } from "../theme/theme-provider"
 import { Button } from "./ui/button"
 import { Text } from "./ui/text"
 
@@ -27,6 +27,7 @@ export function StartLikeSheet({ open, like, starting, problem, onStart, onClose
 }) {
   const [prompt, setPrompt] = useState("")
   const [mode, setMode] = useState<PermissionMode>("plan")
+  const { palette } = useTheme()
   const usable = prompt.trim().length > 0
   const chosen = modes.find((candidate) => candidate.id === mode)!
   return (
@@ -48,8 +49,8 @@ export function StartLikeSheet({ open, like, starting, problem, onStart, onClose
           value={prompt}
           onChangeText={setPrompt}
           placeholder="What should it do?"
-          placeholderTextColor={colors.dark.faint}
-          selectionColor={colors.dark.primary}
+          placeholderTextColor={palette.faint}
+          selectionColor={palette.primary}
           accessibilityLabel="What to do"
           className="min-h-[88px] rounded-lg border border-border bg-code px-2.5 py-2 font-sans text-[12px] text-foreground"
         />

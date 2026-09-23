@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import type { ProviderRuntime } from "@getdomovoi/protocol"
+import { demoWorkspace, type ProviderRuntime } from "@getdomovoi/protocol"
 
 import { LauncherDialog } from "./workspace-shell.js"
 
@@ -15,6 +15,26 @@ const providers: ProviderRuntime[] = [{
   sessionCapable: true,
   version: "1.0.0",
 }]
+
+it("offers recent sessions below the new-session prompt", async () => {
+  const user = userEvent.setup()
+  const onResumeSession = vi.fn()
+  render(<LauncherDialog
+    mode="session"
+    defaultProviderId="codex"
+    defaultPermissionMode="build"
+    onOpenChange={vi.fn()}
+    onOpenProject={vi.fn(async () => {})}
+    onCreateSession={vi.fn(async () => {})}
+    onListModels={vi.fn(async () => [])}
+    providers={providers}
+    recentSessions={demoWorkspace.sessions}
+    onResumeSession={onResumeSession}
+  />)
+  expect(screen.getByText("PICK UP WHERE YOU LEFT OFF")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: /Migrate billing webhooks/ }))
+  expect(onResumeSession).toHaveBeenCalledWith(demoWorkspace.sessions[0]!.id)
+})
 
 it("keeps the chosen model when an equivalent provider list arrives", async () => {
   const onListModels = vi.fn(async () => [{

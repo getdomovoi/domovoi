@@ -67,12 +67,43 @@ describe("useWorkspace connection lifecycle", () => {
       authToken: "device-token",
     })
     expect(view.result.current.snapshot).toEqual(snapshot)
+    expect(view.result.current.clientAccess).toBe("full")
     expect(view.result.current.connected).toBe(true)
 
     view.rerender({ url: daemonUrl, authToken: "device-token" })
     expect(harness.sockets).toHaveLength(1)
     expect(sentRequests(socket, "system.hello")).toHaveLength(1)
     expect(socket.closeCalls).toEqual([])
+  })
+
+  it("uses hello client access and blocks mutations at the workspace action boundary", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket, {
+      ...workspaceSnapshot(),
+      clientAccess: "watching",
+    }))
+
+    expect(view.result.current.clientAccess).toBe("watching")
+    await expect(view.result.current.sendMessage(demoWorkspace.activeSessionId!, "do not send")).rejects.toThrow("Watching clients cannot change workspace state")
+    expect(sentRequests(socket, "session.send")).toHaveLength(0)
+
+    const authorizing = view.result.current.authorizeArtifact({
+      sessionId: demoWorkspace.activeSessionId!,
+      artifactId: "artifact-preview",
+      revision: 2,
+      purpose: "preview",
+    })
+    expect(sentRequests(socket, "artifact.authorize")).toHaveLength(1)
+    respond(socket, "artifact.authorize", {
+      sessionId: demoWorkspace.activeSessionId!,
+      artifactId: "artifact-preview",
+      revision: 2,
+      purpose: "preview",
+      expiresAt: 1_800_000_000,
+      signature: "a".repeat(43),
+    })
+    await expect(authorizing).resolves.toMatchObject({ artifactId: "artifact-preview" })
   })
 
   it("closes the previous socket and forgets its snapshot when the target changes", async () => {

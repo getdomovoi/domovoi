@@ -2,7 +2,7 @@ import { describe, expect, it, jest } from "@jest/globals"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
-import { TabBar, type Tab } from "./tab-bar"
+import { normalizeTab, TabBar, type Tab } from "./tab-bar"
 
 // A notched iPhone reserves room under the bar for the home indicator. The bar
 // floats above that room rather than filling it, and reports the whole
@@ -39,16 +39,23 @@ async function layOut(height: number) {
 }
 
 describe("TabBar", () => {
-  it("draws the four tabs the handoff draws, in its order", async () => {
+  it("draws the three v2 tabs in their signed order", async () => {
     await draw()
     expect(screen.getAllByRole("tab").map((node) => node.props.accessibilityLabel))
-      .toEqual(["Sessions", "Review", "Fleet", "Settings"])
+      .toEqual(["Sessions", "Machines", "Settings"])
+  })
+
+  it("normalizes retired and unknown route values", () => {
+    expect(normalizeTab("review")).toBe("sessions")
+    expect(normalizeTab("fleet")).toBe("machines")
+    expect(normalizeTab("machines")).toBe("machines")
+    expect(normalizeTab("unknown")).toBe("sessions")
   })
 
   it("marks only the tab being looked at", async () => {
-    await draw({ active: "review" })
+    await draw({ active: "machines" })
     expect(screen.getAllByRole("tab").map((node) => node.props.accessibilityState.selected))
-      .toEqual([false, true, false, false])
+      .toEqual([false, true, false])
   })
 
   // The count is the reason to pick the phone up, so a screen reader is told it
@@ -65,10 +72,10 @@ describe("TabBar", () => {
     expect(screen.queryByText("0")).toBeNull()
   })
 
-  it("hands back the tab that was tapped", async () => {
+  it("hands back the machines tab that was tapped", async () => {
     const { onSelect } = await draw()
-    await fireEvent.press(screen.getByRole("tab", { name: "Fleet" }))
-    expect(onSelect).toHaveBeenCalledWith("fleet")
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    expect(onSelect).toHaveBeenCalledWith("machines")
   })
 
   // The bar floats over the list rather than sitting under it, so the list has
@@ -79,12 +86,12 @@ describe("TabBar", () => {
     expect(onFootprint).toHaveBeenCalledWith(54 + notched.insets.bottom)
   })
 
-  it("keeps the handoff's own footing where a device reserves nothing", async () => {
+  it("uses the signed Android 412 by 892 footing", async () => {
     const { onFootprint } = await draw({}, {
-      frame: { x: 0, y: 0, width: 390, height: 844 },
-      insets: { top: 20, left: 0, right: 0, bottom: 0 },
+      frame: { x: 0, y: 0, width: 412, height: 892 },
+      insets: { top: 24, left: 0, right: 0, bottom: 0 },
     })
     await layOut(54)
-    expect(onFootprint).toHaveBeenCalledWith(54 + 22)
+    expect(onFootprint).toHaveBeenCalledWith(54 + 14)
   })
 })

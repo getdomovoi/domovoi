@@ -1,5 +1,4 @@
 import type { ApprovalRule, ProviderRuntime } from "@getdomovoi/protocol"
-import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -39,6 +38,7 @@ export type SettingsShellProps = {
   onOpenAudit: () => void
   onResetFirstRun?: () => void
   theme: WorkspaceTheme
+  readOnly?: boolean
   onThemeChange: (theme: WorkspaceTheme) => void
 } & (DesktopCapability | {
   externalEditor?: undefined
@@ -47,14 +47,6 @@ export type SettingsShellProps = {
   activeWindowDecoration?: undefined
   onWindowDecorationChange?: undefined
 })
-
-const paneLabels: Record<SettingsPane, string> = {
-  providers: "Providers",
-  appearance: "Appearance & window",
-  permissions: "Permissions & rules",
-  "external-editor": "External editor",
-  notifications: "Notifications",
-}
 
 export function SettingsShell({
   providers,
@@ -67,6 +59,7 @@ export function SettingsShell({
   windowDecoration,
   activeWindowDecoration,
   theme,
+  readOnly = false,
   onNotificationsChange,
   onOpenFleet,
   onOpenSkills,
@@ -76,7 +69,6 @@ export function SettingsShell({
   onWindowDecorationChange,
   onThemeChange,
 }: SettingsShellProps) {
-  const [pane, setPane] = useState<SettingsPane>("providers")
   const editorCapability = externalEditor !== undefined && onExternalEditorChange !== undefined
     ? { editor: externalEditor, onChange: onExternalEditorChange }
     : undefined
@@ -85,45 +77,75 @@ export function SettingsShell({
     && onWindowDecorationChange !== undefined
     ? { decoration: windowDecoration, active: activeWindowDecoration, onChange: onWindowDecorationChange }
     : undefined
-  const activePane = pane === "external-editor" && !editorCapability ? "providers" : pane
-  const panes: readonly SettingsPane[] = editorCapability
-    ? ["providers", "appearance", "permissions", "external-editor", "notifications"]
-    : ["providers", "appearance", "permissions", "notifications"]
-
-  const destinations = (
-    <>
-      <Button variant="ghost" className="justify-start" onClick={onOpenFleet}>Fleet &amp; machines</Button>
-      <Button variant="ghost" className="justify-start" onClick={onOpenSkills}>Skills</Button>
-      {panes.map((entry) => (
-        <Button
-          key={entry}
-          variant={activePane === entry ? "secondary" : "ghost"}
-          className="justify-start"
-          aria-current={activePane === entry ? "page" : undefined}
-          onClick={() => setPane(entry)}
-        >
-          {paneLabels[entry]}
-        </Button>
-      ))}
-      <Button variant="ghost" className="justify-start" onClick={onOpenAudit}>Audit log</Button>
-      {onResetFirstRun ? <Button variant="ghost" className="justify-start" onClick={onResetFirstRun}>First-run setup</Button> : null}
-    </>
-  )
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <nav aria-label="Settings" className="hidden w-[236px] shrink-0 flex-col border-r bg-sidebar p-2.5 sm:flex">
-        <div className="px-2 pb-3.5 pt-1 text-base font-semibold">Settings</div>
-        {destinations}
-      </nav>
+    <ScrollArea className="min-h-0 min-w-0 flex-1">
+      <main className="mx-auto flex w-full max-w-[760px] flex-col gap-[26px] px-4 py-5 sm:px-6 sm:py-[30px]">
+        <header className="flex flex-col gap-1.5">
+          <h1 className="m-0 text-[19px] font-semibold tracking-[-0.01em]">Settings</h1>
+          <p className="m-0 text-[12.5px] text-muted-foreground">
+            This machine holds its own settings. Nothing here is synced anywhere unless the row says so.
+          </p>
+        </header>
 
-      <ScrollArea className="min-h-0 min-w-0 flex-1">
-        <main className="mx-auto w-full max-w-[780px] px-4 py-5 sm:px-8 sm:py-7">
-          <nav aria-label="Settings sections" className="mb-3 -ml-2 flex flex-wrap items-center gap-1 sm:hidden">
-            {destinations}
-          </nav>
+        <fieldset disabled={readOnly} className="contents">
+          <section aria-label="Providers and tokens">
+            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon ? { localDaemon } : {})} />
+          </section>
 
-          {activePane === "appearance" ? (
+          <section aria-label="Notifications">
+            <NotificationSettings
+              preferences={notifications}
+              onChange={onNotificationsChange}
+              {...(clientCapabilities ? { client: clientCapabilities } : {})}
+            />
+          </section>
+
+          <section id="permissions-settings" aria-label="Permissions and rules">
+            <PermissionRuleSettings rules={approvalRules} />
+          </section>
+
+          {editorCapability ? (
+            <section aria-label="External editor">
+              <ExternalEditorSettings editor={editorCapability.editor} onEditorChange={editorCapability.onChange} />
+            </section>
+          ) : null}
+        </fieldset>
+
+        <section className="overflow-hidden rounded-lg border bg-card" aria-labelledby="settings-elsewhere">
+          <div className="border-b px-[15px] py-[13px]">
+            <h2 id="settings-elsewhere" className="m-0 text-[13px] font-medium">Elsewhere</h2>
+            <p className="mt-1 text-[11.5px] text-muted-foreground">These live on their own screens.</p>
+          </div>
+          <div className="flex flex-col">
+            <Button variant="ghost" className="h-auto justify-start rounded-none px-[15px] py-3 text-left" onClick={onOpenFleet}>
+              <span className="flex flex-col items-start">
+                <span>Machines and daemons</span>
+                <span className="text-[11px] font-normal text-muted-foreground">Transports, agents installed, and what each one is running.</span>
+              </span>
+            </Button>
+            <Button variant="ghost" className="h-auto justify-start rounded-none border-t px-[15px] py-3 text-left" onClick={onOpenSkills}>
+              <span className="flex flex-col items-start">
+                <span>Skills</span>
+                <span className="text-[11px] font-normal text-muted-foreground">Install sources, signing, and which skills a machine may run.</span>
+              </span>
+            </Button>
+            <Button variant="ghost" className="h-auto justify-start rounded-none border-t px-[15px] py-3 text-left" onClick={onOpenAudit}>
+              <span className="flex flex-col items-start">
+                <span>Audit log</span>
+                <span className="text-[11px] font-normal text-muted-foreground">Who decided what, on which verified device, and what happened next.</span>
+              </span>
+            </Button>
+            {onResetFirstRun ? (
+              <Button variant="ghost" className="h-auto justify-start rounded-none border-t px-[15px] py-3 text-left" onClick={onResetFirstRun}>
+                First-run setup
+              </Button>
+            ) : null}
+          </div>
+        </section>
+
+        <fieldset disabled={readOnly} className="contents">
+          <section aria-label="Appearance">
             <AppearanceSettings
               theme={theme}
               onThemeChange={onThemeChange}
@@ -133,17 +155,9 @@ export function SettingsShell({
                 onWindowDecorationChange: decorationCapability.onChange,
               } : {})}
             />
-          ) : activePane === "permissions" ? (
-            <PermissionRuleSettings rules={approvalRules} />
-          ) : activePane === "notifications" ? (
-            <NotificationSettings preferences={notifications} onChange={onNotificationsChange} {...(clientCapabilities ? { client: clientCapabilities } : {})} />
-          ) : activePane === "external-editor" && editorCapability ? (
-            <ExternalEditorSettings editor={editorCapability.editor} onEditorChange={editorCapability.onChange} />
-          ) : (
-            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon ? { localDaemon } : {})} />
-          )}
-        </main>
-      </ScrollArea>
-    </div>
+          </section>
+        </fieldset>
+      </main>
+    </ScrollArea>
   )
 }

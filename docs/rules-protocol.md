@@ -57,9 +57,10 @@ classification or new-host-only network classification from the prototype copy.
 
 ## Compatibility
 
-The wire minor is now 0.7.0 because older strict rule schemas reject the added
-count and revoked variant. Clients and daemons must upgrade together. Stored
-0.6.x workspaces migrate to 0.7.0, preserving active rules and adding zero counts;
-the previously supported 0.3.x migration remains. Full snapshot validation runs
-before the migrated state is written. No installer, relay, TUF, or reproducible
-build behavior changes are included.
+The wire minor is now 0.8.0 because older strict schemas reject client access,
+policy-refusal thread items, and daemon-owned queued sends. Clients and daemons
+must upgrade together. Stored 0.6.x and 0.7.x workspaces migrate to 0.8.0 while
+preserving rules and adding empty queue state. The previously supported 0.3.x
+migration remains. Full snapshot validation runs before the migrated state is
+written. No installer, relay, TUF, or reproducible build behavior changes are
+included.

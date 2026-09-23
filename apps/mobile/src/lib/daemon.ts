@@ -3,6 +3,7 @@ import {
   fleetSnapshotSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
+  type ClientAccess,
   type FleetEntry,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -69,7 +70,7 @@ export class DaemonConnection {
       // pins trust may run on one of those.
       // The hello answer is the snapshot plus what this daemon can do that
       // the snapshot does not say, read once and never from a later push.
-      onHello?: (hello: WorkspaceSnapshot & { sessionImageAttachments?: boolean }) => void
+      onHello?: (hello: WorkspaceSnapshot & { sessionImageAttachments?: boolean, clientAccess?: ClientAccess }) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       // The daemon pushes the whole fleet whenever it changes, so a list on
       // screen stops being a claim about when the tab was opened.
@@ -99,7 +100,7 @@ export class DaemonConnection {
         (snapshot) => {
           this.handlers.onStatus("open")
           this.handlers.onSnapshot(snapshot as WorkspaceSnapshot)
-          this.handlers.onHello?.(snapshot as WorkspaceSnapshot & { sessionImageAttachments?: boolean })
+          this.handlers.onHello?.(snapshot as WorkspaceSnapshot & { sessionImageAttachments?: boolean, clientAccess?: ClientAccess })
         },
         (cause: Error) => {
           this.handlers.onError(cause)

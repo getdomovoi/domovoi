@@ -379,15 +379,23 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     context: ClaudePermissionContext,
   ): Promise<PermissionResult> {
     const session = this.#requireSession(threadId)
+    const command = typeof input.command === "string" ? input.command : toolName
+    const reason = context.title ?? context.description ?? context.decisionReason
     if (session.runtime.permissionMode === "ask") {
       if (!claudeAskTools.includes(toolName as typeof claudeAskTools[number])) {
+        this.#emit({
+          type: "policy-refused",
+          threadId,
+          ...(session.activeTurnId ? { turnId: session.activeTurnId } : {}),
+          itemId: context.toolUseID,
+          command,
+          reason: reason ?? toolName,
+        })
         return Promise.resolve({ behavior: "deny", message: "Ask mode is read-only" })
       }
       return Promise.resolve({ behavior: "allow", updatedInput: input })
     }
     const requestId = ++this.#nextApprovalId
-    const command = typeof input.command === "string" ? input.command : toolName
-    const reason = context.title ?? context.description ?? context.decisionReason
     const filePath = typeof input.file_path === "string" ? input.file_path.trim() : undefined
     this.#emit({
       type: "approval-requested",

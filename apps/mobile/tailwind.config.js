@@ -6,6 +6,10 @@
 // the stylesheet and run pnpm mobile:tokens; release:invariants fails on drift.
 const { colors, fontFamily, fontSize, radius } = require("./src/theme/tokens.generated.js")
 
+const themedColors = Object.fromEntries(
+  Object.keys(colors.dark).map((name) => [name, `rgb(var(--color-${name}) / <alpha-value>)`]),
+)
+
 // React Native picks a face by its registered name, so each weight is its own
 // family and the weight utilities (font-semibold) are not used.
 const faces = Object.fromEntries(
@@ -27,8 +31,7 @@ module.exports = {
   safelist: carriedLeading,
   presets: [require("nativewind/preset")],
   theme: {
-    // The phone follows the desktop's dark theme; it has no light surface yet.
-    colors: colors.dark,
+    colors: themedColors,
     borderRadius: { ...radius, full: "9999px" },
     // The phone's own ramp, generated from --text-phone-* rather than scaled
     // from the desktop's. Replacing the default scale rather than extending it

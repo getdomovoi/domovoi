@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { View } from "react-native"
-import { StatusBar } from "expo-status-bar"
+import { useWindowDimensions, View } from "react-native"
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
   artifactAuthorizeResultSchema,
@@ -14,22 +13,26 @@ import {
   type FleetEntry,
   type PermissionMode,
   type SkillSummary,
+  type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 import { artifactRows, findArtifact, previewVariants } from "./artifact-rows"
 import { artifactUrlFor } from "./artifact-url"
+import { mutationCall, watchingReason } from "./client-access"
 import { previewChannel, previewParentOrigin, type PreviewSelection } from "./preview-bridge"
 import { connectionNotice } from "./connection-notice"
 import { decisionProblem } from "./decision-problem"
 import { ConfirmSheet } from "./components/confirm-sheet"
+import { FreshSessionSheet } from "./components/fresh-session-sheet"
 import { StopSheet } from "./components/stop-sheet"
 import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
-import { TabBar, type Tab } from "./components/tab-bar"
+import { normalizeTab, TabBar, type Tab } from "./components/tab-bar"
 import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
 import { clientKind } from "./lib/protocol-facts"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
+import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
 
 import { attachmentFrom, attachmentRefusalMessage, attachmentSummary, maximumSessionAttachments, type Attachment } from "./attachments"
@@ -39,17 +42,20 @@ import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
 import { fleetLoader } from "./fleet-load"
-import { FleetScreen } from "./screens/fleet"
-import { ReviewScreen } from "./screens/review"
-import { annotationRows, reviewRows } from "./review-rows"
+import { freshSessionReadiness, startFreshSession } from "./fresh-session"
+import { MachinesScreen } from "./screens/fleet"
+import { annotationRows } from "./review-rows"
 import { SessionScreen } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { PairScanScreen, usePairCameraPermission } from "./screens/pair-scan"
 import { SettingsScreen } from "./screens/settings"
 import { UnpairedScreen } from "./screens/unpaired"
 import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session-detail"
+import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
+import { TabletShell } from "./tablet-shell"
+import { useTheme } from "./theme/theme-provider"
 import {
   missingSkillProblem,
   refusalMessage,
@@ -59,11 +65,15 @@ import {
 import "./global.css"
 
 export function App() {
-  const [tab, setTab] = useState<Tab>("sessions")
+  const { preference, setPreference } = useTheme()
+  const { width } = useWindowDimensions()
+  const tablet = width >= 768
+  const [tab, setTab] = useState<Tab>(() => normalizeTab("sessions"))
+  const selectTab = useCallback((value: unknown) => setTab(normalizeTab(value)), [])
   const [url, setUrl] = useState("")
   const [token, setToken] = useState("")
   const [connectTo, setConnectTo] = useState<{ url: string, token: string } | undefined>(undefined)
-  const [scanning, setScanning] = useState(false)
+  const [pairingMode, setPairingMode] = useState<"scan" | "type" | undefined>(undefined)
   const [cameraPermission, requestCameraPermission] = usePairCameraPermission()
   const [restoring, setRestoring] = useState(true)
   const [openApprovalId, setOpenApprovalId] = useState<string | undefined>(undefined)
@@ -137,6 +147,10 @@ export function App() {
   const [fleetProblem, setFleetProblem] = useState("")
   const [confirmPause, setConfirmPause] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [freshOpen, setFreshOpen] = useState(false)
+  const [freshStarting, setFreshStarting] = useState(false)
+  const [freshProblem, setFreshProblem] = useState("")
+  const [composerFocused, setComposerFocused] = useState(false)
   // How long an approval has been waiting is only true for as long as the
   // clock it was measured against. It ticks while the list is on screen and
   // stops when it is not, because nothing off screen needs a fresh minute.
@@ -169,10 +183,14 @@ export function App() {
     setProblem: setFleetProblem,
   }))
 
-  const { snapshot, status, fault, call, refresh, reconnect, imageAttachments } = useDaemon(
+  const { snapshot, status, fault, call, refresh, reconnect, imageAttachments, clientAccess } = useDaemon(
     connectTo?.url,
     connectTo?.token,
     fleetLoads.accept,
+  )
+  const mutate = useCallback(
+    (method: string, params: unknown) => mutationCall(clientAccess, call, method, params),
+    [call, clientAccess],
   )
   const notice = connectionNotice(status, fault, snapshot !== undefined)
   const shell = shellState({
@@ -182,6 +200,7 @@ export function App() {
     fault,
   })
   const waiting = snapshot ? waitingCount(snapshot) : 0
+  const freshReadiness = snapshot ? freshSessionReadiness(snapshot) : undefined
   // No daemon has been named at all. That is a different screen from a daemon
   // that will not answer: every tab has its own reason for being empty, and
   // Settings is not empty at all. ShellNotice answers the reaching and refused
@@ -190,6 +209,14 @@ export function App() {
   // The same fact narrowed for the screen that draws it, so a state answered by
   // UnpairedScreen cannot also reach ShellNotice.
   const unreachable = unreachableShell(shell)
+  const phases = launchPhases({
+    restoringCredential: restoring,
+    hasCredential: connectTo !== undefined,
+    hasSnapshot: snapshot !== undefined,
+    status,
+    fault,
+    address: connectTo?.url ?? "",
+  })
 
   // The snapshot describes the daemon this phone is talking to, so it is the
   // one machine in the fleet whose sessions and tools the phone can count.
@@ -210,9 +237,13 @@ export function App() {
     if (!openApproval) setExplaining(false)
   }, [openApproval])
 
+  useEffect(() => {
+    if (clientAccess === "watching") setExplaining(false)
+  }, [clientAccess])
+
   const openSession = useMemo(
-    () => snapshot && openSessionId ? sessionDetail(snapshot, openSessionId) : undefined,
-    [openSessionId, snapshot],
+    () => snapshot && openSessionId ? sessionDetail(snapshot, openSessionId, clientAccess) : undefined,
+    [clientAccess, openSessionId, snapshot],
   )
 
   const openArtifacts = useMemo(
@@ -276,11 +307,6 @@ export function App() {
     })()
     return () => { current = false }
   }, [call, openPreviewId, openPreviewRevision, openPreviewSessionId, renderAttempt, url])
-
-  // Every artifact the workspace holds, whichever session made it, because the
-  // Review tab is opened to answer what is outstanding rather than to walk back
-  // into the session that produced it.
-  const review = useMemo(() => snapshot ? reviewRows(snapshot) : [], [snapshot])
 
   const openPlan = useMemo(() => {
     if (!snapshot || !openSessionId) return undefined
@@ -349,14 +375,14 @@ export function App() {
   // to stay current. Depending on the status is what makes it ask once more
   // when the connection comes back.
   useEffect(() => {
-    if (tab === "fleet" && status === "open") void loadFleet()
+    if (tab === "machines" && status === "open") void loadFleet()
   }, [loadFleet, status, tab])
 
   // Sessions measures how long an approval has waited and Fleet measures how
   // long a machine has been silent, so the clock ticks for both and stops on
   // the tab that reads no ages.
   useEffect(() => {
-    if (tab !== "sessions" && tab !== "fleet") return
+    if (tab !== "sessions" && tab !== "machines") return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(timer)
@@ -376,13 +402,16 @@ export function App() {
 
   useEffect(() => () => fleetLoads.invalidate(), [fleetLoads])
 
-  const decide = async (decision: ApprovalDecision, explanation?: string) => {
-    if (!openApproval) return
+  const resolveApproval = async (
+    approval: WorkspaceSnapshot["approvals"][number],
+    decision: ApprovalDecision,
+    explanation?: string,
+  ) => {
     setDeciding(true)
     setDecideProblem("")
     try {
-      await call("approval.resolve", {
-        approvalId: openApproval.id,
+      await mutate("approval.resolve", {
+        approvalId: approval.id,
         decision,
         client: clientKind,
         ...(explanation ? { explanation } : {}),
@@ -398,6 +427,11 @@ export function App() {
     }
   }
 
+  const decide = async (decision: ApprovalDecision, explanation?: string) => {
+    if (!openApproval) return
+    await resolveApproval(openApproval, decision, explanation)
+  }
+
   // The edit is built against the plan in the snapshot the phone holds now.
   // The daemon answers with a receipt that says whether it applied, queued or
   // conflicted, and the next snapshot carries the plan's own account of it.
@@ -405,7 +439,7 @@ export function App() {
     const plan = snapshot ? planForSession(snapshot, sessionId) : undefined
     if (!plan) return
     const edit = planStepEdit(plan, stepId, text)
-    await call("plan.edit", {
+    await mutate("plan.edit", {
       sessionId,
       basedOnStructureRevision: edit.basedOnStructureRevision,
       baseSteps: edit.baseSteps,
@@ -421,7 +455,7 @@ export function App() {
   const commentOnElement = async (artifactId: string, anchor: PreviewSelection["anchor"], body: string) => {
     const artifact = snapshot ? findArtifact(snapshot, artifactId) : undefined
     if (!artifact) return
-    await call("annotation.create", {
+    await mutate("annotation.create", {
       sessionId: artifact.sessionId,
       artifactId,
       ...(artifact.variant ? { variantId: artifact.variant.id } : {}),
@@ -444,14 +478,14 @@ export function App() {
     setStartProblem("")
     try {
       const request = startLikeRequest(like, prompt, mode)
-      const created = workspaceSnapshotSchema.parse(await call("session.create", {
+      const created = workspaceSnapshotSchema.parse(await mutate("session.create", {
         title: request.title,
         runtime: request.runtime,
         client: clientKind,
       }))
       const startedId = created.activeSessionId
       if (!startedId) throw new Error("The daemon created the session but did not say which")
-      await call("session.send", { sessionId: startedId, prompt: request.prompt, client: clientKind })
+      await mutate("session.send", { sessionId: startedId, prompt: request.prompt, client: clientKind })
       setOpenSessionId(startedId)
       setOpenArtifactId(undefined)
       setDraft("")
@@ -468,10 +502,32 @@ export function App() {
   const pauseSession = async (sessionId: string) => {
     setPausing(true)
     try {
-      await call("session.pause", { sessionId, client: clientKind })
+      await mutate("session.pause", { sessionId, client: clientKind })
     } finally {
       setPausing(false)
     }
+  }
+
+  const startFresh = async (prompt: string) => {
+    if (!snapshot) return
+    setFreshStarting(true)
+    setFreshProblem("")
+    try {
+      const sessionId = await startFreshSession(snapshot, prompt, mutate)
+      setFreshOpen(false)
+      setOpenSessionId(sessionId)
+    } catch (cause) {
+      setFreshProblem(cause instanceof Error ? cause.message : "The session was not started")
+    } finally {
+      setFreshStarting(false)
+    }
+  }
+
+  const cancelQueuedSend = async (sessionId: string, queueId: string) => {
+    const queued = snapshot?.queuedSends?.find((candidate) => candidate.sessionId === sessionId)
+    const params = queuedCancelParams(queued, sessionId, queueId)
+    if (!params) return
+    await mutate("session.cancelQueuedSend", params)
   }
 
   const refreshWorkspace = async () => {
@@ -513,10 +569,12 @@ export function App() {
     setSending(true)
     setSendProblem("")
     try {
-      await call("session.send", {
+      const session = snapshot?.sessions.find((candidate) => candidate.id === sessionId)
+      await mutate("session.send", {
         sessionId,
         prompt: draft.trim(),
         client: clientKind,
+        ...(session ? sendDelivery(session) : {}),
         ...(selection ? { skillSelection: selection } : {}),
         ...(attachments.length > 0
           ? { attachments: attachments.map(({ mimeType, width, height, data }) => ({ mimeType, width, height, data })) }
@@ -538,16 +596,15 @@ export function App() {
 
   // An approval is the reason the phone exists, so it takes the whole screen
   // and the tab bar goes away until it is answered or dismissed.
-  if (openApproval) {
+  if (openApproval && (!tablet || explaining)) {
     return (
       <SafeAreaProvider>
-        <StatusBar style="light" />
         <SafeAreaView className="flex-1 bg-background">
-          {explaining ? (
+          {explaining && clientAccess !== "watching" ? (
             <DenyExplainScreen
               approval={openApproval}
               pending={deciding}
-              onSend={(explanation) => void decide("deny-explain", explanation)}
+              onSend={(explanation) => void decide(explanation ? "deny-explain" : "deny", explanation)}
               onBack={() => setExplaining(false)}
             />
           ) : (
@@ -559,6 +616,7 @@ export function App() {
               onDecide={(decision) => void decide(decision)}
               onDenyExplain={() => setExplaining(true)}
               onBack={() => setOpenApprovalId(undefined)}
+              watching={clientAccess === "watching"}
             />
           )}
         </SafeAreaView>
@@ -571,7 +629,6 @@ export function App() {
   if (openArtifact) {
     return (
       <SafeAreaProvider>
-        <StatusBar style="light" />
         <SafeAreaView className="flex-1 bg-background">
           <ArtifactScreen
             artifact={openArtifact}
@@ -579,6 +636,7 @@ export function App() {
             comments={openArtifactComments}
             render={previewRender}
             variants={openVariants}
+            machine={snapshot?.machine.name ?? "the machine"}
             onBack={() => setOpenArtifactId(undefined)}
             onRetryRender={() => setRenderAttempt((attempt) => attempt + 1)}
             onOpenVariant={setOpenArtifactId}
@@ -589,13 +647,59 @@ export function App() {
     )
   }
 
-  // A session is read the same way: full screen, back to the list, no tab bar
-  // competing with the thread for the bottom of a phone.
+  if (tablet && snapshot && tab === "sessions") {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView edges={["top", "left", "right", "bottom"]} className="flex-1 bg-background">
+          <TabletShell
+            snapshot={snapshot}
+            selectedSessionId={openSessionId ?? snapshot.activeSessionId ?? undefined}
+            draft={draft}
+            access={clientAccess}
+            sending={sending || deciding}
+            onSelectSession={(sessionId) => {
+              setOpenSessionId(sessionId)
+              setOpenApprovalId(undefined)
+              setDraft("")
+              setSendProblem("")
+            }}
+            onNewSession={() => {
+              setFreshProblem("")
+              setFreshOpen(true)
+            }}
+            onOpenMachines={() => selectTab("machines")}
+            onChangeDraft={(next) => {
+              setDraft(next)
+              if (sendProblem) setSendProblem("")
+            }}
+            onSend={(sessionId) => void sendMessage(sessionId)}
+            onResolve={(approvalId, decision) => {
+              const approval = snapshot.approvals.find((candidate) => candidate.id === approvalId)
+              if (approval) void resolveApproval(approval, decision)
+            }}
+            onDenyExplain={(approvalId) => {
+              setOpenApprovalId(approvalId)
+              setExplaining(true)
+            }}
+            onPostReview={(artifactId, body) => void commentOnElement(artifactId, { cssSelector: "body" }, body)}
+          />
+          <FreshSessionSheet
+            open={freshOpen}
+            project={snapshot.project?.name ?? snapshot.project?.path ?? "the open project"}
+            starting={freshStarting}
+            problem={freshProblem}
+            onStart={(prompt) => void startFresh(prompt)}
+            onClose={() => { if (!freshStarting) setFreshOpen(false) }}
+          />
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
   if (openSession) {
     return (
       <SafeAreaProvider>
-        <StatusBar style="light" />
-        <SafeAreaView className="flex-1 bg-background">
+        <SafeAreaView edges={["top", "left", "right"]} className="flex-1 bg-background">
           <SessionScreen
             detail={{ ...openSession, sending: sendReadinessOverSocket(status, openSession.sending) }}
             notice={notice}
@@ -606,6 +710,11 @@ export function App() {
             sending={sending}
             sendProblem={sendProblem}
             skillLabel={skillSelectionLabel(chosenSkills)}
+            access={clientAccess}
+            onWatchReceipt={() => setComposerFocused(false)}
+            onCancelQueuedSend={(queueId) => void cancelQueuedSend(openSession.id, queueId)}
+            onComposerFocusChange={setComposerFocused}
+            composerBottomInset={!composerFocused && tabFootprint > 0 ? tabFootprint + 8 : undefined}
             onBack={() => {
               setOpenSessionId(undefined)
               setOpenArtifactId(undefined)
@@ -669,6 +778,40 @@ export function App() {
             }}
             onCancel={() => setConfirmPauseSession(false)}
           />
+          {!composerFocused ? (
+            <TabBar
+              active="sessions"
+              waiting={waiting}
+              onSelect={(next) => {
+                if (next === "sessions") return
+                setOpenSessionId(undefined)
+                selectTab(next)
+              }}
+              onFootprint={setTabFootprint}
+            />
+          ) : null}
+        </SafeAreaView>
+      </SafeAreaProvider>
+    )
+  }
+
+  if (pairingMode) {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView className="flex-1 bg-background">
+          <PairScanScreen
+            mode={pairingMode}
+            permission={cameraPermission}
+            requestPermission={requestCameraPermission}
+            onPaired={(credential) => {
+              setUrl(credential.url)
+              setToken(credential.token)
+              setPairingMode(undefined)
+              setConnectTo(credential)
+              void saveCredential(credential)
+            }}
+            onCancel={() => setPairingMode(undefined)}
+          />
         </SafeAreaView>
       </SafeAreaProvider>
     )
@@ -676,7 +819,6 @@ export function App() {
 
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" />
       {/* The tab bar floats over the screen rather than sitting under it, so
           this view does not reserve the bottom edge. What the bar covers is
           measured and handed to each screen, which pads its own scroller. */}
@@ -687,7 +829,7 @@ export function App() {
               <UnpairedScreen
                 tab="sessions"
                 bottomInset={tabFootprint}
-                onPair={() => setTab("settings")}
+                onPair={() => selectTab("machines")}
               />
             ) : snapshot ? (
               <SessionsScreen
@@ -698,6 +840,13 @@ export function App() {
                 now={now}
                 onOpenApproval={setOpenApprovalId}
                 onRefresh={() => void refreshWorkspace()}
+                onStartSession={() => {
+                  setFreshProblem("")
+                  setFreshOpen(true)
+                }}
+                startDisabledReason={clientAccess === "watching"
+                  ? watchingReason
+                  : freshReadiness?.canStart === false ? freshReadiness.reason : undefined}
                 onOpenSession={(sessionId) => {
                   // A draft is written for one session. Carrying it into
                   // another one would let a reply meant for one agent start a
@@ -711,45 +860,30 @@ export function App() {
                   }
                   setOpenSessionId(sessionId)
                 }}
-                onOpenStop={() => setConfirmPause(true)}
                 bottomInset={tabFootprint}
               />
             ) : unreachable ? (
               <ShellNotice
                 shell={unreachable}
+                phases={phases}
                 address={connectTo?.url ?? ""}
                 bottomInset={tabFootprint}
-                onOpenSettings={() => setTab("settings")}
+                 onOpenSettings={() => selectTab("settings")}
                 onRetry={reconnect}
               />
             ) : null
           ) : null}
-          {tab === "review" ? (
+          {tab === "machines" ? (
             unpaired ? (
               <UnpairedScreen
-                tab="review"
+                tab="machines"
                 bottomInset={tabFootprint}
-                onPair={() => setTab("settings")}
+                onPair={() => setPairingMode("scan")}
+                onScanPairingCode={() => setPairingMode("scan")}
+                onTypePairingCode={() => setPairingMode("type")}
               />
             ) : (
-            <ReviewScreen
-              rows={review}
-              notice={notice}
-              hasSnapshot={snapshot !== undefined}
-              onOpenArtifact={setOpenArtifactId}
-              bottomInset={tabFootprint}
-            />
-            )
-          ) : null}
-          {tab === "fleet" ? (
-            unpaired ? (
-              <UnpairedScreen
-                tab="fleet"
-                bottomInset={tabFootprint}
-                onPair={() => setTab("settings")}
-              />
-            ) : (
-            <FleetScreen
+            <MachinesScreen
               fleet={fleet}
               activity={activity}
               loading={fleetLoading}
@@ -758,26 +892,14 @@ export function App() {
               connected={status === "open"}
               now={now}
               onRefresh={() => void loadFleet()}
-              onOpen={() => setTab("sessions")}
+              onOpen={() => selectTab("sessions")}
+              onScanPairingCode={() => setPairingMode("scan")}
+              onTypePairingCode={() => setPairingMode("type")}
               bottomInset={tabFootprint}
             />
             )
           ) : null}
-          {tab === "settings" && scanning ? (
-            <PairScanScreen
-              permission={cameraPermission}
-              requestPermission={requestCameraPermission}
-              onPaired={(credential) => {
-                setUrl(credential.url)
-                setToken(credential.token)
-                setScanning(false)
-                setConnectTo(credential)
-                void saveCredential(credential)
-              }}
-              onCancel={() => setScanning(false)}
-              bottomInset={tabFootprint}
-            />
-          ) : tab === "settings" ? (
+          {tab === "settings" ? (
             <SettingsScreen
               url={url}
               token={token}
@@ -796,27 +918,39 @@ export function App() {
                 setToken("")
                 void clearCredential()
               }}
-              onScanPairingCode={() => setScanning(true)}
+              onOpenStop={() => setConfirmPause(true)}
+              themePreference={preference}
+              onChangeTheme={setPreference}
               paired={!unpaired}
               bottomInset={tabFootprint}
             />
           ) : null}
         </View>
+        <FreshSessionSheet
+          open={freshOpen}
+          project={snapshot?.project?.name ?? snapshot?.project?.path ?? "the open project"}
+          starting={freshStarting}
+          problem={freshProblem}
+          onStart={(prompt) => void startFresh(prompt)}
+          onClose={() => {
+            if (!freshStarting) setFreshOpen(false)
+          }}
+        />
         <TabBar
           active={tab}
           waiting={waiting}
-          onSelect={setTab}
+          onSelect={selectTab}
           onFootprint={setTabFootprint}
         />
         <StopSheet
           open={confirmPause}
           onOpenStop={() => {
             setConfirmPause(false)
-            void call("system.pauseAll", { client: clientKind })
+            void mutate("system.pauseAll", { client: clientKind })
           }}
           onEmergencyStop={() => {
             setConfirmPause(false)
-            void call("system.emergencyStop", { client: clientKind })
+            void mutate("system.emergencyStop", { client: clientKind })
           }}
           onCancel={() => setConfirmPause(false)}
         />

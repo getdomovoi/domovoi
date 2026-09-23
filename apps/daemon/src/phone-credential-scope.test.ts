@@ -76,7 +76,7 @@ describe("a phone-scoped credential", () => {
     const minted = await call(owner, "device.pair", { label: "iPhone", client: "cli", targetClient: "phone" })
     expect(minted).not.toHaveProperty("error")
     const { token, device } = minted.result as { token: string, device: { id: string, binding: { kind: string, client?: string } } }
-    expect(device.binding).toEqual({ kind: "client", client: "phone" })
+    expect(device.binding).toEqual({ kind: "client", client: "phone", clientAccess: "full" })
 
     const phone = await connect(daemon)
     expect(await call(phone, "system.hello", { client: "phone", clientVersion: "0.0.1", protocolVersion, authToken: token })).not.toHaveProperty("error")

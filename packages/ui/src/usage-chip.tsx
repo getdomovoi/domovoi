@@ -35,7 +35,14 @@ export type UsageChipRow = {
 // connection kind and the provider window (asks 5 and 6).
 export const unreportedCostNote = "Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key."
 
+// The chip names the context the next turn runs in, because that is the
+// number that decides whether the work continues. The session's own total is
+// a running tally nothing acts on, and the rows below carry it. A provider
+// that reports no context leaves the chip on that tally rather than blank.
 export function usageChipText(usage: SessionUsage): string {
+  if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
+    return formatTokenCount(usage.contextTokens)
+  }
   return formatTokenCount(usage.totalTokens)
 }
 
@@ -79,16 +86,84 @@ function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefin
   }
 }
 
-// No provider reports its rolling limit over the wire yet, so the dial is
-// not drawn and the row says why. When a provider states the window this row
-// becomes the ring's source; until then an inferred denominator would be
-// invented precision.
 function providerWindowRow(): UsageChipRow {
   return {
     label: "Provider window",
     value: "not reported",
     note: "This provider has not said what the limit is, so Domovoi draws no dial rather than guessing one.",
   }
+}
+
+// The signed v2 chip carries a 13px ring: a muted track and one arc, drawn at
+// r=5.5 so the circumference is 34.56, offset from the top. Two provider
+// windows run at once and the ring shows the tighter one, because that is the
+// window that stops the work first. The label names which window it drew, so
+// the ring is never a number without a unit.
+export const usageRingCircumference = 34.56
+export const usageRingWarningPercent = 85
+
+export type UsageChipRing = {
+  percent: number
+  offset: number
+  warning: boolean
+  label: string
+}
+
+function providerWindowName(kind: "primary" | "secondary", duration: number | undefined): string {
+  if (duration === 300) return "5 hour window"
+  if (duration === 10_080) return "weekly window"
+  return kind === "primary" ? "primary window" : "secondary window"
+}
+
+function formatPercent(percent: number): string {
+  return percent.toLocaleString("en-US", { maximumFractionDigits: 1 })
+}
+
+function formatResetTime(resetsAt: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(resetsAt))
+}
+
+export function usageChipRing(usage: SessionUsage | null | undefined): UsageChipRing | undefined {
+  const windows = usage?.providerLimits?.windows
+  if (!windows || windows.length === 0) return undefined
+  const tightest = windows.reduce((worst, window) => window.usedPercent > worst.usedPercent ? window : worst)
+  const percent = tightest.usedPercent
+  const name = providerWindowName(tightest.kind, tightest.windowDurationMinutes)
+  const label = [
+    `${formatPercent(percent)} percent of the ${name}`,
+    tightest.resetsAt ? `resets ${formatResetTime(tightest.resetsAt)}` : undefined,
+    windows.length > 1 ? "which is the tighter of the two" : undefined,
+  ].filter((part): part is string => Boolean(part)).join(", ")
+  return {
+    percent,
+    offset: usageRingCircumference * (1 - percent / 100),
+    warning: percent >= usageRingWarningPercent,
+    label,
+  }
+}
+
+function providerWindowLabel(kind: "primary" | "secondary", duration: number | undefined): string {
+  if (duration === 300) return "5-hour limit"
+  if (duration === 10_080) return "Weekly limit"
+  return kind === "primary" ? "Primary limit" : "Secondary limit"
+}
+
+function providerWindowRows(usage: SessionUsage): UsageChipRow[] {
+  if (!usage.providerLimits) return [providerWindowRow()]
+  const provider = usage.providerLimits.provider === "codex"
+    ? "Codex"
+    : usage.providerLimits.provider
+  return usage.providerLimits.windows.map((window) => ({
+    label: providerWindowLabel(window.kind, window.windowDurationMinutes),
+    value: `${window.usedPercent.toLocaleString("en-US", { maximumFractionDigits: 1 })}% used`,
+    note: [
+      window.resetsAt
+        ? `Resets ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(window.resetsAt))}`
+        : undefined,
+      `Reported by ${provider}`,
+    ].filter((part): part is string => Boolean(part)).join(" · "),
+    share: window.usedPercent,
+  }))
 }
 
 // The newest history entry is not always a turn: a system receipt such as
@@ -140,7 +215,7 @@ export function usageChipRows(input: {
   today: UsageWindow | null | undefined
 }): UsageChipRow[] {
   const session = sessionHasUsage(input.usage) ? [turnRow(input.turn), sessionRow(input.usage), contextRow(input.usage)] : []
-  return [...session, todayRow(input.today), ...(session.length > 0 ? [providerWindowRow()] : [])]
+  return [...session, todayRow(input.today), ...(input.usage && session.length > 0 ? providerWindowRows(input.usage) : [])]
     .filter((row): row is UsageChipRow => row !== undefined)
 }
 
@@ -161,6 +236,7 @@ export function UsageChip({
   const readRef = useRef<AbortController | null>(null)
   useEffect(() => () => readRef.current?.abort(), [])
   const text = usageChipTriggerText(usage, today)
+  const ring = usageChipRing(usage)
   if (!text) return null
   const rows = usageChipRows({ usage, turn, today })
   return (
@@ -180,6 +256,23 @@ export function UsageChip({
         <Button variant="ghost" size="sm" aria-label="Usage" className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
           <ChartLineIcon data-icon="inline-start" className="text-muted-foreground" />
           {text}
+          {ring ? (
+            <>
+              <span aria-hidden="true" className="text-faint">·</span>
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" role="img" aria-label={ring.label} className="shrink-0">
+                <circle cx="7" cy="7" r="5.5" stroke="var(--muted)" strokeWidth="2" />
+                <circle
+                  cx="7" cy="7" r="5.5"
+                  stroke={ring.warning ? "var(--warning)" : "var(--primary)"}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeDasharray={usageRingCircumference}
+                  strokeDashoffset={ring.offset.toFixed(2)}
+                  transform="rotate(-90 7 7)"
+                />
+              </svg>
+            </>
+          ) : null}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-[320px] p-0">

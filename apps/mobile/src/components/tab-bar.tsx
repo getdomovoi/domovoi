@@ -5,12 +5,17 @@ import { FloatingBar } from "./floating-bar"
 import { Icon, type IconName } from "./ui/icon"
 import { Text } from "./ui/text"
 
-export type Tab = "sessions" | "review" | "fleet" | "settings"
+export type Tab = "sessions" | "machines" | "settings"
+
+export function normalizeTab(value: unknown): Tab {
+  if (value === "machines" || value === "settings") return value
+  if (value === "fleet") return "machines"
+  return "sessions"
+}
 
 const tabs: Array<{ id: Tab, label: string, icon: IconName }> = [
   { id: "sessions", label: "Sessions", icon: "layers" },
-  { id: "review", label: "Review", icon: "eye" },
-  { id: "fleet", label: "Fleet", icon: "server" },
+  { id: "machines", label: "Machines", icon: "server" },
   { id: "settings", label: "Settings", icon: "settings" },
 ]
 
@@ -42,7 +47,7 @@ export function TabBar({
               ? `Sessions, ${waiting} waiting`
               : tab.label}
             onPress={() => onSelect(tab.id)}
-            // The handoff draws a 52pt bar and four 44pt targets do not fit
+            // The handoff draws a 52pt bar and 44pt targets do not fit
             // inside one. The drawn tab keeps the size it is drawn at and the
             // target is grown past it instead, so the bar reads right and a
             // thumb still lands where iOS asks it to.

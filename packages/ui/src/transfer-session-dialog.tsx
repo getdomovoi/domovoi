@@ -38,6 +38,7 @@ import { returnTransferExplanation, transferOutcomeNotice } from "./transfer-out
 export const previewDebounceMs = 400
 
 type TransferCheck = { label: string; ready: boolean }
+type IncompleteTransfer = Extract<SessionTransferResult, { outcome: "incomplete" }>
 
 export function transferChecks(input: {
   session: SessionSummary
@@ -83,6 +84,7 @@ export function TransferSessionDialog({
   onTransfer,
   onTransferred,
   onOutcome,
+  onRecoverSource,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -97,6 +99,7 @@ export function TransferSessionDialog({
   ) => Promise<SessionTransferResult>
   onTransferred: (machineId: string) => void
   onOutcome: (result: SessionTransferResult) => void
+  onRecoverSource?: ((transferId: string) => Promise<void>) | undefined
 }) {
   const [method, setMethod] = useState<TransferMethod>("git-bundle")
   const [remote, setRemote] = useState("")
@@ -105,6 +108,8 @@ export function TransferSessionDialog({
   const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
   const [previewing, setPreviewing] = useState(false)
   const [previewAttempt, setPreviewAttempt] = useState(0)
+  const [incomplete, setIncomplete] = useState<IncompleteTransfer | undefined>(undefined)
+  const [recovering, setRecovering] = useState(false)
 
   // The daemon decides what this move would carry and whether it may happen at
   // all. Asking it is not a nicety: session.transfer refuses anything without
@@ -172,6 +177,8 @@ export function TransferSessionDialog({
       setRemote("")
       setProblem(undefined)
       setPreview(undefined)
+      setIncomplete(undefined)
+      setRecovering(false)
     }
     wasOpen.current = open
   }, [open])
@@ -183,6 +190,20 @@ export function TransferSessionDialog({
     && !pending
     && !previewing
     && preview?.allowed === true
+
+  const recoverSource = async () => {
+    if (!incomplete || !onRecoverSource || recovering) return
+    setRecovering(true)
+    setProblem(undefined)
+    try {
+      await onRecoverSource(incomplete.transferId)
+      onOpenChange(false)
+    } catch (cause) {
+      setProblem({ title: "Source recovery did not finish", detail: cause instanceof Error ? cause.message : `The session remains frozen on ${source.label}.`, from: "move" })
+    } finally {
+      setRecovering(false)
+    }
+  }
 
   const move = async () => {
     if (!ready) return
@@ -202,6 +223,7 @@ export function TransferSessionDialog({
         ...(method === "remote-ref" ? { remote: remote.trim() } : {}),
       })
       onOutcome(result)
+      setIncomplete(result.outcome === "incomplete" ? result : undefined)
       if (result.outcome === "succeeded") {
         onTransferred(target.id)
         onOpenChange(false)
@@ -242,11 +264,11 @@ export function TransferSessionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[560px]">
+      <DialogContent className="sm:max-w-[620px]">
         <DialogHeader>
-          <DialogTitle>Move session to {target.label}</DialogTitle>
+          <DialogTitle>Move this session to another machine</DialogTitle>
           <DialogDescription>
-            The worktree is checkpointed here first, so this machine keeps a recovery point either way.
+            The thread, the plan and the worktree are recreated on the target. Running processes are not moved, and the agent starts its next turn there from a clean checkout of the same branch.
           </DialogDescription>
         </DialogHeader>
 
@@ -258,11 +280,17 @@ export function TransferSessionDialog({
           </Alert>
         ) : null}
 
-        <div role="group" aria-label="Transfer checks" className="flex flex-col gap-1">
+        <section className="flex flex-col gap-2" aria-labelledby="transfer-target-title">
+          <h3 id="transfer-target-title" className="m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint">TARGET</h3>
+          <div className="flex items-center gap-3 rounded-lg border border-primary bg-card px-3 py-2.5"><span className="size-1.5 rounded-full bg-success" /><span className="flex-1 font-machine text-[12px]">{target.label}</span><CheckIcon className="size-4 text-primary" /></div>
+        </section>
+
+        <div className="flex items-center gap-2"><h3 className="m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint">PRE-FLIGHT ON {target.label.toUpperCase()}</h3><span className="rounded-full bg-accent px-2 py-0.5 font-machine text-[10.5px] text-muted-foreground">{checks.filter((check) => check.ready).length} pass · {checks.filter((check) => !check.ready).length} warnings</span></div>
+        <div role="group" aria-label="Transfer checks" className="overflow-hidden rounded-lg border">
           {checks.map((check) => (
             <p
               key={check.label}
-              className={`m-0 flex items-start gap-1.5 text-[12px] ${check.ready ? "text-muted-foreground" : "text-destructive"}`}
+              className={`m-0 flex items-start gap-2.5 border-t px-3 py-2 first:border-t-0 text-[11.5px] ${check.ready ? "text-muted-foreground" : "text-destructive"}`}
             >
               {check.ready ? <CheckIcon className="mt-0.5 size-3.5 shrink-0" /> : <CircleStopIcon className="mt-0.5 size-3.5 shrink-0" />}
               {check.label}
@@ -330,6 +358,9 @@ export function TransferSessionDialog({
             {coverage.warnings.map((warning) => (
               <p key={warning} className="m-0 text-[11px] leading-relaxed text-warning">{warning}</p>
             ))}
+            <p className="m-0 text-[11px] leading-relaxed text-muted-foreground">
+              Not sent either way: shell history, background processes, anything written outside the worktree, and credentials. The target authenticates its own providers.
+            </p>
           </>
         ) : (
           <p className="m-0 text-[12px] leading-relaxed text-muted-foreground">
@@ -338,6 +369,21 @@ export function TransferSessionDialog({
               : `${source.label} has not said what this move would carry`}
           </p>
         )}
+
+        {incomplete ? (
+          <section role="region" aria-label="Half-failed move" className="flex flex-col gap-3 rounded-xl border p-3">
+            <div><h3 className="m-0 text-[13px] font-semibold">Half-failed move</h3><p className="mt-1 text-[11.5px] leading-[1.55] text-muted-foreground">The source remains authoritative unless the daemon confirms otherwise. Nothing here deletes either worktree.</p></div>
+            <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border">
+              <div className="bg-card p-3"><div className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-success" /><span className="font-machine text-[11.5px]">{source.label}</span></div><p className="mb-0 mt-2 text-[11px] text-muted-foreground">source · recovery checkpoint kept</p></div>
+              <div className="bg-card p-3"><div className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-warning" /><span className="font-machine text-[11.5px]">{target.label}</span></div><p className="mb-0 mt-2 text-[11px] text-muted-foreground">target · {incomplete.state}</p></div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button disabled={!onRecoverSource || recovering} onClick={() => void recoverSource()}>{recovering ? "Recovering source" : "Recover the source and keep working here"}</Button>
+              <Button variant="outline" disabled={pending || previewing} onClick={() => { setIncomplete(undefined); setProblem(undefined); setPreviewAttempt((attempt) => attempt + 1) }}>Retry the move</Button>
+              <span className="ml-auto font-machine text-[10.5px] text-faint">doing nothing is safe, the lease expires</span>
+            </div>
+          </section>
+        ) : null}
 
         {preview?.allowed === false ? (
           <Alert variant="destructive">
@@ -360,9 +406,9 @@ export function TransferSessionDialog({
           <Button type="button" variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button type="button" disabled={!ready} onClick={() => void move()}>
-            {pending ? "Moving session" : "Move session"}
-          </Button>
+          {!incomplete ? <Button type="button" aria-label="Move session" disabled={!ready} onClick={() => void move()}>
+            {pending ? "Moving session" : `Move to ${target.label}`}
+          </Button> : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

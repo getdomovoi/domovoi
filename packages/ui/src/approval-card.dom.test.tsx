@@ -35,13 +35,14 @@ it("sends the selected approval-card decision", async () => {
   expect(onResolve).toHaveBeenCalledWith(approval.id, "allow-once", undefined)
 })
 
-function renderThread() {
+function renderThread(surface: "desktop" | "web" = "desktop") {
   const snapshot = structuredClone(demoWorkspace)
   render(
     <Thread
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
+      surface={surface}
       onResolve={vi.fn(async () => {})}
       onSetRuntime={vi.fn(async () => {})}
       onForkSession={vi.fn(async () => {})}
@@ -57,18 +58,58 @@ function renderThread() {
   return snapshot.approvals[0]!
 }
 
-// The design gives the gate one decision at full weight, two outlined next to
-// it, and the fourth as plain text. Four peer buttons make the person read all
-// four before acting.
-it("gives the gate one decision at full weight", () => {
+it("uses the signed web gate wording and names the holder", () => {
+  renderThread("web")
+  const card = screen.getByRole("alert")
+  expect(card.textContent).toContain("Approval required, hard gate")
+  expect(screen.getByRole("button", { name: "Always here" })).toBeTruthy()
+  expect(card.textContent).toContain("This tab holds the gate")
+  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+})
+
+it("keeps optional explanation behind Deny instead of a fourth peer action", async () => {
+  const user = userEvent.setup()
   renderThread()
   const weight = (name: string) => screen.getByRole("button", { name }).className
   expect(weight("Allow once")).toContain("bg-warning")
   expect(weight("Always in this project")).toContain("border-border")
   expect(weight("Deny")).toContain("border-border")
-  const explain = weight("Deny and explain")
-  expect(explain).not.toContain("bg-warning")
-  expect(explain).not.toContain("border-border")
+  expect(screen.queryByRole("button", { name: "Deny and explain" })).toBeNull()
+
+  await user.click(screen.getByRole("button", { name: "Deny" }))
+
+  expect(screen.getByLabelText("Tell the agent why this command was denied")).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Deny without explanation" })).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Deny with explanation" })).toBeTruthy()
+})
+
+it("cancels denial explanation without deciding", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const onResolve = vi.fn(async () => {})
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+
+  await user.click(screen.getByRole("button", { name: "Deny" }))
+  await user.click(screen.getByRole("button", { name: "Cancel" }))
+
+  expect(onResolve).not.toHaveBeenCalled()
+  expect(screen.queryByLabelText("Tell the agent why this command was denied")).toBeNull()
+  expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy()
 })
 
 it("carries the card radius the design system derives from --radius", () => {

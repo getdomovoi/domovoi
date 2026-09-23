@@ -17,8 +17,8 @@ const deferred = () => {
   return { promise, resolve, reject }
 }
 
-describe("provider restart interaction", () => {
-  it("blocks duplicate clicks, reports failure, and permits retry", async () => {
+describe("provider recovery in the shared failed-read state", () => {
+  it("blocks duplicate retries, reports recovery failure, and permits another attempt", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const active = snapshot.sessions.find(({ id }) => id === snapshot.activeSessionId)!
     active.state = "failed"
@@ -53,8 +53,8 @@ describe("provider restart interaction", () => {
     )
     const view = render(thread(snapshot))
     const user = userEvent.setup()
-    await user.click(screen.getByRole("button", { name: "Restart provider" }))
-    const pending = screen.getByRole("button", { name: "Restarting provider…" }) as HTMLButtonElement
+    await user.click(screen.getByRole("button", { name: "Try again" }))
+    const pending = screen.getByRole("button", { name: "Trying again…" }) as HTMLButtonElement
     expect(pending.disabled).toBe(true)
     await user.click(pending)
     expect(restart).toHaveBeenCalledTimes(1)
@@ -63,7 +63,7 @@ describe("provider restart interaction", () => {
     await screen.findByText("Provider login expired")
     await user.type(screen.getByLabelText("Message"), "Continue")
     expect((screen.getByRole("button", { name: "Send message" }) as HTMLButtonElement).disabled).toBe(true)
-    await user.click(screen.getByRole("button", { name: "Restart provider" }))
+    await user.click(screen.getByRole("button", { name: "Try again" }))
     await waitFor(() => expect(restart).toHaveBeenCalledTimes(2))
     const recovered = structuredClone(snapshot)
     const recoveredSession = recovered.sessions.find(({ id }) => id === recovered.activeSessionId)!

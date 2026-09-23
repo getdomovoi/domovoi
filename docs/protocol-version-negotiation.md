@@ -1,14 +1,17 @@
 # Protocol version negotiation
 
-`protocolVersion` identifies the wire contract. It stays `0.6.0` in this change.
-`buildVersion` and `clientVersion` identify executable releases; their values do
-not decide wire compatibility. A client release `1.2.3` can speak protocol `0.6.0`.
+`protocolVersion` identifies the wire contract. Its current value is `protocolVersion` in
+`packages/protocol/src/protocol-version.ts`. `buildVersion` and `clientVersion` identify
+executable releases; their values do not decide wire compatibility. A client release
+`1.2.3` can speak protocol `0.6.0`.
 
 ## Admission policy
 
 Major and minor components must both match. Patch components may differ. This
 rule also applies after wire version `1.0.0`; a minor increment is not implicitly
 compatible. There is no downgrade to an older schema or feature negotiation.
+
+For example, with a daemon on `0.6.0`:
 
 | Daemon protocol | Client protocol | Result |
 | --- | --- | --- |

@@ -12,16 +12,17 @@ import {
 // into one button called Pause all. Pausing stops at the next turn boundary and
 // loses nothing; the emergency stop kills processes now. They are different
 // things and this is where a person tells them apart.
-export function StopMenu({ connected, pending, onPauseAll, onEmergencyStop }: {
+export function StopMenu({ connected, pending, disabled = false, onPauseAll, onEmergencyStop }: {
   connected: boolean
   pending: boolean
+  disabled?: boolean
   onPauseAll: () => void
   onEmergencyStop: () => void
 }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label="Stop everything" disabled={!connected || pending}>
+        <Button variant="ghost" size="sm" className="electron-no-drag" aria-label="Stop everything" disabled={disabled || !connected || pending}>
           <CircleStopIcon data-icon="inline-start" />
           <span className="hidden sm:inline">Stop everything</span>
         </Button>

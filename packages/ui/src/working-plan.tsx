@@ -30,6 +30,7 @@ export type { WorkingPlanDraftStep }
 export function WorkingPlanCard({
   plan,
   running,
+  onCarryOn,
   onEditPlan,
   onDiscardEdit,
   readOnly = false,
@@ -37,11 +38,13 @@ export function WorkingPlanCard({
   plan: WorkingPlan | undefined
   running: boolean
   readOnly?: boolean | undefined
+  onCarryOn?: (() => Promise<void>) | undefined
   onEditPlan?: ((edit: WorkingPlanEdit) => Promise<void>) | undefined
   onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
 }) {
   const [edit, setEdit] = useState<{ structureRevision: number, steps: { id: string, text: string }[] } | null>(null)
   const [discarding, setDiscarding] = useState(false)
+  const [carryingOn, setCarryingOn] = useState(false)
   const [editError, setEditError] = useState("")
   if (!plan) return null
   const stepCount = plan.steps.length
@@ -49,6 +52,7 @@ export function WorkingPlanCard({
   const editing = edit !== null
   const canEdit = Boolean(onEditPlan) && !readOnly
   const canDiscard = Boolean(onDiscardEdit) && !readOnly
+  const canCarryOn = Boolean(onCarryOn) && !readOnly
 
   return (
     <section aria-label="Working plan" className="rounded-xl border bg-card">
@@ -181,6 +185,25 @@ export function WorkingPlanCard({
         <span className="flex-1" />
         {running ? (
           <span className="font-machine text-[9.5px] text-faint">pinned while running</span>
+        ) : null}
+        {canCarryOn && !editing ? (
+          <Button
+            size="sm"
+            disabled={carryingOn}
+            onClick={() => {
+              setEditError("")
+              setCarryingOn(true)
+              void onCarryOn!().then(
+                () => setCarryingOn(false),
+                (cause: unknown) => {
+                  setCarryingOn(false)
+                  setEditError(cause instanceof Error ? cause.message : "The plan reply could not be sent")
+                },
+              )
+            }}
+          >
+            {carryingOn ? "Sending" : "Looks right, carry on"}
+          </Button>
         ) : null}
       </div>
     </section>

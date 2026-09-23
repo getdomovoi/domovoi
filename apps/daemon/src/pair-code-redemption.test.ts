@@ -81,7 +81,7 @@ describe("a pairing code shown for a phone", () => {
     const redeemed = await call(phone, "device.redeemCode", { code, label: "iPhone", protocolVersion })
     expect(redeemed).not.toHaveProperty("error")
     const { token, device } = redeemed.result as { token: string, device: { binding: { kind: string, client?: string } } }
-    expect(device.binding).toEqual({ kind: "client", client: "phone" })
+    expect(device.binding).toEqual({ kind: "client", client: "phone", clientAccess: "full" })
 
     // The credential works, so the code really did pair this device.
     const paired = await connect(daemon)
@@ -151,6 +151,6 @@ describe("showing a second code", () => {
     const phone = await connect(daemon)
     const redeemed = await call(phone, "device.redeemCode", { code: second, label: "iPhone", protocolVersion })
     expect(redeemed).not.toHaveProperty("error")
-    expect((redeemed.result as { device: { binding: unknown } }).device.binding).toEqual({ kind: "client", client: "phone" })
+    expect((redeemed.result as { device: { binding: unknown } }).device.binding).toEqual({ kind: "client", client: "phone", clientAccess: "full" })
   })
 })

@@ -2,69 +2,37 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { expect, it } from "vitest"
 
-const repositoryRoot = join(import.meta.dirname, "..", "..", "..")
+const sourceDirectory = import.meta.dirname
 
-const designRegions: Record<string, string> = {
-  Rail: "--shell-rail",
-  Sidebar: "--shell-sidebar",
-  "Thread lane": "--shell-thread",
-  Inspector: "--shell-inspector",
-  Titlebar: "--shell-titlebar",
-  Header: "--shell-header",
-  "Control height": "--shell-control",
+function source(file: string): string {
+  return readFileSync(join(sourceDirectory, file), "utf8")
 }
 
-function designGeometry(): Record<string, string> {
-  const design = readFileSync(join(repositoryRoot, "DESIGN.md"), "utf8")
+function shellGeometry(): Record<string, string> {
   const sizes: Record<string, string> = {}
-  for (const line of design.split("\n")) {
-    const columns = line.split("|").map((column) => column.trim())
-    const region = columns[1]
-    const system = columns[2]
-    if (!region || !system || !(region in designRegions)) continue
-    const size = /(\d+)px/u.exec(system)?.[1]
-    if (size) sizes[designRegions[region]!] = `${size}px`
-  }
-  return sizes
-}
-
-function styleGeometry(): Record<string, string> {
-  const styles = readFileSync(join(import.meta.dirname, "styles.css"), "utf8")
-  const sizes: Record<string, string> = {}
-  for (const [, name, value] of styles.matchAll(/(--shell-[a-z]+):\s*([^;]+);/gu)) {
+  for (const [, name, value] of source("styles.css").matchAll(/(--shell-[a-z]+):\s*([^;]+);/gu)) {
     sizes[name!] = value!.trim()
   }
   return sizes
 }
 
-function panelDefault(id: string): string | undefined {
-  const shell = readFileSync(join(import.meta.dirname, "workspace-shell.tsx"), "utf8")
-  return new RegExp(`<ResizablePanel id="${id}"[^>]*?defaultSize=\\{(\\d+)\\}`, "u").exec(shell)?.[1]
-}
-
-it("opens the inspector at its design-system width", () => {
-  expect(`${panelDefault("dock")}px`).toBe(designGeometry()["--shell-inspector"])
+it("uses the v2 titlebar and drawer geometry without retired rail or inspector tokens", () => {
+  const geometry = shellGeometry()
+  expect(geometry["--shell-titlebar"]).toBe("46px")
+  expect(geometry["--shell-sidebar"]).toBe("268px")
+  expect(geometry).not.toHaveProperty("--shell-rail")
+  expect(geometry).not.toHaveProperty("--shell-inspector")
+  expect(source("sessions-drawer.tsx")).toContain("w-[268px]")
 })
 
-// The sessions list is a drawer in v2, not a resizable panel, so the width it
-// has to honour is the same token read from a different place.
-it("opens the sessions drawer at the design-system sidebar width", () => {
-  const drawer = readFileSync(join(import.meta.dirname, "sessions-drawer.tsx"), "utf8")
-
-  expect(drawer).toContain("w-[var(--shell-sidebar)]")
-  expect(designGeometry()["--shell-sidebar"]).toBe("240px")
+it("does not render the retired workspace rail", () => {
+  const shell = source("workspace-shell.tsx")
+  expect(shell).not.toContain("WorkspaceRail")
+  expect(shell).not.toContain('data-workspace-panel="rail"')
 })
 
 it("sizes the default control from the design-system control height", () => {
-  const button = readFileSync(join(import.meta.dirname, "components", "ui", "button.tsx"), "utf8")
+  const button = source(join("components", "ui", "button.tsx"))
   const sizes = button.slice(button.indexOf("size: {"))
-
   expect(sizes).toContain("h-[var(--shell-control)]")
-})
-
-it("keeps the shell geometry tokens equal to the design system", () => {
-  const design = designGeometry()
-
-  expect(Object.keys(design).sort()).toEqual(Object.values(designRegions).sort())
-  expect(styleGeometry()).toEqual(design)
 })

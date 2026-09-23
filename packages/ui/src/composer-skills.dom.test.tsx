@@ -75,7 +75,7 @@ it("says nothing at all without an open project", () => {
   expect(screen.queryByRole("button", { name: "Add a skill to this turn" })).toBeNull()
 })
 
-it("appears in the composer of a mounted shell", () => {
+it("does not expose a persistent skill chooser in the composer", () => {
   const snapshot = structuredClone(demoWorkspace)
   snapshot.skillEnablements = [review("skill-aaaaaaaaaaaa")].map((entry) => ({
     ...entry,
@@ -106,8 +106,8 @@ it("appears in the composer of a mounted shell", () => {
   )
 
   const actions = document.querySelector("[data-workspace-composer-actions]")
-  expect(actions?.textContent).toContain("plan-preview")
-  expect(actions?.textContent).toContain("+ skill")
+  expect(actions?.textContent).not.toContain("plan-preview")
+  expect(actions?.textContent).not.toContain("+ skill")
 })
 
 it("lets a person choose which reviewed skills this turn carries", async () => {

@@ -1,8 +1,11 @@
 import { BlurView } from "expo-blur"
-import { View, type LayoutChangeEvent, type ViewProps } from "react-native"
+import { PixelRatio, useWindowDimensions, View, type LayoutChangeEvent, type ViewProps } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { cn } from "../lib/cn"
+import { responsiveGeometry } from "../responsive-geometry"
+import { shadows } from "../theme/tokens.generated"
+import { useTheme } from "../theme/theme-provider"
 
 // The handoff draws the bottom chrome eight times and draws it the same way
 // every time: a floating slab inset from both edges, hairline border, a 60%
@@ -32,17 +35,14 @@ const paddings: Record<FloatingBarPadding, string> = {
   stack: "gap-2 p-2.5",
 }
 
-// The handoff floats the bar 22px above the bottom of the frame, which is
-// exactly the height of the home indicator it draws. A real phone reports that
-// room as a safe-area inset instead, and it is larger, so the inset wins where
-// there is one and the drawn value stands in where there is not.
-export const floatingBarInset = 22
+export const floatingBarInset = 14
 export const floatingBarSide = 14
 
 export function FloatingBar({
   shape = "pill",
   padding = "composer",
   lifted = false,
+  bottomInset,
   onFootprint,
   className,
   children,
@@ -54,6 +54,7 @@ export function FloatingBar({
   // dropped one, because they sit over a scrolling wall of diff rather than
   // over a list and have to read as a separate plane.
   lifted?: boolean
+  bottomInset?: number
   // A bar floats over the scroller, so the scroller has to be told how much of
   // its own bottom the bar is covering. This reports the drawn height plus the
   // gap under it; a screen that scrolls underneath must pad by at least that
@@ -63,7 +64,17 @@ export function FloatingBar({
   onFootprint?: (footprint: number) => void
 }) {
   const insets = useSafeAreaInsets()
-  const bottom = insets.bottom > 0 ? insets.bottom : floatingBarInset
+  const window = useWindowDimensions()
+  const { resolved } = useTheme()
+  const geometry = responsiveGeometry({
+    width: window.width,
+    height: window.height,
+    topInset: insets.top,
+    bottomInset: insets.bottom,
+    fontScale: PixelRatio.getFontScale(),
+  })
+  const bottom = bottomInset ?? geometry.bottomInset
+  const shadow = shadows[resolved].lg
 
   const measure = (event: LayoutChangeEvent) => {
     onFootprint?.(event.nativeEvent.layout.height + bottom)
@@ -75,25 +86,22 @@ export function FloatingBar({
       onLayout={onFootprint ? measure : undefined}
       style={{
         position: "absolute",
-        left: floatingBarSide,
-        right: floatingBarSide,
+        left: geometry.sideInset,
+        right: geometry.sideInset,
         bottom,
+        minHeight: geometry.minimumBarHeight,
         zIndex: 4,
-        // packages/ui carries an elevation scale, but scripts/mobile-tokens.mjs
-        // renders only colours, radii and faces, so there is no shadow token to
-        // read here. --shadow-lg resolves to black at 55%, which is what these
-        // two values are; they are not a colour choice.
-        shadowColor: "black",
-        shadowOpacity: lifted ? 0.62 : 0.55,
-        shadowRadius: lifted ? 16 : 12,
-        shadowOffset: { width: 0, height: lifted ? 10 : 8 },
-        elevation: lifted ? 16 : 12,
+        shadowColor: shadow.shadowColor,
+        shadowOpacity: lifted ? Math.min(1, shadow.shadowOpacity + 0.06) : shadow.shadowOpacity,
+        shadowRadius: shadow.shadowRadius,
+        shadowOffset: shadow.shadowOffset,
+        elevation: lifted ? shadow.elevation + 3 : shadow.elevation,
       }}
     >
       <View className={cn("overflow-hidden border border-border", shapes[shape])}>
         <BlurView
           intensity={30}
-          tint="dark"
+          tint={resolved}
           // Android draws nothing for a blur unless this method is asked for by
           // name. Where it is unavailable the wash below still carries the bar.
           blurMethod="dimezisBlurView"

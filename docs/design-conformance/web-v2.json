@@ -116,14 +116,7 @@
         "Always here",
         "Allow once",
         "Deny"
-      ],
-      "presence": [
-        "Allow once"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the desktop card decides on the web too; the web header wording and the Always here label are not the design's, and the gate-holder line is not drawn"
-      }
+      ]
     },
     {
       "id": "composer",
@@ -137,14 +130,7 @@
       "evidence": [
         "Steer it, or queue the next message",
         "queued, sends when this turn ends"
-      ],
-      "presence": [
-        "Send message"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the desktop composer serves the web; the design's placeholder and queued-row copy are not drawn. Layout follows the desktop chrome pass"
-      }
+      ]
     },
     {
       "id": "review",
@@ -157,14 +143,7 @@
       ],
       "evidence": [
         "Say what is wrong with this element"
-      ],
-      "presence": [
-        "Comments on this preview"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "review with anchored comments exists through the desktop package; the draft prompt copy is not the design's"
-      }
+      ]
     },
     {
       "id": "limits",

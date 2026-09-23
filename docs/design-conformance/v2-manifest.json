@@ -1,0 +1,174 @@
+{
+  "version": 2,
+  "precedence": [
+    "current design HTML",
+    "approved exception ledger",
+    "production behavior"
+  ],
+  "designs": [
+    {
+      "id": "cloud",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Cloud.dc.html",
+      "inventory": "docs/design-conformance/cloud-v2.json",
+      "sources": [
+        "apps/web/src/**/*.{ts,tsx}",
+        "packages/protocol/src/**/*.ts"
+      ]
+    },
+    {
+      "id": "skills",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html",
+      "inventory": "docs/design-conformance/skills-v2.json",
+      "sources": [
+        "packages/ui/src/**/*.{ts,tsx}",
+        "packages/protocol/src/**/*.ts"
+      ]
+    },
+    {
+      "id": "web",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi Web v2.dc.html",
+      "inventory": "docs/design-conformance/web-v2.json",
+      "sources": [
+        "apps/web/src/**/*.{ts,tsx}",
+        "packages/ui/src/**/*.{ts,tsx}",
+        "packages/protocol/src/**/*.ts"
+      ]
+    },
+    {
+      "id": "tablet",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi Tablet v2.dc.html",
+      "inventory": "docs/design-conformance/tablet-v2.json",
+      "sources": [
+        "apps/mobile/src/**/*.{ts,tsx}",
+        "packages/protocol/src/**/*.ts"
+      ]
+    },
+    {
+      "id": "onboarding",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Onboarding.dc.html",
+      "inventory": "docs/design-conformance/onboarding-v2.json",
+      "sources": [
+        "apps/mobile/src/**/*.{ts,tsx}",
+        "apps/desktop/src/**/*.{ts,tsx}",
+        "packages/ui/src/**/*.{ts,tsx}"
+      ]
+    },
+    {
+      "id": "desktop",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
+      "inventory": "docs/design-conformance/desktop-v2.json",
+      "sources": [
+        "apps/desktop/src/**/*.{ts,tsx}",
+        "packages/ui/src/**/*.{ts,tsx}",
+        "packages/protocol/src/**/*.ts"
+      ]
+    },
+    {
+      "id": "states",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 States.dc.html",
+      "inventory": "docs/design-conformance/states-v2.json",
+      "sources": [
+        "apps/mobile/src/**/*.{ts,tsx}",
+        "packages/ui/src/**/*.{ts,tsx}",
+        "packages/protocol/src/**/*.ts"
+      ]
+    },
+    {
+      "id": "phone",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html",
+      "inventory": "docs/design-conformance/phone-v2.json",
+      "sources": [
+        "apps/mobile/src/**/*.{ts,tsx}",
+        "packages/protocol/src/**/*.ts"
+      ]
+    },
+    {
+      "id": "team",
+      "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Team.dc.html",
+      "inventory": "docs/design-conformance/team-v2.json",
+      "sources": [
+        "packages/protocol/src/**/*.ts",
+        "packages/ui/src/**/*.{ts,tsx}",
+        "apps/mobile/src/**/*.{ts,tsx}"
+      ]
+    }
+  ],
+  "exceptions": [
+    {
+      "id": "UX-001",
+      "surface": "Desktop composer",
+      "allowance": "Visible Enter/Shift+Enter hint",
+      "constraint": "Keep exact existing behavior; do not add other undesigned helper chrome"
+    },
+    {
+      "id": "SAF-001",
+      "surface": "Desktop and phone denial",
+      "allowance": "Optional explanation after selecting Deny",
+      "constraint": "Not a fourth peer action; cancellation returns to the gate without deciding"
+    },
+    {
+      "id": "SAF-002",
+      "surface": "Provider failure",
+      "allowance": "Restart/recovery control",
+      "constraint": "Render through the v2 failed/unavailable state; preserve send blocking and retry semantics"
+    },
+    {
+      "id": "DEV-001",
+      "surface": "Phone connection diagnostic",
+      "allowance": "Raw URL/token entry in development builds only",
+      "constraint": "Never ship in production; state that scope is unverified; never print or store secrets outside SecureStore"
+    },
+    {
+      "id": "SAF-003",
+      "surface": "Phone Settings",
+      "allowance": "Global pause/emergency stop",
+      "constraint": "Remove from Sessions header; retain confirmation and destructive-effect copy"
+    },
+    {
+      "id": "PLATFORM-001",
+      "surface": "Startup and security recovery",
+      "allowance": "Protocol mismatch, daemon refusal, credential recovery, camera permission failure",
+      "constraint": "Minimal presentation; no new product navigation or invented success claims"
+    }
+  ],
+  "contracts": [
+    {
+      "id": "desktop-v2",
+      "sources": [
+        "packages/ui/src/workspace-shell.tsx",
+        "packages/ui/src/styles.css"
+      ],
+      "forbidden": [
+        "WorkspaceRail",
+        "--shell-rail",
+        "--shell-inspector"
+      ],
+      "required": [
+        "AppBar"
+      ]
+    },
+    {
+      "id": "phone-v2",
+      "sources": [
+        "apps/mobile/src/app.tsx",
+        "apps/mobile/src/components/tab-bar.tsx"
+      ],
+      "forbidden": [
+        "ReviewScreen",
+        "FleetScreen",
+        "label: \"Review\"",
+        "label: \"Fleet\""
+      ],
+      "required": [
+        "Sessions",
+        "Machines",
+        "Settings"
+      ],
+      "order": [
+        "Sessions",
+        "Machines",
+        "Settings"
+      ]
+    }
+  ]
+}

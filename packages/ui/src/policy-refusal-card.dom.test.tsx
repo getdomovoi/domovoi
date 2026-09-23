@@ -1,7 +1,10 @@
+import { demoWorkspace } from "@getdomovoi/protocol"
 import { cleanup, render, screen } from "@testing-library/react"
-import { afterEach, expect, it } from "vitest"
+import { type ComponentProps } from "react"
+import { afterEach, expect, it, vi } from "vitest"
 
 import { PolicyRefusalCard, type PolicyRefusal } from "./policy-refusal-card"
+import { Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
 
@@ -13,6 +16,36 @@ const refusal: PolicyRefusal = {
   scope: "every machine in acme-eng",
   remedy: "Run it yourself from the deploy runbook, or ask an owner to retire the rule.",
 }
+
+it("renders daemon policy refusals in the active thread without approval controls", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  snapshot.thread.push({
+    id: "policy-refusal-1",
+    sessionId: snapshot.activeSessionId!,
+    kind: "policy-refusal",
+    ...refusal,
+    createdAt: "2026-09-19T20:00:00.000Z",
+  })
+  const props: ComponentProps<typeof Thread> = {
+    snapshot,
+    connected: true,
+    onQueuedChange: vi.fn(),
+    onResolve: vi.fn(async () => {}),
+    onSetRuntime: vi.fn(async () => {}),
+    onForkSession: vi.fn(async () => {}),
+    onListModels: vi.fn(async () => []),
+    onNewSession: vi.fn(),
+    onSend: vi.fn(async () => {}),
+    onCheckpoint: vi.fn(async () => {}),
+    onRestoreCheckpoint: vi.fn(async () => {}),
+    onPauseSession: vi.fn(async () => {}),
+  }
+  render(<Thread {...props} />)
+  expect(screen.getByRole("region", { name: "Policy refusal" })).toBeTruthy()
+  expect(screen.getByText(refusal.rule)).toBeTruthy()
+  expect(screen.queryByRole("button", { name: /allow|approve/i })).toBeNull()
+})
 
 it("offers no decision, because no client decision can permit it", () => {
   render(<PolicyRefusalCard refusal={refusal} />)

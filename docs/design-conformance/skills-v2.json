@@ -1,0 +1,76 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Skills.dc.html",
+  "sha256": "581b28f5e054a697581ce3f04f3e2e7df5fd4dd7bb2acae57518521a3e4e5300",
+  "derivedOn": "2026-09-20",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts"
+  ],
+  "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "elements": [
+    {
+      "id": "skills.browser",
+      "name": "Skills inventory and installation",
+      "where": "skills surface",
+      "copy": [
+        "Domovoi",
+        "Skills on mac-mini-m4",
+        "A skill is a folder with a SKILL.md and a manifest. Installing is not enabling: enabling is a review, per project.",
+        "Install from a path",
+        "1 review no longer matches its skill",
+        "This turn's selection",
+        "Inventories from your other machines",
+        "Usable only where installed.",
+        "Install from a path on mac-mini-m4",
+        "A path is the only source. No bundle, no registry, no installer, so nothing runs code to install.",
+        "SOURCE PATH",
+        "/Users/dana/work/skills/pr-triage",
+        "Manifest",
+        "Declared needs. Each is still gated when used.",
+        "FILES, 4 OF A 256 LIMIT",
+        "WHERE IT CAN GO",
+        "Two files will not be copied",
+        "typed refusals, not warnings",
+        "Install, leave it untrusted",
+        "Read it, then decide",
+        "Installing does not enable it in any project.",
+        "pr-triage",
+        "Enablement is a review, and it is per project",
+        "acme-api \u00b7 reviewed 12 Aug 14:02 by desktop",
+        "Pinned to the digest and manifest you read. Change either and it is refused with",
+        "review-changed",
+        ". Manual review also grants trust.",
+        "SKILL.md",
+        "2.1 kB of a 128 kB limit \u00b7 read-only here",
+        "Trust it for acme-api",
+        "Revoke",
+        "Trust and revoke are the only two decisions.",
+        "sql-explain changed since you reviewed it",
+        "refused \u00b7 review-changed",
+        "The digest moved and the manifest gained a capability, so your old review does not carry. The daemon refused this turn with a reason.",
+        "WHAT CHANGED",
+        "The new capability is",
+        "secrets.read",
+        ", and it runs processes. Read that part.",
+        "Read the diff and re-review",
+        "Leave it disabled",
+        "The agent carried on this turn without it.",
+        "Skills for this turn",
+        "Eight at most, chosen explicitly. Omissions are reported with a reason.",
+        "Selected",
+        "No skills this turn. The agent works from the thread and the plan alone, which is the normal case for most turns.",
+        "Select three again",
+        "Remove",
+        "Omitted, with the reason",
+        "These four reasons are the whole vocabulary.",
+        "The delivery record keeps this partition, so an odd turn is explainable."
+      ],
+      "evidence": [
+        "Install from a path"
+      ],
+      "presence": [
+        "skill-browser"
+      ]
+    }
+  ]
+}

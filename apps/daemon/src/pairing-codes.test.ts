@@ -51,6 +51,16 @@ describe("PairingCodeService", () => {
     expect(devices.list()).toEqual([existing.device])
   })
 
+  it("binds client access to the code that grants the credential", () => {
+    const { pairing, devices, start } = service()
+    const issued = pairing.issue(start, "phone", "watching")
+    const paired = pairing.redeem(issued.code, { label: "display" }, start)
+
+    expect(devices.verify(paired.token)?.binding).toEqual({
+      kind: "client", client: "phone", clientAccess: "watching",
+    })
+  })
+
   it("spends a code on the first successful pairing", () => {
     const { pairing, start } = service()
     const issued = pairing.issue(start)

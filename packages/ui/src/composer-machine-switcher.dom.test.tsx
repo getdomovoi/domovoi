@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
@@ -72,6 +72,16 @@ it("keeps naming the machine when the fleet has not loaded", () => {
   const snapshot = structuredClone(demoWorkspace)
   render(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected {...handlers} />)
 
+  expect(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeTruthy()
+})
+
+it("keeps the programmatic machine trigger outside the composer action row", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  render(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected {...handlers} />)
+
+  const row = document.querySelector("[data-workspace-composer-actions]")
+  if (!row) throw new Error("The composer draws no action row")
+  expect(within(row as HTMLElement).queryByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeNull()
   expect(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeTruthy()
 })
 

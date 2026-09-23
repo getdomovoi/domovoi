@@ -103,8 +103,28 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
+const developmentLoopConfigured = !app.isPackaged && Boolean(
+  process.env.DOMOVOI_DEV_FIXTURE_URL
+    || process.env.DOMOVOI_DEV_DAEMON_URL
+    || process.env.DOMOVOI_DEV_DAEMON_TOKEN,
+)
+const developmentLoopModule = developmentLoopConfigured
+  ? await import("./dev-fixture-seam.js")
+  : undefined
+const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
+  isPackaged: false,
+  environment: process.env,
+})
+const daemonSeam = developmentLoopModule
+  ? developmentLoopModule.resolveDesktopDaemonSeam({
+      isPackaged: false,
+      environment: process.env,
+      acquire: acquireLocalDaemon,
+    })
+  : acquireLocalDaemon
+
 // Attach to the profile's owner, or own a daemon only when the profile is free.
-const desktopDaemon = new DesktopDaemon(acquireLocalDaemon, () => ({
+const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({
   // The window resolves its renderer target before the first acquisition, so a
   // development daemon is told the origin its renderer is actually served from.
   environment: mainRendererTarget
@@ -349,10 +369,24 @@ registerDesktopIpc(ipcMain, {
   },
 })
 
-const hasSingleInstanceLock = app.requestSingleInstanceLock()
+const hasSingleInstanceLock = developmentLoopEndpoint ? true : app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
-  app.quit()
+  void import("./dev-loop-log.js")
+    .then(({ reportLockHeld }) => reportLockHeld({ environment: process.env, log: (line) => console.log(line) }))
+    .finally(() => app.quit())
 } else {
+  void import("./dev-loop-log.js").then(({ reportMainBoot }) => reportMainBoot({
+    environment: process.env,
+    readState: (path) => {
+      try {
+        return readFileSync(path, "utf8")
+      } catch {
+        return undefined
+      }
+    },
+    writeState: (path, value) => writeFileSync(path, value, "utf8"),
+    log: (line) => console.log(line),
+  }))
   if (!launchSmoke) {
     if (process.defaultApp && process.argv[1]) {
       app.setAsDefaultProtocolClient("domovoi", process.execPath, [resolve(process.argv[1])])

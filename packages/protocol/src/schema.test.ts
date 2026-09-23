@@ -58,6 +58,7 @@ import {
   workspaceDeltaSchema,
   artifactSchema,
   threadItemSchema,
+  toolFileEntries,
   type WorkingPlan,
 } from "./index.js"
 
@@ -69,8 +70,8 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
-  it("uses a breaking minor for counted and revoked approval rules", () => {
-    expect(protocolVersion).toBe("0.7.0")
+  it("uses a breaking minor for client access, refusals, and queued sends", () => {
+    expect(protocolVersion).toBe("0.8.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
   })
 
@@ -343,6 +344,62 @@ describe("workspace protocol", () => {
     // load rather than failing the daemon on startup.
     expect(threadItemSchema.safeParse({ ...tool, tool: "file-change" }).success).toBe(true)
     expect(threadItemSchema.safeParse({ ...tool, tool: "invented" }).success).toBe(false)
+  })
+
+  it("carries the files a tool call touched", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "command", status: "completed",
+      title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    // A snapshot written before the field existed still loads.
+    expect(threadItemSchema.safeParse(tool).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, files: ["src/a.ts", "src/b.ts"] }).success).toBe(true)
+    expect(threadItemSchema.safeParse({ ...tool, files: [""] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: "src/a.ts" }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: Array.from({ length: 257 }, (_, index) => `src/${index}.ts`) }).success).toBe(false)
+  })
+
+  // A leading or trailing space is a legal character in a path name. Trimming it
+  // reports a file the provider never named, and can fold two real paths into
+  // one so the count lies. Whitespace alone is still not a path.
+  it("reports the touched path the provider named", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "command", status: "completed",
+      title: "pnpm test", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    const parsed = threadItemSchema.safeParse({ ...tool, files: [" src/a.ts", "src/a.ts"] })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.kind === "tool" ? parsed.data.files : undefined)
+      .toEqual([" src/a.ts", "src/a.ts"])
+    expect(threadItemSchema.safeParse({ ...tool, files: ["   "] }).success).toBe(false)
+  })
+
+  // The thread names the files a turn moved and by how much. A count that the
+  // client derives from the worktree describes the tree now, not that turn, so
+  // it drifts as later turns land. The provider reports the real numbers.
+  it("carries how far a tool call moved each file", () => {
+    const tool = {
+      id: "tool-1", sessionId: "session-a", kind: "tool", tool: "file-change", status: "completed",
+      title: "File changes", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    const entry = { path: "src/a.ts", additions: 62, deletions: 14 }
+    const parsed = threadItemSchema.safeParse({ ...tool, files: [entry, "src/b.ts"] })
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.kind === "tool" ? parsed.data.files : undefined)
+      .toEqual([entry, "src/b.ts"])
+    // A counted entry still needs a path, and a count is a whole number of lines.
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ additions: 1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "   ", additions: 1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts", additions: -1 }] }).success).toBe(false)
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts", additions: 1.5 }] }).success).toBe(false)
+    // Counts are optional, so a provider that reports only paths still parses.
+    expect(threadItemSchema.safeParse({ ...tool, files: [{ path: "src/a.ts" }] }).success).toBe(true)
+  })
+
+  it("reads a touched file whether or not it carries counts", () => {
+    expect(toolFileEntries(["src/a.ts", { path: "src/b.ts", additions: 7, deletions: 0 }]))
+      .toEqual([{ path: "src/a.ts" }, { path: "src/b.ts", additions: 7, deletions: 0 }])
+    expect(toolFileEntries(undefined)).toEqual([])
   })
 
   it("defaults durable skill reviews for older snapshots", () => {
@@ -1705,5 +1762,29 @@ describe("persisted thread compatibility", () => {
       createdAt: new Date().toISOString(),
     }
     expect(threadItemSchema.parse(item)).toMatchObject({ tool: "file-change" })
+  })
+})
+
+describe("context compaction notice", () => {
+  const base = {
+    id: "item-compaction",
+    sessionId: "session-1",
+    kind: "system" as const,
+    body: "Context compacted.",
+    createdAt: new Date().toISOString(),
+  }
+
+  it("carries a compaction notice on a system row", () => {
+    expect(threadItemSchema.parse({ ...base, notice: "context-compaction" })).toMatchObject({
+      notice: "context-compaction",
+    })
+  })
+
+  it("still parses a system row written before the notice existed", () => {
+    expect(threadItemSchema.parse(base)).toMatchObject({ kind: "system" })
+  })
+
+  it("rejects an unknown notice", () => {
+    expect(() => threadItemSchema.parse({ ...base, notice: "something-else" })).toThrow()
   })
 })

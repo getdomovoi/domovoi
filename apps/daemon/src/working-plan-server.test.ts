@@ -104,6 +104,325 @@ async function startedDaemon(
 }
 
 describe("working plan RPC", () => {
+  it("asks for a native plan and mirrors the final reply when no plan event arrives", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.runtime = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "medium",
+      permissionMode: "plan",
+      auto: false,
+    }
+    session.workspacePath = "/worktrees/plan-fallback"
+    session.providerThreadId = "thread-plan-fallback"
+    delete session.activeTurnId
+    snapshot.workingPlans = []
+    snapshot.artifacts = snapshot.artifacts.filter(
+      (artifact) => artifact.sessionId !== session.id || artifact.type !== "plan",
+    )
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    let emit: ((event: AgentEvent) => void) | undefined
+    const turnIds = ["turn-plan-fallback", "turn-native-plan", "turn-no-reply"]
+    const startTurn = vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => (
+      turnIds.shift()!
+    ))
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn,
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        emit = listener
+        return () => { emit = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const context = await startedDaemon(snapshot, { codex: agent })
+
+    await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Plan the composer work",
+      client: "desktop",
+    })
+    expect(startTurn).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: expect.stringContaining("provider's native plan mechanism"),
+    }))
+    expect(startTurn.mock.calls[0]![0].prompt).toContain("Plan the composer work")
+
+    emit!({
+      type: "text-delta",
+      threadId: "thread-plan-fallback",
+      turnId: "turn-plan-fallback",
+      itemId: "final-plan",
+      delta: [
+        "Plan ready.",
+        "<proposed_plan>",
+        "# Composer plan",
+        "",
+        "## Approach",
+        "",
+        "1. Compare the available options.",
+        "",
+        "## Steps (in order)",
+        "",
+        "### Step 1: Inspect the composer.",
+        "Files: `packages/ui/src/thread.tsx`.",
+        "",
+        "### Step 2: Implement the fix.",
+        "Stops for approval: no.",
+        "",
+        "```text",
+        "1. This is an example, not a step.",
+        "```",
+        "",
+        "## Risks",
+        "",
+        "1. The composer may have platform-specific behavior.",
+        "</proposed_plan>",
+        "Let me know what to refine.",
+      ].join("\n"),
+    })
+    emit!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-plan-fallback",
+        turnId: "turn-plan-fallback",
+        turn: { id: "turn-plan-fallback", status: "completed" },
+      },
+    })
+
+    await waitForDaemon(() => expect(context.durable().artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: `plan-${session.id}`,
+        sessionId: session.id,
+        title: "Working plan",
+        type: "plan",
+        mimeType: "text/markdown",
+        content: [
+          "# Composer plan",
+          "",
+          "## Approach",
+          "",
+          "1. Compare the available options.",
+          "",
+          "## Steps (in order)",
+          "",
+          "### Step 1: Inspect the composer.",
+          "Files: `packages/ui/src/thread.tsx`.",
+          "",
+          "### Step 2: Implement the fix.",
+          "Stops for approval: no.",
+          "",
+          "```text",
+          "1. This is an example, not a step.",
+          "```",
+          "",
+          "## Risks",
+          "",
+          "1. The composer may have platform-specific behavior.",
+        ].join("\n"),
+      }),
+    ])))
+    expect(context.durable().workingPlans).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: session.id,
+        steps: [
+          expect.objectContaining({ text: "Inspect the composer.", status: "pending" }),
+          expect.objectContaining({ text: "Implement the fix.", status: "pending" }),
+        ],
+      }),
+    ]))
+    expect(context.durable().thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "assistant",
+        body: expect.stringContaining("Plan ready.\n\n# Composer plan"),
+      }),
+    ]))
+    const finalPlanReply = context.durable().thread.find(
+      (item) => item.kind === "assistant" && item.id.includes("final-plan"),
+    )
+    expect(finalPlanReply?.kind).toBe("assistant")
+    if (finalPlanReply?.kind !== "assistant") throw new Error("Expected finalized plan reply")
+    expect(finalPlanReply.body).toContain("Let me know what to refine.")
+    expect(finalPlanReply.body).toContain(
+      "1. The composer may have platform-specific behavior.\n\nLet me know what to refine.",
+    )
+    expect(finalPlanReply.body).not.toContain("<proposed_plan>")
+    expect(finalPlanReply.body).not.toContain("</proposed_plan>")
+
+    await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Refine the plan",
+      client: "desktop",
+    })
+    emit!({
+      type: "plan-updated",
+      threadId: "thread-plan-fallback",
+      turnId: "turn-native-plan",
+      steps: [{ text: "Use the provider plan", status: "pending" }],
+    })
+    emit!({
+      type: "text-delta",
+      threadId: "thread-plan-fallback",
+      turnId: "turn-native-plan",
+      itemId: "native-plan-summary",
+      delta: "I updated the plan.",
+    })
+    emit!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-plan-fallback",
+        turnId: "turn-native-plan",
+        turn: { id: "turn-native-plan", status: "completed" },
+      },
+    })
+    await waitForDaemon(() => {
+      const artifact = context.durable().artifacts.find(
+        (candidate) => candidate.id === `plan-${session.id}`,
+      )
+      expect(artifact?.content).toContain("Use the provider plan")
+      expect(artifact?.content).not.toContain("I updated the plan.")
+    })
+
+    await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Check whether the plan needs changes",
+      client: "desktop",
+    })
+    const savesBeforeCompletion = context.save.mock.calls.length
+    emit!({
+      type: "turn-completed",
+      params: { threadId: "thread-plan-fallback", status: "completed" },
+    })
+    await waitForDaemon(() => {
+      expect(context.save.mock.calls.length).toBeGreaterThan(savesBeforeCompletion)
+      const artifact = context.durable().artifacts.find(
+        (candidate) => candidate.id === `plan-${session.id}`,
+      )
+      expect(artifact?.content).toContain("Use the provider plan")
+      expect(artifact?.content).not.toContain("I updated the plan.")
+    })
+    context.socket.close()
+  })
+
+  describe("the mode a turn was sent in", () => {
+    async function turnInMode(permissionMode: "build" | "plan") {
+      const snapshot = structuredClone(demoWorkspace)
+      const session = snapshot.sessions[0]!
+      session.state = "idle"
+      session.runtime = {
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        reasoning: "medium",
+        permissionMode,
+        auto: false,
+      }
+      session.workspacePath = "/worktrees/plan-mode-turn"
+      session.providerThreadId = "thread-mode-turn"
+      delete session.activeTurnId
+      snapshot.workingPlans = []
+      snapshot.artifacts = snapshot.artifacts.filter(
+        (artifact) => artifact.sessionId !== session.id || artifact.type !== "plan",
+      )
+      snapshot.annotations = snapshot.annotations.filter(
+        (annotation) => annotation.sessionId !== session.id,
+      )
+      let emit: ((event: AgentEvent) => void) | undefined
+      const agent = {
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => [{
+          provider: "codex" as const,
+          id: "gpt-5.6-sol",
+          displayName: "GPT-5.6 Sol",
+          description: "Coding model",
+          supportedReasoningEfforts: ["medium" as const],
+          defaultReasoningEffort: "medium" as const,
+          isDefault: true,
+        }]),
+        startThread: vi.fn(async () => "unused"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn-mode"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+          emit = listener
+          return () => { emit = undefined }
+        }),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const context = await startedDaemon(snapshot, { codex: agent })
+      await context.rpc("session.send", {
+        sessionId: session.id,
+        prompt: "Work on the composer",
+        client: "desktop",
+      })
+      const finish = async (nextMode: "build" | "plan") => {
+        const changed = await context.rpc("session.setRuntime", {
+          sessionId: session.id,
+          client: "desktop",
+          runtime: { ...session.runtime, permissionMode: nextMode },
+        })
+        expect(changed).not.toHaveProperty("error")
+        emit!({
+          type: "text-delta",
+          threadId: "thread-mode-turn",
+          turnId: "turn-mode",
+          itemId: "final-reply",
+          delta: "# Summary\n\n1. Changed the composer.\n2. Ran the tests.",
+        })
+        emit!({
+          type: "turn-completed",
+          params: {
+            threadId: "thread-mode-turn",
+            turnId: "turn-mode",
+            turn: { id: "turn-mode", status: "completed" },
+          },
+        })
+        await waitForDaemon(() => expect(context.durable().sessions.find(
+          (candidate) => candidate.id === session.id,
+        )?.activeTurnId).toBeUndefined())
+      }
+      return { context, session, finish }
+    }
+
+    it("does not read a Build turn's reply as a plan when Plan is picked for the next turn", async () => {
+      const { context, session, finish } = await turnInMode("build")
+      await finish("plan")
+
+      expect(context.durable().workingPlans.filter((plan) => plan.sessionId === session.id)).toEqual([])
+      expect(context.durable().artifacts.find((artifact) => artifact.id === `plan-${session.id}`))
+        .toBeUndefined()
+      context.socket.close()
+    })
+
+    it("still captures a Plan turn's reply when Build is picked for the next turn", async () => {
+      const { context, session, finish } = await turnInMode("plan")
+      await finish("build")
+
+      await waitForDaemon(() => expect(context.durable().workingPlans).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: session.id,
+          steps: [
+            expect.objectContaining({ text: "Changed the composer.", status: "pending" }),
+            expect.objectContaining({ text: "Ran the tests.", status: "pending" }),
+          ],
+        }),
+      ])))
+      context.socket.close()
+    })
+  })
+
   it("persists an attributed idle edit after redaction and updates only the derived plan", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
