@@ -8581,16 +8581,18 @@ export class DomovoiDaemon {
     // thread, but its lifecycle is not the provider's to change: marking it
     // failed leaves transfer or archive metadata on a state that cannot hold
     // it, and the invalid snapshot then refuses every save and every RPC.
+    // Its turn and approvals belonged to the exited process, so they go.
     const affected = this.#snapshot.sessions.filter((session) =>
       session.runtime.provider === provider
-      && session.providerThreadId !== undefined
-      && !sessionIsReadOnly(session))
+      && session.providerThreadId !== undefined)
     if (affected.length === 0) return
+    const failing = affected.filter((session) => !sessionIsReadOnly(session))
 
     const createdAt = new Date().toISOString()
     const providerName = provider === "codex" ? "Codex" : provider
     const affectedSessionIds = new Set(affected.map((session) => session.id))
-    const notices = affected.map((session) => ({
+    const failingSessionIds = new Set(failing.map((session) => session.id))
+    const notices = failing.map((session) => ({
       id: `system-${randomUUID()}`,
       sessionId: session.id,
       kind: "system" as const,
@@ -8598,9 +8600,15 @@ export class DomovoiDaemon {
       detail: redactDurableText(reason).value,
       createdAt,
     }))
-    const markFailed = (snapshot: WorkspaceSnapshot) => {
+    const markDisconnected = (snapshot: WorkspaceSnapshot) => {
       for (const session of snapshot.sessions) {
         if (!affectedSessionIds.has(session.id)) continue
+        if (!failingSessionIds.has(session.id)) {
+          if (session.activeTurnId === undefined) continue
+          delete session.activeTurnId
+          session.updatedAt = createdAt
+          continue
+        }
         session.state = "failed"
         session.providerFailure = classifyProviderFailure(new Error(reason))
         delete session.activeTurnId
@@ -8609,14 +8617,16 @@ export class DomovoiDaemon {
       snapshot.thread.push(...structuredClone(notices))
     }
     const candidate = structuredClone(this.#snapshot)
-    markFailed(candidate)
+    markDisconnected(candidate)
     workspaceSnapshotSchema.parse(candidate)
 
     for (const session of affected) {
-      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
+      if (failingSessionIds.has(session.id)) {
+        this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
+      }
       this.#flushCommandOutputStreams(session.id)
     }
-    markFailed(this.#snapshot)
+    markDisconnected(this.#snapshot)
     this.#removeApprovals(
       (approval) => affectedSessionIds.has(approval.sessionId),
       createdAt,

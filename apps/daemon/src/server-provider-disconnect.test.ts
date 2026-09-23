@@ -7,6 +7,7 @@ import { demoWorkspace, protocolVersion, workspaceSnapshotSchema } from "@getdom
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceStore } from "./store.js"
+import type { WorkspaceService } from "./workspace.js"
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -136,5 +137,82 @@ describe("provider disconnect", () => {
       providerFailure: expect.any(Object),
     })
     for (const saved of store.save.mock.calls) workspaceSnapshotSchema.parse(saved[0])
+  })
+
+  it("clears the turn and approvals an archive left on the provider when its cleanup aborted", async () => {
+    const snapshot = frozenWorkspace()
+    const session = snapshot.sessions[1]!
+    session.state = "active"
+    delete session.archiveRequestedAt
+    const approval = {
+      ...structuredClone(demoWorkspace.approvals[0]!),
+      id: "approval-archiving",
+      sessionId: session.id,
+      providerRequestId: 41,
+    }
+    const store = {
+      snapshot,
+      load() { return this.snapshot },
+      save(next: typeof snapshot) { this.snapshot = structuredClone(next); saved.push(this.snapshot) },
+      close: vi.fn(),
+    } satisfies WorkspaceStore & { snapshot: typeof snapshot }
+    const saved: Array<typeof snapshot> = []
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => { throw new Error("Archive provider cleanup timed out") }),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => { throw new Error("Archive turn interrupt timed out") }),
+      resolveApproval: vi.fn(async () => { throw new Error("provider denial failed") }),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const workspaceService = {
+      inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
+      archiveSessionWorkspace: vi.fn(async () => {}), checkpoint: vi.fn(), restore: vi.fn(),
+    } satisfies WorkspaceService
+    const daemon = new DomovoiDaemon({
+      port: 0, store, agents: { codex: agent }, workspaceService, errorSink: vi.fn(),
+    })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const live = store.snapshot.sessions.find(({ id }) => id === session.id)!
+    live.activeTurnId = "turn-archiving"
+    store.snapshot.approvals.push(approval)
+    const { socket } = await client(daemon, port)
+
+    const archive = await call(socket, "session.archive", { sessionId: session.id, client: "desktop" })
+    expect(archive.error).toMatchObject({ code: -32603 })
+    const before = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+    expect(before.sessions.find(({ id }) => id === session.id)).toMatchObject({
+      state: "archiving",
+      activeTurnId: "turn-archiving",
+    })
+    expect(before.approvals.map(({ id }) => id)).toEqual([approval.id])
+
+    for (const listener of listeners) {
+      listener({ type: "provider-disconnected", reason: "Codex app-server exited with code 1" })
+    }
+
+    await client(daemon, port)
+    const after = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+    const archiving = after.sessions.find(({ id }) => id === session.id)
+    expect(archiving).toMatchObject({
+      state: "archiving",
+      providerThreadId: session.providerThreadId,
+      archiveRequestedAt: expect.any(String),
+    })
+    expect(archiving?.activeTurnId).toBeUndefined()
+    expect(archiving?.providerFailure).toBeUndefined()
+    expect(after.approvals.map(({ id }) => id)).not.toContain(approval.id)
+    expect(store.snapshot.approvals.map(({ id }) => id)).not.toContain(approval.id)
+    for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
   })
 })
