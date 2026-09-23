@@ -958,12 +958,14 @@ describe("SqliteWorkspaceStore", () => {
     async function seedThenDamage(
       name: string,
       damage: (databasePath: string) => Promise<string>,
+      prepare?: (seed: SqliteWorkspaceStore) => void,
     ): Promise<{ scratch: string; databasePath: string; damaged: string }> {
       const scratch = await mkdtemp(join(tmpdir(), `domovoi-store-${name}-`))
       scratchDirectories.push(scratch)
       const databasePath = join(scratch, "state.sqlite")
       const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
       seed.auditLog.append(auditEntry)
+      prepare?.(seed)
       seed.close()
       const damaged = await damage(databasePath)
       return { scratch, databasePath, damaged }
@@ -983,6 +985,15 @@ describe("SqliteWorkspaceStore", () => {
         sessionId: initial.activeSessionId,
         kind: "system",
         detail: expect.stringContaining(quarantinedPath),
+      })
+    }
+
+    function quarantineReceipt(quarantinedPath: string) {
+      return expect.objectContaining({
+        action: "state.quarantine",
+        outcome: "succeeded",
+        actor: { kind: "daemon", component: "state-store" },
+        target: quarantinedPath,
       })
     }
 
@@ -1054,11 +1065,14 @@ describe("SqliteWorkspaceStore", () => {
         kind: "snapshot",
         quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
         reason: expect.stringContaining("JSON"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: true,
       })
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(damaged)
       expect(await readdir(scratch)).toContain(join(recovery!.quarantinedPath).slice(scratch.length + 1))
       expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
       expect(store.auditLog.query({ limit: 10 }).entries).toEqual([
+        quarantineReceipt(recovery!.quarantinedPath),
         expect.objectContaining({ id: "audit-before-corruption" }),
       ])
       store.close()
@@ -1078,11 +1092,14 @@ describe("SqliteWorkspaceStore", () => {
         kind: "snapshot",
         quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
         reason: expect.stringContaining("ZodError"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: true,
       })
       expect(damaged).toBe(incompatible)
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(incompatible)
       expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
       expect(store.auditLog.query({ limit: 10 }).entries).toEqual([
+        quarantineReceipt(recovery!.quarantinedPath),
         expect.objectContaining({ id: "audit-before-corruption" }),
       ])
       store.close()
@@ -1104,29 +1121,120 @@ describe("SqliteWorkspaceStore", () => {
         kind: "database",
         quarantinedPath: expect.stringMatching(/state\.sqlite\.corrupt-[0-9TZ-]+$/),
         reason: expect.stringContaining("not a database"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: false,
       })
       expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(garbage)
       const freshSidecar = await readFile(`${databasePath}-wal`, "utf8").catch(() => "")
       expect(freshSidecar).not.toBe("stale wal")
       expect((await stat(databasePath)).size).toBeGreaterThan(0)
       expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
-      expect(store.auditLog.query({ limit: 10 }).entries).toEqual([])
+      expect(store.auditLog.query({ limit: 10 }).entries).toEqual([quarantineReceipt(recovery!.quarantinedPath)])
       store.close()
 
       await expectPersistedRecovery(scratch, databasePath, recovery!.quarantinedPath)
     })
 
-    it("starts an unopened workspace from the initial snapshot and reports the recovery", async () => {
+    it("records the recovery of the daemon's empty initial workspace and keeps paired devices", async () => {
+      // The daemon always opens with an empty initial workspace, which has no
+      // session thread to carry a notice. The recovery must still be recorded
+      // where the person can find it, and phones paired in the kept database
+      // must still be accepted.
       const empty = createEmptyWorkspace(demoWorkspace.machine)
-      const { databasePath, damaged } = await seedThenDamage("unopened", async (path) =>
-        replaceSnapshotRow(path, "{}"),
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath, damaged } = await seedThenDamage(
+        "unopened",
+        async (path) => replaceSnapshotRow(path, "{}"),
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
       )
 
       const store = new SqliteWorkspaceStore(databasePath, empty, { legacySnapshots: [demoWorkspace] })
-      expect(store.recovery).toMatchObject({ kind: "snapshot" })
-      expect(await readFile(store.recovery!.quarantinedPath, "utf8")).toBe(damaged)
+      const recovery = store.recovery
+      expect(recovery).toEqual({
+        kind: "snapshot",
+        quarantinedPath: expect.stringMatching(/state\.sqlite\.snapshot-corrupt-[0-9TZ-]+\.json$/),
+        reason: expect.stringContaining("ZodError"),
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+        pairedDevicesKept: true,
+      })
+      expect(await readFile(recovery!.quarantinedPath, "utf8")).toBe(damaged)
       expect(store.load()).toEqual(empty)
+      expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+      const receipt = expect.objectContaining({
+        action: "state.quarantine",
+        outcome: "succeeded",
+        actor: { kind: "daemon", component: "state-store" },
+        target: recovery!.quarantinedPath,
+      })
+      expect(store.auditLog.query({ action: "state.quarantine" }).entries).toEqual([receipt])
       store.close()
+
+      const reopened = new SqliteWorkspaceStore(databasePath, empty, { legacySnapshots: [demoWorkspace] })
+      try {
+        expect(reopened.recovery).toBeUndefined()
+        expect(reopened.auditLog.query({ action: "state.quarantine" }).entries).toEqual([receipt])
+        expect(reopened.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+      } finally { reopened.close() }
+    })
+
+    it("refuses state written by a newer protocol and leaves it where it is", async () => {
+      const [major, minor] = protocolVersion.split(".").map(Number)
+      const newer = `${major}.${minor! + 1}.0`
+      const written = JSON.stringify({ ...demoWorkspace, protocolVersion: newer })
+      const { scratch, databasePath } = await seedThenDamage("newer-protocol", async (path) =>
+        replaceSnapshotRow(path, written),
+      )
+      const entriesBefore = (await readdir(scratch)).sort()
+
+      expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine)))
+        .toThrow(`was written by Domovoi protocol ${newer}, which is newer than this build's protocol ${protocolVersion}`)
+      expect((await readdir(scratch)).sort()).toEqual(entriesBefore)
+      const database = new DatabaseSync(databasePath)
+      try {
+        const row = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get() as { snapshot: string }
+        expect(row.snapshot).toBe(written)
+      } finally { database.close() }
+    })
+
+    it("moves a database with an unreadable snapshot page aside and keeps its paired devices", async () => {
+      const marker = "unreadable-overflow-page"
+      let paired: ReturnType<SqliteWorkspaceStore["devices"]["pair"]> | undefined
+      const { databasePath } = await seedThenDamage(
+        "malformed-page",
+        async (path) => {
+          replaceSnapshotRow(path, `${"a".repeat(6_000)}${marker}${"b".repeat(20_000)}`)
+          const bytes = await readFile(path)
+          const offset = bytes.indexOf(marker)
+          expect(offset).toBeGreaterThan(0)
+          // The marker sits on an overflow page; pointing that page past the
+          // end of the file makes the row unreadable and leaves other tables.
+          bytes.writeUInt32BE(0x7fff_ffff, Math.floor(offset / 4_096) * 4_096)
+          await writeFile(path, bytes)
+          return ""
+        },
+        (seed) => {
+          paired = seed.devices.pair({ label: "studio-phone", binding: { kind: "client", client: "phone" } })
+        },
+      )
+
+      const store = new SqliteWorkspaceStore(databasePath, initial)
+      try {
+        const recovery = store.recovery
+        expect(recovery).toEqual({
+          kind: "database",
+          quarantinedPath: expect.stringMatching(/state\.sqlite\.corrupt-[0-9TZ-]+$/),
+          reason: expect.stringContaining("malformed"),
+          occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+          pairedDevicesKept: true,
+        })
+        expect(store.load()).toEqual(recovered(recovery!.quarantinedPath))
+        expect(store.devices.verify(paired!.token)?.device).toEqual(paired!.device)
+        expect(store.auditLog.query({ action: "state.quarantine" }).entries).toEqual([
+          expect.objectContaining({ target: recovery!.quarantinedPath }),
+        ])
+      } finally { store.close() }
     })
   })
 

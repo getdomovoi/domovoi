@@ -849,10 +849,19 @@ export const helloParamsSchema = z.discriminatedUnion("client", [
   machineHelloParamsSchema,
 ])
 
+export const stateRecoverySchema = z.object({
+  kind: z.enum(["database", "snapshot"]),
+  quarantinedPath: z.string().min(1).check(utf16MaxLength(4_096)),
+  reason: z.string().check(utf16MaxLength(1_024)),
+  occurredAt: dateTimeSchema,
+  pairedDevicesKept: z.boolean(),
+}).strict()
+
 export const systemHelloResultSchema = workspaceSnapshotSchema.extend({
   connectionId: connectionIdSchema.optional(),
   sessionImageAttachments: z.boolean().optional(),
   clientAccess: clientAccessSchema.optional(),
+  stateRecovery: stateRecoverySchema.optional(),
 })
 
 export const artifactAccessPurposeSchema = z.enum(["preview", "print", "download"])
@@ -1815,6 +1824,7 @@ export type SessionHistoryPage = z.infer<typeof sessionHistoryPageSchema>
 export type AuditOutcome = z.infer<typeof auditOutcomeSchema>
 export type AuditActor = z.infer<typeof auditActorSchema>
 export type AuditEntry = z.infer<typeof auditEntrySchema>
+export type StateRecovery = z.infer<typeof stateRecoverySchema>
 export type AuditQueryParams = z.infer<typeof auditQueryParamsSchema>
 export type AuditQueryPage = z.infer<typeof auditQueryPageSchema>
 export type AuditExportParams = z.infer<typeof auditExportParamsSchema>

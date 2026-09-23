@@ -427,6 +427,31 @@ is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyS
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
 again as soon as one write succeeds, since each write stores the whole snapshot.
 
+## When stored state cannot be read
+
+At startup the daemon reads `state.sqlite` and its stored workspace snapshot. What happens next
+depends on why a read fails:
+
+- **Written by a newer build.** A snapshot whose protocol major or minor is newer than this build's
+  is left in place, and startup fails with a message that names the file, both protocol versions,
+  and the build needed to open it. Running that newer build again restores everything.
+- **An unreadable snapshot row.** Malformed JSON, or a value this build's schema rejects, is copied
+  beside the database as `state.sqlite.snapshot-corrupt-<time>.json` and the workspace starts from
+  the initial snapshot. The rest of the database stays, including paired devices, the audit log,
+  the fleet registry, and queued sends.
+- **An unreadable database.** A file that is not a SQLite database, or one with a damaged page in
+  any table read at startup, is renamed to `state.sqlite.corrupt-<time>` with its `-wal` and `-shm`
+  files, and a new database is created. Paired devices are copied from the renamed file when its
+  pairing table can still be read; otherwise every device must be paired again.
+
+A busy, locked, read-only, or permission-denied file is never moved aside; startup fails instead.
+
+Every recovery is reported three ways: a `state.quarantine` audit receipt whose target is the
+kept file and whose detail says whether paired devices were kept, a line in the daemon error log,
+and a `stateRecovery` field on every client `system.hello` result until the daemon restarts. The
+field carries the kind, the kept path, the reason, when it happened, and `pairedDevicesKept`.
+Nothing is deleted. The kept file holds the earlier state; Domovoi does not restore it automatically.
+
 ## Provider prompt budget
 
 Each `session.send` composes one provider prompt from reviewed skills, open annotations, the
