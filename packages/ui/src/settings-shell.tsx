@@ -1,4 +1,6 @@
-import type { ApprovalRule, ProviderRuntime } from "@getdomovoi/protocol"
+import type { ApprovalRule, ProviderRuntime, UpdateStatus } from "@getdomovoi/protocol"
+import { ExternalLinkIcon } from "lucide-react"
+import { useEffect, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -24,8 +26,60 @@ export type LocalDaemonDescription = {
   detail: string
 }
 
+// About this build (J10, 2026-09-23). The first release is unsigned and does
+// not update itself, and Settings says so in one line. scripts/unsigned-build.mjs
+// fails the release invariants the day a signing build runs on an automatic
+// trigger while this line is still here, so the copy moves with the fact.
+export const releasePageUrl = "https://github.com/getdomovoi/domovoi/releases"
+
+export type AboutBuild = {
+  version: string
+  onUpdateStatus: () => Promise<UpdateStatus>
+  // The desktop opens the release page in the person's browser; a browser
+  // tab links it directly.
+  onOpenReleasePage?: (() => Promise<boolean>) | undefined
+}
+
+function AboutBuildSection({ about }: { about: AboutBuild }) {
+  const [commit, setCommit] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    let active = true
+    about.onUpdateStatus().then(
+      (status) => { if (active) setCommit(status.currentSourceCommit?.slice(0, 7)) },
+      () => { if (active) setCommit(undefined) },
+    )
+    return () => { active = false }
+  }, [about])
+  return (
+    <section aria-labelledby="settings-about" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 id="settings-about" className="m-0 text-[13px] font-medium">About this build</h2>
+        <span className="font-machine text-[11px] text-muted-foreground">{commit ? `domovoid ${about.version} · ${commit}` : `domovoid ${about.version}`}</span>
+        <span className="flex-1" />
+        <span className="flex items-center gap-2 text-[11.5px] text-muted-foreground">
+          <span aria-hidden className="size-[7px] rounded-full bg-faint" />
+          Not signed
+        </span>
+      </div>
+      <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
+      {about.onOpenReleasePage ? (
+        <Button variant="outline" size="sm" className="self-start" onClick={() => void about.onOpenReleasePage?.()}>
+          Release page
+          <ExternalLinkIcon data-icon="inline-end" />
+        </Button>
+      ) : (
+        <a href={releasePageUrl} target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 self-start text-[12px] text-primary underline-offset-2 hover:underline">
+          Release page
+          <ExternalLinkIcon className="size-3.5" />
+        </a>
+      )}
+    </section>
+  )
+}
+
 export type SettingsShellProps = {
   providers: readonly ProviderRuntime[]
+  about?: AboutBuild | undefined
   secrets: readonly ProviderSecretStatus[]
   localDaemon?: LocalDaemonDescription
   approvalRules: readonly ApprovalRule[]
@@ -50,6 +104,7 @@ export type SettingsShellProps = {
 export function SettingsShell({
   providers,
   secrets,
+  about,
   localDaemon,
   approvalRules,
   notifications,
@@ -91,6 +146,8 @@ export function SettingsShell({
           <section aria-label="Providers and tokens">
             <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon ? { localDaemon } : {})} />
           </section>
+
+          {about ? <AboutBuildSection about={about} /> : null}
 
           <section aria-label="Notifications">
             <NotificationSettings

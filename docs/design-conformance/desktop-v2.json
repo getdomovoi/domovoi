@@ -476,12 +476,8 @@
       ],
       "evidence": [
         "About this build",
-        "Checks run only while this machine's update policy allows them."
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J10; Settings does not say the build is unsigned or how update checks run"
-      }
+        "This build is not signed and does not update itself."
+      ]
     },
     {
       "id": "settings.pairing",
@@ -1823,6 +1819,11 @@
       "id": "palette",
       "since": "2026-09-23",
       "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "settings.about-build",
+      "since": "2026-09-23",
+      "note": "Not signed is fixed copy for M1 (ND6); scripts/unsigned-build.mjs fails the release invariants once a signing build runs on an automatic trigger while the line stays. The update-checks line (Checks run only while this machine's update policy allows them) belongs to the design's later signed state and is not drawn. The About Domovoi menu dialog is not drawn; it is app-menu work."
     }
   ],
   "annotations": [

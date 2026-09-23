@@ -242,7 +242,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
-  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, revokeDevice, rotateDevice, renameDevice } = home
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, updateStatus, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
   const {
     activateSession,
@@ -1279,6 +1279,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             secrets={providerSecrets}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon } : {})}
+            about={{
+              version: snapshot.machine.version,
+              onUpdateStatus: updateStatus,
+              ...(windowBridge?.openReleasePage ? { onOpenReleasePage: windowBridge.openReleasePage } : {}),
+            }}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {

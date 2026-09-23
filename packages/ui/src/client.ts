@@ -931,6 +931,12 @@ export class DomovoiClient extends EventTarget {
     }, options)
   }
 
+  // What the daemon knows about its own build: version, source commit and
+  // whether an update is pending. Read once for About this build.
+  updateStatus(options?: DomovoiRequestOptions): Promise<RpcResult<"update.status">> {
+    return this.request("update.status", {}, options)
+  }
+
   listDevices(options?: DomovoiRequestOptions): Promise<DevicesResult> {
     return this.request("device.list", {}, options)
   }

@@ -199,3 +199,24 @@ it("draws no local daemon section for a client that cannot say how the daemon is
   expect(screen.queryByRole("region", { name: /local daemon/iu })).toBeNull()
   expect(screen.queryByText(/Domovoi service/u)).toBeNull()
 })
+
+// J10 (2026-09-23): the build says what it is. Unsigned, no self-update,
+// versions come from the release page; the daemon's version and commit in mono.
+it("says the build is not signed and where new versions come from", async () => {
+  const user = userEvent.setup()
+  const onOpenReleasePage = vi.fn(async () => true)
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), state: "idle" as const })), onOpenReleasePage }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
+  expect(within(section).getByText("Not signed")).toBeTruthy()
+  expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
+  await user.click(within(section).getByRole("button", { name: "Release page" }))
+  expect(onOpenReleasePage).toHaveBeenCalledOnce()
+})
+
+it("links the release page directly where there is no desktop to open it", () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => { throw new Error("not on this daemon") }) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(within(section).getByText("domovoid 0.9.4")).toBeTruthy()
+  expect(within(section).getByRole("link", { name: "Release page" }).getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
+})
