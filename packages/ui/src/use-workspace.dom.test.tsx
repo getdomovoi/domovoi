@@ -519,3 +519,55 @@ describe("useWorkspace skill catalog requests", () => {
     expect(outcomes).toEqual(["AbortError", "AbortError"])
   })
 })
+
+describe("useWorkspace attached machine admission", () => {
+  const machineId = demoWorkspace.machine.id
+  const deviceId = `device-${"a".repeat(32)}`
+  const connection = {
+    state: "client" as const,
+    admission: { machineId, deviceId },
+    resolveEndpoint: async () => ({ url: daemonUrl, token: "a".repeat(43) }),
+  }
+  const receipt = { kind: "client" as const, machineId, deviceId, client: "desktop" as const, clientAccess: "full" as const }
+
+  // The client holds what arrives between the hello answer and the identity
+  // receipt, then applies the hello and replays it. Applying the hello again
+  // afterwards would drop a change that arrived in that window.
+  it("keeps a change that arrived while the identity receipt was pending", async () => {
+    const view = renderHook(() => useWorkspace(daemonUrl, "desktop", undefined, undefined, connection))
+    await drive(() => {})
+    const socket = harness.socket(0)
+    const hello = workspaceSnapshot()
+    await drive(() => completeHandshake(socket, hello))
+    const later = structuredClone(hello)
+    later.machine.name = "changed during admission"
+    await drive(() => notify(socket, "workspace.changed", later))
+    await drive(() => respond(socket, "device.current", receipt))
+
+    expect(view.result.current.connected).toBe(true)
+    expect(view.result.current.snapshot?.machine.name).toBe("changed during admission")
+  })
+
+  it("keeps a change that arrived during admission on reconnect() too", async () => {
+    const view = renderHook(() => useWorkspace(daemonUrl, "desktop", undefined, undefined, connection))
+    await drive(() => {})
+    const first = harness.socket(0)
+    await drive(() => completeHandshake(first))
+    await drive(() => respond(first, "device.current", receipt))
+    await drive(() => first.drop(1006, "daemon restarted"))
+
+    let reconnecting!: Promise<void>
+    await drive(() => { reconnecting = view.result.current.reconnect() })
+    const second = harness.socket(1)
+    const hello = workspaceSnapshot()
+    await drive(() => completeHandshake(second, hello))
+    const later = structuredClone(hello)
+    later.machine.name = "changed during readmission"
+    await drive(() => notify(second, "workspace.changed", later))
+    await drive(() => respond(second, "device.current", receipt))
+    await reconnecting
+
+    expect(view.result.current.snapshot?.machine.name).toBe("changed during readmission")
+  })
+})
+
