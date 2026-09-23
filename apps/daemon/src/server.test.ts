@@ -1270,12 +1270,30 @@ describe("DomovoiDaemon", () => {
       socket.once("error", reject)
     })
     await identifyClient(socket)
-    const response = new Promise<Record<string, unknown>>((resolve) => {
+    const reply = (id: string) => new Promise<Record<string, unknown>>((resolve) => {
       socket.on("message", (data) => {
         const message = JSON.parse(data.toString()) as { id?: string }
-        if (message.id === "usage-current") resolve(message as Record<string, unknown>)
+        if (message.id === id) resolve(message as Record<string, unknown>)
       })
     })
+    const cold = reply("usage-cold")
+    socket.send(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "usage-cold",
+      method: "session.usage",
+      params: { sessionId: session.id },
+    }))
+    await expect(cold).resolves.toMatchObject({ result })
+    expect((await cold).result).not.toHaveProperty("providerLimits")
+    expect(agent.connect).not.toHaveBeenCalled()
+    expect(usageLimits).not.toHaveBeenCalled()
+
+    const models = reply("models")
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: "models", method: "runtime.models", params: { provider: "codex", client: "desktop" } }))
+    await models
+    expect(agent.connect).toHaveBeenCalledOnce()
+
+    const response = reply("usage-current")
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: "usage-current",
@@ -1302,12 +1320,7 @@ describe("DomovoiDaemon", () => {
     expect(usageLimits).toHaveBeenCalledOnce()
 
     usageLimits.mockRejectedValueOnce(new Error("rate limits unavailable"))
-    const fallback = new Promise<Record<string, unknown>>((resolve) => {
-      socket.on("message", (data) => {
-        const message = JSON.parse(data.toString()) as { id?: string }
-        if (message.id === "usage-fallback") resolve(message as Record<string, unknown>)
-      })
-    })
+    const fallback = reply("usage-fallback")
     socket.send(JSON.stringify({
       jsonrpc: "2.0",
       id: "usage-fallback",
