@@ -2,10 +2,11 @@
 "@getdomovoi/daemon": patch
 ---
 
-A terminal value typed after its name was shown on an idle beat is now redacted. The daemon
-releases held terminal output on a short idle beat so a prompt with no newline shows, and until
-now forgot what it had released: `export API_KEY=`, a pause, then the value sent the value in
-clear to every terminal client and into the replay a rejoining client is handed. The redactor now
-keeps what the released text means. A value after a released assignment is dropped up to its
-delimiter, with one `[REDACTED]` in its place. A released name or word stays as context so the
-separator and value after it are still caught. Nothing is shown twice.
+Terminal redaction no longer leaks a value split across reads or idle beats. Each terminal read
+is redacted in the context of its whole current line, and what is shown is how the redacted line
+grew, so a value is caught however its name, separator, whitespace, quotes and value were split.
+The daemon used to hold back a tail that might become a secret and release it on a short idle beat
+so a prompt showed; a value typed after the released part went out in clear, live and in the
+replay a rejoining client is handed. Nothing is held now except a bare token (sk-, ghp_, a JWT)
+still being printed, so prompts show at once. A value longer than a line's 8,192-character
+context is dropped up to where it ends.

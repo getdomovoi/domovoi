@@ -214,149 +214,129 @@ function boundedText(value: unknown, maximumLength: number): { value: string; tr
 }
 
 // A terminal is not command output: it has no reliable newlines, its lines can
-// be enormous, and what it shows has to keep up with typing. Redaction still
-// has to see across reads, so the whole of what has been carried plus the new
-// read is redacted together, and a tail is held back only while it could still
-// be the beginning of a secret. Ordinary output is never delayed, and nothing
-// is ever replaced wholesale.
+// be enormous, and what it shows has to keep up with typing. Each read is
+// redacted in the context of the whole of its current line, and what is shown
+// is how the redacted line has grown since last time. A value always follows
+// its name on the same line, so however the line was split across reads or
+// idle beats, the name is in view when the value arrives, and nothing that
+// could still turn out to be a value has to be held back to be caught.
+// Line boundaries are carriage returns and newlines.
 export const terminalRedactionCarryCharacters = 256
 
-// The start of an assignment this redactor would act on, left dangling at the
-// end of a read: a sensitive name, or one followed by its separator and a value
-// that may still be growing.
-const danglingSecret = new RegExp(
-  String.raw`(?:${sensitiveName}\b["']?\s*[:=]?\s*|(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)?|-D${sensitiveName}\s*=?)[^\s;&|\r\n]*$`,
-  "i",
-)
+// How much of one line is kept as context. A longer line keeps only its tail,
+// unless it ends inside a value, which is then dropped up to where it ends.
+const maximumTerminalLineContextCharacters = 8_192
 
-// A sensitive name can itself be split, so a word still being typed at the end
-// of a read is held until the next one resolves it.
-const danglingWord = /[A-Za-z][A-Za-z0-9_-]*$/
+const lineBoundary = /[\r\n]/
 
 // Where a value ends, once the redactor has decided it is inside one.
 const valueDelimiter = /[\s;&|\r\n]/
 
-export class TerminalOutputRedactor {
-  #carry = ""
-  // How many leading characters of the carry were already handed out by an
-  // idle release. They stay in the carry as context, so a name released on an
-  // idle beat still governs what arrives after it, and are not handed out twice.
-  #released = 0
-  // Set once an assignment's value has outgrown what can be carried. From then
-  // on the value's bytes are dropped rather than held, until its delimiter, so
-  // a token of any length is redacted without anything being buffered for it.
-  #droppingValue = false
-  // Set when an idle release handed out an assignment whose value may still be
-  // arriving: what comes next, up to a delimiter, is that value and is dropped,
-  // with one replacement shown in its place when none was shown yet.
-  #valueAfterRelease = false
-  #replacementOwed = false
+const assignmentPrefix = String.raw`(?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*`
+const structuredPrefix = String.raw`["']?\b${sensitiveName}\b["']?\s*:\s*`
+const flagPrefix = String.raw`(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)`
+const javaPrefix = String.raw`-D${sensitiveName}\s*=`
+const valuePrefix = `(?:${assignmentPrefix}|${structuredPrefix}|${flagPrefix}|${javaPrefix})`
 
-  // Everything held back plus the new read is redacted as one string, so an
-  // assignment split across two reads is seen whole.
+// A quoted value whose closing quote has not arrived yet: everything after the
+// opening quote is value until it does.
+const unclosedQuotedValue = new RegExp(String.raw`(${valuePrefix})(["'])(?:\\.|(?!\2)[^\\\r\n])*$`, "iu")
+
+// The line ends inside a value: an unclosed quote, or an unquoted run.
+const valueAtEnd = new RegExp(String.raw`${valuePrefix}(?:(["'])(?:\\.|(?!\1)[^\\\r\n])*|[^\s;&|\r\n"'][^\s;&|\r\n]*)$`, "iu")
+
+// The start of a bare token (sk-, ghp_, a JWT) still being printed. Held until
+// the next read, so its first characters are not shown before the pattern that
+// recognises it is complete. Not released on an idle beat: a token is not a
+// prompt anyone waits on.
+const tokenFragment = /\b(?:(?:sk|ghp|gho|github_pat|xox[baprs])(?:[-_][A-Za-z0-9_-]*)?|eyJ[A-Za-z0-9_.-]*)$/u
+
+function redactTerminalLine(line: string): string {
+  return redactStreamText(line.replace(unclosedQuotedValue, (_match, prefix: string, quote: string) => `${prefix}${quote}${replacement}`))
+}
+
+function commonPrefixLength(left: string, right: string): number {
+  const length = Math.min(left.length, right.length)
+  let index = 0
+  while (index < length && left.charCodeAt(index) === right.charCodeAt(index)) index += 1
+  return index
+}
+
+export class TerminalOutputRedactor {
+  // The raw text of the current line so far, and the redacted form of it that
+  // has been shown.
+  #line = ""
+  #shown = ""
+  // Set when a line outgrew its context while inside a value: the value's
+  // remaining bytes are dropped until this ends it.
+  #droppingUntil: RegExp | undefined
+
   push(chunk: string): string {
     let input = chunk
-    let shown = ""
-    if (this.#valueAfterRelease) {
-      const delimiter = valueDelimiter.exec(input)
-      const value = delimiter ? input.slice(0, delimiter.index) : input
-      if (value && this.#replacementOwed) {
-        shown = replacement
-        this.#replacementOwed = false
+    if (this.#droppingUntil) {
+      const end = this.#droppingUntil.exec(input)
+      if (!end) return ""
+      input = input.slice(end.index + (this.#droppingUntil === valueDelimiter ? 0 : 1))
+      this.#droppingUntil = undefined
+    }
+    let output = ""
+    while (input.length > 0) {
+      const boundary = lineBoundary.exec(input)
+      if (boundary) {
+        this.#line += input.slice(0, boundary.index + 1)
+        input = input.slice(boundary.index + 1)
+        output += this.#show(redactTerminalLine(this.#line))
+        this.#line = ""
+        this.#shown = ""
+        continue
       }
-      if (!delimiter) return shown
-      input = input.slice(delimiter.index)
-      this.#valueAfterRelease = false
-      this.#replacementOwed = false
+      this.#line += input
+      input = ""
+      const held = tokenFragment.exec(this.#line)
+      const ready = held && held[0].length <= terminalRedactionCarryCharacters
+        ? this.#line.slice(0, held.index)
+        : this.#line
+      output += this.#show(redactTerminalLine(ready))
+      if (this.#line.length > maximumTerminalLineContextCharacters) this.#trimLine()
     }
-    if (this.#droppingValue) {
-      const delimiter = valueDelimiter.exec(input)
-      if (!delimiter) return shown
-      input = input.slice(delimiter.index)
-      this.#droppingValue = false
-    }
-
-    const combined = `${this.#carry}${input}`
-    const holdFrom = this.#suspiciousTailStart(combined)
-    const held = combined.length - holdFrom
-    if (held > terminalRedactionCarryCharacters) {
-      // The tail is an assignment whose value has already run past the carry.
-      // Redact what there is, which turns the value seen so far into the
-      // replacement, and drop the rest of it as it arrives.
-      this.#carry = ""
-      this.#droppingValue = true
-      return shown + this.#withoutReleased(combined, redactStreamText(combined))
-    }
-
-    if (holdFrom < this.#released) {
-      // Only characters already handed out are ready; keep them as context.
-      this.#carry = combined.slice(holdFrom)
-      this.#released -= holdFrom
-      return shown
-    }
-    this.#carry = combined.slice(holdFrom)
-    const ready = combined.slice(0, holdFrom)
-    return shown + this.#withoutReleased(ready, redactStreamText(ready))
+    return output
   }
 
-  // An idle beat: hand out what is held, so a prompt with no newline shows,
-  // while keeping what the held text means for what arrives next.
+  // An idle beat. Everything but a bare token still being printed has already
+  // been shown, so there is nothing more to release.
   release(): string {
-    if (this.#carry === "") return ""
-    const pending = this.#carry
-    const redacted = redactStreamText(pending)
-    if (redacted === pending && /[A-Za-z0-9_-]$/.test(pending)) {
-      // A word that may still become a sensitive name, or a bare name whose
-      // separator has not arrived: shown, and kept as context.
-      const shown = pending.slice(this.#released)
-      this.#released = pending.length
-      return shown
-    }
-    const shown = this.#withoutReleased(pending, redacted)
-    this.#carry = ""
-    if (danglingSecret.test(pending)) {
-      this.#valueAfterRelease = true
-      this.#replacementOwed = !redacted.endsWith(replacement)
-    }
-    return shown
+    return ""
   }
 
-  // The end of the stream: hand out what is held and forget everything.
+  // The end of the stream: show what is held, redacted, and forget the line.
   flush(): string {
-    this.#droppingValue = false
-    this.#valueAfterRelease = false
-    this.#replacementOwed = false
-    if (this.#carry === "") {
-      this.#released = 0
-      return ""
+    const output = this.#line === "" ? "" : this.#show(redactTerminalLine(this.#line))
+    this.#line = ""
+    this.#shown = ""
+    this.#droppingUntil = undefined
+    return output
+  }
+
+  // Shows how the redacted line grew. If redaction changed text already shown
+  // (a bare token recognised late), the rest of the redacted line is shown
+  // after it: the view may repeat a little, but nothing unredacted appears.
+  #show(redacted: string): string {
+    const shared = commonPrefixLength(redacted, this.#shown)
+    const added = redacted.slice(shared)
+    this.#shown = redacted
+    return added
+  }
+
+  #trimLine(): void {
+    const inValue = valueAtEnd.exec(this.#line)
+    if (inValue) {
+      const quote = inValue[1]
+      this.#droppingUntil = quote === undefined ? valueDelimiter : new RegExp(quote === '"' ? '"' : "'")
+      this.#line = ""
+      this.#shown = ""
+      return
     }
-    const remainder = this.#carry
-    this.#carry = ""
-    return this.#withoutReleased(remainder, redactStreamText(remainder))
-  }
-
-  // Drops the characters an idle release already handed out. They were a
-  // name or a word, which redaction leaves as they are; if redaction changed
-  // them after all, the whole redacted text is shown again rather than risk
-  // cutting into a replacement.
-  #withoutReleased(raw: string, redacted: string): string {
-    const released = this.#released
-    this.#released = 0
-    if (released === 0) return redacted
-    const prefix = raw.slice(0, released)
-    return redacted.startsWith(prefix) ? redacted.slice(released) : redacted
-  }
-
-  // Only a tail that could still become a secret is worth withholding, so a
-  // terminal that is simply busy is never held up. A dangling word is checked
-  // within the carry bound; a dangling assignment is checked in full, since the
-  // point is to notice one that has outgrown the bound.
-  #suspiciousTailStart(combined: string): number {
-    const assignment = danglingSecret.exec(combined)
-    if (assignment) return assignment.index
-    const window = combined.slice(-terminalRedactionCarryCharacters)
-    const word = danglingWord.exec(window)
-    if (!word) return combined.length
-    return combined.length - window.length + word.index
+    this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
+    this.#shown = redactTerminalLine(this.#line)
   }
 }
