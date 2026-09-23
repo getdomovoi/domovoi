@@ -75,3 +75,42 @@ describe("terminal redaction at every split point", () => {
     })
   }
 })
+
+// Cases from review, run as they were reported. Each is a list of reads with
+// idle beats between some of them.
+const reviewCases: readonly { name: string, steps: readonly Step[], value: string, plain?: readonly string[] }[] = [
+  { name: "an assignment followed by more spaces than a line keeps", steps: ["export API_KEY=", " ".repeat(8_200), "zqxjwvkm\r\n"], value: "zqxjwvkm" },
+  { name: "an assignment followed by spaces, then an idle beat", steps: ["export API_KEY=", " ".repeat(8_200), "idle", "zqxjwvkm\r\n"], value: "zqxjwvkm" },
+  { name: "an oversized quoted value with an escaped quote", steps: ["export API_KEY=\"", "q".repeat(9_000), "\\\"zqxjwvkm", "\" done\r\n"], value: "zqxjwvkm" },
+  { name: "an escaped quote split from its backslash", steps: ["export API_KEY=\"", "q".repeat(9_000), "\\", "\"zqxjwvkm\" done\r\n"], value: "zqxjwvkm" },
+  { name: "an oversized unclosed quote, then plain lines", steps: ["export API_KEY=\"", "q".repeat(9_000), "\r\nplain line one\r\nplain line two\r\n"], value: "qqqq", plain: ["plain line one\r\n", "plain line two\r\n"] },
+]
+
+describe("terminal redaction on the cases review reported", () => {
+  for (const { name, steps, value, plain: shownLines } of reviewCases) {
+    it(name, () => {
+      const output = run(steps)
+      for (const part of fragments(value)) expect(output).not.toContain(part)
+      for (const line of shownLines ?? []) expect(output).toContain(line)
+    })
+  }
+})
+
+// Review cases that leak on main as well, before this change. They are held
+// open with it.fails until the owner decides whether they belong here or in a
+// follow-up: each assertion fails today, and turns this test red when fixed.
+const openCases: readonly { name: string, steps: readonly Step[] }[] = [
+  { name: "an ANSI sequence between the name and its separator", steps: ["export API_KEY\x1b[0m=zqxjwvkm\r\n"] },
+  { name: "a carriage return and cursor move before the value", steps: ["export API_KEY=", "idle", "\r\x1b[8Czqxjwvkm\r\n"] },
+  { name: "a bare token longer than a line keeps", steps: ["echo ghp_", "zqxj", "a".repeat(8_300), "wvkm done\r\n"] },
+]
+
+describe("terminal redaction cases still open, pre-existing on main", () => {
+  for (const { name, steps } of openCases) {
+    it.fails(name, () => {
+      const output = run(steps)
+      expect(output).not.toContain("zqxj")
+      expect(output).not.toContain("wvkm")
+    })
+  }
+})

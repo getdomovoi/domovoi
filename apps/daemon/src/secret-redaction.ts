@@ -242,8 +242,16 @@ const valuePrefix = `(?:${assignmentPrefix}|${structuredPrefix}|${flagPrefix}|${
 // opening quote is value until it does.
 const unclosedQuotedValue = new RegExp(String.raw`(${valuePrefix})(["'])(?:\\.|(?!\2)[^\\\r\n])*$`, "iu")
 
-// The line ends inside a value: an unclosed quote, or an unquoted run.
-const valueAtEnd = new RegExp(String.raw`${valuePrefix}(?:(["'])(?:\\.|(?!\1)[^\\\r\n])*|[^\s;&|\r\n"'][^\s;&|\r\n]*)$`, "iu")
+// The line ends inside a value: an unclosed quote (possibly ending on the
+// backslash of an escape still arriving), or an unquoted run.
+const valueAtEnd = new RegExp(String.raw`${valuePrefix}(?:(["'])(?:\\.|(?!\1)[^\\\r\n])*\\?|[^\s;&|\r\n"'][^\s;&|\r\n]*)$`, "iu")
+
+// The line ends with a name and its separator whose value has not started.
+const pendingValue = new RegExp(String.raw`${valuePrefix}$`, "iu")
+
+type DroppedValue =
+  | { kind: "unquoted" }
+  | { kind: "quoted", quote: string, escaped: boolean }
 
 // The start of a bare token (sk-, ghp_, a JWT) still being printed. Held until
 // the next read, so its first characters are not shown before the pattern that
@@ -268,16 +276,17 @@ export class TerminalOutputRedactor {
   #line = ""
   #shown = ""
   // Set when a line outgrew its context while inside a value: the value's
-  // remaining bytes are dropped until this ends it.
-  #droppingUntil: RegExp | undefined
+  // remaining bytes are dropped until it ends. A quoted value ends at its
+  // unescaped closing quote; either kind ends at a line boundary.
+  #dropping: DroppedValue | undefined
 
   push(chunk: string): string {
     let input = chunk
-    if (this.#droppingUntil) {
-      const end = this.#droppingUntil.exec(input)
-      if (!end) return ""
-      input = input.slice(end.index + (this.#droppingUntil === valueDelimiter ? 0 : 1))
-      this.#droppingUntil = undefined
+    if (this.#dropping) {
+      const end = this.#endOfDroppedValue(input, this.#dropping)
+      if (end === undefined) return ""
+      input = input.slice(end)
+      this.#dropping = undefined
     }
     let output = ""
     while (input.length > 0) {
@@ -313,7 +322,7 @@ export class TerminalOutputRedactor {
     const output = this.#line === "" ? "" : this.#show(redactTerminalLine(this.#line))
     this.#line = ""
     this.#shown = ""
-    this.#droppingUntil = undefined
+    this.#dropping = undefined
     return output
   }
 
@@ -331,12 +340,48 @@ export class TerminalOutputRedactor {
     const inValue = valueAtEnd.exec(this.#line)
     if (inValue) {
       const quote = inValue[1]
-      this.#droppingUntil = quote === undefined ? valueDelimiter : new RegExp(quote === '"' ? '"' : "'")
+      const trailingBackslashes = /\\*$/u.exec(this.#line)![0].length
+      this.#dropping = quote === undefined
+        ? { kind: "unquoted" }
+        : { kind: "quoted", quote, escaped: trailingBackslashes % 2 === 1 }
       this.#line = ""
       this.#shown = ""
       return
     }
+    // A name and separator whose value has not started stay as context, so a
+    // value after a long run of spaces is still seen as one.
+    const pending = pendingValue.exec(this.#line)
+    if (pending) {
+      const kept = pending[0].length > terminalRedactionCarryCharacters
+        ? pending[0].replace(/\s+$/u, (space) => space.slice(-1))
+        : pending[0]
+      this.#line = kept
+      this.#shown = redactTerminalLine(kept)
+      return
+    }
     this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
     this.#shown = redactTerminalLine(this.#line)
+  }
+
+  // Where a dropped value ends in this read, or undefined if it does not.
+  // An unquoted value ends before its delimiter; a quoted one after its
+  // unescaped closing quote. Both end before a line boundary, which is then
+  // read as one.
+  #endOfDroppedValue(input: string, dropping: DroppedValue): number | undefined {
+    if (dropping.kind === "unquoted") {
+      const end = valueDelimiter.exec(input)
+      return end ? end.index : undefined
+    }
+    for (let index = 0; index < input.length; index += 1) {
+      const character = input[index]!
+      if (character === "\r" || character === "\n") return index
+      if (dropping.escaped) {
+        dropping.escaped = false
+        continue
+      }
+      if (character === "\\") dropping.escaped = true
+      else if (character === dropping.quote) return index + 1
+    }
+    return undefined
   }
 }
