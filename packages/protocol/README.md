@@ -206,7 +206,8 @@ worktree or session. Authentication, quota or model access can change afterward,
 handle a `session.create` error by retaining the form and rediscovering. This contract
 does not test a billable inference to prove quota availability.
 
-This addition keeps protocol version `0.5.0`. `runtime.models` and the required full
+This addition shipped within protocol version `0.5.0`; the current wire version is
+`protocolVersion` in `src/protocol-version.ts`. `runtime.models` and the required full
 `session.create.runtime` remain compatible. An older daemon may answer `runtime.discover`
 with `-32601`; show an upgrade requirement. Desktop can adopt this same call for its
 new-session form and permission controls; this change ships the protocol and daemon only.

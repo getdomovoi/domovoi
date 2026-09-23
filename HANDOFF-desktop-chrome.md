@@ -1,8 +1,8 @@
 # Handoff: Domovoi desktop chrome rebuild (v2)
 
-Written for the next agent taking over. Everything below is uncommitted work on `main`.
-Nothing has been committed, branched, pushed, or opened as a PR. Do not do any of those
-unless fetzy asks.
+Written for the next agent taking over. This work is committed on `feat/v2-client-parity`
+(first commit `33c937f3`, 2026-09-20). On 2026-09-22 fetzy approved pushing the branch and
+opening one PR for it as part of the audit fix program.
 
 ## 1. Standing rules you inherit
 
@@ -267,25 +267,25 @@ In rough order.
 
 1. **Undesigned controls: mostly done, two gaps left.** fetzy ruled that the re-vendored design
    decides, so each was settled by searching the design file, not by opinion.
-   - `ThinkChip` — **removed.** The design file contains no `think` string anywhere. Its catalog
+   - `ThinkChip`: **removed.** The design file contains no `think` string anywhere. Its catalog
      fetch, `reasoningCatalog`, `catalogAttempt` and the `ReasoningCatalog` import went with it,
      since nothing else read them. **Capability lost:** there is now no way to set reasoning
      effort. The design draws none, so this is the design's answer, not an oversight.
-   - `Checkpoint` button — **removed.** The design draws no checkpoint control in the composer.
+   - `Checkpoint` button: **removed.** The design draws no checkpoint control in the composer.
      The `/revert` picker now inserts that command and the Checkpoints sheet tab lists existing
      checkpoints, but there is still no manual checkpoint creation. `onCheckpoint` stays on
      Thread's prop type so callers still compile; nothing reads it.
-   - `MachineSwitcher` — **kept, trigger hidden.** The design draws no machine chip in the
+   - `MachineSwitcher`: **kept, trigger hidden.** The design draws no machine chip in the
      composer, but the sessions drawer's `move` opens this exact menu through `openRequest`
      (`workspace-shell.tsx:536`), and `machine-switcher.tsx:122` captures that value in a ref
      **on mount**. Mounting it conditionally therefore breaks `move` silently. It is wrapped in
      `sr-only` so the menu still anchors and opens. Giving `move` its own dialog is the real fix.
-   - `ComposerSkillChip` — **still kept.** The `/skill` picker now inserts `/skill ` into the
+   - `ComposerSkillChip`: **still kept.** The `/skill` picker now inserts `/skill ` into the
      message field, but it does not populate the protocol's `TurnSkillSelection`. Removing the chip
      still drops the five tested behaviours: a per-turn skill choice surviving a remount, a held
      choice for a skill no longer enabled, an explicit empty choice, and waiting for a pending
      catalog. Do not remove it until that protocol wiring has a design-defined replacement.
-   - The `<provider> not ready` badge — **kept.** The design is silent on it, and it reports a
+   - The `<provider> not ready` badge: **kept.** The design is silent on it, and it reports a
      real blocked state. Recorded as a gap rather than invented away.
 2. **Watching-only arrangement.** The copy matches, the arrangement does not. The design insets
    the notice *inside* the composer card with the controls locked at 45% opacity. The app instead
@@ -297,10 +297,12 @@ In rough order.
 
 ### Known gaps, already recorded
 
-- Attachments stay absent, chips and paperclip both, because `session.send` carries no bytes.
-  Say so in the PR.
-- The design's second watching reason, `Free plan: this route carries reads only.`, has no source
-  on the wire. No watching-only client concept exists in `client-admission-policy.ts`.
+- The desktop composer has no attachment control yet. `session.send` already accepts up to two
+  attachments: images, text files and worktree file paths (`docs/session-image-attachments.md`).
+- The design's second watching reason, `Free plan: this route carries reads only.`, names a plan,
+  and plans are Phase 5. `33c937f3` rendered it for watching-only credentials; on 2026-09-22 it was
+  replaced with "This device was paired to watch only." and `composer.watching-note` is blocked
+  on the design.
 - The design has no drawing for the release action the app offers on an archived session.
 
 ## 6. Traps that already cost time
@@ -349,8 +351,11 @@ composer draws are settled by reading the design rather than by asking. See sect
 
 Still open, because the design cannot answer them:
 
-1. Reasoning effort now has no control at all. Accept that, or give it a home?
-2. Manual checkpoint creation is gone until `/revert` exists. Accept the gap, or build `/revert`
-   before anything else in the slash panel?
+1. Reasoning effort now has no control at all. **Answered 2026-09-22:** give it a home, as a
+   group in the v2 model menu (audit J33). It waits for the design; keep `ThinkChip` and
+   `ReasoningCatalog` until then.
+2. Manual checkpoint creation is gone until `/revert` exists. **Answered 2026-09-22:** the
+   daemon will take a checkpoint before each approved write (audit J34), and the command palette
+   now has "Take a checkpoint" for a manual one.
 3. Provider failure alerts in the thread (`thread.tsx` around line 900) are drawn but not
    designed. Keep or remove?
