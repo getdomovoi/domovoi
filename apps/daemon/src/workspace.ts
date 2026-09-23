@@ -520,9 +520,16 @@ const inertRepositoryConfig = ["-c", `core.hooksPath=${inertHooksPath}`, "-c", "
 // Config and helpers the daemon's own environment carries are not the
 // repository's and not the person's config files: an inherited
 // GIT_CONFIG_COUNT would add filters the scope scan reads as command-line
-// settings, and GIT_DIR or GIT_INDEX_FILE would point a command at another
-// repository. Daemon git runs without them.
+// settings, GIT_CONFIG would point the scan at another file than the one add
+// and checkout read, GIT_CONFIG_GLOBAL could name a worktree file as "global",
+// and GIT_DIR or GIT_INDEX_FILE would point a command at another repository.
+// Daemon git runs without them, so "global" and "system" are git's own files
+// for this user.
 const droppedGitEnvironment = new Set([
+  "GIT_CONFIG",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
   "GIT_CONFIG_PARAMETERS",
   "GIT_CONFIG_COUNT",
   "GIT_DIR",

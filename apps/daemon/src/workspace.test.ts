@@ -856,10 +856,12 @@ describe("GitWorkspaceService", () => {
   it("keeps running a filter the person set in their global Git config", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-global-filter-"))
     scratchDirectories.push(scratch)
-    const globalConfig = join(scratch, "global.gitconfig")
-    await writeFile(globalConfig, "[filter \"upper\"]\n\tclean = tr a-z A-Z\n\tsmudge = cat\n")
-    const previous = process.env.GIT_CONFIG_GLOBAL
-    process.env.GIT_CONFIG_GLOBAL = globalConfig
+    const home = join(scratch, "home")
+    await mkdir(home)
+    await writeFile(join(home, ".gitconfig"), "[filter \"upper\"]\n\tclean = tr a-z A-Z\n\tsmudge = cat\n")
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
     try {
       const repositoryPath = join(scratch, "project")
       await execute("git", ["init", "--initial-branch=main", repositoryPath])
@@ -877,9 +879,51 @@ describe("GitWorkspaceService", () => {
 
       expect((await execute("git", ["-C", repositoryPath, "show", `${checkpoint.commit}:note.txt`])).stdout).toBe("CHANGED\n")
     } finally {
-      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL
-      else process.env.GIT_CONFIG_GLOBAL = previous
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
     }
+  })
+
+  it.each([
+    ["GIT_CONFIG", "points the scan at a harmless file while the repository's own config still applies"],
+    ["GIT_CONFIG_GLOBAL", "names a worktree file as the person's global config"],
+  ])("does not let an inherited %s decide which config counts: it %s", async (variable) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-config-variable-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "victim.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
+    await writeFile(join(repositoryPath, "payload.sh"), `echo ran >> "${markerPath}"\ncat\n`)
+    await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=planted\n")
+    const harmless = join(scratch, "harmless.gitconfig")
+    await writeFile(harmless, "[user]\n\tname = Nobody\n")
+    const plantedGlobal = join(repositoryPath, "planted.gitconfig")
+    await writeFile(plantedGlobal, "[filter \"planted\"]\n\tclean = sh ./payload.sh\n")
+    if (variable === "GIT_CONFIG") await execute("git", ["-C", repositoryPath, "config", "filter.planted.clean", "sh ./payload.sh"])
+    await writeFile(join(repositoryPath, "victim.txt"), "changed\n")
+    const previous = process.env[variable]
+    process.env[variable] = variable === "GIT_CONFIG" ? harmless : plantedGlobal
+    try {
+      const service = new GitWorkspaceService(join(scratch, "worktrees"))
+      if (variable === "GIT_CONFIG") {
+        await expect(service.checkpoint(repositoryPath, "inherited config")).rejects.toThrow("filter.planted.clean in local Git config")
+      } else {
+        await service.checkpoint(repositoryPath, "inherited config")
+      }
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
   it.each([
