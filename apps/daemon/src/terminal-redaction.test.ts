@@ -73,12 +73,13 @@ describe("TerminalOutputRedactor", () => {
     expect(chunk.length - emitted.length).toBeLessThanOrEqual(terminalRedactionCarryCharacters)
   })
 
-  it("gives back what it was holding when the terminal ends, redacted", () => {
+  it("shows a name at once and a value only redacted, when the terminal ends mid-line", () => {
+    // A name is shown as it arrives; only a bare token still being printed is
+    // held, and the end of the stream shows it redacted.
     const redactor = new TerminalOutputRedactor()
-    expect(redactor.push("export API_KEY=sk-live-abcdef")).toBe("export ")
+    expect(redactor.push("export API_KEY=sk-live-abcdef")).toBe("export API_KEY=")
     const flushed = redactor.flush()
-    expect(flushed).toContain("API_KEY=[REDACTED]")
-    expect(flushed).not.toContain("sk-live-abcdef")
+    expect(flushed).toBe("[REDACTED]")
     expect(redactor.flush()).toBe("")
   })
 
@@ -131,8 +132,8 @@ describe("TerminalOutputRedactor", () => {
 
     it("stops treating input as a value at its delimiter, and after flush", () => {
       const redactor = new TerminalOutputRedactor()
-      expect(redactor.push("TOKEN=")).toBe("")
-      expect(redactor.release()).toBe("TOKEN=")
+      expect(redactor.push("TOKEN=")).toBe("TOKEN=")
+      expect(redactor.release()).toBe("")
       expect(redactor.push("abc")).toBe("[REDACTED]")
       expect(redactor.push("def; echo ok\r\n")).toBe("; echo ok\r\n")
       redactor.push("TOKEN=")
@@ -140,6 +141,16 @@ describe("TerminalOutputRedactor", () => {
       redactor.flush()
       expect(redactor.push("visible\r\n")).toBe("visible\r\n")
     })
+  })
+
+  it("drops a value that outgrows a line's context, until it ends", () => {
+    for (const [prefix, closer] of [["export API_KEY=", " done\r\n"], ["export API_KEY=\"", "\" done\r\n"]] as const) {
+      const redactor = new TerminalOutputRedactor()
+      const parts = [prefix, ...Array.from({ length: 12 }, () => "q".repeat(1_000)), closer]
+      const output = `${parts.map((part) => redactor.push(part)).join("")}${redactor.flush()}`
+      expect(output, prefix).not.toContain("qqqq")
+      expect(output, prefix).toContain(" done\r\n")
+    }
   })
 })
 
