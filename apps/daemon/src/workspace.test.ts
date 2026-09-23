@@ -788,6 +788,35 @@ describe("GitWorkspaceService", () => {
     await expect(readFile(join(workspace.path, "victim.txt"), "utf8")).resolves.toBe("changed\n")
   })
 
+  it("reads evidence with a repository-set filter treated as absent, so its command never runs", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-evidence-filter-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "victim.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.clean", "sh ./payload.sh"])
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.required", "true"])
+    await writeFile(join(repositoryPath, "payload.sh"), `echo ran >> "${markerPath}"\ncat\n`)
+    await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n")
+    await writeFile(join(repositoryPath, "victim.txt"), "changed\n")
+    await execute("git", ["-C", repositoryPath, "diff", "HEAD", "--stat"])
+    await expect(readFile(markerPath, "utf8")).resolves.toContain("ran")
+    await rm(markerPath)
+
+    const evidence = await new GitWorkspaceService(join(scratch, "worktrees")).evidence(repositoryPath)
+
+    expect(evidence.files.map((file) => file.path)).toEqual(expect.arrayContaining(["victim.txt"]))
+    expect(evidence.diff).toContain("+changed")
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
   it("keeps running a filter the person set in their global Git config", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-global-filter-"))
     scratchDirectories.push(scratch)

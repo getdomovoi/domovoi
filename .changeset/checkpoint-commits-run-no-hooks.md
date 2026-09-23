@@ -20,3 +20,7 @@ config that sets it. Git runs a filter's command on every add, checkout and rese
 repository-set command such as `./scripts/clean.sh` runs a file the agent can edit. Turning the
 filter off instead would change what a checkpoint stores, for example git-crypt plaintext. Filters
 from your global or system Git config, such as Git LFS, still run.
+
+The file-change view reads its evidence with those repository-set filters treated as absent, so
+their commands never run there. A filtered file can show as changed in that view; nothing is
+stored.

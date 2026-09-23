@@ -243,14 +243,17 @@ export class RepositoryFilterRefusedError extends Error {
   }
 }
 
-async function refuseRepositoryFilters(repositoryPath: string, signal?: AbortSignal): Promise<void> {
+async function repositoryFilterSettings(
+  repositoryPath: string,
+  signal?: AbortSignal,
+): Promise<{ scope: string; key: string }[]> {
   let output: string
   try {
     output = await git(repositoryPath, [
       "config", "--show-scope", "-z", "--get-regexp", String.raw`^filter\..+\.(clean|smudge|process)$`,
     ], signal)
   } catch (error) {
-    if ((error as { code?: unknown }).code === 1) return
+    if ((error as { code?: unknown }).code === 1) return []
     throw error
   }
   const fields = output.split("\0")
@@ -260,7 +263,26 @@ async function refuseRepositoryFilters(repositoryPath: string, signal?: AbortSig
     const key = fields[index + 1]!.split("\n")[0]!
     if (!trustedFilterScopes.has(scope)) entries.push({ scope, key })
   }
+  return entries
+}
+
+async function refuseRepositoryFilters(repositoryPath: string, signal?: AbortSignal): Promise<void> {
+  const entries = await repositoryFilterSettings(repositoryPath, signal)
   if (entries.length > 0) throw new RepositoryFilterRefusedError(entries)
+}
+
+// Evidence only reads what the worktree shows, so a repository-set filter is
+// treated as absent there: the file view may show a filtered file as changed,
+// and nothing is stored.
+async function repositoryFiltersSwitchedOff(repositoryPath: string, signal?: AbortSignal): Promise<string[]> {
+  const entries = await repositoryFilterSettings(repositoryPath, signal)
+  const names = new Set(entries.map(({ key }) => key.slice("filter.".length, key.lastIndexOf("."))))
+  return [...names].flatMap((name) => [
+    "-c", `filter.${name}.clean=`,
+    "-c", `filter.${name}.smudge=`,
+    "-c", `filter.${name}.process=`,
+    "-c", `filter.${name}.required=false`,
+  ])
 }
 
 export class WorkspaceEvidenceUnstableError extends Error {
@@ -626,10 +648,12 @@ async function hashGit(
 async function workspaceEvidenceFingerprint(
   worktreePath: string,
   signal?: AbortSignal,
+  filtersOff: readonly string[] = [],
 ): Promise<{ headCommit: string; digest: string }> {
   const fingerprintConfig = [
     "-c",
     "core.fsmonitor=false",
+    ...filtersOff,
   ]
   const [baseCommit, status, diffHash] = await Promise.all([
     git(worktreePath, [...fingerprintConfig, "rev-parse", "HEAD"], signal),
@@ -992,13 +1016,15 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async evidence(worktreePath: string, signal?: AbortSignal, includeRevertTargets = false): Promise<WorkspaceEvidence> {
+    const filtersOff = await repositoryFiltersSwitchedOff(worktreePath, signal)
     for (let attempt = 0; attempt < maximumEvidenceAttempts; attempt += 1) {
-      const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, signal)
+      const fingerprintBefore = await workspaceEvidenceFingerprint(worktreePath, signal, filtersOff)
       const [baseCommit, status] = await Promise.all([
         git(worktreePath, ["-c", "core.fsmonitor=false", "rev-parse", "HEAD"], signal),
         git(worktreePath, [
           "-c",
           "core.fsmonitor=false",
+          ...filtersOff,
           "status",
           "--porcelain=v2",
           "-z",
@@ -1010,6 +1036,7 @@ export class GitWorkspaceService implements WorkspaceService {
         git(worktreePath, [
           "-c",
           "core.fsmonitor=false",
+          ...filtersOff,
           "diff",
           "HEAD",
           "--numstat",
@@ -1023,6 +1050,7 @@ export class GitWorkspaceService implements WorkspaceService {
           [
             "-c",
             "core.fsmonitor=false",
+            ...filtersOff,
             "diff",
             "--no-ext-diff",
             "--no-textconv",
@@ -1035,7 +1063,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ),
         includeRevertTargets ? pathsAtCommit(worktreePath, baseCommit, signal) : undefined,
       ])
-      const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, signal)
+      const fingerprintAfter = await workspaceEvidenceFingerprint(worktreePath, signal, filtersOff)
       if (fingerprintBefore.digest !== fingerprintAfter.digest) continue
 
       const stats = parseNumstat(numstat)
