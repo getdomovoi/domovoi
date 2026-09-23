@@ -46,4 +46,12 @@ describe("connectionNotice", () => {
     expect(connectionNotice("connecting", undefined, false)?.headline).toBe("Connecting")
     expect(connectionNotice("closed", undefined, false)?.headline).toBe("Not connected")
   })
+
+  it("says the app is out of date when the daemon sent something it could not read, even while connected", () => {
+    const notice = connectionNotice("open", undefined, true, "The daemon sent a workspace.changed notification this app could not read")
+
+    expect(notice?.tone).toBe("warning")
+    expect(notice?.headline).toBe("This app is out of date with the daemon")
+    expect(notice?.detail).toContain("workspace.changed")
+  })
 })
