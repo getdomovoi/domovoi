@@ -38,7 +38,11 @@ describe("gitReadCanRunProgram", () => {
     ["diff.external", "/tmp/differ"],
     ["diff.secret.textconv", "/tmp/decode"],
     ["diff.secret.command", "/tmp/differ"],
-    ["filter.lfs.clean", "git-lfs clean -- %f"],
+    ["filter.lfs.clean", "git-lfs clean %f"],
+    ["filter.lfs.smudge", "git-lfs smudge --skip -- %f"],
+    ["filter.lfs.process", "git-lfs filter-process --skip"],
+    ["filter.lfs.required", "false"],
+    ["filter.lfs.extra", "/tmp/program"],
     ["filter.crypt.process", "/tmp/crypt"],
     ["log.showSignature", "true"],
     ["gpg.program", "/tmp/gpg"],
@@ -55,6 +59,33 @@ describe("gitReadCanRunProgram", () => {
     await set(key, value)
 
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(false)
+  })
+
+  it("allows the filter lines git lfs install writes, exactly", async () => {
+    const { root, set } = await repository()
+    await set("filter.lfs.clean", "git-lfs clean -- %f")
+    await set("filter.lfs.smudge", "git-lfs smudge -- %f")
+    await set("filter.lfs.process", "git-lfs filter-process")
+    await set("filter.lfs.required", "true")
+
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(false)
+    await set("filter.crypt.clean", "/tmp/crypt")
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
+  })
+
+  it("asks in a repository with a submodule, since git status runs each submodule under its own configuration", async () => {
+    const { root } = await repository()
+    await writeFile(join(root, "a.txt"), "a\n")
+    const commit = async () => {
+      await git("git", ["-C", root, "add", "a.txt"], { env: isolated })
+      await git("git", ["-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "a"], { env: isolated })
+      return (await git("git", ["-C", root, "rev-parse", "HEAD"], { env: isolated })).stdout.trim()
+    }
+    const head = await commit()
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(false)
+    await git("git", ["-C", root, "update-index", "--add", "--cacheinfo", `160000,${head},vendor/lib`], { env: isolated })
+
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
   })
 
   it("reads settings from an included file", async () => {
