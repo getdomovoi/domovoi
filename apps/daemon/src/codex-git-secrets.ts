@@ -13,28 +13,48 @@ import { gitReadCanRunProgram } from "./git-read-config.js"
 // that gates Claude's Git reads finds no program Git could run (a partial
 // clone fetches missing trees through the remote's programs, measured with
 // --filter=tree:0). It also runs with the repository's hooks and fsmonitor
-// switched off, no ext:: transport, and lazy fetching disabled, so a setting
-// that check does not know about still cannot fetch or run a hook.
+// switched off, every transport refused (the general and the per-protocol
+// keys, since a per-protocol key in the repository would outrank the general
+// one), and lazy fetching disabled, so a promisor remote written after the
+// check ran still cannot fetch. GIT_NO_LAZY_FETCH exists since Git 2.45; an
+// older Git does not scan at all, and the notice says it could not finish.
 export type HistoryScanLimits = { commits: number; timeoutMs: number; outputBytes: number }
 
 export const codexHistoryScanLimits: Readonly<HistoryScanLimits> = { commits: 1_000, timeoutMs: 3_000, outputBytes: 256 * 1_024 }
 
 const commitMarker = "\u0001"
 
-const inertGit = [
+export const historyScanGit = [
   "-c", "core.hooksPath=/dev/null",
   "-c", "core.fsmonitor=false",
-  "-c", "protocol.ext.allow=never",
+  "-c", "protocol.allow=never",
+  ...["file", "ssh", "git", "http", "https", "ext"].flatMap((protocol) => ["-c", `protocol.${protocol}.allow=never`]),
 ] as const
+
+export function gitSupportsNoLazyFetch(version: string | undefined): boolean {
+  const match = /(\d+)\.(\d+)/.exec(version ?? "")
+  if (!match) return false
+  const major = Number(match[1])
+  const minor = Number(match[2])
+  return major > 2 || (major === 2 && minor >= 45)
+}
+
+function gitVersion(): Promise<string | undefined> {
+  return new Promise((done) => {
+    execFile("git", ["--version"], { timeout: 3_000 }, (error, stdout) => done(error ? undefined : stdout.trim()))
+  })
+}
 
 export async function committedCodexSecretPaths(
   worktree: string,
   limits: Readonly<HistoryScanLimits> = codexHistoryScanLimits,
+  options: { gitVersion?: () => Promise<string | undefined> } = {},
 ): Promise<string[] | undefined> {
+  if (!gitSupportsNoLazyFetch(await (options.gitVersion ?? gitVersion)())) return undefined
   if (await gitReadCanRunProgram(worktree)) return undefined
   const env = { ...process.env, GIT_NO_LAZY_FETCH: "1" }
   const args = [
-    "-C", worktree, ...inertGit, "log", "--all", "--no-renames", "--name-only", "--format=%x01",
+    "-C", worktree, ...historyScanGit, "log", "--all", "--no-renames", "--name-only", "--format=%x01",
     `--max-count=${limits.commits}`,
     "--", ...codexWorktreeSecretPatterns.map((pattern) => `:(glob)${pattern}`),
   ]
