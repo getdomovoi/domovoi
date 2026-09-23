@@ -295,4 +295,3 @@ describe("DaemonConnection results", () => {
     } finally { daemon.close() }
   })
 })
-
