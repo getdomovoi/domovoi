@@ -1,5 +1,5 @@
 import type { KeychainAccessibilityConstant } from "expo-secure-store"
-import { relayClientPinSchema, relayRecoveryResultSchema, type RelayClientPin } from "@getdomovoi/protocol"
+import { relayClientPinSchema, relayRecoveryResultSchema, type RelayClientPin, type RpcParams } from "@getdomovoi/protocol"
 import { adoptRelayRecovery, type RelayPinStore } from "@getdomovoi/protocol/relay-admission"
 import { DaemonError } from "./daemon"
 
@@ -81,7 +81,7 @@ export function createRelayPinStore(secrets: SecretItems, machineId: string, opt
   }
 }
 
-export type RelayPinCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
+export type RelayPinCall = (method: "relay.recovery", params: RpcParams<"relay.recovery">) => Promise<unknown>
 
 // Bring the saved pin in line with the daemon on the other end of an
 // authenticated connection. No pin yet: enrol what this daemon publishes as

@@ -12,6 +12,8 @@ import {
   type ApprovalDecision,
   type FleetEntry,
   type PermissionMode,
+  type RpcMethod,
+  type RpcParams,
   type SkillSummary,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -195,7 +197,7 @@ export function App() {
     fleetLoads.accept,
   )
   const mutate = useCallback(
-    (method: string, params: unknown) => mutationCall(clientAccess, call, method, params),
+    <M extends RpcMethod>(method: M, params: RpcParams<M>) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
   )
   const notice = connectionNotice(status, fault, snapshot !== undefined, protocolProblem)
@@ -419,7 +421,6 @@ export function App() {
       await mutate("approval.resolve", {
         approvalId: approval.id,
         decision,
-        client,
         ...(explanation ? { explanation } : {}),
       })
       setExplaining(false)
