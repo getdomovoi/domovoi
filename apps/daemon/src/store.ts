@@ -65,6 +65,14 @@ export type StoredQueuedSessionSend = Omit<QueuedSessionSend, "state"> & {
   credentialDeviceId?: string
 }
 
+export type QueuedSessionSendTransition = {
+  sessionId: string
+  queueId: string
+  from: StoredQueuedSessionSend["state"][]
+  to: StoredQueuedSessionSend["state"]
+  reason?: string
+}
+
 export type ProjectWorkspaceState = {
   project: NonNullable<WorkspaceSnapshot["project"]>
   sessions: WorkspaceSnapshot["sessions"]
@@ -122,6 +130,7 @@ export interface WorkspaceStore {
     to: StoredQueuedSessionSend["state"],
     reason?: string,
   ): boolean
+  transitionQueuedSessionSends?(transitions: readonly QueuedSessionSendTransition[]): boolean[]
   deleteQueuedSessionSend?(sessionId: string, queueId: string): boolean
   close(): void | Promise<void>
 }
@@ -836,6 +845,24 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       WHERE session_id = ? AND queue_id = ? AND state = ?
     `).run(to, JSON.stringify(payload), sessionId, queueId, row.state)
     return result.changes === 1
+  }
+
+  transitionQueuedSessionSends(transitions: readonly QueuedSessionSendTransition[]): boolean[] {
+    this.#database.exec("BEGIN IMMEDIATE")
+    try {
+      const results = transitions.map((transition) => this.transitionQueuedSessionSend(
+        transition.sessionId,
+        transition.queueId,
+        transition.from,
+        transition.to,
+        transition.reason,
+      ))
+      this.#database.exec("COMMIT")
+      return results
+    } catch (error) {
+      this.#database.exec("ROLLBACK")
+      throw error
+    }
   }
 
   deleteQueuedSessionSend(sessionId: string, queueId: string): boolean {

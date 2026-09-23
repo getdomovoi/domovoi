@@ -6,7 +6,7 @@ import { demoWorkspace, protocolVersion, workspaceSnapshotSchema } from "@getdom
 
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { DomovoiDaemon } from "./server.js"
-import type { WorkspaceStore } from "./store.js"
+import type { QueuedSessionSendTransition, WorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
 
 const daemons: DomovoiDaemon[] = []
@@ -372,6 +372,204 @@ describe("provider disconnect", () => {
     expect(after.queuedSends?.find(({ sessionId }) => sessionId === session.id)?.state).toBe("held")
     const tool = after.thread.find((item) => item.id === "tool-command-ordinary")
     expect(tool).toMatchObject({ kind: "tool", output: expect.stringContaining("partial line without a newline") })
+    for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
+  })
+  it("changes nothing live when holding a queued send fails in the store", async () => {
+    const snapshot = frozenWorkspace()
+    const first = snapshot.sessions[2]!
+    const second = {
+      ...structuredClone(first),
+      id: "session-second",
+      providerThreadId: "thread-session-second",
+      workspacePath: "/worktrees/session-second",
+    }
+    snapshot.sessions.push(second)
+    workspaceSnapshotSchema.parse(snapshot)
+    const saved: Array<typeof snapshot> = []
+    const storeHolds: string[] = []
+    let failHold: "throw" | undefined
+    const transition = (sessionId: string, to: string) => {
+      if (to !== "held") return true
+      if (failHold === "throw" && storeHolds.length > 0) throw new Error("disk I/O error")
+      storeHolds.push(sessionId)
+      return true
+    }
+    const store = {
+      load: () => snapshot,
+      save: (next: typeof snapshot) => { saved.push(structuredClone(next)) },
+      transitionQueuedSessionSend: vi.fn((sessionId: string, _queueId: string, _from: unknown, to: string) =>
+        transition(sessionId, to)),
+      transitionQueuedSessionSends: vi.fn((transitions: readonly QueuedSessionSendTransition[]) => {
+        const committed = [...storeHolds]
+        try {
+          return transitions.map(({ sessionId, to }) => transition(sessionId, to))
+        } catch (error) {
+          storeHolds.splice(0, storeHolds.length, ...committed)
+          throw error
+        }
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    for (const session of [first, second]) {
+      const live = snapshot.sessions.find(({ id }) => id === session.id)!
+      live.state = "active"
+      live.activeTurnId = `turn-${session.id}`
+    }
+    workspaceSnapshotSchema.parse(snapshot)
+    const { socket } = await client(daemon, port)
+    await call(socket, "runtime.models", { provider: "codex", client: "desktop" })
+    emit({
+      type: "command-output",
+      threadId: first.providerThreadId!,
+      turnId: `turn-${first.id}`,
+      itemId: "command-first",
+      delta: "partial line without a newline",
+    })
+    for (const session of [first, second]) {
+      const queued = await call(socket, "session.send", {
+        sessionId: session.id,
+        prompt: "Run the checks next",
+        client: "desktop",
+        delivery: "next-turn-replace",
+      })
+      expect(queued.error).toBeUndefined()
+    }
+    const before = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+
+    failHold = "throw"
+    emit({ type: "provider-disconnected", reason: "Codex app-server exited with code 1" })
+    const failed = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+    expect(failed.queuedSends).toEqual(before.queuedSends)
+    expect(failed.sessions).toEqual(before.sessions)
+    expect(storeHolds).toEqual([])
+
+    failHold = undefined
+    await call(socket, "runtime.models", { provider: "codex", client: "desktop" })
+    emit({ type: "provider-disconnected", reason: "Codex app-server exited with code 1" })
+    const after = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+    expect(after.queuedSends?.map(({ state }) => state)).toEqual(["held", "held"])
+    expect(after.thread.find((item) => item.id === "tool-command-first"))
+      .toMatchObject({ kind: "tool", output: expect.stringContaining("partial line without a newline") })
+    for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
+  })
+
+  it("holds the other queued sends and still fails the sessions when the store refuses one hold", async () => {
+    const snapshot = frozenWorkspace()
+    const first = snapshot.sessions[2]!
+    const second = {
+      ...structuredClone(first),
+      id: "session-second",
+      providerThreadId: "thread-session-second",
+      workspacePath: "/worktrees/session-second",
+    }
+    snapshot.sessions.push(second)
+    workspaceSnapshotSchema.parse(snapshot)
+    const saved: Array<typeof snapshot> = []
+    const storeHolds: string[] = []
+    let refuseHold = false
+    const transition = (sessionId: string, to: string) => {
+      if (to !== "held") return true
+      if (refuseHold && sessionId === second.id) return false
+      storeHolds.push(sessionId)
+      return true
+    }
+    const store = {
+      load: () => snapshot,
+      save: (next: typeof snapshot) => { saved.push(structuredClone(next)) },
+      transitionQueuedSessionSend: vi.fn((sessionId: string, _queueId: string, _from: unknown, to: string) =>
+        transition(sessionId, to)),
+      transitionQueuedSessionSends: vi.fn((transitions: readonly QueuedSessionSendTransition[]) => {
+        const committed = [...storeHolds]
+        try {
+          return transitions.map(({ sessionId, to }) => transition(sessionId, to))
+        } catch (error) {
+          storeHolds.splice(0, storeHolds.length, ...committed)
+          throw error
+        }
+      }),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const emit = (event: AgentEvent) => { for (const listener of listeners) listener(event) }
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: agent }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    for (const session of [first, second]) {
+      const live = snapshot.sessions.find(({ id }) => id === session.id)!
+      live.state = "active"
+      live.activeTurnId = `turn-${session.id}`
+    }
+    workspaceSnapshotSchema.parse(snapshot)
+    const { socket } = await client(daemon, port)
+    await call(socket, "runtime.models", { provider: "codex", client: "desktop" })
+    emit({
+      type: "command-output",
+      threadId: first.providerThreadId!,
+      turnId: `turn-${first.id}`,
+      itemId: "command-first",
+      delta: "partial line without a newline",
+    })
+    for (const session of [first, second]) {
+      const queued = await call(socket, "session.send", {
+        sessionId: session.id,
+        prompt: "Run the checks next",
+        client: "desktop",
+        delivery: "next-turn-replace",
+      })
+      expect(queued.error).toBeUndefined()
+    }
+    const before = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+
+    refuseHold = true
+    emit({ type: "provider-disconnected", reason: "Codex app-server exited with code 1" })
+    const after = workspaceSnapshotSchema.parse((await call(socket, "workspace.get")).result)
+    expect(storeHolds).toEqual([first.id])
+    expect(after.queuedSends?.map(({ sessionId, state }) => [sessionId, state])).toEqual(
+      before.queuedSends?.map(({ sessionId, state }) => [sessionId, sessionId === first.id ? "held" : state]),
+    )
+    expect(after.sessions.filter(({ id }) => id === first.id || id === second.id).map(({ state }) => state))
+      .toEqual(["failed", "failed"])
+    expect(after.thread.filter((item) => item.kind === "system" && item.body.includes("disconnected"))
+      .map(({ sessionId }) => sessionId)).toEqual(expect.arrayContaining([first.id, second.id]))
+    expect(after.thread.find((item) => item.id === "tool-command-first"))
+      .toMatchObject({ kind: "tool", output: expect.stringContaining("partial line without a newline") })
     for (const snapshot of saved) workspaceSnapshotSchema.parse(snapshot)
   })
 })

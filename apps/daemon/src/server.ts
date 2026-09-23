@@ -92,7 +92,12 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
+import {
+  SqliteWorkspaceStore,
+  type QueuedSessionSendTransition,
+  type StoredQueuedSessionSend,
+  type WorkspaceStore,
+} from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
@@ -2532,6 +2537,18 @@ export class DomovoiDaemon {
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()
     return true
+  }
+
+  #commitQueuedSendTransitions(transitions: readonly QueuedSessionSendTransition[]): boolean[] {
+    if (transitions.length === 0) return []
+    if (this.#store.transitionQueuedSessionSends) return this.#store.transitionQueuedSessionSends(transitions)
+    return transitions.map((transition) => this.#store.transitionQueuedSessionSend?.(
+      transition.sessionId,
+      transition.queueId,
+      transition.from,
+      transition.to,
+      transition.reason,
+    ) ?? true)
   }
 
   #holdQueuedSessionSend(sessionId: string, reason: string): boolean {
@@ -8676,24 +8693,35 @@ export class DomovoiDaemon {
       }
       snapshot.thread.push(...structuredClone(notices))
     }
-    const candidate = structuredClone(this.#snapshot)
-    markDisconnected(candidate)
-    const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
-    if (candidateApprovals) {
-      candidate.approvals = candidateApprovals.approvals
-      candidate.workingPlans = candidateApprovals.workingPlans
+    const validateCandidate = (held: readonly StoredQueuedSessionSend[]) => {
+      const candidate = structuredClone(this.#snapshot)
+      markDisconnected(candidate)
+      const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
+      if (candidateApprovals) {
+        candidate.approvals = candidateApprovals.approvals
+        candidate.workingPlans = candidateApprovals.workingPlans
+      }
+      if (held.length > 0) {
+        const candidateQueue = new Map(this.#queuedSessionSends)
+        for (const queued of held) candidateQueue.set(queued.sessionId, queued)
+        candidate.queuedSends = this.#queuedSendsFor(candidate, candidateQueue.values())
+      }
+      workspaceSnapshotSchema.parse(candidate)
     }
-    if (holds.length > 0) {
-      const candidateQueue = new Map(this.#queuedSessionSends)
-      for (const held of holds) candidateQueue.set(held.sessionId, held)
-      candidate.queuedSends = this.#queuedSendsFor(candidate, candidateQueue.values())
-    }
-    workspaceSnapshotSchema.parse(candidate)
+    validateCandidate(holds)
+    const committed = this.#commitQueuedSendTransitions(holds.map((held) => ({
+      sessionId: held.sessionId,
+      queueId: held.id,
+      from: ["waiting", "releasing"],
+      to: "held",
+      reason: holdReason,
+    })))
+    const held = holds.filter((_, index) => committed[index] === true)
+    if (held.length !== holds.length) validateCandidate(held)
 
     for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
-    for (const held of holds) {
-      this.#transitionQueuedSessionSend(held.sessionId, held.id, ["waiting", "releasing"], "held", holdReason)
-    }
+    for (const queued of held) this.#queuedSessionSends.set(queued.sessionId, queued)
+    if (held.length > 0) this.#syncQueuedSendMetadata()
     markDisconnected(this.#snapshot)
     this.#removeApprovals(heldByAffected, createdAt)
     await this.#flushAgentState()
