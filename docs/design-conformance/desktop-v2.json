@@ -274,10 +274,10 @@
         "Keep the session"
       ],
       "presence": [
-        "Archive this session?"
+        "<AlertDialog open={archiveTarget !== null}"
       ],
       "evidence": [
-        "Archive this session?",
+        "<AlertDialog open={archiveTarget !== null}",
         "Archive and remove the worktree",
         "Keep the session",
         "then removes the worktree directory"
