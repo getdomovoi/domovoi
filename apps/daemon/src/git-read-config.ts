@@ -32,8 +32,13 @@ const standardLfsFilter: Readonly<Record<string, string>> = {
   "filter.lfs.required": "true",
 }
 const switchedKeys = new Set(["core.fsmonitor", "log.showsignature"])
+// Every signature placeholder (%G?, %GG, %GS, %GK, %GF, %GP, %GT, %GR) starts
+// with %G, and git log runs the signature program to fill any of them.
+const signatureFormatKeys = /^(?:format\.pretty|pretty\..+)$/
 const falseValues = new Set(["false", "no", "off", "0", ""])
-const programEnvironment = ["GIT_EXTERNAL_DIFF", "GIT_PAGER"] as const
+// Git picks a pager from GIT_PAGER, then core.pager, then PAGER, and its
+// helper programs from GIT_EXEC_PATH.
+const programEnvironment = ["GIT_EXTERNAL_DIFF", "GIT_PAGER", "PAGER", "GIT_EXEC_PATH"] as const
 const limits = { timeout: 3_000, maxBuffer: 1024 * 1024 }
 
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
@@ -57,12 +62,13 @@ export async function gitReadCanRunProgram(directory: string, env: NodeJS.Proces
     if (raw !== undefined && Object.hasOwn(standardLfsFilter, key) && standardLfsFilter[key] === raw) continue
     if (programKeys.some((pattern) => pattern.test(key))) return true
     if (switchedKeys.has(key) && !falseValues.has(value)) return true
+    if (signatureFormatKeys.test(key) && raw !== undefined && raw.includes("%G")) return true
   }
   if (await hasGitlink(directory, env)) return true
   const hook = await run(directory, ["rev-parse", "--git-path", "hooks/post-index-change"], env)
   if (hook === undefined) return true
   try {
-    await access(resolve(directory, hook.trim()))
+    await access(resolve(directory, hook.replace(/\r?\n$/, "")))
     return true
   } catch {
     return false

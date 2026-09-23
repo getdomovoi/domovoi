@@ -1050,6 +1050,7 @@ describe("reads Claude would approve before Domovoi sees them", () => {
   beforeEach(() => {
     vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null")
     vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1")
+    for (const name of ["GIT_PAGER", "PAGER", "GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH"]) vi.stubEnv(name, "")
   })
   afterEach(() => { vi.unstubAllEnvs() })
 
@@ -1186,6 +1187,9 @@ describe("reads Claude would approve before Domovoi sees them", () => {
   it.each([
     "GIT_PAGER=cat git status --short",
     "git -c core.fsmonitor=helper status --short",
+    "git log --show-signature",
+    "git log --format=%G?",
+    "git log --pretty=format:%GG",
   ])("asks when the command itself sets Git configuration: %s", async (command) => {
     const { adapter, screen } = await session("build")
 

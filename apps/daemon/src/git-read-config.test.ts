@@ -13,7 +13,9 @@ const git = promisify(execFile)
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
-const isolated = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }
+const programVariables = ["GIT_PAGER", "PAGER", "GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH"] as const
+const isolated: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }
+for (const name of programVariables) delete isolated[name]
 
 async function repository() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-read-config-")))
@@ -47,6 +49,15 @@ describe("gitReadCanRunProgram", () => {
     ["log.showSignature", "true"],
     ["gpg.program", "/tmp/gpg"],
     ["gpg.ssh.program", "/tmp/ssh-keygen"],
+    ["format.pretty", "%h %G?"],
+    ["format.pretty", "format:%GG"],
+    ["format.pretty", "%GS"],
+    ["format.pretty", "%GK"],
+    ["format.pretty", "%GF"],
+    ["format.pretty", "%GP"],
+    ["format.pretty", "%GT"],
+    ["format.pretty", "%GR"],
+    ["pretty.signed", "%h %G? %s"],
   ])("asks when %s is set", async (key, value) => {
     const { root, set } = await repository()
     await set(key, value)
@@ -54,7 +65,7 @@ describe("gitReadCanRunProgram", () => {
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
   })
 
-  it.each([["core.fsmonitor", "false"], ["log.showSignature", "false"]])("does not ask for %s=%s", async (key, value) => {
+  it.each([["core.fsmonitor", "false"], ["log.showSignature", "false"], ["format.pretty", "%h %s"], ["pretty.short", "%an %s"]])("does not ask for %s=%s", async (key, value) => {
     const { root, set } = await repository()
     await set(key, value)
 
@@ -117,10 +128,20 @@ describe("gitReadCanRunProgram", () => {
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
   })
 
-  it.each(["GIT_EXTERNAL_DIFF", "GIT_PAGER"])("asks when %s is set in the environment", async (name) => {
+  it.each(programVariables)("asks when %s is set in the environment", async (name) => {
     const { root } = await repository()
 
     await expect(gitReadCanRunProgram(root, { ...isolated, [name]: "/tmp/program" })).resolves.toBe(true)
+  })
+
+  it("finds a hook under a hooks path that starts with a space", async () => {
+    const { root, set } = await repository()
+    await mkdir(join(root, " spaced-hooks"), { recursive: true })
+    await writeFile(join(root, " spaced-hooks", "post-index-change"), "#!/bin/sh\n")
+    await chmod(join(root, " spaced-hooks", "post-index-change"), 0o755)
+    await set("core.hooksPath", " spaced-hooks")
+
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
   })
 
   it("asks when the configuration cannot be read", async () => {
