@@ -457,7 +457,9 @@ function quotedColumn(name: string): string {
 // file is read as immutable, which opens no sidecar. When the log holds
 // changes, or this Node cannot open a URL path, a private copy is read.
 // Only a missing table, a missing row or unreadable content means there is
-// no stored version; an operational failure refuses the start.
+// no stored version; an operational failure refuses the start. The daemon
+// constructs its store only while it holds the profile lease, so no other
+// daemon writes the file or its log during this read.
 export function storedProtocolVersion(path: string): string | undefined {
   if (path === ":memory:" || !existsSync(path)) return undefined
   const walPath = `${path}-wal`
