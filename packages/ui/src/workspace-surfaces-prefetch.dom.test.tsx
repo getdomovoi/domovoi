@@ -64,4 +64,3 @@ it("fetches the surfaces at idle, and a failed fetch leaves opening the surface 
   expect(await screen.findByRole("heading", { level: 1, name: "Audit log" })).toBeTruthy()
   expect(screen.queryByText(/did not load in this window/)).toBeNull()
 })
-

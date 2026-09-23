@@ -152,4 +152,3 @@ test("measures a lazy chunk together with the lazy chunks it imports, not startu
 
   assert.equal(measurements.web.lazyJavascriptBytes, 100)
 })
-
