@@ -53,12 +53,34 @@ const ignoredDirectories = new Set([
   "dist", "build", "out", "target", ".next", ".venv", "venv", "__pycache__", ".turbo", ".cache",
 ])
 
-const defaultWatchFactory: ArtifactWatchFactory = (root, onEvent, onError) => {
+const nativeRecursiveWatch: ArtifactWatchFactory = (root, onEvent, onError) => {
   const watcher = watch(root, { recursive: true }, (_event, path) => {
     onEvent(path === null ? undefined : path.toString())
   })
   watcher.on("error", onError)
   return watcher
+}
+
+export const artifactPollIntervalMs = 2_000
+
+// Node emulates a recursive watch outside macOS and Windows: it walks the
+// whole tree synchronously and holds one inotify watch per file, including
+// node_modules, with no way to skip it. There the bounded asynchronous scan is
+// polled instead; its fingerprints already decide whether anything changed.
+const pollingWatch: ArtifactWatchFactory = (_root, onEvent) => {
+  const timer = setInterval(() => onEvent(), artifactPollIntervalMs)
+  timer.unref?.()
+  return { close: () => clearInterval(timer) }
+}
+
+export function watchFactoryFor(platform: NodeJS.Platform): ArtifactWatchFactory {
+  return platform === "darwin" || platform === "win32" ? nativeRecursiveWatch : pollingWatch
+}
+
+const defaultWatchFactory = watchFactoryFor(process.platform)
+
+function insideIgnoredDirectory(path: string): boolean {
+  return path.split(/[\\/]/u).some((segment) => ignoredDirectories.has(segment))
 }
 
 export class ArtifactWatcher {
@@ -101,7 +123,13 @@ export class ArtifactWatcher {
     try {
       this.#subscription = this.#watchFactory(
         this.#root,
-        () => this.#schedule(),
+        (path) => {
+          // The scan never enters these directories, so nothing that changes
+          // in them can change an artifact; a build or test run there should
+          // not cost a walk of the worktree.
+          if (path !== undefined && insideIgnoredDirectory(path)) return
+          this.#schedule()
+        },
         (error) => this.#onError(error),
       )
       await this.rescan()
