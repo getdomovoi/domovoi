@@ -4,6 +4,7 @@ import type { DesktopDaemonConnection } from "./desktop-startup.js"
 export type DesktopDaemonCopy = {
   title: string
   detail: string
+  owner?: "app" | "service" | "other-app"
 }
 
 export function daemonConnectionCopy(daemon: DesktopDaemonConnection): DesktopDaemonCopy {
@@ -11,17 +12,20 @@ export function daemonConnectionCopy(daemon: DesktopDaemonConnection): DesktopDa
     return {
       title: "Running Domovoi inside this app",
       detail: "This app started the local daemon and stops it when the app quits.",
+      owner: "app",
     }
   }
   if (daemon.owner === "daemon") {
     return {
       title: "Connected to the installed Domovoi service",
       detail: "The daemon runs outside this app and keeps running after it quits.",
+      owner: "service",
     }
   }
   return {
     title: "Connected to the daemon another Domovoi Desktop started",
     detail: "That app owns the daemon and stops it when it quits.",
+    owner: "other-app",
   }
 }
 
