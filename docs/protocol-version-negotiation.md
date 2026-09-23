@@ -7,9 +7,20 @@ executable releases; their values do not decide wire compatibility. A client rel
 
 ## Admission policy
 
-Major and minor components must both match. Patch components may differ. This
-rule also applies after wire version `1.0.0`; a minor increment is not implicitly
-compatible. There is no downgrade to an older schema or feature negotiation.
+Major and minor components must both match. Patch components may differ, because
+a patch carries no wire change: every change to a protocol schema, including an
+added optional field, is a minor bump. Schemas stay strict, so a peer on another
+minor could not parse the change anyway. This rule also applies after wire version
+`1.0.0`; a minor increment is not implicitly compatible. There is no downgrade to
+an older schema or feature negotiation.
+
+CI enforces the bump. `packages/protocol/wire-schema.json` records a digest of the
+JSON Schema of every schema the protocol package exports and of every RPC's params
+and result. `node scripts/protocol-wire.mjs check --base <ref>` fails when that
+record is stale against the built package, or when it differs from the record at
+the last protocol release tag (or, with no tag yet, the pull request's base)
+without a minor or major increase of `protocolVersion`. After a schema change, run
+`pnpm --filter @getdomovoi/protocol build`, then `node scripts/protocol-wire.mjs write`.
 
 For example, with a daemon on `0.6.0`:
 
