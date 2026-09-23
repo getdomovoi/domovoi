@@ -980,6 +980,23 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
+  it("drops a refusal that fails after its child was deleted, even while the thread stays loaded", async () => {
+    const settle = deferred<{ data: boolean }>()
+    const { adapter, client, stream, threadId } = await childAskedInFirstTurn((client) => {
+      client.postSessionIdPermissionsPermissionId.mockReturnValueOnce(settle.promise)
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1))
+
+    stream.emit({ type: "session.deleted", properties: { info: { id: "ses_child", parentID: threadId } } })
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    settle.resolve(Promise.reject(new Error("provider busy")))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
   it("forgets a deleted child without ever adopting it again", async () => {
     const { client, factory, stream } = harness()
     const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
@@ -1160,5 +1177,18 @@ describe("SubagentRegistry", () => {
     registry.forgetThread("thread")
     expect(registry.size).toBe(1)
     expect(registry.get("child-c")).toEqual({ threadId: "other", turnId: "turn-1" })
+  })
+})
+
+describe("SubagentRegistry tombstones", () => {
+  it("moves a repeated deletion to the newest place, so a burst does not evict it", () => {
+    const registry = new SubagentRegistry(2)
+    registry.delete("old")
+    registry.delete("recent")
+    registry.delete("old")
+    registry.delete("newest")
+    expect(registry.isKnown("old")).toBe(true)
+    expect(registry.isKnown("recent")).toBe(false)
+    expect(registry.isKnown("newest")).toBe(true)
   })
 })

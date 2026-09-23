@@ -155,6 +155,8 @@ export class SubagentRegistry {
     const threadId = this.#linked.get(sessionId)?.threadId ?? this.#neverLinked.get(sessionId) ?? fallbackThreadId
     this.#linked.delete(sessionId)
     this.#neverLinked.delete(sessionId)
+    // Re-insert so a repeated deletion is the newest tombstone, not the oldest.
+    this.#tombstones.delete(sessionId)
     this.#tombstones.set(sessionId, threadId)
     while (this.#tombstones.size > this.#tombstoneLimit) {
       const oldest = this.#tombstones.keys().next().value
@@ -420,7 +422,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       // A subagent's refusal must not be lost, or the subagent waits on it.
       const owner = pending.subagentTurn ? this.#sessions.get(pending.subagentTurn.threadId) : undefined
       const stillLoaded = owner !== undefined && owner.generation === pending.generation
-      if (response === "reject" && pending.subagentTurn && stillLoaded && !this.#closed) this.#failedRefusals.set(requestId, pending)
+      // A deleted subagent cannot take the refusal either, so nothing is kept for it.
+      const stillLinked = this.#subagents.get(pending.providerSessionId) !== undefined
+      if (response === "reject" && pending.subagentTurn && stillLoaded && stillLinked && !this.#closed) {
+        this.#failedRefusals.set(requestId, pending)
+      }
     })
   }
 
