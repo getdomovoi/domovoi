@@ -10382,7 +10382,19 @@ describe("DomovoiDaemon", () => {
     const signedPreviewUrl = `http://${address.host}:${address.port}/artifacts/${encodeURIComponent(access.artifactId)}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&bridge=${access.bridgeChannel}&parentOrigin=${signedParentOrigin}&expires=${access.expiresAt}&signature=${access.signature}`
     const signedPreview = await fetch(signedPreviewUrl)
     expect(signedPreview.status).toBe(200)
-    expect(signedPreview.headers.get("content-security-policy")).toContain("default-src 'none'")
+    // The agent wrote this document. The sandbox directive gives it an opaque
+    // origin in every container that shows it, whatever that container does.
+    const previewPolicy = (signedPreview.headers.get("content-security-policy") ?? "")
+      .split(";").map((directive) => directive.trim())
+    expect(previewPolicy).toEqual(expect.arrayContaining([
+      "default-src 'none'",
+      "connect-src 'none'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "form-action 'none'",
+      "sandbox allow-scripts",
+    ]))
+    expect(previewPolicy.filter((directive) => directive.startsWith("sandbox"))).toEqual(["sandbox allow-scripts"])
     const signedContent = await signedPreview.text()
     expect(signedContent).toContain("domovoi.preview.selection")
     expect(signedContent).toContain("preview_channel_123456")
