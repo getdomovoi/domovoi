@@ -1530,7 +1530,7 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
     revised part 2, 31d28b7a vendored the README). Its byte table is gone rather than
     corrected: a restated byte count goes stale on every re-export, which is the same shape as
     an undated `[x]` or prose restating a token. What replaces it is checkable after any
-    re-export, and was checked here rather than taken on the README's word — part 1 ends
+    re-export, and was checked here rather than taken on the README's word: part 1 ends
     `</x-dc>` with zero trailing bytes, part 2 opens `\n<script` and ends `</html>\n`, and the
     seam is adjacent bytes with no separator. The correction list is closed.
 
