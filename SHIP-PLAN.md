@@ -28,10 +28,16 @@ below; their ticked bullets keep their text and citations under the phase they s
   branch; `release:invariants` runs it on every push. Ticks that predate the rule are listed in
   `scripts/tick-citations-allowlist.json`, which only ever shrinks.
 - A citation must resolve on a fresh clone of `main`. This repository merges by squash as well
-  as by merge commit, and a squash replaces every in-PR sha, so a tick never cites a commit from
-  the pull request that lands it: tick in a follow-up, citing the squash sha. A sha handed
-  between agents names the ref it is reachable from, because a sha reachable only from a
-  feature branch passes the checker on that checkout and fails everywhere else.
+  as by merge commit, and the two take different rules:
+  - A pull request that lands as a squash replaces every in-PR sha, so a tick never cites a
+    commit from that pull request. Tick in a follow-up, citing the squash sha. Squash is the
+    usual path (`docs/working-rules.md`, "Read back 2026-09-22" under rule 9), and a pull
+    request whose merge method is not yet known is treated as a squash.
+  - A pull request that lands as a merge commit keeps its branch shas reachable from `main`, so
+    a tick may cite them, in that pull request or later.
+
+  A sha handed between agents names the ref it is reachable from, because a sha reachable only
+  from a feature branch passes the checker on that checkout and fails everywhere else.
 - A tick written by whoever did the work wants a second reader by default. On 2026-09-14 a peer
   read of the Phase 1 ticks found four errors, every one optimistic.
 - `[ ]` not complete. An untrue `[ ]` is the sharper error: it sends an agent to start work that
@@ -398,8 +404,8 @@ Every ledger entry is now merged.
     provider CLIs first, so this is not alpha scope.
 - [x] Token and cost telemetry normalized for Anthropic, per session and provider
       (76a9cb2 · session totals 2508149 · cached-token fold 3d92b6f)
-  - [x] OpenCode undercounted: `tokens.cache.read` landed in `cachedInputTokens` and never
-        reached `inputTokens`. `usage.ts` now folds `cache.read` and `cache.write` into
+  - [x] An adapter that reports cache reads separately undercounted: `tokens.cache.read`
+        landed in `cachedInputTokens` and never reached `inputTokens`. `usage.ts` now folds `cache.read` and `cache.write` into
         `inputTokens` (4359bcf9)
   - [x] The ACP adapter gave `totalTokens` and `contextTokens` the same `update.used`. It now
         records `tokens: "unavailable"` rather than guessing a total (4359bcf9)
@@ -1063,7 +1069,7 @@ payload plaintext to the relay, and a bearer or channel key alone must not be en
 Ticked here under rule 7: Codex did the work, this file is Claude Code's, so the citation
 carries Codex's sha rather than a second agent's edit.
 - [x] Normalize adapter token reporting. One of the two was already fixed when this line was
-      written: `claude.ts` by 3d92b6f0 (#330) on 2026-09-07. OpenCode's `tokens.cache.read` and
+      written: `claude.ts` by 3d92b6f0 (#330) on 2026-09-07. The other adapter's `tokens.cache.read` and
       `.write` now fold into `inputTokens` in `usage.ts` (4359bcf9).
 - [x] `acp.ts:296` gives `totalTokens` and `contextTokens` the same `update.used` value.
       Fixed by deleting the total rather than guessing one; the record says
@@ -1516,8 +1522,12 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       `fork: true`, and the reasoning sits above `historyRows` in the design file itself so the
       drawing carries its own why. Re-vendored, `part2-logic` 133,178 to 133,451 bytes. Nothing
       to raise with Codex: `session.fork` taking a checkpoint id is right as it stands.
-  - The export `README.md` is vendored at `design/design_handoff_domovoi_v2/designs/README.md`
-    (17cf141b for the parts, 31d28b7a for the README). Its byte table is gone rather than
+  - Current state, 2026-09-22: since e841e66c (#488, 2026-09-18) Desktop V2 is vendored whole
+    as `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html`, and the two
+    exported parts and the export `README.md` are gone from `design/`. What follows is the
+    record of the two-part period. The export `README.md` was vendored at
+    `design/design_handoff_domovoi_v2/designs/README.md` (17cf141b for the parts, 31d28b7a for
+    the README). Its byte table is gone rather than
     corrected: a restated byte count goes stale on every re-export, which is the same shape as
     an undated `[x]` or prose restating a token. What replaces it is checkable after any
     re-export, and was checked here rather than taken on the README's word — part 1 ends
@@ -1556,7 +1566,9 @@ pull request, and corrected here rather than left as a task nobody would start.
 - [x] Vendor them as data under `design/`, digested, using
       `pnpm design:revision --accept-new=<path>` per file. Nine `.dc.html` files plus the two
       exported Desktop V2 parts, fourteen entries in `design/REVISIONS.json`.
-      (`42cd0af` · Desktop V2 as its two parts `02459d6`)
+      (`42cd0af` · Desktop V2 as its two parts `02459d6`) Since e841e66c (#488) Desktop V2 is one
+      file again and the parts are gone; `design/REVISIONS.json` records twelve files under
+      `design/design_handoff_domovoi_v2/` on 2026-09-22.
 - [x] Then a grep of `design/` answers presence **and** absence *within the recorded
       revision* — which is the only absence it can ever answer. It says nothing about the
       live project, and it cannot prove the export was complete. State that scope wherever
@@ -1687,7 +1699,7 @@ floor is **higher** than the desktop's rather than lower.
 
 ---
 
-## Phase 4 — distribution and signing — M2 onward
+## Phase 4: distribution and signing, M2 onward
 
 M1 ships unsigned and updated by hand; signing is an M2 precondition (decided 2026-09-17 under
 `S1.4`).
@@ -1703,8 +1715,9 @@ M1 ships unsigned and updated by hand; signing is an M2 precondition (decided 20
       the reproducible build: two clean builds from one commit, byte-compared before
       publication, with the comparison in the release record (`S1.4`'s design names the
       shape). `S1.4` consumes it. SBOM and `SHA256SUMS` exist in `scripts/release-artifacts.mjs`
-      (b2e58881); the comparison does not, and no artefact has been published to attach any of
-      it to.
+      (b2e58881); the comparison does not. No release carrying an SBOM or a digest record has
+      been published. The one published artefact, the `desktop-v0.0.1` DMG (2026-09-18, a
+      `.sha256` file beside it and no SBOM), was hidden as a draft on 2026-09-22; see `S1.4`.
 
 ### From the roadmap: package and release the open core (Goal 4)
 
@@ -1712,8 +1725,9 @@ Priority: `P2`. Every install channel must wrap the same immutable release.
 
 #### Release engineering and semantic versioning
 
-Release tooling exists; no package is published from this repository yet. Finish this section
-before any public package or application publish.
+Release tooling exists; no npm package is published from this repository yet. One desktop
+build was published as a GitHub pre-release on 2026-09-18 and hidden as a draft on 2026-09-22
+(see `S1.4`). Finish this section before any public package or application publish.
 
 - [x] Add Changesets and require release metadata for every publishable change before any public
   publish
