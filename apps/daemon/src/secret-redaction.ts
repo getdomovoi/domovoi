@@ -220,17 +220,43 @@ function boundedText(value: unknown, maximumLength: number): { value: string; tr
 // its name on the same line, so however the line was split across reads or
 // idle beats, the name is in view when the value arrives, and nothing that
 // could still turn out to be a value has to be held back to be caught.
-// Line boundaries are carriage returns and newlines.
+// A line ends at a newline. A carriage return, a cursor move or formatting is
+// a redraw within the line, so patterns are matched on the line as it reads
+// with those removed, and a value written after a name by a redraw is still
+// that name's value.
 export const terminalRedactionCarryCharacters = 256
 
 // How much of one line is kept as context. A longer line keeps only its tail,
 // unless it ends inside a value, which is then dropped up to where it ends.
 const maximumTerminalLineContextCharacters = 8_192
 
-const lineBoundary = /[\r\n]/
+const lineBoundary = /\n/
 
-// Where a value ends, once the redactor has decided it is inside one.
-const valueDelimiter = /[\s;&|\r\n]/
+// Where an unquoted value ends, once the redactor has decided it is inside
+// one. A carriage return is a redraw, not an end.
+const valueDelimiter = /[ \t\f\v;&|\n]/
+
+// Escape sequences (CSI, OSC, two-character escapes, and one cut off at the
+// end of what has arrived) and control characters other than tab and newline.
+// They change how a line looks, not what it says.
+// eslint-disable-next-line no-control-regex
+const invisible = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_]|\[[0-?]*[ -/]*$|\][^\x07\x1b]*$|$)|[\x00-\x08\x0b-\x1f\x7f]/gu
+
+// The line as it reads, and for each character the index it came from.
+function readable(raw: string): { text: string, origins: number[] } {
+  let text = ""
+  const origins: number[] = []
+  let from = 0
+  for (const match of raw.matchAll(invisible)) {
+    for (let index = from; index < match.index; index += 1) origins.push(index)
+    text += raw.slice(from, match.index)
+    from = match.index + match[0].length
+  }
+  for (let index = from; index < raw.length; index += 1) origins.push(index)
+  text += raw.slice(from)
+  return { text, origins }
+}
+
 
 const assignmentPrefix = String.raw`(?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*`
 const structuredPrefix = String.raw`["']?\b${sensitiveName}\b["']?\s*:\s*`
@@ -252,6 +278,7 @@ const pendingValue = new RegExp(String.raw`${valuePrefix}$`, "iu")
 type DroppedValue =
   | { kind: "unquoted" }
   | { kind: "quoted", quote: string, escaped: boolean }
+  | { kind: "token" }
 
 // The start of a bare token (sk-, ghp_, a JWT) still being printed. Held until
 // the next read, so its first characters are not shown before the pattern that
@@ -267,10 +294,33 @@ function escapeForPattern(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-function redactTerminalLine(line: string): string {
+function redactReadable(line: string): string {
   return redactStreamText(line.replace(unclosedQuotedValue, (_match, prefix: string, quote: string) => `${prefix}${quote}${replacement}`))
     .replace(wordAfterRedactedQuote, "$1")
 }
+
+// Redacts the line as it reads. Only the span from the first changed character
+// to the last is rewritten: formatting and redraws before and after it are
+// kept, and anything inside it, a value's bytes and any sequence between them,
+// is replaced by the redacted text.
+function redactTerminalLine(line: string): string {
+  const { text, origins } = readable(line)
+  const redacted = redactReadable(text)
+  if (text === line) return redacted
+  if (redacted === text) return line
+  const shared = commonPrefixLength(text, redacted)
+  let suffix = 0
+  const limit = Math.min(text.length, redacted.length) - shared
+  while (suffix < limit && text.charCodeAt(text.length - 1 - suffix) === redacted.charCodeAt(redacted.length - 1 - suffix)) suffix += 1
+  const from = shared < origins.length ? origins[shared]! : line.length
+  const lastChanged = text.length - suffix - 1
+  const to = lastChanged >= shared ? origins[lastChanged]! + 1 : from
+  return `${line.slice(0, from)}${redacted.slice(shared, redacted.length - suffix)}${line.slice(to)}`
+}
+
+// A bare token that has run past what a line keeps.
+const tokenAtEnd = /\b(?:(?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]*|eyJ[A-Za-z0-9_.-]*)$/u
+
 
 function commonPrefixLength(left: string, right: string): number {
   const length = Math.min(left.length, right.length)
@@ -346,10 +396,17 @@ class LineContextRedactor {
   }
 
   #trimLine(): void {
-    const inValue = valueAtEnd.exec(this.#line)
+    const { text } = readable(this.#line)
+    if (tokenAtEnd.test(text)) {
+      this.#dropping = { kind: "token" }
+      this.#line = ""
+      this.#shown = ""
+      return
+    }
+    const inValue = valueAtEnd.exec(text)
     if (inValue) {
       const quote = inValue[1]
-      const trailingBackslashes = /\\*$/u.exec(this.#line)![0].length
+      const trailingBackslashes = /\\*$/u.exec(text)![0].length
       this.#dropping = quote === undefined
         ? { kind: "unquoted" }
         : { kind: "quoted", quote, escaped: trailingBackslashes % 2 === 1 }
@@ -359,7 +416,7 @@ class LineContextRedactor {
     }
     // A name and separator whose value has not started stay as context, so a
     // value after a long run of spaces is still seen as one.
-    const pending = pendingValue.exec(this.#line)
+    const pending = pendingValue.exec(text)
     if (pending) {
       const kept = pending[0].length > terminalRedactionCarryCharacters
         ? pending[0].replace(/\s+$/u, (space) => space.slice(-1))
@@ -377,6 +434,10 @@ class LineContextRedactor {
   // and the word goes on until an unquoted delimiter, so `"…"rest` is one
   // value. A newline always ends it and is then read as a line boundary.
   #endOfDroppedValue(input: string, dropping: DroppedValue): number | undefined {
+    if (dropping.kind === "token") {
+      const end = /[^A-Za-z0-9_.-]/u.exec(input)
+      return end ? end.index : undefined
+    }
     for (let index = 0; index < input.length; index += 1) {
       const character = input[index]!
       if (character === "\n") return index
