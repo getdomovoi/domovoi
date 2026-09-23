@@ -778,7 +778,7 @@ function codexSandboxNoticeFor(
   committed: readonly string[] | undefined,
 ): WorkspaceSnapshot["thread"] {
   if (runtime.provider !== "codex") return []
-  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexSandboxNotice(committed ?? []), createdAt }]
+  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexSandboxNotice(committed), createdAt }]
 }
 
 function committedSecretsFor(runtime: Runtime, worktree: string): Promise<string[] | undefined> {

@@ -167,6 +167,12 @@ describe("codexSandboxNotice", () => {
     expect(codexSandboxNotice([".env"]).detail).toBe(`${codexWorktreeSecretNotice.detail} Codex can still read these through Git: .env.`)
     expect(codexSandboxNotice([])).toEqual(codexWorktreeSecretNotice)
   })
+
+  it("says so when the repository history could not be checked", () => {
+    expect(codexSandboxNotice(undefined).detail).toBe(
+      `${codexWorktreeSecretNotice.detail} Domovoi could not finish checking the repository history.`,
+    )
+  })
 })
 
 describe("StdioCodexTransport", () => {

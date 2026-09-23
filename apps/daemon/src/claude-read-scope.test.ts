@@ -55,6 +55,11 @@ describe("claudeReadOutsideWorktree", () => {
     "cat src/*.ts",
     "cd src && cat index.ts",
     "rg secret",
+    "echo hi > notes.txt",
+    "echo hi >> notes.txt",
+    "echo $(cat /etc/passwd)",
+    "echo `id`",
+    "cd src",
   ])("does not let a read Domovoi cannot resolve at parse time skip the card: %s", (command) => {
     expect(claudeShellReadIsListed(command)).toBe(false)
   })
@@ -68,6 +73,11 @@ describe("claudeReadOutsideWorktree", () => {
     "git status --short",
     "git log --oneline -n 5",
     "git diff --stat",
+    "pwd",
+    "pwd -P",
+    "echo hello",
+    "echo -n done",
+    "echo 'Tests finished' 2>/dev/null",
   ])("lets a short-list read whose arguments are all paths skip the card: %s", (command) => {
     expect(claudeShellReadIsListed(command)).toBe(true)
   })

@@ -9800,7 +9800,8 @@ describe("DomovoiDaemon", () => {
     const notice = {
       kind: "system",
       body: "Codex cannot read secret files in this worktree.",
-      detail: "The Codex sandbox refuses reads of .env, .env.*, *.pem, *.key, id_rsa*, .npmrc, .netrc and .pypirc at any depth. A test or build that loads .env fails with \"Operation not permitted\". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply.",
+      // These worktrees are not repositories, so the history scan cannot finish.
+      detail: "The Codex sandbox refuses reads of .env, .env.*, *.pem, *.key, id_rsa*, .npmrc, .netrc and .pypirc at any depth. A test or build that loads .env fails with \"Operation not permitted\". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply. Domovoi could not finish checking the repository history.",
     }
     const noticesFor = (snapshot: WorkspaceSnapshot, sessionId: string) => snapshot.thread.filter(
       (item) => item.sessionId === sessionId && item.kind === "system" && item.body === notice.body,

@@ -90,8 +90,14 @@ export const codexWorktreeSecretNotice = {
 } as const
 
 // The notice names committed copies of those files too, which Codex can
-// still read through Git.
-export function codexSandboxNotice(committed: readonly string[]): { body: string; detail: string } {
+// still read through Git, or says the history could not be checked.
+export function codexSandboxNotice(committed: readonly string[] | undefined): { body: string; detail: string } {
+  if (committed === undefined) {
+    return {
+      body: codexWorktreeSecretNotice.body,
+      detail: `${codexWorktreeSecretNotice.detail} Domovoi could not finish checking the repository history.`,
+    }
+  }
   if (committed.length === 0) return codexWorktreeSecretNotice
   const list = committed.length === 1
     ? committed[0]!

@@ -53,11 +53,12 @@ export async function claudeReadOutsideWorktree(
   return undefined
 }
 
-// Only these reads skip the card (owner ruling 2026-09-23), and only when every
-// argument is a path Domovoi can see before the command runs. Anything that
+// Only these reads skip the card (owner rulings 2026-09-23), and only when every
+// argument is a path Domovoi can see before the command runs. pwd and echo read
+// no file; echo is only listed without a redirect to a file or a substitution. Anything that
 // computes, finds or follows paths at run time (a pipe into xargs, find -exec,
 // a recursive read, a glob) asks, because the screen above cannot place it.
-const listedReaders = new Set(["cat", "head", "tail", "wc", "ls"])
+const listedReaders = new Set(["cat", "head", "tail", "wc", "ls", "pwd", "echo"])
 const unresolvableSyntax = /[`$(){}\\\n*?[\]~<>]/
 const deviceRedirect = /\s*\d*>>?\s*(?:\/dev\/null|\/dev\/stderr|\/dev\/stdout|&[12])(?=\s|$)/g
 const plainFlag = /^(?:-[A-Za-z0-9]+|--[a-z][a-z-]*)$/

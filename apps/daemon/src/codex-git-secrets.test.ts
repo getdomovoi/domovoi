@@ -54,6 +54,18 @@ describe("committedCodexSecretPaths", () => {
     await expect(committedCodexSecretPaths(root)).resolves.toBeUndefined()
   })
 
+  it("reports that it could not finish when the history reaches the commit bound", async () => {
+    const { root, run } = await repository()
+    for (const name of [".env", ".env.local", "server.pem"]) {
+      await writeFile(join(root, name), "x\n")
+      await run("add", ".")
+      await run("commit", "-qm", name)
+    }
+
+    await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 3 })).resolves.toBeUndefined()
+    await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 4 })).resolves.toEqual([".env", ".env.local", "server.pem"])
+  })
+
   it("bounds the scan", () => {
     expect(codexHistoryScanLimits).toEqual({ commits: 1_000, timeoutMs: 3_000, outputBytes: 256 * 1_024 })
   })
