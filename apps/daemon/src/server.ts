@@ -140,6 +140,7 @@ import {
 } from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
+  codexWorktreeSecretNotice,
 } from "./codex.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
@@ -767,6 +768,15 @@ export function isTestCommandTitle(title: string): boolean {
       + "|(?:go|cargo|dotnet|swift|mix)\\s+test(?:\\s|$)"
       + "|(?:\\./)?gradle(?:w)?\\s+test(?:\\s|$)|mvn(?:\\s+\\S+)*\\s+test(?:\\s|$))",
   ).test(command)
+}
+
+function codexSandboxNoticeFor(
+  sessionId: string,
+  runtime: Runtime,
+  createdAt: string,
+): WorkspaceSnapshot["thread"] {
+  if (runtime.provider !== "codex") return []
+  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexWorktreeSecretNotice, createdAt }]
 }
 
 function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { kind: "system" }>): boolean {
@@ -6789,6 +6799,9 @@ export class DomovoiDaemon {
               : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
+          if (previousRuntime.provider !== runtime.provider) {
+            this.#snapshot.thread.push(...codexSandboxNoticeFor(currentSession.id, runtime, createdAt))
+          }
         } else {
           currentSession.runtime = runtime
           delete currentSession.providerFailure
@@ -7119,6 +7132,7 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
+        this.#snapshot.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt))
         changed = true
       }
 
@@ -7309,6 +7323,7 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
+        candidate.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt))
         try {
           if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
           else this.#store.save(candidate)

@@ -821,6 +821,33 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  it.each([
+    ["ask", false],
+    ["plan", false],
+    ["build", false],
+    ["build", true],
+  ] as const)("tells a new %s Codex thread which worktree files its sandbox refuses", async (mode, auto) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime(mode, auto) })
+    const instructions = (transport.sent[2]?.params as { developerInstructions?: unknown } | undefined)
+      ?.developerInstructions
+    expect(typeof instructions).toBe("string")
+    for (const file of [".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".npmrc", ".netrc", ".pypirc"]) {
+      expect(instructions).toContain(file)
+    }
+    expect(instructions).toContain("Operation not permitted")
+    expect(instructions).toMatch(/say so in your reply/)
+    transport.receive({ id: 2, result: { thread: { id: "thread-notice" } } })
+    await expect(starting).resolves.toBe("thread-notice")
+    await adapter.close()
+  })
+
   it("initializes, starts a turn, streams events, and resolves approval", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()

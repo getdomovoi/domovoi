@@ -79,6 +79,18 @@ export const codexWorktreeSecretPatterns = [
   "**/.pypirc",
 ] as const
 
+// Codex emits no item for a command its sandbox refuses, so Domovoi cannot see
+// the attempt. The person is told when a session reaches Codex, and the model
+// is asked to say so itself when a command fails on one of these files.
+const codexWorktreeSecretFiles = codexWorktreeSecretPatterns.map((pattern) => pattern.replace(/^\*\*\//, ""))
+
+export const codexWorktreeSecretNotice = {
+  body: "Codex cannot read secret files in this worktree.",
+  detail: `The Codex sandbox refuses reads of ${codexWorktreeSecretFiles.slice(0, -1).join(", ")} and ${codexWorktreeSecretFiles.at(-1)} at any depth. A test or build that loads .env fails with "Operation not permitted". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply.`,
+} as const
+
+export const codexDeveloperInstructions = `Domovoi runs you in a sandbox that refuses reads of these files anywhere in the worktree: ${codexWorktreeSecretFiles.join(", ")}. A command that opens one of them fails with "Operation not permitted", for example a test or build that loads .env. Domovoi cannot see that failure. When a command fails on one of these files, say so in your reply and name the file.`
+
 export function codexAppServerArguments(): string[] {
   const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
   const denied = `{${[
@@ -272,6 +284,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       approvalPolicy: policy.approvalPolicy,
       sandbox,
       serviceName: "domovoi",
+      developerInstructions: codexDeveloperInstructions,
     })
     const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
