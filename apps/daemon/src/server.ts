@@ -155,7 +155,7 @@ import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachm
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
-  RepositoryFilterRefusedError,
+  RepositoryConfigRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -7934,7 +7934,7 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, error.code, error.message)
         return
       }
-      if (error instanceof RepositoryFilterRefusedError) {
+      if (error instanceof RepositoryConfigRefusedError) {
         this.#error(socket, request.id, invalidParams, error.message)
         return
       }

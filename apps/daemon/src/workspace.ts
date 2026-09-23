@@ -224,9 +224,16 @@ export class FileRevertIncompleteError extends Error {
 // switching it off would change what a checkpoint stores (git-crypt plaintext),
 // so the actions that would run it are refused until repositories can be
 // trusted.
-const trustedFilterScopes = new Set(["system", "global", "command"])
+// "unknown" is config git ships itself, such as Apple Git's credential helper.
+// "command" is left out: the daemon's own -c settings name no filter or
+// helper, and an inherited one is dropped with the environment above.
+const trustedConfigScopes = new Set(["system", "global", "unknown"])
 
-export class RepositoryFilterRefusedError extends Error {
+// Refused because a command or URL the repository's own config supplies would
+// run or apply. The message names the setting and where it is set.
+export class RepositoryConfigRefusedError extends Error {}
+
+export class RepositoryFilterRefusedError extends RepositoryConfigRefusedError {
   readonly filters: readonly string[]
 
   constructor(entries: readonly { scope: string; key: string }[]) {
@@ -241,6 +248,73 @@ export class RepositoryFilterRefusedError extends Error {
     this.name = "RepositoryFilterRefusedError"
     this.filters = filters
   }
+}
+
+export class RepositoryTransportRefusedError extends RepositoryConfigRefusedError {
+  constructor(entries: readonly { scope: string; key: string }[]) {
+    super(
+      `This repository's own Git config sets ${entries.map(({ scope, key }) => `${key} in ${scope} Git config`).join(", ")}. `
+      + "Push and fetch would follow it, and Domovoi does not apply commands or URL rewrites a repository's "
+      + "own config supplies until that repository can be trusted. Settings from your global or system Git config still apply.",
+    )
+    this.name = "RepositoryTransportRefusedError"
+  }
+}
+
+async function configEntries(
+  repositoryPath: string,
+  pattern: string,
+  signal?: AbortSignal,
+): Promise<{ scope: string; key: string; value: string }[]> {
+  let output: string
+  try {
+    output = await git(repositoryPath, ["config", "--show-scope", "-z", "--get-regexp", pattern], signal)
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) return []
+    throw error
+  }
+  const fields = output.split("\0")
+  const entries: { scope: string; key: string; value: string }[] = []
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const record = fields[index + 1]!
+    const newline = record.indexOf("\n")
+    entries.push({
+      scope: fields[index]!,
+      key: newline === -1 ? record : record.slice(0, newline),
+      value: newline === -1 ? "" : record.slice(newline + 1),
+    })
+  }
+  return entries
+}
+
+// Push and fetch run the commands these settings name, or send the repository
+// somewhere else. The repository's own values are replaced by the person's
+// (global or system) or by Git's defaults; a URL rewrite or proxy command it
+// sets is refused, since no override can remove one.
+const transportSettingPattern = String.raw`^(core\.(sshcommand|askpass|gitproxy)|credential\..*helper|remote\..*\.(uploadpack|receivepack)|url\..*\.(insteadof|pushinsteadof))$`
+
+async function repositoryTransportOverrides(repositoryPath: string, signal?: AbortSignal): Promise<string[]> {
+  const entries = await configEntries(repositoryPath, transportSettingPattern, signal)
+  const untrusted = entries.filter(({ scope }) => !trustedConfigScopes.has(scope))
+  const refused = untrusted.filter(({ key }) => key.includes("=") || /^(core\.gitproxy|url\..*\.(insteadof|pushinsteadof))$/u.test(key))
+  if (refused.length > 0) throw new RepositoryTransportRefusedError(refused)
+  const overrides = ["-c", "protocol.ext.allow=never", "-c", "push.gpgSign=false"]
+  for (const key of new Set(untrusted.map(({ key }) => key))) {
+    const trusted = entries
+      .filter((entry) => entry.key === key && trustedConfigScopes.has(entry.scope))
+      .map(({ value }) => value)
+    if (/^credential\..*helper$/u.test(key)) {
+      overrides.push("-c", `${key}=`, ...trusted.flatMap((value) => ["-c", `${key}=${value}`]))
+      continue
+    }
+    const fallback = key === "core.sshcommand"
+      ? "ssh"
+      : key.endsWith(".uploadpack")
+        ? "git-upload-pack"
+        : key.endsWith(".receivepack") ? "git-receive-pack" : ""
+    overrides.push("-c", `${key}=${trusted.at(-1) ?? fallback}`)
+  }
+  return overrides
 }
 
 async function repositoryFilterSettings(
@@ -261,7 +335,7 @@ async function repositoryFilterSettings(
   for (let index = 0; index + 1 < fields.length; index += 2) {
     const scope = fields[index]!
     const key = fields[index + 1]!.split("\n")[0]!
-    if (!trustedFilterScopes.has(scope)) entries.push({ scope, key })
+    if (!trustedConfigScopes.has(scope)) entries.push({ scope, key })
   }
   return entries
 }
@@ -443,6 +517,36 @@ function isWorktreeRelativePath(path: string): boolean {
 const inertHooksPath = process.platform === "win32" ? join(process.execPath, "hooks") : "/dev/null"
 const inertRepositoryConfig = ["-c", `core.hooksPath=${inertHooksPath}`, "-c", "core.fsmonitor=false"] as const
 
+// Config and helpers the daemon's own environment carries are not the
+// repository's and not the person's config files: an inherited
+// GIT_CONFIG_COUNT would add filters the scope scan reads as command-line
+// settings, and GIT_DIR or GIT_INDEX_FILE would point a command at another
+// repository. Daemon git runs without them.
+const droppedGitEnvironment = new Set([
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_EXEC_PATH",
+  "GIT_SSH",
+  "GIT_SSH_COMMAND",
+  "GIT_ASKPASS",
+  "GIT_EXTERNAL_DIFF",
+  "GIT_PAGER",
+  "GIT_EDITOR",
+])
+
+function gitEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(process.env)) {
+    const upper = name.toUpperCase()
+    if (droppedGitEnvironment.has(upper) || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/u.test(upper)) continue
+    environment[name] = value
+  }
+  return environment
+}
+
 function gitArguments(repositoryPath: string, arguments_: readonly string[]): string[] {
   return ["-C", repositoryPath, ...inertRepositoryConfig, ...arguments_]
 }
@@ -454,6 +558,7 @@ async function git(
 ): Promise<string> {
   signal?.throwIfAborted()
   const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
+    env: gitEnvironment(),
     encoding: "utf8",
     maxBuffer: maximumGitOutputBytes,
     signal,
@@ -527,6 +632,7 @@ async function gitDirectory(
 ): Promise<string> {
   signal?.throwIfAborted()
   const result = await execute("git", [`--git-dir=${directory}`, ...inertRepositoryConfig, ...arguments_], {
+    env: gitEnvironment(),
     encoding: "utf8",
     signal,
   })
@@ -542,6 +648,7 @@ async function boundedGit(
   signal?.throwIfAborted()
   return new Promise((resolvePromise, reject) => {
     const child = spawn("git", gitArguments(repositoryPath, arguments_), {
+      env: gitEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     })
     const output: Buffer[] = []
@@ -607,6 +714,7 @@ async function hashGit(
   signal?.throwIfAborted()
   return new Promise((resolvePromise, reject) => {
     const child = spawn("git", gitArguments(repositoryPath, arguments_), {
+      env: gitEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     })
     const hash = createHash("sha256")
@@ -747,12 +855,12 @@ async function transferWorktreeFingerprint(
       "--cached",
       "--others",
       "--exclude-standard",
-    ]), { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
+    ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
     execute("git", gitArguments(worktreePath, [
       "ls-files",
       "--stage",
       "-z",
-    ]), { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
+    ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal }),
   ])
   const paths = utf8GitPaths(Buffer.from(listed.stdout))
   const gitlinks = indexedGitlinks(Buffer.from(staged.stdout))
@@ -1143,7 +1251,7 @@ export class GitWorkspaceService implements WorkspaceService {
       }
       const { stdout } = await execute("git", gitArguments(root, [
         "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
-      ]), { encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
+      ]), { env: gitEnvironment(), encoding: "buffer", maxBuffer: maximumGitOutputBytes, signal })
       let count = 0
       let start = 0
       // NUL framing also counts filenames containing newlines or non-UTF-8
@@ -1361,6 +1469,7 @@ export class GitWorkspaceService implements WorkspaceService {
     if (!safeRemoteName.test(remote)) throw new Error("Remote name is not safe")
 
     await refuseRepositoryFilters(worktreePath, signal)
+    const transport = await repositoryTransportOverrides(worktreePath, signal)
     const remotes = await git(worktreePath, ["remote"], signal)
     if (!remotes.split("\n").map((name) => name.trim()).includes(remote)) {
       throw new Error(`Repository has no remote named ${remote}`)
@@ -1379,13 +1488,14 @@ export class GitWorkspaceService implements WorkspaceService {
     // remote to support atomic pushes.
     if (checkpointRefs.length > 0) {
       await git(worktreePath, [
+        ...transport,
         "push",
         "--",
         remote,
         ...checkpointRefs.map((checkpoint) => `${checkpoint}:${checkpoint}`),
       ], signal)
     }
-    await git(worktreePath, ["push", "--", remote, `${commit}:${ref}`], signal)
+    await git(worktreePath, [...transport, "push", "--", remote, `${commit}:${ref}`], signal)
     return { ref, commit, remote }
   }
 
@@ -1414,7 +1524,9 @@ export class GitWorkspaceService implements WorkspaceService {
 
     const ref = `refs/domovoi/sessions/${sessionId}`
     const checkpointRefs = uniqueCheckpointCommits(checkpointCommits).map(checkpointRef)
+    const transport = await repositoryTransportOverrides(repositoryPath, operationSignal)
     await git(repositoryPath, [
+      ...transport,
       "fetch",
       "--quiet",
       "--atomic",
@@ -1434,6 +1546,7 @@ export class GitWorkspaceService implements WorkspaceService {
     await mkdir(this.worktreeRoot, { recursive: true })
     const held = await this.sessionHeadCommit(sessionId, operationSignal)
     if (held !== undefined) {
+      await refuseRepositoryFilters(path, operationSignal)
       const status = await git(path, ["status", "--porcelain"], operationSignal)
       if (held !== commit || status.length > 0) throw new SessionWorktreeExistsError()
       await git(path, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], operationSignal)
@@ -1645,8 +1758,10 @@ export class GitWorkspaceService implements WorkspaceService {
       source: checkpointRef(commit),
       target: `${incomingPrefix}/checkpoints/${commit}`,
     }))
+    const transport = await repositoryTransportOverrides(repository.root, signal)
     try {
       await git(repository.root, [
+        ...transport,
         "fetch",
         "--quiet",
         "--atomic",
@@ -1681,6 +1796,7 @@ export class GitWorkspaceService implements WorkspaceService {
       // already owns. Uncommitted target work is never this transfer's to drop.
       const held = await this.sessionHeadCommit(sessionId, signal)
       if (held !== undefined) {
+        await refuseRepositoryFilters(path, signal)
         const [status, worktreeCommon, repositoryCommon] = await Promise.all([
           git(path, ["status", "--porcelain"], signal),
           git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
