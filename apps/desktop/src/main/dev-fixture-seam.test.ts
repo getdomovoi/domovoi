@@ -3,13 +3,18 @@ import { describe, expect, it } from "vitest"
 import { rpcMethods } from "@getdomovoi/protocol"
 
 import {
+  devDaemonTokenVariable,
+  devDaemonUrlVariable,
   devFixtureEndpoint,
   devFixtureUrlVariable,
+  devLoopEndpoint,
   resolveDesktopDaemonSeam,
   shouldRequireSingleInstanceLock,
 } from "./dev-fixture-seam.js"
 
 const fixtureUrl = "ws://127.0.0.1:47999/rpc"
+const daemonUrl = "ws://localhost:47831/rpc"
+const daemonToken = "a".repeat(43)
 
 const realSeam = () => Promise.reject(new Error("the real seam ran"))
 
@@ -62,14 +67,68 @@ describe("the development fixture seam", () => {
   })
 })
 
+describe("the real daemon development seam", () => {
+  const environment = {
+    [devDaemonUrlVariable]: daemonUrl,
+    [devDaemonTokenVariable]: daemonToken,
+  }
+
+  it("attaches an unpackaged window to a loopback daemon without owning it", async () => {
+    expect(devLoopEndpoint({ isPackaged: false, environment })).toEqual({
+      kind: "daemon",
+      endpoint: { url: daemonUrl, token: daemonToken },
+    })
+    const handle = await resolveDesktopDaemonSeam({ isPackaged: false, environment, acquire: realSeam })({
+      mode: "start-or-attach",
+      timeoutMs: 1_000,
+    })
+    expect(handle).toMatchObject({ kind: "attached", owner: "daemon", endpoint: { url: daemonUrl } })
+  })
+
+  it("accepts the IPv6 loopback URL endpoint discovery may publish", () => {
+    expect(devLoopEndpoint({
+      isPackaged: false,
+      environment: {
+        [devDaemonUrlVariable]: "ws://[::1]:47831/rpc",
+        [devDaemonTokenVariable]: daemonToken,
+      },
+    })).toMatchObject({ kind: "daemon", endpoint: { url: "ws://[::1]:47831/rpc" } })
+  })
+
+  it.each([
+    ["a packaged build", true, daemonUrl, daemonToken],
+    ["a remote daemon", false, "ws://192.0.2.4:47831/rpc", daemonToken],
+    ["an invalid token", false, daemonUrl, "short"],
+  ])("refuses %s", (_label, isPackaged, url, token) => {
+    expect(devLoopEndpoint({
+      isPackaged,
+      environment: { [devDaemonUrlVariable]: url, [devDaemonTokenVariable]: token },
+    })).toBeNull()
+  })
+
+  it("refuses an ambiguous fixture and real daemon selection", () => {
+    expect(devLoopEndpoint({
+      isPackaged: false,
+      environment: { ...environment, [devFixtureUrlVariable]: fixtureUrl },
+    })).toBeNull()
+  })
+})
+
 describe("shouldRequireSingleInstanceLock", () => {
-  it("skips the lock only for a fixture window", () => {
+  it("skips the lock for a fixture window", () => {
     expect(
       shouldRequireSingleInstanceLock({
         isPackaged: false,
         environment: { [devFixtureUrlVariable]: "ws://127.0.0.1:60872/rpc" },
       }),
     ).toBe(false)
+  })
+
+  it("skips the lock for the watched real-daemon window", () => {
+    expect(shouldRequireSingleInstanceLock({
+      isPackaged: false,
+      environment: { [devDaemonUrlVariable]: daemonUrl, [devDaemonTokenVariable]: daemonToken },
+    })).toBe(false)
   })
 
   it("keeps the lock for a packaged build even when the variable names a fixture", () => {

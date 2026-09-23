@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { devLoopStateVariable, lockHeldLine, mainBootLine, nextBootCount, reportLockHeld, reportMainBoot } from "./dev-loop-log.js"
+import { devLoopKindVariable, devLoopStateVariable, lockHeldLine, mainBootLine, nextBootCount, reportLockHeld, reportMainBoot } from "./dev-loop-log.js"
 
 function harness(seed?: string) {
   const lines: string[] = []
@@ -77,5 +77,13 @@ describe("the development loop boot report", () => {
     expect(mainBootLine(1)).toContain("Renderer edits apply in place")
     expect(mainBootLine(1)).toContain("main and preload edits relaunch")
     expect(mainBootLine(2)).toContain("Fixture state kept")
+  })
+
+  it("names the real daemon without claiming fixture state", () => {
+    const state = harness()
+    state.run({ [devLoopStateVariable]: "/tmp/loop-state", [devLoopKindVariable]: "daemon" })
+    expect(state.lines[0]).toContain("real daemon")
+    expect(state.lines[0]).not.toContain("fixture")
+    expect(mainBootLine(2, "daemon")).toContain("Daemon state kept")
   })
 })

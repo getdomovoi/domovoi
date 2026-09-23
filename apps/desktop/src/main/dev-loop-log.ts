@@ -9,11 +9,14 @@
 // The boot count lives in a file named by the environment, because it has to
 // outlive the main process it describes.
 export const devLoopStateVariable = "DOMOVOI_DEV_LOOP_STATE"
+export const devLoopKindVariable = "DOMOVOI_DEV_LOOP_KIND"
 
-export function mainBootLine(bootCount: number): string {
+export function mainBootLine(bootCount: number, kind: "fixture" | "daemon" = "fixture"): string {
+  const target = kind === "daemon" ? "the real daemon" : "the fixture daemon"
+  const kept = kind === "daemon" ? "Daemon state kept." : "Fixture state kept."
   return bootCount <= 1
-    ? "[loop] window started against the fixture daemon. Renderer edits apply in place; main and preload edits relaunch this window."
-    : `[loop] window relaunched (main or preload edit, boot ${bootCount}). Fixture state kept.`
+    ? `[loop] window started against ${target}. Renderer edits apply in place; main and preload edits relaunch this window.`
+    : `[loop] window relaunched (main or preload edit, boot ${bootCount}). ${kept}`
 }
 export function nextBootCount(previous: string | undefined): number {
   const parsed = Number.parseInt(previous ?? "", 10)
@@ -45,5 +48,6 @@ export function reportMainBoot(options: {
   if (!statePath) return
   const count = nextBootCount(options.readState(statePath))
   options.writeState(statePath, String(count))
-  options.log(mainBootLine(count))
+  const kind = options.environment[devLoopKindVariable] === "daemon" ? "daemon" : "fixture"
+  options.log(mainBootLine(count, kind))
 }

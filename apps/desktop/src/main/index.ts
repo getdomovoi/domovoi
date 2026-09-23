@@ -103,13 +103,24 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
-const developmentFixtureWindow = !app.isPackaged
-  && /^ws:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/u.test(process.env.DOMOVOI_DEV_FIXTURE_URL ?? "")
-const daemonSeam = developmentFixtureWindow
-  ? async (options: Parameters<typeof acquireLocalDaemon>[0]) => {
-      const { resolveDesktopDaemonSeam } = await import("./dev-fixture-seam.js")
-      return resolveDesktopDaemonSeam({ isPackaged: false, environment: process.env, acquire: acquireLocalDaemon })(options)
-    }
+const developmentLoopConfigured = !app.isPackaged && Boolean(
+  process.env.DOMOVOI_DEV_FIXTURE_URL
+    || process.env.DOMOVOI_DEV_DAEMON_URL
+    || process.env.DOMOVOI_DEV_DAEMON_TOKEN,
+)
+const developmentLoopModule = developmentLoopConfigured
+  ? await import("./dev-fixture-seam.js")
+  : undefined
+const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
+  isPackaged: false,
+  environment: process.env,
+})
+const daemonSeam = developmentLoopModule
+  ? developmentLoopModule.resolveDesktopDaemonSeam({
+      isPackaged: false,
+      environment: process.env,
+      acquire: acquireLocalDaemon,
+    })
   : acquireLocalDaemon
 
 // Attach to the profile's owner, or own a daemon only when the profile is free.
@@ -358,7 +369,7 @@ registerDesktopIpc(ipcMain, {
   },
 })
 
-const hasSingleInstanceLock = developmentFixtureWindow ? true : app.requestSingleInstanceLock()
+const hasSingleInstanceLock = developmentLoopEndpoint ? true : app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   void import("./dev-loop-log.js")
     .then(({ reportLockHeld }) => reportLockHeld({ environment: process.env, log: (line) => console.log(line) }))

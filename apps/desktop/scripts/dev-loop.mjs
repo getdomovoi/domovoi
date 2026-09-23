@@ -3,20 +3,51 @@
 // main or preload edit relaunches the window and comes back to the same fixture
 // rather than to a first run.
 //
-// Nothing here touches ~/.domovoi. The window reaches the fixture through the
-// development seam, which a packaged build cannot take.
+// Fixture mode never touches a profile. Real mode reads the selected local
+// profile's endpoint and token but never acquires, starts or stops its daemon.
+// Both reach the window through a development seam a packaged build cannot take.
 import { spawn } from "node:child_process"
 import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { start } from "./dev-fixture-daemon.mjs"
+import { realDevEndpoint } from "./dev-real-endpoint.mjs"
 
-const fixture = await start({ port: Number(process.env.DOMOVOI_DEV_FIXTURE_PORT ?? 0) })
+const mode = process.argv[2] ?? "fixture"
+if (mode !== "fixture" && mode !== "real") {
+  throw new Error(`Unknown desktop development loop mode: ${mode}`)
+}
+const fixture = mode === "fixture"
+  ? await start({ port: Number(process.env.DOMOVOI_DEV_FIXTURE_PORT ?? 0) })
+  : undefined
+const real = mode === "real"
+  ? realDevEndpoint({ homeDirectory: homedir(), environment: process.env })
+  : undefined
 const stateDirectory = mkdtempSync(join(tmpdir(), "domovoi-dev-loop-"))
 
-console.log(`[loop] fixture daemon listening on ${fixture.url} (pid ${process.pid}).`)
-console.log("[loop] fixture state survives a window relaunch. Stop this command to discard it.")
+if (fixture) {
+  console.log(`[loop] fixture daemon listening on ${fixture.url} (pid ${process.pid}).`)
+  console.log("[loop] fixture state survives a window relaunch. Stop this command to discard it.")
+} else {
+  console.log(`[loop] real daemon at ${real.url}. Token read from the selected profile's daemon.token.`)
+  console.log("[loop] daemon state survives a window relaunch. This command will not start or stop it.")
+}
+
+const childEnvironment = {
+  ...process.env,
+  DOMOVOI_DEV_LOOP_KIND: mode === "real" ? "daemon" : "fixture",
+  DOMOVOI_DEV_LOOP_STATE: join(stateDirectory, "boots"),
+}
+if (fixture) {
+  childEnvironment.DOMOVOI_DEV_FIXTURE_URL = fixture.url
+  delete childEnvironment.DOMOVOI_DEV_DAEMON_URL
+  delete childEnvironment.DOMOVOI_DEV_DAEMON_TOKEN
+} else {
+  childEnvironment.DOMOVOI_DEV_DAEMON_URL = real.url
+  childEnvironment.DOMOVOI_DEV_DAEMON_TOKEN = real.token
+  delete childEnvironment.DOMOVOI_DEV_FIXTURE_URL
+}
 
 // The child runs in its own process group so stopping this command stops the
 // Electron processes with it. Killing the wrapper alone leaves them running,
@@ -28,15 +59,11 @@ console.log("[loop] fixture state survives a window relaunch. Stop this command 
 const electron = spawn("npx", ["electron-vite", "dev", "--watch"], {
   stdio: "inherit",
   detached: true,
-  env: {
-    ...process.env,
-    DOMOVOI_DEV_FIXTURE_URL: fixture.url,
-    DOMOVOI_DEV_LOOP_STATE: join(stateDirectory, "boots"),
-  },
+  env: childEnvironment,
 })
 
 const shutdown = async (code) => {
-  await fixture.close()
+  await fixture?.close()
   rmSync(stateDirectory, { recursive: true, force: true })
   process.exit(code ?? 0)
 }

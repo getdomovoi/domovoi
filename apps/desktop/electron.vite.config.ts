@@ -34,6 +34,10 @@ export default defineConfig({
     esbuild: { keepNames: true },
   },
   renderer: {
+    // A separately started local daemon admits the repository's fixed browser
+    // development origin. Keep Desktop on that exact origin so real-daemon mode
+    // preserves the daemon's WebSocket origin check.
+    server: { port: 5178, strictPort: true },
     plugins: [
       react(),
       tailwindcss(),
