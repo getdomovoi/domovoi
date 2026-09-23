@@ -155,6 +155,7 @@ import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachm
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
+  RepositoryConfigRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -7931,6 +7932,10 @@ export class DomovoiDaemon {
           this.#reportError(`RPC ${method} timed out`, error)
         }
         this.#error(socket, request.id, error.code, error.message)
+        return
+      }
+      if (error instanceof RepositoryConfigRefusedError) {
+        this.#error(socket, request.id, invalidParams, error.message)
         return
       }
       this.#reportError(`RPC ${method} failed`, error)
