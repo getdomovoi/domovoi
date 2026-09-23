@@ -9,6 +9,7 @@ import {
   installService,
   nodeServiceEffects,
   removeService,
+  servicePlan,
   serviceStatus,
   type ServiceEffects,
   type ServiceStatus,
@@ -33,6 +34,13 @@ export type DaemonServiceOptions = {
   // the daemon reads its environment. Absent means the default profile under
   // the user's home. DOMOVOI_AUTH_TOKEN is refused, as the CLI refuses it.
   environment?: DaemonEnvironment
+  // The handoff, ruled 2026-09-23: called once the runtime, the platform and
+  // the configuration have been checked, and before the profile is claimed.
+  // The desktop stops its in-app daemon here, so a refused install never
+  // stops it. A rejection stops the install with nothing claimed or written.
+  // The desktop refuses the handoff before calling this while a turn runs or
+  // a gate waits; the installer does not look.
+  releaseInAppDaemon?: () => Promise<void>
 }
 
 export type DaemonServiceInstallResult =
@@ -100,12 +108,17 @@ export async function installDaemonService(
     homeDirectory: dependencies.home,
     workingDirectory: dependencies.home,
   })
-  const plan = await installService({
+  const serviceTarget = {
     ...target(dependencies),
     execPath: options.runtime.daemonEntryPath,
     runtime: options.runtime.nodePath,
     configuration,
-  }, dependencies)
+  }
+  // The plan is pure: building it refuses an unsupported platform, a missing
+  // user or uid, and an overlong Windows command, all before the handoff.
+  servicePlan(serviceTarget)
+  await options.releaseInAppDaemon?.()
+  const plan = await installService(serviceTarget, dependencies)
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }

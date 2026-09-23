@@ -93,6 +93,49 @@ describe("installDaemonService", () => {
   })
 })
 
+describe("the handoff from the in-app daemon", () => {
+  // Ruled 2026-09-23 (J24, option B): the installer asks the desktop to stop
+  // its in-app daemon only once the runtime and platform checks pass, and
+  // before it claims the profile. A refused install never stops it.
+  it("never releases the in-app daemon when the runtime or platform is refused", async () => {
+    const missing = dependencies({ runtimeFile: vi.fn(async () => "missing" as const) })
+    const releaseInAppDaemon = vi.fn(async () => {})
+    await expect(installDaemonService({ runtime, releaseInAppDaemon }, missing)).rejects.toBeInstanceOf(DaemonServiceRuntimeMissingError)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+
+    const unsupported = dependencies({ platform: "freebsd", home: "/home/dl" })
+    await expect(installDaemonService({ runtime, releaseInAppDaemon }, unsupported)).rejects.toThrow(/no service manager/)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+    expect(unsupported.claimProfile).not.toHaveBeenCalled()
+
+    const token = dependencies()
+    await expect(installDaemonService({ runtime, releaseInAppDaemon, environment: { DOMOVOI_AUTH_TOKEN: "x" } }, token)).rejects.toThrow(/DOMOVOI_AUTH_TOKEN/)
+    expect(releaseInAppDaemon).not.toHaveBeenCalled()
+  })
+
+  it("releases the in-app daemon exactly once, before the profile is claimed", async () => {
+    const order: string[] = []
+    const releaseInAppDaemon = vi.fn(async () => { order.push("release") })
+    const effects = dependencies({
+      claimProfile: vi.fn(() => { order.push("claim"); return { release: vi.fn() } }),
+      write: vi.fn(async (path: string) => { order.push(`write ${path}`) }),
+    })
+    await installDaemonService({ runtime, releaseInAppDaemon }, effects)
+    expect(releaseInAppDaemon).toHaveBeenCalledOnce()
+    expect(order[0]).toBe("release")
+    expect(order.indexOf("claim")).toBeGreaterThan(0)
+  })
+
+  it("stops when the release fails, with nothing claimed or written", async () => {
+    const effects = dependencies()
+    const releaseInAppDaemon = vi.fn(async () => { throw new Error("in-app daemon did not stop") })
+    await expect(installDaemonService({ runtime, releaseInAppDaemon }, effects)).rejects.toThrow(/did not stop/)
+    expect(effects.claimProfile).not.toHaveBeenCalled()
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+  })
+})
+
 describe("readDaemonServiceStatus and removeDaemonService", () => {
   it("report the launch agent and remove it", async () => {
     const effects = dependencies()
