@@ -5230,9 +5230,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "This machine cannot commit session transfers")
           return
         }
-        const before = this.#snapshot
         const committed = await commitPreparedSessionTransfer({
-          snapshot: before,
+          snapshot: this.#snapshot,
           transferId: params.transferId,
           manifestDigest: params.manifestDigest,
           transactions: this.#transferTransactions,
@@ -5283,9 +5282,28 @@ export class DomovoiDaemon {
               this.#usageLedger.replaceTransferredSession!(sessionId, records)
             ),
           },
-          save: async (candidate, ownership) => {
+          save: (candidate, ownership) => this.#serializeSnapshotPersistence(async () => {
+            // The candidate was built from the snapshot captured before the
+            // repository restore. Other sessions, and other arriving commits,
+            // changed the live snapshot since, so only this session's slice is
+            // imported into it, on the same serializer as every other write.
+            const live = this.#snapshot
+            if (
+              live.machine.id !== candidate.machine.id
+              || live.project?.id !== candidate.project?.id
+            ) {
+              throw new SessionTransferStateError("target-project-missing")
+            }
+            if (live.sessions.some((session) => session.id === manifest.sessionId)) {
+              throw new SessionTransferStateError("target-session-diverged")
+            }
+            const imported = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
+              ...mergeSessionSnapshotSlice(latest, slice, manifest.sessionId),
+              activeSessionId: candidate.activeSessionId,
+            })
+            const persisted = imported(live, candidate)
             try {
-              await this.#store.saveTransferredSnapshot!(candidate, ownership)
+              await this.#store.saveTransferredSnapshot!(persisted, ownership)
             } catch (error) {
               this.#persistenceFailed(error)
               throw error
@@ -5295,21 +5313,14 @@ export class DomovoiDaemon {
             // atomically, this process must adopt them before touching the
             // disposable transaction journal. A later journal failure cannot
             // make the target overwrite its now-authoritative imported state.
-            this.#snapshot = candidate
+            this.#snapshot = imported(this.#snapshot, persisted)
             this.#activeAssistantItems.clear()
             this.#sessionHistory.invalidate(manifest.sessionId)
             this.#syncArtifactWatchers()
             this.#broadcastSnapshot()
-          },
+          }),
           now: () => new Date().toISOString(),
         })
-        if (committed.snapshot !== before && this.#snapshot !== committed.snapshot) {
-          this.#snapshot = committed.snapshot
-          this.#activeAssistantItems.clear()
-          this.#sessionHistory.invalidate(manifest.sessionId)
-          this.#syncArtifactWatchers()
-          this.#broadcastSnapshot()
-        }
         if (committed.result.state === "committed") {
           // The imported session and ownership row are now authoritative.
           // Keep replay idempotent through that canonical state instead of
