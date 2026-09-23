@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import { realDevEndpoint } from "./dev-real-endpoint.mjs"
@@ -19,7 +20,7 @@ describe("realDevEndpoint", () => {
       url: "ws://127.0.0.1:48123/rpc",
       token,
     })
-    expect(readFile).toHaveBeenCalledWith("/Users/dev/.domovoi/daemon.token", "utf8")
+    expect(readFile).toHaveBeenCalledWith(join("/Users/dev", ".domovoi", "daemon.token"), "utf8")
   })
 
   it("accepts an explicit loopback URL for a daemon on another port", () => {
@@ -39,7 +40,7 @@ describe("realDevEndpoint", () => {
       environment: { DOMOVOI_PROFILE_DIR: "/private/tmp/domovoi-dev-profile" },
       readFile,
     })).toEqual({ url: "ws://localhost:49001/rpc", token })
-    expect(readFile).toHaveBeenCalledWith("/private/tmp/domovoi-dev-profile/daemon.token", "utf8")
+    expect(readFile).toHaveBeenCalledWith(join("/private/tmp/domovoi-dev-profile", "daemon.token"), "utf8")
   })
 
   it("explains how to start a daemon when the selected profile has no published endpoint", () => {

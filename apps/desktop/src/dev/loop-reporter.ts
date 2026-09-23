@@ -1,4 +1,4 @@
-import { relative } from "node:path"
+import { relative, sep } from "node:path"
 
 import type { Plugin } from "vite"
 
@@ -44,7 +44,9 @@ export function devLoopReporter(options: { root: string; log?: (line: string) =>
     configureServer(server) {
       let pending: string | null = null
       server.watcher.on("change", (file) => {
-        const path = relative(options.root, file)
+        // The prefixes are written with forward slashes; Windows reports
+        // backslashes, so a save there matched none of them.
+        const path = relative(options.root, file).split(sep).join("/")
         const line = changeLine(path)
         if (!line) return
         log(line)
