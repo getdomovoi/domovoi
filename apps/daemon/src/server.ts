@@ -8886,8 +8886,10 @@ export class DomovoiDaemon {
       },
       failures: failures.slice(0, 100),
     }
-    this.#broadcastSnapshot()
+    // A client holding a queued message releases it when a session goes idle.
+    // The stop has to reach it first, or the idle snapshot restarts the work.
     this.#broadcastNotification("system.emergencyStopped", result)
+    this.#broadcastSnapshot()
     return result
   }
 
