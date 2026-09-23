@@ -305,11 +305,20 @@ bootstrap installer's download URL.
 ## Versioning and release metadata
 
 Every package in this workspace carries the same version and is released as one compatibility
-unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `packages/ui`, `apps/web`,
-`apps/desktop`, and `apps/mobile` ship together, so a version that moves for one moves for all.
+unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `apps/cli` and its `domovoi`
+CLI, `packages/credential-store`, `packages/ui`, `apps/web`, `apps/desktop`, and `apps/mobile`
+ship together, so a version that moves for one moves for all.
 Changesets enforces that at version time through the `@getdomovoi/*` fixed
 group in `.changeset/config.json`, and `pnpm release:invariants` fails the build if a manifest
 drifts out of lockstep or the built protocol export advertises another release.
+
+Four of those manifests are not private: `@getdomovoi/protocol`, `@getdomovoi/daemon`,
+`@getdomovoi/cli` (since 2026-09-11) and `@getdomovoi/credential-store` (since 2026-09-13). The
+release workflow, `publishablePackages` in `scripts/release-artifacts.mjs` and the rest of this
+document publish only the first two, because they were written before the other two existed.
+Which set the first release publishes is not decided. Until it is, the publish plan Changesets
+builds and the set the release tooling accepts can disagree; settle it by marking the two newer
+packages private or by naming all four here and in the tooling.
 
 `@getdomovoi/protocol` exports `buildVersion`, compiled directly from its package manifest.
 Daemon machine facts, every daemon and client greeting, and provider initialization use that

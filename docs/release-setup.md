@@ -17,6 +17,11 @@ Read-only checks against `getdomovoi/domovoi` and the public npm registry found:
 | Prerelease state | All six manifests are `0.0.1`; no `.changeset/pre.json` | Review and enter alpha mode before versioning |
 | Release protection | No main branch protection/ruleset or GitHub release | Retain the exact-commit CI gate and protect environment admission |
 
+Since that check, `@getdomovoi/cli` (2026-09-11) and `@getdomovoi/credential-store` (2026-09-13)
+were added as non-private packages, so eight manifests exist and four are publishable by their
+manifests. Steps 8 and 9 below cover only protocol and daemon. Which packages the first release
+publishes is undecided; see [distribution](distribution.md#versioning-and-release-metadata).
+
 npm organization ownership and name availability were not established by those package 404s.
 Do not treat missing packages as proof that the organization is available.
 
