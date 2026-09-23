@@ -17,6 +17,7 @@ import {
   codexAppServerArguments,
   codexPolicyFor,
   codexSecretLocations,
+  codexWorktreeSecretPatterns,
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
@@ -132,6 +133,17 @@ describe("codexAppServerArguments", () => {
     expect(settings.get("permissions.domovoi-build.extends")).toBe('":workspace"')
     expect(settings.get("permissions.domovoi-read.network.enabled")).toBe("false")
     expect(settings.get("permissions.domovoi-build.network.enabled")).toBe("false")
+  })
+
+  it("denies secret files inside the worktree in both profiles", () => {
+    for (const profile of ["domovoi-read", "domovoi-build"]) {
+      const filesystem = settings.get(`permissions.${profile}.filesystem`)!
+      for (const pattern of ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/.npmrc", "**/.netrc", "**/.pypirc"]) {
+        expect(filesystem).toContain(`${JSON.stringify(pattern)}="deny"`)
+      }
+      expect(filesystem).toContain('":workspace_roots"={')
+    }
+    expect(codexWorktreeSecretPatterns).toContain("**/.env")
   })
 
   it.each([

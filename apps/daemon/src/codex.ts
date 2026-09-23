@@ -65,8 +65,26 @@ export const codexSecretLocations = [
   "~/.claude/.credentials.json",
 ] as const
 
+// Secret files inside the worktree are refused too (owner ruling, 2026-09-22),
+// in every mode. A test or build that loads one of them inside the sandbox
+// fails with "Operation not permitted".
+export const codexWorktreeSecretPatterns = [
+  "**/.env",
+  "**/.env.*",
+  "**/*.pem",
+  "**/*.key",
+  "**/id_rsa*",
+  "**/.npmrc",
+  "**/.netrc",
+  "**/.pypirc",
+] as const
+
 export function codexAppServerArguments(): string[] {
-  const denied = `{${codexSecretLocations.map((location) => `${JSON.stringify(location)}="deny"`).join(",")}}`
+  const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
+  const denied = `{${[
+    ...codexSecretLocations.map((location) => `${JSON.stringify(location)}="deny"`),
+    `":workspace_roots"=${worktreeSecrets}`,
+  ].join(",")}}`
   const profile = (name: CodexPermissionProfile, base: string) => [
     "-c", `permissions.${name}.extends=${JSON.stringify(base)}`,
     "-c", `permissions.${name}.filesystem=${denied}`,

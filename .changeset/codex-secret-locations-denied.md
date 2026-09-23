@@ -8,6 +8,8 @@ card. The daemon now starts `codex app-server` with two permission profiles, `do
 and Plan and `domovoi-build` for Build, and selects one per turn in place of the old sandbox policy.
 Both keep the previous read, write and network limits and deny reads of `~/.ssh`, `~/.aws`,
 `~/.domovoi`, `~/.config/gh`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.gnupg` and other credential
-stores. Other reads outside the worktree still run without a card; a strict allow-list waits for a
+stores, and deny secret files inside the worktree: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+`.npmrc`, `.netrc` and `.pypirc` at any depth. A test or build that loads `.env` inside the Codex
+sandbox now fails. Other reads outside the worktree still run without a card; a strict allow-list waits for a
 survey of the toolchains commands load. A denied command fails with "Operation not permitted", and
 commands that need `~/.gnupg` or `~/.npmrc`, such as signed commits, fail inside the sandbox too.
