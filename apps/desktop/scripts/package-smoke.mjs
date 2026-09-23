@@ -63,6 +63,25 @@ if (!await access(asar, constants.R_OK).then(() => true, () => false)) {
   throw new Error(`${description} found no application archive at ${asar}`)
 }
 
+// The daemon runtime the app ships for the login service (J24) sits beside
+// the archive, outside it. The installer cannot prove its entry's imports
+// resolve, so the packaged copy is run here, by the packaged Node.
+const resourcesDirectory = dirname(asar)
+const runtimeNode = join(resourcesDirectory, "daemon-runtime", "node", process.platform === "win32" ? "node.exe" : join("bin", "node"))
+const runtimeDaemon = join(resourcesDirectory, "daemon-runtime", "daemon", "dist", "index.js")
+for (const required of [runtimeNode, runtimeDaemon]) {
+  if (!await access(required, constants.R_OK).then(() => true, () => false)) {
+    throw new Error(`${description} found no shipped daemon runtime at ${required}. Run node scripts/prepare-daemon-runtime.mjs before packaging`)
+  }
+}
+const daemonManifest = JSON.parse(await readFile(join(desktopRoot, "..", "daemon", "package.json"), "utf8"))
+const runtimeProbe = await runSmokeProcess({ command: runtimeNode, args: [runtimeDaemon, "--version"], cwd: desktopRoot, env: process.env, timeoutMs: 30_000 })
+if (runtimeProbe.timedOut || runtimeProbe.code !== 0 || runtimeProbe.stdout.trim() !== daemonManifest.version) {
+  reportSmokeOutput(runtimeProbe)
+  throw new Error(`${description} shipped daemon runtime printed ${JSON.stringify(runtimeProbe.stdout.trim())} for --version, expected ${daemonManifest.version}`)
+}
+process.stdout.write(`shipped daemon runtime runs: ${runtimeDaemon} --version printed ${daemonManifest.version} under ${runtimeNode}\n`)
+
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
 
 // Native modules first. A launch that fails later is much harder to read when

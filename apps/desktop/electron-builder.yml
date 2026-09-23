@@ -38,6 +38,15 @@ files:
   - "!node_modules/react-dom/**"
   - "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 
+# The daemon runtime the app ships for the login service (J24): one pinned
+# Node program and the daemon with its production dependencies, prepared by
+# scripts/prepare-daemon-runtime.mjs for the host platform and architecture
+# before packaging. Outside the asar, because the service runs it as plain
+# files after the app copies it under the profile.
+extraResources:
+  - from: daemon-runtime/${platform}-${arch}
+    to: daemon-runtime
+
 # @napi-rs/keyring and node-pty are Node-API modules and load unchanged in
 # Electron, so there is nothing to rebuild and no compiler to require.
 npmRebuild: false

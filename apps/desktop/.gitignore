@@ -1,0 +1,3 @@
+# Prepared by scripts/prepare-daemon-runtime.mjs; never committed.
+daemon-runtime/
+.cache/
