@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, open, readFile, readlink, realpath, unlink, writeF
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
+import { publishFileDurably } from "@getdomovoi/credential-store"
 import { maximumPreviewSourceBytes } from "@getdomovoi/protocol"
 
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
@@ -391,6 +392,36 @@ async function git(
     signal,
   }))
   return result.stdout.trim()
+}
+
+type IndexSnapshot = { path: string; head: string | undefined; bytes: Buffer | undefined }
+
+async function currentHead(worktreePath: string, signal?: AbortSignal): Promise<string | undefined> {
+  const head = await git(worktreePath, ["rev-parse", "-q", "--verify", "HEAD^{commit}"], signal).catch(() => "")
+  return head || undefined
+}
+
+async function snapshotIndex(worktreePath: string, signal?: AbortSignal): Promise<IndexSnapshot> {
+  const path = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
+  const head = await currentHead(worktreePath, signal)
+  try {
+    return { path, head, bytes: await readFile(path) }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path, head, bytes: undefined }
+    throw error
+  }
+}
+
+async function restoreIndex(snapshot: IndexSnapshot): Promise<void> {
+  if (!snapshot.bytes) {
+    await unlink(snapshot.path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error
+    })
+    return
+  }
+  const staging = `${snapshot.path}.domovoi-${randomUUID()}`
+  await writeFile(staging, snapshot.bytes)
+  await publishFileDurably(staging, snapshot.path)
 }
 
 async function pathsAtCommit(worktreePath: string, commit: string, signal?: AbortSignal): Promise<Set<string>> {
@@ -1184,38 +1215,35 @@ export class GitWorkspaceService implements WorkspaceService {
   }
 
   async checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
-    await git(worktreePath, ["add", "--all"], signal)
-    await this.#afterCheckpointStaging?.()
-    let names: string
+    // A failed checkpoint must leave the index exactly as it found it,
+    // including anything the person had staged themselves.
+    const index = await snapshotIndex(worktreePath, signal)
+    let changedFiles: string[]
     try {
-      names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+      await git(worktreePath, ["add", "--all"], signal)
+      await this.#afterCheckpointStaging?.()
+      const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+      changedFiles = names.split("\0").filter(Boolean)
+      if (changedFiles.length > 0) {
+        await git(worktreePath, [
+          "-c",
+          "user.name=Domovoi",
+          "-c",
+          "user.email=domovoi@localhost",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "--no-verify",
+          "-m",
+          `chore(domovoi): checkpoint ${label}`,
+        ], signal)
+      }
     } catch (error) {
-      // Everything is staged by now; a failed checkpoint must not leave it so.
-      await git(worktreePath, ["reset", "-q"]).catch(() => undefined)
-      throw error
-    }
-    const changedFiles = names.split("\0").filter(Boolean)
-    if (changedFiles.length === 0) {
-      const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
-      await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
-      return { commit, changedFiles }
-    }
-
-    try {
-      await git(worktreePath, [
-        "-c",
-        "user.name=Domovoi",
-        "-c",
-        "user.email=domovoi@localhost",
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "--no-verify",
-        "-m",
-        `chore(domovoi): checkpoint ${label}`,
-      ], signal)
-    } catch (error) {
-      await git(worktreePath, ["reset", "-q"]).catch(() => undefined)
+      // A deadline can land after the commit itself did. The index then
+      // already matches the new HEAD, and the old one would read as reverting it.
+      const head = await currentHead(worktreePath).catch(() => undefined)
+      if (head !== undefined && head !== index.head) await git(worktreePath, ["reset", "-q"]).catch(() => undefined)
+      else await restoreIndex(index).catch(() => undefined)
       throw error
     }
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)

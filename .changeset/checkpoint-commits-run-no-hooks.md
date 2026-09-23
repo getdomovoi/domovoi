@@ -11,5 +11,5 @@ service runs now points `core.hooksPath` at a path that cannot be a directory an
 
 Checkpoint commits also skip commit signing. A signing setup with no key for the Domovoi
 committer, or a failing `pre-commit` hook, no longer makes every checkpoint in that repository
-fail. When the checkpoint commit fails for any other reason, the index is reset so the worktree
-is not left staged.
+fail. When a checkpoint fails after staging, for any reason, the index is put back byte for byte
+as it was, so the worktree is not left staged and anything the person had staged stays staged.

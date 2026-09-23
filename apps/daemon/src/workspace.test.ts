@@ -742,11 +742,15 @@ describe("GitWorkspaceService", () => {
     expect((await execute("git", ["-C", repositoryPath, "cat-file", "commit", "HEAD"])).stdout).not.toContain("gpgsig")
   })
 
-  it("leaves nothing staged when the checkpoint commit itself fails", async () => {
-    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-commit-fails-"))
+  it.each([
+    ["the commit itself fails", "commit"],
+    ["the deadline expires after staging", "deadline"],
+  ] as const)("puts the person's own staging back when %s", async (_name, failure) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-staging-"))
     scratchDirectories.push(scratch)
     const repositoryPath = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "staged.txt"), "base\n")
     await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
     await writeFile(join(repositoryPath, "remove.txt"), "remove me\n")
     await execute("git", ["-C", repositoryPath, "add", "."])
@@ -754,23 +758,30 @@ describe("GitWorkspaceService", () => {
       "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
+    await writeFile(join(repositoryPath, "staged.txt"), "staged by the person\n")
+    await execute("git", ["-C", repositoryPath, "add", "staged.txt"])
+    await writeFile(join(repositoryPath, "staged.txt"), "staged, then edited again\n")
     await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
     await rm(join(repositoryPath, "remove.txt"))
     await writeFile(join(repositoryPath, "fresh.txt"), "fresh\n")
     const observe = async () => ({
       head: (await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim(),
+      index: (await execute("git", ["-C", repositoryPath, "ls-files", "--stage"])).stdout,
       staged: (await execute("git", ["-C", repositoryPath, "diff", "--cached", "--name-only"])).stdout,
       status: (await execute("git", ["-C", repositoryPath, "status", "--porcelain"])).stdout,
     })
     const before = await observe()
-    expect(before.staged).toBe("")
+    expect(before.staged).toBe("staged.txt\n")
 
     const branchLock = join(repositoryPath, ".git", "refs", "heads", "main.lock")
+    const controller = new AbortController()
     const service = new GitWorkspaceService(join(scratch, "worktrees"), {
-      afterCheckpointStaging: () => writeFile(branchLock, ""),
+      afterCheckpointStaging: failure === "commit"
+        ? () => writeFile(branchLock, "")
+        : () => controller.abort(new Error("checkpoint timed out")),
     })
-    await expect(service.checkpoint(repositoryPath, "blocked")).rejects.toThrow()
-    await rm(branchLock)
+    await expect(service.checkpoint(repositoryPath, "blocked", controller.signal)).rejects.toThrow()
+    await rm(branchLock, { force: true })
 
     expect(await observe()).toEqual(before)
   })
