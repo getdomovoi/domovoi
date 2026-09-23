@@ -4,7 +4,7 @@ import qrcode from "qrcode-generator"
 import { useEffect, useMemo, useState } from "react"
 
 import { Button } from "./components/ui/button"
-import { pairingAddressNotReported, pairingAddressOf, type IssuedPairingCode, type PairingAddressReport } from "./pairing-address.js"
+import { pairingAddressOf, type IssuedPairingCode, type PairingAddressReport } from "./pairing-address.js"
 
 export type { IssuedPairingCode, PairingAddressReport } from "./pairing-address.js"
 
@@ -29,9 +29,7 @@ type Problem = { title: string; mono: string; still: string; next: string }
 
 function problemFor(report: PairingAddressReport): Problem | undefined {
   if ("problem" in report) {
-    return report.problem === pairingAddressNotReported
-      ? { title: "No code: this daemon did not report an address", mono: "device.issueCode · no pairingAddress", still: "Sessions and this window are unaffected.", next: report.problem }
-      : { title: "No code: a phone would not trust this daemon", mono: report.problem, still: "The tailnet address works. Only the certificate is missing.", next: "Ask Tailscale for one. The key stays on this machine." }
+    return { title: "No code: a phone would not trust this daemon", mono: report.problem, still: "Sessions and this window are unaffected.", next: "Give the daemon a certificate for its tailnet name, then show a code." }
   }
   if (report.loopback) {
     return { title: "No code: a phone cannot reach this daemon", mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code." }

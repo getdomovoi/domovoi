@@ -90,7 +90,4 @@ it("draws no QR when a phone could not reach or trust the daemon, and says which
   await user.click(screen.getByRole("button", { name: "Show another" }))
   expect(await screen.findByText("No code: a phone would not trust this daemon")).toBeTruthy()
   expect(screen.getByText("This daemon serves no certificate, so a device has no address it can verify.")).toBeTruthy()
-  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: undefined }))
-  await user.click(screen.getByRole("button", { name: "Show another" }))
-  expect(await screen.findByText("No code: this daemon did not report an address")).toBeTruthy()
 })
