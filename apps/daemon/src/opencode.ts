@@ -36,7 +36,13 @@ export type OpenCodeClient = {
     promptAsync(
       options: MethodOptions<OpencodeSdkClient["session"]["promptAsync"]>,
     ): Promise<OpenCodeResult<unknown>>
-    messages(options: MethodOptions<OpencodeSdkClient["session"]["messages"]>): Promise<OpenCodeResult<unknown>>
+    // `before` pages backwards through a session (opencode 1.18, kilo 7.7);
+    // the next page's cursor comes back in the X-Next-Cursor header.
+    messages(options: {
+      path: { id: string }
+      query: { directory: string; limit: number; before?: string }
+      throwOnError: true
+    }): Promise<OpenCodeResult<unknown> & { response?: Response }>
   }
   event: {
     subscribe(options?: MethodOptions<OpencodeSdkClient["event"]["subscribe"]>): Promise<unknown>
@@ -108,6 +114,8 @@ const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 const orderMask = 0xffff_ffff_ffffn
 const orderedMessageId = /^msg_([0-9a-f]{12})/u
 let lastOrder = 0n
+const historyPageSize = 200
+const maximumHistoryPages = 1_000
 
 export function openCodeMessageOrder(milliseconds: number, counter = 1): string {
   return ((BigInt(milliseconds) * 0x1000n + BigInt(counter)) & orderMask).toString(16).padStart(12, "0")
@@ -278,13 +286,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       if (session.id !== threadId) {
         throw new Error(`${this.#identity.providerName} did not resume the requested session`)
       }
-      const newest = unwrap(await client.session.messages({
-        path: { id: threadId },
-        query: { directory: cwd, limit: 1 },
-        throwOnError: true,
-      }), `${this.#identity.providerName} session history`)
-      const newestMessageId = (Array.isArray(newest) ? newest : [])
-        .reduce<string | undefined>((current, message) => laterMessageId(current, asRecord(asRecord(message)?.info)?.id), undefined)
+      const newestMessageId = await this.#greatestMessageId(client, threadId, cwd)
       await this.#loadSession(threadId, cwd, runtime, pending, newestMessageId)
     } finally {
       if (this.#pendingSessionLoads.get(threadId) === pending) {
@@ -388,6 +390,29 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#runtime?.server.close()
     this.#runtime = undefined
     await this.#connection
+  }
+
+  // The servers page a session newest-first by creation time, and a clock that
+  // stepped back can leave an older message with a greater id, so the whole
+  // history is read for its greatest id.
+  async #greatestMessageId(client: OpenCodeClient, threadId: string, cwd: string): Promise<string | undefined> {
+    let greatest: string | undefined
+    let before: string | undefined
+    for (let page = 0; page < maximumHistoryPages; page += 1) {
+      const result = await client.session.messages({
+        path: { id: threadId },
+        query: { directory: cwd, limit: historyPageSize, ...(before === undefined ? {} : { before }) },
+        throwOnError: true,
+      })
+      const messages = unwrap(result, `${this.#identity.providerName} session history`)
+      for (const message of Array.isArray(messages) ? messages : []) {
+        greatest = laterMessageId(greatest, asRecord(asRecord(message)?.info)?.id)
+      }
+      const next = result.response?.headers.get("x-next-cursor") ?? undefined
+      if (!next || next === before) return greatest
+      before = next
+    }
+    throw new Error(`${this.#identity.providerName} session history is too long to resume`)
   }
 
   #nextMessageId(session: Session): string {

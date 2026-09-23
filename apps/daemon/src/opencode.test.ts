@@ -89,7 +89,7 @@ function harness() {
       delete: vi.fn(async () => ({ data: true })),
       abort: vi.fn(async () => ({ data: true })),
       promptAsync: vi.fn(async () => ({ data: undefined })),
-      messages: vi.fn(async (): Promise<{ data: unknown }> => ({ data: [] })),
+      messages: vi.fn(async (_options?: unknown): Promise<{ data: unknown; response?: Response }> => ({ data: [] })),
     },
     event: {
       subscribe: vi.fn(async () => ({ stream })),
@@ -737,9 +737,31 @@ describe("message order across processes", () => {
 
     expect(client.session.messages).toHaveBeenCalledWith(expect.objectContaining({
       path: { id: "open-session" },
-      query: { directory: "/worktree", limit: 1 },
+      query: expect.objectContaining({ directory: "/worktree" }),
     }))
     expect(turnId > history).toBe(true)
+    await adapter.close()
+  })
+
+  it("resumes after the greatest id in the whole history, not the newest by time", async () => {
+    const { client, factory } = harness()
+    const base = Date.now() + 10_800_000
+    // A clock that stepped back gave the later-created message the lower id.
+    const newerByTime = `msg_${openCodeMessageOrder(base)}CCCCCCCCCCCCCC`
+    const greatest = `msg_${openCodeMessageOrder(base + 5_000)}DDDDDDDDDDDDDD`
+    client.session.messages
+      .mockResolvedValueOnce({ data: [{ info: { id: newerByTime } }], response: new Response(null, { headers: { "x-next-cursor": "page-2" } }) })
+      .mockResolvedValueOnce({ data: [{ info: { id: greatest } }], response: new Response(null) })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(client.session.messages).toHaveBeenCalledTimes(2)
+    expect(client.session.messages).toHaveBeenLastCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ before: "page-2" }),
+    }))
+    expect(turnId > greatest).toBe(true)
     await adapter.close()
   })
 

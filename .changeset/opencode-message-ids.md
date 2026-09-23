@@ -11,4 +11,5 @@ server makes.
 
 Each id also sorts after the last one the daemon made, when the clock steps back or a millisecond
 runs out of counter values, and after the newest message the session already holds: on resume the
-adapter reads the server's newest message id, and it follows every message id the server reports.
+adapter reads the greatest id in the session's whole history, a page at a time, and it follows
+every message id the server reports.
