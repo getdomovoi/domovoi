@@ -1526,8 +1526,8 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
     as `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html`, and the two
     exported parts and the export `README.md` are gone from `design/`. What follows is the
     record of the two-part period. The export `README.md` was vendored at
-    `design/design_handoff_domovoi_v2/designs/README.md` (17cf141b for the parts, 31d28b7a for
-    the README). Its byte table is gone rather than
+    `design/design_handoff_domovoi_v2/designs/README.md` (02459d66 vendored both parts, 17cf141b
+    revised part 2, 31d28b7a vendored the README). Its byte table is gone rather than
     corrected: a restated byte count goes stale on every re-export, which is the same shape as
     an undated `[x]` or prose restating a token. What replaces it is checkable after any
     re-export, and was checked here rather than taken on the README's word — part 1 ends
