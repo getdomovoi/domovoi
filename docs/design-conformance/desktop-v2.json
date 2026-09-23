@@ -1711,11 +1711,7 @@
       ],
       "evidence": [
         "SESSIONS ON OTHER MACHINES"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J39; the palette searches the connected machine only"
-      }
+      ]
     },
     {
       "id": "composer.action-row",
@@ -1823,6 +1819,11 @@
       "id": "palette",
       "since": "2026-09-23",
       "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "palette.other-machines",
+      "since": "2026-09-23",
+      "note": "Grouped per machine (the design's layout A). The home machine's own rows stay the title-ranked SESSIONS group; its summaries are not searched yet. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
     }
   ],
   "annotations": [

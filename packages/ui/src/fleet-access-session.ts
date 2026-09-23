@@ -1,4 +1,4 @@
-import { credentialSchema, type FleetMachine } from "@getdomovoi/protocol"
+import { credentialSchema, type FleetMachine, type SessionSearchResult } from "@getdomovoi/protocol"
 
 import type { DomovoiClient } from "./client.js"
 import { ClientAdmissionError } from "./client-admission-policy.js"
@@ -91,6 +91,36 @@ export class FleetAccessSession {
   }
 
   clear(): void { for (const id of Object.keys(this.#states)) this.remove(id) }
+
+  // One search on one admitted machine, asked directly (J39). A machine that
+  // does not answer within the deadline throws, and the palette shows it as
+  // not searched rather than as no results. Identity is checked the way the
+  // inventory reader checks it: the answer must come from the machine asked.
+  async search(machineId: string, query: string, signal: AbortSignal): Promise<SessionSearchResult> {
+    const access = this.#access.get(machineId)
+    if (!access) throw new ClientAdmissionError("client-credential-required")
+    const deadline = Deadline.start(10_000)
+    const client = fleetClient({ ...this.inputs(), access })
+    const close = () => { client.disconnect(); deadline.clear(); signal.removeEventListener("abort", close); this.#readers.get(machineId)?.delete(close) }
+    const readers = this.#readers.get(machineId) ?? new Set<() => void>()
+    readers.add(close)
+    this.#readers.set(machineId, readers)
+    signal.addEventListener("abort", close, { once: true })
+    try {
+      if (signal.aborted) throw new DOMException("Search cancelled", "AbortError")
+      await client.connect(deadline)
+      if (signal.aborted || this.#access.get(machineId) !== access) throw new DOMException("Search cancelled", "AbortError")
+      if (client.admittedDeviceId !== access.deviceId) throw new ClientAdmissionError("identity-mismatch")
+      return await client.searchSessions({ query, limit: 20 }, { deadline, signal })
+    } catch (cause) {
+      if (cause instanceof ClientAdmissionError && !signal.aborted && this.#access.get(machineId) === access) {
+        this.refuse(machineId, cause.message)
+      }
+      throw cause
+    } finally {
+      close()
+    }
+  }
 
   async inventory(machineId: string, signal: AbortSignal): Promise<FleetInventoryReader> {
     // One comparison question, not a persistent reader. The collector closes

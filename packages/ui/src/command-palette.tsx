@@ -17,6 +17,7 @@ import {
   SparklesIcon,
 } from "lucide-react"
 
+import { Button } from "./components/ui/button"
 import {
   Command,
   CommandDialog,
@@ -28,6 +29,7 @@ import {
   CommandShortcut,
 } from "./components/ui/command"
 import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { SessionSearchMatch, SessionSearchResult } from "@getdomovoi/protocol"
 
 import { fleetMachines, transferTargets } from "./fleet-entries"
 import { StatusDot, type StatusMeaning } from "./status-dot"
@@ -301,6 +303,68 @@ export function restoreCommandPaletteFocus(target: { focus(): void } | null): vo
   target?.focus()
 }
 
+// J39 (2026-09-23): the palette asks every admitted machine directly for
+// sessions whose title or summary match, and says what each one answered.
+// Not answering is shown as not searched, never as no results.
+export type MachineSearch = {
+  machines: readonly { id: string; label: string; transport: string }[]
+  search: (machineId: string, query: string, signal: AbortSignal) => Promise<SessionSearchResult>
+  open: (machineId: string, sessionId: string) => void
+}
+
+type MachineAnswer =
+  | { state: "asking" }
+  | { state: "hits"; matches: SessionSearchMatch[] }
+  | { state: "none" }
+  | { state: "silent" }
+  | { state: "left" }
+
+const machineSearchDebounceMs = 250
+
+function answerLabel(answer: MachineAnswer): string {
+  switch (answer.state) {
+    case "asking": return "asking"
+    case "hits": return `${answer.matches.length} ${answer.matches.length === 1 ? "match" : "matches"}`
+    case "none": return "no matches"
+    case "silent": return "not searched, did not answer"
+    case "left": return "not searched, left out"
+  }
+}
+
+function useMachineSearch(machineSearch: MachineSearch | undefined, query: string, open: boolean) {
+  const [answers, setAnswers] = useState<Record<string, MachineAnswer>>({})
+  const [askedFor, setAskedFor] = useState("")
+  const trimmed = query.trim()
+  const active = Boolean(machineSearch) && open && trimmed.length >= 2
+  useEffect(() => {
+    if (!machineSearch || !active) {
+      setAnswers({})
+      setAskedFor("")
+      return
+    }
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      setAskedFor(trimmed)
+      setAnswers(Object.fromEntries(machineSearch.machines.map((machine) => [machine.id, { state: "asking" as const }])))
+      for (const machine of machineSearch.machines) {
+        machineSearch.search(machine.id, trimmed, controller.signal).then(
+          (result) => {
+            if (controller.signal.aborted) return
+            setAnswers((current) => ({ ...current, [machine.id]: result.matches.length ? { state: "hits", matches: result.matches } : { state: "none" } }))
+          },
+          () => {
+            if (controller.signal.aborted) return
+            setAnswers((current) => ({ ...current, [machine.id]: { state: "silent" } }))
+          },
+        )
+      }
+    }, machineSearchDebounceMs)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [machineSearch, active, trimmed])
+  const leaveOutSilent = () => setAnswers((current) => Object.fromEntries(Object.entries(current).map(([id, answer]) => [id, answer.state === "silent" ? { state: "left" as const } : answer])))
+  return { active, askedFor, answers, leaveOutSilent }
+}
+
 export function CommandPalette({
   open,
   platform,
@@ -308,12 +372,14 @@ export function CommandPalette({
   onOpenChange,
   onOpenFirstRun,
   restoreFocusTo,
+  machineSearch,
 }: {
   open: boolean
   platform: CommandPalettePlatform
   commands: readonly WorkspaceCommand[]
   onOpenChange: (open: boolean) => void
   restoreFocusTo: { focus(): void } | null
+  machineSearch?: MachineSearch | undefined
   // Setting a machine up is not a command: it is the thing you reach for when
   // no command here can help yet.
   onOpenFirstRun?: (() => void) | undefined
@@ -341,6 +407,18 @@ export function CommandPalette({
     [choosing, query],
   )
   const rows = targets ?? ranked
+  const remote = useMachineSearch(machineSearch, query, open && !choosing)
+  const remoteMachines = machineSearch?.machines ?? []
+  const answered = 1 + remoteMachines.filter((machine) => ["hits", "none"].includes(remote.answers[machine.id]?.state ?? "")).length
+  const asking = remoteMachines.some((machine) => remote.answers[machine.id]?.state === "asking")
+  const silent = remoteMachines.filter((machine) => remote.answers[machine.id]?.state === "silent")
+  const leftOut = remoteMachines.some((machine) => remote.answers[machine.id]?.state === "left")
+  const total = 1 + remoteMachines.length
+  const remoteScope = asking
+    ? `${answered} of ${total} answered, asking each machine directly`
+    : leftOut
+      ? `searched the ${answered} ${answered === 1 ? "machine" : "machines"} that answered`
+      : `searched ${answered} of ${total} machines`
   const current = highlighted || rows[0]?.id
   const elsewhere = rows.find((command) => command.id === current
     && (command.openElsewhere || canChooseMachine(command))
@@ -420,7 +498,7 @@ export function CommandPalette({
         />
         {!choosing ? (
           <p className="m-0 border-b px-3 py-1.5 text-eyebrow text-faint">
-            sessions, machines, commands, skills
+            {remote.active ? "titles and summaries, every machine" : "sessions, machines, commands, skills"}
           </p>
         ) : null}
         <CommandList>
@@ -471,6 +549,48 @@ export function CommandPalette({
               </CommandGroup>
             ) : null
           })}
+          {remote.active && remote.askedFor && machineSearch ? (
+            <CommandGroup heading="SESSIONS ON OTHER MACHINES" forceMount>
+              <p className="m-0 px-2 pb-1 font-machine text-mono-xs text-faint">{remoteScope}</p>
+              {silent.length ? (
+                <div className="mx-2 mb-2 flex flex-col gap-2 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">
+                  <span>{silent.map((machine) => machine.label).join(", ")} did not answer, so its sessions were not searched. This is not the same as having no results, and Domovoi will not round it down to one.</span>
+                  <Button type="button" variant="outline" size="xs" className="self-start" onClick={remote.leaveOutSilent}>Search only what answered</Button>
+                </div>
+              ) : null}
+              {remoteMachines.map((machine) => {
+                const answer = remote.answers[machine.id] ?? { state: "asking" as const }
+                return (
+                  <div key={machine.id} role="group" aria-label={machine.label} className="flex flex-col">
+                    <div className="flex items-center gap-2 px-2 py-1 text-[11px]">
+                      <span className="font-machine text-strong">{machine.label}</span>
+                      <span className="font-machine text-mono-xs text-faint">{machine.transport}</span>
+                      <span className="flex-1" />
+                      <span className={answer.state === "silent" ? "text-destructive" : "text-faint"}>{answerLabel(answer)}</span>
+                    </div>
+                    {answer.state === "hits" ? answer.matches.map((match) => (
+                      <CommandItem
+                        key={`${machine.id}:${match.session.id}`}
+                        value={`remote:${machine.id}:${match.session.id}`}
+                        className="pl-6"
+                        onSelect={() => {
+                          shouldRestoreFocus.current = false
+                          close()
+                          machineSearch.open(machine.id, match.session.id)
+                        }}
+                      >
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                          <span className="truncate">{match.session.title}</span>
+                          {match.matchedIn === "summary" ? <span className="shrink-0 rounded-full bg-muted px-1.5 font-machine text-mono-xs text-muted-foreground">in summary</span> : null}
+                        </span>
+                        <span className="shrink-0 font-machine text-mono-xs text-faint">{match.session.state}</span>
+                      </CommandItem>
+                    )) : null}
+                  </div>
+                )
+              })}
+            </CommandGroup>
+          ) : null}
         </CommandList>
         <div className="flex items-center gap-3 border-t px-3 py-2">
         <p data-testid="palette-hints" className="m-0 flex-1 font-machine text-mono-xs text-muted-foreground">

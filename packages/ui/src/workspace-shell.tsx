@@ -532,6 +532,26 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // machine change drops it rather than opening controls on the wrong thread.
   const [rowIntent, setRowIntent] = useState<{ action: "fork" | "move", sessionId: string } | null>(null)
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null)
+  // A row picked on another machine (J39) switches this window to that
+  // machine, then opens the session there once its snapshot arrives.
+  const [pendingElsewhere, setPendingElsewhere] = useState<{ machineId: string; sessionId: string } | null>(null)
+  useEffect(() => {
+    if (!pendingElsewhere) return
+    if ((attached?.machineId ?? homeMachineId) !== pendingElsewhere.machineId) return
+    if (!snapshot?.sessions.some((session) => session.id === pendingElsewhere.sessionId)) return
+    setPendingElsewhere(null)
+    openSessionInWorkspace(pendingElsewhere.sessionId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingElsewhere, attached?.machineId, homeMachineId, snapshot])
+  const searchableMachines = fleetMachines(fleet?.entries ?? []).filter((machine) => !machine.self && fleetClientAccess[machine.id]?.state === "admitted")
+  const machineSearch = useMemo(() => searchableMachines.length === 0 ? undefined : {
+    machines: searchableMachines.map((machine) => ({ id: machine.id, label: machine.label, transport: machine.connection })),
+    search: (machineId: string, query: string, signal: AbortSignal) => accessSession.search(machineId, query, signal),
+    open: (machineId: string, sessionId: string) => {
+      if (switchMachine(machineId)) setPendingElsewhere({ machineId, sessionId })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchableMachines.map((machine) => machine.id).join(","), accessSession, switchMachine])
   const sessionRowAction = (action: SessionRowAction, sessionId: string) => {
     if (watching) return
     if (action === "stop") {
@@ -1474,6 +1494,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           commands={workspaceCommands}
           onOpenChange={setCommandPaletteOpen}
           restoreFocusTo={commandPaletteFocusRef.current}
+          machineSearch={machineSearch}
           {...(firstRunEnabled && !watching ? {
             onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
           } : {})}
