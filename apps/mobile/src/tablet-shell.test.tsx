@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
@@ -10,7 +10,7 @@ const metrics: Metrics = {
   insets: { top: 24, left: 0, right: 0, bottom: 20 },
 }
 
-async function draw(risk?: "normal" | "hard-gate", access: "full" | "watching" = "full") {
+async function draw(risk?: "normal" | "hard-gate", access: "full" | "watching" = "full", adjust?: (snapshot: WorkspaceSnapshot) => void) {
   const snapshot = structuredClone(demoWorkspace)
   const approval = snapshot.approvals[0]
   if (!approval) throw new Error("fixture needs an approval")
@@ -20,6 +20,7 @@ async function draw(risk?: "normal" | "hard-gate", access: "full" | "watching" =
   if (!session) throw new Error("fixture needs the approval session")
   session.workspacePath = "/worktrees/billing"
   session.providerThreadId = "provider-thread-tablet"
+  adjust?.(snapshot)
   const props = {
     snapshot,
     selectedSessionId: approval.sessionId,
@@ -135,5 +136,43 @@ describe("TabletShell", () => {
 
     expect(props.onPostReview).toHaveBeenCalledWith(expect.any(String), "The retry window is too long")
     expect(screen.getByRole("button", { name: "Cancel" })).toBeOnTheScreen()
+  })
+
+  it("says a watching tablet's waiting session waits on a full-access device, not on the person holding it", async () => {
+    await draw("normal", "watching")
+
+    expect(screen.getByText("waiting on a full-access device")).toBeOnTheScreen()
+    expect(screen.queryByText("waiting on you")).toBeNull()
+  })
+
+  it("says a full-access tablet's waiting session waits on the person holding it", async () => {
+    await draw("normal", "full")
+
+    expect(screen.getByText("waiting on you")).toBeOnTheScreen()
+  })
+
+  it("keeps the rule, who set it, where it applies and the remedy on a policy refusal in the thread", async () => {
+    const refusal = {
+      id: "refusal-tablet",
+      kind: "policy-refusal" as const,
+      operation: "Drop the production orders table",
+      command: "psql $PROD_DATABASE_URL -c 'drop table orders'",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+      createdAt: "2026-09-22T12:00:00.000Z",
+    }
+    await draw("normal", "full", (snapshot) => {
+      const sessionId = snapshot.approvals[0]!.sessionId
+      snapshot.thread.push({ ...refusal, sessionId })
+    })
+
+    expect(screen.getByText(refusal.operation)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.command)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.rule)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.setBy)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.scope)).toBeOnTheScreen()
+    expect(screen.getByText(refusal.remedy)).toBeOnTheScreen()
   })
 })
