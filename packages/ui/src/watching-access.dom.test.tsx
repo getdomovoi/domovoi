@@ -69,7 +69,8 @@ it("keeps observation surfaces and provider failure visible while locking compos
 
   render(<WatchingThread snapshot={snapshot} />)
 
-  expect(screen.getByText("Free plan: this route carries reads only.")).toBeTruthy()
+  expect(screen.getByText("This device was paired to watch only.")).toBeTruthy()
+  expect(screen.queryByText(/plan:/iu)).toBeNull()
   expect(screen.getByText("No sends, approvals, terminal or writes. Reads stream as normal.")).toBeTruthy()
   expect(screen.getByText("Provider connection failed")).toBeTruthy()
   expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()

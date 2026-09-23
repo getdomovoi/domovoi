@@ -617,15 +617,10 @@
       "name": "Changed file chips and Review all",
       "where": "under the activity row: path, +n, -n per file, then Review all N changed files",
       "evidence": [
-        "Review all"
-      ],
-      "presence": [
-        "changed files"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a changed-files line exists; the chip row and its Review all action are not the design's"
-      }
+        "Review all ${count} changed files",
+        "+${file.additions}",
+        "\u2212${file.deletions}"
+      ]
     },
     {
       "id": "conversation.approval",
@@ -793,7 +788,12 @@
       "evidence": [
         "Free plan: this route carries reads only.",
         "No sends, approvals, terminal or writes. Reads stream as normal."
-      ]
+      ],
+      "blocked": {
+        "since": "2026-09-22",
+        "needs": "design",
+        "reason": "The drawn reason names a Free plan, and plans are Phase 5; M1 may not claim account behaviour. The composer says This device was paired to watch only. until the design draws a reason with a source on the wire."
+      }
     },
     {
       "id": "composer.watching-note-archived",
@@ -1039,7 +1039,9 @@
       "name": "Comments on a variant",
       "where": "Preview tab: COMMENTS ON VARIANT n, count, send to the agent, rows with pin, anchor, state, status, replies, action",
       "evidence": [
-        "COMMENTS ON VARIANT",
+        "re:COMMENTS ON \\$\\{preview\\.variant\\.label\\.toUpperCase\\(\\)\\}",
+        "Send 2 open comments to the agent",
+        "Comments reach the agent only when you send them.",
         "Design variants"
       ],
       "presence": [
@@ -1047,7 +1049,7 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "variants and comments exist; the header copy is not the design's"
+        "reason": "the dynamic variant heading and comment rows exist; the design's explicit decision to attach open comments to the next turn is absent, while production currently carries open annotations automatically"
       }
     },
     {
@@ -1144,7 +1146,7 @@
     {
       "id": "dock.changes",
       "name": "Changes tab, evidence per file",
-      "where": "Changes tab: EVIDENCE PER FILE, per file badge, path, coverage, +n -n, runs, diff, revert ask (Revert this file / Keep it), reverted note, Revert file; foot Open a pull request, Open the worktree in your editor, nothing is merged until you do",
+      "where": "Changes tab: EVIDENCE PER FILE, per file badge, path, coverage, +n -n, runs, diff, revert ask (Revert this file / Keep it), reverted note, Revert file; foot Open the worktree in your editor",
       "states": [
         "file open",
         "diff shown",
@@ -1157,15 +1159,12 @@
         "Revert this file",
         "Keep it",
         "Revert file",
-        "Open a pull request",
-        "Open the worktree in your editor",
-        "nothing is merged until you do"
+        "Open the worktree in your editor"
       ],
       "evidence": [
         "EVIDENCE PER FILE",
         "Revert this file",
         "Keep it",
-        "Open a pull request",
         "Open the worktree in your editor"
       ],
       "presence": [
@@ -1174,7 +1173,21 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "evidence per file and revert exist; the header, the keep/revert ask and the foot actions are not the design's"
+        "reason": "evidence per file and revert exist; the header, the keep/revert ask and the dock-local editor action are not the design's"
+      }
+    },
+    {
+      "id": "dock.changes-pr",
+      "name": "Open a pull request",
+      "where": "Changes tab foot: Open a pull request and the note that nothing is merged until you do",
+      "copy": [
+        "Open a pull request",
+        "nothing is merged until you do"
+      ],
+      "blocked": {
+        "since": "2026-09-20",
+        "needs": "protocol",
+        "reason": "no daemon RPC or desktop adapter defines how a session worktree becomes a pull request"
       }
     },
     {

@@ -1269,7 +1269,7 @@ export function Thread({
             <div className="flex items-start gap-2.5 rounded-[calc(var(--radius)-2px)] border border-info-border bg-info-background px-3 py-[11px]">
               <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-info" />
               <div className="min-w-0 flex-1">
-                <div className="text-[12px] leading-[1.5] text-info-foreground">Free plan: this route carries reads only.</div>
+                <div className="text-[12px] leading-[1.5] text-info-foreground">This device was paired to watch only.</div>
                 <div className="mt-1 text-[11px] leading-[1.5] text-info-dim">No sends, approvals, terminal or writes. Reads stream as normal.</div>
               </div>
             </div>
