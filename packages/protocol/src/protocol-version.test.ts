@@ -32,7 +32,8 @@ it.each([
 it("keeps payload validation when a compatible patch is accepted", () => {
   const remoteVersion = protocolVersion.replace(/\d+$/, "1")
   expect(systemHelloResultSchema.safeParse({ ...demoWorkspace, protocolVersion: remoteVersion, sessions: "not sessions" }).success).toBe(false)
-  for (const version of ["0.7.0", "0.9.0", "1.2.0"]) {
+  // A minor below, a minor above and a major above the current 0.9.
+  for (const version of ["0.8.0", "0.10.0", "1.2.0"]) {
     expect(workspaceSnapshotSchema.safeParse({ ...demoWorkspace, protocolVersion: version }).success).toBe(false)
   }
 })
