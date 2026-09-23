@@ -8,6 +8,7 @@ import { KiloSdkAdapter } from "./kilo.js"
 import { domovoiKiloConfig } from "./kilo-runtime.js"
 import {
   OpenCodeSdkAdapter,
+  SubagentRegistry,
   domovoiOpenCodeConfig,
   openCodeAgentFor,
   type OpenCodeClient,
@@ -775,7 +776,7 @@ describe("subagents and current permission events", () => {
     await adapter.close()
   })
 
-  async function childAskedInFirstTurn() {
+  async function childAskedInFirstTurn(beforeTurnEnd?: (client: ReturnType<typeof harness>["client"]) => void) {
     const { client, factory, stream } = harness()
     let turns = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++turns}`)
@@ -800,12 +801,89 @@ describe("subagents and current permission events", () => {
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "approval-requested", requestId: 1, threadId, turnId: "turn-1",
     })))
+    beforeTurnEnd?.(client)
     stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "parent failed" } } } })
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
       type: "turn-completed", params: expect.objectContaining({ turnId: "turn-1" }),
     })))
     return { adapter, client, events, stream, threadId, child }
   }
+
+  const askFrom = (sessionID: string, id: string) => ({
+    type: "permission.asked" as const,
+    properties: { id, sessionID, permission: "bash", patterns: ["ls"], metadata: { command: "ls" }, always: [] },
+  })
+
+  it("never adopts a child first seen while its thread has no active turn", async () => {
+    const { client, factory, stream } = harness()
+    let turns = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++turns}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_between", info: { id: "ses_between", parentID: threadId } } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+    stream.emit({ type: "session.updated", properties: { sessionID: "ses_between", info: { id: "ses_between", parentID: threadId } } })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_grandchild", info: { id: "ses_grandchild", parentID: "ses_between" } } })
+    stream.emit(askFrom("ses_between", "per_between"))
+    stream.emit(askFrom("ses_grandchild", "per_grandchild"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(events.filter((event) => event.type === "approval-requested")).toEqual([])
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("keeps a failed refusal and refuses again when the card is answered later", async () => {
+    const { adapter, client } = await childAskedInFirstTurn((client) => {
+      client.postSessionIdPermissionsPermissionId.mockRejectedValueOnce(new Error("provider busy"))
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1))
+
+    adapter.resolveApproval(1, "allow-once")
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(2))
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenLastCalledWith(
+      expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
+    )
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalledWith(
+      expect.objectContaining({ body: { response: "once" } }),
+    )
+    await adapter.close()
+  })
+
+  it("retries a failed refusal when the thread's next turn starts", async () => {
+    const { adapter, client, threadId } = await childAskedInFirstTurn((client) => {
+      client.postSessionIdPermissionsPermissionId.mockRejectedValueOnce(new Error("provider busy"))
+    })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(1))
+
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Next", runtime: runtime("build") })
+    await waitForDaemon(() => expect(client.postSessionIdPermissionsPermissionId).toHaveBeenCalledTimes(2))
+    expect(client.postSessionIdPermissionsPermissionId).toHaveBeenLastCalledWith(
+      expect.objectContaining({ path: { id: "ses_child", permissionID: "per_child" }, body: { response: "reject" } }),
+    )
+    await adapter.close()
+  })
+
+  it("forgets a deleted child without ever adopting it again", async () => {
+    const { client, factory, stream } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory, () => "turn-1")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_gone", info: { id: "ses_gone", parentID: threadId } } })
+    stream.emit({ type: "session.deleted", properties: { info: { id: "ses_gone", parentID: threadId } } })
+    stream.emit({ type: "session.updated", properties: { sessionID: "ses_gone", info: { id: "ses_gone", parentID: threadId } } })
+    stream.emit(askFrom("ses_gone", "per_gone"))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(events.filter((event) => event.type === "approval-requested")).toEqual([])
+    expect(client.postSessionIdPermissionsPermissionId).not.toHaveBeenCalled()
+    await adapter.close()
+  })
 
   it("refuses a child's pending approval when the parent turn ends, and ignores a later answer", async () => {
     const { adapter, client } = await childAskedInFirstTurn()
@@ -938,5 +1016,36 @@ describe("event stream shapes", () => {
     })))
     expect(events).not.toContainEqual(expect.objectContaining({ type: "provider-disconnected" }))
     await adapter.close()
+  })
+})
+
+describe("SubagentRegistry", () => {
+  it("drops a deleted child's record and keeps only a bounded tombstone, so it is never adopted again", () => {
+    const registry = new SubagentRegistry(2)
+    registry.link("child-a", { threadId: "thread", turnId: "turn-1" })
+    registry.neverLink("child-b", "thread")
+    expect(registry.size).toBe(2)
+
+    registry.delete("child-a")
+    registry.delete("child-b")
+    expect(registry.size).toBe(0)
+    expect(registry.isKnown("child-a")).toBe(true)
+    expect(registry.isKnown("child-b")).toBe(true)
+
+    registry.link("child-c", { threadId: "thread", turnId: "turn-1" })
+    registry.delete("child-c")
+    expect(registry.isKnown("child-a")).toBe(false)
+    expect(registry.isKnown("child-c")).toBe(true)
+    expect(registry.tombstones).toBe(2)
+  })
+
+  it("forgets every record and tombstone of a thread when the thread is unloaded", () => {
+    const registry = new SubagentRegistry(8)
+    registry.link("child-a", { threadId: "thread", turnId: "turn-1" })
+    registry.neverLink("child-b", "thread")
+    registry.link("child-c", { threadId: "other", turnId: "turn-1" })
+    registry.forgetThread("thread")
+    expect(registry.size).toBe(1)
+    expect(registry.get("child-c")).toEqual({ threadId: "other", turnId: "turn-1" })
   })
 })

@@ -101,6 +101,70 @@ type SubagentTurn = {
   turnId: string
 }
 
+// Subagent sessions, by session id. A linked subagent belongs to the thread
+// and turn that started it, and keeps that turn after it ends so its late
+// events are recognised. A subagent first seen while its thread had no active
+// turn is never linked (owner ruling 2026-09-23) and stays ignored, as does
+// anything it starts. A deleted session's record is dropped, and a bounded
+// tombstone keeps it from being adopted again.
+export class SubagentRegistry {
+  readonly #linked = new Map<string, SubagentTurn>()
+  readonly #neverLinked = new Map<string, string>()
+  readonly #tombstones = new Map<string, string>()
+  readonly #tombstoneLimit: number
+
+  constructor(tombstoneLimit = 1_024) {
+    this.#tombstoneLimit = tombstoneLimit
+  }
+
+  get size(): number {
+    return this.#linked.size + this.#neverLinked.size
+  }
+
+  get tombstones(): number {
+    return this.#tombstones.size
+  }
+
+  get(sessionId: string): SubagentTurn | undefined {
+    return this.#linked.get(sessionId)
+  }
+
+  neverLinkedThread(sessionId: string): string | undefined {
+    return this.#neverLinked.get(sessionId)
+  }
+
+  isKnown(sessionId: string): boolean {
+    return this.#linked.has(sessionId) || this.#neverLinked.has(sessionId) || this.#tombstones.has(sessionId)
+  }
+
+  link(sessionId: string, turn: SubagentTurn): void {
+    this.#linked.set(sessionId, turn)
+  }
+
+  neverLink(sessionId: string, threadId: string): void {
+    this.#neverLinked.set(sessionId, threadId)
+  }
+
+  delete(sessionId: string): void {
+    const threadId = this.#linked.get(sessionId)?.threadId ?? this.#neverLinked.get(sessionId)
+    if (threadId === undefined) return
+    this.#linked.delete(sessionId)
+    this.#neverLinked.delete(sessionId)
+    this.#tombstones.set(sessionId, threadId)
+    while (this.#tombstones.size > this.#tombstoneLimit) {
+      const oldest = this.#tombstones.keys().next().value
+      if (oldest === undefined) break
+      this.#tombstones.delete(oldest)
+    }
+  }
+
+  forgetThread(threadId: string): void {
+    for (const [sessionId, owner] of this.#linked) if (owner.threadId === threadId) this.#linked.delete(sessionId)
+    for (const [sessionId, owner] of this.#neverLinked) if (owner === threadId) this.#neverLinked.delete(sessionId)
+    for (const [sessionId, owner] of this.#tombstones) if (owner === threadId) this.#tombstones.delete(sessionId)
+  }
+}
+
 type PendingSessionLoad = {
   cwd: string
   cancelled: boolean
@@ -126,10 +190,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #directories = new Map<string, DirectoryStream>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
-  // Subagent sessions the task tool started, by session id, with the thread
-  // and turn they belong to. An entry stays after its turn ends so a late
-  // event from that subagent is recognised and dropped, not re-adopted.
-  #subagentSessions = new Map<string, SubagentTurn>()
+  #subagents = new SubagentRegistry()
+  // Refusals the provider did not accept, by request id. They are sent again
+  // when the card is answered or the thread's next turn starts or ends.
+  #failedRefusals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
 
   constructor(
@@ -268,6 +332,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<string> {
     const session = this.#requireSession(threadId)
+    this.#retryFailedRefusals(threadId)
     const turnId = this.#id()
     session.runtime = runtime
     session.activeTurnId = turnId
@@ -324,13 +389,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
+    const failed = this.#failedRefusals.get(requestId)
+    if (failed) {
+      this.#failedRefusals.delete(requestId)
+      this.#respond(failed, "reject", requestId)
+      return
+    }
     const pending = this.#pendingApprovals.get(requestId)
     if (!pending) return
     this.#pendingApprovals.delete(requestId)
-    this.#respond(pending, decision === "allow-once" || decision === "always-project" ? "once" : "reject")
+    this.#respond(pending, decision === "allow-once" || decision === "always-project" ? "once" : "reject", requestId)
   }
 
-  #respond(pending: PendingApproval, response: "once" | "reject"): void {
+  #respond(pending: PendingApproval, response: "once" | "reject", requestId: number): void {
     void this.#client().then(async (client) => {
       unwrap(await client.postSessionIdPermissionsPermissionId({
         path: { id: pending.providerSessionId, permissionID: pending.permissionId },
@@ -340,7 +411,17 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       }), `${this.#identity.providerName} permission response`)
     }).catch((error: unknown) => {
       console.error(`Domovoi could not resolve a ${this.#identity.providerName} permission`, error)
+      // A subagent's refusal must not be lost, or the subagent waits on it.
+      if (response === "reject" && pending.subagentTurn && !this.#closed) this.#failedRefusals.set(requestId, pending)
     })
+  }
+
+  #retryFailedRefusals(threadId: string): void {
+    for (const [requestId, pending] of this.#failedRefusals) {
+      if (pending.subagentTurn?.threadId !== threadId) continue
+      this.#failedRefusals.delete(requestId)
+      this.#respond(pending, "reject", requestId)
+    }
   }
 
   onEvent(listener: (event: AgentEvent) => void): () => void {
@@ -353,8 +434,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const directory of this.#directories.values()) directory.controller.abort()
     this.#directories.clear()
     this.#sessions.clear()
-    this.#subagentSessions.clear()
+    this.#subagents = new SubagentRegistry()
     this.#pendingApprovals.clear()
+    this.#failedRefusals.clear()
     this.#runtime?.server.close()
     this.#runtime = undefined
     await this.#connection
@@ -426,8 +508,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   #forgetSubagents(threadId: string): void {
-    for (const [sessionId, owner] of this.#subagentSessions) {
-      if (owner.threadId === threadId) this.#subagentSessions.delete(sessionId)
+    this.#subagents.forgetThread(threadId)
+    for (const [requestId, pending] of this.#failedRefusals) {
+      if (pending.subagentTurn?.threadId === threadId) this.#failedRefusals.delete(requestId)
     }
   }
 
@@ -472,14 +555,26 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #adoptSubagent(cwd: string, properties: Record<string, unknown>): void {
     const info = asRecord(properties.info)
     if (typeof info?.id !== "string" || typeof info.parentID !== "string") return
-    if (this.#sessions.has(info.id) || this.#subagentSessions.has(info.id)) return
-    const parentSubagent = this.#subagentSessions.get(info.parentID)
-    const threadId = parentSubagent?.threadId ?? info.parentID
+    if (this.#sessions.has(info.id) || this.#subagents.isKnown(info.id)) return
+    const parentSubagent = this.#subagents.get(info.parentID)
+    const parentNeverLinked = this.#subagents.neverLinkedThread(info.parentID)
+    const threadId = parentSubagent?.threadId ?? parentNeverLinked ?? info.parentID
     const session = this.#sessions.get(threadId)
     if (session?.cwd !== cwd) return
-    const turnId = parentSubagent?.turnId ?? session.activeTurnId
-    if (!turnId || session.activeTurnId !== turnId) return
-    this.#subagentSessions.set(info.id, { threadId, turnId })
+    if (parentNeverLinked !== undefined) {
+      this.#subagents.neverLink(info.id, threadId)
+      return
+    }
+    // A subagent's own subagent belongs to the same turn, even one that ended.
+    if (parentSubagent) {
+      this.#subagents.link(info.id, parentSubagent)
+      return
+    }
+    if (!session.activeTurnId) {
+      this.#subagents.neverLink(info.id, threadId)
+      return
+    }
+    this.#subagents.link(info.id, { threadId, turnId: session.activeTurnId })
   }
 
   #receive(cwd: string, event: OpenCodeEvent): void {
@@ -487,9 +582,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const properties = asRecord(event.properties)
     if (!properties) return
     if (event.type === "session.created" || event.type === "session.updated") this.#adoptSubagent(cwd, properties)
+    if (event.type === "session.deleted") {
+      const deleted = asRecord(properties.info)?.id
+      if (typeof deleted === "string") this.#subagents.delete(deleted)
+      return
+    }
     const sessionId = eventSessionId(properties)
     if (!sessionId) return
-    const subagentTurn = this.#subagentSessions.get(sessionId)
+    const subagentTurn = this.#subagents.get(sessionId)
     const subagent = subagentTurn !== undefined
     const session = this.#sessions.get(subagentTurn?.threadId ?? sessionId)
     if (!session || session.cwd !== cwd) return
@@ -499,7 +599,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) {
       if (event.type !== "permission.updated" && event.type !== "permission.asked") return
       const request = permissionRequest(properties, this.#identity.providerName)
-      if (request) this.#respond({ providerSessionId: sessionId, cwd, permissionId: request.permissionId }, "reject")
+      if (request) {
+        this.#respond(
+          { providerSessionId: sessionId, cwd, permissionId: request.permissionId, subagentTurn },
+          "reject",
+          ++this.#nextApprovalId,
+        )
+      }
       return
     }
 
@@ -659,8 +765,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const [requestId, pending] of this.#pendingApprovals) {
       if (pending.subagentTurn?.threadId !== session.threadId || pending.subagentTurn.turnId !== turnId) continue
       this.#pendingApprovals.delete(requestId)
-      this.#respond(pending, "reject")
+      this.#respond(pending, "reject", requestId)
     }
+    this.#retryFailedRefusals(session.threadId)
   }
 
   #requireSession(threadId: string): Session {
