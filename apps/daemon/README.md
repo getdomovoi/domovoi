@@ -422,6 +422,10 @@ refuses mutating RPC methods with `daemonPersistenceUnavailableErrorCode` (`-320
 running on state nobody will get back. Every failure is still reported through the daemon error
 sink, and `system.emergencyStop` still reports a `persistence` failure in its bounded outcome.
 
+An approval decision is saved before the agent is told. If that save fails, `approval.resolve`
+answers `-32014`, the agent is not answered, no standing rule is created, and the approval stays
+pending, so a client that shows the gate as still waiting is telling the truth.
+
 Read-only methods keep working, including `workspace.get`, so an operator can read the state that
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
