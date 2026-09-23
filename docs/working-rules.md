@@ -365,7 +365,9 @@ Moved here on 2026-09-22 from `bab32d9` (2026-09-11), a commit on
 `chore/plans-and-v2-design-vendor` that never reached `main`. For eleven days the procedure lived
 only on that branch and in an agent's notes, which is the failure this entry is about: knowledge
 held somewhere the repository cannot read. Checked against `main` at 35a0cc6d before moving; the
-changes from the original are the project name, the precedent shas and the note on step 1.
+changes from the original are the project name as `REVISIONS.json` records it, where the
+design-system id appears, the precedent shas (the original cited branch shas), the `--check` and
+bare-flag details read from `scripts/design-revision.mjs`, and the note on step 1.
 
 **The source of record** is Claude Design project `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named
 "Relay multi-device platform". `design/REVISIONS.json` records it as `source`. Recorded
