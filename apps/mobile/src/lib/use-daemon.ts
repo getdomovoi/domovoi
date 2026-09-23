@@ -55,8 +55,13 @@ export function useDaemon(
 
     const open = () => {
       if (!live || givenUp.current) return
-      const daemon = new DaemonConnection(url, token, {
+      connection.current?.close()
+      // A connection this one replaced can still deliver a late frame or its
+      // close. Only the current one speaks for the screen.
+      const current = () => connection.current === daemon
+      const daemon: DaemonConnection = new DaemonConnection(url, token, {
         onSnapshot: (next) => {
+          if (!current()) return
           // A greeting that answers is the only proof the connection works, so
           // the backoff resets here rather than when the socket opens.
           attempt.current = 0
@@ -68,6 +73,7 @@ export function useDaemon(
         // identity is pinned or a distrusted pin is recovered; it never
         // decides the connection.
         onHello: (next) => {
+          if (!current()) return
           setImageAttachments(next.sessionImageAttachments === true)
           setClientAccess(next.clientAccess ?? "full")
           void reconcileRelayPin({
@@ -78,10 +84,15 @@ export function useDaemon(
             console.warn("Relay pin not reconciled:", cause instanceof Error ? cause.message : String(cause))
           })
         },
-        onDelta: (delta: WorkspaceDelta) =>
-          setSnapshot((current) => current ? applyWorkspaceDelta(current, delta) : current),
-        onFleet: (entries) => fleetSink.current(entries),
+        onDelta: (delta: WorkspaceDelta) => {
+          if (!current()) return
+          setSnapshot((held) => held ? applyWorkspaceDelta(held, delta) : held)
+        },
+        onFleet: (entries) => {
+          if (current()) fleetSink.current(entries)
+        },
         onStatus: (next) => {
+          if (!current()) return
           // A closed or reconnecting connection has not said what it can do.
           if (next !== "open") {
             setImageAttachments(false)
@@ -90,12 +101,13 @@ export function useDaemon(
           setStatus(next)
         },
         onError: (cause) => {
+          if (!current()) return
           const next = connectionFault(cause)
           setFault(next)
           if (!next.retriable) givenUp.current = true
         },
         onClosed: () => {
-          if (!live || givenUp.current) return
+          if (!live || givenUp.current || !current()) return
           attempt.current += 1
           timer.current = setTimeout(open, retryDelayMs(attempt.current))
         },
@@ -109,7 +121,7 @@ export function useDaemon(
     // without abandoning the backoff for the times nobody asked.
     const now = () => {
       if (givenUp.current) return
-      if (connection.current?.isOpen()) return
+      if (connection.current?.isLive()) return
       if (timer.current) clearTimeout(timer.current)
       attempt.current = 0
       open()

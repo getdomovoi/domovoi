@@ -180,6 +180,13 @@ export class DaemonConnection {
     return this.#socket?.readyState === 1
   }
 
+  // Still dialing counts: a second dial beside it would greet twice and feed
+  // every delta to the screen twice.
+  isLive(): boolean {
+    const state = this.#socket?.readyState
+    return state === 0 || state === 1
+  }
+
   // Requests sent and not yet answered. Every one of them holds a promise the
   // caller is waiting on, so a number that climbs and never falls is the shape
   // of a leak.
