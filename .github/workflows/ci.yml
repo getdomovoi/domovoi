@@ -2,12 +2,13 @@ name: ci
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
 
-# A newer push to a pull request replaces the run for the older one. Pushes to
-# main are grouped by commit, so a main run is never cancelled.
+# A newer push to a pull request replaces the run for the older one, and so does
+# converting it to draft (that run skips every job). Pushes to main are grouped
+# by commit, so a main run is never cancelled.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
