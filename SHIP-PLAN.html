@@ -1415,7 +1415,7 @@ td { color: var(--ink2); }
 </li>
 <li>[ ] Automate Changesets version PRs, changelogs, Git tags, npm publishing with provenance, and GitHub Releases from the same immutable commit
 <ul>
-<li>Repository mechanisms are implemented, not yet proven by a hosted publication. <code>release.yml</code> opens version PRs, packs once, verifies downloaded archives, and publishes the protocol before the daemon. Alpha uses its own npm channel. A single canonical <code>v&lt;version&gt;</code> GitHub release matches the bootstrap URL and stays a draft until all asset hashes are checked. Local tests cover real Changesets versioning, artifact binding and API refusal/order behavior; account admission, provenance and the first public install still need a hosted release.
+<li>Repository mechanisms are implemented, not yet proven by a hosted publication. <code>release.yml</code> opens version PRs, packs once, verifies downloaded archives, and publishes the protocol before the daemon. Ruled 2026-09-22: the first release publishes <code>@getdomovoi/cli</code> and <code>@getdomovoi/credential-store</code> too; the workflow does not yet (see &quot;Audit fix rulings, 2026-09-22&quot;). Alpha uses its own npm channel. A single canonical <code>v&lt;version&gt;</code> GitHub release matches the bootstrap URL and stays a draft until all asset hashes are checked. Local tests cover real Changesets versioning, artifact binding and API refusal/order behavior; account admission, provenance and the first public install still need a hosted release.
 </li>
 <li>Its <code>gate</code> job runs <code>pnpm release:gate</code>, and <code>scripts/release-gate.mjs</code> refuses to continue until the <code>ci</code> run for that exact commit has concluded success with every one of its jobs concluded success too. A run reporting no job at all, and a job that was skipped rather than run, are refusals rather than passes. A release therefore inherits the Linux, macOS, and Windows matrix, the packed-daemon musl check, and the production dependency audit instead of re-running a Linux-only subset of them. While a run is still going, and while no run exists for the commit at all, the gate polls every 30 seconds for up to 45 minutes and then fails, so an absent or unfinished verdict is a refusal rather than a publish. <code>scripts/release-gate.test.mjs</code> covers each of those outcomes.
 </li>
@@ -1639,7 +1639,7 @@ td { color: var(--ink2); }
 </li>
 </ul>
 <h2 id="audit-fix-rulings-2026-09-22">Audit fix rulings, 2026-09-22</h2>
-<p>The maintainer took every recommended pick on the decision sheet for fixing the 2026-09-22 audit. The labels in brackets are that audit's finding ids; the report is kept outside this repository. Each ruling stands until the maintainer changes it.</p>
+<p>The maintainer took every recommended pick on the decision sheet for fixing the 2026-09-22 audit, and ruled on the publish set (10) the same day. The labels in brackets are that audit's finding ids; the report is kept outside this repository. Each ruling stands until the maintainer changes it.</p>
 <ol>
 <li>Fix branches (<code>fix/audit-0922-*</code>) are pushed, opened as pull requests and merged after a peer read and green CI, with no per-pull-request ask. The <code>native</code> untick procedure in <code>docs/working-rules.md</code> applies when its path filter skips a pull request. This program only.
 </li>
@@ -1658,6 +1658,8 @@ td { color: var(--ink2); }
 <li>Asking Tailscale for this machine's own certificate is allowed; no tailnet setting is touched [J25].
 </li>
 <li>Dependabot security updates go on [E15].
+</li>
+<li>The first release publishes all four public packages: <code>@getdomovoi/protocol</code>, <code>@getdomovoi/daemon</code>, <code>@getdomovoi/cli</code> and <code>@getdomovoi/credential-store</code> [I62]. The release tooling still names two (<code>publishablePackages</code> in <code>scripts/release-artifacts.mjs</code>, <code>release.yml</code>); changing it is owed work.
 </li>
 </ol>
 <p>Not decided yet: an off-machine dev-server preview [J32], launching <code>ssh</code> [J41], checkpoint refs in an adopted repository [J43], direct API keys before the alpha [J18, D18], and one pricing source [I58].</p>

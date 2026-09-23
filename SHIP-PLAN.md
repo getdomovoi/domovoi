@@ -1751,7 +1751,9 @@ build was published as a GitHub pre-release on 2026-09-18 and hidden as a draft 
   GitHub Releases from the same immutable commit
   - Repository mechanisms are implemented, not yet proven by a hosted publication.
     `release.yml` opens version PRs, packs once, verifies downloaded archives, and publishes the
-    protocol before the daemon. Alpha uses its own npm channel. A single canonical `v<version>`
+    protocol before the daemon. Ruled 2026-09-22: the first release publishes `@getdomovoi/cli`
+    and `@getdomovoi/credential-store` too; the workflow does not yet (see "Audit fix rulings,
+    2026-09-22"). Alpha uses its own npm channel. A single canonical `v<version>`
     GitHub release matches the bootstrap URL and stays a draft until all asset hashes are checked.
     Local tests cover real Changesets versioning, artifact binding and API refusal/order behavior;
     account admission, provenance and the first public install still need a hosted release.
@@ -1994,7 +1996,7 @@ dependent work starts.
 ## Audit fix rulings, 2026-09-22
 
 The maintainer took every recommended pick on the decision sheet for fixing the 2026-09-22
-audit. The labels in brackets are that audit's finding ids; the report is kept outside this
+audit, and ruled on the publish set (10) the same day. The labels in brackets are that audit's finding ids; the report is kept outside this
 repository. Each ruling stands until the maintainer changes it.
 
 1. Fix branches (`fix/audit-0922-*`) are pushed, opened as pull requests and merged after a
@@ -2018,6 +2020,10 @@ repository. Each ruling stands until the maintainer changes it.
 8. Asking Tailscale for this machine's own certificate is allowed; no tailnet setting is
    touched [J25].
 9. Dependabot security updates go on [E15].
+10. The first release publishes all four public packages: `@getdomovoi/protocol`,
+    `@getdomovoi/daemon`, `@getdomovoi/cli` and `@getdomovoi/credential-store` [I62]. The
+    release tooling still names two (`publishablePackages` in `scripts/release-artifacts.mjs`,
+    `release.yml`); changing it is owed work.
 
 Not decided yet: an off-machine dev-server preview [J32], launching `ssh` [J41], checkpoint
 refs in an adopted repository [J43], direct API keys before the alpha [J18, D18], and one
