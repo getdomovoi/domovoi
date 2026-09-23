@@ -133,7 +133,7 @@ export function SettingsScreen({
             disagree with what the machine has been told. None has anywhere to
             go, so none is drawn with a chevron. */}
         <View className="gap-[7px]">
-          <Text variant="label" className="px-1">This phone</Text>
+          <Text variant="label" className="px-1">THIS PHONE</Text>
           <Card flush>
             {phoneFacts({
               os: Platform.OS,
