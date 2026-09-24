@@ -14,8 +14,11 @@ pnpm performance:budget
 The command measures minified production bytes for the web client and Electron renderer, main
 process, and preload. Startup JavaScript counts only the graph the built `index.html` loads
 eagerly: the entry module and every `modulepreload` it declares. Chunks that load lazily, such as
-the terminal pane, are reported as lazy bytes with their own budget, so both an eager regression
-and a lazy-chunk regression fail the gate. It prints the measurements, budgets, and any failures
+the terminal pane and the Settings, Skills, Machines and Audit log surfaces, are paid for only when
+that surface opens, so each lazy chunk is held to the lazy budget on its own, together with every
+chunk it imports that startup did not already load: the reported lazy bytes are the largest such
+graph, not the sum of all lazy chunks. An eager regression and an oversized lazy chunk
+both fail the gate. It prints the measurements, budgets, and any failures
 as JSON. `pnpm test` gates the runtime invariants below. CI runs both commands on Linux, macOS,
 and Windows.
 
