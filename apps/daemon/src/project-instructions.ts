@@ -70,10 +70,12 @@ async function collectClaudeFile(
 // raw HTML, so containers, escapes, paragraph boundaries and tab stops follow
 // Markdown's own rules. Inline HTML tags arrive as separate nodes beside the
 // text they enclose, so text between an opening <code>, <pre>, <kbd> or <samp>
-// and its closing tag is skipped too, within the same paragraph.
+// and its closing tag is skipped too, within the same paragraph. The parser
+// gives one node per tag and one per comment, so only a node's leading tag
+// name counts: a tag written inside an attribute value or a comment does not.
 type MarkdownNode = { type: string; value?: unknown; children?: MarkdownNode[] }
 
-const codeTag = /<(\/?)(code|pre|kbd|samp)(?=[\s>/])[^>]*>/gi
+const codeTag = /^<(\/?)(code|pre|kbd|samp)(?=[\s>/])/i
 
 export function importReferences(text: string): string[] {
   const references: string[] = []
@@ -85,9 +87,8 @@ export function importReferences(text: string): string[] {
     let insideCode = 0
     for (const child of node.children ?? []) {
       if (child.type === "html" && typeof child.value === "string") {
-        for (const tag of child.value.matchAll(codeTag)) {
-          insideCode = tag[1] === "/" ? Math.max(0, insideCode - 1) : insideCode + 1
-        }
+        const tag = codeTag.exec(child.value)
+        if (tag) insideCode = tag[1] === "/" ? Math.max(0, insideCode - 1) : insideCode + 1
         continue
       }
       if (insideCode === 0) visit(child)
