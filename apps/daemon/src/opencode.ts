@@ -77,9 +77,14 @@ type Session = {
   runtime: Runtime
   activeTurnId?: string
   // Set once the server shows the active turn's own messages. The server ends
-  // an aborted run before it takes the next prompt, so an idle or error that
-  // comes before them is the interrupted turn's, not this one's.
+  // an aborted run before it takes the next prompt, so after an interrupt an
+  // idle or error that comes before them is the interrupted turn's, not this
+  // one's.
   activeTurnStarted?: true
+  // The turn an interrupt was sent for, until the first idle or error after
+  // it. Only an interrupt arms the wait above; without one, the first idle or
+  // error ends the active turn as before.
+  interruptedTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
 }
@@ -285,11 +290,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) return
     const client = await this.#client()
-    unwrap(await client.session.abort({
-      path: { id: threadId },
-      query: { directory: session.cwd },
-      throwOnError: true,
-    }), `${this.#identity.providerName} turn interruption`)
+    // Armed before the abort is sent, because the run's end can arrive before
+    // the abort's own answer.
+    session.interruptedTurnId = turnId
+    try {
+      unwrap(await client.session.abort({
+        path: { id: threadId },
+        query: { directory: session.cwd },
+        throwOnError: true,
+      }), `${this.#identity.providerName} turn interruption`)
+    } catch (error) {
+      if (session.interruptedTurnId === turnId) delete session.interruptedTurnId
+      throw error
+    }
   }
 
   async stopThread(threadId: string): Promise<void> {
@@ -531,7 +544,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       })
       return
     }
-    if ((event.type === "session.error" || event.type === "session.idle") && !session.activeTurnStarted) return
+    if (event.type === "session.error" || event.type === "session.idle") {
+      const interrupted = session.interruptedTurnId
+      delete session.interruptedTurnId
+      // The interrupted run's own end, arriving after the next turn took the
+      // slot and before that turn's messages. It ends nothing.
+      if (interrupted !== undefined && session.activeTurnId !== interrupted && !session.activeTurnStarted) return
+    }
     if (event.type === "session.error") {
       const error = asRecord(properties.error)
       this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
@@ -607,6 +626,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         turn: { id: turnId, status, ...(error ? { error } : {}) },
       },
     })
+    if (session.interruptedTurnId === session.activeTurnId) delete session.interruptedTurnId
     delete session.activeTurnId
     delete session.activeTurnStarted
     session.toolPhases.clear()

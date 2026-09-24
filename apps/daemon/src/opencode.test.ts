@@ -272,11 +272,9 @@ describe("OpenCodeSdkAdapter", () => {
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "First", runtime: runtime("build") })
-    stream.emit({ type: "message.updated", properties: { info: { id: "turn-1", sessionID: threadId, role: "user" } } })
     stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
     await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Second", runtime: runtime("build") })
-    stream.emit({ type: "message.updated", properties: { info: { id: "turn-2", sessionID: threadId, role: "user" } } })
     for (const info of [
       { id: "late", parentID: "turn-1" }, { id: "unassociated" },
     ]) stream.emit({ type: "message.updated", properties: { info: {
@@ -510,7 +508,6 @@ describe("OpenCodeSdkAdapter", () => {
       prompt: "Try again",
       runtime: runtime("build"),
     })).resolves.toBe("turn-2")
-    reopened.emit({ type: "message.updated", properties: { info: { id: "turn-2", sessionID: threadId, role: "user" } } })
     reopened.emit({ type: "session.idle", properties: { sessionID: threadId } })
     await waitForDaemon(() => expect(events).toContainEqual({
       type: "turn-completed",
@@ -689,6 +686,48 @@ describe("an interrupted turn's end that arrives late", () => {
       type: "turn-completed",
       params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
     })))
+    await adapter.close()
+  })
+
+  // Only an interrupt arms the wait for the new turn's own messages. Without
+  // one, the first idle or error ends the turn, even before any message.
+  it("ends a turn on a session error that comes before its user message when nothing was interrupted", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "ProviderAuthError", data: { message: "no key" } } } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId, turn: expect.objectContaining({ status: "failed" }) }),
+    })))
+    await adapter.close()
+  })
+
+  it("waits for the new turn's messages only until the interrupted run's end has come", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    const third = await adapter.interruptTurn(threadId, second).then(() =>
+      adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Three", runtime: runtime("build") }))
+    void third
+    events.length = 0
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "UnknownError", data: { message: "boom" } } } })
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1))
     await adapter.close()
   })
 })
