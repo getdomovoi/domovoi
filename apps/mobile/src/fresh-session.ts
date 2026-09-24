@@ -1,6 +1,7 @@
 import {
   runtimeDiscoverResultSchema,
   workspaceSnapshotSchema,
+  type RpcParams,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -12,7 +13,13 @@ export type FreshSessionReadiness =
   | { canStart: true, reason: undefined }
   | { canStart: false, reason: string }
 
-type RpcCall = (method: string, params: unknown) => Promise<unknown>
+// The three calls a fresh start makes, each checked against the protocol. The
+// answers are read with their schemas below.
+type FreshSessionCall = {
+  (method: "runtime.discover", params: RpcParams<"runtime.discover">): Promise<unknown>
+  (method: "session.create", params: RpcParams<"session.create">): Promise<unknown>
+  (method: "session.send", params: RpcParams<"session.send">): Promise<unknown>
+}
 
 export function freshSessionReadiness(snapshot: WorkspaceSnapshot): FreshSessionReadiness {
   if (!snapshot.project) return { canStart: false, reason: noOpenProjectReason }
@@ -24,7 +31,7 @@ export function freshSessionReadiness(snapshot: WorkspaceSnapshot): FreshSession
 export async function startFreshSession(
   snapshot: WorkspaceSnapshot,
   prompt: string,
-  call: RpcCall,
+  call: FreshSessionCall,
   client: HandheldClient,
 ): Promise<string> {
   const readiness = freshSessionReadiness(snapshot)

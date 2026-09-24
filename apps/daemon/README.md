@@ -713,6 +713,28 @@ remove only the named claim file. Keep the session worktree, repository and Git 
 token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
 make live manual claim deletion safe.
 
+## Live provider contract
+
+The adapter unit tests drive fakes that submit every tool call for approval, so they cannot see a
+call a real provider approves on its own. `src/live-provider-contract.test.ts` runs the providers
+installed on the machine (`claude`, `codex`, `opencode`, `kilo`; a missing one is reported as skipped) through
+the real adapters in Ask, Build and Build auto. Each provider talks to a local stand-in for its
+model API that asks for one shell command: reading a committed `.env` that holds a planted token,
+writing a file outside the worktree, or `rm -rf build`. The suite denies every approval and checks
+that the effect did not happen (the token never came back to the stand-in, the file does not
+exist, `build/` is intact). Every case also checks that the stand-in sent its tool call, since a
+case where it never did tested nothing. In Build (except Codex) the request must reach the adapter
+as an approval or a policy refusal first; otherwise the turn must have ended or shown a card. No
+model is called and no account is used; it runs under a scratch `HOME`. The outside-the-worktree
+target is a scratch directory under the real `~/.cache` (`~/.cache/domovoi-live-contract-*`),
+because Codex's workspace sandbox keeps the temporary directory writable. The suite removes it
+afterwards; a run that is killed can leave it behind. It is opt-in and not for hosted CI:
+
+```sh
+cd apps/daemon
+DOMOVOI_LIVE_PROVIDERS=1 npx vitest run src/live-provider-contract.test.ts --coverage.enabled=false
+```
+
 ## Loaded fixture checks
 
 The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native

@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<script src="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/_ds_bundle.js"></script>
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: calc(var(--radius) - 2px); border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--primary) 55%, var(--border)); background-clip: content-box; }
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); } 70% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--warning) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); } }
+  @keyframes dvPopIn { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  @keyframes dvBlink { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+  .dv-dark {
+    --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
+    --accent: oklch(0.235 0.006 285); --muted: oklch(0.265 0.007 285); --border: oklch(0.305 0.008 285);
+    --foreground: oklch(0.96 0.003 285); --strong: oklch(0.89 0.003 285); --muted-foreground: oklch(0.66 0.01 285);
+    --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
+    --overlay: oklch(0.11 0.004 285 / .72);
+    --shadow-lg: oklch(0 0 0 / .55); --shadow-xl: oklch(0 0 0 / .8);
+    --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
+    --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-bg: oklch(0.235 0.045 62); --warn-bg-deep: oklch(0.19 0.03 62); --warn-border: oklch(0.38 0.08 62);
+    --warning-foreground: oklch(0.19 0.03 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25); --danger-dim: oklch(0.78 0.06 25);
+    --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240); --info-dim: oklch(0.8 0.08 240);
+  }
+  .dv-light {
+    --background: oklch(0.995 0.001 285); --sidebar: oklch(0.975 0.003 285); --card: oklch(1 0 0);
+    --accent: oklch(0.955 0.004 285); --muted: oklch(0.935 0.005 285); --border: oklch(0.9 0.006 285);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.33 0.011 285); --muted-foreground: oklch(0.5 0.012 285);
+    --faint: oklch(0.63 0.011 285); --code: oklch(0.972 0.003 285); --desk: oklch(0.925 0.005 285);
+    --overlay: oklch(0.3 0.01 285 / .38);
+    --shadow-lg: oklch(0.2 0.01 285 / .16); --shadow-xl: oklch(0.2 0.01 285 / .2);
+    --primary: oklch(0.52 0.2 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.52 0.13 158); --warning: oklch(0.6 0.13 62); --destructive: oklch(0.55 0.2 25); --info: oklch(0.52 0.14 240);
+    --warn-bg: oklch(0.975 0.025 85); --warn-bg-deep: oklch(0.945 0.045 85); --warn-border: oklch(0.86 0.09 75);
+    --warning-foreground: oklch(0.22 0.04 62); --warn-fg: oklch(0.38 0.09 62); --warn-dim: oklch(0.52 0.09 62);
+    --danger-bg: oklch(0.965 0.02 25); --danger-border: oklch(0.87 0.07 25); --danger-fg: oklch(0.42 0.14 25); --danger-dim: oklch(0.54 0.14 25);
+    --info-bg: oklch(0.965 0.02 240); --info-border: oklch(0.87 0.05 240); --info-fg: oklch(0.36 0.1 240); --info-dim: oklch(0.48 0.11 240);
+  }
+</style>
+</helmet>
+
+<div class="{{ rootClass }}" style="--radius: 0.65rem; --ring: var(--primary); min-height: 100vh; min-width: max-content; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 26px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+
+  <div style="width: 1560px; display: flex; align-items: flex-start; gap: 16px;">
+    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px;">
+      <div style="font-size: 19px; font-weight: 600; letter-spacing: -.015em;">Several projects on one machine</div>
+      <div style="font-size: 13px; color: var(--muted-foreground);">Proposal. Today a daemon has one active project, and opening another stops the first. Here each machine holds up to 3, as its daemon states.</div>
+    </div>
+    <sc-if value="{{ isPhoneView }}" hint-placeholder-val="{{ false }}">
+      <div style="display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--accent);">
+        <div onClick="{{ setIos }}" style="{{ iosTabStyle }}">iOS</div>
+        <div onClick="{{ setAndroid }}" style="{{ androidTabStyle }}">Android</div>
+      </div>
+    </sc-if>
+    <div onClick="{{ toggleTheme }}" aria-label="Switch theme" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">{{ themeIcon }}</div>
+  </div>
+
+  <div style="width: 1560px; display: flex; flex-direction: column; gap: 10px;">
+    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <sc-for list="{{ steps }}" as="s" hint-placeholder-count="9">
+        <div onClick="{{ s.go }}" style="{{ s.style }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ s.numColor }};">{{ s.num }}</span>
+          <span style="font-size: 11.5px;">{{ s.label }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display: flex; align-items: baseline; gap: 10px; min-height: 20px;">
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ stepNum }}</span>
+      <span style="font-size: 12.5px; color: var(--strong);">{{ stepNote }}</span>
+    </div>
+  </div>
+
+  <sc-if value="{{ isDesk }}" hint-placeholder-val="{{ true }}">
+  <div style="width: 1560px; height: 940px; flex: 0 0 auto; position: relative; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
+
+    <div style="height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border); position: relative; z-index: 6;">
+      <sc-if value="{{ isMac }}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; gap: 8px; padding-right: 4px;">
+          <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+          <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+          <div style="width: 11px; height: 11px; border-radius: 50%; background: var(--muted);"></div>
+        </div>
+      </sc-if>
+      <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
+      <div onClick="{{ toggleDrawer }}" aria-label="Sessions" style="{{ drawerBtnStyle }}" style-hover="background: var(--accent); color: var(--foreground);">{{ I.panel }}</div>
+      <div onClick="{{ goLauncher }}" aria-label="New session" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">{{ I.plus }}</div>
+
+      <div style="flex: 1; display: flex; justify-content: center;">
+        <div onClick="{{ openPalette }}" style="display: flex; align-items: center; gap: 9px; width: 560px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--sidebar); cursor: pointer; color: var(--faint);" style-hover="background: var(--accent);">
+          {{ I.search14 }}
+          <span style="font-size: 12.5px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ titleText }}</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); flex: 0 0 auto;">{{ kPalette }}</span>
+        </div>
+      </div>
+
+      <div style="position: relative; display: flex;">
+        <div onClick="{{ togglePop }}" style="{{ projChipStyle }}" style-hover="background: var(--accent); color: var(--foreground);">
+          {{ I.folder14 }}
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ th.project }}</span>
+          {{ I.chevD12 }}
+        </div>
+        <sc-if value="{{ popOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position: absolute; top: calc(100% + 7px); right: 0; z-index: 9; width: 430px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 20px 60px var(--shadow-lg); overflow: hidden; animation: dvPopIn .11s var(--ease-out, ease);">
+            <div style="display: flex; align-items: center; gap: 7px; padding: 11px 14px; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">ACTIVE ON</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">mac-mini-m4</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ capText }}</span>
+            </div>
+            <div style="padding: 6px; display: flex; flex-direction: column; gap: 2px;">
+              <sc-for list="{{ popActive }}" as="pa" hint-placeholder-count="3">
+                <div style="{{ pa.rowStyle }}" style-hover="background: var(--accent);">
+                  <div onClick="{{ pa.pick }}" style="flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+                    <span style="{{ pa.dot }}"></span>
+                    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                      <div style="display: flex; align-items: baseline; gap: 8px;">
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--foreground);">{{ pa.name }}</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ pa.path }}</span>
+                      </div>
+                      <span style="font-size: 11px; color: var(--muted-foreground);">{{ pa.status }}</span>
+                    </div>
+                  </div>
+                  <div onClick="{{ pa.close }}" style="padding: 5px 11px; border-radius: calc(var(--radius) - 3px); border: 1px solid var(--border); font-size: 11px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger-fg);">Close</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="border-top: 1px solid var(--border); padding: 10px 14px 4px; font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">OPEN ANOTHER ON THIS MACHINE</div>
+            <sc-if value="{{ atCap }}" hint-placeholder-val="{{ false }}">
+              <div style="margin: 6px 12px 4px; padding: 10px 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--accent); display: flex; align-items: flex-start; gap: 9px; color: var(--muted-foreground);">
+                {{ I.lock14 }}
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <span style="font-size: 12px; color: var(--foreground);">{{ capSentence }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">refused by the daemon · project_cap 3</span>
+                </div>
+              </div>
+            </sc-if>
+            <div style="padding: 2px 6px 6px; display: flex; flex-direction: column; gap: 2px;">
+              <sc-for list="{{ popOpenable }}" as="po" hint-placeholder-count="2">
+                <div style="{{ po.rowStyle }}">
+                  <span style="display: flex; color: var(--muted-foreground);">{{ po.icon }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">{{ po.name }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ po.path }}</span>
+                  <span style="flex: 1;"></span>
+                  <div onClick="{{ po.open }}" aria-disabled="{{ po.disabled }}" style="{{ po.btnStyle }}">{{ po.btn }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="border-top: 1px solid var(--border); padding: 9px 14px; font-size: 11px; color: var(--faint);">Opening or closing one project stops nothing in the others.</div>
+          </div>
+        </sc-if>
+      </div>
+      <div onClick="{{ noop }}" style="display: flex; align-items: center; gap: 8px; padding: 5px 10px 4px 9px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border);" style-hover="background: var(--accent);">
+        <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--success);"></span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">mac-mini-m4</span>
+        <span style="font-size: 10.5px; color: var(--faint);">loopback</span>
+      </div>
+      <div onClick="{{ toggleTheme }}" aria-label="Switch theme" style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">{{ themeIcon }}</div>
+      <sc-if value="{{ notMac }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; gap: 2px; margin-left: 4px;">
+          <div style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">{{ I.minus }}</div>
+          <div style="{{ iconBtn }}" style-hover="background: var(--accent); color: var(--foreground);">{{ I.square }}</div>
+          <div style="{{ iconBtn }}" style-hover="background: var(--destructive); color: var(--primary-foreground);">{{ I.x }}</div>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="flex: 1; min-height: 0; display: flex; position: relative;">
+
+      <sc-if value="{{ drawerOpen }}" hint-placeholder-val="{{ true }}">
+        <div style="width: 268px; flex: 0 0 268px; border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; overflow: hidden;">
+          <sc-if value="{{ drawer.hasChips }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; flex-wrap: wrap; gap: 5px; padding: 10px 10px 2px;">
+              <sc-for list="{{ drawer.chips }}" as="c" hint-placeholder-count="4">
+                <div onClick="{{ c.pick }}" style="{{ c.style }}">
+                  <span style="{{ c.labelStyle }}">{{ c.label }}</span>
+                  <span style="{{ c.subStyle }}">{{ c.sub }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ c.count }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column;">
+            <sc-for list="{{ drawer.groups }}" as="g" hint-placeholder-count="4">
+              <div style="display: flex; flex-direction: column; gap: 2px; padding-bottom: 8px;">
+                <div style="position: relative; display: flex; align-items: center; gap: 7px; padding: 8px 9px 6px; border-radius: calc(var(--radius) - 3px);" style-hover="background: color-mix(in oklab, var(--accent) 60%, transparent);">
+                  <div onClick="{{ g.toggle }}" style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; cursor: pointer;">
+                    <span style="{{ g.chevronStyle }}">{{ I.chevR12 }}</span>
+                    <span style="{{ g.labelStyle }}">{{ g.label }}</span>
+                    <span style="{{ g.subStyle }}">{{ g.sub }}</span>
+                  </div>
+                  <span style="{{ g.badgeStyle }}">{{ g.count }}</span>
+                  <sc-if value="{{ g.hasMenu }}" hint-placeholder-val="{{ false }}">
+                    <div onClick="{{ g.openMenu }}" aria-label="{{ g.menuAria }}" style="display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: calc(var(--radius) - 4px); color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--muted); color: var(--foreground);">{{ I.more14 }}</div>
+                  </sc-if>
+                  <sc-if value="{{ g.menuOpen }}" hint-placeholder-val="{{ false }}">
+                    <div style="position: absolute; top: calc(100% + 4px); right: 4px; z-index: 7; width: 224px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); box-shadow: 0 16px 44px var(--shadow-lg); overflow: hidden; animation: dvPopIn .1s var(--ease-out, ease);">
+                      <div onClick="{{ g.doClose }}" style="display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; cursor: pointer;" style-hover="background: var(--danger-bg);">
+                        <span style="font-size: 12px; color: var(--foreground);">Close this project</span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ g.closeNote }}</span>
+                      </div>
+                    </div>
+                  </sc-if>
+                </div>
+                <sc-if value="{{ g.hasReceipt }}" hint-placeholder-val="{{ false }}">
+                  <div style="margin: 0 2px 2px; padding: 10px 11px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--card); display: flex; flex-direction: column; gap: 9px;">
+                    <div style="display: flex; align-items: baseline; gap: 7px;">
+                      <span style="font-size: 12px; font-weight: 500; color: var(--foreground);">Closed</span>
+                      <span style="flex: 1;"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ g.receipt.time }}</span>
+                    </div>
+                    <sc-for list="{{ g.receipt.lines }}" as="rl" hint-placeholder-count="3">
+                      <div style="display: flex; align-items: flex-start; gap: 8px;">
+                        <span style="{{ rl.dot }}"></span>
+                        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;">
+                          <span style="font-size: 11.5px; color: var(--strong);">{{ rl.label }}</span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ rl.detail }}</span>
+                          <sc-if value="{{ rl.hasNote }}" hint-placeholder-val="{{ false }}">
+                            <span style="font-size: 11px; line-height: 1.5; color: var(--muted-foreground);">{{ rl.note }}</span>
+                          </sc-if>
+                        </div>
+                      </div>
+                    </sc-for>
+                    <sc-if value="{{ g.receipt.hasCheck }}" hint-placeholder-val="{{ false }}">
+                      <span onClick="{{ g.receipt.check }}" style="align-self: flex-start; font-size: 11px; color: var(--primary); cursor: pointer;">Ask the daemon again</span>
+                    </sc-if>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ g.open }}" hint-placeholder-val="{{ true }}">
+                  <sc-for list="{{ g.rows }}" as="s" hint-placeholder-count="2">
+                    <div onMouseEnter="{{ s.enter }}" onMouseLeave="{{ s.leave }}" style="{{ s.rowStyle }}">
+                      <span onClick="{{ s.go }}" style="{{ s.dot }}"></span>
+                      <div onClick="{{ s.go }}" style="min-width: 0; flex: 1; cursor: pointer;">
+                        <div style="font-size: 12px; line-height: 1.38; color: var(--strong); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ s.title }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ s.meta }}</div>
+                      </div>
+                      <div style="position: relative; display: flex;">
+                        <div onClick="{{ s.toggleMenu }}" aria-label="Session actions" style="{{ s.menuBtnStyle }}">{{ I.more14 }}</div>
+                        <sc-if value="{{ s.menuOpen }}" hint-placeholder-val="{{ false }}">
+                          <div style="position: absolute; top: calc(100% + 5px); right: 0; z-index: 7; width: 214px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); box-shadow: 0 16px 44px var(--shadow-lg); overflow: hidden; animation: dvPopIn .1s var(--ease-out, ease);">
+                            <sc-for list="{{ s.menu }}" as="mi" hint-placeholder-count="5">
+                              <div onClick="{{ mi.act }}" style="{{ mi.style }}" style-hover="background: var(--accent);">
+                                <span style="display: flex; color: var(--muted-foreground);">{{ mi.icon }}</span>
+                                <span>{{ mi.label }}</span>
+                              </div>
+                            </sc-for>
+                          </div>
+                        </sc-if>
+                      </div>
+                    </div>
+                  <sc-for list="{{ s.subs }}" as="sb" hint-placeholder-count="0">
+                    <div onClick="{{ sb.pick }}" style="{{ sb.style }}" style-hover="background: color-mix(in oklab, var(--accent) 60%, transparent);">
+                      <sc-if value="{{ sb.mid }}" hint-placeholder-val="{{ true }}"><span style="position: relative; width: 9px; flex: 0 0 9px; align-self: stretch; margin-top: -3px; border-left: 1px solid var(--border);"><span style="position: absolute; left: 0; top: 14px; width: 8px; border-top: 1px solid var(--border);"></span></span></sc-if>
+                      <sc-if value="{{ sb.end }}" hint-placeholder-val="{{ false }}"><span style="width: 9px; flex: 0 0 9px; align-self: flex-start; height: 17px; margin-top: -3px; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); border-bottom-left-radius: 4px;"></span></sc-if>
+                      <span style="{{ sb.dot }}"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); white-space: nowrap;">{{ sb.name }}</span>
+                      <span style="flex: 1; min-width: 0; font-size: 10.5px; color: var(--faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ sb.state }}</span>
+                    </div>
+                  </sc-for>
+                  </sc-for>
+                  <sc-if value="{{ g.hasEmpty }}" hint-placeholder-val="{{ false }}">
+                    <div style="padding: 2px 9px 4px 28px; font-size: 11px; color: var(--faint);">{{ g.empty }}</div>
+                  </sc-if>
+                  <sc-if value="{{ g.hasMore }}" hint-placeholder-val="{{ false }}">
+                    <div style="padding: 4px 9px 4px 24px; font-size: 11px; color: var(--primary); cursor: pointer;">{{ g.more }}</div>
+                  </sc-if>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex: 0 0 auto; padding: 9px 10px 11px; display: flex; flex-direction: column; align-items: center; gap: 5px;">
+            <span onClick="{{ togglePop }}" style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); cursor: pointer;">{{ drawer.footer }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">3 machines · 1 unreachable</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+        <sc-if value="{{ isLauncher }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px 24px;">
+            <div style="width: 100%; max-width: 760px; margin: auto 0; display: flex; flex-direction: column; gap: 20px; padding: 40px 0;">
+              <div style="display: flex; flex-direction: column; gap: 7px;">
+                <div style="font-size: 22px; font-weight: 600; letter-spacing: -.02em;">What should the agent work on?</div>
+                <div style="font-size: 13px; color: var(--muted-foreground);">It runs on <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">mac-mini-m4</span> in <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">{{ launchProject }}</span>, in a fresh worktree off <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">main</span>. Nothing touches your checkout.</div>
+              </div>
+              <div style="border: 1px solid var(--border); border-radius: 16px; background: var(--card); padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 12px;">
+                <div style="font-size: 13.5px; line-height: 1.6; color: var(--foreground);">Invoices with Cyrillic line items render boxes instead of letters. Fix the font fallback and add a render test.<span style="display: inline-block; width: 1.5px; height: 15px; background: var(--primary); margin-left: 2px; vertical-align: -2px; animation: dvBlink 1.1s steps(1) infinite;"></span></div>
+                <div style="display: flex; align-items: center; gap: 7px; flex-wrap: wrap;">
+                  <div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; background: var(--accent); cursor: pointer; color: var(--faint);" style-hover="background: var(--muted);">
+                    <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--success);"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">mac-mini-m4</span>
+                    {{ I.chevD12 }}
+                  </div>
+                  <div style="position: relative; display: flex;">
+                    <div onClick="{{ toggleLaunchMenu }}" style="{{ launchProjChipStyle }}" style-hover="background: var(--muted);">
+                      {{ I.folder12 }}
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ launchProject }}</span>
+                      {{ I.chevD12 }}
+                    </div>
+                    <sc-if value="{{ launchMenu }}" hint-placeholder-val="{{ false }}">
+                      <div style="position: absolute; top: calc(100% + 6px); left: 0; z-index: 8; width: 380px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 20px 60px var(--shadow-lg); overflow: hidden; animation: dvPopIn .11s var(--ease-out, ease);">
+                        <div style="display: flex; align-items: center; gap: 7px; padding: 10px 13px; border-bottom: 1px solid var(--border);">
+                          <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">ACTIVE ON</span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">mac-mini-m4</span>
+                          <span style="flex: 1;"></span>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ capText }}</span>
+                        </div>
+                        <div style="padding: 6px; display: flex; flex-direction: column; gap: 2px;">
+                          <sc-for list="{{ launchRows }}" as="lr" hint-placeholder-count="3">
+                            <div onClick="{{ lr.pick }}" style="{{ lr.rowStyle }}" style-hover="background: var(--accent);">
+                              <span style="{{ lr.dot }}"></span>
+                              <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                                <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--foreground);">{{ lr.name }}</span>
+                                <span style="font-size: 11px; color: var(--muted-foreground);">{{ lr.status }}</span>
+                              </div>
+                              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ lr.path }}</span>
+                            </div>
+                          </sc-for>
+                        </div>
+                        <div style="{{ launchOpenStyle }}" onClick="{{ launchOpenAct }}">
+                          <span style="display: flex; color: var(--muted-foreground);">{{ launchOpenIcon }}</span>
+                          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                            <span style="font-size: 12px; color: var(--foreground);">Open another project</span>
+                            <span style="font-size: 11px; color: var(--muted-foreground);">{{ launchOpenNote }}</span>
+                          </div>
+                        </div>
+                        <div style="border-top: 1px solid var(--border); padding: 9px 13px; font-size: 11px; color: var(--faint);">Only projects active on the chosen machine are listed.</div>
+                      </div>
+                    </sc-if>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; background: var(--accent); cursor: pointer;" style-hover="background: var(--muted);">
+                    <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--faint);"></span>
+                    <span style="font-size: 11px; color: var(--strong);">fresh worktree off main</span>
+                  </div>
+                  <span style="flex: 1;"></span>
+                  <div onClick="{{ startSession }}" style="display: flex; align-items: center; gap: 8px; padding: 7px 15px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">
+                    <span>Start the session</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; opacity: .8;">{{ kSend }}</span>
+                  </div>
+                </div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">PICK UP WHERE YOU LEFT OFF</div>
+                <div style="display: flex; flex-direction: column;">
+                  <sc-for list="{{ recent }}" as="r" hint-placeholder-count="3">
+                    <div onClick="{{ r.go }}" style="display: flex; align-items: center; gap: 11px; padding: 11px 12px; border-top: 1px solid var(--border); cursor: pointer;" style-hover="background: var(--accent);">
+                      <span style="{{ r.dot }}"></span>
+                      <span style="font-size: 12.5px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ r.title }}</span>
+                      <span style="flex: 1;"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); white-space: nowrap;">{{ r.meta }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isThread }}" hint-placeholder-val="{{ true }}">
+          <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 32px 24px 0;">
+            <div style="width: 100%; max-width: 760px; margin-top: auto; display: flex; flex-direction: column; gap: 22px; padding-bottom: 20px;">
+              <div style="display: flex; align-items: center; gap: 10px; color: var(--faint);">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ th.crumb }}</span>
+                <span style="flex: 1; height: 1px; background: var(--border);"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">14:07</span>
+              </div>
+              <div style="display: flex; justify-content: flex-end;">
+                <div style="max-width: 74%; padding: 11px 15px; border-radius: 14px 14px 4px 14px; background: var(--accent); font-size: 13.5px; line-height: 1.6;">{{ th.ask }}</div>
+              </div>
+              <div style="font-size: 13.5px; line-height: 1.65; text-wrap: pretty;">{{ th.reply }}</div>
+              <sc-if value="{{ th.isGate }}" hint-placeholder-val="{{ true }}">
+                <div style="border: 1.5px solid var(--warning); border-radius: 16px; background: var(--warn-bg); overflow: hidden;">
+                  <div style="display: flex; align-items: center; gap: 11px; padding: 14px 16px 12px;">
+                    <span style="width: 9px; height: 9px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+                    <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--warn-fg);">Waiting on your decision</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">{{ th.gateMeta }}</span>
+                  </div>
+                  <div style="padding: 0 16px 13px;">
+                    <div style="padding: 13px 15px; border-radius: calc(var(--radius) - 2px); background: var(--warn-bg-deep); font-family: 'JetBrains Mono', monospace; font-size: 13.5px; color: var(--warn-fg);">{{ th.cmd }}</div>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px; padding: 0 16px 14px;">
+                    <div style="padding: 8px 16px; border-radius: 999px; background: var(--warning); color: var(--warning-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">Allow once</div>
+                    <div style="padding: 8px 16px; border-radius: 999px; border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12.5px; cursor: pointer;">Deny</div>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+          <div style="flex: 0 0 auto; position: relative; z-index: 1; margin-top: -20px; display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 20px 24px 20px; background: linear-gradient(to bottom, transparent 0, color-mix(in oklab, var(--background) 58%, transparent) 9px, var(--background) 20px);">
+            <sc-if value="{{ th.hasStrip }}" hint-placeholder-val="{{ true }}">
+              <div style="width: 100%; max-width: 760px; position: relative; border: 1px solid var(--border); border-top-color: transparent; border-radius: 14px; background: var(--card); overflow: hidden;" style-before="content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(to right, transparent, var(--border) 16%, var(--border) 84%, transparent); pointer-events: none;">
+                <div style="display: flex; align-items: center; gap: 10px; padding: 9px 13px; cursor: pointer;" style-hover="background: var(--accent);">
+                  <span style="{{ th.stripDot }}"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ th.stripStep }}</span>
+                  <span style="font-size: 12px; color: var(--foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ th.stripTitle }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="{{ th.stripStateStyle }}">{{ th.stripState }}</span>
+                  <span style="font-size: 11px; color: var(--muted-foreground); cursor: pointer;">Edit</span>
+                  <span style="font-size: 11px; color: var(--primary); cursor: pointer;">Plan preview</span>
+                  <span style="display: inline-flex; color: var(--muted-foreground);">{{ I.chevD13 }}</span>
+                </div>
+              </div>
+            </sc-if>
+            <div style="{{ th.composerStyle }}">
+              <div style="font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; color: var(--faint);">{{ th.placeholder }}</div>
+              <div style="display: flex; align-items: center; gap: 7px;">
+                <div style="{{ th.attachStyle }}" style-hover="background: var(--accent); color: var(--foreground);">{{ I.paperclip }}</div>
+                <div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid transparent;">
+                  <span role="img" aria-label="claude-code" style="display: block; width: 12px; height: 12px; flex: 0 0 12px; background: currentColor; color: var(--strong); -webkit-mask: url(assets/harness/claude-code.svg) center / contain no-repeat; mask: url(assets/harness/claude-code.svg) center / contain no-repeat;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">sonnet 4.6</span>
+                  <span style="display: inline-flex; color: var(--faint);">{{ I.chevD12 }}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; background: color-mix(in oklab, var(--warning) 15%, transparent); color: var(--warning);">
+                  <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--warning);"></span>
+                  <span style="font-size: 11px; font-weight: 500;">Ask</span>
+                  <span style="display: inline-flex; color: var(--faint);">{{ I.chevD12 }}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; background: var(--accent); color: var(--strong);">
+                  <span style="display: flex; color: var(--muted-foreground);">{{ I.brain }}</span>
+                  <span style="font-size: 11px;">Medium</span>
+                  <span style="display: inline-flex; color: var(--faint);">{{ I.chevD12 }}</span>
+                </div>
+                <div style="{{ iconBtnSm }}" style-hover="background: var(--accent); color: var(--foreground);">{{ I.terminal }}</div>
+                <div style="{{ iconBtnSm }}" style-hover="background: var(--accent); color: var(--foreground);">{{ I.expand }}</div>
+                <span style="flex: 1;"></span>
+                <div style="display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; color: var(--muted-foreground);" style-hover="background: var(--accent);">
+                  {{ I.usage }}
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">42.1k</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">·</span>
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none" style="flex: 0 0 13px;" role="img" aria-label="38 percent of the 5 hour window, resets 17:40">
+                    <circle cx="7" cy="7" r="5.5" stroke="var(--muted)" stroke-width="2"></circle>
+                    <circle cx="7" cy="7" r="5.5" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-dasharray="34.56" stroke-dashoffset="21.43" transform="rotate(-90 7 7)"></circle>
+                  </svg>
+                </div>
+                <sc-if value="{{ th.isRunning }}" hint-placeholder-val="{{ false }}">
+                  <div aria-label="Stop the agent" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 999px; border: 1px solid var(--border); cursor: pointer;" style-hover="background: var(--accent);">
+                    <span style="display: block; width: 9px; height: 9px; border-radius: 3px; background: var(--muted-foreground);"></span>
+                  </div>
+                </sc-if>
+                <div aria-label="Send" style="{{ th.sendStyle }}">{{ I.arrowUp }}</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <sc-if value="{{ paletteOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="position: absolute; inset: 0; z-index: 10; background: var(--overlay); display: flex; justify-content: center; align-items: flex-start; padding-top: 96px;">
+          <div onClick="{{ closeOverlays }}" style="position: absolute; inset: 0;"></div>
+          <div style="width: 660px; position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 30px 90px var(--shadow-lg); overflow: hidden; animation: dvPopIn .14s var(--ease-out, ease);">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); color: var(--faint);">
+              {{ I.search16 }}
+              <span style="font-size: 14px; color: var(--strong);">pdf</span>
+              <span style="width: 1.5px; height: 17px; background: var(--primary); animation: dvBlink 1.1s steps(1) infinite;"></span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">sessions, projects, machines, commands</span>
+            </div>
+            <sc-for list="{{ paletteGroups }}" as="pg" hint-placeholder-count="3">
+              <div style="border-top: 1px solid var(--border); padding: 8px 8px 10px;">
+                <div style="padding: 6px 10px; font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ pg.label }}</div>
+                <sc-for list="{{ pg.items }}" as="pi" hint-placeholder-count="2">
+                  <div onClick="{{ pi.go }}" style="{{ pi.rowStyle }}" style-hover="background: var(--accent);">
+                    <span style="{{ pi.dot }}"></span>
+                    <span style="{{ pi.labelStyle }}">{{ pi.label }}</span>
+                    <span style="flex: 1;"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); white-space: nowrap;">{{ pi.meta }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ dialogOpen }}" hint-placeholder-val="{{ false }}">
+        <div style="position: absolute; inset: 0; z-index: 10; background: var(--overlay); display: flex; justify-content: center; align-items: center;">
+          <div onClick="{{ closeOverlays }}" style="position: absolute; inset: 0;"></div>
+          <div role="dialog" aria-label="{{ dlg.aria }}" style="width: 560px; position: relative; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 30px 90px var(--shadow-lg); overflow: hidden; animation: dvPopIn .14s var(--ease-out, ease);">
+            <div style="padding: 18px 20px 14px; display: flex; flex-direction: column; gap: 6px;">
+              <div style="font-size: 16px; font-weight: 600; letter-spacing: -.01em;">Close <span style="font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 500;">{{ dlg.name }}</span> on <span style="font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 500;">mac-mini-m4</span>?</div>
+              <div style="font-size: 12.5px; color: var(--muted-foreground);">{{ dlg.others }}</div>
+            </div>
+            <div style="border-top: 1px solid var(--border); padding: 12px 20px 4px; font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT STOPS</div>
+            <div style="padding: 4px 20px 12px; display: flex; flex-direction: column; gap: 11px;">
+              <sc-for list="{{ dlg.stops }}" as="ds" hint-placeholder-count="2">
+                <div style="display: flex; align-items: flex-start; gap: 10px;">
+                  <span style="{{ ds.dot }}"></span>
+                  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                    <span style="font-size: 12.5px; color: var(--strong);">{{ ds.title }}</span>
+                    <div style="display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;">
+                      <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ ds.effect }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ ds.detail }}</span>
+                    </div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="border-top: 1px solid var(--border); padding: 12px 20px 4px; font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT STAYS</div>
+            <div style="padding: 4px 20px 14px; display: flex; flex-direction: column; gap: 6px;">
+              <sc-for list="{{ dlg.stays }}" as="dy" hint-placeholder-count="3">
+                <span style="font-size: 12px; line-height: 1.5; color: var(--muted-foreground);">{{ dy }}</span>
+              </sc-for>
+            </div>
+            <div style="border-top: 1px solid var(--border); padding: 12px 20px 14px; display: flex; flex-direction: column; gap: 10px;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">listed by the daemon on mac-mini-m4 · 14:07:12</span>
+              <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <div onClick="{{ closeOverlays }}" style="padding: 7px 14px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--foreground); cursor: pointer; white-space: nowrap;" style-hover="background: var(--accent);">Cancel</div>
+                <div onClick="{{ dlg.confirm }}" style="padding: 7px 14px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--danger-border); background: var(--danger-bg); font-size: 12px; font-weight: 500; color: var(--danger-fg); cursor: pointer; white-space: nowrap;">{{ dlg.confirmLabel }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isPhoneView }}" hint-placeholder-val="{{ false }}">
+    <div style="width: 1560px; display: flex; justify-content: center;">
+      <div style="{{ colStyle }}">
+        <div style="display: flex; align-items: baseline; gap: 9px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">01</span>
+          <span style="font-size: 13px; font-weight: 600;">Sessions, needs-you first, then by project</span>
+        </div>
+        <div style="{{ phoneStyle }}">
+          <div style="{{ statusBarStyle }}">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+            <span style="flex: 1;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+          </div>
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 8px 18px 12px;">
+            <span style="{{ phoneMarkStyle }}" role="img" aria-label="Domovoi"></span>
+            <span style="font-size: 26px; font-weight: 600; letter-spacing: -.02em;">Sessions</span>
+            <span style="flex: 1;"></span>
+            <span style="padding: 4px 10px; border-radius: 999px; background: var(--warn-bg); color: var(--warn-fg); font-size: 11.5px; font-weight: 500;">{{ phoneNeeds }}</span>
+          </div>
+          <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 14px 92px; display: flex; flex-direction: column; gap: 14px;">
+            <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 9px; padding: 0 4px;">
+              <span style="width: 6px; height: 6px; flex: 0 0 6px; margin-top: 6px; border-radius: 50%; background: var(--info);"></span>
+              <span style="font-size: 12.5px; color: var(--muted-foreground); line-height: 1.5;">Keep Domovoi open to answer gates. Nothing is pushed to this phone yet.</span>
+            </div>
+            <sc-for list="{{ phoneGroups }}" as="g" hint-placeholder-count="4">
+              <div style="display: flex; flex-direction: column; gap: 7px;">
+                <div style="display: flex; align-items: baseline; gap: 8px; padding: 0 4px;">
+                  <span style="{{ g.labelStyle }}">{{ g.label }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">{{ g.sub }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="{{ g.badgeStyle }}">{{ g.count }}</span>
+                </div>
+                <sc-for list="{{ g.items }}" as="s" hint-placeholder-count="2">
+                  <div style="{{ s.cardStyle }}">
+                    <div style="display: flex; align-items: flex-start; gap: 10px;">
+                      <span style="{{ s.dot }}"></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: 14px; line-height: 1.4; color: var(--foreground);">{{ s.title }}</div>
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint); margin-top: 5px;">{{ s.meta }}</div>
+                      </div>
+                      <span style="{{ s.pillStyle }}">{{ s.pill }}</span>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-for>
+          </div>
+          <div style="{{ tabBarStyle }}">
+            <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--primary);">{{ I.sessions }}<span style="font-size: 10.5px;">Sessions</span></div>
+            <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--muted-foreground);">{{ I.machines }}<span style="font-size: 10.5px;">Machines</span></div>
+            <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--muted-foreground);">{{ I.settings }}<span style="font-size: 10.5px;">Settings</span></div>
+          </div>
+          <div style="{{ homeIndicatorStyle }}"></div>
+        </div>
+        <div style="{{ captionStyle }}">Project headers are labels, not controls. There is no open or close here, because the phone answers yes or no to what a machine proposed.</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isCompare }}" hint-placeholder-val="{{ false }}">
+    <div style="width: 1560px; display: flex; flex-direction: column; gap: 18px;">
+      <div style="padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); display: flex; flex-direction: column; gap: 6px;">
+        <span style="font-size: 13px; font-weight: 600;">Decided: B, section headers</span>
+        <span style="font-size: 12.5px; line-height: 1.6; color: var(--muted-foreground); max-width: 1100px; text-wrap: pretty;">The cap keeps headers to 3 per machine, so B stays short, and a row's position answers where it runs without reading its meta line. A hides the other projects' running work behind a filter, and its chips get ambiguous once the same repo is active on two machines.</span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px;">
+        <sc-for list="{{ panels }}" as="p" hint-placeholder-count="4">
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: flex; align-items: baseline; gap: 9px;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ p.id }}</span>
+              <span style="font-size: 13px; font-weight: 600;">{{ p.name }}</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ p.count }}</span>
+            </div>
+            <div style="height: 760px; border: 1px solid var(--border); border-radius: 14px; background: var(--sidebar); display: flex; flex-direction: column; overflow: hidden;">
+              <sc-if value="{{ p.drawer.hasChips }}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; flex-wrap: wrap; gap: 5px; padding: 10px 10px 2px;">
+                  <sc-for list="{{ p.drawer.chips }}" as="c" hint-placeholder-count="4">
+                    <div style="{{ c.style }}">
+                      <span style="{{ c.labelStyle }}">{{ c.label }}</span>
+                      <span style="{{ c.subStyle }}">{{ c.sub }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ c.count }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column;">
+                <sc-for list="{{ p.drawer.groups }}" as="g" hint-placeholder-count="4">
+                  <div style="display: flex; flex-direction: column; gap: 2px; padding-bottom: 8px;">
+                    <div style="display: flex; align-items: center; gap: 7px; padding: 8px 9px 6px;">
+                      <span style="{{ g.chevronStyle }}">{{ I.chevR12 }}</span>
+                      <span style="{{ g.labelStyle }}">{{ g.label }}</span>
+                      <span style="{{ g.subStyle }}">{{ g.sub }}</span>
+                      <span style="flex: 1;"></span>
+                      <span style="{{ g.badgeStyle }}">{{ g.count }}</span>
+                    </div>
+                    <sc-if value="{{ g.open }}" hint-placeholder-val="{{ true }}">
+                      <sc-for list="{{ g.rows }}" as="s" hint-placeholder-count="2">
+                        <div style="{{ s.rowStyle }}">
+                          <span style="{{ s.dot }}"></span>
+                          <div style="min-width: 0; flex: 1;">
+                            <div style="font-size: 12px; line-height: 1.38; color: var(--strong); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">{{ s.title }}</div>
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ s.meta }}</div>
+                          </div>
+                        </div>
+                  <sc-for list="{{ s.subs }}" as="sb" hint-placeholder-count="0">
+                    <div onClick="{{ sb.pick }}" style="{{ sb.style }}" style-hover="background: color-mix(in oklab, var(--accent) 60%, transparent);">
+                      <sc-if value="{{ sb.mid }}" hint-placeholder-val="{{ true }}"><span style="position: relative; width: 9px; flex: 0 0 9px; align-self: stretch; margin-top: -3px; border-left: 1px solid var(--border);"><span style="position: absolute; left: 0; top: 14px; width: 8px; border-top: 1px solid var(--border);"></span></span></sc-if>
+                      <sc-if value="{{ sb.end }}" hint-placeholder-val="{{ false }}"><span style="width: 9px; flex: 0 0 9px; align-self: flex-start; height: 17px; margin-top: -3px; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); border-bottom-left-radius: 4px;"></span></sc-if>
+                      <span style="{{ sb.dot }}"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); white-space: nowrap;">{{ sb.name }}</span>
+                      <span style="flex: 1; min-width: 0; font-size: 10.5px; color: var(--faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ sb.state }}</span>
+                    </div>
+                  </sc-for>
+                      </sc-for>
+                      <sc-if value="{{ g.hasEmpty }}" hint-placeholder-val="{{ false }}">
+                        <div style="padding: 2px 9px 4px 28px; font-size: 11px; color: var(--faint);">{{ g.empty }}</div>
+                      </sc-if>
+                      <sc-if value="{{ g.hasMore }}" hint-placeholder-val="{{ false }}">
+                        <div style="padding: 4px 9px 4px 24px; font-size: 11px; color: var(--primary);">{{ g.more }}</div>
+                      </sc-if>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="flex: 0 0 auto; padding: 9px 10px 11px; border-top: 1px solid var(--border); display: flex; justify-content: center;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ p.drawer.footer }}</span>
+              </div>
+            </div>
+            <div style="font-size: 12px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ p.note }}</div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1180},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;mac&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;,&quot;linux&quot;],&quot;tsType&quot;:&quot;\&quot;mac\&quot; | \&quot;windows\&quot; | \&quot;linux\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;phone&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;ios&quot;,&quot;options&quot;:[&quot;ios&quot;,&quot;android&quot;],&quot;tsType&quot;:&quot;\&quot;ios\&quot; | \&quot;android\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;}}">
+const M = "mac-mini-m4";
+const CAP = 3;
+const PROJ = {
+  "acme-api": { path: "~/code/acme-api", agents: [{ n: "claude-code", ok: true }] },
+  "acme-docs": { path: "~/code/acme-docs", agents: [{ n: "claude-code", ok: true }] },
+  "pdf-worker": { path: "~/code/pdf-worker", agents: [{ n: "claude-code", ok: true }, { n: "codex", ok: false, pid: "48213" }] },
+  "acme-web": { path: "~/code/acme-web", agents: [] },
+  "infra": { path: "~/code/infra", agents: [] }
+};
+const ORDER = ["acme-api", "acme-docs", "pdf-worker", "acme-web", "infra"];
+const ALL3 = ["acme-api", "acme-docs", "pdf-worker"];
+const S6 = [
+  { id: "billing", title: "Migrate billing webhooks to the new idempotency table", p: "acme-api", state: "gate", meta: "waiting on you", wt: "wt-billing-idem", cmd: "pnpm -w prisma migrate deploy", step: "step 3 of 4", plan: "Apply the migration on this machine's dev database", subs: [["test-runner", "running"], ["migration-check", "running"], ["", "1 finished"]] },
+  { id: "render", title: "Profile the render queue under 200 concurrent jobs", p: "pdf-worker", state: "gate", meta: "waiting on you", wt: "wt-render-prof", cmd: "pnpm bench:render --jobs 200", step: "step 2 of 3", plan: "Run the render benchmark at 200 concurrent jobs" },
+  { id: "backfill", title: "Backfill org_id on 4.1M audit rows without locking", p: "acme-api", state: "run", meta: "running 12m", wt: "wt-org-backfill", step: "step 2 of 5", plan: "Backfill in batches of 10k with a lock timeout", subs: [["row-counter", "running"]] },
+  { id: "runbook", title: "Write the on-call runbook for duplicate deliveries", p: "acme-docs", state: "run", meta: "running 4m", wt: "wt-runbook-dupes", step: "step 1 of 3", plan: "Collect the duplicate-delivery incidents from the last quarter" },
+  { id: "cold", title: "Cut the cold start on the pdf worker below 400ms", p: "pdf-worker", state: "run", meta: "running 3m", wt: "wt-cold-start", step: "step 2 of 4", plan: "Lazy-load pdfium until the first render", subs: [["profiler", "running"], ["", "2 finished"]] },
+  { id: "replay", title: "Document the replay table for the runbook", p: "acme-docs", state: "idle", meta: "idle 2d", wt: "wt-replay-doc", step: "" }
+];
+const SCLOSED = [
+  { id: "cdn", title: "Move the marketing site to the new CDN", p: "acme-web", state: "idle", meta: "stopped 3d", wt: "wt-cdn-move", step: "" }
+];
+const S40 = (() => {
+  const src = [
+    ["acme-api", M, [
+      ["Migrate billing webhooks to the new idempotency table", "gate"], ["Backfill org_id on 4.1M audit rows without locking", "run"],
+      ["Port the CLI auth flow off the deprecated device grant", "run"], ["Add rate limits to the public invoices endpoint", "run"],
+      ["Split the monolithic webhook handler by event type", "idle"], ["Replace the hand-rolled retry loop with the queue's backoff", "idle"],
+      ["Drop the unused legacy_customers table after the audit", "idle"], ["Move session tokens to the new signing key", "run"],
+      ["Cache tax lookups per region for one hour", "idle"], ["Fix the flaky refund test that times out on CI", "run"],
+      ["Remove the v1 pricing routes behind the flag", "idle"], ["Log idempotency key collisions with the request id", "idle"],
+      ["Tighten the Postgres pool to 20 connections", "idle"], ["Add a dry-run mode to the invoice regenerate script", "idle"],
+      ["Rename account_owner to billing_contact across the API", "idle"], ["Profile the slow customer export query", "idle"]]],
+    ["acme-docs", M, [
+      ["Write the on-call runbook for duplicate deliveries", "run"], ["Document the replay table for the runbook", "idle"],
+      ["Rewrite the webhook quickstart for the new signing scheme", "run"], ["Add the idempotency section to the API reference", "idle"],
+      ["Fix broken anchors in the migration guide", "idle"], ["Draft the changelog for 4.2", "gate"],
+      ["Convert the auth diagrams to the new style", "idle"], ["Remove the deprecated SDK pages", "idle"],
+      ["Check every code sample compiles against 4.2", "run"]]],
+    ["pdf-worker", M, [
+      ["Profile the render queue under 200 concurrent jobs", "gate"], ["Cut the cold start on the pdf worker below 400ms", "run"],
+      ["Pin pdfium to 6721 and rebuild the base image", "idle"], ["Stream large invoices instead of buffering them", "run"],
+      ["Fix the font fallback for Cyrillic invoice lines", "idle"], ["Add a health check that renders one real page", "idle"],
+      ["Trim the worker image under 300 MB", "idle"]]],
+    ["acme-api", "hetzner-cx42", [
+      ["Find why the staging queue drains at 40 per second", "fail"], ["Load test the new idempotency table at 2k writes per second", "run"],
+      ["Rebuild the staging seed data from last week's snapshot", "idle"], ["Rotate the Stripe webhook secret across environments", "gate"],
+      ["Compare replica lag before and after the backfill", "idle"]]],
+    ["infra", "hetzner-cx42", [
+      ["Move the staging Postgres to the new volume", "run"], ["Renew the wildcard certificate before it expires", "idle"],
+      ["Upgrade the tailnet ACLs to the tagged-owner model", "idle"]]]
+  ];
+  const out = []; let i = 0;
+  src.forEach(([p, m, rows]) => rows.forEach(([title, state]) => {
+    i += 1;
+    const meta = state === "gate" ? "waiting on you" : state === "fail" ? "failed 1h ago" : state === "run" ? "running " + (3 + (i * 7) % 40) + "m" : "idle " + (1 + i % 6) + "d";
+    out.push({ id: "s" + i, title, p, m, state, meta, active: true });
+  }));
+  return out;
+})();
+
+class Component extends DCLogic {
+  state = {
+    view: "desk", theme: null, phone: null, mode: null, drawerOpen: true,
+    active: ALL3, stopped: {}, selected: "billing", screen: "thread",
+    popOpen: false, paletteOpen: false, dialog: null, receipt: null, checked: false,
+    collapsed: { "NOT ACTIVE": true }, menuFor: null, launchMenu: false, launchProject: "pdf-worker", filter: "all"
+  };
+
+  componentDidMount() {
+    if (window.lucide && window.lucide.icons) return;
+    let tries = 0;
+    this._iconTimer = setInterval(() => {
+      tries += 1;
+      if (window.lucide && window.lucide.icons) { clearInterval(this._iconTimer); this.forceUpdate(); }
+      else if (tries > 60) clearInterval(this._iconTimer);
+    }, 100);
+  }
+  componentWillUnmount() { if (this._iconTimer) clearInterval(this._iconTimer); }
+
+  icon(name, size) {
+    const set = window.lucide && window.lucide.icons;
+    const entry = set ? set[name] : null;
+    const nodes = entry && Array.isArray(entry[2]) ? entry[2] : entry;
+    const px = size || 16;
+    if (!nodes || !nodes.length) return React.createElement("span", { style: { display: "inline-block", width: px, height: px, flex: "0 0 auto" } });
+    return React.createElement("svg", {
+      width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+      style: { display: "block", flex: "0 0 auto" }
+    }, nodes.map((n, i) => {
+      const attrs = {};
+      Object.keys(n[1] || {}).forEach(k => { attrs[k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())] = n[1][k]; });
+      attrs.key = i;
+      return React.createElement(n[0], attrs);
+    }));
+  }
+
+  dot(color, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
+  }
+  stateColor(s) {
+    return s === "gate" ? "var(--warning)" : s === "fail" ? "var(--destructive)" : s === "run" ? "var(--success)" : "var(--faint)";
+  }
+  hollow() {
+    return "width: 7px; height: 7px; flex: 0 0 7px; margin-top: 4px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); background: transparent;";
+  }
+
+  live(s, st) {
+    const m = s.m || M;
+    if (st.active.indexOf(s.p) < 0) {
+      const meta = st.receipt === s.p
+        ? (s.state === "gate" ? "approval expired" : s.state === "run" ? "turn interrupted" : "stopped")
+        : s.p === "acme-web" ? "stopped 3d" : "stopped";
+      return Object.assign({}, s, { m, active: false, state: "stopped", meta });
+    }
+    if (st.stopped[s.p]) return Object.assign({}, s, { m, active: true, state: "idle", meta: "stopped" });
+    return Object.assign({}, s, { m, active: true });
+  }
+
+  projStatus(list, p) {
+    const mine = list.filter(s => s.p === p && s.active);
+    const g = mine.filter(s => s.state === "gate").length;
+    const r = mine.filter(s => s.state === "run").length;
+    const parts = [];
+    if (g) parts.push(g + " waiting on you");
+    if (r) parts.push(r + " running");
+    if (!g && !r) parts.push(mine.length ? mine.length + " idle" : "no sessions yet");
+    return { text: parts.join(" · "), color: g ? "var(--warning)" : r ? "var(--success)" : "var(--faint)" };
+  }
+
+  buildDrawer(list, o) {
+    const noop = () => {};
+    const needsOf = s => s.active && (s.state === "gate" || s.state === "fail");
+    const key = s => s.p + "@" + s.m;
+    const keys = [];
+    (o.keys || []).forEach(k => { if (keys.indexOf(k) < 0) keys.push(k); });
+    list.forEach(s => { if (s.active && keys.indexOf(key(s)) < 0) keys.push(key(s)); });
+    const names = {};
+    keys.forEach(k => { const n = k.split("@")[0]; names[n] = (names[n] || 0) + 1; });
+    const collapsed = o.collapsed || {};
+    const eyebrow = "font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint); white-space: nowrap;";
+    const projLabel = "font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; color: var(--strong); white-space: nowrap;";
+    const monoSub = "min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;";
+    const sansSub = "min-width: 0; font-size: 10.5px; color: var(--faint); white-space: nowrap;";
+    const row = (s, withProject) => {
+      const hovered = o.hover === s.id;
+      const menuOpen = o.rowMenu === s.id;
+      const running = s.state === "run" || s.state === "gate";
+      const defs = [
+        { label: running ? "Stop the agent" : "Resume session", icon: running ? "Pause" : "Play" },
+        { label: "Fork from a checkpoint", icon: "GitFork" },
+        { label: "Move to another machine", icon: "HardDrive" },
+        { label: "Archive session", icon: "Archive" },
+        { label: "Delete the worktree", icon: "Trash2", danger: true }
+      ];
+      const subList = s.active && s.state !== "idle" ? (s.subs || []) : [];
+      const subs = subList.map(([name, state], i) => {
+        const end = !name;
+        return {
+          name, state, mid: !end, end,
+          dot: name ? "width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: var(--success);" : "display: none;",
+          pick: o.selectSub && name ? () => o.selectSub(s.id, name) : noop,
+          style: "display: flex; align-items: center; gap: 6px; height: 22px; margin-top: -3px; padding: 0 9px 0 21px; border-radius: calc(var(--radius) - 3px); cursor: pointer;" +
+            (name && o.sub === s.id + "/" + name ? " background: var(--accent);" : "")
+        };
+      });
+      return {
+        subs,
+        title: s.title,
+        meta: withProject ? s.m + " · " + s.p + " · " + s.meta : s.m + " · " + s.meta,
+        dot: this.dot(this.stateColor(s.state), 6) + " margin-top: 5px; cursor: pointer;",
+        go: o.select ? () => o.select(s.id) : noop,
+        enter: o.setHover ? () => o.setHover(s.id) : noop,
+        leave: o.setHover ? () => o.setHover(null) : noop,
+        menuOpen,
+        toggleMenu: o.setRowMenu ? () => o.setRowMenu(menuOpen ? null : s.id) : noop,
+        menuBtnStyle: "display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: 0 0 24px; margin-top: 2px; border-radius: 999px; cursor: pointer; color: var(--" +
+          (menuOpen ? "foreground" : "muted-foreground") + ");" + (menuOpen ? " background: var(--muted);" : "") +
+          (o.setHover && (hovered || menuOpen) ? "" : " opacity: 0;"),
+        menu: defs.map((m, i) => ({
+          label: m.label, icon: this.icon(m.icon, 14),
+          act: o.setRowMenu ? () => o.setRowMenu(null) : noop,
+          style: "display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; font-size: 12px; cursor: pointer; color: var(--" +
+            (m.danger ? "danger-fg" : "foreground") + ");" + (i ? " border-top: 1px solid var(--border);" : "")
+        })),
+        rowStyle: "display: flex; gap: 9px; padding: 8px 9px; border-radius: calc(var(--radius) - 3px);" +
+          (o.selected === s.id && !o.sub ? " background: var(--accent);" : hovered ? " background: color-mix(in oklab, var(--accent) 60%, transparent);" : "") +
+          (!s.active ? " opacity: .55;" : "")
+      };
+    };
+    const G = (id, kind, label, sub, rows, extra) => {
+      const open = !collapsed[id];
+      let shown = rows, more = "";
+      const lim = kind === "needs" ? 0 : (o.limit || 0);
+      if (lim && rows.length > lim) { shown = rows.slice(0, lim); more = (rows.length - lim) + " more" + (kind === "project" ? " in " + label : ""); }
+      return Object.assign({
+        label, sub: sub || "", count: String(rows.length),
+        labelStyle: kind === "project" ? projLabel : eyebrow,
+        subStyle: kind === "project" ? monoSub : sansSub,
+        badgeStyle: (() => {
+          const k = id === "NEEDS YOU" ? (rows.some(r => r.dot.indexOf("--warning") >= 0) ? "warning" : "muted") : id === "RUNNING" ? "success" : "muted";
+          return "min-width: 18px; padding: 2px 8px; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: " +
+            (k === "muted" ? "var(--muted)" : "color-mix(in oklab, var(--" + k + ") 16%, transparent)") + "; color: " +
+            (k === "muted" ? "var(--muted-foreground)" : "var(--" + k + ")") + ";";
+        })(),
+        chevronStyle: "display: flex; color: var(--faint); transform: rotate(" + (open ? 90 : 0) + "deg); transition: transform 140ms var(--ease-out, ease);",
+        open, rows: open ? shown : [], hasMore: open && !!more, more,
+        toggle: o.toggle ? () => o.toggle(id) : noop,
+        hasMenu: false, menuOpen: false, menuAria: "", openMenu: noop, doClose: noop, closeNote: "",
+        hasEmpty: false, empty: "", hasReceipt: false, receipt: { time: "", lines: [], hasCheck: false, check: noop }
+      }, extra || {});
+    };
+    const groups = [];
+    const needs = list.filter(needsOf);
+    const filterKey = o.mode === "filter" ? (o.filter || "all") : "all";
+    if (needs.length) groups.push(G("NEEDS YOU", "needs", "NEEDS YOU", o.mode === "filter" ? "all projects" : "", needs.map(s => row(s, true))));
+    if (o.mode === "filter") {
+      const pass = s => filterKey === "all" || key(s) === filterKey;
+      const run = list.filter(s => s.active && s.state === "run" && pass(s));
+      const quiet = list.filter(s => s.active && s.state === "idle" && pass(s));
+      if (run.length) groups.push(G("RUNNING", "state", "RUNNING", "", run.map(s => row(s, true))));
+      if (quiet.length) groups.push(G("QUIET", "state", "QUIET", "", quiet.map(s => row(s, true))));
+    } else {
+      keys.forEach(k => {
+        const [p, m] = k.split("@");
+        const rows = list.filter(s => s.active && key(s) === k && !needsOf(s));
+        const inNeeds = list.filter(s => needsOf(s) && key(s) === k).length;
+        const n = list.filter(s => s.active && key(s) === k && (s.state === "gate" || s.state === "run")).length;
+        groups.push(G(k, "project", p, m, rows.map(s => row(s, false)), {
+          hasEmpty: rows.length === 0,
+          empty: inNeeds ? (inNeeds === 1 ? "Its one session is in Needs you" : "Its sessions are in Needs you") : "No sessions yet",
+          hasMenu: !!o.menu, menuOpen: o.menuFor === p,
+          menuAria: "Actions for " + p,
+          openMenu: o.menu ? () => o.menu(p) : noop,
+          doClose: o.close ? () => o.close(p) : noop,
+          closeNote: p + " · stops " + n + (n === 1 ? " session" : " sessions")
+        }));
+      });
+      if (o.receipt) {
+        groups.push(G("receipt", "project", o.receipt.name, M, [], {
+          count: "", badgeStyle: "display: none;", hasReceipt: true, receipt: o.receipt
+        }));
+      }
+    }
+    const closed = list.filter(s => !s.active);
+    if (closed.length) groups.push(G("NOT ACTIVE", "state", "NOT ACTIVE", "", closed.map(s => row(s, true))));
+    const chips = o.mode === "filter" ? [{ k: "all", label: "All", sub: "", count: String(list.filter(s => s.active).length) }].concat(keys.map(k => {
+      const [p, m] = k.split("@");
+      return { k, label: p, sub: names[p] > 1 ? m : "", count: String(list.filter(s => s.active && key(s) === k).length) };
+    })).map(c => ({
+      label: c.label, sub: c.sub, count: c.count,
+      pick: o.pickFilter ? () => o.pickFilter(c.k) : noop,
+      labelStyle: c.k === "all" ? "font-size: 11px;" : "font-family: 'JetBrains Mono', monospace; font-size: 10.5px;",
+      subStyle: c.sub ? "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);" : "display: none;",
+      style: "display: flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+        (filterKey === c.k ? "var(--border); background: var(--accent); color: var(--foreground);" : "transparent; color: var(--muted-foreground);")
+    })) : [];
+    return { groups, chips, hasChips: chips.length > 0, footer: o.footer || "" };
+  }
+
+  go(id) {
+    const base = {
+      view: "desk", screen: "thread", popOpen: false, paletteOpen: false, dialog: null, receipt: null, checked: false,
+      launchMenu: false, menuFor: null, sub: null, drawerOpen: true, active: ALL3, stopped: {}, selected: "billing", collapsed: { "NOT ACTIVE": true }
+    };
+    const per = {
+      drawer: {},
+      subagents: { sub: "billing/test-runner" },
+      switch: { active: ["acme-api", "acme-docs"], stopped: { "pdf-worker": true }, popOpen: true, collapsed: {} },
+      launcher: { screen: "launcher", launchMenu: true, launchProject: "pdf-worker" },
+      palette: { paletteOpen: true },
+      cap: { popOpen: true },
+      close: { dialog: "pdf-worker", selected: "cold" },
+      closed: { active: ["acme-api", "acme-docs"], receipt: "pdf-worker", collapsed: {} },
+      phone: { view: "phone" },
+      compare: { view: "compare" }
+    };
+    return () => this.setState(Object.assign(base, per[id] || {}));
+  }
+
+  renderVals() {
+    const st = this.state;
+    const P = this.props;
+    const noop = () => {};
+    const theme = st.theme ?? P.theme ?? "dark";
+    const plat = P.platform ?? "mac";
+    const phone = st.phone ?? P.phone ?? "ios";
+    const ios = phone === "ios";
+    const mode = "headers";
+    const mac = plat === "mac";
+
+    const all = S6.concat(SCLOSED).map(s => this.live(s, st));
+    const byId = id => all.find(s => s.id === id) || all[0];
+    const atCap = st.active.length >= CAP;
+    const capSentence = st.active.length + " projects are active on " + M + ". Close one to open another.";
+    const select = id => this.setState({ selected: id, sub: null, screen: "thread", popOpen: false, paletteOpen: false, launchMenu: false, menuFor: null });
+    const firstOf = p => {
+      const mine = all.filter(s => s.p === p && s.active);
+      const pick = mine.find(s => s.state === "gate") || mine.find(s => s.state === "run") || mine[0];
+      return pick ? pick.id : st.selected;
+    };
+    const openDialog = p => this.setState({ dialog: p, popOpen: false, paletteOpen: false, menuFor: null });
+
+    const view = st.view;
+    const activeStep = view === "compare" ? "compare" : view === "phone" ? "phone"
+      : st.dialog ? "close" : st.paletteOpen ? "palette" : st.screen === "launcher" ? "launcher"
+      : st.popOpen ? (atCap ? "cap" : "switch") : st.receipt ? "closed" : st.sub ? "subagents" : "drawer";
+
+    const stepDefs = [
+      { id: "drawer", num: "1", label: "Sessions by project", note: "Needs you comes first, across every project. Below it, one section per active project. A session shows once, and every row still names its machine." },
+      { id: "subagents", num: "1b", label: "With subagents", note: "A subagent hangs off its session on a tree line, so it sits in its parent's project and runs on its parent's machine. Finished ones fold into one line." },
+      { id: "switch", num: "2", label: "Open, switch, close", note: "The project chip lists what is active on this machine. Picking one switches the view and stops nothing. Open and Close act on one project only." },
+      { id: "launcher", num: "3", label: "New session in a project", note: "The project menu lists only what is active on the machine chosen beside it. A session starts in exactly one project on exactly one machine." },
+      { id: "palette", num: "4", label: "Palette names the project", note: "Every session result names its machine and its project. Projects are results too, with their state, and a locked command says why." },
+      { id: "cap", num: "5", label: "Cap reached", note: "The daemon refuses a fourth project. Open stays where it was, locked, with the daemon's reason and the way out." },
+      { id: "close", num: "6", label: "Close a project", note: "The confirmation lists what stops, session by session, as the daemon reports it. The other projects are not touched." },
+      { id: "closed", num: "6b", label: "Closed, one stop unconfirmed", note: "The receipt says what stopped. A stop the daemon has not seen finish is unconfirmed, not failed." },
+      { id: "phone", num: "7", label: "Phone sessions", note: "The phone groups the same way as the drawer. Headers are labels: the phone answers gates and never opens or closes a project." },
+      { id: "compare", num: "8", label: "Why section headers", note: "Kept as the record: filter chips against section headers, at 6 sessions and at 40. Section headers were chosen." }
+    ];
+    const cur = stepDefs.find(s => s.id === activeStep) || stepDefs[0];
+
+    const I = {
+      panel: this.icon("PanelLeft", 16), plus: this.icon("Plus", 16), search14: this.icon("Search", 14), search16: this.icon("Search", 16),
+      folder14: this.icon("FolderGit2", 14), folder12: this.icon("FolderGit2", 12), chevD12: this.icon("ChevronDown", 12),
+      chevR12: this.icon("ChevronRight", 12), more14: this.icon("Ellipsis", 14), lock14: this.icon("Lock", 14),
+      minus: this.icon("Minus", 15), square: this.icon("Square", 13), x: this.icon("X", 15),
+      chevD13: this.icon("ChevronDown", 13), paperclip: this.icon("Paperclip", 16), brain: this.icon("Brain", 14),
+      terminal: this.icon("SquareTerminal", 16), expand: this.icon("Maximize2", 16), usage: this.icon("ChartLine", 13), arrowUp: this.icon("ArrowUp", 16),
+      sessions: this.icon("MessageSquare", 20), machines: this.icon("Server", 20), settings: this.icon("Settings", 20)
+    };
+
+    // Receipt for the project just closed, built from what the daemon reported for its sessions and agents.
+    let receipt = null;
+    if (st.receipt) {
+      const p = st.receipt;
+      const lines = [];
+      S6.filter(s => s.p === p).forEach(s => {
+        if (s.state === "gate") lines.push({ dot: this.dot("var(--faint)", 6) + " margin-top: 5px;", label: "Approval expired, the command did not run", detail: s.cmd, hasNote: false, note: "" });
+        if (s.state === "run") lines.push({ dot: this.dot("var(--faint)", 6) + " margin-top: 5px;", label: "Turn interrupted at " + s.step, detail: s.wt, hasNote: false, note: "" });
+        const live = (s.subs || []).filter(x => x[0]).map(x => x[0]);
+        if (live.length && s.state !== "idle") lines.push({ dot: this.dot("var(--faint)", 6) + " margin-top: 5px;", label: live.length === 1 ? "Subagent stopped" : "Subagents stopped", detail: live.join(", "), hasNote: false, note: "" });
+      });
+      PROJ[p].agents.forEach(a => {
+        if (a.ok || st.checked) lines.push({ dot: this.dot("var(--faint)", 6) + " margin-top: 5px;", label: "Agent stopped", detail: a.n + (a.ok ? "" : " · confirmed on second ask"), hasNote: false, note: "" });
+        else lines.push({ dot: this.hollow(), label: "Agent stop unconfirmed", detail: a.n + " · pid " + a.pid, hasNote: true, note: "The daemon has not seen it exit. It is not marked failed." });
+      });
+      receipt = {
+        name: p, time: "14:07:15", lines,
+        hasCheck: PROJ[p].agents.some(a => !a.ok) && !st.checked,
+        check: () => this.setState({ checked: true })
+      };
+    }
+
+    const drawer = this.buildDrawer(all, {
+      mode, filter: st.filter, selected: st.selected, collapsed: st.collapsed,
+      hover: st.rowHover, rowMenu: st.rowMenu,
+      setHover: id => this.setState({ rowHover: id }),
+      sub: st.sub, selectSub: (id, name) => this.setState({ selected: id, sub: id + "/" + name, screen: "thread", popOpen: false, paletteOpen: false }),
+      setRowMenu: id => this.setState({ rowMenu: id, menuFor: null }),
+      keys: st.active.map(p => p + "@" + M),
+      select,
+      toggle: id => this.setState({ collapsed: Object.assign({}, st.collapsed, { [id]: !st.collapsed[id] }) }),
+      menu: p => this.setState({ menuFor: st.menuFor === p ? null : p }),
+      close: openDialog,
+      pickFilter: k => this.setState({ filter: k }),
+      receipt,
+      footer: st.active.length + " of " + CAP + " projects active on " + M
+    });
+
+    const sel = byId(st.selected);
+    const th = {
+      project: sel.p,
+      crumb: sel.p + " · main · " + sel.wt + (st.sub ? " · " + st.sub.split("/")[1] : ""),
+      ask: sel.title + ".",
+      reply: !sel.active ? "Stopped when " + sel.p + " was closed. Open the project on " + M + " to work here again."
+        : sel.state === "gate" ? "The command is ready. It waits for your decision before it runs on " + M + "."
+        : sel.state === "run" ? "Working through " + sel.step + ". Nothing needs you yet."
+        : "Stopped. The worktree " + sel.wt + " is kept on " + M + ".",
+      isGate: sel.active && sel.state === "gate",
+      cmd: sel.cmd || "", gateMeta: (sel.step || "") + " · " + M,
+      placeholder: !sel.active ? "Cannot send, " + sel.p + " is not active on " + M : sel.state === "run" ? "Steer it while it works" : "Reply, or steer the plan",
+      hasStrip: !!sel.step,
+      isRunning: sel.active && sel.state === "run",
+      stripStep: sel.step || "",
+      stripTitle: sel.plan || "",
+      stripState: !sel.active ? "stopped" : sel.state === "gate" ? "waiting on you 4m" : sel.state === "run" ? "running 1m 09s" : "done",
+      stripDot: this.dot(!sel.active ? "var(--faint)" : sel.state === "gate" ? "var(--warning)" : sel.state === "run" ? "var(--primary)" : "var(--success)", 6) +
+        (sel.active && sel.state === "gate" ? " animation: dvPulse 2.4s infinite;" : ""),
+      stripStateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: " +
+        (!sel.active ? "var(--faint)" : sel.state === "gate" ? "var(--warning)" : sel.state === "run" ? "var(--primary)" : "var(--success)") + ";",
+      composerStyle: "position: relative; width: 100%; max-width: 760px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); padding: 13px 15px 11px; display: flex; flex-direction: column; gap: 11px;" +
+        (!sel.active ? " opacity: .5;" : ""),
+      attachStyle: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 999px; cursor: pointer; color: var(--muted-foreground);",
+      sendStyle: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 999px; background: " +
+        (!sel.active ? "var(--muted)" : "var(--primary)") + "; color: " + (!sel.active ? "var(--faint)" : "var(--primary-foreground)") + ";" +
+        (!sel.active ? " cursor: not-allowed;" : " cursor: pointer;")
+    };
+
+    const popActive = st.active.map(p => {
+      const ps = this.projStatus(all, p);
+      const current = sel.p === p;
+      return {
+        name: p, path: PROJ[p].path, status: ps.text,
+        dot: this.dot(ps.color, 7) + " margin-top: 5px;",
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: calc(var(--radius) - 3px);" +
+          (current ? " background: var(--accent);" : ""),
+        pick: () => select(firstOf(p)),
+        close: () => openDialog(p)
+      };
+    });
+    const popOpenable = ORDER.filter(p => st.active.indexOf(p) < 0).map(p => ({
+      name: p, path: PROJ[p].path,
+      icon: atCap ? I.lock14 : I.folder14,
+      disabled: atCap ? "true" : "false",
+      btn: "Open",
+      open: atCap ? noop : () => this.setState({ active: st.active.concat([p]), stopped: Object.assign({}, st.stopped, { [p]: true }) }),
+      rowStyle: "display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: calc(var(--radius) - 3px);" + (atCap ? " opacity: .45;" : ""),
+      btnStyle: "padding: 5px 12px; border-radius: calc(var(--radius) - 3px); border: 1px solid var(--border); font-size: 11px; color: var(--foreground);" +
+        (atCap ? " cursor: default;" : " cursor: pointer;")
+    }));
+
+    const launchProject = st.active.indexOf(st.launchProject) >= 0 ? st.launchProject : st.active[0];
+    const launchRows = st.active.map(p => {
+      const ps = this.projStatus(all, p);
+      return {
+        name: p, path: PROJ[p].path, status: ps.text,
+        dot: this.dot(ps.color, 7) + " margin-top: 5px;",
+        pick: () => this.setState({ launchProject: p, launchMenu: false }),
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: calc(var(--radius) - 3px); cursor: pointer;" +
+          (p === launchProject ? " background: var(--accent);" : "")
+      };
+    });
+
+    const pdfLive = st.active.indexOf("pdf-worker") >= 0;
+    const paletteGroups = [
+      { label: "SESSIONS", items: all.filter(s => s.p === "pdf-worker").map(s => ({
+        label: s.title, meta: s.m + " · " + s.p + " · " + s.meta, color: this.stateColor(s.state), go: () => select(s.id), dim: !s.active })) },
+      { label: "PROJECTS", items: [{
+        label: "pdf-worker", mono: true, meta: M + " · " + (pdfLive ? "active · " + this.projStatus(all, "pdf-worker").text : "not active"),
+        color: pdfLive ? this.projStatus(all, "pdf-worker").color : "var(--faint)", go: pdfLive ? () => select(firstOf("pdf-worker")) : () => this.setState({ paletteOpen: false, popOpen: true }) }] },
+      { label: "COMMANDS", items: [
+        pdfLive
+          ? { label: "Close this project", meta: "pdf-worker on " + M, color: "var(--faint)", go: () => openDialog("pdf-worker") }
+          : { label: "Open pdf-worker", meta: M, color: "var(--faint)", go: () => this.setState({ paletteOpen: false, popOpen: true }) },
+        { label: "Open another project", meta: atCap ? CAP + " of " + CAP + " active on " + M + ", locked" : st.active.length + " of " + CAP + " active on " + M,
+          color: "var(--faint)", dim: atCap, go: () => this.setState({ paletteOpen: false, popOpen: true }) }
+      ] }
+    ].map(g => ({
+      label: g.label,
+      items: g.items.map(i => ({
+        label: i.label, meta: i.meta, go: i.go,
+        dot: this.dot(i.color, 6),
+        labelStyle: (i.mono ? "font-family: 'JetBrains Mono', monospace; font-size: 12px;" : "font-size: 12.5px;") + " color: var(--foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;",
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: calc(var(--radius) - 3px); cursor: pointer;" + (i.dim ? " opacity: .55;" : "")
+      }))
+    }));
+
+    let dlg = { name: "", aria: "", others: "", stops: [], stays: [], confirm: noop, confirmLabel: "" };
+    if (st.dialog) {
+      const p = st.dialog;
+      const mine = all.filter(s => s.p === p && s.active);
+      const stops = [];
+      mine.forEach(s => {
+        const live = (s.subs || []).filter(x => x[0]).map(x => x[0]);
+        const subNote = live.length ? " " + live.length + (live.length === 1 ? " subagent stops." : " subagents stop.") : "";
+        const subDetail = live.length ? " · " + live.join(", ") : "";
+        if (s.state === "gate") stops.push({ dot: this.dot("var(--warning)", 7) + " margin-top: 5px;", title: s.title, effect: "Approval expires. The command does not run." + subNote, detail: s.cmd + subDetail });
+        if (s.state === "run") stops.push({ dot: this.dot("var(--success)", 7) + " margin-top: 5px;", title: s.title, effect: "Turn interrupted at " + s.step + "." + subNote, detail: s.wt + subDetail });
+      });
+      const agents = PROJ[p].agents.map(a => a.n);
+      if (agents.length) stops.push({ dot: this.dot("var(--faint)", 7) + " margin-top: 5px;", title: agents.length === 1 ? "1 agent stops" : agents.length + " agents stop", effect: "Their processes on " + M + " are ended.", detail: agents.join(", ") });
+      const idle = mine.filter(s => s.state === "idle").length;
+      const others = st.active.filter(x => x !== p);
+      const stays = [];
+      if (idle) stays.push(idle === 1 ? "1 idle session is not affected." : idle + " idle sessions are not affected.");
+      stays.push("Worktrees, threads and checkpoints stay on " + M + ".");
+      stays.push("Whether these sessions resume when you reopen " + p + " is not decided.");
+      const n = mine.filter(s => s.state === "gate" || s.state === "run").length;
+      dlg = {
+        name: p, aria: "Close " + p + " on " + M,
+        others: others.length ? others.join(" and ") + (others.length === 1 ? " keeps" : " keep") + " running. Only this project's work stops." : "No other project is active on " + M + ".",
+        stops, stays,
+        confirmLabel: n ? "Close and stop " + n + (n === 1 ? " session" : " sessions") : "Close " + p,
+        confirm: () => this.setState({
+          dialog: null, active: st.active.filter(x => x !== p), receipt: p, checked: false,
+          selected: sel.p === p ? firstOf(others[0] || "acme-api") : st.selected,
+          collapsed: Object.assign({}, st.collapsed, { "NOT ACTIVE": false })
+        })
+      };
+    }
+
+    const recent = ["cold", "backfill", "runbook"].map(id => byId(id)).map(s => ({
+      title: s.title, meta: s.m + " · " + s.p + " · " + s.meta, dot: this.dot(this.stateColor(s.state), 6), go: () => select(s.id)
+    }));
+
+    // Phone: same grouping, read-only headers.
+    const W = ios ? 390 : 412;
+    const R = ios ? 44 : 30;
+    const phoneList = all.filter(s => s.active);
+    const pNeeds = phoneList.filter(s => s.state === "gate" || s.state === "fail");
+    const pill = (txt, k) => txt ? "flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: color-mix(in oklab, var(--" + k + ") 16%, transparent); color: var(--" + k + ");" : "display: none;";
+    const card = (s, withProject, extra) => Object.assign({
+      title: s.title, meta: withProject ? s.m + " · " + s.p + " · " + s.meta : s.m + " · " + s.meta,
+      pill: s.state === "gate" ? "gate" : "", pillStyle: pill(s.state === "gate" ? "gate" : "", "warning"),
+      dot: this.dot(this.stateColor(s.state), 7) + " margin-top: 6px;",
+      cardStyle: "padding: 13px 14px; border: 1px solid " + (s.state === "gate" ? "var(--warn-border)" : "var(--border)") + "; border-radius: 16px; background: " + (s.state === "gate" ? "var(--warn-bg)" : "var(--card)") + ";"
+    }, extra || {});
+    const eyebrowP = "font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);";
+    const projP = "font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: var(--strong);";
+    const badgeP = "min-width: 20px; padding: 2px 8px; border-radius: 999px; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; background: var(--muted); color: var(--muted-foreground);";
+    const phoneGroups = [];
+    if (pNeeds.length) phoneGroups.push({ label: "NEEDS YOU", sub: "", labelStyle: eyebrowP, count: String(pNeeds.length), badgeStyle: badgeP, items: pNeeds.map(s => card(s, true)) });
+    st.active.forEach(p => {
+      const rows = phoneList.filter(s => s.p === p && s.state !== "gate" && s.state !== "fail");
+      if (rows.length) phoneGroups.push({ label: p, sub: M, labelStyle: projP, count: String(rows.length), badgeStyle: badgeP, items: rows.map(s => card(s, false)) });
+    });
+    phoneGroups.push({ label: "UNREACHABLE", sub: "", labelStyle: eyebrowP, count: "1", badgeStyle: badgeP, items: [card(
+      { title: "Upgrade the Postgres client to 16", m: "wsl-ubuntu-24", p: "acme-api", meta: "daemon not answering", state: "idle" }, false,
+      { pill: "offline", pillStyle: pill("offline", "destructive"), cardStyle: "padding: 13px 14px; border: 1px solid var(--border); border-radius: 16px; background: var(--card); opacity: .55;" })] });
+
+    // Comparison boards, all sessions active, no interaction.
+    const s6 = S6.map(s => Object.assign({}, s, { m: M, active: true }));
+    const panels = [
+      { id: "A · 6", name: "Filter chips", list: s6, mode: "filter", limit: 0, footer: "3 of 3 projects active on " + M,
+        note: "Reads like today's drawer. The project lives only in the meta line, so finding where a row belongs means reading it." },
+      { id: "B · 6", name: "Section headers", list: s6, mode: "headers", limit: 0, footer: "3 of 3 projects active on " + M,
+        note: "Three short sections. Where a session belongs is its position, and the header is where Close lives." },
+      { id: "A · 40", name: "Filter chips", list: S40, mode: "filter", limit: 6, collapsed: { QUIET: true }, footer: "5 projects on 2 machines",
+        note: "acme-api is active on two machines, so its chips need the machine name. With a project picked, the other projects' running work is hidden and only Needs you still shows it." },
+      { id: "B · 40", name: "Section headers", list: S40, mode: "headers", limit: 3, footer: "5 projects on 2 machines",
+        note: "Each section shows 3 rows and counts the rest. All five headers fit above the fold, and the two acme-api sections read apart by machine." }
+    ].map(p => ({
+      id: p.id, name: p.name, note: p.note, count: p.list.length + " sessions",
+      drawer: this.buildDrawer(p.list, { mode: p.mode, limit: p.limit, collapsed: p.collapsed || {}, footer: p.footer })
+    }));
+
+    const seg = on => "padding: 5px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; background: " + (on ? "var(--background)" : "transparent") + "; color: var(--" + (on ? "foreground" : "muted-foreground") + ");";
+    const iconBtn = "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);";
+
+    return {
+      rootClass: theme === "light" ? "dv-light" : "dv-dark",
+      toggleTheme: () => this.setState({ theme: theme === "light" ? "dark" : "light" }),
+      themeIcon: theme === "light" ? this.icon("Sun", 16) : this.icon("Moon", 16),
+      iconBtn, I, noop,
+      iconBtnSm: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: 999px; cursor: pointer; color: var(--muted-foreground);",
+      markStyle: "display: block; width: 22px; height: 22px; flex: 0 0 22px; background: var(--primary); -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+      phoneMarkStyle: "display: block; width: 24px; height: 24px; flex: 0 0 24px; background: var(--primary); -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;",
+
+      steps: stepDefs.map(s => ({
+        num: s.num, label: s.label, go: this.go(s.id),
+        numColor: activeStep === s.id ? "var(--primary-foreground)" : "var(--faint)",
+        style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
+          (activeStep === s.id ? "var(--primary)" : "var(--border)") + "; background: " +
+          (activeStep === s.id ? "var(--primary)" : "transparent") + "; color: " +
+          (activeStep === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      stepNum: cur.num, stepNote: cur.note,
+
+      isDesk: view === "desk", isPhoneView: view === "phone", isCompare: view === "compare",
+      showModeSwitch: view === "desk",
+      headersTabStyle: seg(mode === "headers"), filterTabStyle: seg(mode === "filter"),
+      setHeaders: () => this.setState({ mode: "headers" }), setFilter: () => this.setState({ mode: "filter", filter: "all" }),
+      iosTabStyle: seg(ios), androidTabStyle: seg(!ios),
+      setIos: () => this.setState({ phone: "ios" }), setAndroid: () => this.setState({ phone: "android" }),
+
+      isMac: mac, notMac: !mac,
+      kPalette: mac ? "⌘K" : "Ctrl K", kSend: mac ? "⏎" : "Enter",
+      drawerOpen: st.drawerOpen,
+      toggleDrawer: () => this.setState({ drawerOpen: !st.drawerOpen }),
+      drawerBtnStyle: iconBtn + (st.drawerOpen ? " background: var(--accent); color: var(--foreground);" : ""),
+      goLauncher: () => this.setState({ screen: "launcher", popOpen: false, paletteOpen: false, launchMenu: false }),
+      openPalette: () => this.setState({ paletteOpen: true, popOpen: false }),
+      closeOverlays: () => this.setState({ paletteOpen: false, dialog: null }),
+      titleText: st.screen === "launcher" ? "New session" : sel.title,
+
+      togglePop: () => this.setState({ popOpen: !st.popOpen, menuFor: null }),
+      popOpen: st.popOpen,
+      projChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 9px 4px; border-radius: 999px; border: 1px solid var(--border); cursor: pointer; color: var(--faint);" +
+        (st.popOpen ? " background: var(--accent);" : ""),
+      capText: st.active.length + " of " + CAP,
+      atCap, capSentence, popActive, popOpenable,
+
+      drawer, th,
+      isLauncher: st.screen === "launcher", isThread: st.screen !== "launcher",
+      launchProject, launchRows, launchMenu: st.launchMenu,
+      toggleLaunchMenu: () => this.setState({ launchMenu: !st.launchMenu }),
+      launchProjChipStyle: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; background: var(--accent); cursor: pointer; color: var(--faint);" +
+        (st.launchMenu ? " box-shadow: 0 0 0 1px var(--border);" : ""),
+      launchOpenIcon: atCap ? I.lock14 : this.icon("FolderPlus", 14),
+      launchOpenNote: atCap ? capSentence : "Adds a project to " + M + ". Nothing else stops.",
+      launchOpenStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px 11px; border-top: 1px solid var(--border);" + (atCap ? " opacity: .55; cursor: default;" : " cursor: pointer;"),
+      launchOpenAct: atCap ? noop : () => this.setState({ launchMenu: false, popOpen: true }),
+      startSession: () => select(firstOf(launchProject)),
+      recent,
+
+      paletteOpen: st.paletteOpen, paletteGroups,
+      dialogOpen: !!st.dialog, dlg,
+
+      colStyle: "flex: 0 0 auto; display: flex; flex-direction: column; gap: 11px; width: " + W + "px;",
+      statusIcons: ios ? "▮▮▮ ⌁ 82%" : "◔ ▲ ▮ 82%",
+      phoneStyle: "width: " + W + "px; height: " + (ios ? 844 : 892) + "px; flex: 0 0 auto; display: flex; flex-direction: column; position: relative; background: var(--background); border: " +
+        (ios ? "9px solid oklch(0.28 0.008 285)" : "8px solid oklch(0.26 0.008 285)") + "; border-radius: " + R + "px; overflow: hidden; box-shadow: 0 30px 80px var(--shadow-lg);",
+      statusBarStyle: "flex: 0 0 " + (ios ? 42 : 30) + "px; height: " + (ios ? 42 : 30) + "px; display: flex; align-items: center; gap: 6px; padding: " + (ios ? "6px 24px 0" : "0 16px") + "; color: var(--foreground);",
+      tabBarStyle: "position: absolute; left: " + (ios ? 14 : 12) + "px; right: " + (ios ? 14 : 12) + "px; bottom: " + (ios ? 22 : 14) + "px; z-index: 4; display: flex; align-items: stretch; padding: " + (ios ? "7px 6px" : "8px 6px") + "; border-radius: 999px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 14px 38px var(--shadow-lg);",
+      homeIndicatorStyle: ios
+        ? "position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); width: 134px; height: 5px; border-radius: 999px; background: var(--muted); z-index: 5;"
+        : "position: absolute; left: 50%; bottom: 5px; transform: translateX(-50%); width: 108px; height: 3px; border-radius: 999px; background: var(--muted); z-index: 5;",
+      captionStyle: "width: " + W + "px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-align: center;",
+      phoneNeeds: pNeeds.length + " need you",
+      phoneGroups,
+
+      panels
+    };
+  }
+}
+</script>
+</body>
+</html>

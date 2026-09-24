@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/colors.css">
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--desk); }
+  body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary) 80%, var(--foreground)); }
+  @keyframes dvSweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(460%); } }
+</style>
+</helmet>
+<div class="theme-dark" style="--radius: 0.65rem; min-height: 100vh; display: flex; flex-direction: column; gap: 56px; padding: 40px; background: var(--desk); color: var(--foreground);">
+
+  <section style="display: flex; flex-direction: column; gap: 18px;">
+    <div style="display: flex; flex-direction: column; gap: 6px; max-width: 900px;">
+      <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">TURN 2 · THE WINNER AT THE NARROWEST WINDOW</div>
+      <div style="font-size: 19px; font-weight: 600; letter-spacing: -.01em;">The card in an 800px window, both themes</div>
+      <div style="font-size: 12.5px; color: var(--muted-foreground); line-height: 1.6;">The settings column is 690px here. The code slot keeps its 165px, the right column wraps under it only below 520px, and no approval fact is dropped.</div>
+    </div>
+    <div style="display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-start;">
+      <div id="2a" class="theme-dark" style="width: 800px; display: flex; flex-direction: column; gap: 14px; padding: 18px; border-radius: 16px; background: var(--desk); border: 1px solid var(--border);">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">2a</span>
+          <span style="font-size: 13px; font-weight: 500;">Dark</span>
+        </div>
+        <sc-for list="{{ narrow }}" as="s" hint-placeholder-count="3">
+          <div style="display: flex; flex-direction: column; gap: 7px;">
+            <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ s.label }}</span>
+            <div style="display: flex; width: 764px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--background);">
+              <div style="width: 62px; flex: 0 0 62px; display: flex; justify-content: center; padding-top: 16px; background: var(--sidebar); border-right: 1px solid var(--border);">
+                <span style="display: block; width: 22px; height: 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;"></span>
+              </div>
+              <div style="flex: 1; min-width: 0; padding: 20px 24px;">
+                <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 13px 15px; border-bottom: 1px solid var(--border);">
+                    <span style="font-size: 13px; font-weight: 500;">Phone and tablet</span>
+                    <span style="font-size: 11.5px; color: var(--muted-foreground);">Pair a device to watch sessions and answer gates while away from the desk.</span>
+                  </div>
+                  <dc-import name="PairingCard" phase="{{ s.phase }}" reach="{{ s.reach }}" cert-state="{{ s.cert }}" access="{{ s.access }}" in-app="{{ s.inApp }}" frozen="{{ true }}" hint-size="100%,320px"></dc-import>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div id="2b" class="theme-light" style="width: 800px; display: flex; flex-direction: column; gap: 14px; padding: 18px; border-radius: 16px; background: var(--desk); border: 1px solid var(--border); color: var(--foreground);">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">2b</span>
+          <span style="font-size: 13px; font-weight: 500;">Light</span>
+        </div>
+        <sc-for list="{{ narrow }}" as="s" hint-placeholder-count="3">
+          <div style="display: flex; flex-direction: column; gap: 7px;">
+            <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ s.label }}</span>
+            <div style="display: flex; width: 764px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--background);">
+              <div style="width: 62px; flex: 0 0 62px; display: flex; justify-content: center; padding-top: 16px; background: var(--sidebar); border-right: 1px solid var(--border);">
+                <span style="display: block; width: 22px; height: 22px; color: var(--primary); background: currentColor; -webkit-mask: url(assets/mark-reduced.svg) center/contain no-repeat; mask: url(assets/mark-reduced.svg) center/contain no-repeat;"></span>
+              </div>
+              <div style="flex: 1; min-width: 0; padding: 20px 24px;">
+                <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                  <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 13px 15px; border-bottom: 1px solid var(--border);">
+                    <span style="font-size: 13px; font-weight: 500;">Phone and tablet</span>
+                    <span style="font-size: 11.5px; color: var(--muted-foreground);">Pair a device to watch sessions and answer gates while away from the desk.</span>
+                  </div>
+                  <dc-import name="PairingCard" phase="{{ s.phase }}" reach="{{ s.reach }}" cert-state="{{ s.cert }}" access="{{ s.access }}" in-app="{{ s.inApp }}" frozen="{{ true }}" hint-size="100%,320px"></dc-import>
+                </div>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </section>
+
+  <section style="display: flex; flex-direction: column; gap: 18px;">
+    <div style="display: flex; flex-direction: column; gap: 6px; max-width: 900px;">
+      <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">TURN 1 · THE CHOSEN LAYOUT</div>
+      <div style="font-size: 19px; font-weight: 600; letter-spacing: -.01em;">Code-first card</div>
+      <div style="font-size: 12.5px; color: var(--muted-foreground); line-height: 1.6;">The code is the one thing the person acts on, so it leads. The three-step strip was dropped.</div>
+    </div>
+    <div style="display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-start;">
+      <div id="1a" style="width: 800px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">1a</span>
+          <span style="font-size: 13px; font-weight: 500;">A: code-first card</span>
+          <span style="font-size: 11.5px; color: var(--muted-foreground);">chosen</span>
+        </div>
+        <sc-for list="{{ compare }}" as="s" hint-placeholder-count="3">
+          <div style="display: flex; flex-direction: column; gap: 7px;">
+            <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ s.label }}</span>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 13px 15px; border-bottom: 1px solid var(--border);">
+                <span style="font-size: 13px; font-weight: 500;">Phone and tablet</span>
+                <span style="font-size: 11.5px; color: var(--muted-foreground);">Pair a device to watch sessions and answer gates while away from the desk.</span>
+              </div>
+              <dc-import name="PairingCard" phase="{{ s.phase }}" reach="{{ s.reach }}" cert-state="{{ s.cert }}" access="{{ s.access }}" frozen="{{ true }}" hint-size="100%,320px"></dc-import>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const S = (label, phase, reach, extra) => Object.assign({ label: label, phase: phase || "idle", reach: reach || "tailnet", cert: "none", access: "full", inApp: false }, extra || {});
+    return {
+      compare: [
+        S("Idle"), S("Code shown", "code"), S("Just paired", "paired"),
+        S("Refused: the phone's app is older", "version-app"), S("Daemon answers only on this computer", "idle", "loopback")
+      ],
+      narrow: [
+        S("1 · Idle"), S("2 · Code shown", "code"), S("3 · Just paired", "paired"),
+        S("4a · Daemon answers only on this computer", "idle", "loopback"),
+        S("4b · No certificate for the tailnet address", "idle", "nocert"),
+        S("4c · Code expired", "expired"),
+        S("4d · Refused: the phone's app is older", "version-app"),
+        S("4e · Refused: the daemon is older", "version-daemon"),
+        S("4f · Refused: the device list is full", "full"),
+        S("5 · Watching-only window", "idle", "tailnet", { access: "watching" })
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

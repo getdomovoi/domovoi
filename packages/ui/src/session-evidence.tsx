@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   CheckCircle2Icon,
   CircleStopIcon,
+  ExternalLinkIcon,
   FileDiffIcon,
   RefreshCwIcon,
   Undo2Icon,
@@ -293,9 +294,9 @@ function RevertFileDialog({
         <p className="m-0 truncate font-machine text-[10px] text-strong" title={path}>{path}</p>
         {error ? <p role="alert" className="m-0 text-sm text-destructive">{error}</p> : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>Keep the changes</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending}>Keep it</AlertDialogCancel>
           <Button variant="destructive" disabled={pending || !prompt.available} onClick={onConfirm}>
-            {pending ? "Working" : prompt.available ? `${prompt.verb} file` : "Unavailable"}
+            {pending ? "Working" : prompt.available ? `${prompt.verb} this file` : "Unavailable"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -372,6 +373,7 @@ export function SessionEvidenceContent({
   loading,
   onRefresh,
   onRevertFile,
+  onOpenInEditor,
 }: {
   connected: boolean
   evidence?: SessionEvidence
@@ -379,6 +381,8 @@ export function SessionEvidenceContent({
   loading: boolean
   onRefresh: () => void
   onRevertFile?: (path: string, expectedBaseCommit?: string) => Promise<void>
+  // The desktop opens the worktree in the person's editor; a browser has none.
+  onOpenInEditor?: (() => void) | undefined
 }) {
   const associations = useMemo(
     () => new Map((evidence?.fileAssociations ?? []).map((association) => [association.path, association])),
@@ -454,10 +458,11 @@ export function SessionEvidenceContent({
           ) : null}
           {evidence ? (
             <>
-              <section className="overflow-hidden rounded-lg border bg-card">
+              <section className="overflow-hidden rounded-lg border bg-card" aria-labelledby="evidence-per-file">
                 <div className="flex items-center justify-between px-3 py-2">
                   <div>
-                    <h3 className="m-0 text-[11px] font-medium">Working tree</h3>
+                    <h3 id="evidence-per-file" className="m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint">EVIDENCE PER FILE</h3>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">What ran against each change, and whether it passed.</p>
                     <p className="mt-0.5 font-machine text-mono-xs text-faint">
                       {evidence.workspace.totalChangedFiles} changed files · {evidence.workspace.baseCommit.slice(0, 8)}
                     </p>
@@ -512,6 +517,14 @@ export function SessionEvidenceContent({
                   <p className="border-t px-3 py-2 font-machine text-mono-xs text-warning">
                     Only the first {evidence.workspace.files.length} changed files are shown.
                   </p>
+                ) : null}
+                {onOpenInEditor ? (
+                  <div className="flex items-center border-t px-3 py-2">
+                    <Button variant="outline" size="xs" onClick={onOpenInEditor}>
+                      <ExternalLinkIcon />
+                      Open in editor
+                    </Button>
+                  </div>
                 ) : null}
               </section>
 
@@ -640,12 +653,14 @@ export function SessionEvidencePanel({
   sessionId,
   onLoad,
   onRevertFile,
+  onOpenInEditor,
 }: {
   connected: boolean
   readOnly?: boolean
   sessionId: string | null
   onLoad: (sessionId: string) => Promise<SessionEvidence>
   onRevertFile?: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
+  onOpenInEditor?: (() => void) | undefined
 }) {
   const generation = useRef(0)
   const [state, setState] = useState<EvidenceState>({ loading: false, error: "" })
@@ -712,6 +727,7 @@ export function SessionEvidencePanel({
       error={visible.error}
       loading={visible.loading}
       onRefresh={refresh}
+      onOpenInEditor={onOpenInEditor}
       {...(onRevertFile && !readOnly
         ? {
           onRevertFile: async (path: string, expectedBaseCommit?: string) => {

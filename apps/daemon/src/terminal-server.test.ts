@@ -1471,6 +1471,16 @@ describe("terminal RPC", () => {
       protocolVersion,
       clientId: "tablet-watcher",
     })
+    // Terminal notifications go to the connections that opened or claimed the
+    // terminal, so the watcher attaches the way a second window does.
+    await expect(watcher.rpc("terminal.create", {
+      terminalId: "terminal-reconnect",
+      sessionId: session.id,
+      cols: 80,
+      rows: 24,
+      client: "tablet",
+      clientId: "tablet-watcher",
+    })).resolves.toMatchObject({ result: { owner: { clientId: "desktop-owner" } } })
 
     owner.socket.close()
     await new Promise<void>((resolve) => owner.socket.once("close", resolve))
