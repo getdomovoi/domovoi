@@ -155,10 +155,13 @@ async function attach(
 export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Promise<LocalDaemonHandle> {
   const deadline = OperationDeadline.start(options.timeoutMs)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
+  // Before any path can refuse: the inherited bearer leaves process.env and is
+  // pinned to the profile it was handed for, whatever this acquisition ends as.
+  const settings = { ...withInheritedCredentials(options.environment ?? process.env, homeDirectory), ...options.environmentOverrides }
   let lease: ProfileLease | undefined
   let runtime: ProductionDaemonHandle | undefined
   try {
-    const profile = profileLocation(homeDirectory, configuredProfileDirectory((options.environment ?? process.env).DOMOVOI_PROFILE_DIR, homeDirectory))
+    const profile = profileLocation(homeDirectory, configuredProfileDirectory(settings.DOMOVOI_PROFILE_DIR, homeDirectory))
     try { lease = claimProfile(profile) } catch (error) {
       if (!(error instanceof ProfileAlreadyOwnedError)) throw error
     }
@@ -166,7 +169,7 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     const record = readLocalOwnerRecord(profile)
     if (!lease) {
       if (record?.state !== "ready") return refused("owner-unreachable")
-      return await attach(profile, record, withInheritedCredentials(options.environment ?? process.env, homeDirectory).DOMOVOI_AUTH_TOKEN, deadline)
+      return await attach(profile, record, settings.DOMOVOI_AUTH_TOKEN, deadline)
     }
     // Lease freedom alone is not a shutdown record. A crashed service keeps
     // its record, and an installed but restarting service keeps its config.
