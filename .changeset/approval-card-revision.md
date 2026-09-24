@@ -38,3 +38,11 @@ A card whose Affects line shows [REDACTED] carries `{ state: "unresolved", reaso
 (`workspace.get`, `workspace.changed`, the saved store), so no client receives the path the line
 hides. The daemon keeps the real record in memory only, for the reading on Allow, and forgets it
 when the card leaves.
+
+A card's directory is the directory the request runs in. A path Claude Code blocked on is sent
+beside the request as `blockedPath` and is never the card's directory; before this the Claude
+adapter sent it as the request's directory, so a blocked credential path reached every client and
+the saved store. A directory that names a credential store, or one the durable redaction changes,
+shows as "[REDACTED] in the session worktree" or "[REDACTED], outside the session worktree", the
+card is a hard gate, and a resolved execution record, which names the directory, is replaced as
+above and kept in memory for the reading on Allow.

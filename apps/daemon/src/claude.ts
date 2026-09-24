@@ -542,7 +542,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(session.activeTurnId ? { turnId: session.activeTurnId } : {}),
       itemId: context.toolUseID,
       command,
-      cwd: context.blockedPath ?? cwd,
+      // The request runs in the thread's directory. The path Claude blocked
+      // on is named beside it and is never the directory a card shows.
+      cwd,
       ...(filePath ? { path: isAbsolute(filePath) ? filePath : `${cwd}${sep}${filePath}` } : {}),
       ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),

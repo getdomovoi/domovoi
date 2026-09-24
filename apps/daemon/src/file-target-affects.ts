@@ -46,6 +46,24 @@ function within(workspace: string, target: string): string | undefined {
 // keeps only where the file is.
 const hiddenPath = { text: "[REDACTED]", redacted: false }
 
+// The directory line of a card: the directory the request runs in. It is
+// persisted and sent like the file path, so a directory that names a
+// credential store, or one the durable redaction changes, is hidden whole and
+// the line keeps only where it is, in the form #541 uses (hiddenDirectory in
+// approval-facts.ts). Hidden is true then, and the card is a hard gate.
+export function cardDirectory(input: { directory: string; workspace: string }): { text: string; hidden: boolean } {
+  const workspace = resolve(input.workspace)
+  const directory = resolve(workspace, input.directory)
+  if (!namesSecretPath(input.directory) && !namesSecretPath(directory) && !redactDurableText(input.directory).redacted) {
+    return { text: input.directory, hidden: false }
+  }
+  const inside = directory === workspace || within(workspace, directory) !== undefined
+  return {
+    text: inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree",
+    hidden: true,
+  }
+}
+
 // Redacted is true when the durable redaction changed a path, which makes the
 // card a hard gate the way a secret anywhere else in its text does. Sensitive
 // is true when the file is hidden as [REDACTED] for naming a credential file:

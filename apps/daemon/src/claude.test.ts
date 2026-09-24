@@ -731,7 +731,9 @@ describe("ClaudeAgentSdkAdapter", () => {
       threadId: "22222222-2222-4222-8222-222222222222",
       itemId: "tool-edit-blocked",
       command: "Edit",
-      cwd: "/worktree/.claude/settings.json",
+      // The request runs in the thread's directory; the blocked path is
+      // named beside it, never as it.
+      cwd: "/worktree",
       path: "/worktree/src/index.ts",
       blockedPath: "/worktree/.claude/settings.json",
       reason: "Edit a settings file",

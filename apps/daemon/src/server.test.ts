@@ -1047,7 +1047,8 @@ describe("DomovoiDaemon", () => {
         risk: "hard-gate",
         command: "OPENAI_API_KEY=[REDACTED] pnpm test --token [REDACTED]",
         operation: "Authorization: [REDACTED]",
-        directory: "https://[REDACTED]@example.test/repo",
+        // A directory the redaction changes is hidden whole.
+        directory: "[REDACTED] in the session worktree",
       }),
     ])
     const approvalId = pending.result.approvals[0]!.id as string
@@ -12628,6 +12629,163 @@ describe("DomovoiDaemon", () => {
     expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
     neverNamed()
     socket.close()
+  })
+
+  // The directory line is the directory the request runs in. The path a
+  // provider blocked on is never it, and a directory that names a credential
+  // store, or that the durable redaction changes, is hidden whole.
+  it("never shows a blocked path or a hidden directory as a card's directory", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-cwd-hidden-"))
+    const outsidePath = await mkdtemp(join(tmpdir(), "domovoi-file-cwd-outside-"))
+    scratchDirectories.push(workspacePath, outsidePath)
+    const secretName = "ghp_abcdefghijklmnop"
+    await mkdir(join(workspacePath, "src"))
+    await writeFile(join(workspacePath, "src", "index.ts"), "export {}\n")
+    await mkdir(join(workspacePath, ".aws"))
+    await writeFile(join(workspacePath, ".aws", "credentials"), "[default]\n")
+    await mkdir(join(workspacePath, ".ssh"))
+    await mkdir(join(outsidePath, secretName))
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-file-cwd-hidden"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-file-cwd-hidden"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const received: string[] = []
+    const sockets: WebSocket[] = []
+    for (const client of ["desktop", "web"] as const) {
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket, client)
+      socket.on("message", (data: WebSocket.RawData) => { received.push(data.toString()) })
+      sockets.push(socket)
+    }
+    const socket = sockets[0]!
+    type Card = { id: string; providerRequestId?: number; risk: string; directory: string; revision: number; execution: unknown }
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+    const card = async (requestId: number) => (await cards()).find((candidate) => candidate.providerRequestId === requestId)!
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the file", client: "desktop" })
+    const edit = {
+      type: "approval-requested",
+      threadId: session.providerThreadId,
+      turnId: "turn-file-cwd-hidden",
+      reason: "Edit a file",
+      command: "Edit",
+      path: join(workspacePath, "src", "index.ts"),
+    } as const
+    const blockedPath = join(workspacePath, ".aws", "credentials")
+    // Claude names the path it blocked on beside the request.
+    listener!({ ...edit, requestId: 101, cwd: blockedPath, blockedPath })
+    listener!({ ...edit, requestId: 102, cwd: join(workspacePath, ".ssh") })
+    listener!({ ...edit, requestId: 103, cwd: join(outsidePath, secretName) })
+    listener!({ ...edit, requestId: 104, cwd: join(workspacePath, "src") })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(4), { timeout: 3_000 })
+
+    expect((await card(101)).directory).toBe(workspacePath)
+    expect(await card(102)).toMatchObject({ risk: "hard-gate", directory: "[REDACTED] in the session worktree" })
+    expect(await card(103)).toMatchObject({ risk: "hard-gate", directory: "[REDACTED], outside the session worktree" })
+    expect((await card(104)).directory).toBe(join(workspacePath, "src"))
+    // Nothing a client received and nothing saved names a hidden directory.
+    const neverNamed = () => {
+      for (const copy of [...received, JSON.stringify(store.save.mock.calls)]) {
+        expect(copy).not.toContain(".aws")
+        expect(copy).not.toContain(".ssh")
+        expect(copy).not.toContain(secretName)
+      }
+    }
+    neverNamed()
+
+    // A command run in a hidden directory hides the record that names it,
+    // and a package script there is still read again on Allow.
+    const hiddenExecution = { state: "unresolved", reason: "sensitive-content" }
+    await writeFile(join(workspacePath, ".ssh", "package.json"), JSON.stringify({ scripts: { build: "tsc" } }))
+    listener!({
+      type: "approval-requested",
+      requestId: 105,
+      threadId: session.providerThreadId,
+      turnId: "turn-file-cwd-hidden",
+      reason: "Build the package",
+      command: "pnpm run build",
+      cwd: join(workspacePath, ".ssh"),
+    })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(5), { timeout: 3_000 })
+    const script = await card(105)
+    expect(script).toMatchObject({
+      risk: "hard-gate",
+      directory: "[REDACTED] in the session worktree",
+      execution: hiddenExecution,
+    })
+    neverNamed()
+    await writeFile(join(workspacePath, ".ssh", "package.json"), JSON.stringify({ scripts: { build: "tsc --watch" } }))
+    await expect(rpc("approval.resolve", { approvalId: script.id, decision: "allow-once", revision: 0, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "The resolved command changed; review the updated approval before allowing it" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(105, expect.anything())
+    expect(await card(105)).toMatchObject({ risk: "hard-gate", revision: 1, execution: hiddenExecution })
+    neverNamed()
+    await expect(rpc("approval.resolve", { approvalId: script.id, decision: "allow-once", revision: 1, client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(105, "allow-once")
+    expect(daemon.fileApprovalTargetIds).not.toContain(script.id)
+    neverNamed()
+    for (const open of sockets) open.close()
   })
 
   it("forgets a file card's requested path when the card leaves without an answer", async () => {
