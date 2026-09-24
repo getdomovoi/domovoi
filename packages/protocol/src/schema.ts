@@ -75,6 +75,10 @@ export const providerModelSchema = z.object({
   description: z.string(),
   supportedReasoningEfforts: z.array(reasoningEffortSchema),
   defaultReasoningEffort: reasoningEffortSchema,
+  // Whether an image attachment on a send to this model is delivered. Absent
+  // when the daemon did not say, which a client treats as not known rather
+  // than as no. Phone v2 frames 13 and 13b.
+  imageInput: z.boolean().optional(),
   isDefault: z.boolean(),
 }).superRefine((model, context) => {
   if (
@@ -112,6 +116,9 @@ export const providerRuntimeSchema = z.object({
   status: providerRuntimeStatusSchema,
   version: z.string().trim().min(1).optional(),
   sessionCapable: z.boolean().default(false),
+  // Why this machine cannot start sessions with the detected CLI, in the words
+  // a session start would be refused with. Absent when nothing is known wrong.
+  problem: z.string().trim().min(1).max(1_024).optional(),
 })
 
 export const machineSchema = z.object({
@@ -312,6 +319,13 @@ export const sessionSummarySchema = z.object({
   activeTurnId: z.string().min(1).optional(),
   providerFailure: providerFailureSchema.optional(),
   baseCommit: z.string().min(1).optional(),
+  // The branch the session's worktree is on, kept after archive; and, filled
+  // at archive, how many files that branch changed that the source checkout
+  // never received (files changed since the merge base with the source's
+  // HEAD, so a branch merged before archive says 0). Desktop V2 archived
+  // notice: "Branch <b> and its final checkpoint are kept", "7 files never merged".
+  branch: z.string().min(1).optional(),
+  unmergedFiles: z.number().int().nonnegative().optional(),
   archiveRequestedAt: dateTimeSchema.optional(),
   archiveCheckpoint: commitShaSchema.optional(),
   archivedAt: dateTimeSchema.optional(),

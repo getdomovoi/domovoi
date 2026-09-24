@@ -36,11 +36,13 @@ export function providerHandoffDescription(provider: string, model: string): str
 
 export function providerCanStartSession(provider: ProviderRuntime): boolean {
   return provider.sessionCapable
+    && provider.problem === undefined
     && provider.status !== "auth-required"
     && provider.status !== "missing"
 }
 
 export function providerStatusLabel(provider: ProviderRuntime): string {
+  if (provider.problem !== undefined) return "Cannot start"
   if (provider.status === "auth-required") return "Sign in required"
   // A miss on the searched PATH, not a fact about the machine.
   if (provider.status === "missing") return "Not found"
