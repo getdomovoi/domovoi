@@ -1281,6 +1281,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             {...(localDaemon && !attached ? { localDaemon } : {})}
             {...(attached || clientKind !== "desktop" ? {} : {
               pairing: {
+                connected: home.connected,
                 onIssueCode: issueDeviceCode,
                 onCopy: (text: string) => platform ? platform.clipboard.writeText(text) : Promise.reject(new Error("This client has no clipboard")),
                 onListDevices: listDevices,

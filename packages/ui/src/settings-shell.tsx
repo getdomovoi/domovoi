@@ -34,6 +34,7 @@ export type LocalDaemonDescription = {
 // then one row sending device management to Machines, where each daemon
 // keeps its own list.
 export type PairingSettings = {
+  connected: boolean
   onIssueCode: (client: ClientKind) => Promise<IssuedPairingCode>
   onCopy: (text: string) => Promise<void>
   onListDevices: () => Promise<{ devices: PairedDeviceSummary[] }>
@@ -42,21 +43,22 @@ export type PairingSettings = {
 
 function PairingSection({ pairing, readOnly, onOpenFleet }: { pairing: PairingSettings; readOnly: boolean; onOpenFleet: () => void }) {
   const [count, setCount] = useState<number | null>(null)
+  const { onListDevices } = pairing
   useEffect(() => {
     let active = true
-    pairing.onListDevices().then(
+    onListDevices().then(
       (result) => { if (active) setCount(result.devices.filter((device) => device.binding.kind === "client" && !device.revokedAt).length) },
       () => { if (active) setCount(null) },
     )
     return () => { active = false }
-  }, [pairing])
+  }, [onListDevices])
   return (
     <section aria-labelledby="settings-pairing" className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <h2 id="settings-pairing" className="m-0 text-[13px] font-medium">Phone and tablet</h2>
         <p className="m-0 text-[11.5px] text-muted-foreground">Pair a device to watch sessions and answer gates while away from the desk.</p>
       </div>
-      <PairingCard connected readOnly={readOnly} inAppDaemon={pairing.inAppDaemon ?? false} onIssueCode={pairing.onIssueCode} onCopy={pairing.onCopy} />
+      <PairingCard connected={pairing.connected} readOnly={readOnly} inAppDaemon={pairing.inAppDaemon ?? false} onIssueCode={pairing.onIssueCode} onCopy={pairing.onCopy} />
       <Button variant="ghost" className="h-auto justify-between rounded-lg border px-[15px] py-3 text-left" onClick={onOpenFleet}>
         <span className="flex flex-col items-start gap-0.5">
           <span>{count === null ? "Paired devices" : `${count} ${count === 1 ? "client" : "clients"} paired with this daemon`}</span>
