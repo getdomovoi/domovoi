@@ -54,7 +54,27 @@ describe("agentPromptWithHandoff", () => {
 
     const prompt = agentPromptWithHandoff(snapshot, "session-billing", "Continue")
     const serialized = prompt.match(/<domovoi_handoff_context>\n([\s\S]+)\n<\/domovoi_handoff_context>/)?.[1]
-    expect(JSON.parse(serialized!).tests).toEqual({ passed: 1, failed: 1 })
+    expect(JSON.parse(serialized!).tests).toEqual({ passed: 1, failed: 1, last: "failed" })
+  })
+
+  // Counts are cumulative over the session's life. Without the latest run's
+  // status, three failures then a green run read as tests currently failing.
+  it("says whether the latest test run passed, not only how many did", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.thread = snapshot.thread.slice(0, 3)
+    const run = (id: string, status: "completed" | "failed", createdAt: string) => (
+      { id, sessionId: "session-billing", kind: "tool" as const, tool: "command" as const, status, title: "pnpm test", output: status === "failed" ? "1 failed" : "42 passed", createdAt }
+    )
+    snapshot.thread.unshift(
+      run("run-1", "failed", "2026-08-29T11:00:00.000Z"),
+      run("run-2", "failed", "2026-08-29T11:01:00.000Z"),
+      run("run-3", "failed", "2026-08-29T11:02:00.000Z"),
+      run("run-4", "completed", "2026-08-29T11:03:00.000Z"),
+    )
+
+    const prompt = agentPromptWithHandoff(snapshot, "session-billing", "Continue")
+    const serialized = prompt.match(/<domovoi_handoff_context>\n([\s\S]+)\n<\/domovoi_handoff_context>/)?.[1]
+    expect(JSON.parse(serialized!).tests).toEqual({ passed: 1, failed: 3, last: "passed" })
   })
 
   it("does not replay handoff state after the new provider responds", () => {
