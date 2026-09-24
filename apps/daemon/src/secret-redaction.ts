@@ -13,6 +13,9 @@ export type RedactedText = {
 
 const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret|client[_-]?secret|credentials?|cookie|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|github[_-]?token|openai[_-]?api[_-]?key|azure[_-]?client[_-]?secret)`
 const quotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
+// A quoted shell word: a backslash escapes inside double quotes, and is a
+// literal character inside single quotes, which nothing can escape.
+const shellQuotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')`
 const assignment = new RegExp(
   String.raw`((?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
@@ -22,7 +25,7 @@ const structuredAssignment = new RegExp(
   "giu",
 )
 const secretFlag = new RegExp(
-  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))(${quotedValue}|[^\s;&|\r\n]+)`,
+  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))(${shellQuotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
 const quotedCmdAssignment = new RegExp(
@@ -30,7 +33,7 @@ const quotedCmdAssignment = new RegExp(
   "giu",
 )
 const javaSystemProperty = new RegExp(
-  String.raw`(-D${sensitiveName}\s*=)(${quotedValue}|[^\s;&|\r\n]+)`,
+  String.raw`(-D${sensitiveName}\s*=)(${shellQuotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
 
@@ -258,27 +261,57 @@ function readable(raw: string): { text: string, origins: number[] } {
 }
 
 
+
 const assignmentPrefix = String.raw`(?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*`
 const structuredPrefix = String.raw`["']?\b${sensitiveName}\b["']?\s*:\s*`
 const flagPrefix = String.raw`(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)`
 const javaPrefix = String.raw`-D${sensitiveName}\s*=`
-const valuePrefix = `(?:${assignmentPrefix}|${structuredPrefix}|${flagPrefix}|${javaPrefix})`
+const shellValuePrefix = `(?:${assignmentPrefix}|${flagPrefix}|${javaPrefix})`
+const valuePrefix = `(?:${shellValuePrefix}|${structuredPrefix})`
+
+// Every place a value could start, shell or structured, to find the last one.
+const valueStarts = new RegExp(String.raw`(${shellValuePrefix})|(${structuredPrefix})`, "giu")
 
 // A quoted value whose closing quote has not arrived yet: everything after the
 // opening quote is value until it does.
-const unclosedQuotedValue = new RegExp(String.raw`(${valuePrefix})(["'])(?:\\.|(?!\2)[^\\\r\n])*$`, "iu")
-
-// The line ends inside a value: an unclosed quote (possibly ending on the
-// backslash of an escape still arriving), or an unquoted run.
-const valueAtEnd = new RegExp(String.raw`${valuePrefix}(?:(["'])(?:\\.|(?!\1)[^\\\r\n])*\\?|[^\s;&|\r\n"'][^\s;&|\r\n]*)$`, "iu")
+const unclosedQuotedValue = new RegExp(String.raw`(${valuePrefix})(?:(")(?:\\.|[^"\\\r\n])*\\?|(')[^'\r\n]*)$`, "iu")
 
 // The line ends with a name and its separator whose value has not started.
 const pendingValue = new RegExp(String.raw`${valuePrefix}$`, "iu")
 
-type DroppedValue =
-  | { kind: "unquoted" }
-  | { kind: "quoted", quote: string, escaped: boolean }
-  | { kind: "token" }
+// Where a value is, once the redactor has decided it is inside one. A shell
+// value is a shell word: a backslash escapes inside double quotes and is
+// literal inside single quotes, and a closing quote does not end the word,
+// only an unquoted delimiter does. A structured (JSON) value is read the same
+// way, except that a comma or closing brace also ends it. A newline ends both.
+type ValueScan = { context: "shell" | "structured" | "token", quote: string | undefined, escaped: boolean }
+
+const structuredValueDelimiter = /[\s,;&|}]/u
+
+// Where the value being scanned ends in this text, or undefined if it goes on.
+function endOfValue(text: string, scan: ValueScan): number | undefined {
+  if (scan.context === "token") {
+    const end = /[^A-Za-z0-9_.-]/u.exec(text)
+    return end ? end.index : undefined
+  }
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!
+    if (character === "\n") return index
+    if (scan.quote !== undefined) {
+      if (scan.escaped) {
+        scan.escaped = false
+      } else if (character === "\\" && scan.quote === '"') {
+        scan.escaped = true
+      } else if (character === scan.quote) {
+        scan.quote = undefined
+      }
+      continue
+    }
+    if ((scan.context === "structured" ? structuredValueDelimiter : valueDelimiter).test(character)) return index
+    if (character === '"' || character === "'") scan.quote = character
+  }
+  return undefined
+}
 
 // The start of a bare token (sk-, ghp_, a JWT) still being printed. Held until
 // the next read, so its first characters are not shown before the pattern that
@@ -286,17 +319,18 @@ type DroppedValue =
 // prompt anyone waits on.
 const tokenFragment = /\b(?:(?:sk|ghp|gho|github_pat|xox[baprs])(?:[-_][A-Za-z0-9_-]*)?|eyJ[A-Za-z0-9_.-]*)$/u
 
-// A shell word goes on after a closing quote (`"…"rest` is one value), so
-// what follows a redacted quoted value up to a delimiter is redacted with it.
-const wordAfterRedactedQuote = new RegExp(String.raw`(${escapeForPattern(replacement)}["'])[^\s;&|\r\n]+`, "gu")
-
-function escapeForPattern(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
+// A quoted value and the rest of its word (`"…"rest` is one shell value). The
+// word goes on to the next delimiter, which for a structured (JSON) value also
+// includes a comma or closing brace, so `"password":"…","safe":…` keeps the
+// field after it.
+const quotedValueWithWord = new RegExp(String.raw`(${shellValuePrefix})(${shellQuotedValue})([^\s;&|\r\n]+)`, "giu")
+const structuredQuotedValueWithWord = new RegExp(String.raw`(${structuredPrefix})(${quotedValue})([^\s,;&|}\r\n]+)`, "giu")
 
 function redactReadable(line: string): string {
-  return redactStreamText(line.replace(unclosedQuotedValue, (_match, prefix: string, quote: string) => `${prefix}${quote}${replacement}`))
-    .replace(wordAfterRedactedQuote, "$1")
+  const unclosed = line.replace(unclosedQuotedValue, (_match, prefix: string, double: string | undefined, single: string | undefined) => `${prefix}${double ?? single}${replacement}`)
+  const wholeWord = (_match: string, prefix: string, quoted: string) => `${prefix}${quoted[0]}${replacement}${quoted[0]}`
+  const words = unclosed.replace(quotedValueWithWord, wholeWord).replace(structuredQuotedValueWithWord, wholeWord)
+  return redactStreamText(words)
 }
 
 // Redacts the line as it reads. Only the span from the first changed character
@@ -322,6 +356,7 @@ function redactTerminalLine(line: string): string {
 const tokenAtEnd = /\b(?:(?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]*|eyJ[A-Za-z0-9_.-]*)$/u
 
 
+
 function commonPrefixLength(left: string, right: string): number {
   const length = Math.min(left.length, right.length)
   let index = 0
@@ -337,12 +372,12 @@ class LineContextRedactor {
   // Set when a line outgrew its context while inside a value: the value's
   // remaining bytes are dropped until it ends. A quoted value ends at its
   // unescaped closing quote; either kind ends at a line boundary.
-  #dropping: DroppedValue | undefined
+  #dropping: ValueScan | undefined
 
   push(chunk: string): string {
     let input = chunk
     if (this.#dropping) {
-      const end = this.#endOfDroppedValue(input, this.#dropping)
+      const end = endOfValue(input, this.#dropping)
       if (end === undefined) return ""
       input = input.slice(end)
       this.#dropping = undefined
@@ -398,21 +433,23 @@ class LineContextRedactor {
   #trimLine(): void {
     const { text } = readable(this.#line)
     if (tokenAtEnd.test(text)) {
-      this.#dropping = { kind: "token" }
+      this.#dropping = { context: "token", quote: undefined, escaped: false }
       this.#line = ""
       this.#shown = ""
       return
     }
-    const inValue = valueAtEnd.exec(text)
-    if (inValue) {
-      const quote = inValue[1]
-      const trailingBackslashes = /\\*$/u.exec(text)![0].length
-      this.#dropping = quote === undefined
-        ? { kind: "unquoted" }
-        : { kind: "quoted", quote, escaped: trailingBackslashes % 2 === 1 }
-      this.#line = ""
-      this.#shown = ""
-      return
+    let last: RegExpExecArray | undefined
+    for (const start of text.matchAll(valueStarts)) last = start
+    if (last) {
+      const rest = text.slice(last.index + last[0].length)
+      const scan: ValueScan = { context: last[1] === undefined ? "structured" : "shell", quote: undefined, escaped: false }
+      if (rest.length > 0 && endOfValue(rest, scan) === undefined) {
+        // The line ends inside a value: drop the rest of it as it arrives.
+        this.#dropping = scan
+        this.#line = ""
+        this.#shown = ""
+        return
+      }
     }
     // A name and separator whose value has not started stay as context, so a
     // value after a long run of spaces is still seen as one.
@@ -429,33 +466,6 @@ class LineContextRedactor {
     this.#shown = redactTerminalLine(this.#line)
   }
 
-  // Where a dropped value ends in this read, or undefined if it does not. A
-  // value is a shell word: quoted parts end at their unescaped closing quote,
-  // and the word goes on until an unquoted delimiter, so `"…"rest` is one
-  // value. A newline always ends it and is then read as a line boundary.
-  #endOfDroppedValue(input: string, dropping: DroppedValue): number | undefined {
-    if (dropping.kind === "token") {
-      const end = /[^A-Za-z0-9_.-]/u.exec(input)
-      return end ? end.index : undefined
-    }
-    for (let index = 0; index < input.length; index += 1) {
-      const character = input[index]!
-      if (character === "\n") return index
-      if (dropping.kind === "quoted") {
-        if (dropping.escaped) {
-          dropping.escaped = false
-        } else if (character === "\\" && dropping.quote === '"') {
-          dropping.escaped = true
-        } else if (character === dropping.quote) {
-          this.#dropping = dropping = { kind: "unquoted" }
-        }
-        continue
-      }
-      if (valueDelimiter.test(character)) return index
-      if (character === '"' || character === "'") this.#dropping = dropping = { kind: "quoted", quote: character, escaped: false }
-    }
-    return undefined
-  }
 }
 
 // The first stage, unchanged from before the line-context stage existed. It

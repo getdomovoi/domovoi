@@ -8,6 +8,8 @@ import {
   redactDurableCommand,
   redactDurableOutput,
   redactDurableText,
+  redactStreamText,
+  TerminalOutputRedactor,
 } from "./secret-redaction.js"
 
 const secrets = [
@@ -170,5 +172,28 @@ describe("durable secret redaction", () => {
     expect(stream.push("continuation-secret")).toBe("")
     expect(stream.push("\r\nsafe line\n")).toBe("safe line\n")
     expect(stream.flush()).toBe("")
+  })
+})
+
+describe("shell quoting in flag and property values", () => {
+  // Review round 4: a backslash is literal inside shell single quotes, so it
+  // cannot escape the closing quote; a JSON value ends where JSON says.
+  it.each([
+    "curl --token 'abc zqxjwvkm\\' -s",
+    "java -Dpassword='abc zqxjwvkm\\' -jar app.jar",
+    "curl --token \"abc \\\"zqxjwvkm\" -s",
+  ])("hides the whole quoted value of %j", (line) => {
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+      expect(redacted).toContain("[REDACTED]")
+      expect(redacted).toMatch(/ -(s|jar app\.jar)$/)
+    }
+  })
+
+  it("keeps the fields after a redacted JSON value", () => {
+    const line = "{\"password\":\"secret\",\"safe\":\"visible\"}"
+    expect(redactDurableOutput(line).value).toBe("{\"password\":\"[REDACTED]\",\"safe\":\"visible\"}")
+    const terminal = new TerminalOutputRedactor()
+    expect(`${terminal.push(`${line}\r\n`)}${terminal.flush()}`).toBe("{\"password\":\"[REDACTED]\",\"safe\":\"visible\"}\r\n")
   })
 })

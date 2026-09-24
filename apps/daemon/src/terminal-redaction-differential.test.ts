@@ -2,8 +2,13 @@ import { writeFileSync } from "node:fs"
 
 import { describe, expect, it } from "vitest"
 
-import { TerminalOutputRedactor } from "./secret-redaction.js"
-import { TerminalOutputRedactor as MainTerminalOutputRedactor } from "./terminal-redaction-main.test-support.js"
+import { DurableOutputRedactor, redactDurableCommand, redactDurableOutput, TerminalOutputRedactor } from "./secret-redaction.js"
+import {
+  DurableOutputRedactor as MainDurableOutputRedactor,
+  redactDurableCommand as mainRedactDurableCommand,
+  redactDurableOutput as mainRedactDurableOutput,
+  TerminalOutputRedactor as MainTerminalOutputRedactor,
+} from "./terminal-redaction-main.test-support.js"
 
 // Differential fuzz: the terminal redactor against a frozen copy of main's
 // (8bda137f). Inputs are generated from secret and plain forms with random
@@ -14,7 +19,8 @@ import { TerminalOutputRedactor as MainTerminalOutputRedactor } from "./terminal
 // failure names its seed, its shape and a minimal list of reads.
 
 type Step = string | "idle"
-type Case = { shape: string, text: string, value?: string }
+// kept: text outside the secret that must survive wherever main keeps it.
+type Case = { shape: string, text: string, value?: string, kept: readonly string[] }
 
 function random(seed: number): () => number {
   let state = seed >>> 0
@@ -52,13 +58,15 @@ function generate(next: () => number): Case {
       "Downloading 10%\rDownloading 20%", "\x1b[32mpasswords are hashed\x1b[0m", "password\nhello world",
       "Password:\nhello world", "the token was rotated", "secret sauce recipe",
     ])
-    return { shape: "plain", text: `${plain}${ending || "\r\n"}` }
+    return { shape: "plain", text: `${plain}${ending || "\r\n"}`, kept: [] }
   }
   const name = pick(names)
   const quote = chance(0.35) ? pick(['"', "'"]) : ""
   let value = valueBody()
   if (quote && chance(0.3)) { features.push("inner-space"); value = `${value} ${word(6)}` }
   if (quote === '"' && chance(0.3)) { features.push("escaped-quote"); value = `${word(4)}\\"${value}` }
+  // In shell single quotes a backslash is literal and cannot escape the quote.
+  if (quote === "'" && chance(0.3)) { features.push("single-quote-backslash"); value = `${value}\\` }
   const closed = !quote || chance(0.85)
   if (quote && !closed) features.push("unclosed")
   const after = quote && closed && chance(0.2) ? (features.push("after-quote"), word(8)) : ""
@@ -66,21 +74,25 @@ function generate(next: () => number): Case {
   const secretText = quote ? value.replace(/\\"/g, "") + after : value + after
   const newlineBeforeValue = chance(0.08) ? (features.push("newline-before-value"), "\n") : ""
   const redraw = chance(0.06) ? (features.push("redraw"), "\r\x1b[4C") : ""
-  const form = pick(["assignment", "export", "json", "flag-space", "flag-equals", "property", "prompt", "env", "bare-token"])
+  const form = pick(["assignment", "export", "json", "json-mixed", "flag-space", "flag-equals", "property", "prompt", "env", "bare-token"])
   let text: string
+  let kept: string[] = []
   switch (form) {
     case "assignment": text = `${name}${ansi()}${space()}=${space()}${ansi()}${newlineBeforeValue}${redraw}${quoted}`; break
     case "export": text = `export ${name}${ansi()}=${ansi()}${newlineBeforeValue}${redraw}${quoted}`; break
     case "json": text = `{"${name}":${space()}${newlineBeforeValue}${quote ? quoted : `"${value}"`}}`; break
-    case "flag-space": text = `curl --${name}${space() || " "}${ansi()}${redraw}${quoted} -s`; break
+    case "json-mixed": text = `{"${name}":"${value.replace(/[\\"]/g, "")}","safe":"visible"}`; kept = [`"safe":"visible"}`]; break
+    case "flag-space": text = `curl --${name}${space() || " "}${ansi()}${redraw}${quoted} -s`; kept = [" -s"]; break
     case "flag-equals": text = `curl --${name}=${ansi()}${quoted}`; break
-    case "property": text = `java -D${name}=${space()}${ansi()}${quoted} -jar app.jar`; break
+    case "property": text = `java -D${name}=${space()}${ansi()}${quoted} -jar app.jar`; kept = [" -jar app.jar"]; break
     case "prompt": text = `${name}:${space() || " "}${ansi()}${newlineBeforeValue}${redraw}${value}`; break
     case "env": text = `$env:${name}=${quote ? quoted : `"${value}"`}`; break
-    default: text = `echo ghp_${value} done`; break
+    default: text = `echo ghp_${value} done`; kept = [" done"]; break
   }
-  const hidden = form === "bare-token" ? `ghp_${value}` : form === "json" && !quote ? value : form === "env" && !quote ? value : form === "prompt" ? value : secretText
-  return { shape: [form, ...[...new Set(features)].sort()].join("+"), text: `${text}${ending}`, value: hidden }
+  const hidden = form === "bare-token" ? `ghp_${value}` : form === "json-mixed" ? value.replace(/[\\"]/g, "") : form === "json" && !quote ? value : form === "env" && !quote ? value : form === "prompt" ? value : secretText
+  // After a quote that never closes, the rest of the line is inside the shell
+  // word, so nothing after it counts as kept outside the secret.
+  return { shape: [form, ...[...new Set(features)].sort()].join("+"), text: `${text}${ending}`, value: hidden, kept: closed ? kept : [] }
 }
 
 function cut(text: string, next: () => number): Step[] {
@@ -118,17 +130,40 @@ function fragments(value: string): string[] {
   return [...all]
 }
 
+function runMainDurable(steps: readonly Step[]): string {
+  const redactor = new MainDurableOutputRedactor()
+  return steps.map((step) => step === "idle" ? "" : redactor.push(step)).join("") + redactor.flush()
+}
+
+function runNewDurable(steps: readonly Step[]): string {
+  const redactor = new DurableOutputRedactor()
+  return steps.map((step) => step === "idle" ? "" : redactor.push(step)).join("") + redactor.flush()
+}
+
+// Each redactor this change touches, beside main's own version of it.
+const pairs: readonly { name: string, main: (item: Case, steps: readonly Step[]) => string, current: (item: Case, steps: readonly Step[]) => string }[] = [
+  { name: "terminal", main: (_item, steps) => runMain(steps), current: (_item, steps) => runNew(steps) },
+  { name: "durable output stream", main: (_item, steps) => runMainDurable(steps), current: (_item, steps) => runNewDurable(steps) },
+  { name: "durable output", main: (item) => mainRedactDurableOutput(item.text).value, current: (item) => redactDurableOutput(item.text).value },
+  { name: "durable command", main: (item) => mainRedactDurableCommand(item.text).value, current: (item) => redactDurableCommand(item.text).value },
+]
+
 function failure(item: Case, steps: readonly Step[]): string | undefined {
-  const main = runMain(steps)
-  const current = runNew(steps)
-  if (item.value === undefined) {
-    if (main === item.text && current !== item.text) return `plain line changed: ${JSON.stringify(current.slice(0, 160))}`
-    return undefined
+  for (const pair of pairs) {
+    const main = pair.main(item, steps)
+    const current = pair.current(item, steps)
+    if (item.value === undefined) {
+      if (main === item.text && current !== item.text) return `${pair.name}: plain line changed: ${JSON.stringify(current.slice(0, 160))}`
+      continue
+    }
+    const lost = item.kept.find((part) => main.includes(part) && !current.includes(part))
+    if (lost !== undefined) return `${pair.name}: main keeps ${JSON.stringify(lost)}, this loses it: ${JSON.stringify(current.slice(-160))}`
+    const pieces = fragments(item.value)
+    if (pieces.length === 0 || pieces.some((piece) => main.includes(piece))) continue
+    const shown = pieces.find((piece) => current.includes(piece))
+    if (shown !== undefined) return `${pair.name}: main hides the value, this shows ${JSON.stringify(shown)}`
   }
-  const pieces = fragments(item.value)
-  if (pieces.length === 0 || pieces.some((piece) => main.includes(piece))) return undefined
-  const shown = pieces.find((piece) => current.includes(piece))
-  return shown === undefined ? undefined : `main hides the value, this shows ${JSON.stringify(shown)}`
+  return undefined
 }
 
 function shrink(item: Case, steps: readonly Step[]): Step[] {
@@ -169,9 +204,9 @@ describe("terminal redaction against main", () => {
       const item = generate(next)
       const steps = cut(item.text, next)
       const problem = failure(item, steps)
-      if (!problem || failures.has(item.shape)) continue
+      if (!problem || failures.has(`${item.shape} (${problem.slice(0, problem.indexOf(":"))})`)) continue
       const minimal = shrink(item, steps)
-      failures.set(item.shape, `seed ${caseSeed}: ${problem}\n  reads ${JSON.stringify(minimal.map((step) => step !== "idle" && step.length > 60 ? `${step.slice(0, 40)}…(${step.length})` : step))}`)
+      failures.set(`${item.shape} (${problem.slice(0, problem.indexOf(":"))})`, `seed ${caseSeed}: ${problem}\n  reads ${JSON.stringify(minimal.map((step) => step !== "idle" && step.length > 60 ? `${step.slice(0, 40)}…(${step.length})` : step))}`)
     }
     const report = [...failures].map(([shape, detail]) => `${shape}\n  ${detail}`)
     if (process.env.TERMINAL_REDACTION_FUZZ_REPORT) writeFileSync(process.env.TERMINAL_REDACTION_FUZZ_REPORT, report.join("\n"))
