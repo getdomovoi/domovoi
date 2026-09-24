@@ -29,10 +29,13 @@ export function workflowTriggers(content) {
     return [value]
   }
   const triggers = []
+  let indent
   for (const line of lines.slice(start + 1)) {
+    if (/^\s*(#.*)?$/.test(line)) continue
     if (/^\S/.test(line)) break
-    const key = /^  (\w[\w-]*):/.exec(line)
-    if (key) triggers.push(key[1])
+    const key = /^(\s+)(\w[\w-]*):/.exec(line)
+    indent ??= key?.[1]
+    if (key && key[1] === indent) triggers.push(key[2])
   }
   return triggers
 }
