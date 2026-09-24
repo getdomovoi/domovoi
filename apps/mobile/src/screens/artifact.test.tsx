@@ -12,8 +12,21 @@ jest.mock("react-native-webview", () => {
   return {
     // The host view has no `source`; it is carried as an extra prop so the
     // test can read what the frame was handed.
-    WebView: (props: { testID: string, source: { uri: string }, onMessage?: (event: { nativeEvent: { data: string } }) => void }) =>
-      <Host testID={props.testID} {...{ source: props.source, onMessage: props.onMessage }} />,
+    WebView: (props: {
+      testID: string
+      source: { uri: string }
+      onMessage?: (event: { nativeEvent: { data: string } }) => void
+      onShouldStartLoadWithRequest?: (request: { url: string }) => boolean
+      setSupportMultipleWindows?: boolean
+      allowsBackForwardNavigationGestures?: boolean
+    }) =>
+      <Host testID={props.testID} {...{
+        source: props.source,
+        onMessage: props.onMessage,
+        onShouldStartLoadWithRequest: props.onShouldStartLoadWithRequest,
+        setSupportMultipleWindows: props.setSupportMultipleWindows,
+        allowsBackForwardNavigationGestures: props.allowsBackForwardNavigationGestures,
+      }} />,
   }
 })
 
@@ -109,6 +122,19 @@ describe("ArtifactScreen preview", () => {
 
     const frame = screen.getByTestId("preview-render")
     expect(frame.props.source).toEqual({ uri: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s" })
+    // The frame never leaves the signed address: no link, redirect or script
+    // navigation, no new window and no back gesture into another page.
+    const mayLoad = frame.props.onShouldStartLoadWithRequest as (request: { url: string }) => boolean
+    expect(mayLoad({ url: "https://mac.ts.net:47831/artifacts/artifact-preview?signature=s" })).toBe(true)
+    for (const url of [
+      "https://attacker.example/collect?d=1",
+      "https://mac.ts.net:47831/artifacts/artifact-preview?signature=other",
+      "https://mac.ts.net:47831/rpc",
+      "file:///etc/hosts",
+      "javascript:alert(1)",
+    ]) expect(mayLoad({ url })).toBe(false)
+    expect(frame.props.setSupportMultipleWindows).toBe(false)
+    expect(frame.props.allowsBackForwardNavigationGestures).toBe(false)
     expect(screen.getByText("The render stays on mac-mini-m4. This phone displays it and never downloads the repository.")).toBeOnTheScreen()
     expect(screen.queryByText(/signed fetch/)).toBeNull()
   })

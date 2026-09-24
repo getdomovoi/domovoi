@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { demoWorkspace } from "@getdomovoi/protocol"
+
 import { DaemonConnection } from "./daemon"
 import { DaemonTimeoutError, requestTimeoutMs } from "./request-timeout"
 
@@ -55,7 +57,7 @@ afterEach(() => {
 describe("a request the daemon never answers", () => {
   it("gives up rather than leaving the caller waiting forever", async () => {
     const daemon = connect()
-    const pending = daemon.call("session.send", {})
+    const pending = daemon.call("session.send", { sessionId: "session-1", prompt: "ship it", client: "phone" })
     const settled = expect(pending).rejects.toBeInstanceOf(DaemonTimeoutError)
 
     expect(daemon.pendingRequests()).toBe(1)
@@ -72,8 +74,9 @@ describe("a request the daemon never answers", () => {
     const pending = daemon.call("workspace.get", {})
     const id = JSON.parse(FakeSocket.last?.sent[0] ?? "{}").id
 
-    FakeSocket.last?.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id, result: { ok: true } }) })
-    await expect(pending).resolves.toEqual({ ok: true })
+    // A real snapshot: the answer is read by the method's own result schema.
+    FakeSocket.last?.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id, result: demoWorkspace }) })
+    await expect(pending).resolves.toMatchObject({ machine: { id: demoWorkspace.machine.id } })
 
     expect(daemon.pendingRequests()).toBe(0)
     await vi.advanceTimersByTimeAsync(requestTimeoutMs("workspace.get") * 2)

@@ -241,7 +241,7 @@
           <div style="width: 100%; max-width: 720px; display: flex; align-items: center; gap: 11px;">
             <div style="flex: 1; min-width: 0; height: 52px; display: flex; align-items: center; gap: 11px; padding: 0 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
               <span style="flex: 1; font-size: 15px; color: var(--faint);">Reply, or steer the plan</span>
-              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">{{ tabModelLabel }}</span>
+              <span role="img" aria-label="claude-code" style="display: block; width: 13px; height: 13px; flex: 0 0 13px; background: currentColor; color: var(--faint); -webkit-mask: url(assets/harness/claude-code.svg) center / contain no-repeat; mask: url(assets/harness/claude-code.svg) center / contain no-repeat;"></span><span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">{{ tabModelLabel }}</span>
               <span style="{{ tabSepStyle }}">·</span>
               <sc-if value="{{ tabShowRing }}" hint-placeholder-val="{{ true }}">
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex: 0 0 14px;" role="img" aria-label="{{ tabRingLabel }}">
@@ -384,6 +384,27 @@
       </sc-if>
     </div>
 
+    <sc-if value="{{ isPairedTab }}" hint-placeholder-val="{{ false }}">
+      <div style="position: absolute; inset: 26px 0 22px; z-index: 6; background: var(--overlay); display: flex; align-items: center; justify-content: center; padding: 24px;">
+        <div style="width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 16px; padding: 22px 24px; border: 1px solid var(--border); border-radius: 20px; background: var(--background); box-shadow: 0 30px 80px var(--shadow-lg);">
+          <div style="display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; align-items: center; gap: 11px;">
+              <span style="width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--success);"></span>
+              <span style="font-size: 17px; font-weight: 600; letter-spacing: -.01em;">Paired with hetzner-cx42</span>
+            </div>
+            <span style="padding-left: 19px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">tailnet · credential b41d…2fe</span>
+          </div>
+          <div style="display: flex; align-items: flex-start; gap: 11px; padding-top: 16px; border-top: 1px solid var(--border);">
+            <span style="width: 7px; height: 7px; flex: 0 0 7px; margin-top: 8px; margin-left: 1px; border-radius: 50%; background: var(--info);"></span>
+            <span style="font-size: 14px; color: var(--muted-foreground); line-height: 1.55;">Gates reach this tablet only while Domovoi is open on it. There are no notifications yet.</span>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <div onClick="{{ closePaired }}" style="height: 44px; padding: 0 20px; display: flex; align-items: center; border-radius: 14px; background: var(--primary); color: var(--primary-foreground); font-size: 14px; font-weight: 500; cursor: pointer;">Open Sessions</div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
     <div style="flex: 0 0 auto; height: 22px; display: flex; align-items: center; justify-content: center;">
       <span style="display: block; width: 148px; height: 5px; border-radius: 3px; background: var(--muted);"></span>
     </div>
@@ -460,7 +481,8 @@ class Component extends DCLogic {
       { id: "gate", num: "1", label: "Two pane, gate waiting", note: "Sessions and thread side by side. The gate's three decisions are 52 and 48px targets, not desktop buttons scaled up." },
       { id: "decided", num: "2", label: "Decision made", note: "The receipt says what ran, how long it took and that a checkpoint exists, in one card you can read at arm's length." },
       { id: "sheet", num: "3", label: "Review sheet", note: "Changes, the diff and the plan arrive as a bottom sheet with a grab handle, because a right panel has nowhere to go here." },
-      { id: "cellular", num: "4", label: "On cellular", note: "Off your network the route is Cloud, and the banner says the view lags rather than pretending it is live." }
+      { id: "cellular", num: "4", label: "On cellular", note: "Off your network the route is Cloud, and the banner says the view lags rather than pretending it is live." },
+      { id: "paired", num: "5", label: "Paired", note: "A tablet cannot be woken over a tailnet either, so pairing states the limit in the tablet's own words, before the first gate is missed." }
     ];
 
     return {
@@ -535,6 +557,8 @@ class Component extends DCLogic {
         rowStyle: "display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 12px 16px;" + (i ? " border-top: 1px solid var(--border);" : "")
       })),
 
+      isPairedTab: sc === "paired",
+      closePaired: this.go("gate"),
       isGate: !decided,
       isDecided: decided,
       factsOpen: st.factsOpen,
@@ -597,7 +621,7 @@ class Component extends DCLogic {
         const agent = "claude-code";
         const id = "claude-sonnet-4.6";
         const owned = agent.split("-");
-        return agent + " · " + id.split("-").filter(t => owned.indexOf(t) === -1).join(" ");
+        return id.split("-").filter(t => owned.indexOf(t) === -1).join(" ");
       })(),
       // An OAuth connection is already paid for, so a price would read as zero. One ring for
       // two windows: it shows the tighter of the 5 hour and weekly limits, and the label says
