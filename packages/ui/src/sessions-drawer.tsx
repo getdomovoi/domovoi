@@ -67,11 +67,17 @@ export function SessionsDrawerColumn({
   onAction,
   machineAvailability,
   onOpenMachines,
+  scope,
+  credentialNote,
   className,
 }: {
   snapshot: WorkspaceSnapshot
   open: boolean
   onActivate: (sessionId: string) => void
+  // A browser tab over the tailnet reaches one machine and holds its
+  // credential for the tab only; the column says both (Web v2, 2026-09-23).
+  scope?: { machine: string; note: string } | undefined
+  credentialNote?: { label: string; meta: string } | undefined
   onAction?: ((action: SessionRowAction, sessionId: string) => void) | undefined
   onNewSession?: (() => void) | undefined
   onOpenProviderSettings?: (() => void) | undefined
@@ -96,6 +102,13 @@ export function SessionsDrawerColumn({
       aria-label="Sessions"
       className={cn("flex w-[268px] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar", className)}
     >
+      {scope ? (
+        <div className="flex shrink-0 items-center gap-2 border-b px-[14px] py-[9px]">
+          <span className="font-machine text-[11px] text-strong">{scope.machine}</span>
+          <span className="flex-1" />
+          <span className="text-[10.5px] text-faint">{scope.note}</span>
+        </div>
+      ) : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
         {groups.length === 0 ? (
           <p className="m-0 px-2 py-3 text-[11.5px] text-faint">
@@ -169,6 +182,14 @@ export function SessionsDrawerColumn({
           )
         })}
       </div>
+      {credentialNote ? (
+        <div className="flex shrink-0 items-center gap-2 border-t px-[14px] py-[9px]">
+          <span aria-hidden className="size-1.5 rounded-full bg-info" />
+          <span className="text-[11px]">{credentialNote.label}</span>
+          <span className="flex-1" />
+          <span className="font-machine text-[10.5px] text-faint">{credentialNote.meta}</span>
+        </div>
+      ) : null}
       {machineAvailability ? (
         <div className="flex shrink-0 items-center justify-center px-[10px] pt-[9px] pb-[11px]">
           <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={onOpenMachines}>

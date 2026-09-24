@@ -251,3 +251,47 @@ describe("DaemonConnection messages it cannot read", () => {
     } finally { daemon.close() }
   })
 })
+
+describe("DaemonConnection results", () => {
+  function answering() {
+    const sent: string[] = []
+    const socket = withSocket((payload) => { sent.push(payload) })
+    const onProtocolError = vi.fn()
+    const daemon = connection({ onProtocolError })
+    daemon.connect()
+    const answer = (frame: Record<string, unknown>) => {
+      const request = JSON.parse(sent.at(-1)!) as { id: number }
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, ...frame }) })
+    }
+    return { daemon, answer, onProtocolError }
+  }
+
+  it("hands back a result only once the method's own schema accepts it", async () => {
+    const { daemon, answer } = answering()
+    try {
+      const pending = daemon.call("workspace.get", {})
+      answer({ result: demoWorkspace })
+      await expect(pending).resolves.toMatchObject({ machine: { id: demoWorkspace.machine.id } })
+    } finally { daemon.close() }
+  })
+
+  it("refuses a result that does not match the method's schema, and reports it", async () => {
+    const { daemon, answer, onProtocolError } = answering()
+    try {
+      const pending = daemon.call("workspace.get", {})
+      answer({ result: { sessions: "none" } })
+      await expect(pending).rejects.toBeInstanceOf(DaemonProtocolError)
+      expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("workspace.get"))
+    } finally { daemon.close() }
+  })
+
+  it("refuses a response frame that is not JSON-RPC, and reports it", async () => {
+    const { daemon, answer, onProtocolError } = answering()
+    try {
+      const pending = daemon.call("workspace.get", {})
+      answer({ result: demoWorkspace, unexpected: true })
+      await expect(pending).rejects.toBeInstanceOf(DaemonProtocolError)
+      expect(onProtocolError).toHaveBeenCalled()
+    } finally { daemon.close() }
+  })
+})

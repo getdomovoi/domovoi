@@ -1,12 +1,12 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html",
-  "sha256": "e10f42ddc4f703ddde57a3e09a91a15ab0ee4f1e2a29b25e503818c82444cb0c",
-  "derivedOn": "2026-09-20",
+  "sha256": "c894360f2ea65280fb00bc18e88dd2e6a1a3b363d56150322c7da5bfe4c4dca8",
+  "derivedOn": "2026-09-23",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "Twenty-three frames in five sections. Frame names, section eyebrows and step captions are annotations; the fictional session is sample. Frames 20 to 23 are blocked on S3.4 and the native decision. Re-derived 2026-09-18 after the design edits: frame 13 and 14 captions no longer say drawn-not-built, frame 08 names the tailnet instead of Cloud, and the clone action is gone from frame 10.",
+  "note": "Frames in five sections plus the read-only terminal (04, 04e to 04g), pairing success (09b), notifications not yet (09c), images per model (13b, 14b) and the lock-screen study (20a to 20c). Frame names, section eyebrows, step captions, the A/B comparisons and the FOR THE OWNER block are annotations; the fictional session is sample. Re-derived 2026-09-23 from the handoff vendored that day: frame 04 is now the read-only terminal (J38), the receipt names the checkpoint by id, 01 and 09b carry the gates-only-while-open line (J28), 13b and 14b lock images per model (J42), 20a to 20c replace frame 20 (J30). The design's OPEN_QUESTIONS and NEW_STRINGS live in its data and are not held here.",
   "sample": [
     "Migrate billing webhooks",
     "pnpm -w prisma migrate deploy",
@@ -15,7 +15,7 @@
     "no writes to a production database",
     "Set by dana@acme.dev as org policy, on every machine on this account.",
     "mac-mini-m4",
-    "Step 3 of 4 \u00b7 writing the migration",
+    "Step 3 of 4 · writing the migration",
     "4m",
     "Steps 1 and 2 are done. replay.spec.ts asserts exactly-once delivery and passes.",
     "Also cover the claim-expiry case in replay.spec.ts",
@@ -40,7 +40,38 @@
     "B is the one the agent builds on",
     "variant B",
     "the expired row, on \"retried after 15m\"",
-    "Fifteen minutes is too long. Stripe retries at 1, 5 and 30 minutes"
+    "Fifteen minutes is too long. Stripe retries at 1, 5 and 30 minutes",
+    "kilo",
+    "test-runner",
+    "claude-code · mac-mini-m4 · running",
+    "claude-code asked: run the webhooks suite after each change and report failures.",
+    "vitest run webhooks/handler.spec.ts",
+    "14 passed",
+    "vitest run webhooks/replay.spec.ts",
+    "1 failed",
+    "replay.spec.ts still asserts two invocations on a retry, which step 4 rewrites. handler.spec.ts is green.",
+    "ckpt_7f24",
+    "38s",
+    "Claim-then-commit is in. Running the webhooks suite before the migration step.",
+    "pnpm vitest run src/webhooks",
+    "replay.spec.ts still asserts two invocations on a retry, which step 4 rewrites.",
+    "zsh · wt-billing-idem",
+    "120×34",
+    "18 new",
+    "6 new",
+    "The tests failed, and the agent wants to reset the dev database before it retries. Nothing has run yet.",
+    "pnpm -w prisma migrate reset --force",
+    "exit 1",
+    "tailnet · credential 7c3e…a90",
+    "claude-sonnet-4.6",
+    "qwen3-coder-72b",
+    "now",
+    "fetched over tailnet · 41ms",
+    "fetched over tailnet · 38ms",
+    "2m",
+    "25m",
+    "18m",
+    "1 waiting on you, 2 running, 1 queued"
   ],
   "annotations": [
     "Domovoi on a phone, v2",
@@ -49,13 +80,10 @@
     "The five screens the product exists for",
     "Sessions, needs-you first",
     "9:41",
-    "Needs you is the first group and it is never collapsed. Everything else on this screen is secondary to it.",
     "The gate, full screen",
     "The gate owns the screen rather than sitting in a thread. One primary decision at full width, the two alternatives beneath it.",
     "Decided, and who decided",
-    "A decision is worth nothing if you cannot see what it did. The receipt names the outcome, the checkpoint and the credential.",
     "Watching, and the shell is elsewhere",
-    "A run the agent reports is not a shell stream. One claimant at a time is real, a phone is never the claimant, and the held shell's own output is not drawn here because it does not reach a phone.",
     "A refusal on a phone is the strongest version of the promise: the buttons are absent because the answer is not yours to give.",
     "FIRST RUN AND UNPAIRED",
     "The app opens with no machine behind it, and says why",
@@ -92,15 +120,8 @@
     "Pinned plan, expanded",
     "Tapping the strip lifts the whole plan as a sheet. The thread stays behind it, so you have not left the conversation.",
     "WITHOUT OPENING THE APP",
-    "The reason the phone exists: answering a gate from the lock screen",
     "Lock screen, decided in place",
-    "Drawn, not built: waking a locked phone needs APNs, so this waits on the relay rather than on client work. Three actions, the same three the gate screen offers, so a decision taken here is the decision. Always allow is absent, because a standing rule is not a thing to grant from a locked phone.",
-    "Live Activity, while it works",
-    "Drawn, not built, and twice over: a Live Activity is a Swift widget extension, and every background update to it is an APNs push. So it needs the relay and a native target. It shows progress and never a decision, because a glance is not consent.",
     "Four at once, so no progress bar",
-    "Drawn, not built, same reason as 21. One activity for Domovoi, not one per session: four sessions have no shared denominator, so averaging step 3 of 4 with step 1 of 7 would be a number nobody can act on. The roster names each one and its own state instead.",
-    "Unlocked, where the island is compact",
-    "Drawn, not built, same reason as 21. The home screen, because a compact island is what an unlocked phone shows; locked, the same activity is the card in frames 21 and 22.",
     "01",
     "02",
     "03",
@@ -120,10 +141,76 @@
     "17",
     "18",
     "19",
-    "20",
     "21",
     "22",
-    "23"
+    "23",
+    "Needs you is the first group and it is never collapsed. Running subagents hang off their session on tree lines, and finished ones fold into one line. The line above it is M1's limit: without the relay there is no push, so gates arrive only while the app is open.",
+    "01b",
+    "A subagent's thread",
+    "Tap a subagent under its session to read its thread. It is read-only here: a subagent takes instructions from claude-code, and its gates arrive in the parent thread.",
+    "Read-only. The receipt names the checkpoint the daemon took before the write, and reverting to it happens on a desktop.",
+    "Read-only. The view names the one device that holds the claim. Recent output arrives first, then live, redacted as everywhere else. The claimant's 120 columns wrap here, because a phone never resizes them. B in the thread opens it, and back returns there.",
+    "READ-ONLY TERMINAL",
+    "Extends 04. A phone or tablet reads the shell, and only the device holding the claim types into it",
+    "04e",
+    "A gate after a failed command",
+    "The gate names the failed command it answers to and links to that output, read-only. The failure is red and the link is neutral, because amber belongs to the gate alone.",
+    "04f",
+    "Tablet, output beside the thread",
+    "The same read-only view opens beside the thread at about 100 columns, so a 120-column line still wraps. A keyboard attached to the tablet does not type into it. The claimant still does.",
+    "04g",
+    "The grant line, when this ships",
+    "Today",
+    "When this ships",
+    "Desktop, pairing card",
+    "Command line",
+    "Phone, before it pairs",
+    "One line, one source. It moves from a limit to a grant and names its limit in the same breath, and the desktop card, the command line and the phone change together.",
+    "A OR B, LONG LINES AT PHONE WIDTH",
+    "The same 14 lines of output, cropped to the phone's content width",
+    "A",
+    "Full screen",
+    "Full screen gives about 52 columns. A long line wraps under a hanging indent, so a path or an assertion stays whole and the next line still starts at the margin.",
+    "B",
+    "Inside the thread",
+    "Inside the thread the block is about 46 columns and seven lines tall. Sideways scrolling inside a scrolling thread fights the page, so it wraps and shows the tail.",
+    "RECOMMENDATION",
+    "B is the way in, A is where you read. Once long lines wrap, a seven-line block holds little more than the summary, so B shows the tail and one tap opens A.",
+    "Frame 04 is A. B is the thread block that opens it.",
+    "FOR THE OWNER",
+    "New literal strings for the conformance inventory, and what is not decided",
+    "NEW STRINGS",
+    "OPEN QUESTIONS",
+    "09b",
+    "Nothing can wake a phone over a tailnet, so the limit ships inside the success card. You learn when a gate can reach you at the moment you pair, not when one is missed.",
+    "09c",
+    "Settings, notifications not yet",
+    "A setting that does not exist yet stays listed, dimmed and untouchable, with no chevron. The line under it says why, so the missing row reads as a fact rather than a bug.",
+    "13b",
+    "Model without image input",
+    "Attaches, then blocks send until removed.",
+    "14b",
+    "Then a model without images",
+    "Queued images the model cannot take lock send before you press it, and the line names the model. The 1.5 MB, 2048 px and count caps are unchanged.",
+    "WHEN A GATE CAN REACH THIS PHONE",
+    "Three versions of the line, at phone width, dark and light",
+    "dark",
+    "light",
+    "One payload rule: a push says that something happened, never what. Push needs the hosted relay and accounts, so all of this ships after the first release.",
+    "20a",
+    "20b",
+    "Facts do not fit, so only Open",
+    "Rule: if one fact would be cut, the lock screen cannot decide. Nine paths do not fit the expanded notification, so Open is the only action and every path waits in the app.",
+    "20c",
+    "Stale: answered elsewhere, or expired",
+    "Rule: a stale notification decides nothing. An answer from another device replaces the notification, and the daemon keeps only the first answer. An expired handle fetches no facts, and the gate keeps waiting on its machine.",
+    "Ongoing",
+    "Rule: the roster carries the same payload as 21, nothing more. Four sessions share no denominator, so there is no combined progress bar.",
+    "What the collapsed notification could say. Bodies are encrypted to the phone. On iOS a Live Activity cannot decrypt, so 21 to 23 stay at A there.",
+    "A locked screen shows",
+    "The push service sees",
+    "iOS",
+    "Android"
   ],
   "elements": [
     {
@@ -137,23 +224,8 @@
         "Settings"
       ],
       "evidence": [
-        "\"Sessions\"",
-        "\"Machines\"",
-        "\"Settings\"",
-        "tab-bar",
-        "label: \"Machines\""
-      ]
-    },
-    {
-      "id": "shell.platform-toggle",
-      "name": "iOS and Android drawn from one design",
-      "where": "design chrome: the platform switch above the frames",
-      "copy": [
-        "iOS",
-        "Android"
-      ],
-      "evidence": [
-        "Platform.OS"
+        "label: \"Machines\"",
+        "label: \"Settings\""
       ]
     },
     {
@@ -169,6 +241,36 @@
       ]
     },
     {
+      "id": "sessions.gates-while-open",
+      "name": "Gates only while open",
+      "where": "frame 01, under the header (J28)",
+      "copy": [
+        "Keep Domovoi open to answer gates. Nothing is pushed to this phone yet."
+      ],
+      "evidence": [
+        "Keep Domovoi open to answer gates"
+      ]
+    },
+    {
+      "id": "subagent.thread",
+      "name": "A subagent's thread",
+      "where": "frame 01b: subagent tag, the parent's instruction, tool rows, the read-only note, Back to the parent thread",
+      "copy": [
+        "subagent",
+        "Subagents take instructions from claude-code, not from you.",
+        "Back to the parent thread"
+      ],
+      "evidence": [
+        "Back to the parent thread",
+        "Subagents take instructions from"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "session history carries no subagent identity or subagent thread, so a phone has nothing to group under a session or open"
+      }
+    },
+    {
       "id": "gate.screen",
       "name": "The gate, full screen",
       "where": "frame 02: title, Waiting on you, what it touches and that nothing has run, the command, Allow once at full width, Always allow this, Deny",
@@ -180,54 +282,131 @@
         "Deny"
       ],
       "evidence": [
-        "Waiting on you",
-        "Allow once",
+        "Waiting on you</Text>",
         "Always allow this",
-        "Deny",
         "Nothing has run yet"
-      ]
+      ],
+      "presence": [
+        "Always allow this"
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "the gate screen decides; its title reads Approval, not the design's Waiting on you. The earlier evidence for that line matched the protocol's follow pill text, not the phone"
+      }
     },
     {
       "id": "receipt.screen",
       "name": "Decided, and who decided",
-      "where": "frame 03: Allowed once, finished in N seconds with the checkpoint, RECORDED AS the verified credential, Watch the rest of the turn, the desktop-revert note",
+      "where": "frame 03: Allowed once, Checkpoint <id> was taken first, then it ran in <duration>, RECORDED AS the verified credential, Watch the rest of the turn, the desktop-revert note",
       "copy": [
         "Allowed once",
-        "Finished in 38 seconds. A checkpoint was taken before it, so this is revertible.",
         "RECORDED AS",
         "The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.",
         "Watch the rest of the turn",
-        "Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work."
+        "Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.",
+        "Checkpoint",
+        "was taken first, then it ran in"
       ],
       "evidence": [
+        "Allowed once",
+        "RECORDED AS",
+        "Watch the rest of the turn",
+        "Reverting happens on a desktop",
+        "was taken first, then it ran in"
+      ],
+      "presence": [
         "Allowed once",
         "RECORDED AS",
         "Watch the rest of the turn",
         "Reverting happens on a desktop"
       ],
-      "presence": [
-        "Allowed once"
-      ]
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "the 2026-09-23 design names the checkpoint by id before the duration; the screen still says it finished with a checkpoint taken"
+      }
     },
     {
       "id": "watching.screen",
-      "name": "Watching, and the shell is elsewhere",
-      "where": "frame 04: the run the agent reported, WHAT THE AGENT REPORTED, the shell is held on desktop, typing needs the claim",
+      "name": "Watching, read-only terminal",
+      "where": "frame 04 (J38): the claimant line, the command with Failed and Live, Show all N lines, the read-only terminal with Follow output and Jump to latest, and the read-only note",
       "copy": [
         "watching",
-        "WHAT THE AGENT REPORTED",
-        "The shell is held on desktop",
-        "Typing needs the claim, and a phone cannot take one. Claim it from a desktop.",
-        "This phone cannot pull the repository down. Diffs stream from the machine and are never stored here. Terminal output does not reach a phone yet."
+        "Failed",
+        "Live",
+        "Claimed by MacBook Pro",
+        "Show all 14 lines",
+        "read-only",
+        "Follow output",
+        "Jump to latest",
+        "Read-only. Only the claimant can type or resize."
       ],
       "evidence": [
-        "WHAT THE AGENT REPORTED",
-        "The shell is held on desktop"
+        "Claimed by",
+        "Follow output",
+        "Only the claimant can type or resize"
       ],
       "blocked": {
-        "since": "2026-09-18",
+        "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "waits on terminal.watch, decided as option A after Phase 1 (S3.3 frame 04)"
+        "reason": "the phone allow-list (phoneAndTabletRpcMethods) carries no terminal method, so a phone receives no terminal output to read; J38 and the design's open questions on buffer size and redaction point need a protocol decision first"
+      },
+      "states": [
+        "live",
+        "failed",
+        "following output",
+        "N new lines below"
+      ]
+    },
+    {
+      "id": "gate.failed-command",
+      "name": "A gate after a failed command",
+      "where": "frame 04e: the failed command with its exit code, Read the output, then the gate",
+      "copy": [
+        "Read the output"
+      ],
+      "evidence": [
+        "Read the output"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "Read the output opens the read-only terminal, which a phone cannot receive (see watching.screen)"
+      }
+    },
+    {
+      "id": "tablet.terminal-beside",
+      "name": "Tablet, output beside the thread",
+      "where": "frame 04f: Open beside the thread, the read-only view at about 100 columns",
+      "copy": [
+        "Open beside the thread",
+        "Read-only. A keyboard attached to this tablet does not type into it."
+      ],
+      "evidence": [
+        "Open beside the thread"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "same as watching.screen: no terminal method on the phone and tablet allow-list"
+      }
+    },
+    {
+      "id": "pairing.grant-line",
+      "name": "The grant line, today and when it ships",
+      "where": "frame 04g: the same line on the desktop pairing card, the command line and the phone before it pairs",
+      "copy": [
+        "Terminal output is not on a phone yet.",
+        "Read terminal output. It cannot type, resize or take the claim.",
+        "A PAIRED DEVICE CAN",
+        "$ domovoid pair --client phone",
+        "THIS PHONE WILL BE ABLE TO"
+      ],
+      "evidence": [
+        "THIS PHONE WILL BE ABLE TO"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "the phone draws no grant list before it pairs; the shared list is phoneAndTabletPromise in packages/protocol, whose unbuilt line still reads with Everything else here works (design open question 6)"
       }
     },
     {
@@ -274,7 +453,7 @@
         "Pair with a machine"
       ],
       "presence": [
-        "Nothing paired to this phone"
+        "No machine is paired"
       ]
     },
     {
@@ -297,7 +476,7 @@
         "Nothing passes through a server"
       ],
       "presence": [
-        "No machines paired"
+        "WHAT STAYS UNAVAILABLE"
       ]
     },
     {
@@ -316,6 +495,36 @@
       ]
     },
     {
+      "id": "pairing.success",
+      "name": "Paired, with the gates-while-open limit",
+      "where": "frame 09b (J28): Paired, Paired with <machine>, the route and credential, the limit, Open Sessions",
+      "copy": [
+        "Paired",
+        "Paired with mac-mini-m4",
+        "Gates reach this phone only while Domovoi is open on it. There are no notifications yet.",
+        "Open Sessions"
+      ],
+      "evidence": [
+        "Gates reach this phone only while Domovoi is open on it",
+        "Open Sessions"
+      ]
+    },
+    {
+      "id": "settings.notifications-not-yet",
+      "name": "Notifications, not yet",
+      "where": "frame 09c: THIS PHONE, Appearance, Notifications dimmed with Not yet and no chevron",
+      "copy": [
+        "THIS PHONE",
+        "Appearance",
+        "Notifications",
+        "Not yet"
+      ],
+      "evidence": [
+        "THIS PHONE",
+        "Not yet"
+      ]
+    },
+    {
       "id": "sessions.idle",
       "name": "Nothing running, everything is idle",
       "where": "frame 10: two machines answering and idle, Start a session is the only action (clone cut 2026-09-18)",
@@ -329,7 +538,7 @@
         "Start a session"
       ],
       "presence": [
-        "No sessions running"
+        "Everything is idle"
       ]
     },
     {
@@ -380,7 +589,6 @@
         "Photo or screenshot",
         "Take a photo",
         "File from the worktree",
-        "Terminal output",
         "A URL to fetch"
       ]
     },
@@ -396,6 +604,30 @@
         "Images only, up to",
         "maximumImageUploadDimension"
       ]
+    },
+    {
+      "id": "attach.model-images",
+      "name": "Images per model",
+      "where": "frames 13, 13b, 14b (J42): the model line with its image capability, Take a photo locked with the refusal code, and the queued-images block with Remove N images and Change model",
+      "copy": [
+        "takes image input, as its harness reports",
+        "takes no image input, as its harness reports",
+        "Locked for this model.",
+        "refused by mac-mini-m4 · attach.image.model_no_input",
+        "2 images cannot go to",
+        ". Remove them or pick another model.",
+        "Remove 2 images",
+        "Change model"
+      ],
+      "evidence": [
+        "attach.image.model_no_input",
+        "as its harness reports"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "image input is one machine-wide flag (sessionImageAttachments on system.hello); nothing reports it per model, and no attach.image.model_no_input refusal exists"
+      }
     },
     {
       "id": "plan.sheet",
@@ -421,9 +653,12 @@
         "Acceptance"
       ],
       "evidence": [
-        "agent-markdown",
-        "Acceptance"
-      ]
+        "PLAN.md"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no screen renders PLAN.md as a document; AgentMarkdown renders agent replies and the plan sheet renders step rows"
+      }
     },
     {
       "id": "artifact.render",
@@ -435,8 +670,7 @@
       ],
       "evidence": [
         "The render stays on",
-        "builds on",
-        "Comment"
+        "builds on"
       ]
     },
     {
@@ -464,26 +698,49 @@
         "Unpin"
       ],
       "evidence": [
-        "Unpin",
         "Pinned stays pinned across screens"
       ]
     },
     {
       "id": "lockscreen.decision",
       "name": "Lock screen, decided in place",
-      "where": "frame 20: notification with Allow once, Deny, Open",
+      "where": "frame 20a (J30): A gate is waiting, fetched over tailnet with latency, every fact, Allow once, Deny, Open; 20b drops to Open when one fact would be cut",
       "copy": [
         "DOMOVOI",
-        "Open"
+        "Open",
+        "A gate is waiting",
+        "All 5 facts fit, so you can decide here.",
+        "7 paths do not fit, so the decision moves to Domovoi."
       ],
       "evidence": [
         "expo-notifications",
         "Open"
       ],
       "blocked": {
-        "since": "2026-09-18",
+        "since": "2026-09-23",
         "needs": "platform",
-        "reason": "waking a locked phone needs APNs and a server holding a push identity; S3.4"
+        "reason": "waking a locked phone needs APNs and the hosted relay; the design states it ships after the first release (J30, S3.4)"
+      }
+    },
+    {
+      "id": "lockscreen.stale",
+      "name": "Stale notification",
+      "where": "frame 20c: Answered on the desktop, This link expired, Gate still waiting",
+      "copy": [
+        "Answered on the desktop",
+        "Nothing left to decide here.",
+        "This link expired",
+        "The gate still waits on its machine.",
+        "Gate still waiting"
+      ],
+      "evidence": [
+        "expo-notifications",
+        "This link expired"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "platform",
+        "reason": "same as lockscreen.decision: APNs and the hosted relay"
       }
     },
     {
@@ -491,7 +748,8 @@
       "name": "Live Activity, while it works",
       "where": "frame 21",
       "copy": [
-        "step 3 of 4"
+        "step 3 of 4",
+        "No decision here. A gate arrives as its own notification."
       ],
       "evidence": [
         "ActivityKit"
@@ -526,7 +784,10 @@
         "since": "2026-09-18",
         "needs": "platform",
         "reason": "same as 21"
-      }
+      },
+      "copy": [
+        "Domovoi notification"
+      ]
     }
   ],
   "humanRead": [
