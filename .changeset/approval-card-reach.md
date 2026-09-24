@@ -80,3 +80,9 @@ manifest a script came from, and a file line written before its path was classif
 the approval becomes a hard gate. When the daemon starts or opens a project, its saved approvals are
 then settled at their real paths before any client sees them. A standing rule whose execution record
 holds such a path is dropped.
+
+A saved card keeps its file only as its file line, so at load and at Allow each path that line names
+is followed on disk under the same 2 second deadline: a file that became a link into a credential
+store is hidden and the card becomes a hard gate, and a line that no longer reads back as a path
+(shortened, with an escaped character, or in another format) seals the card. A sealed card keeps a
+provider's own reach line and hides any other Affects line, whatever its format.
