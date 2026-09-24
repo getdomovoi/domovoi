@@ -69,13 +69,15 @@ export class SqliteAuditLog implements AuditLog {
   #maximumPreAuthEntries: number
   // Rows per retention class, counted once at open and kept current by this
   // writer, so an append under the cap does not walk the class's index to
-  // learn there is nothing to prune. The count only decides whether to look;
-  // the prune itself deletes by position in the index, so a count left high
-  // by a caller's rolled-back transaction deletes nothing and is recounted.
+  // learn there is nothing to prune. The prune removes as many of the oldest
+  // rows as the count says are past the bound, so the count must be exact.
   #retained = new Map<"activity" | "pre-auth", number>()
-  // The last row this writer appended per class. If a caller's rollback took
-  // it away, the count above is stale and is recounted before it is trusted.
-  #lastAppended = new Map<"activity" | "pre-auth", number | bigint>()
+  // The last row this writer appended per class: its sequence and its entry
+  // id. If a caller's rollback took it away, the count above is stale and is
+  // recounted before it is trusted. The id is checked as well as the
+  // sequence, because SQLite hands a rolled-back sequence out again and the
+  // other class may now hold a row at it.
+  #lastAppended = new Map<"activity" | "pre-auth", { sequence: number | bigint, id: string }>()
   #insert: StatementSync | undefined
   #prune: StatementSync | undefined
   #appendedRow: StatementSync | undefined
@@ -146,8 +148,12 @@ export class SqliteAuditLog implements AuditLog {
     const maximum = retention === "pre-auth" ? this.#maximumPreAuthEntries : this.#maximumEntries
     const lastAppended = this.#lastAppended.get(retention)
     if (lastAppended !== undefined) {
-      this.#appendedRow ??= this.#database.prepare("SELECT 1 AS present FROM audit_log WHERE sequence = ?")
-      if (this.#appendedRow.get(lastAppended) === undefined) this.#retained.delete(retention)
+      this.#appendedRow ??= this.#database.prepare(
+        "SELECT 1 AS present FROM audit_log WHERE sequence = ? AND id = ? AND retention_class = ?",
+      )
+      if (this.#appendedRow.get(lastAppended.sequence, lastAppended.id, retention) === undefined) {
+        this.#retained.delete(retention)
+      }
     }
     const retained = this.#retainedCount(retention)
     // A quarantine must become durable with its receipt, not before it.
@@ -195,7 +201,7 @@ export class SqliteAuditLog implements AuditLog {
       }
       this.#database.exec("RELEASE domovoi_audit_append")
       this.#retained.set(retention, retained + 1 - pruned)
-      this.#lastAppended.set(retention, inserted.lastInsertRowid)
+      this.#lastAppended.set(retention, { sequence: inserted.lastInsertRowid, id: entry.id })
     } catch (error) {
       this.#database.exec("ROLLBACK TO domovoi_audit_append")
       this.#database.exec("RELEASE domovoi_audit_append")
