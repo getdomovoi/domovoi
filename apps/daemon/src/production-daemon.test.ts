@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -224,6 +224,55 @@ describe("createProductionDaemon", () => {
       running.push(explicit)
       expect(explicit.authToken).not.toBe(authToken)
       expect(explicit.credential).not.toEqual({ source: "environment" })
+    })
+  })
+
+  // The profile a kept bearer belongs to is pinned when it is taken. A profile
+  // path that later leads somewhere else is another profile.
+  it.runIf(process.platform !== "win32")("does not hand the kept bearer to the profile a retargeted symlink now names", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const profileA = join(home, "profile-a")
+      const profileB = join(home, "profile-b")
+      await mkdir(profileA)
+      await mkdir(profileB)
+      const link = join(home, "profile")
+      await symlink(profileA, link)
+      process.env.DOMOVOI_PROFILE_DIR = link
+      try {
+        const first = await acquire(home, process.env)
+        expect(first.authToken).toBe(authToken)
+        await first.stop()
+
+        await rm(link)
+        await symlink(profileB, link)
+        const other = await acquire(home, process.env)
+        running.push(other)
+        expect(other.authToken).not.toBe(authToken)
+        expect(other.credential).not.toEqual({ source: "environment" })
+      } finally {
+        delete process.env.DOMOVOI_PROFILE_DIR
+      }
+    })
+  })
+
+  it.runIf(process.platform !== "win32")("takes a newly supplied bearer out of the environment even when its profile path cannot be resolved", async () => {
+    await withInheritedBearer(async () => {
+      const first = await acquire(await temporaryHome(), process.env)
+      await first.stop()
+
+      const home = await temporaryHome()
+      const loop = join(home, "loop")
+      await symlink(loop, loop)
+      process.env.DOMOVOI_AUTH_TOKEN = testToken("second bearer")
+      process.env.DOMOVOI_PROFILE_DIR = loop
+      try {
+        await acquire(home, process.env).then((handle) => { running.push(handle) }, () => {})
+        expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+        expect(process.env.DOMOVOI_CREDENTIAL_PATH).toBeUndefined()
+      } finally {
+        delete process.env.DOMOVOI_PROFILE_DIR
+      }
     })
   })
 
