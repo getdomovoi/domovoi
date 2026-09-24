@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path"
 
-import { credentialSchema } from "@getdomovoi/protocol"
+import { credentialSchema, maximumWebAppUrlLength, webAppUrlSchema } from "@getdomovoi/protocol"
 import { relayIdentityPublicKeyIsValid } from "@getdomovoi/protocol/relay-admission"
 
 import { configuredSshTunnelsSchema, isLoopbackHost, maximumSshConfigurationBytes, tailnetHostSchema, type ConfiguredSshTunnel } from "./transport-config.js"
@@ -27,6 +27,7 @@ export type DaemonEnvironmentConfig = {
   relayCredentialFile?: string
   authToken?: string
   allowedOrigins?: string[]
+  webAppUrl?: string
   allowRemoteTransport: boolean
 }
 
@@ -77,6 +78,7 @@ export function parseDaemonEnvironment(
     : parseStatePath(environment.DOMOVOI_ADVERTISE_HOST, "DOMOVOI_ADVERTISE_HOST", "")
   const authToken = parseAuthToken(environment.DOMOVOI_AUTH_TOKEN)
   const allowedOrigins = parseAllowedOrigins(environment.DOMOVOI_ALLOWED_ORIGINS)
+  const webAppUrl = parseWebAppUrl(environment.DOMOVOI_WEB_APP_URL)
   const tailnetHost = environment.DOMOVOI_TAILNET_HOST
   if (tailnetHost !== undefined && (!tailnetHostSchema.safeParse(tailnetHost).success || !tls || isLoopbackHost(host))) {
     throw new DaemonConfigurationError("DOMOVOI_TAILNET_HOST requires a routable host without a port or URL components and a non-loopback TLS listener")
@@ -105,6 +107,7 @@ export function parseDaemonEnvironment(
     ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),
     ...(authToken !== undefined ? { authToken } : {}),
     ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
+    ...(webAppUrl !== undefined ? { webAppUrl } : {}),
     allowRemoteTransport,
   }
 }
@@ -118,6 +121,15 @@ function parseSshTunnels(value: string | undefined): ConfiguredSshTunnel[] | und
     // Do not echo malformed URLs, which might contain credentials.
     throw new DaemonConfigurationError("DOMOVOI_SSH_TUNNELS must be at most 32 KiB of JSON with up to 128 unique {machineId, endpoint} entries using credential-free loopback WebSocket endpoints")
   }
+}
+
+function parseWebAppUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  // The value is not echoed: a mistyped URL can carry credentials.
+  if (!webAppUrlSchema.safeParse(value).success) {
+    throw new DaemonConfigurationError(`DOMOVOI_WEB_APP_URL must be an absolute http or https URL without credentials or a fragment, at most ${maximumWebAppUrlLength} characters`)
+  }
+  return value
 }
 
 function parseHost(value: string | undefined): string {

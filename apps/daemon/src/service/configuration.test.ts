@@ -18,6 +18,7 @@ describe("service configuration", () => {
       DOMOVOI_TAILNET_HOST: "studio.tailnet.example",
       DOMOVOI_SSH_TUNNELS: JSON.stringify([{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]),
       DOMOVOI_ALLOWED_ORIGINS: "https://app.example.com,file://",
+      DOMOVOI_WEB_APP_URL: "https://app.example.com/connect",
       ANTHROPIC_API_KEY: "not-a-daemon-setting",
       NODE_OPTIONS: "not-a-daemon-setting",
     }, { platform, homeDirectory: root, workingDirectory: root })
@@ -25,6 +26,8 @@ describe("service configuration", () => {
     const decoded = parseServiceConfiguration(text)
     const { version: _version, homeDirectory, ...settings } = config
     expect(decoded).toEqual(config)
+    expect(decoded.webAppUrl).toBe("https://app.example.com/connect")
+    expect(serviceEnvironment(decoded).DOMOVOI_WEB_APP_URL).toBe("https://app.example.com/connect")
     expect(decoded).toMatchObject({ tailnetHost: "studio.tailnet.example",
       sshTunnels: [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }] })
     // Same parser the production factory uses, not a test-only environment mapper.
@@ -47,6 +50,7 @@ describe("service configuration", () => {
     { tls: { certPath: "/cert.pem" } },
     { credentialPath: "relative/daemon.token" },
     { allowedOrigins: ["https://app.example.com/path"] },
+    { webAppUrl: "https://person:secret@app.example.com/" },
     { advertiseHost: "" },
     { extra: "unexpected" },
   ])("refuses invalid or secret-bearing saved state without echoing it: %j", (override) => {

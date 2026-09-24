@@ -211,13 +211,31 @@ export const deviceIssueCodeParamsSchema = z.object({
   clientAccess: clientAccessSchema.optional(),
 }).strict()
 
+// The web app a pairing code can be opened in, as the daemon's owner set it.
+// An absolute http(s) address with no credentials and no fragment, so a card
+// can build a link from it without carrying a secret or losing its own part.
+export const maximumWebAppUrlLength = 2_048
+
+export const webAppUrlSchema = z.string().check(utf16MaxLength(maximumWebAppUrlLength)).refine((value) => {
+  if (value.includes("#")) return false
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return false
+  }
+  return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
+}, "Expected an absolute http or https URL without credentials or a fragment")
+
 // The code comes with the address a device dials to spend it, or the problem
 // that leaves it nothing to dial, so the desktop card, the web connect page
-// and the command line draw one address and none of them guesses it.
+// and the command line draw one address and none of them guesses it. The web
+// app address is there only when the daemon's owner configured one.
 export const deviceIssueCodeResultSchema = z.object({
   code: pairingCodeSchema,
   expiresAt: offsetDateTimeSchema,
   pairingAddress: pairingAddressSchema,
+  webAppUrl: webAppUrlSchema.optional(),
 }).strict()
 
 // Redeeming is one step, unlike a machine claim: a client stores its

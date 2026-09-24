@@ -31,6 +31,7 @@ const configurationSchema = z.object({
   tailnetHost: tailnetHostSchema.optional(),
   sshTunnels: configuredSshTunnelsSchema.optional(),
   allowedOrigins: z.array(z.string()).optional(),
+  webAppUrl: z.string().optional(),
   allowRemoteTransport: z.boolean(),
 }).strict()
 
@@ -64,6 +65,7 @@ export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironm
     ...(config.tailnetHost !== undefined ? { DOMOVOI_TAILNET_HOST: config.tailnetHost } : {}),
     ...(config.sshTunnels !== undefined ? { DOMOVOI_SSH_TUNNELS: JSON.stringify(config.sshTunnels) } : {}),
     ...(config.allowedOrigins !== undefined ? { DOMOVOI_ALLOWED_ORIGINS: config.allowedOrigins.join(",") } : {}),
+    ...(config.webAppUrl !== undefined ? { DOMOVOI_WEB_APP_URL: config.webAppUrl } : {}),
   }
 }
 
@@ -112,7 +114,7 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, ...required } = configurationSchema.parse(JSON.parse(text))
     const config: ServiceConfiguration = {
       ...required,
       ...(wsl !== undefined ? { wsl } : {}),
@@ -125,6 +127,7 @@ export function parseServiceConfiguration(text: string): ServiceConfiguration {
       ...(tailnetHost !== undefined ? { tailnetHost } : {}),
       ...(sshTunnels !== undefined ? { sshTunnels } : {}),
       ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
+      ...(webAppUrl !== undefined ? { webAppUrl } : {}),
     }
     // Reuse the production listener and origin checks, including required TLS.
     parseDaemonEnvironment(serviceEnvironment(config), config.homeDirectory)

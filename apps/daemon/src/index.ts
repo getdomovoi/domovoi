@@ -114,6 +114,7 @@ Environment:
   DOMOVOI_CREDENTIAL_PATH         Credential file (default: <profile>/daemon.token)
   DOMOVOI_MACHINE_IDENTITY_PATH   Machine identity file (default: <profile>/machine.json)
   DOMOVOI_ALLOWED_ORIGINS         Comma-separated trusted browser origins
+  DOMOVOI_WEB_APP_URL             Web app a pairing code can be opened in (absolute http or https URL)
   DOMOVOI_ALLOW_REMOTE_TRANSPORT  Set to 1 to permit non-loopback listeners
   DOMOVOI_TLS_CERT_PATH           TLS certificate chain, required off loopback
   DOMOVOI_TLS_KEY_PATH            TLS private key, required off loopback
