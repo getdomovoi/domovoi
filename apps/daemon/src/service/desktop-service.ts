@@ -9,11 +9,17 @@ import {
   installService,
   nodeServiceEffects,
   removeService,
+  serviceOperation,
   servicePlan,
   serviceStatus,
+  updateService,
   type ServiceEffects,
   type ServiceStatus,
 } from "./install.js"
+import { DaemonServiceUpdateError } from "./update-outcome.js"
+import { updateWslService } from "./wsl-install.js"
+
+export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
 
 // The desktop's way to keep the daemon running after the app quits: a per-user
 // service (a launchd agent, a systemd user unit or a Windows logon task) that
@@ -65,27 +71,38 @@ export type DaemonServiceDependencies = {
   uid?: number
   user?: string
   runtimeFile: (path: string, part: "node" | "daemon") => Promise<RuntimeFileState>
+  // How long an update waits for a stopped service's daemon to let the
+  // profile go before it counts the profile as taken. Defaults to 5 seconds.
+  profileReleaseWaitMs?: number
 }
 
 const taskName = "Domovoi daemon"
 
 export class DaemonServiceRuntimeMissingError extends Error {
-  constructor(readonly part: "node" | "daemon", readonly path: string, reason: "missing" | "not-file" | "relative") {
+  constructor(
+    readonly part: "node" | "daemon",
+    readonly path: string,
+    reason: "missing" | "not-file" | "relative",
+    operation: "install" | "update" = "install",
+  ) {
     const what = part === "node" ? "The Node runtime this app ships" : "The Domovoi daemon this app ships"
     const why = reason === "relative"
       ? `is named by a relative path, ${path}`
       : reason === "not-file" ? `is not a runnable file at ${path}` : `was not found at ${path}`
-    super(`${what} ${why}. No service was installed and no service files were changed.`)
+    const outcome = operation === "install"
+      ? "No service was installed and no service files were changed."
+      : "The service was not updated and no service files were changed."
+    super(`${what} ${why}. ${outcome}`)
     this.name = "DaemonServiceRuntimeMissingError"
   }
 }
 
-async function checkRuntime(runtime: DaemonServiceRuntime, dependencies: DaemonServiceDependencies): Promise<void> {
+async function checkRuntime(runtime: DaemonServiceRuntime, dependencies: DaemonServiceDependencies, operation: "install" | "update" = "install"): Promise<void> {
   const paths = dependencies.platform === "win32" ? win32 : posix
   for (const [part, path] of [["node", runtime.nodePath], ["daemon", runtime.daemonEntryPath]] as const) {
-    if (!paths.isAbsolute(path)) throw new DaemonServiceRuntimeMissingError(part, path, "relative")
+    if (!paths.isAbsolute(path)) throw new DaemonServiceRuntimeMissingError(part, path, "relative", operation)
     const state = await dependencies.runtimeFile(path, part)
-    if (state !== "file") throw new DaemonServiceRuntimeMissingError(part, path, state)
+    if (state !== "file") throw new DaemonServiceRuntimeMissingError(part, path, state, operation)
   }
 }
 
@@ -119,6 +136,39 @@ export async function installDaemonService(
   servicePlan(serviceTarget)
   await options.releaseInAppDaemon?.()
   const plan = await installService(serviceTarget, dependencies)
+  return plan.kind === "file"
+    ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
+    : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+}
+
+export type DaemonServiceUpdateOptions = {
+  runtime: DaemonServiceRuntime
+}
+
+// Ruled 2026-09-23: "Update the service" moves the installed service to the
+// runtime the app now ships, in place, on each platform. The runtime is
+// checked first and nothing is changed before that passes. The saved service
+// configuration (profile, host, port, TLS) is kept; for a WSL guest service
+// it records the guest runtime, so that one field changes. If the swap fails,
+// the previous service is put back and started, and the error says so.
+export async function updateDaemonService(
+  options: DaemonServiceUpdateOptions,
+  dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
+): Promise<DaemonServiceInstallResult> {
+  await checkRuntime(options.runtime, dependencies, "update")
+  const saved = dependencies.readConfiguration?.(dependencies.home, dependencies.platform)
+  if (!saved) throw new DaemonServiceUpdateError("not-installed")
+  const profileWaitMs = dependencies.profileReleaseWaitMs ?? 5_000
+  if (dependencies.platform === "linux" && saved.wsl) {
+    const updated = await serviceOperation(dependencies, (deadline) => updateWslService(saved, options.runtime, dependencies, { profileWaitMs }, deadline))
+    return { kind: "task", ...updated }
+  }
+  const plan = await updateService({
+    ...target(dependencies),
+    execPath: options.runtime.daemonEntryPath,
+    runtime: options.runtime.nodePath,
+    configuration: saved,
+  }, dependencies, { profileWaitMs })
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
