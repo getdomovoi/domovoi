@@ -1324,6 +1324,11 @@ export class DomovoiDaemon {
   #store: WorkspaceStore
   #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
+  // The file a waiting file-tool card was raised for, exactly as the provider
+  // asked for it, keyed by approval id. approval.resolve reads it again before
+  // releasing the edit. Held in memory: the provider request it answers does
+  // not outlive the daemon either.
+  #fileApprovalTargets = new Map<string, { cwd: string; filePath: string }>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
@@ -6733,28 +6738,46 @@ export class DomovoiDaemon {
         let resolvedApprovalExecution = approval.execution.state === "resolved"
           ? approval.execution
           : undefined
+        const approvedRecord = resolvedApprovalExecution?.record
+        // A package script can change while its card waits, and so can the
+        // file an edit reaches: a directory on its path can become a link to
+        // somewhere else. Both are read again before anything is released.
         if (
           params.decision !== "deny"
           && params.decision !== "deny-explain"
-          && resolvedApprovalExecution?.record.kind === "shell"
-          && resolvedApprovalExecution.record.entries.some(
-            (entry) => entry.source.kind === "package-script",
+          && resolvedApprovalExecution !== undefined
+          && approvedRecord !== undefined
+          && (
+            approvedRecord.kind === "workspace-file-tool"
+            || (approvedRecord.kind === "shell" && approvedRecord.entries.some(
+              (entry) => entry.source.kind === "package-script",
+            ))
           )
         ) {
           const project = this.#snapshot.project
           const workspaceRoot = session?.workspacePath ?? project?.path
           const cwd = workspaceRoot === undefined
             ? undefined
-            : resolvedApprovalExecution.record.cwd === "."
+            : approvedRecord.cwd === "."
               ? workspaceRoot
-              : join(workspaceRoot, resolvedApprovalExecution.record.cwd)
-          const currentExecution = workspaceRoot === undefined
+              : join(workspaceRoot, approvedRecord.cwd)
+          const requestedFile = this.#fileApprovalTargets.get(approval.id)
+          const currentExecution = workspaceRoot === undefined || cwd === undefined
             ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
-            : await resolveExecution({
-                workspaceRoot,
-                command: approval.command,
-                ...(cwd === undefined ? {} : { cwd }),
-              })
+            : approvedRecord.kind === "workspace-file-tool"
+              ? await resolveExecution({
+                  workspaceRoot,
+                  cwd: requestedFile?.cwd ?? cwd,
+                  command: approvedRecord.tool,
+                  ...(requestedFile
+                    ? { filePath: requestedFile.filePath }
+                    : approvedRecord.scope === "file" ? { filePath: join(workspaceRoot, approvedRecord.path) } : {}),
+                })
+              : await resolveExecution({
+                  workspaceRoot,
+                  command: approval.command,
+                  cwd,
+                })
           if (
             currentExecution.state !== "resolved"
             || currentExecution.digest !== resolvedApprovalExecution.digest
@@ -6772,7 +6795,8 @@ export class DomovoiDaemon {
               reason: approval.operation,
               execution: currentExecution,
             })
-            approval.risk = currentDecision.risk
+            // A card raised as a hard gate (a secret in its text, say) stays one.
+            approval.risk = approval.risk === "hard-gate" ? "hard-gate" : currentDecision.risk
             await this.#persistSnapshot()
             this.#broadcastSnapshot()
             this.#error(
@@ -6973,6 +6997,7 @@ export class DomovoiDaemon {
             return
           }
         }
+        this.#fileApprovalTargets.delete(approval.id)
         if (blockedPlan) {
           this.#appendAudit({
             actor: { kind: "daemon", component: "working-plan" },
@@ -8594,9 +8619,10 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       const project = this.#snapshot.project
       if (!project) return
+      const requestCwd = event.cwd ?? session.workspacePath ?? project.path
       const execution = await resolveExecution({
         workspaceRoot: session.workspacePath ?? project.path,
-        cwd: event.cwd ?? session.workspacePath ?? project.path,
+        cwd: requestCwd,
         ...(event.command === undefined ? {} : { command: event.command }),
         ...(event.path === undefined ? {} : { filePath: event.path }),
         ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
@@ -8705,6 +8731,9 @@ export class DomovoiDaemon {
           }),
         }
         this.#snapshot.approvals.push(approval)
+        if (execution.state === "resolved" && execution.record.kind === "workspace-file-tool" && event.path !== undefined) {
+          this.#fileApprovalTargets.set(approval.id, { cwd: requestCwd, filePath: event.path })
+        }
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,
           session.id,

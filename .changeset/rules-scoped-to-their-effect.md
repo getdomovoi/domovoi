@@ -29,3 +29,11 @@ directory. A rule for an inside file no longer matches a path that a link carrie
 Claude adapter passes the file name exactly as the provider will use it, untrimmed and with `..`
 kept. A `package.json` that is not a regular file, or that is too large or too slow to read, leaves
 a script run unresolved instead of holding the request.
+
+A provider tool is identified by the tool that runs, not by fields in its input: an MCP request
+whose input carries `command: "Edit"` and a `file_path` stays unresolved instead of taking the
+Edit rule's digest, a Claude file tool is always named by its tool, and a Bash request never
+sends a file path. Approving a file-tool card reads its target again first, the way a changed
+package script already was: if the file the edit reaches changed while the card waited, for
+example because a directory on its path became a link out of the worktree, the edit is not
+released and the card is updated for review. A card updated this way keeps its hard gate.

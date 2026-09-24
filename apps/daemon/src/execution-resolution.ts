@@ -436,6 +436,16 @@ async function resolveExecutionOrThrow(input: ExecutionInput): Promise<Execution
   if (!command) return unresolved("command-missing")
   const directory = await canonicalCwd(input.workspaceRoot, input.cwd)
   if (!directory) return unresolved("cwd-outside-project")
+  if (
+    readTools.has(command)
+    && input.filePath !== undefined
+    && !await pathStaysInside(directory.root, directory.absolute, input.filePath)
+  ) return unresolved("cwd-outside-project")
+  // WebFetch, MCP tools and the like act through inputs a command record cannot
+  // hold (a URL, arguments), so no rule may stand for all of them at once. This
+  // comes before the file tools: a provider tool whose own input says "Edit"
+  // is still that provider tool, and must never borrow an Edit record.
+  if (input.tool !== undefined) return unresolved("unsupported-syntax")
   if (fileTools.has(command)) {
     if (input.blockedPath !== undefined || input.filePath === undefined) return unresolved("unsupported-syntax")
     // The record names the file the edit really reaches, found the way the
@@ -456,14 +466,6 @@ async function resolveExecutionOrThrow(input: ExecutionInput): Promise<Execution
       path,
     })
   }
-  if (
-    readTools.has(command)
-    && input.filePath !== undefined
-    && !await pathStaysInside(directory.root, directory.absolute, input.filePath)
-  ) return unresolved("cwd-outside-project")
-  // WebFetch, MCP tools and the like act through inputs a command record cannot
-  // hold (a URL, arguments), so no rule may stand for all of them at once.
-  if (input.tool !== undefined) return unresolved("unsupported-syntax")
   const parts = parseCommand(command)
   if (!parts) return unresolved("unsupported-syntax")
   const needsManifest = parts.some((part) => packageInvocation(part.argv) !== undefined)

@@ -1088,6 +1088,32 @@ describe("the tool behind an approval request", () => {
     expect(tools).toEqual({ fetch: "WebFetch", mcp: "mcp__github__create_issue", edit: undefined, bash: undefined })
     await adapter.close()
   })
+
+  it("takes the request's identity from the tool that runs, not from fields the tool input supplies", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (toolName: string, input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!(toolName, input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask("mcp__github__create_issue", { command: "Edit", file_path: "/worktree/src/index.ts", title: "x" }, "mcp")
+    ask("Edit", { command: "pnpm test", file_path: "/worktree/src/index.ts", old_string: "a", new_string: "b" }, "edit")
+    ask("Bash", { command: "Edit", file_path: "/worktree/src/index.ts" }, "bash")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(3))
+    const requests = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested"
+      ? [[event.itemId, { command: event.command, path: event.path, tool: event.tool }]]
+      : []))
+    expect(requests).toEqual({
+      mcp: { command: "Edit", path: "/worktree/src/index.ts", tool: "mcp__github__create_issue" },
+      edit: { command: "Edit", path: "/worktree/src/index.ts", tool: undefined },
+      bash: { command: "Edit", path: undefined, tool: undefined },
+    })
+    await adapter.close()
+  })
 })
 
 describe("reads Claude would approve before Domovoi sees them", () => {

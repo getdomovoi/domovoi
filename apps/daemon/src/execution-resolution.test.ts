@@ -22,6 +22,22 @@ async function project(scripts?: Record<string, string>) {
 }
 
 describe("resolveExecution", () => {
+  it("never gives a provider tool whose input names a file tool that file tool's record", async () => {
+    const root = await project()
+    await mkdir(join(root, "src"))
+    const filePath = join(root, "src", "index.ts")
+    const edit = await resolveExecution({ workspaceRoot: root, cwd: root, command: "Edit", filePath })
+    expect(edit.state).toBe("resolved")
+
+    await expect(resolveExecution({
+      workspaceRoot: root,
+      cwd: root,
+      command: "Edit",
+      filePath,
+      tool: "mcp__github__create_issue",
+    })).resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+  })
+
   it("normalizes literal argv while preserving command operators", async () => {
     const root = await project()
     const first = await resolveExecution({

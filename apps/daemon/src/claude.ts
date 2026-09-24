@@ -500,7 +500,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     context: ClaudePermissionContext,
   ): Promise<PermissionResult> {
     const session = this.#requireSession(threadId)
-    const command = typeof input.command === "string" ? input.command : toolName
+    // A file tool is named by the tool Claude runs, never by a command field
+    // in its input, so an Edit cannot pass for a shell command.
+    const command = !claudeFileTools.has(toolName) && typeof input.command === "string" ? input.command : toolName
     const screened = session.screenedReads.get(context.toolUseID)
     session.screenedReads.delete(context.toolUseID)
     const reason = screened?.reason ?? context.title ?? context.description ?? context.decisionReason
@@ -521,10 +523,13 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const requestId = ++this.#nextApprovalId
     // The file exactly as the provider will use it: not trimmed, and a
     // relative path is joined to cwd without collapsing "..", so the daemon
-    // fingerprints the same file that runs.
-    const filePath = typeof input.file_path === "string"
-      ? input.file_path
-      : typeof input.notebook_path === "string" ? input.notebook_path : screened?.path
+    // fingerprints the same file that runs. Bash acts on no file field, so a
+    // file_path beside its command is never sent.
+    const filePath = toolName === "Bash"
+      ? undefined
+      : typeof input.file_path === "string"
+        ? input.file_path
+        : typeof input.notebook_path === "string" ? input.notebook_path : screened?.path
     this.#emit({
       type: "approval-requested",
       requestId,

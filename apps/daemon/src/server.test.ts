@@ -1,6 +1,6 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, chmod, mkdir, mkdtemp, realpath, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
@@ -11565,6 +11565,148 @@ describe("DomovoiDaemon", () => {
       expect(agent.resolveApproval).toHaveBeenLastCalledWith(providerRequestId, "allow-once")
     }
     expect(((await rpc("workspace.get", {})).result as { approvalRules: unknown[] }).approvalRules).toHaveLength(1)
+    socket.close()
+  })
+
+  // The link is a directory junction so the swap runs on Windows too (ruled
+  // 2026-09-24).
+  it("reads a file target again when its card is answered, and holds the edit if the target moved", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-swap-"))
+    const outside = await mkdtemp(join(tmpdir(), "domovoi-file-swap-outside-"))
+    scratchDirectories.push(workspacePath, outside)
+    await mkdir(join(workspacePath, "src", "config"), { recursive: true })
+    await mkdir(join(workspacePath, "src", "kept"), { recursive: true })
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-file-swap"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-file-swap"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    type Card = { id: string; providerRequestId?: number; risk: string; execution: { state: string; digest?: string } }
+    const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the config", client: "desktop" })
+    listener!({
+      type: "approval-requested",
+      requestId: 41,
+      threadId: session.providerThreadId,
+      turnId: "turn-file-swap",
+      reason: "Edit a file",
+      command: "Edit",
+      path: join(workspacePath, "src", "config", "settings.json"),
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 42,
+      threadId: session.providerThreadId,
+      turnId: "turn-file-swap",
+      reason: "Edit a file",
+      command: "Edit",
+      path: join(workspacePath, "src", "kept", "settings.json"),
+    })
+    // A secret in the card's text makes it a hard gate, and a re-read keeps it one.
+    listener!({
+      type: "approval-requested",
+      requestId: 43,
+      threadId: session.providerThreadId,
+      turnId: "turn-file-swap",
+      reason: "Write ghp_PowerShellSecret into the config",
+      command: "Edit",
+      path: join(workspacePath, "src", "config", "token.json"),
+    })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(3), { timeout: 3_000 })
+    const waiting = await cards()
+    const swapped = waiting.find((card) => card.providerRequestId === 41)!
+    const kept = waiting.find((card) => card.providerRequestId === 42)!
+    const gated = waiting.find((card) => card.providerRequestId === 43)!
+    expect(swapped.execution).toMatchObject({ state: "resolved", record: { path: "src/config/settings.json" } })
+    expect(gated).toMatchObject({ risk: "hard-gate", execution: { state: "resolved" } })
+
+    // While the card waits, the directory holding the target becomes a link
+    // that leads outside the worktree.
+    await rename(join(workspacePath, "src", "config"), join(workspacePath, "src", "config-before"))
+    await symlink(outside, join(workspacePath, "src", "config"), "junction")
+
+    await expect(rpc("approval.resolve", { approvalId: swapped.id, decision: "allow-once", client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "The resolved command changed; review the updated approval before allowing it" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(41, expect.anything())
+    expect((await cards()).find((card) => card.id === swapped.id)!.execution)
+      .toEqual({ state: "unresolved", reason: "cwd-outside-project" })
+    await expect(rpc("approval.resolve", { approvalId: swapped.id, decision: "always-project", client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "Unresolved commands cannot create standing rules" } })
+    await expect(rpc("approval.resolve", { approvalId: gated.id, decision: "allow-once", client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "The resolved command changed; review the updated approval before allowing it" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(43, expect.anything())
+    expect((await cards()).find((card) => card.id === gated.id))
+      .toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "cwd-outside-project" } })
+
+    await expect(rpc("approval.resolve", { approvalId: kept.id, decision: "always-project", client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(42, "allow-once")
+    const rules = ((await rpc("workspace.get", {})).result as {
+      approvalRules: Array<{ execution: { digest: string } }>
+    }).approvalRules
+    expect(rules.map((rule) => rule.execution.digest)).toEqual([kept.execution.digest])
     socket.close()
   })
 
