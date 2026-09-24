@@ -392,3 +392,15 @@ it("does not call a daemon this app did not start the installed service", () => 
   expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
   expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
 })
+
+// Ruled by fetzy 2026-09-23: when the recovery line and the not-running line
+// both show, the second does not repeat "Removed.".
+it("says Removed once when the profile owner is unresolved and the daemon did not start again", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "operator-confirmation-required", daemonRunning: false }))
+  const section = daemonSection("outside", { remove })
+  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  expect(await within(section).findByText("Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal.")).toBeTruthy()
+  expect(within(section).getByText("The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
+  expect(section.textContent?.match(/Removed\./g)).toHaveLength(1)
+})
