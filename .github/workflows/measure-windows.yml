@@ -32,18 +32,21 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build
-      - name: Daemon suite as CI runs it, with a process census every five seconds
+      - name: Claim tests, twelve rounds, with a process census every five seconds
         working-directory: apps/daemon
         run: |
           stop="$RUNNER_TEMP/stop-sampler"
           node measure/sampler.mjs "$stop" 5000 > ../../samples.log 2>&1 &
-          npx vitest run --reporter=verbose 2>&1 | tee ../../suite.log || true
+          for round in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            echo "ROUND $round $(date -u +%H:%M:%S)" | tee -a ../../claims.log
+            npx vitest run --config measure/vitest.measure.config.ts --reporter=verbose src/workspace.test.ts -t "bounds claim" 2>&1 | tee -a ../../claims.log || true
+          done
           touch "$stop"
           wait
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: measure-logs-4-${{ matrix.attempt }}
+          name: measure-logs-5-${{ matrix.attempt }}
           path: |
-            suite.log
+            claims.log
             samples.log

@@ -28,7 +28,9 @@ prototype.spawn = function (this: childProcess.ChildProcess, options: { file: st
   return result
 }
 
-function record(name: string, ms: number) {
+let slowFs: string[] = []
+function record(name: string, ms: number, detail?: unknown) {
+  if (ms >= 200 && slowFs.length < 40) slowFs.push(`${now() - started - ms}+${ms} ${name} ${String(detail ?? "").slice(-80)}`)
   const current = fsOps.get(name) ?? { count: 0, ms: 0, max: 0 }
   current.count += 1
   current.ms += ms
@@ -42,7 +44,7 @@ for (const name of ["open", "readFile", "writeFile", "rename", "rm", "mkdir", "m
   if (typeof original !== "function") continue
   promises[name] = async function (this: unknown, ...values: unknown[]) {
     const begin = now()
-    try { return await original.apply(this, values) } finally { record(`promises.${name}`, now() - begin) }
+    try { return await original.apply(this, values) } finally { record(`promises.${name}`, now() - begin, values[0]) }
   }
 }
 const sync = fs as unknown as Record<string, (...values: unknown[]) => unknown>
@@ -51,13 +53,14 @@ for (const name of ["fsyncSync", "renameSync", "rmSync", "realpathSync", "writeF
   if (typeof original !== "function") continue
   sync[name] = function (this: unknown, ...values: unknown[]) {
     const begin = now()
-    try { return original.apply(this, values) } finally { record(name, now() - begin) }
+    try { return original.apply(this, values) } finally { record(name, now() - begin, typeof values[0] === "number" ? `fd ${values[0]}` : values[0]) }
   }
 }
 
 beforeEach(() => {
   spawned = []
   fsOps = new Map()
+  slowFs = []
   loop.reset()
   started = now()
 })
@@ -84,6 +87,8 @@ afterEach(() => {
     spawnsByCommand: Object.fromEntries([...byCommand.entries()].sort((left, right) => right[1].ms - left[1].ms).slice(0, 15)),
     fs: Object.fromEntries([...fsOps.entries()].sort((left, right) => right[1].ms - left[1].ms).slice(0, 10)),
     slowestSpawns: [...spawned].sort((left, right) => right.ms - left.ms).slice(0, 8),
+    timeline: wallMs >= 10_000 ? spawned.map((entry) => `${entry.startMs}+${entry.ms} ${entry.command} ${entry.args}`) : undefined,
+    slowFs: wallMs >= 10_000 ? slowFs : undefined,
   }
   if (wallMs >= 2_000) console.info(`MEASURE ${JSON.stringify(summary)}`)
 })
