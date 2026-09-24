@@ -14,6 +14,7 @@ import {
   createEmptyWorkspace,
   daemonShuttingDownErrorCode,
   demoWorkspace,
+  sessionSummarySchema,
   projectOpenParamsSchema,
   providerModelSchema,
   providerFailureSchema,
@@ -1487,6 +1488,19 @@ describe("workspace protocol", () => {
     }).success).toBe(true)
   })
 
+  it("says per model whether an image attachment is delivered to it", () => {
+    // Phone v2 frames 13 and 13b: "takes image input, as its harness reports".
+    // Absent means the daemon did not say, which is an older daemon, not a no.
+    const model = {
+      provider: "claude-code", id: "sonnet", displayName: "Sonnet", description: "",
+      supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: true,
+    }
+    expect(providerModelSchema.parse({ ...model, imageInput: true }).imageInput).toBe(true)
+    expect(providerModelSchema.parse({ ...model, imageInput: false }).imageInput).toBe(false)
+    expect(providerModelSchema.parse(model)).not.toHaveProperty("imageInput")
+    expect(providerModelSchema.safeParse({ ...model, imageInput: "yes" }).success).toBe(false)
+  })
+
   it("validates machine provider readiness", () => {
     expect(providerRuntimeSchema.parse({
       id: "claude-code",
@@ -1505,6 +1519,20 @@ describe("workspace protocol", () => {
       command: "codex",
       status: "logged-in-ish",
     }).success).toBe(false)
+  })
+
+  it("carries why a detected provider cannot start sessions here", () => {
+    const provider = {
+      id: "claude-code",
+      command: "claude",
+      status: "ready",
+      version: "2.1.100",
+      sessionCapable: true,
+      problem: "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.",
+    } as const
+    expect(providerRuntimeSchema.parse(provider)).toEqual(provider)
+    expect(providerRuntimeSchema.safeParse({ ...provider, problem: "" }).success).toBe(false)
+    expect(providerRuntimeSchema.safeParse({ ...provider, problem: "x".repeat(1_025) }).success).toBe(false)
   })
 
   it("upgrades snapshots that predate annotation state", () => {
@@ -1786,5 +1814,17 @@ describe("context compaction notice", () => {
 
   it("rejects an unknown notice", () => {
     expect(() => threadItemSchema.parse({ ...base, notice: "something-else" })).toThrow()
+  })
+})
+
+describe("session branch and unmerged files", () => {
+  it("names the kept branch and how many files never merged", () => {
+    const session = demoWorkspace.sessions[0]!
+    expect(sessionSummarySchema.parse({ ...session, branch: "domovoi/session-billing", unmergedFiles: 7 }))
+      .toMatchObject({ branch: "domovoi/session-billing", unmergedFiles: 7 })
+    expect(sessionSummarySchema.parse(session)).not.toHaveProperty("branch")
+    expect(sessionSummarySchema.safeParse({ ...session, branch: "" }).success).toBe(false)
+    expect(sessionSummarySchema.safeParse({ ...session, unmergedFiles: -1 }).success).toBe(false)
+    expect(sessionSummarySchema.safeParse({ ...session, unmergedFiles: 1.5 }).success).toBe(false)
   })
 })

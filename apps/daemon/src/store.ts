@@ -554,6 +554,21 @@ function versionFromCopy(path: string): string | undefined {
   }
 }
 
+// SQLite ends a transaction itself on some errors, such as a full database; a
+// ROLLBACK then fails with "no transaction is active" and would replace the
+// error that ended it. isTransaction is absent before Node 22.16, so that one
+// error is tolerated there.
+function rollBackIfOpen(database: DatabaseSync): void {
+  const open = (database as { isTransaction?: boolean }).isTransaction
+  if (open === false) return
+  try {
+    database.exec("ROLLBACK")
+  } catch (error) {
+    if (open === undefined && error instanceof Error && error.message.includes("no transaction is active")) return
+    throw error
+  }
+}
+
 function openQuarantined<T>(quarantinedPath: string, read: (source: DatabaseSync) => T): T | undefined {
   let source: DatabaseSync | undefined
   try {
@@ -599,7 +614,7 @@ function salvagePairedDevices(database: DatabaseSync, quarantinedPath: string): 
     database.exec("COMMIT")
     return invalid.length === 0
   } catch {
-    database.exec("ROLLBACK")
+    rollBackIfOpen(database)
     return false
   }
 }
@@ -1092,7 +1107,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       this.transferOwnership.record(ownership)
       this.#database.exec("COMMIT")
     } catch (error) {
-      this.#database.exec("ROLLBACK")
+      rollBackIfOpen(this.#database)
       throw error
     }
     this.#restrictFilePermissions()
@@ -1289,7 +1304,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       this.#database.exec("COMMIT")
       return results
     } catch (error) {
-      this.#database.exec("ROLLBACK")
+      rollBackIfOpen(this.#database)
       throw error
     }
   }
