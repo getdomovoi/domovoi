@@ -118,6 +118,9 @@ importers:
       '@opencode-ai/sdk':
         specifier: ^1.18.29
         version: 1.18.29
+      mdast-util-from-markdown:
+        specifier: 2.0.3
+        version: 2.0.3
       node-pty:
         specifier: 1.2.0-beta.15
         version: 1.2.0-beta.15

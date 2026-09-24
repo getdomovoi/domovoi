@@ -17,6 +17,7 @@ import type {
   AgentVisualContext,
   AgentWorkingPlanStep,
 } from "./agents.js"
+import { projectInstructions } from "./project-instructions.js"
 import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } from "./claude-read-scope.js"
 import { gitReadCanRunProgram } from "./git-read-config.js"
 import { permissionDecisionFor } from "./permission-policy.js"
@@ -91,7 +92,7 @@ export type ClaudeQueryOptions = {
   settingSources?: Array<"user" | "project" | "local">
   tools?: string[]
   disallowedTools?: string[]
-  systemPrompt?: { type: "preset"; preset: "claude_code" }
+  systemPrompt?: { type: "preset"; preset: "claude_code"; append?: string }
   hooks?: { PreToolUse?: Array<{ hooks: ClaudePreToolUseHook[] }> }
   stderr?: (data: string) => void
   canUseTool?: (
@@ -385,8 +386,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
+    const instructions = await projectInstructions(cwd, "claude")
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
+      ...(instructions
+        ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
+        : {}),
       cwd,
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
@@ -811,7 +816,7 @@ function baseOptions(): ClaudeQueryOptions {
   return {
     includePartialMessages: true,
     forwardSubagentText: true,
-    settingSources: ["user", "project", "local"],
+    settingSources: ["user"],
     systemPrompt: { type: "preset", preset: "claude_code" },
   }
 }

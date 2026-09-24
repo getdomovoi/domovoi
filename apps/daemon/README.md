@@ -519,6 +519,36 @@ user thread item's `providerPromptDelivery`: `budget.limit` and `budget.used`,
 `skills.omitted.budget`, `annotations.omitted.budget`, and `handoff.omitted`. The prompt itself
 opens with a `domovoi_context_delivery` marker whenever context was omitted.
 
+## Repository configuration
+
+A session worktree is a checkout of the opened repository, so anything the repository tracks is in
+it. Until a one-time trust step for a repository exists, the daemon does not let a provider load
+code or settings the repository brings:
+
+- Claude Code sessions start with `settingSources: ["user"]`. The worktree's
+  `.claude/settings.json`, `.claude/settings.local.json` and `.mcp.json` are not read, so their
+  hooks, `env` block, helper commands, permission rules and MCP servers do not apply. Project
+  skills, subagents and commands under `.claude/` are not loaded either. Your own
+  `~/.claude/settings.json` still applies.
+- OpenCode and Kilo servers start with `OPENCODE_DISABLE_PROJECT_CONFIG=1` and
+  `KILO_DISABLE_PROJECT_CONFIG=1`. Project `opencode.json`, `kilo.json`, `.opencode/`, `.kilo/`
+  and `.kilocode/` configuration, plugins and MCP entries are not loaded, and no package install
+  runs in those directories. Your global provider configuration still applies.
+- Kilo still reads its legacy files from the session directory with that switch set: a
+  `.kilo/mcp.json` or `.kilocode/mcp.json` starts its MCP servers, and a `.kilocodemodes` adds
+  agents with their own permissions. The daemon refuses to open or continue a Kilo session in a
+  worktree that contains any of those three files, and says which one. Kilo also reads
+  `.kilocode/rules/`, `.kilocode/workflows/` and `.kilocodeignore` from the worktree; those give
+  instructions, slash commands and deny rules, and they still load.
+
+Instruction files still reach the agent, because the daemon reads them itself as text. For Claude
+Code it reads `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md` at the worktree root and
+follows `@path` imports up to five levels deep, and it appends them to the preset system prompt
+when the session opens. For OpenCode and Kilo it sends the first of `AGENTS.md`, `CLAUDE.md` and
+`CONTEXT.md` at the worktree root as system text with each prompt. Only regular files of at most
+128 KiB that resolve inside the worktree are read; an import or link that leaves it is skipped.
+`.claude/rules/` and instruction entries in project provider configuration are not read.
+
 ## Supervise
 
 Install the daemon as a service for the user who asks for it:
