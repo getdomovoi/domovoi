@@ -82,6 +82,7 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
   type StateRecovery,
@@ -94,9 +95,11 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import {
+  boundedQueuedSendReason,
   SqliteWorkspaceStore,
   type QueuedSessionSendTransition,
   type StoredQueuedSessionSend,
+  type UnreadableQueuedSessionSend,
   type WorkspaceStore,
 } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
@@ -146,7 +149,9 @@ import {
 } from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
+  codexSandboxNotice,
 } from "./codex.js"
+import { committedCodexSecretPaths } from "./codex-git-secrets.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
@@ -157,7 +162,7 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
-import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
+import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -197,6 +202,7 @@ import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
   internalRpcErrorMessage,
+  repositoryInspectionRefusal,
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
@@ -209,7 +215,7 @@ import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
-import type { MachineIdentity } from "./machine-identity.js"
+import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
@@ -233,6 +239,8 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer } from "./terminal-replay.js"
+import { pairingAddressFor } from "./pairing-address.js"
+import { searchSessions } from "./session-search.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -408,6 +416,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "skill.reviewRevision",
   "skill.installPreview",
   "session.history",
+  "session.search",
   "session.evidence",
   "audit.query",
   "fleet.heartbeat",
@@ -827,6 +836,20 @@ export function isTestCommandTitle(title: string): boolean {
       + "|(?:go|cargo|dotnet|swift|mix)\\s+test(?:\\s|$)"
       + "|(?:\\./)?gradle(?:w)?\\s+test(?:\\s|$)|mvn(?:\\s+\\S+)*\\s+test(?:\\s|$))",
   ).test(command)
+}
+
+function codexSandboxNoticeFor(
+  sessionId: string,
+  runtime: Runtime,
+  createdAt: string,
+  committed: readonly string[] | undefined,
+): WorkspaceSnapshot["thread"] {
+  if (runtime.provider !== "codex") return []
+  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexSandboxNotice(committed), createdAt }]
+}
+
+function committedSecretsFor(runtime: Runtime, worktree: string): Promise<string[] | undefined> {
+  return runtime.provider === "codex" ? committedCodexSecretPaths(worktree) : Promise.resolve(undefined)
 }
 
 function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { kind: "system" }>): boolean {
@@ -1274,6 +1297,9 @@ type ActiveTerminal = {
   // A released ownership waits through a grace window for the next connection
   // to re-claim it, then the terminal is reaped rather than stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  // The connections that opened or claimed this terminal. Its output, owner
+  // changes and close go to these and nowhere else.
+  audience: Set<RpcOutboundSocket>
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -1301,6 +1327,7 @@ export class DomovoiDaemon {
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
+  #pendingSnapshotPersist: Promise<void> | undefined
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -1560,7 +1587,7 @@ export class DomovoiDaemon {
       if (!options.store) void Promise.resolve(this.#store.close()).catch((error: unknown) => {
         this.#reportError("Closing mismatched workspace state failed", error)
       })
-      throw new Error("Stored workspace machine identity does not match this daemon; restore the matching identity and state before restarting")
+      throw new StoredMachineIdentityMismatchError()
     }
     if (options.machineIdentity) {
       // A saved machine row is not evidence of this executable's platform or
@@ -1622,6 +1649,19 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // The address a code issued here tells a device to dial: the name on the
+  // certificate this daemon serves, never the address it binds, or the one
+  // problem that leaves a device nothing to dial. One source for every surface
+  // that draws a code.
+  #pairingAddress(): PairingAddress {
+    const port = this.address?.port ?? this.requestedPort
+    const tls = this.#tls
+    return pairingAddressFor(
+      { host: this.host, port, ...(tls ? { tls: { certPath: "the certificate this daemon serves" } } : {}) },
+      () => tls!.cert.toString("utf8"),
     )
   }
 
@@ -1819,6 +1859,13 @@ export class DomovoiDaemon {
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
     })
+    // The WebSocket server re-emits its HTTP server's errors. A listen failure
+    // such as a port in use is answered by start() below; without a listener
+    // here the re-emitted copy throws first and start() never settles.
+    this.#websocket.on("error", (error) => {
+      // Before listening, start() answers the listen failure itself.
+      if (this.#http?.listening) this.#reportError("Domovoi WebSocket server failed", error)
+    })
     this.#websocket.on("headers", (headers, request) => {
       const nonce = request.headers["x-domovoi-owner-nonce"]
       const peer = request.socket.remoteAddress
@@ -1930,7 +1977,11 @@ export class DomovoiDaemon {
     try {
       await new Promise<void>((resolve, reject) => {
         if (!this.#http) return resolve()
-        this.#http.close((error) => (error ? reject(error) : resolve()))
+        // A listener that never started (a port already in use, say) has
+        // nothing to close; failing here would keep the profile lease held.
+        this.#http.close((error) => (
+          error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()
+        ))
       })
     } catch (error) {
       failures.push(error)
@@ -2161,6 +2212,16 @@ export class DomovoiDaemon {
         : []),
     ))
     this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+    this.#syncArtifactWatchActivity()
+  }
+
+  // A session with a turn starting or running keeps its artifact watch on the
+  // fast poll; an idle one may back off (artifact-watcher.ts).
+  #syncArtifactWatchActivity(): void {
+    for (const [sessionId, active] of this.#artifactWatchers) {
+      const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+      active.watcher.setBusy?.(Boolean(session?.activeTurnId))
+    }
   }
 
   #updateUsageAccounting(update: () => void): void {
@@ -2196,9 +2257,29 @@ export class DomovoiDaemon {
   }
 
   #broadcastNotification(method: string, params: unknown): void {
+    this.#notifyClients(this.#rpcClients, method, params)
+  }
+
+  // Terminals are not on the pairing card: a phone or tablet credential, and a
+  // watching-only one, is never an audience for one.
+  #mayWatchTerminals(socket: RpcOutboundSocket): boolean {
+    const binding = this.#deviceCredentials.get(socket)?.verified?.binding
+    if (binding?.kind !== "client") return true
+    return binding.client !== "phone" && binding.client !== "tablet" && binding.clientAccess !== "watching"
+  }
+
+  #notifyTerminalAudience(terminal: ActiveTerminal, method: string, params: unknown): void {
+    this.#notifyClients(
+      [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket)),
+      method,
+      params,
+    )
+  }
+
+  #notifyClients(clients: Iterable<RpcOutboundSocket>, method: string, params: unknown): void {
     const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
-    for (const client of this.#rpcClients) {
+    for (const client of clients) {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
@@ -2456,7 +2537,15 @@ export class DomovoiDaemon {
   // belongs to the project being left and is not loaded.
   #loadQueuedSessionSends(afterRestart: boolean): void {
     this.#queuedSessionSends.clear()
-    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+    const unreadable = (row: UnreadableQueuedSessionSend) => this.#reportError(
+      row.quarantined
+        ? "Domovoi moved an unreadable queued message aside"
+        : "Domovoi skipped an unreadable queued message it could not move aside",
+      new Error(row.quarantined
+        ? `Queued message ${row.queueId} for ${row.sessionId} was moved to queued_session_send_quarantine. ${row.reason}`
+        : `Queued message ${row.queueId} for ${row.sessionId} stays in queued_session_sends; the next load tries again. ${row.reason}`),
+    )
+    for (const loaded of this.#store.loadQueuedSessionSends?.(unreadable) ?? []) {
       if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
       const queued = afterRestart && loaded.state === "releasing"
         ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
@@ -2551,10 +2640,13 @@ export class DomovoiDaemon {
   ): boolean {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.id !== queueId || !from.includes(queued.state)) return false
+    // One bound for memory and disk, so the snapshot never carries a reason
+    // the stored row does not.
+    const bounded = boundedQueuedSendReason(reason)
     if (this.#store.transitionQueuedSessionSend
-      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, reason)) return false
+      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, bounded)) return false
     const updated = { ...queued, state }
-    if (reason) updated.reason = reason
+    if (bounded) updated.reason = bounded
     else delete updated.reason
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()
@@ -3385,11 +3477,8 @@ export class DomovoiDaemon {
       ))
     }
     try {
-      if (this.#store.saveAsync) await this.#store.saveAsync(authoritative)
-      else this.#store.save(authoritative)
-      this.#persistenceSucceeded()
+      await this.#persistSnapshot()
     } catch (error) {
-      this.#persistenceFailed(error)
       this.#reportError("Domovoi could not persist a detected ownership conflict", error)
     }
   }
@@ -3892,7 +3981,20 @@ export class DomovoiDaemon {
     return agent
   }
 
+  // Whether a model takes image input is read from the adapter each time the
+  // list is read, by the rule the send uses, so a cached list never disagrees
+  // with the send. Whatever an adapter listed is overridden.
+  #withImageInput(provider: string, models: readonly ProviderModel[]): ProviderModel[] {
+    if (models.length === 0) return []
+    const imageInput = modelImageInput(this.#agents.require(provider).capabilities)
+    return models.map((model) => ({ ...model, imageInput }))
+  }
+
   async #listProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
+    return this.#withImageInput(provider, await this.#listCachedProviderModels(provider, deadline))
+  }
+
+  async #listCachedProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
     deadline?.throwIfExpired()
     const cached = this.#providerModels.get(provider)
     if (cached && Date.now() - cached.cachedAt < this.#modelCacheTtlMs) return cached.models
@@ -4748,11 +4850,13 @@ export class DomovoiDaemon {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
             }
-            this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+            existing.audience.add(socket)
+            this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
             }))
           }
+          existing.audience.add(socket)
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -4782,7 +4886,7 @@ export class DomovoiDaemon {
           () => output.resume(params.terminalId),
         )
         const output = new TerminalOutputBatcher((terminalId, data) => {
-          this.#broadcastNotification("terminal.output", { terminalId, data })
+          this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
           return outputBackpressure.observe()
         })
         const activeTerminal: ActiveTerminal = {
@@ -4797,6 +4901,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
+          audience: new Set([socket]),
           reapTimer: undefined,
           output,
           outputBackpressure,
@@ -4855,7 +4960,7 @@ export class DomovoiDaemon {
           active.outputBackpressure.dispose()
           active.disposeData()
           active.disposeExit()
-          this.#broadcastNotification("terminal.closed", {
+          this.#notifyTerminalAudience(active, "terminal.closed", {
             terminalId: params.terminalId,
             exitCode,
             ...(signal === undefined ? {} : { signal }),
@@ -4889,6 +4994,7 @@ export class DomovoiDaemon {
         }
         terminal.owner = { client: params.client, clientId: params.clientId }
         terminal.ownerSocket = socket
+        terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -4897,7 +5003,7 @@ export class DomovoiDaemon {
           terminalId: params.terminalId,
           owner: terminal.owner,
         })
-        this.#broadcastNotification("terminal.ownership", ownership)
+        this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: ownership })
         return
       }
@@ -5018,7 +5124,7 @@ export class DomovoiDaemon {
         let models: ProviderModel[]
         try {
           models = this.#watchingOnly(socket) && !this.#connectedAgents.has(params.provider)
-            ? this.#providerModels.get(params.provider)?.models ?? []
+            ? this.#withImageInput(params.provider, this.#providerModels.get(params.provider)?.models ?? [])
             : await this.#listProviderModels(params.provider)
         } catch (error) {
           if (!(error instanceof AgentProviderUnavailableError)) throw error
@@ -5318,9 +5424,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "This machine cannot commit session transfers")
           return
         }
-        const before = this.#snapshot
         const committed = await commitPreparedSessionTransfer({
-          snapshot: before,
+          snapshot: this.#snapshot,
           transferId: params.transferId,
           manifestDigest: params.manifestDigest,
           transactions: this.#transferTransactions,
@@ -5371,9 +5476,28 @@ export class DomovoiDaemon {
               this.#usageLedger.replaceTransferredSession!(sessionId, records)
             ),
           },
-          save: async (candidate, ownership) => {
+          save: (candidate, ownership) => this.#serializeSnapshotPersistence(async () => {
+            // The candidate was built from the snapshot captured before the
+            // repository restore. Other sessions, and other arriving commits,
+            // changed the live snapshot since, so only this session's slice is
+            // imported into it, on the same serializer as every other write.
+            const live = this.#snapshot
+            if (
+              live.machine.id !== candidate.machine.id
+              || live.project?.id !== candidate.project?.id
+            ) {
+              throw new SessionTransferStateError("target-project-missing")
+            }
+            if (live.sessions.some((session) => session.id === manifest.sessionId)) {
+              throw new SessionTransferStateError("target-session-diverged")
+            }
+            const imported = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
+              ...mergeSessionSnapshotSlice(latest, slice, manifest.sessionId),
+              activeSessionId: candidate.activeSessionId,
+            })
+            const persisted = imported(live, candidate)
             try {
-              await this.#store.saveTransferredSnapshot!(candidate, ownership)
+              await this.#store.saveTransferredSnapshot!(persisted, ownership)
             } catch (error) {
               this.#persistenceFailed(error)
               throw error
@@ -5383,21 +5507,14 @@ export class DomovoiDaemon {
             // atomically, this process must adopt them before touching the
             // disposable transaction journal. A later journal failure cannot
             // make the target overwrite its now-authoritative imported state.
-            this.#snapshot = candidate
+            this.#snapshot = imported(this.#snapshot, persisted)
             this.#activeAssistantItems.clear()
             this.#sessionHistory.invalidate(manifest.sessionId)
             this.#syncArtifactWatchers()
             this.#broadcastSnapshot()
-          },
+          }),
           now: () => new Date().toISOString(),
         })
-        if (committed.snapshot !== before && this.#snapshot !== committed.snapshot) {
-          this.#snapshot = committed.snapshot
-          this.#activeAssistantItems.clear()
-          this.#sessionHistory.invalidate(manifest.sessionId)
-          this.#syncArtifactWatchers()
-          this.#broadcastSnapshot()
-        }
         if (committed.result.state === "committed") {
           // The imported session and ownership row are now authoritative.
           // Keep replay idempotent through that canonical state instead of
@@ -5799,9 +5916,10 @@ export class DomovoiDaemon {
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(
-            this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
-          ),
+          result: rpcMethods[method].result.parse({
+            ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
+            pairingAddress: this.#pairingAddress(),
+          }),
         })
         return
       }
@@ -6163,6 +6281,17 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(page),
+        })
+        return
+      }
+
+      if (method === "session.search") {
+        const params = paramsResult.data as RpcParams<"session.search">
+        const { matches, truncated } = searchSessions(this.#snapshot, params.query, params.limit)
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
         })
         return
       }
@@ -6972,6 +7101,9 @@ export class DomovoiDaemon {
             }
             throw error
           }
+          const committed = previousRuntime.provider !== runtime.provider
+            ? await committedSecretsFor(runtime, currentSession.workspacePath)
+            : undefined
           const createdAt = new Date().toISOString()
           currentSession.runtime = runtime
           currentSession.providerThreadId = nextThreadId
@@ -7009,6 +7141,9 @@ export class DomovoiDaemon {
               : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
+          if (previousRuntime.provider !== runtime.provider) {
+            this.#snapshot.thread.push(...codexSandboxNoticeFor(currentSession.id, runtime, createdAt, committed))
+          }
         } else {
           currentSession.runtime = runtime
           delete currentSession.providerFailure
@@ -7068,35 +7203,41 @@ export class DomovoiDaemon {
             )
             signal.throwIfAborted()
           }
-          const candidate = structuredClone(this.#snapshot)
-          const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
-          if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
-            throw new PublicRpcError(invalidParams, "Session is no longer ready to restart its provider")
-          }
-          const createdAt = new Date().toISOString()
-          currentSession.runtime = runtime
-          currentSession.providerThreadId = threadId
-          currentSession.state = "idle"
-          currentSession.updatedAt = createdAt
-          delete currentSession.activeTurnId
-          delete currentSession.providerFailure
-          candidate.thread.push({
-            id: `system-${randomUUID()}`,
-            sessionId: currentSession.id,
-            kind: "system",
-            body: `Provider thread restarted by ${client}.`,
-            detail: `Connection ${connectionId}. The existing worktree, history, checkpoints, artifacts, and annotations were preserved.`,
-            createdAt,
+          // The synchronous write joins the persistence serializer, so a
+          // worker write posted before it cannot land afterwards and put the
+          // provider thread it records back out of the stored snapshot.
+          await this.#serializeSnapshotPersistence(async () => {
+            signal?.throwIfAborted()
+            const candidate = structuredClone(this.#snapshot)
+            const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
+            if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
+              throw new PublicRpcError(invalidParams, "Session is no longer ready to restart its provider")
+            }
+            const createdAt = new Date().toISOString()
+            currentSession.runtime = runtime
+            currentSession.providerThreadId = threadId
+            currentSession.state = "idle"
+            currentSession.updatedAt = createdAt
+            delete currentSession.activeTurnId
+            delete currentSession.providerFailure
+            candidate.thread.push({
+              id: `system-${randomUUID()}`,
+              sessionId: currentSession.id,
+              kind: "system",
+              body: `Provider thread restarted by ${client}.`,
+              detail: `Connection ${connectionId}. The existing worktree, history, checkpoints, artifacts, and annotations were preserved.`,
+              createdAt,
+            })
+            workspaceSnapshotSchema.parse(candidate)
+            try {
+              this.#store.save(candidate)
+            } catch (error) {
+              this.#persistenceFailed(error)
+              throw error
+            }
+            this.#persistenceSucceeded()
+            this.#snapshot = candidate
           })
-          workspaceSnapshotSchema.parse(candidate)
-          try {
-            this.#store.save(candidate)
-          } catch (error) {
-            this.#persistenceFailed(error)
-            throw error
-          }
-          this.#persistenceSucceeded()
-          this.#snapshot = candidate
           this.#activeAssistantItems.clear()
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
           changed = true
@@ -7130,11 +7271,22 @@ export class DomovoiDaemon {
           )
           return
         }
-        const repository = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.inspect(params.path, signal),
-          this.#agentTimeoutMs,
-          "Repository inspection timed out",
-        )
+        let repository: Awaited<ReturnType<WorkspaceService["inspect"]>>
+        try {
+          repository = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.inspect(params.path, signal),
+            this.#agentTimeoutMs,
+            "Repository inspection timed out",
+          )
+        } catch (error) {
+          if (error instanceof OperationTimeoutError || signal?.aborted) throw error
+          const refusal = repositoryInspectionRefusal(error)
+          if (refusal === undefined) throw error
+          // The git error quotes the machine's paths and output, which stay in
+          // the daemon log; the caller gets the one thing it can act on.
+          this.#reportError("RPC project.open failed", error)
+          throw new PublicRpcError(invalidParams, refusal)
+        }
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         if (this.#snapshot.project?.path === repository.root) {
           if (
@@ -7182,7 +7334,7 @@ export class DomovoiDaemon {
           await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
           if (this.#snapshot.project) await this.#persistSnapshot()
-          const restored = this.#store.loadProject?.(projectId)
+          const restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
@@ -7311,6 +7463,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         this.#snapshot.sessions.push({
           ...creationDraft,
@@ -7319,6 +7472,7 @@ export class DomovoiDaemon {
           workspacePath: workspace.path,
           providerThreadId,
           baseCommit: workspace.baseCommit,
+          branch: workspace.branch,
         })
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#snapshot.activeSessionId = sessionId
@@ -7339,6 +7493,7 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
+        this.#snapshot.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         changed = true
       }
 
@@ -7502,6 +7657,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         const candidate = structuredClone(this.#snapshot)
         candidate.sessions.push({
@@ -7511,6 +7667,7 @@ export class DomovoiDaemon {
           workspacePath: workspace.path,
           providerThreadId,
           baseCommit: checkpoint.commit,
+          branch: workspace.branch,
         })
         candidate.thread.push({
           id: `checkpoint-${randomUUID()}`,
@@ -7529,9 +7686,21 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
+        candidate.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         try {
-          if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
-          else this.#store.save(candidate)
+          // Other sessions keep streaming while the fork is written, so only
+          // the fork's own slice is merged into the live snapshot, before and
+          // after the write, on the same serializer as every other write.
+          await this.#serializeSnapshotPersistence(async () => {
+            const persisted = workspaceSnapshotSchema.parse(
+              mergeSessionSnapshotSlice(this.#snapshot, candidate, sessionId),
+            )
+            if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+            else this.#store.save(persisted)
+            this.#snapshot = workspaceSnapshotSchema.parse(
+              mergeSessionSnapshotSlice(this.#snapshot, persisted, sessionId),
+            )
+          })
           this.#persistenceSucceeded()
         } catch (error) {
           this.#persistenceFailed(error)
@@ -7555,7 +7724,6 @@ export class DomovoiDaemon {
           }
           throw error
         }
-        this.#snapshot = candidate
         this.#activeAssistantItems.clear()
         this.#clearCommittedSessionCreations()
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
@@ -7652,7 +7820,7 @@ export class DomovoiDaemon {
         let preparedTurn
         try {
           const images = params.attachments?.filter((attachment): attachment is ImageUpload => !("kind" in attachment))
-          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities)
+          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities, session.runtime.model)
           const attachmentText = await prepareSessionAttachmentText(params.attachments, session.workspacePath)
           const userPrompt = attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt
           preparedTurn = await composeProviderPrompt({
@@ -7709,12 +7877,31 @@ export class DomovoiDaemon {
         }
         this.#emergencyBlockedThreads.delete(emergencyThread)
         this.#inFlightProviderThreads.set(emergencyThread, session.id)
+        // A provider that cannot connect, resume or start a turn is something
+        // the person can act on: record the classified failure on the session,
+        // where the sign-in, quota and model guidance is shown, and answer with
+        // its fixed message. Timeouts and cancellations keep their own paths.
+        // A failed steer leaves its turn running, so only the answer names the
+        // failure; the session is not marked as failed.
+        const providerRefusal = async (error: unknown, record = true): Promise<never> => {
+          if (error instanceof PublicRpcError || signal?.aborted) throw error
+          this.#reportError("RPC session.send failed", error)
+          const failure = classifyProviderFailure(error)
+          const failed = record ? this.#snapshot.sessions.find((candidate) => candidate.id === session.id) : undefined
+          if (failed) {
+            failed.providerFailure = failure
+            failed.updatedAt = new Date().toISOString()
+            await this.#persistSnapshot()
+            this.#broadcastSnapshot()
+          }
+          throw new PublicRpcError(invalidParams, failure.message)
+        }
         let agent: AgentAdapter
         try {
           agent = await this.#ensureAgentConnected(session.runtime.provider)
         } catch (error) {
           this.#inFlightProviderThreads.delete(emergencyThread)
-          throw error
+          return await providerRefusal(error)
         }
         if (signal?.aborted) {
           this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7737,7 +7924,7 @@ export class DomovoiDaemon {
             if (error instanceof OperationTimeoutError) {
               await this.#quarantineProviderThread(session.id, error.message)
             }
-            throw error
+            return await providerRefusal(error)
           }
           if (signal?.aborted) {
             this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7746,6 +7933,7 @@ export class DomovoiDaemon {
           this.#loadedAgentThreads.add(loadedThread)
         }
         let turnId = session.activeTurnId
+        const steering = turnId !== undefined
         let providerMessageId: string | undefined
         try {
           signal?.throwIfAborted()
@@ -7784,7 +7972,7 @@ export class DomovoiDaemon {
           if (error instanceof OperationTimeoutError) {
             await this.#quarantineProviderThread(session.id, error.message)
           }
-          throw error
+          return await providerRefusal(error, !steering)
         }
         if (signal?.aborted) {
           if (turnId) await this.#stopCancelledProviderTurn(session, turnId, providerThreadId)
@@ -9619,6 +9807,23 @@ export class DomovoiDaemon {
       }
       const workspacePath = session.workspacePath
       await this.#awaitTerminalExits(terminalExits)
+      // The archived notice names the kept branch and what the source never
+      // received; both are read while the worktree still exists. A failure
+      // here does not stop the archive: the notice then says less.
+      const sourcePath = this.#snapshot.project?.path
+      if (this.#workspaceService.sessionBranchFacts && sourcePath) {
+        try {
+          const facts = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.sessionBranchFacts!(workspacePath, sourcePath, signal),
+            this.#agentTimeoutMs,
+            "Archive branch facts timed out",
+          )
+          session.branch = facts.branch
+          session.unmergedFiles = facts.unmergedFiles
+        } catch (error) {
+          this.#reportError("Domovoi could not read the archived session's branch", error)
+        }
+      }
       await this.#withAbortTimeout(
         (signal) => this.#workspaceService.archiveSessionWorkspace!(workspacePath, signal),
         this.#agentTimeoutMs,
@@ -9693,12 +9898,13 @@ export class DomovoiDaemon {
     terminal.output.flush(terminalId)
     terminal.outputBackpressure.dispose()
     terminal.process.kill()
-    this.#broadcastNotification("terminal.closed", { terminalId })
+    this.#notifyTerminalAudience(terminal, "terminal.closed", { terminalId })
     return true
   }
 
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
+      terminal.audience.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
@@ -9734,6 +9940,7 @@ export class DomovoiDaemon {
       })
       const entry = { root, watcher }
       this.#artifactWatchers.set(sessionId, entry)
+      watcher.setBusy?.(Boolean(this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)?.activeTurnId))
       void watcher.start().catch((error: unknown) => {
         if (this.#artifactWatchers.get(sessionId) !== entry) return
         watcher.stop()
@@ -9908,8 +10115,14 @@ export class DomovoiDaemon {
     )
   }
 
+  // Each write carries the whole live snapshot as it stands when the write
+  // starts, so every change that arrives while a write is still waiting to
+  // start is carried by that write. Sharing it keeps the backlog to one
+  // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
-    await this.#serializeSnapshotPersistence(async () => {
+    this.#syncArtifactWatchActivity()
+    const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
+      this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()
       try {
         if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
@@ -9921,6 +10134,7 @@ export class DomovoiDaemon {
       this.#persistenceSucceeded()
       this.#clearCommittedSessionCreations()
     })
+    await pending
   }
 
   #persistenceFailed(error: unknown): void {

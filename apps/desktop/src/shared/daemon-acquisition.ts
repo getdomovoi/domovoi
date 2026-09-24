@@ -4,6 +4,9 @@ export const daemonRefusalReasons = [
   "owner-incompatible",
   "owner-unverified",
   "profile-invalid",
+  "port-in-use",
+  "state-locked",
+  "identity-mismatch",
 ] as const
 
 export type DaemonRefusalReason = (typeof daemonRefusalReasons)[number]

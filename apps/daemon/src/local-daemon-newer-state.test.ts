@@ -8,7 +8,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon } from "./local-daemon.js"
 import { CliProviderProbe } from "./providers.js"
-import { SqliteWorkspaceStore } from "./store.js"
+import { DomovoiDaemon } from "./server.js"
+import { NewerWorkspaceStateError, SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 // The desktop starts its daemon through acquisition. State a newer daemon
@@ -43,4 +44,16 @@ it("refuses newer state with the store's own message", async () => {
     reason: "profile-invalid",
     message: `Domovoi state at ${statePath} was written by a newer daemon (protocol ${stored}), and this daemon speaks protocol ${protocolVersion}. It was left as it is and this daemon did not start. Run the newer Domovoi again, or update this one to protocol ${major}.${minor! + 1} or later.`,
   })
+})
+
+// Merged with main's startup classifier, which walks an error's causes: the
+// refusal is found, with its own message, when something wraps it too.
+it("refuses newer state with the store's own message when it arrives wrapped", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-acquire-newer-wrapped-"))
+  homes.push(home)
+  const refusal = new NewerWorkspaceStateError("/profile/state.sqlite", "0.99.0", protocolVersion)
+  vi.spyOn(DomovoiDaemon.prototype, "start").mockRejectedValue(new Error("daemon start failed", { cause: refusal }))
+
+  const handle = await acquireLocalDaemon({ environment: { DOMOVOI_PORT: "0" }, homeDirectory: home, mode: "start-or-attach", timeoutMs: 20_000 })
+  expect(handle).toEqual({ kind: "refused", reason: "profile-invalid", message: refusal.message })
 })

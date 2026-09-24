@@ -95,6 +95,10 @@
           <span style="{{ needsBadge }}">2 need you</span>
         </div>
         <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 14px 92px; display: flex; flex-direction: column; gap: 14px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 9px; padding: 0 4px;">
+            <span style="width: 6px; height: 6px; flex: 0 0 6px; margin-top: 6px; border-radius: 50%; background: var(--info);"></span>
+            <span style="font-size: 12.5px; color: var(--muted-foreground); line-height: 1.5;">Keep Domovoi open to answer gates. Nothing is pushed to this phone yet.</span>
+          </div>
           <sc-for list="{{ phoneGroups }}" as="g" hint-placeholder-count="3">
             <div style="display: flex; flex-direction: column; gap: 7px;">
               <div style="display: flex; align-items: center; gap: 9px; padding: 0 4px;">
@@ -112,6 +116,15 @@
                     </div>
                     <span style="{{ s.pillStyle }}">{{ s.pill }}</span>
                   </div>
+                  <sc-for list="{{ s.subs }}" as="sb" hint-placeholder-count="0">
+                    <div style="display: flex; align-items: center; gap: 8px; height: 44px; margin: 0 0 -6px 3px;">
+                      <sc-if value="{{ sb.mid }}" hint-placeholder-val="{{ true }}"><span style="position: relative; width: 12px; flex: 0 0 12px; align-self: stretch; border-left: 1px solid var(--border);"><span style="position: absolute; left: 0; top: 22px; width: 11px; border-top: 1px solid var(--border);"></span></span></sc-if>
+                      <sc-if value="{{ sb.end }}" hint-placeholder-val="{{ false }}"><span style="width: 12px; flex: 0 0 12px; align-self: flex-start; height: 22px; border-left: 1px solid var(--border); border-bottom: 1px solid var(--border); border-bottom-left-radius: 5px;"></span></sc-if>
+                      <span style="{{ sb.dot }}"></span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--strong); white-space: nowrap;">{{ sb.name }}</span>
+                      <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">{{ sb.state }}</span>
+                    </div>
+                  </sc-for>
                 </div>
               </sc-for>
             </div>
@@ -133,7 +146,41 @@
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Needs you is the first group and it is never collapsed. Everything else on this screen is secondary to it.</div>
+      <div style="{{ captionStyle }}">Needs you is the first group and it is never collapsed. Running subagents hang off their session on tree lines, and finished ones fold into one line. The line above it is M1's limit: without the relay there is no push, so gates arrive only while the app is open.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">01b</span><span style="{{ frameName }}">A subagent's thread</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-bottom: 1px solid var(--border);">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">subagent</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 20px; color: var(--foreground);">test-runner</div>
+            <div style="display: flex; align-items: center; gap: 7px; margin-top: 6px;"><span style="width: 6px; height: 6px; border-radius: 50%; background: var(--success);"></span><span role="img" aria-label="claude-code" style="display: block; width: 12px; height: 12px; flex: 0 0 12px; background: currentColor; color: var(--muted-foreground); -webkit-mask: url(assets/harness/claude-code.svg) center / contain no-repeat; mask: url(assets/harness/claude-code.svg) center / contain no-repeat;"></span><span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint);">claude-code · mac-mini-m4 · running</span></div>
+          </div>
+          <div style="font-size: 14px; line-height: 1.55; color: var(--muted-foreground);">claude-code asked: run the webhooks suite after each change and report failures.</div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 12px; background: var(--code);"><span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--success);"></span><span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">vitest run webhooks/handler.spec.ts</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground);">14 passed</span></div>
+            <div style="display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 12px; background: var(--code);"><span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--destructive);"></span><span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">vitest run webhooks/replay.spec.ts</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground);">1 failed</span></div>
+          </div>
+          <div style="font-size: 14.5px; line-height: 1.6; color: var(--foreground);">replay.spec.ts still asserts two invocations on a retry, which step 4 rewrites. handler.spec.ts is green.</div>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 34px; border-top: 1px solid var(--border);">
+          <span style="font-size: 12.5px; color: var(--muted-foreground); text-align: center;">Subagents take instructions from claude-code, not from you.</span>
+          <div style="height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 12px; border: 1px solid var(--border); font-size: 14px; color: var(--foreground);">Back to the parent thread</div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Tap a subagent under its session to read its thread. It is read-only here: a subagent takes instructions from claude-code, and its gates arrive in the parent thread.</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -203,7 +250,7 @@
               <span style="{{ okDot }}"></span>
               <span style="font-size: 19px; font-weight: 600; letter-spacing: -.015em; color: var(--ok-fg);">Allowed once</span>
             </div>
-            <div style="font-size: 13px; color: var(--ok-dim); margin-top: 7px; line-height: 1.55;">Finished in 38 seconds. A checkpoint was taken before it, so this is revertible.</div>
+            <div style="font-size: 13px; color: var(--ok-dim); margin-top: 7px; line-height: 1.55;">Checkpoint <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">ckpt_7f24</span> was taken first, then it ran in <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">38s</span>.</div>
           </div>
           <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
             <div style="padding: 11px 15px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">RECORDED AS</div>
@@ -223,54 +270,99 @@
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">A decision is worth nothing if you cannot see what it did. The receipt names the outcome, the checkpoint and the credential.</div>
+      <div style="{{ captionStyle }}">Read-only. The receipt names the checkpoint the daemon took before the write, and reverting to it happens on a desktop.</div>
     </div>
 
     <div style="{{ colStyle }}">
-      <div style="display: flex; align-items: baseline; gap: 9px;">
-        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">04</span>
-        <span style="font-size: 13px; font-weight: 600;">Watching, and the shell is elsewhere</span>
-      </div>
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">04</span><span style="{{ frameName }}">Watching, and the shell is elsewhere</span></div>
       <div style="{{ phoneStyle }}">
         <div style="{{ statusBarStyle }}">
           <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
           <span style="flex: 1;"></span>
           <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
         </div>
+        <sc-if value="{{ t04Thread }}" hint-placeholder-val="{{ false }}">
         <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px;">
           <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
-          <span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
-          <span style="flex: 1;"></span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
           <span style="{{ watchPill }}">watching</span>
         </div>
-        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px 26px; display: flex; flex-direction: column; gap: 11px;">
-          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 14px;">
-            <span style="{{ workingDot }}"></span>
-            <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--strong);">Running the test suite</span>
-            <span style="position: relative; width: 34px; height: 3px; border-radius: 3px; background: var(--muted); overflow: hidden; display: block;">
-              <span style="position: absolute; inset: 0; width: 30%; border-radius: 3px; background: var(--primary); animation: dvSweep 1.5s var(--ease-out, ease) infinite; display: block;"></span>
-            </span>
-          </div>
-          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px;">
-            <div style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHAT THE AGENT REPORTED</div>
-            <div style="border-radius: 14px; background: var(--code); padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.75; display: flex; flex-direction: column; overflow: hidden;">
-              <sc-for list="{{ streamLines }}" as="l" hint-placeholder-count="6">
-                <div style="{{ l.style }}">{{ l.text }}</div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 4px 16px 26px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="font-size: 14px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">Claim-then-commit is in. Running the webhooks suite before the migration step.</div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+            <div style="display: flex; flex-direction: column; gap: 6px; padding: 9px 12px; background: var(--card);">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="display: inline-flex; color: var(--muted-foreground);">{{ iTermSm }}</span>
+                <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">pnpm vitest run src/webhooks</span>
+                <span style="{{ failDot }}"></span>
+                <span style="font-size: 12px; color: var(--strong);">Failed</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="{{ liveDot }}"></span>
+                <span style="font-size: 12px; color: var(--strong);">Live</span>
+                <span style="flex: 1;"></span>
+                <span style="display: inline-flex; color: var(--muted-foreground);">{{ iLaptopSm }}</span>
+                <span style="font-size: 12px; color: var(--muted-foreground);">Claimed by MacBook Pro</span>
+              </div>
+            </div>
+            <div style="{{ cropOutB }}">
+              <sc-for list="{{ compareRows }}" as="r" hint-placeholder-count="7">
+              <sc-if value="{{ r.isLine }}" hint-placeholder-val="{{ true }}"><div style="{{ r.style }}"><sc-for list="{{ r.parts }}" as="p" hint-placeholder-count="1"><span style="{{ p.style }}">{{ p.t }}</span></sc-for></div></sc-if>
+              <sc-if value="{{ r.isMark }}" hint-placeholder-val="{{ false }}"><div style="{{ r.style }}">{{ r.text }}</div></sc-if>
               </sc-for>
             </div>
-          </div>
-          <div style="flex: 0 0 auto; padding: 12px 14px; border: 1px solid var(--info-border); border-radius: 14px; background: var(--info-bg);">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <span style="{{ infoDot }}"></span>
-              <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--info-fg);">The shell is held on desktop</span>
+            <div onClick="{{ t04ToFull }}" style="display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-top: 1px solid var(--border); background: var(--card); cursor: pointer;" style-hover="background: var(--accent);">
+              <span style="flex: 1; font-size: 13px; color: var(--strong);">Show all 14 lines</span>
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iMaximizeSm }}</span>
             </div>
-            <div style="font-size: 12px; color: var(--info-dim); margin-top: 6px; line-height: 1.55;">Typing needs the claim, and a phone cannot take one. Claim it from a desktop.</div>
           </div>
-          <div style="flex: 0 0 auto; font-size: 12px; color: var(--faint); line-height: 1.55;">This phone cannot pull the repository down. Diffs stream from the machine and are never stored here. Terminal output does not reach a phone yet.</div>
+          <div style="font-size: 14px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">replay.spec.ts still asserts two invocations on a retry, which step 4 rewrites.</div>
         </div>
+        </sc-if>
+        <sc-if value="{{ t04Full }}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 8px;">
+          <span onClick="{{ t04ToThread }}" style="display: inline-flex; color: var(--muted-foreground); cursor: pointer;">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+          <span style="{{ watchPill }}">read-only</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px; padding: 0 16px 11px; border-bottom: 1px solid var(--border);">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="display: inline-flex; color: var(--muted-foreground);">{{ iTermSm }}</span>
+            <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">zsh · wt-billing-idem</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">120×34</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="{{ liveDot }}"></span>
+            <span style="font-size: 12px; color: var(--strong);">Live</span>
+            <span style="flex: 1;"></span>
+            <span style="display: inline-flex; color: var(--muted-foreground);">{{ iLaptopSm }}</span>
+            <span style="font-size: 12px; color: var(--muted-foreground);">Claimed by MacBook Pro</span>
+          </div>
+        </div>
+        
+        <div style="{{ t04OutStyle }}">
+          <sc-for list="{{ t04Rows }}" as="r" hint-placeholder-count="12">
+              <sc-if value="{{ r.isLine }}" hint-placeholder-val="{{ true }}"><div style="{{ r.style }}"><sc-for list="{{ r.parts }}" as="p" hint-placeholder-count="1"><span style="{{ p.style }}">{{ p.t }}</span></sc-for></div></sc-if>
+              <sc-if value="{{ r.isMark }}" hint-placeholder-val="{{ false }}"><div style="{{ r.style }}">{{ r.text }}</div></sc-if>
+          </sc-for>
+        </div>
+        <div style="{{ termBarStyle }}">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div onClick="{{ t04OnFollow }}" style="{{ t04FollowStyle }}">
+              <span style="{{ t04Track }}"><span style="{{ t04Knob }}"></span></span>
+              <span style="font-size: 13px; color: var(--strong);">Follow output</span>
+            </div>
+            <span style="flex: 1;"></span>
+            <sc-if value="{{ t04ShowJump }}" hint-placeholder-val="{{ true }}">
+              <div onClick="{{ t04OnJump }}" style="{{ jumpBtnStyle }}">{{ iArrowDownSm }}<span>Jump to latest</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">18 new</span></div>
+            </sc-if>
+          </div>
+          <div style="font-size: 11px; color: var(--faint); text-align: center; line-height: 1.5;">Read-only. Only the claimant can type or resize.</div>
+        </div>
+                </sc-if>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">A run the agent reports is not a shell stream. One claimant at a time is real, a phone is never the claimant, and the held shell's own output is not drawn here because it does not reach a phone.</div>
+      <div style="{{ captionStyle }}">Read-only. The view names the one device that holds the claim. Recent output arrives first, then live, redacted as everywhere else. The claimant's 120 columns wrap here, because a phone never resizes them. B in the thread opens it, and back returns there.</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -321,6 +413,310 @@
     </div>
 
   </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">READ-ONLY TERMINAL</span>
+    <span style="{{ sectionNote }}">Extends 04. A phone or tablet reads the shell, and only the device holding the claim types into it</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+<sc-for list="{{ termStates }}" as="t" hint-placeholder-count="3">
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">{{ t.num }}</span><span style="{{ frameName }}">{{ t.name }}</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 8px;">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+          <span style="{{ watchPill }}">read-only</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px; padding: 0 16px 11px; border-bottom: 1px solid var(--border);">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="display: inline-flex; color: var(--muted-foreground);">{{ iTermSm }}</span>
+            <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">zsh · wt-billing-idem</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">120×34</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="{{ t.dot }}"></span>
+            <span style="font-size: 12px; color: var(--strong);">{{ t.status }}</span>
+            <span style="flex: 1;"></span>
+            <span style="display: inline-flex; color: var(--muted-foreground);">{{ iLaptopSm }}</span>
+            <span style="font-size: 12px; color: var(--muted-foreground);">{{ t.claimant }}</span>
+          </div>
+        </div>
+        <sc-if value="{{ t.hasBanner }}" hint-placeholder-val="{{ false }}">
+          <div style="flex: 0 0 auto; margin: 10px 12px 0; padding: 11px 13px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); display: flex; flex-direction: column; gap: 5px;">
+            <div style="display: flex; align-items: center; gap: 9px;">
+              <span style="{{ t.dot }}"></span>
+              <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--foreground);">{{ t.bannerTitle }}</span>
+              <span style="position: relative; width: 34px; height: 3px; border-radius: 3px; background: var(--muted); overflow: hidden; display: block;"><span style="position: absolute; inset: 0; width: 30%; border-radius: 3px; background: var(--primary); animation: dvSweep 1.5s var(--ease-out, ease) infinite; display: block;"></span></span>
+            </div>
+            <div style="font-size: 12px; color: var(--muted-foreground); line-height: 1.5;">{{ t.bannerBody }}</div>
+          </div>
+        </sc-if>
+        <div style="{{ t.outStyle }}">
+          <sc-for list="{{ t.rows }}" as="r" hint-placeholder-count="12">
+              <sc-if value="{{ r.isLine }}" hint-placeholder-val="{{ true }}"><div style="{{ r.style }}"><sc-for list="{{ r.parts }}" as="p" hint-placeholder-count="1"><span style="{{ p.style }}">{{ p.t }}</span></sc-for></div></sc-if>
+              <sc-if value="{{ r.isMark }}" hint-placeholder-val="{{ false }}"><div style="{{ r.style }}">{{ r.text }}</div></sc-if>
+          </sc-for>
+        </div>
+        <div style="{{ termBarStyle }}">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div onClick="{{ t.onFollow }}" style="{{ t.followStyle }}">
+              <span style="{{ t.track }}"><span style="{{ t.knob }}"></span></span>
+              <span style="font-size: 13px; color: var(--strong);">Follow output</span>
+            </div>
+            <span style="flex: 1;"></span>
+            <sc-if value="{{ t.showJump }}" hint-placeholder-val="{{ true }}">
+              <div onClick="{{ noop }}" style="{{ jumpBtnStyle }}">{{ iArrowDownSm }}<span>Jump to latest</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ t.jumpCount }}</span></div>
+            </sc-if>
+          </div>
+          <div style="font-size: 11px; color: var(--faint); text-align: center; line-height: 1.5;">Read-only. Only the claimant can type or resize.</div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">{{ t.caption }}</div>
+    </div>
+    </sc-for>
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">04e</span><span style="{{ frameName }}">A gate after a failed command</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 16px 10px;">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px;">
+            <span style="{{ gatePulseDot }}"></span>
+            <span style="font-size: 24px; font-weight: 600; letter-spacing: -.02em; color: var(--warn-fg);">Waiting on you</span>
+          </div>
+          <div style="flex: 0 0 auto; font-size: 14px; line-height: 1.55; color: var(--strong);">The tests failed, and the agent wants to reset the dev database before it retries. Nothing has run yet.</div>
+          <div style="flex: 0 0 auto; padding: 13px 15px; border-radius: 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 13.5px; color: var(--warn-fg); line-height: 1.5; word-break: break-all;">pnpm -w prisma migrate reset --force</div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 9px; padding: 10px 14px; background: var(--card);">
+              <span style="{{ failDot }}"></span>
+              <span style="font-size: 12.5px; color: var(--strong);">Failed</span>
+              <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--faint); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">pnpm vitest run src/webhooks</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted-foreground);">exit 1</span>
+            </div>
+            <div style="padding: 10px 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.6; font-variant-ligatures: none; display: flex; flex-direction: column;">
+              <sc-for list="{{ gateTailRows }}" as="r" hint-placeholder-count="3">
+              <sc-if value="{{ r.isLine }}" hint-placeholder-val="{{ true }}"><div style="{{ r.style }}"><sc-for list="{{ r.parts }}" as="p" hint-placeholder-count="1"><span style="{{ p.style }}">{{ p.t }}</span></sc-for></div></sc-if>
+              <sc-if value="{{ r.isMark }}" hint-placeholder-val="{{ false }}"><div style="{{ r.style }}">{{ r.text }}</div></sc-if>
+              </sc-for>
+            </div>
+            <div onClick="{{ noop }}" style="display: flex; align-items: center; gap: 9px; min-height: 44px; padding: 0 14px; border-top: 1px solid var(--border); background: var(--card); cursor: pointer;" style-hover="background: var(--accent);">
+              <span style="flex: 1; font-size: 13.5px; color: var(--foreground);">Read the output</span>
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iChevronRightSm }}</span>
+            </div>
+          </div>
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+            <sc-for list="{{ gateResetFacts }}" as="f" hint-placeholder-count="3">
+              <div style="{{ f.rowStyle }}">
+                <span style="flex: 0 0 auto; font-size: 12.5px; color: var(--muted-foreground);">{{ f.k }}</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong); text-align: right;">{{ f.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="{{ decisionSpacerStyle }}"></div>
+        <div style="{{ decisionStyle }}">
+          <div style="{{ allowOnceStyle }}">Allow once</div>
+          <div style="display: flex; gap: 8px;">
+            <div style="{{ ruleStyle }}">Always allow this</div>
+            <div style="{{ denyStyle }}">Deny</div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">The gate names the failed command it answers to and links to that output, read-only. The failure is red and the link is neutral, because amber belongs to the gate alone.</div>
+    </div>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+    <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 11px; width: 1180px;">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">04f</span><span style="{{ frameName }}">Tablet, output beside the thread</span></div>
+      <div style="{{ tabletStyle }}">
+        <div style="flex: 0 0 26px; display: flex; align-items: center; gap: 6px; padding: 0 22px; color: var(--foreground);">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="flex: 1; min-height: 0; display: flex;">
+          <div style="flex: 0 0 400px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border);">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 18px; border-bottom: 1px solid var(--border);">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+              <span style="flex: 1; min-width: 0; font-size: 14px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+            </div>
+            <div style="flex: 1; min-height: 0; overflow: hidden; padding: 18px; display: flex; flex-direction: column; gap: 14px;">
+              <div style="font-size: 14px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">Claim-then-commit is in. Running the webhooks suite before the migration step.</div>
+              <div style="display: flex; flex-direction: column; gap: 6px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--accent);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="display: inline-flex; color: var(--foreground);">{{ iTermSm }}</span>
+                  <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">pnpm vitest run src/webhooks</span>
+                  <span style="{{ failDot }}"></span>
+                  <span style="font-size: 12px; color: var(--strong);">Failed</span>
+                </div>
+                <span style="font-size: 11.5px; color: var(--muted-foreground);">Open beside the thread</span>
+              </div>
+              <div style="font-size: 14px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">replay.spec.ts still asserts two invocations on a retry, which step 4 rewrites.</div>
+            </div>
+          </div>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 9px; min-height: 48px; padding: 0 18px; border-bottom: 1px solid var(--border);">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iTermSm }}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">zsh · wt-billing-idem</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">120×34</span>
+              <span style="{{ watchPill }}">read-only</span>
+              <span style="flex: 1;"></span>
+              <span style="{{ liveDot }}"></span>
+              <span style="font-size: 12px; color: var(--strong);">Live</span>
+              <span style="display: inline-flex; color: var(--muted-foreground); margin-left: 8px;">{{ iLaptopSm }}</span>
+              <span style="font-size: 12px; color: var(--muted-foreground);">Claimed by MacBook Pro</span>
+            </div>
+            <div style="{{ tabOutStyle }}">
+              <sc-for list="{{ tabRows }}" as="r" hint-placeholder-count="12">
+              <sc-if value="{{ r.isLine }}" hint-placeholder-val="{{ true }}"><div style="{{ r.style }}"><sc-for list="{{ r.parts }}" as="p" hint-placeholder-count="1"><span style="{{ p.style }}">{{ p.t }}</span></sc-for></div></sc-if>
+              <sc-if value="{{ r.isMark }}" hint-placeholder-val="{{ false }}"><div style="{{ r.style }}">{{ r.text }}</div></sc-if>
+              </sc-for>
+            </div>
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 6px 18px 22px; border-top: 1px solid var(--border);">
+              <div onClick="{{ tabOnFollow }}" style="{{ tabFollowStyle }}">
+                <span style="{{ tabTrack }}"><span style="{{ tabKnob }}"></span></span>
+                <span style="font-size: 13px; color: var(--strong);">Follow output</span>
+              </div>
+              <span style="flex: 1; min-width: 0; font-size: 11px; color: var(--faint); text-align: center;">Read-only. A keyboard attached to this tablet does not type into it.</span>
+              <sc-if value="{{ tabShowJump }}" hint-placeholder-val="{{ false }}">
+                <div onClick="{{ tabOnJump }}" style="{{ jumpBtnStyle }}">{{ iArrowDownSm }}<span>Jump to latest</span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">6 new</span></div>
+              </sc-if>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="width: 1180px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-align: center;">The same read-only view opens beside the thread at about 100 columns, so a 120-column line still wraps. A keyboard attached to the tablet does not type into it. The claimant still does.</div>
+    </div>
+    <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 11px; width: 820px;">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">04g</span><span style="{{ frameName }}">The grant line, when this ships</span></div>
+      <div style="display: flex; flex-direction: column; gap: 18px; padding: 18px 20px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
+        <div style="display: grid; grid-template-columns: 130px minmax(0, 1fr); row-gap: 10px; column-gap: 14px; align-items: baseline;">
+          <span style="font-size: 12px; color: var(--faint);">Today</span>
+          <div style="display: flex; align-items: flex-start; gap: 9px;"><span style="{{ infoDotSm }}"></span><span style="font-size: 13px; color: var(--muted-foreground); line-height: 1.5;">Terminal output is not on a phone yet.</span></div>
+          <span style="font-size: 12px; color: var(--faint);">When this ships</span>
+          <div style="display: flex; align-items: flex-start; gap: 9px;"><span style="{{ okDotSm }}"></span><span style="font-size: 13px; font-weight: 500; color: var(--foreground); line-height: 1.5;">Read terminal output. It cannot type, resize or take the claim.</span></div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;">
+          <div style="display: flex; flex-direction: column; gap: 9px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--background);">
+            <span style="font-size: 11.5px; font-weight: 500; color: var(--muted-foreground);">Desktop, pairing card</span>
+            <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">A PAIRED DEVICE CAN</span>
+            <sc-for list="{{ grantRows }}" as="g" hint-placeholder-count="6">
+                <div style="{{ g.rowStyle }}"><span style="{{ g.dot }}"></span><span style="{{ g.textStyle }}">{{ g.text }}</span></div>
+              </sc-for>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 9px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--code);">
+            <span style="font-size: 11.5px; font-weight: 500; color: var(--muted-foreground);">Command line</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--foreground);">$ domovoid pair --client phone</span>
+            <sc-for list="{{ grantCliRows }}" as="g" hint-placeholder-count="6">
+                <div style="{{ g.rowStyle }}"><span style="{{ g.dot }}"></span><span style="{{ g.textStyle }}">{{ g.text }}</span></div>
+              </sc-for>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 9px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--background);">
+            <span style="font-size: 11.5px; font-weight: 500; color: var(--muted-foreground);">Phone, before it pairs</span>
+            <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">THIS PHONE WILL BE ABLE TO</span>
+            <sc-for list="{{ grantRows }}" as="g" hint-placeholder-count="6">
+                <div style="{{ g.rowStyle }}"><span style="{{ g.dot }}"></span><span style="{{ g.textStyle }}">{{ g.text }}</span></div>
+              </sc-for>
+          </div>
+        </div>
+      </div>
+      <div style="width: 820px; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-align: center;">One line, one source. It moves from a limit to a grant and names its limit in the same breath, and the desktop card, the command line and the phone change together.</div>
+    </div>
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">A OR B, LONG LINES AT PHONE WIDTH</span>
+    <span style="{{ sectionNote }}">The same 14 lines of output, cropped to the phone's content width</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">A</span><span style="{{ frameName }}">Full screen</span></div>
+      <div style="{{ cropStyle }}">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border);">
+            <span style="display: inline-flex; color: var(--muted-foreground);">{{ iTermSm }}</span>
+            <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">zsh · wt-billing-idem</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">120×34</span>
+          </div>
+        <div style="{{ cropOutA }}">
+          <sc-for list="{{ compareRows }}" as="r" hint-placeholder-count="12">
+              <sc-if value="{{ r.isLine }}" hint-placeholder-val="{{ true }}"><div style="{{ r.style }}"><sc-for list="{{ r.parts }}" as="p" hint-placeholder-count="1"><span style="{{ p.style }}">{{ p.t }}</span></sc-for></div></sc-if>
+              <sc-if value="{{ r.isMark }}" hint-placeholder-val="{{ false }}"><div style="{{ r.style }}">{{ r.text }}</div></sc-if>
+          </sc-for>
+        </div>
+      </div>
+      <div style="{{ captionStyle }}">Full screen gives about 52 columns. A long line wraps under a hanging indent, so a path or an assertion stays whole and the next line still starts at the margin.</div>
+    </div>
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">B</span><span style="{{ frameName }}">Inside the thread</span></div>
+      <div style="{{ cropStyle }}">
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="font-size: 14px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">Claim-then-commit is in. Running the webhooks suite before the migration step.</div>
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--card);">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iTermSm }}</span>
+              <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">pnpm vitest run src/webhooks</span>
+              <span style="{{ failDot }}"></span>
+              <span style="font-size: 12px; color: var(--strong);">Failed</span>
+            </div>
+            <div style="{{ cropOutB }}">
+              <sc-for list="{{ compareRows }}" as="r" hint-placeholder-count="7">
+              <sc-if value="{{ r.isLine }}" hint-placeholder-val="{{ true }}"><div style="{{ r.style }}"><sc-for list="{{ r.parts }}" as="p" hint-placeholder-count="1"><span style="{{ p.style }}">{{ p.t }}</span></sc-for></div></sc-if>
+              <sc-if value="{{ r.isMark }}" hint-placeholder-val="{{ false }}"><div style="{{ r.style }}">{{ r.text }}</div></sc-if>
+              </sc-for>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-top: 1px solid var(--border); background: var(--card);">
+              <span style="flex: 1; font-size: 13px; color: var(--strong);">Show all 14 lines</span>
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iMaximizeSm }}</span>
+            </div>
+          </div>
+          <div style="font-size: 14px; line-height: 1.6; color: var(--foreground); text-wrap: pretty;">replay.spec.ts still asserts two invocations on a retry, which step 4 rewrites.</div>
+        </div>
+      </div>
+      <div style="{{ captionStyle }}">Inside the thread the block is about 46 columns and seven lines tall. Sideways scrolling inside a scrolling thread fights the page, so it wraps and shows the tail.</div>
+    </div>
+    <div style="flex: 0 0 340px; display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; margin-top: 26px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
+      <span style="{{ sectionEyebrow }}">RECOMMENDATION</span>
+      <div style="font-size: 13px; line-height: 1.6; color: var(--strong); text-wrap: pretty;">B is the way in, A is where you read. Once long lines wrap, a seven-line block holds little more than the summary, so B shows the tail and one tap opens A.</div>
+      <div style="font-size: 12px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">Frame 04 is A. B is the thread block that opens it.</div>
+    </div>
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">FOR THE OWNER</span>
+    <span style="{{ sectionNote }}">New literal strings for the conformance inventory, and what is not decided</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+    <div style="flex: 0 0 820px; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--card);">
+      <div style="padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">NEW STRINGS</div>
+      <sc-for list="{{ newStrings }}" as="s" hint-placeholder-count="12">
+        <div style="{{ s.rowStyle }}"><span style="{{ s.textStyle }}">{{ s.text }}</span><span style="flex: 0 0 120px; font-size: 11px; color: var(--faint); text-align: right;">{{ s.where }}</span></div>
+      </sc-for>
+    </div>
+    <div style="flex: 0 0 520px; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--card);">
+      <div style="padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">OPEN QUESTIONS</div>
+      <sc-for list="{{ openQuestions }}" as="q" hint-placeholder-count="6">
+        <div style="{{ q.rowStyle }}"><span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ q.n }}</span><span style="flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.55; color: var(--strong); text-wrap: pretty;">{{ q.text }}</span></div>
+      </sc-for>
+    </div>
+  </div>
+
 
   <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
     <span style="{{ sectionEyebrow }}">FIRST RUN AND UNPAIRED</span>
@@ -467,6 +863,88 @@
     </div>
 
     <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">09b</span><span style="{{ frameName }}">Paired</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iClose }}</span>
+          <span style="font-size: 13px; color: var(--muted-foreground);">Pair with a machine</span>
+        </div>
+        <div style="{{ bodyPad }}">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 12px; padding: 15px 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
+            <div style="display: flex; flex-direction: column; gap: 5px;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--success);"></span>
+                <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em;">Paired with mac-mini-m4</span>
+              </div>
+              <span style="padding-left: 17px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">tailnet · credential 7c3e…a90</span>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border);">
+              <span style="width: 6px; height: 6px; flex: 0 0 6px; margin-top: 7px; margin-left: 1px; border-radius: 50%; background: var(--info);"></span>
+              <span style="font-size: 13px; color: var(--muted-foreground); line-height: 1.55;">Gates reach this phone only while Domovoi is open on it. There are no notifications yet.</span>
+            </div>
+          </div>
+          <div style="flex: 1;"></div>
+          <div style="flex: 0 0 auto; padding: 14px 22px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 13.5px; font-weight: 500; text-align: center; cursor: pointer;">Open Sessions</div>
+        </div>
+        <div style="flex: 0 0 auto; height: 34px;"></div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Nothing can wake a phone over a tailnet, so the limit ships inside the success card. You learn when a gate can reach you at the moment you pair, not when one is missed.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">09c</span><span style="{{ frameName }}">Settings, notifications not yet</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ headerRow }}">
+          <span style="{{ screenTitle }}">Settings</span>
+        </div>
+        <div style="{{ bodyPad }}">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 7px;">
+            <span style="padding: 0 4px; font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">THIS PHONE</span>
+            <div style="border: 1px solid var(--border); border-radius: 16px; overflow: hidden; background: var(--card);">
+              <div style="display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 12px 15px; cursor: pointer;">
+                <span style="flex: 1; min-width: 0; font-size: 14px;">Appearance</span>
+                <span style="font-size: 12.5px; color: var(--muted-foreground);">{{ appearanceValue }}</span>
+                <span style="display: inline-flex; color: var(--muted-foreground);">{{ iChevRow }}</span>
+              </div>
+              <div aria-disabled="true" style="display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 12px 15px; border-top: 1px solid var(--border); opacity: .5; cursor: default;">
+                <span style="flex: 1; min-width: 0; font-size: 14px;">Notifications</span>
+                <span style="font-size: 12.5px; color: var(--muted-foreground);">Not yet</span>
+              </div>
+            </div>
+            <span style="padding: 2px 4px 0; font-size: 12px; color: var(--muted-foreground); line-height: 1.55;">Gates reach this phone only while Domovoi is open on it. There are no notifications yet.</span>
+          </div>
+        </div>
+        <div style="{{ tabBarStyle }}">
+          <div style="{{ tabsSet.sessions }}">
+            {{ iSessions }}
+            <span style="font-size: 10.5px;">Sessions</span>
+          </div>
+          <div style="{{ tabsSet.machines }}">
+            {{ iMachines }}
+            <span style="font-size: 10.5px;">Machines</span>
+          </div>
+          <div style="{{ tabsSet.settings }}">
+            {{ iSettings }}
+            <span style="font-size: 10.5px;">Settings</span>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">A setting that does not exist yet stays listed, dimmed and untouchable, with no chevron. The line under it says why, so the missing row reads as a fact rather than a bug.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
       <div style="{{ frameLabel }}"><span style="{{ frameNum }}">10</span><span style="{{ frameName }}">Nothing running</span></div>
       <div style="{{ phoneStyle }}">
         <div style="{{ statusBarStyle }}">
@@ -544,7 +1022,7 @@
           </div>
           <sc-for list="{{ threadTurns }}" as="t" hint-placeholder-count="4">
             <div style="{{ t.rowStyle }}">
-              <span style="{{ t.whoStyle }}">{{ t.who }}</span>
+              <span style="{{ t.whoStyle }}"><sc-if value="{{ t.agent }}" hint-placeholder-val="{{ false }}"><span role="img" aria-label="{{ t.who }}" style="display: block; width: 11px; height: 11px; flex: 0 0 11px; background: currentColor; -webkit-mask: url(assets/harness/{{ t.who }}.svg) center / contain no-repeat; mask: url(assets/harness/{{ t.who }}.svg) center / contain no-repeat;"></span></sc-if>{{ t.who }}</span>
               <div style="{{ t.bubbleStyle }}">{{ t.text }}</div>
             </div>
           </sc-for>
@@ -592,7 +1070,7 @@
         </div>
         <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px;">
           <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;">
-            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">claude-code</span>
+            <span style="display: inline-flex; align-items: center; gap: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);"><span role="img" aria-label="claude-code" style="display: block; width: 11px; height: 11px; flex: 0 0 11px; background: currentColor; -webkit-mask: url(assets/harness/claude-code.svg) center / contain no-repeat; mask: url(assets/harness/claude-code.svg) center / contain no-repeat;"></span>claude-code</span>
             <div style="max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: 18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border);">Steps 1 and 2 are done. replay.spec.ts asserts exactly-once delivery and passes.</div>
           </div>
         </div>
@@ -657,6 +1135,11 @@
         <div style="position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; border-radius: 26px 26px 0 0; border-top: 1px solid var(--border); background: var(--card); box-shadow: 0 -18px 50px var(--shadow-lg); padding: 10px 0 30px;">
           <div style="display: flex; justify-content: center; padding-bottom: 8px;">
             <span style="width: 38px; height: 4px; border-radius: 999px; background: var(--muted); display: block;"></span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 2px 20px 10px;">
+            <span role="img" aria-label="claude-code" style="display: block; width: 12px; height: 12px; flex: 0 0 12px; background: currentColor; color: var(--strong); -webkit-mask: url(assets/harness/claude-code.svg) center / contain no-repeat; mask: url(assets/harness/claude-code.svg) center / contain no-repeat;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">claude-sonnet-4.6</span>
+            <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">takes image input, as its harness reports</span>
           </div>
           <div onClick="{{ noop }}" style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px;">
             <span style="color: var(--muted-foreground);">{{ iImage }}</span>
@@ -766,6 +1249,172 @@
         </div>
       </div>
       <div style="{{ captionStyle }}">Attachments grow the composer into a card, each thumb removable, and the size line says where the bytes go before you send. Images only, at the bound the annotation path already uses.</div>
+    </div>
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">13b</span><span style="{{ frameName }}">Model without image input</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px; opacity: .45;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;">
+            <div style="max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: 18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border);">Steps 1 and 2 are done.</div>
+          </div>
+        </div>
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; border-radius: 26px 26px 0 0; border-top: 1px solid var(--border); background: var(--card); box-shadow: 0 -18px 50px var(--shadow-lg); padding: 10px 0 30px;">
+          <div style="display: flex; justify-content: center; padding-bottom: 8px;">
+            <span style="width: 38px; height: 4px; border-radius: 999px; background: var(--muted); display: block;"></span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 2px 20px 10px;">
+            <span role="img" aria-label="kilo" style="display: block; width: 12px; height: 12px; flex: 0 0 12px; background: currentColor; color: var(--strong); -webkit-mask: url(assets/harness/kilo.svg) center / contain no-repeat; mask: url(assets/harness/kilo.svg) center / contain no-repeat;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">qwen3-coder-72b</span>
+            <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">takes no image input, as its harness reports</span>
+          </div>
+          <sc-if value="{{ guardA }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px;">
+            <span style="color: var(--muted-foreground); opacity: .55;">{{ iImage }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--muted-foreground);">Photo or screenshot</div>
+              <div style="font-size: 11.5px; color: var(--foreground); margin-top: 3px; line-height: 1.45;">Locked for this model.</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 2px;">refused by mac-mini-m4 · attach.image.model_no_input</div>
+            </div>
+            <span style="color: var(--muted-foreground);">{{ iLock }}</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground); opacity: .55;">{{ iCamera }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--muted-foreground);">Take a photo</div>
+              <div style="font-size: 11.5px; color: var(--foreground); margin-top: 3px; line-height: 1.45;">Locked for this model.</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 2px;">refused by mac-mini-m4 · attach.image.model_no_input</div>
+            </div>
+            <span style="color: var(--muted-foreground);">{{ iLock }}</span>
+          </div>
+          </sc-if>
+          <sc-if value="{{ guardB }}" hint-placeholder-val="{{ false }}">
+          <div onClick="{{ noop }}" style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px;">
+            <span style="color: var(--muted-foreground);">{{ iImage }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--foreground);">Photo or screenshot</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">up to 1.5 MB and 2048 px, uploaded to the machine and not stored here</div>
+              <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11.5px; color: var(--foreground);"><span style="display: flex; color: var(--muted-foreground);">{{ iInfoSm }}</span>Attaches, then blocks send until removed.</div>
+            </div>
+          </div>
+          <div onClick="{{ noop }}" style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground);">{{ iCamera }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--foreground);">Take a photo</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">one shot, sent with the turn, same bound</div>
+              <div style="display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 11.5px; color: var(--foreground);"><span style="display: flex; color: var(--muted-foreground);">{{ iInfoSm }}</span>Attaches, then blocks send until removed.</div>
+            </div>
+          </div>
+          </sc-if>
+          <div style="border-top: 1px solid var(--border);"></div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px;">
+            <span style="color: var(--muted-foreground);">{{ iFile }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--muted-foreground);">File from the worktree</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">desktop work: a phone holds no worktree to pick from</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground);">{{ iTerminal }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--muted-foreground);">Terminal output</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">waits on a read-only terminal path, which a phone does not have yet</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 13px; min-height: 56px; padding: 12px 20px; border-top: 1px solid var(--border);">
+            <span style="color: var(--muted-foreground);">{{ iGlobe }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 14px; color: var(--muted-foreground);">A URL to fetch</div>
+              <div style="font-size: 11.5px; color: var(--faint); margin-top: 3px; line-height: 1.45;">not built: an outbound fetch on a phone's word needs its own gate line</div>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">{{ cap13b }}</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">14b</span><span style="{{ frameName }}">Then a model without images</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ navRow }}">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ iBack }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 13px; color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis;">Migrate billing webhooks</span>
+        </div>
+        <div style="flex: 1; min-height: 0; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 10px 13px; border: 1px solid var(--border); border-radius: 14px;">
+            <span style="{{ workingDot }}"></span>
+            <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--strong);">Running the test suite</span>
+          </div>
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; align-items: flex-start;">
+            <div style="max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: 18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border);">The claim expiry is still 15 minutes. Do you want it configurable?</div>
+          </div>
+        </div>
+        <div style="{{ composerFocusStyle }}">
+          <div style="display: flex; gap: 8px;">
+            <sc-for list="{{ draftThumbs }}" as="d" hint-placeholder-count="2">
+              <div style="position: relative; width: 64px; height: 64px; border-radius: 14px; background: repeating-linear-gradient(135deg, var(--accent) 0 8px, var(--card) 8px 16px); border: 1px solid var(--danger-border); display: flex; align-items: flex-end; padding: 5px;">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ d.size }}</span>
+                <span style="position: absolute; top: -5px; right: -5px; width: 20px; height: 20px; border-radius: 999px; background: var(--muted); color: var(--foreground); display: flex; align-items: center; justify-content: center;">{{ iX }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display: flex; align-items: flex-end; gap: 10px;">
+            <div style="flex: 1; min-width: 0; padding: 10px 14px; border-radius: 20px; border: 1px solid var(--primary); background: var(--card); font-size: 13.5px; line-height: 1.5;">Yes, and here is what it looks like before and after<span style="display: inline-block; width: 1.5px; height: 15px; margin-left: 2px; vertical-align: -2px; background: var(--primary);"></span></div>
+            <div style="{{ sendDimStyle }}">{{ iSend }}</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 11px 12px; border: 1px solid var(--danger-border); border-radius: 14px; background: var(--danger-bg);">
+            <div style="display: flex; align-items: flex-start; gap: 8px;">
+              <span style="{{ dangerDotSm }}"></span>
+              <span style="flex: 1; min-width: 0; font-size: 12.5px; color: var(--danger-fg); line-height: 1.5;">2 images cannot go to <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">qwen3-coder-72b</span>. Remove them or pick another model.</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <div onClick="{{ noop }}" style="flex: 1; min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--danger-border); font-size: 13px; color: var(--danger-fg); cursor: pointer;">Remove 2 images</div>
+              <div onClick="{{ noop }}" style="flex: 1; min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--danger-border); font-size: 13px; color: var(--danger-fg); cursor: pointer;">Change model</div>
+            </div>
+          </div>
+        </div>
+        <div style="{{ keyboardStyle }}">
+          <div style="flex: 0 0 auto; display: flex; align-items: center; padding: 0 4px 3px;">
+            <sc-for list="{{ kbSuggestions }}" as="s" hint-placeholder-count="3">
+              <span style="{{ s.style }}">{{ s.text }}</span>
+            </sc-for>
+          </div>
+          <sc-for list="{{ kbRows }}" as="r" hint-placeholder-count="3">
+            <div style="{{ r.rowStyle }}">
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div onClick="{{ toggleShift }}" style="{{ kbModStyle }}">{{ iShift }}</div>
+              </sc-if>
+              <sc-for list="{{ r.keys }}" as="k" hint-placeholder-count="10">
+                <div style="{{ k.style }}">{{ k.label }}</div>
+              </sc-for>
+              <sc-if value="{{ r.showEdges }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ kbModStyle }}">{{ iBackspace }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <div style="display: flex; gap: 6px; padding: 0 2px; justify-content: center;">
+            <div style="{{ kbKeyWideStyle }}">123</div>
+            <div style="{{ kbModStyle }}">{{ iGlobe }}</div>
+            <div style="{{ kbSpaceStyle }}">space</div>
+            <div style="{{ kbReturnStyle }}">return</div>
+          </div>
+        </div>
+      </div>
+      <div style="{{ captionStyle }}">Queued images the model cannot take lock send before you press it, and the line names the model. The 1.5 MB, 2048 px and count caps are unchanged.</div>
     </div>
 
   </div>
@@ -1017,14 +1666,53 @@
   </div>
 
   <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">WHEN A GATE CAN REACH THIS PHONE</span>
+    <span style="{{ sectionNote }}">Three versions of the line, at phone width, dark and light</span>
+  </div>
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+    <sc-for list="{{ reachVersions }}" as="v" hint-placeholder-count="3">
+      <div style="{{ colStyle }}">
+        <div style="{{ frameLabel }}"><span style="{{ frameNum }}">{{ v.num }}</span><span style="{{ frameName }}">{{ v.name }}</span><span style="{{ frameNum }}">{{ v.count }}</span></div>
+        <div class="dv-dark" style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 20px; background: var(--background); color: var(--foreground);">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">dark</span>
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 15px 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--success);"></span>
+              <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em;">Paired with mac-mini-m4</span>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border);">
+              <span style="width: 6px; height: 6px; flex: 0 0 6px; margin-top: 7px; margin-left: 1px; border-radius: 50%; background: var(--info);"></span>
+              <span style="font-size: 13px; color: var(--muted-foreground); line-height: 1.55;">{{ v.text }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="dv-light" style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 20px; background: var(--background); color: var(--foreground);">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">light</span>
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 15px 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--card);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--success);"></span>
+              <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em;">Paired with mac-mini-m4</span>
+            </div>
+            <div style="display: flex; align-items: flex-start; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border);">
+              <span style="width: 6px; height: 6px; flex: 0 0 6px; margin-top: 7px; margin-left: 1px; border-radius: 50%; background: var(--info);"></span>
+              <span style="font-size: 13px; color: var(--muted-foreground); line-height: 1.55;">{{ v.text }}</span>
+            </div>
+          </div>
+        </div>
+        <div style="{{ captionStyle }}">{{ v.caption }}</div>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
     <span style="{{ sectionEyebrow }}">WITHOUT OPENING THE APP</span>
-    <span style="{{ sectionNote }}">The reason the phone exists: answering a gate from the lock screen</span>
+    <span style="{{ sectionNote }}">One payload rule: a push says that something happened, never what. Push needs the hosted relay and accounts, so all of this ships after the first release.</span>
   </div>
 
   <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
 
     <div style="{{ colStyle }}">
-      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">20</span><span style="{{ frameName }}">Lock screen, decided in place</span></div>
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">20a</span><span style="{{ frameName }}">Lock screen, decided in place</span></div>
       <div style="{{ phoneStyle }}">
         <div style="{{ statusBarLockStyle }}">
           <span style="flex: 1;"></span>
@@ -1036,33 +1724,133 @@
             <div style="{{ lockClockStyle }}">9:41</div>
           </div>
           <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
-            <sc-for list="{{ notifications }}" as="n" hint-placeholder-count="3">
-              <div style="{{ n.cardStyle }}">
-                <div style="display: flex; align-items: center; gap: 9px;">
-                  <span style="{{ n.iconStyle }}" role="img" aria-label="Domovoi"></span>
-                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ n.chromeColor }};">DOMOVOI</span>
-                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ n.chromeColor }};">{{ n.when }}</span>
+            <div style="{{ gateCardStyle }}">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ gateMarkStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ lock.warnDim }};">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.warnDim }};">now</span>
                 </div>
-                <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ n.titleColor }}; line-height: 1.4;">{{ n.title }}</div>
-                <div style="font-size: 12px; line-height: 1.5; margin-top: 4px; color: {{ n.bodyColor }};">{{ n.body }}</div>
-                <sc-if value="{{ n.actions }}" hint-placeholder-val="{{ true }}">
-                  <div style="display: flex; gap: 7px; margin-top: 11px;">
-                    <span style="{{ n.allowStyle }}">Allow once</span>
-                    <span style="{{ n.denyStyle }}">Deny</span>
-                    <span style="{{ n.viewStyle }}">Open</span>
+              <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ lock.warnInk }}; line-height: 1.4;">A gate is waiting</div>
+              <div style="{{ fetchedStyle }}">fetched over tailnet · 41ms</div>
+              <div style="{{ factBoxStyle }}">
+                <sc-for list="{{ fitFacts }}" as="f" hint-placeholder-count="5">
+                  <div style="{{ f.rowStyle }}">
+                    <span style="{{ f.kStyle }}">{{ f.k }}</span>
+                    <span style="flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;">
+                      <span style="{{ f.vStyle }}">{{ f.v }}</span>
+                      <span style="{{ f.noteStyle }}">{{ f.note }}</span>
+                    </span>
                   </div>
-                </sc-if>
+                </sc-for>
               </div>
-            </sc-for>
+              <div style="{{ fitLineStyle }}">All 5 facts fit, so you can decide here.</div>
+              <div style="display: flex; gap: 7px; margin-top: 11px;">
+                <span style="{{ allowStyle }}"><span style="display: flex;">{{ iAuth }}</span>Allow once</span>
+                <span style="{{ denyStyle }}">Deny</span>
+              </div>
+            </div>
           </div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Drawn, not built: waking a locked phone needs APNs, so this waits on the relay rather than on client work. Three actions, the same three the gate screen offers, so a decision taken here is the decision. Always allow is absent, because a standing rule is not a thing to grant from a locked phone.</div>
+      <div style="{{ captionStyle }}">Rule: decide in place only when every fact fits. The push said only that a gate is waiting. Expanding it fetches the facts over the phone's own route, all five fit, so Allow once and Deny are offered. Allow once asks for {{ authWord }} first.</div>
     </div>
 
     <div style="{{ colStyle }}">
-      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">21</span><span style="{{ frameName }}">Live Activity, while it works</span></div>
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">20b</span><span style="{{ frameName }}">Facts do not fit, so only Open</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarLockStyle }}">
+          <span style="flex: 1;"></span>
+          <span style="{{ statusIconsStyle }}">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ lockGroundStyle }}">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; padding: 34px 0 0;">
+            <div style="{{ lockDateStyle }}">{{ lockDate }}</div>
+            <div style="{{ lockClockStyle }}">9:41</div>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
+            <div style="{{ gateCardStyle }}">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ gateMarkStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ lock.warnDim }};">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.warnDim }};">now</span>
+                </div>
+              <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ lock.warnInk }}; line-height: 1.4;">A gate is waiting</div>
+              <div style="{{ fetchedStyle }}">fetched over tailnet · 38ms</div>
+              <div style="{{ factBoxStyle }}">
+                <sc-for list="{{ overFacts }}" as="f" hint-placeholder-count="5">
+                  <div style="{{ f.rowStyle }}">
+                    <span style="{{ f.kStyle }}">{{ f.k }}</span>
+                    <span style="flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;">
+                      <span style="{{ f.vStyle }}">{{ f.v }}</span>
+                      <span style="{{ f.noteStyle }}">{{ f.note }}</span>
+                    </span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="{{ fitLineStyle }}">7 paths do not fit, so the decision moves to Domovoi.</div>
+              <div style="display: flex; gap: 7px; margin-top: 11px;">
+                <span style="{{ openWarnStyle }}">Open</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Rule: if one fact would be cut, the lock screen cannot decide. Nine paths do not fit the expanded notification, so Open is the only action and every path waits in the app.</div>
+    </div>
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">20c</span><span style="{{ frameName }}">Stale: answered elsewhere, or expired</span></div>
+      <div style="{{ phoneStyle }}">
+        <div style="{{ statusBarLockStyle }}">
+          <span style="flex: 1;"></span>
+          <span style="{{ statusIconsStyle }}">{{ statusIcons }}</span>
+        </div>
+        <div style="{{ lockGroundStyle }}">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; padding: 34px 0 0;">
+            <div style="{{ lockDateStyle }}">{{ lockDate }}</div>
+            <div style="{{ lockClockStyle }}">9:41</div>
+          </div>
+          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
+            <div style="{{ plainCardStyle }}">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ gateMarkStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ lock.dim }};">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.dim }};">2m</span>
+                </div>
+              <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ lock.ink }}; line-height: 1.4;">Answered on the desktop</div>
+              <div style="font-size: 12px; line-height: 1.5; margin-top: 4px; color: {{ lock.dim }};">Nothing left to decide here.</div>
+            </div>
+            <div style="{{ plainCardStyle }}">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ gateMarkStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ lock.dim }};">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.dim }};">25m</span>
+                </div>
+              <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ lock.ink }}; line-height: 1.4;">This link expired</div>
+              <div style="font-size: 12px; line-height: 1.5; margin-top: 4px; color: {{ lock.dim }};">The gate still waits on its machine.</div>
+              <div style="display: flex; align-items: center; gap: 7px; margin-top: 9px;">
+                <span style="{{ waitDotStyle }}"></span>
+                <span style="font-size: 11px; color: {{ lock.warnSolid }};">Gate still waiting</span>
+              </div>
+              <div style="display: flex; gap: 7px; margin-top: 11px;">
+                <span style="{{ openPlainStyle }}">Open</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="{{ homeIndicatorStyle }}"></div>
+      </div>
+      <div style="{{ captionStyle }}">Rule: a stale notification decides nothing. An answer from another device replaces the notification, and the daemon keeps only the first answer. An expired handle fetches no facts, and the gate keeps waiting on its machine.</div>
+    </div>
+
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+
+    <div style="{{ colStyle }}">
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">21</span><span style="{{ frameName }}">{{ f21Name }}</span></div>
       <div style="{{ phoneStyle }}">
         <div style="{{ statusBarLockStyle }}">
           <span style="flex: 1;"></span>
@@ -1075,25 +1863,33 @@
           </div>
           <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
             <div style="{{ activityCardStyle }}">
+              <sc-if value="{{ platIsAndroid }}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                  <span style="{{ activityIconSmStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="font-size: 11px; font-weight: 500; color: {{ lock.dim }};">Domovoi</span>
+                  <span style="font-size: 11px; color: {{ lock.faint }};">Ongoing</span>
+                </div>
+              </sc-if>
               <div style="display: flex; align-items: center; gap: 9px;">
-                <span style="{{ activityIconStyle }}" role="img" aria-label="Domovoi"></span>
-                <span style="flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: {{ activityInk }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Migrate billing webhooks</span>
-                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ activityDim }};">mac-mini-m4</span>
+                <sc-if value="{{ platIsIos }}" hint-placeholder-val="{{ true }}"><span style="{{ activityIconStyle }}" role="img" aria-label="Domovoi"></span></sc-if>
+                <span style="flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: {{ lock.ink }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ activityTitle }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.dim }};">{{ activityRight }}</span>
               </div>
               <div style="display: flex; align-items: center; gap: 10px; margin-top: 12px;">
                 <span style="{{ activityStepStyle }}">step 3 of 4</span>
-                <span style="flex: 1; min-width: 0; font-size: 12px; color: {{ activityDim }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Running the test suite</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.dim }};">18m</span>
               </div>
               <div style="{{ activityTrackStyle }}">
                 <span style="{{ activityFillStyle }}"></span>
               </div>
-              <div style="font-size: 11px; color: {{ activityDim }}; margin-top: 9px; line-height: 1.5;">{{ activityNote }}</div>
+              <div style="font-size: 11px; color: {{ lock.dim }}; margin-top: 9px; line-height: 1.5;">No decision here. A gate arrives as its own notification.</div>
             </div>
           </div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Drawn, not built, and twice over: a Live Activity is a Swift widget extension, and every background update to it is an APNs push. So it needs the relay and a native target. It shows progress and never a decision, because a glance is not consent.</div>
+      <div style="{{ captionStyle }}">Rule: a push carries state, never content. {{ c21 }}</div>
     </div>
 
     <div style="{{ colStyle }}">
@@ -1110,73 +1906,119 @@
           </div>
           <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 9px; padding: 0 12px 30px;">
             <div style="{{ activityCardStyle }}">
+              <sc-if value="{{ platIsAndroid }}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                  <span style="{{ activityIconSmStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="font-size: 11px; font-weight: 500; color: {{ lock.dim }};">Domovoi</span>
+                  <span style="font-size: 11px; color: {{ lock.faint }};">Ongoing</span>
+                </div>
+              </sc-if>
               <div style="display: flex; align-items: center; gap: 9px;">
-                <span style="{{ activityIconStyle }}" role="img" aria-label="Domovoi"></span>
-                <span style="flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: {{ activityInk }};">{{ rosterHead }}</span>
+                <sc-if value="{{ platIsIos }}" hint-placeholder-val="{{ true }}"><span style="{{ activityIconStyle }}" role="img" aria-label="Domovoi"></span></sc-if>
+                <span style="flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: {{ lock.ink }};">{{ rosterHead }}</span>
                 <span style="{{ rosterBadgeStyle }}">{{ rosterBadge }}</span>
               </div>
               <div style="display: flex; flex-direction: column; gap: 1px; margin-top: 12px; border-radius: 12px; overflow: hidden; background: oklch(1 0 0 / .07);">
-                <sc-for list="{{ roster }}" as="r" hint-placeholder-count="4">
+                <sc-for list="{{ roster }}" as="r" hint-placeholder-count="3">
                   <div style="{{ r.rowStyle }}">
                     <span style="{{ r.dot }}"></span>
-                    <span style="flex: 1; min-width: 0; font-size: 12px; color: {{ r.ink }}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ r.title }}</span>
+                    <span style="{{ r.titleStyle }}">{{ r.title }}</span>
                     <span style="{{ r.stateStyle }}">{{ r.state }}</span>
                   </div>
                 </sc-for>
               </div>
-              <div style="font-size: 11px; color: {{ activityDim }}; margin-top: 10px; line-height: 1.5;">{{ rosterNote }}</div>
+              <div style="font-size: 11px; color: {{ lock.dim }}; margin-top: 10px; line-height: 1.5;">{{ rosterNote }}</div>
             </div>
           </div>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Drawn, not built, same reason as 21. One activity for Domovoi, not one per session: four sessions have no shared denominator, so averaging step 3 of 4 with step 1 of 7 would be a number nobody can act on. The roster names each one and its own state instead.</div>
+      <div style="{{ captionStyle }}">Rule: the roster carries the same payload as 21, nothing more. Four sessions share no denominator, so there is no combined progress bar.</div>
     </div>
 
     <div style="{{ colStyle }}">
-      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">23</span><span style="{{ frameName }}">Unlocked, where the island is compact</span></div>
+      <div style="{{ frameLabel }}"><span style="{{ frameNum }}">23</span><span style="{{ frameName }}">{{ f23Name }}</span></div>
       <div style="{{ phoneStyle }}">
         <div style="{{ islandGroundStyle }}">
-          <div style="{{ islandBarStyle }}">
-            <span style="{{ islandClockStyle }}">9:41</span>
-            <span style="flex: 1;"></span>
-            <div style="{{ islandPillStyle }}">
-              <span style="{{ islandIconStyle }}" role="img" aria-label="Domovoi"></span>
-              <span style="{{ islandCountStyle }}">{{ islandCount }}</span>
-              <span style="{{ islandGateDotStyle }}"></span>
+          <sc-if value="{{ platIsIos }}" hint-placeholder-val="{{ true }}">
+            <div style="{{ islandBarStyle }}">
+              <span style="{{ islandClockStyle }}">9:41</span>
+              <span style="flex: 1;"></span>
+              <div style="{{ islandPillStyle }}">
+                <span style="{{ islandIconStyle }}" role="img" aria-label="Domovoi"></span>
+                <span style="{{ islandCountStyle }}">{{ islandCount }}</span>
+                <span style="{{ islandGateDotStyle }}"></span>
+              </div>
+              <span style="flex: 1;"></span>
+              <span style="{{ islandStatusStyle }}">{{ statusIcons }}</span>
             </div>
-            <span style="flex: 1;"></span>
-            <span style="{{ islandStatusStyle }}">{{ statusIcons }}</span>
-          </div>
-          <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 22px; padding: 26px 22px 0;">
-            <sc-for list="{{ homeRows }}" as="hr" hint-placeholder-count="2">
-              <div style="display: flex; align-items: flex-start; gap: 22px;">
-                <sc-for list="{{ hr.apps }}" as="ha" hint-placeholder-count="4">
-                  <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; width: 58px;">
-                    <div style="{{ ha.tileStyle }}">
-                      <span style="{{ ha.glyphStyle }}">{{ ha.glyph }}</span>
+            <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 22px; padding: 26px 22px 0;">
+              <sc-for list="{{ homeRows }}" as="hr" hint-placeholder-count="2">
+                <div style="display: flex; align-items: flex-start; gap: 22px;">
+                  <sc-for list="{{ hr.apps }}" as="ha" hint-placeholder-count="4">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; width: 58px;">
+                      <div style="{{ ha.tileStyle }}">
+                        <span style="{{ ha.glyphStyle }}">{{ ha.glyph }}</span>
+                      </div>
+                      <span style="{{ ha.labelStyle }}">{{ ha.label }}</span>
                     </div>
-                    <span style="{{ ha.labelStyle }}">{{ ha.label }}</span>
-                  </div>
+                  </sc-for>
+                </div>
+              </sc-for>
+              <span style="flex: 1;"></span>
+              <div style="flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 6px;">
+                <sc-for list="{{ pageDots }}" as="pd" hint-placeholder-count="3">
+                  <span style="{{ pd }}"></span>
                 </sc-for>
               </div>
-            </sc-for>
-            <span style="flex: 1;"></span>
-            <div style="flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 6px;">
-              <sc-for list="{{ pageDots }}" as="pd" hint-placeholder-count="3">
-                <span style="{{ pd }}"></span>
-              </sc-for>
+              <div style="{{ dockStyle }}">
+                <sc-for list="{{ dockApps }}" as="da" hint-placeholder-count="4">
+                  <div style="{{ da }}"></div>
+                </sc-for>
+              </div>
             </div>
-            <div style="{{ dockStyle }}">
-              <sc-for list="{{ dockApps }}" as="da" hint-placeholder-count="4">
-                <div style="{{ da }}"></div>
-              </sc-for>
+          </sc-if>
+          <sc-if value="{{ platIsAndroid }}" hint-placeholder-val="{{ false }}">
+            <div style="{{ islandBarStyle }}">
+              <span style="{{ islandClockStyle }}">9:41</span>
+              <span style="{{ sbMarkStyle }}" role="img" aria-label="Domovoi notification"></span>
+              <span style="flex: 1;"></span>
+              <span style="{{ islandStatusStyle }}">{{ statusIcons }}</span>
             </div>
-          </div>
+            <div style="{{ shadeStyle }}">
+              <div style="display: flex; gap: 10px;">
+                <sc-for list="{{ shadeTiles }}" as="t" hint-placeholder-count="4">
+                  <span style="{{ t }}"></span>
+                </sc-for>
+              </div>
+              <div style="{{ activityCardStyle }}">
+                <sc-if value="{{ platIsAndroid }}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                  <span style="{{ activityIconSmStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="font-size: 11px; font-weight: 500; color: {{ lock.dim }};">Domovoi</span>
+                  <span style="font-size: 11px; color: {{ lock.faint }};">Ongoing</span>
+                </div>
+              </sc-if>
+                <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: {{ lock.ink }};">{{ rosterHead }}</span>
+                  <span style="{{ rosterBadgeStyle }}">{{ rosterBadge }}</span>
+                </div>
+                <div style="font-size: 12px; color: {{ lock.dim }}; margin-top: 6px;">1 waiting on you, 2 running, 1 queued</div>
+              </div>
+              <div style="{{ gateCardStyle }}">
+                <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ gateMarkStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ lock.warnDim }};">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.warnDim }};">now</span>
+                </div>
+                <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ lock.warnInk }}; line-height: 1.4;">A gate is waiting</div>
+              </div>
+            </div>
+          </sc-if>
         </div>
         <div style="{{ homeIndicatorStyle }}"></div>
       </div>
-      <div style="{{ captionStyle }}">Drawn, not built, same reason as 21. The home screen, because a compact island is what an unlocked phone shows; locked, the same activity is the card in frames 21 and 22.</div>
+      <div style="{{ captionStyle }}">{{ c23 }}</div>
       <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
         <sc-for list="{{ islandFacts }}" as="i" hint-placeholder-count="3">
           <div style="{{ i.cardStyle }}">
@@ -1188,12 +2030,139 @@
     </div>
 
   </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: baseline; gap: 10px; padding-top: 12px;">
+    <span style="{{ sectionEyebrow }}">FOR THE OWNER</span>
+    <span style="{{ sectionNote }}">What the collapsed notification could say. Bodies are encrypted to the phone. On iOS a Live Activity cannot decrypt, so 21 to 23 stay at A there.</span>
+  </div>
+
+  <div style="flex: 0 0 auto; display: flex; align-items: flex-start; gap: 26px;">
+    <sc-for list="{{ payloadVersions }}" as="p" hint-placeholder-count="3">
+      <div style="{{ colStyle }}">
+        <div style="{{ frameLabel }}"><span style="{{ frameNum }}">{{ p.id }}</span><span style="{{ frameName }}">{{ p.name }}</span><span style="{{ p.tagStyle }}">{{ p.tag }}</span></div>
+        <div style="{{ payloadGroundStyle }}">
+          <div style="{{ gateCardStyle }}">
+            <div style="display: flex; align-items: center; gap: 9px;">
+                  <span style="{{ gateMarkStyle }}" role="img" aria-label="Domovoi"></span>
+                  <span style="flex: 1; font-size: 11px; font-weight: 500; letter-spacing: .04em; color: {{ lock.warnDim }};">DOMOVOI</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: {{ lock.warnDim }};">now</span>
+                </div>
+            <div style="font-size: 13px; font-weight: 500; margin-top: 8px; color: {{ lock.warnInk }}; line-height: 1.4;">A gate is waiting</div>
+            <sc-if value="{{ p.hasBody }}" hint-placeholder-val="{{ false }}">
+              <div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 4px;">
+                <sc-for list="{{ p.parts }}" as="pt" hint-placeholder-count="1">
+                  <span style="{{ pt.style }}">{{ pt.text }}</span>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px; padding: 12px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--card);">
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <span style="font-size: 12px; font-weight: 500; color: var(--foreground);">A locked screen shows</span>
+            <span style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">{{ p.shows }}</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <span style="font-size: 12px; font-weight: 500; color: var(--foreground);">The push service sees</span>
+            <span style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">{{ p.sees }}</span>
+          </div>
+        </div>
+      </div>
+    </sc-for>
+  </div>
 </div>
 
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2200,&quot;height&quot;:1080},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;ios&quot;,&quot;options&quot;:[&quot;ios&quot;,&quot;android&quot;],&quot;tsType&quot;:&quot;\&quot;ios\&quot; | \&quot;android\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;threadFollow&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;scrolled&quot;,&quot;options&quot;:[&quot;bottom&quot;,&quot;scrolled&quot;,&quot;gate&quot;],&quot;tsType&quot;:&quot;\&quot;bottom\&quot; | \&quot;scrolled\&quot; | \&quot;gate\&quot;&quot;,&quot;section&quot;:&quot;Behaviour&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2200,&quot;height&quot;:1080},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;ios&quot;,&quot;options&quot;:[&quot;ios&quot;,&quot;android&quot;],&quot;tsType&quot;:&quot;\&quot;ios\&quot; | \&quot;android\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;threadFollow&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;scrolled&quot;,&quot;options&quot;:[&quot;bottom&quot;,&quot;scrolled&quot;,&quot;gate&quot;],&quot;tsType&quot;:&quot;\&quot;bottom\&quot; | \&quot;scrolled\&quot; | \&quot;gate\&quot;&quot;,&quot;section&quot;:&quot;Behaviour&quot;},&quot;pushPayload&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;plus session label&quot;,&quot;options&quot;:[&quot;state only&quot;,&quot;plus machine&quot;,&quot;plus session label&quot;],&quot;tsType&quot;:&quot;\&quot;state only\&quot; | \&quot;plus machine\&quot; | \&quot;plus session label\&quot;&quot;,&quot;section&quot;:&quot;Behaviour&quot;},&quot;imageGuard&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;A: lock in menu&quot;,&quot;options&quot;:[&quot;A: lock in menu&quot;,&quot;B: warn on chip&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Behaviour&quot;}}">
+// Read-only terminal (frame 04 and 04b to 04g). A phone reads the claimant's shell; it never
+// types, resizes or claims. Output here is already redacted by the daemon, same as everywhere.
+const TERM_LIVE = [
+  { k: "cmd", t: "$ pnpm vitest run src/webhooks" },
+  { k: "dim", t: " RUN  v2.1.4 /Users/mira/dev/acme/.domovoi/worktrees/wt-billing-idem" },
+  { k: "pass", t: " ✓ src/webhooks/handler.spec.ts (14 tests) 412ms" },
+  { k: "dim", t: "[webhook] verifying with secret ", red: "[redacted 38 bytes]", after: ", tolerance 300s" },
+  { mark: "Recent output above. Live from 14:06:12." },
+  { k: "fail", t: " ❯ src/webhooks/replay.spec.ts (5 tests | 1 failed) 2.41s" },
+  { k: "fail", t: "   × commits after a partial write" },
+  { k: "strong", t: "AssertionError: expected [ 'evt_1PqR8sLkd92HfXa0' ] to deeply equal []" },
+  { k: "strong", t: " ❯ src/webhooks/replay.spec.ts:88:31" },
+  { k: "dim", t: "     87|   const rows = await db.webhookReplay.findMany({ where: { committed: false } })" },
+  { k: "strong", t: "     88|   expect(rows.map(r => r.eventId)).toEqual([])" },
+  { k: "dim", t: " Test Files  1 failed | 1 passed (2)" },
+  { k: "dim", t: "      Tests  1 failed | 18 passed (19)" },
+  { k: "dim", t: "   Duration  2.83s" }
+];
+const TERM_OLDEST = [
+  { mark: "Earlier output was not kept. The machine's record of this terminal starts at 13:52:04." },
+  { k: "dim", t: "Progress: resolved 412, reused 409, downloaded 3, added 3, done" },
+  { k: "dim", t: " + @prisma/client 5.19.1" },
+  { k: "dim", t: " + vitest 2.1.4" },
+  { k: "dim", t: "Done in 11.2s" },
+  { k: "cmd", t: "$ pnpm -w prisma generate" },
+  { k: "dim", t: "Environment variables loaded from .env" },
+  { k: "pass", t: "✔ Generated Prisma Client (v5.19.1) to ./node_modules/@prisma/client in 214ms" },
+  { k: "cmd", t: "$ pnpm vitest run src/webhooks" },
+  { k: "dim", t: " RUN  v2.1.4 /Users/mira/dev/acme/.domovoi/worktrees/wt-billing-idem" },
+  { k: "pass", t: " ✓ src/webhooks/handler.spec.ts (14 tests) 412ms" }
+];
+const TERM_CLOSED = TERM_LIVE.slice(5).concat([
+  { k: "cmd", t: "$ exit" },
+  { mark: "The shell exited with code 0 at 14:09:40. No more output will arrive." }
+]);
+const TERM_DROPPED = TERM_LIVE.slice(0, 7).concat([
+  { mark: "Nothing received since 14:07:18. Reconnecting replays the recent output first." }
+]);
+// Shared word for word with PairingCard GRANTS and the command line. Proposed, not shipped.
+const GRANTS_NEXT = [
+  { text: "Watch every session and its diffs", k: "success" },
+  { text: "Answer gates, with the same three decisions", k: "success" },
+  { text: "Start and stop sessions, and steer one mid-run", k: "success" },
+  { text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", k: "info" },
+  { text: "Read terminal output. It cannot type, resize or take the claim.", k: "success", changed: true },
+  { text: "It cannot pull the repository down. Files stay here.", k: "info" }
+];
+const NEW_STRINGS = [
+  { text: "Watching, and the shell is elsewhere", where: "04 name, kept" },
+  { text: "read-only", mono: true, where: "04 to 04f pill" },
+  { text: "Live", where: "status label" },
+  { text: "Closed", where: "status label" },
+  { text: "Unconfirmed", where: "status label" },
+  { text: "Claimed by MacBook Pro", where: "claimant" },
+  { text: "Last claimed by MacBook Pro", where: "claimant, 04b" },
+  { text: "Last heard: claimed by MacBook Pro", where: "claimant, 04d" },
+  { text: "Follow output", where: "toggle" },
+  { text: "Jump to latest", where: "button" },
+  { text: "{n} new", mono: true, where: "jump count" },
+  { text: "Read-only. Only the claimant can type or resize.", where: "phone footer" },
+  { text: "Recent output above. Live from {time}.", where: "stream marker" },
+  { text: "Earlier output was not kept. The machine's record of this terminal starts at {time}.", where: "stream marker" },
+  { text: "The shell exited with code {n} at {time}. No more output will arrive.", where: "stream marker" },
+  { text: "Nothing received since {time}. Reconnecting replays the recent output first.", where: "stream marker" },
+  { text: "Lost the route to {machine}", where: "04d banner" },
+  { text: "The shell may still be running there. Retrying over the tailnet.", where: "04d banner" },
+  { text: "The tests failed, and the agent wants to reset the dev database before it retries. Nothing has run yet.", where: "04e gate body" },
+  { text: "Failed", where: "status label" },
+  { text: "Read the output", where: "04e link" },
+  { text: "Open beside the thread", where: "04f thread block" },
+  { text: "Read-only. A keyboard attached to this tablet does not type into it.", where: "tablet footer" },
+  { text: "Show all {n} lines", where: "B block" },
+  { text: "Read terminal output. It cannot type, resize or take the claim.", where: "grant line" },
+  { text: "THIS PHONE WILL BE ABLE TO", where: "phone eyebrow" },
+  { text: "zsh · {worktree}   {cols}×{rows}   exit {n}", mono: true, where: "machine text" },
+  { text: "Removed: The shell is held on desktop / Typing needs the claim, and a phone cannot take one. Claim it from a desktop. / Terminal output does not reach a phone yet.", where: "04, retired" }
+];
+const OPEN_QUESTIONS = [
+  "How much recent output does a new watcher get, and how long does a closed terminal stay readable? The frames name a start time, not a size.",
+  "Is output redacted before the recent-output buffer is written, or only on the way out to each watcher? If only on the way out, the buffer on the machine holds the secret.",
+  "When the claim moves between two desktops while a phone watches, does the claimant line change in place, or is the move also marked in the stream?",
+  "The claimant is named by its device label. The receipt in 03 uses the verified credential. Is the label enough here?",
+  "The attach sheet in 11 still says a phone has no read-only terminal path. Once reading ships, can a phone attach a selection of output to a turn? Not drawn.",
+  "PairingCard reads \"Terminal output is not on a phone yet.\" with an info dot. The brief and the desktop export quote \"... Everything else here works.\" with a warning dot. Which is canonical? The command line's layout is also not drawn anywhere, so 04g's rendering of it is illustrative.",
+  "I read \"a gate on a failing command\" as a gate the agent raises after a command failed. If you meant gating a rerun of the failing command itself, 04e keeps the same link."
+];
+
 class Component extends DCLogic {
-  state = { theme: null, plat: "ios", kbShift: false };
+  state = { theme: null, plat: "ios", kbShift: false, follow: false, tFollow: true, t04View: "full" };
 
   componentDidMount() {
     if (window.lucide && window.lucide.icons) return;
@@ -1242,6 +2211,104 @@ class Component extends DCLogic {
     return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: " + color + ";";
   }
 
+  termRows(list) {
+    const tone = { cmd: "var(--foreground)", dim: "var(--muted-foreground)", pass: "var(--success)", fail: "var(--destructive)", strong: "var(--strong)" };
+    return list.map(r => r.mark ? {
+      isLine: false, isMark: true, text: r.mark,
+      style: "margin: 6px 0; padding: 6px 0 2px; border-top: 1px dashed var(--border); font-family: 'Instrument Sans', system-ui, sans-serif; font-size: 11px; line-height: 1.5; color: var(--muted-foreground); text-wrap: pretty;"
+    } : {
+      isLine: true, isMark: false,
+      style: "white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 3ch; text-indent: -3ch; color: " + tone[r.k] + ";",
+      parts: (r.red ? [{ t: r.t }, { t: r.red, red: true }, { t: r.after }] : [{ t: r.t }]).map(p => ({
+        t: p.t, style: p.red ? "padding: 0 3px; border-radius: 4px; background: var(--muted); color: var(--muted-foreground);" : ""
+      }))
+    });
+  }
+
+  termVals(ios, W, kv) {
+    const st = this.state;
+    const out = (bottom, fs) => "flex: 1; min-height: 0; overflow: hidden; padding: 12px 14px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: " +
+      (fs || 11) + "px; line-height: 1.6; font-variant-ligatures: none; display: flex; flex-direction: column; justify-content: " + (bottom ? "flex-end" : "flex-start") + ";";
+    const sw = (on, dis, fn) => ({
+      followStyle: "display: flex; align-items: center; gap: 10px; min-height: 44px; " + (dis ? "opacity: .45; cursor: default;" : "cursor: pointer;"),
+      track: "position: relative; display: block; width: 38px; height: 22px; flex: 0 0 38px; border-radius: 999px; background: " + (on ? "var(--primary)" : "var(--muted)") + ";",
+      knob: "position: absolute; top: 2px; left: " + (on ? 18 : 2) + "px; width: 18px; height: 18px; border-radius: 50%; background: " +
+        (on ? "var(--primary-foreground)" : "var(--foreground)") + "; transition: left 140ms var(--ease-out, ease);",
+      onFollow: dis ? undefined : fn
+    });
+    const liveDot = this.dot("var(--success)", 7);
+    const closedDot = this.dot("var(--faint)", 7);
+    const hollowDot = "width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; border: 1.5px solid var(--muted-foreground); box-sizing: border-box;";
+    const s04 = sw(st.follow, false, () => this.setState(s => ({ follow: !s.follow })));
+    const sTab = sw(st.tFollow, false, () => this.setState(s => ({ tFollow: !s.tFollow })));
+    const state = (o, on, dis) => Object.assign({ hasBanner: false, bannerTitle: "", bannerBody: "", showJump: false, jumpCount: "" }, o, sw(on, dis, undefined));
+    const gRow = (g, mono) => ({
+      text: (mono ? (g.k === "success" ? "+ " : "- ") : "") + g.text,
+      dot: mono ? "display: none;" : this.dot("var(--" + g.k + ")", 6) + " margin-top: 6px;",
+      rowStyle: "display: flex; align-items: flex-start; gap: 8px; padding: 3px 6px; margin: 0 -6px; border-radius: 6px;" +
+        (g.changed ? " background: color-mix(in oklab, var(--primary) 14%, transparent);" : ""),
+      textStyle: (mono ? "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-variant-ligatures: none; white-space: pre-wrap; padding-left: 2ch; text-indent: -2ch;" : "font-size: 11.5px;") +
+        " line-height: 1.5; color: " + (g.changed ? "var(--foreground)" : "var(--strong)") + ";"
+    });
+    return {
+      liveDot,
+      failDot: this.dot("var(--destructive)", 7),
+      infoDotSm: this.dot("var(--info)", 6) + " margin-top: 7px;",
+      okDotSm: this.dot("var(--success)", 6) + " margin-top: 7px;",
+      termBarStyle: "flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px; padding: 6px 16px " + (ios ? 28 : 20) + "px; border-top: 1px solid var(--border);",
+      jumpBtnStyle: "display: flex; align-items: center; gap: 7px; height: 44px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--strong); font-size: 13px; cursor: pointer;",
+      t04Rows: this.termRows(TERM_LIVE),
+      t04OutStyle: out(st.follow),
+      t04FollowStyle: s04.followStyle, t04Track: s04.track, t04Knob: s04.knob, t04OnFollow: s04.onFollow,
+      t04ShowJump: !st.follow,
+      t04Full: st.t04View !== "thread",
+      t04Thread: st.t04View === "thread",
+      t04ToThread: () => this.setState({ t04View: "thread" }),
+      t04ToFull: () => this.setState({ t04View: "full" }),
+      t04OnJump: () => this.setState({ follow: true }),
+      termStates: [
+        state({ num: "04b", name: "A closed terminal", dot: closedDot, status: "Closed", claimant: "Last claimed by MacBook Pro",
+          rows: this.termRows(TERM_CLOSED), outStyle: out(true),
+          caption: "Closed is a state, not an error. The last output stays readable, follow turns off, and the end is stated with its exit code." }, false, true),
+        state({ num: "04c", name: "Older output no longer kept", dot: liveDot, status: "Live", claimant: "Claimed by MacBook Pro",
+          rows: this.termRows(TERM_OLDEST), outStyle: out(false), showJump: true, jumpCount: "212 new",
+          caption: "Scrolled to the top. The machine did not keep older output either, so the view says where its record starts rather than implying the start of the session." }, false, false),
+        state({ num: "04d", name: "Connection dropped, unconfirmed", dot: hollowDot, status: "Unconfirmed", claimant: "Last heard: claimed by MacBook Pro",
+          hasBanner: true, bannerTitle: "Lost the route to mac-mini-m4", bannerBody: "The shell may still be running there. Retrying over the tailnet.",
+          rows: this.termRows(TERM_DROPPED), outStyle: out(true),
+          caption: "A dropped connection is unconfirmed, not failed. Nothing turns red, the shell is not called dead, and the gap is marked where it began." }, false, true)
+      ],
+      gateTailRows: this.termRows(TERM_LIVE.slice(6, 9)),
+      gateResetFacts: kv([
+        { k: "Machine", v: "mac-mini-m4" },
+        { k: "Database", v: "acme_dev, not prod" },
+        { k: "Checkpoint", v: "taken before it runs" }
+      ]),
+      tabletStyle: "width: 1180px; height: 820px; flex: 0 0 auto; display: flex; flex-direction: column; position: relative; background: var(--background); border: " +
+        (ios ? "12px solid oklch(0.28 0.008 285)" : "10px solid oklch(0.26 0.008 285)") + "; border-radius: " + (ios ? 30 : 22) + "px; overflow: hidden; box-shadow: 0 30px 80px var(--shadow-lg);",
+      tabRows: this.termRows(TERM_LIVE),
+      tabOutStyle: out(st.tFollow, 11.5).replace("padding: 12px 14px", "padding: 14px 18px"),
+      tabFollowStyle: sTab.followStyle, tabTrack: sTab.track, tabKnob: sTab.knob, tabOnFollow: sTab.onFollow,
+      tabShowJump: !st.tFollow,
+      tabOnJump: () => this.setState({ tFollow: true }),
+      cropStyle: "width: " + (W - (ios ? 18 : 16)) + "px; height: 560px; align-self: center; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: 20px; overflow: hidden;",
+      compareRows: this.termRows(TERM_LIVE),
+      cropOutA: out(false),
+      cropOutB: "height: 143px; overflow: hidden; padding: 10px 12px; background: var(--code); font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.6; font-variant-ligatures: none; display: flex; flex-direction: column; justify-content: flex-end;",
+      grantRows: GRANTS_NEXT.map(g => gRow(g, false)),
+      grantCliRows: GRANTS_NEXT.map(g => gRow(g, true)),
+      newStrings: NEW_STRINGS.map((s, i) => ({
+        text: s.text, where: s.where,
+        rowStyle: "display: flex; align-items: baseline; gap: 14px; padding: 8px 16px;" + (i ? " border-top: 1px solid var(--border);" : ""),
+        textStyle: "flex: 1; min-width: 0; line-height: 1.5; color: var(--strong); " + (s.mono ? "font-family: 'JetBrains Mono', monospace; font-size: 11.5px;" : "font-size: 12.5px;")
+      })),
+      openQuestions: OPEN_QUESTIONS.map((t, i) => ({
+        n: String(i + 1).padStart(2, "0"), text: t,
+        rowStyle: "display: flex; align-items: baseline; gap: 12px; padding: 11px 16px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      }))
+    };
+  }
+
   renderVals() {
     const st = this.state;
     const follow = this.props.threadFollow ?? "scrolled";
@@ -1275,6 +2342,41 @@ class Component extends DCLogic {
     };
     const R = ios ? 44 : 30;
     const W = ios ? 390 : 412;
+    // One payload level for every push-driven surface in frames 21 to 23. Frame 20's facts
+    // are fetched after the tap, so they are not a payload and do not follow this.
+    const payload = this.props.pushPayload ?? "plus session label";
+    const plvl = payload === "plus session label" ? "C" : payload === "plus machine" ? "B" : "A";
+    // Bodies are encrypted to the phone. A notification is decrypted on arrival (iOS service
+    // extension, Android app code), but iOS hands a Live Activity update straight to the
+    // widget with no step that could decrypt it, so on iOS 21 to 23 stay at state only.
+    const lvl = ios ? "A" : plvl;
+    const cardBase = "padding: 13px 14px; border-radius: " + (ios ? "19px" : "23px") +
+      "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); background: ";
+    const facts = rows => rows.map((r, i) => ({
+      k: r.k, v: r.v, note: r.note || "",
+      rowStyle: "display: flex; align-items: baseline; gap: 10px; padding: 7px 10px; background: oklch(0.19 0.03 62 / .5);" +
+        (i ? " border-top: 1px solid oklch(0.38 0.08 62 / .6);" : ""),
+      kStyle: "flex: 0 0 70px; font-size: 11px; color: oklch(0.76 0.07 62);",
+      vStyle: "min-width: 0; overflow-wrap: anywhere; " + (r.sans
+        ? "font-size: 12px; color: " + (r.more ? "oklch(0.76 0.07 62)" : "oklch(0.94 0.05 68)") + ";"
+        : "font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.94 0.05 68);"),
+      noteStyle: r.note ? "font-size: 11px; color: oklch(0.76 0.07 62);" : "display: none;"
+    }));
+    const RS = {
+      A: { head: "4 sessions", note: "Grouped by state, because the payload names no session.", rows: [
+        { title: "Waiting on you", state: "1", k: "warning" },
+        { title: "Running", state: "2", k: "success" },
+        { title: "Queued", state: "1", k: "info" }] },
+      B: { head: "4 sessions, 3 machines", note: "Grouped by machine, the one waiting on you first.", rows: [
+        { title: "mac-mini-m4", mono: true, state: "1 waiting, 1 running", k: "warning" },
+        { title: "hetzner-cx42", mono: true, state: "1 running", k: "success" },
+        { title: "wsl-ubuntu-24", mono: true, state: "1 queued", k: "info" }] },
+      C: { head: "4 sessions, 3 machines", note: "Labels are the ones you typed, never the agent's titles.", rows: [
+        { title: "Billing webhooks", state: "waiting on you", k: "warning" },
+        { title: "Search backfill", state: "step 2 of 5", k: "success" },
+        { title: "On-call runbook", state: "step 1 of 3", k: "success" },
+        { title: "Postgres client", state: "queued", k: "info" }] }
+    }[lvl];
 
     const kv = (rows, tint) => rows.map((r, i) => ({
       k: r.k, v: r.v,
@@ -1325,6 +2427,11 @@ class Component extends DCLogic {
       iClose: this.icon("X", 20),
       iSunSm: this.icon("Sun", 16),
       iMoonSm: this.icon("Moon", 16),
+      iTermSm: this.icon("SquareTerminal", 16),
+      iLaptopSm: this.icon("Laptop", 16),
+      iArrowDownSm: this.icon("ArrowDown", 16),
+      iChevronRightSm: this.icon("ChevronRight", 16),
+      iMaximizeSm: this.icon("Maximize2", 16),
       iEmptyChat: this.icon("MessageSquareDashed", 24),
       // The lock screen is the OS drawing over a wallpaper, so it is the one surface whose
       // ground is not a theme token. Notification cards are translucent over it, which is
@@ -1338,77 +2445,107 @@ class Component extends DCLogic {
       lockGroundStyle: "flex: 1; min-height: 0; display: flex; flex-direction: column; background: linear-gradient(165deg, oklch(0.3 0.04 268), oklch(0.18 0.03 285) 62%, oklch(0.14 0.02 290));",
       lockDateStyle: "font-size: 14px; color: " + LOCK.dim + ";",
       lockClockStyle: "font-size: 72px; font-weight: 500; letter-spacing: -.03em; line-height: 1.05; color: " + LOCK.ink + "; margin-top: 2px;",
-      notifications: [
-        {
-          when: "now", title: "Waiting on you, mac-mini-m4",
-          body: "pnpm prisma migrate deploy in acme-api. Writes to acme_dev, and a checkpoint was taken first.",
-          actions: true, hi: true
-        },
-        {
-          when: "12m", title: "repo-audit finished on hetzner-cx42",
-          body: "41 packages checked, 3 licence flags to review.", actions: false, hi: false
-        },
-        {
-          when: "1h", title: "design-studio rendered 3 variants",
-          body: "Onboarding v3 is ready, with 2 open comments.", actions: false, hi: false
-        }
-      ].map(n => {
-        const ink = n.hi ? LOCK.warnInk : LOCK.ink;
-        const dim = n.hi ? LOCK.warnDim : LOCK.dim;
-        return {
-          when: n.when, title: n.title, body: n.body, actions: n.actions,
-          titleColor: ink, bodyColor: dim, chromeColor: dim,
-          // iOS draws the app icon here as a tile, but a tile needs a ground that separates
-          // from the card behind it, and the amber gate card sits at the same lightness as
-          // every neutral surface in the ramp. The mark alone in --primary reads on all
-          // three cards and matches frames 21 and 23, which is worth more than the tile.
-          iconStyle: this.mark(17, LOCK.accent),
-          cardStyle: "padding: 13px 14px; border-radius: " + (ios ? "19px" : "23px") +
-            "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); background: " +
-            (n.hi ? LOCK.warnCard : LOCK.card) + "; border: 1px solid " +
-            (n.hi ? LOCK.warnBorder : LOCK.hairline) + ";",
-          // The same three the gate screen offers, so a decision here is the decision.
-          allowStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; background: " +
-            LOCK.warnSolid + "; color: " + LOCK.warnDeep + "; font-size: 12.5px; font-weight: 600;",
-          denyStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; border: 1px solid " +
-            LOCK.warnBorder + "; color: " + LOCK.warnInk + "; font-size: 12.5px;",
-          viewStyle: "flex: 0 0 64px; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; border: 1px solid " +
-            LOCK.warnBorder + "; color: " + LOCK.warnDim + "; font-size: 12.5px;"
-        };
-      }),
-      activityInk: LOCK.ink,
-      activityDim: LOCK.dim,
+      lock: LOCK,
+      gateMarkStyle: this.mark(17, LOCK.accent),
+      gateCardStyle: cardBase + LOCK.warnCard + "; border: 1px solid " + LOCK.warnBorder + ";",
+      plainCardStyle: cardBase + LOCK.card + "; border: 1px solid " + LOCK.hairline + ";",
+      fetchedStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: " + LOCK.warnDim + "; margin-top: 3px;",
+      factBoxStyle: "display: flex; flex-direction: column; margin-top: 10px; border-radius: 11px; overflow: hidden; border: 1px solid " + LOCK.warnBorder + ";",
+      fitLineStyle: "font-size: 11px; line-height: 1.5; color: " + LOCK.warnDim + "; margin-top: 9px;",
+      // Every fact the gate screen shows, in the same order. If one would truncate, the
+      // phone drops the buttons: that check runs on the phone, after the fetch.
+      fitFacts: facts([
+        { k: "Command", v: "pnpm prisma migrate deploy" },
+        { k: "Machine", v: "mac-mini-m4" },
+        { k: "Worktree", v: "wt-billing-idem" },
+        { k: "Database", v: "acme_dev", note: "not prod" },
+        { k: "Checkpoint", v: "before it runs" }
+      ]),
+      overFacts: facts([
+        { k: "Command", v: "scripts/rotate-secret.sh --all-envs" },
+        { k: "Machine", v: "hetzner-cx42" },
+        { k: "Writes", v: "9 paths outside the worktree", sans: true },
+        { k: "", v: "/etc/acme/stripe.env" },
+        { k: "", v: "~/.config/acme/staging.env" },
+        { k: "", v: "7 more paths", sans: true, more: true }
+      ]),
+      iAuth: this.icon(ios ? "ScanFace" : "Fingerprint", 16),
+      authWord: ios ? "Face ID" : "a fingerprint or PIN",
+      allowStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 11px; background: " +
+        LOCK.warnSolid + "; color: " + LOCK.warnDeep + "; font-size: 12.5px; font-weight: 600;",
+      denyStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; border: 1px solid " +
+        LOCK.warnBorder + "; color: " + LOCK.warnInk + "; font-size: 12.5px;",
+      openWarnStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; border: 1px solid " +
+        LOCK.warnBorder + "; color: " + LOCK.warnInk + "; font-size: 12.5px; font-weight: 500;",
+      openPlainStyle: "flex: 1; min-height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 11px; border: 1px solid " +
+        LOCK.hairline + "; color: " + LOCK.ink + "; font-size: 12.5px; font-weight: 500;",
+      waitDotStyle: this.dot(LOCK.warnSolid, 6),
+
+      f21Name: ios ? "Live Activity, while it works" : "Ongoing notification, while it works",
+      f23Name: ios ? "Unlocked, where the island is compact" : "Unlocked, where the shade holds it",
+      c21: ios
+        ? "Rule: a push carries state, never content. iOS hands Live Activity updates straight to the widget, with no step that could decrypt them, so this card stays at state only: a count, a step number and elapsed time."
+        : "Rule: a push carries state, never content. Each update is an FCM message encrypted to the phone and decrypted by the app, so it adds the machine and the label you typed. No agent-written text.",
+      c23: ios
+        ? "Rule: unlocking shows nothing the push did not carry. The compact island is a count and an amber dot while a gate waits. Locked, the same activity is the card in 21 and 22."
+        : "Rule: unlocking shows nothing the push did not carry. Android has no island, so the ongoing notification sits in the shade, and a gate gets its own notification beside it.",
+      activityTitle: ({ A: "1 session running", B: "1 session running", C: "Billing webhooks" })[lvl],
+      activityRight: lvl === "A" ? "" : "mac-mini-m4",
       activityIconStyle: this.mark(18, LOCK.accent),
+      activityIconSmStyle: this.mark(14, LOCK.accent),
       activityCardStyle: "padding: 14px 15px; border-radius: " + (ios ? "22px" : "24px") +
         "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); background: " +
         LOCK.card + "; border: 1px solid " + LOCK.hairline + ";",
       activityStepStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 3px 9px; border-radius: 999px; background: oklch(0.72 0.17 275 / .3); color: " +
         LOCK.ink + ";",
       activityTrackStyle: "display: block; position: relative; height: 4px; border-radius: 999px; margin-top: 12px; background: oklch(1 0 0 / .14); overflow: hidden;",
-      activityFillStyle: "position: absolute; inset: 0 auto 0 0; display: block; width: 72%; border-radius: 999px; background: " + LOCK.accent + ";",
-      activityNote: "No decision here. When a gate opens, a notification arrives beside this one and carries the buttons.",
+      // Two of four steps done. Step 3 is in flight, and a bar that counts it as done lies.
+      activityFillStyle: "position: absolute; inset: 0 auto 0 0; display: block; width: 50%; border-radius: 999px; background: " + LOCK.accent + ";",
 
-      // Four sessions share no denominator, so there is no honest aggregate progress. Same
-      // rule as the usage ring: do not draw a dial from a number nobody gave us.
-      rosterHead: "4 sessions, 3 machines",
+      rosterHead: RS.head,
       rosterBadge: "1 waiting",
       rosterBadgeStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 3px 9px; border-radius: 999px; background: oklch(0.79 0.13 62 / .26); color: " +
         LOCK.warnInk + ";",
-      roster: [
-        { title: "Migrate billing webhooks", state: "waiting on you", k: "warning" },
-        { title: "Backfill the search index", state: "step 2 of 5", k: "success" },
-        { title: "Write the on-call runbook", state: "step 1 of 3", k: "success" },
-        { title: "Upgrade the Postgres client", state: "queued", k: "info" }
-      ].map(r => ({
+      roster: RS.rows.map(r => ({
         title: r.title, state: r.state,
-        ink: r.k === "warning" ? LOCK.warnInk : LOCK.ink,
+        titleStyle: "flex: 1; min-width: 0; font-size: " + (r.mono ? "11.5px" : "12px") + "; font-family: " +
+          (r.mono ? "'JetBrains Mono', monospace" : "inherit") + "; color: " + (r.k === "warning" ? LOCK.warnInk : LOCK.ink) +
+          "; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;",
         dot: this.dot(r.k === "warning" ? LOCK.warnSolid : r.k === "success" ? LOCK.ok : LOCK.info, 6),
         stateStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: " +
           (r.k === "warning" ? LOCK.warnSolid : LOCK.faint) + ";",
         rowStyle: "display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 7px 11px; background: " +
           (r.k === "warning" ? "oklch(0.235 0.045 62 / .74)" : "oklch(1 0 0 / .03)") + ";"
       })),
-      rosterNote: "Sorted so the one waiting on you is first. The others are ordered by machine, not by progress, because progress across unrelated work is not a ranking.",
+      rosterNote: RS.note,
+
+      sbMarkStyle: this.mark(13, LOCK.ink),
+      shadeStyle: "flex: 0 0 auto; display: flex; flex-direction: column; gap: 10px; padding: 14px 12px 16px; border-radius: 0 0 28px 28px; background: oklch(0.16 0.006 285 / .94);",
+      shadeTiles: [0, 1, 2, 3].map(() => "flex: 1; height: 48px; border-radius: 16px; background: oklch(1 0 0 / .08);"),
+      payloadGroundStyle: "display: flex; flex-direction: column; padding: 16px 12px; border-radius: 20px; background: linear-gradient(165deg, oklch(0.3 0.04 268), oklch(0.18 0.03 285));",
+      payloadVersions: [
+        { id: "A", name: "State only", parts: [],
+          shows: "That an agent of yours wants a decision now. Not which machine, not which work.",
+          sees: "Timing and an opaque handle that expires. Nothing to decrypt." },
+        { id: "B", name: "Plus the machine name", parts: [{ t: "mac-mini-m4", mono: true }],
+          shows: "Which machine asked. A host name can name a client, an employer, or a role like prod-db.",
+          sees: "Timing and ciphertext. The body is encrypted to the phone and decrypted on arrival." },
+        { id: "C", name: "Plus the session label", parts: [{ t: "mac-mini-m4", mono: true }, { t: "·" }, { t: "Billing webhooks" }],
+          shows: "What you are working on, in words you typed. A label is only as private as you wrote it.",
+          sees: "Timing and ciphertext, same as B." }
+      ].map(p => ({
+        id: p.id, name: p.name, shows: p.shows, sees: p.sees, hasBody: p.parts.length > 0,
+        tag: [p.id === plvl ? "chosen" : "", p.id === lvl ? "drawn in 21 to 23" : ""].filter(Boolean).join(", "),
+        tagStyle: p.id === lvl || p.id === plvl
+          ? "padding: 2px 8px; border-radius: 999px; font-size: 10.5px; background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);"
+          : "display: none;",
+        parts: p.parts.map(x => ({
+          text: x.t,
+          style: x.mono
+            ? "font-family: 'JetBrains Mono', monospace; font-size: 11px; color: " + LOCK.warnDim + ";"
+            : "font-size: 12px; color: " + LOCK.warnDim + ";"
+        }))
+      })),
 
       // Same wallpaper as frames 20 to 22: this is a locked phone, and the island band sits
       // where the status bar would be. The pill stays absolute black because the Dynamic
@@ -1467,20 +2604,33 @@ class Component extends DCLogic {
       islandCount: "4",
       islandCountStyle: "font-family: 'JetBrains Mono', monospace; font-size: 12px; color: " + LOCK.ink + ";",
       islandGateDotStyle: this.dot(LOCK.warnSolid, 7) + " animation: dvPulse 2.4s infinite;",
-      islandFacts: [
+      islandFacts: (ios ? [
         {
           title: "A count and a state, and that is the budget",
-          body: "Compact mode is two small slots either side of the camera. The mark, the number of running sessions, and an amber dot if any of them is waiting. No title fits, and a truncated session title is worse than none."
+          body: "Two slots either side of the camera: the mark, the running count, and an amber dot while a gate waits. No title fits, and the payload carries none."
         },
         {
           title: "iOS shows one activity, whichever is most recent",
-          body: "This is why Domovoi runs a single activity rather than one per session. Four would mean three of them are invisible in the island and the user cannot tell which one they are looking at."
+          body: "This is why Domovoi runs a single activity rather than one per session. Four would leave three invisible in the island."
         },
         {
           title: "Expanding it opens the roster, not the app",
-          body: "A long press expands to frame 22's list. Tapping a row deep-links to that session, so the island is a way in rather than a second place to decide."
+          body: "A long press expands to 22's roster at the same payload level. Tapping a row opens Domovoi, which fetches that session over its own route."
         }
-      ].map(i => ({
+      ] : [
+        {
+          title: "Status bar icons are one colour",
+          body: "Android draws notification icons monochrome, so there is no amber dot up here. The amber stays on the gate notification in the shade."
+        },
+        {
+          title: "Ongoing, so it cannot be swiped away",
+          body: "It stays while any session runs and clears when the last one ends. A gate never rides on it; it gets its own notification."
+        },
+        {
+          title: "Same payload as the lock screen",
+          body: "Tapping it opens Domovoi, which fetches the sessions over its own route. Nothing in the shade came from the agent."
+        }
+      ]).map(i => ({
         title: i.title, body: i.body,
         cardStyle: "padding: 12px 13px; border: 1px solid var(--border); border-radius: 12px; background: var(--card);"
       })),
@@ -1580,9 +2730,9 @@ class Component extends DCLogic {
         { who: "claude-code", text: "Steps 1 and 2 are done. replay.spec.ts now asserts exactly-once delivery and passes.", k: "agent" },
         { who: "you", text: "Cover the claim-expiry case too", k: "user" }
       ].map(t => ({
-        who: t.who, text: t.text,
+        who: t.who, text: t.text, agent: t.k === "agent",
         rowStyle: "display: flex; flex-direction: column; gap: 5px;" + (t.k === "user" ? " align-items: flex-end;" : ""),
-        whoStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);",
+        whoStyle: "display: inline-flex; align-items: center; gap: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);",
         bubbleStyle: "max-width: 86%; padding: 11px 14px; font-size: 13.5px; line-height: 1.55; border-radius: " +
           (t.k === "user" ? "18px 18px 4px 18px; background: var(--primary); color: var(--primary-foreground);"
             : "18px 18px 18px 4px; background: var(--card); border: 1px solid var(--border); color: var(--foreground);")
@@ -1613,6 +2763,14 @@ class Component extends DCLogic {
       iSend: this.icon("ArrowUp", 18),
       iMic: this.icon("Mic", 20),
       iImage: this.icon("Image", 20),
+      iLock: this.icon("Lock", 16),
+      iInfoSm: this.icon("Info", 14),
+      dangerDotSm: this.dot("var(--destructive)", 6) + " margin-top: 7px;",
+      guardA: String(this.props.imageGuard ?? "A").charAt(0) !== "B",
+      guardB: String(this.props.imageGuard ?? "A").charAt(0) === "B",
+      cap13b: String(this.props.imageGuard ?? "A").charAt(0) === "B"
+        ? "Option B. The image sources stay open and say what follows. A photo attaches, its thumb is flagged, and send locks until it goes."
+        : "Option A. A model that takes no images locks both image sources with the daemon's reason. They stay listed, and the header names the model.",
       iCamera: this.icon("Camera", 20),
       iFile: this.icon("FileCode", 20),
       iTerminal: this.icon("SquareTerminal", 20),
@@ -1683,6 +2841,21 @@ class Component extends DCLogic {
       tabBarStyle: "position: absolute; left: " + (ios ? 14 : 12) + "px; right: " + (ios ? 14 : 12) + "px; bottom: " +
         (ios ? 22 : 14) + "px; z-index: 4; display: flex; align-items: stretch; padding: " + (ios ? "7px 6px" : "8px 6px") +
         "; border-radius: 999px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 14px 38px var(--shadow-lg);",
+      tabsSet: {
+        sessions: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--muted-foreground);",
+        machines: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--muted-foreground);",
+        settings: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--primary);"
+      },
+      appearanceValue: theme === "light" ? "Light" : "Dark",
+      iChevRow: this.icon("ChevronRight", 16),
+      reachVersions: [
+        { num: "A", name: "Proposed", text: "Gates reach this phone only while Domovoi is open on it. There are no notifications yet.",
+          caption: "Device and condition first, then the missing feature by name. The owner's line, and the one drawn in 09b and 09c." },
+        { num: "B", name: "Mechanism first", text: "This phone hears gates only while Domovoi holds a connection open. No notifications yet.",
+          caption: "Names why: the gate travels over a live connection the app holds. Reads best to an engineer, and says less about what to do." },
+        { num: "C", name: "Where the gate goes", text: "Keep Domovoi open to answer gates. Closed, a gate waits on its machine instead.",
+          caption: "Leads with the action and says where an unheard gate goes. Shortest of the three, and it never says notifications." }
+      ].map(v => Object.assign({}, v, { count: v.text.length + " chars" })),
       tabs: {
         sessions: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--primary);",
         machines: "flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 2px; border-radius: 999px; color: var(--muted-foreground);",
@@ -1694,7 +2867,7 @@ class Component extends DCLogic {
         {
           label: "NEEDS YOU", count: "2", k: "warning",
           items: [
-            { title: "Migrate billing webhooks to the new idempotency table", meta: "mac-mini-m4 · acme-api · 4m", k: "warning", pill: "gate", pk: "warning" },
+            { title: "Migrate billing webhooks to the new idempotency table", meta: "mac-mini-m4 · acme-api · 4m", k: "warning", pill: "gate", pk: "warning", subs: true },
             { title: "Rotate the Stripe webhook secret across environments", meta: "hetzner-cx42 · acme-api · 12m", k: "warning", pill: "gate", pk: "warning" }
           ]
         },
@@ -1717,6 +2890,12 @@ class Component extends DCLogic {
           (g.k === "muted" ? "var(--muted)" : "color-mix(in oklab, var(--" + g.k + ") 16%, transparent)") + "; color: " +
           (g.k === "muted" ? "var(--muted-foreground)" : "var(--" + g.k + ")") + ";",
         items: g.items.map(s => ({
+          subs: s.subs ? [
+            { name: "test-runner", state: "running", k: "success" },
+            { name: "migration-check", state: "running", k: "success" },
+            { name: "", state: "1 finished", end: true }
+          ].map(r => ({ name: r.name, state: r.state, mid: !r.end, end: !!r.end,
+            dot: r.name ? "width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--" + r.k + ");" : "display: none;" })) : [],
           title: s.title, meta: s.meta, pill: s.pill,
           dot: this.dot("var(--" + s.k + ")", 7) + " margin-top: 6px;",
           pillStyle: s.pill
@@ -1734,7 +2913,7 @@ class Component extends DCLogic {
         { k: "Machine", v: "mac-mini-m4" },
         { k: "Worktree", v: "wt-billing-idem" },
         { k: "Database", v: "acme_dev, not prod" },
-        { k: "Checkpoint", v: "taken first, revertible" }
+        { k: "Checkpoint", v: "taken before it runs" }
       ]),
       gateNote: "Deciding here is the same call the desktop would make. Whichever client answers first wins, and the other is told who answered.",
       decisionStyle: "position: absolute; left: " + (ios ? 14 : 12) + "px; right: " + (ios ? 14 : 12) + "px; bottom: " +
@@ -1771,6 +2950,8 @@ class Component extends DCLogic {
         style: "color: " + (l.k === "pass" ? "var(--success)" : l.k === "fail" ? "var(--destructive)" : l.k === "cmd" ? "var(--foreground)" : "var(--muted-foreground)") +
           "; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
       })),
+
+      ...this.termVals(ios, W, kv),
 
       phoneAlternatives: [
         { text: "Write the SQL to prisma/migrations and stop.", k: "success" },

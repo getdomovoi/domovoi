@@ -12,6 +12,8 @@ import {
   type ApprovalDecision,
   type FleetEntry,
   type PermissionMode,
+  type RpcMethod,
+  type RpcParams,
   type SkillSummary,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -150,6 +152,8 @@ export function App() {
   const [freshStarting, setFreshStarting] = useState(false)
   const [freshProblem, setFreshProblem] = useState("")
   const [composerFocused, setComposerFocused] = useState(false)
+  // Stable, so the thread's memoized rows are not redrawn on every keystroke.
+  const watchReceipt = useCallback(() => setComposerFocused(false), [])
   // How long an approval has been waiting is only true for as long as the
   // clock it was measured against. It ticks while the list is on screen and
   // stops when it is not, because nothing off screen needs a fresh minute.
@@ -195,7 +199,7 @@ export function App() {
     },
   )
   const mutate = useCallback(
-    (method: string, params: unknown) => mutationCall(clientAccess, call, method, params),
+    <M extends RpcMethod>(method: M, params: RpcParams<M>) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
   )
   const notice = connectionNotice(status, fault, snapshot !== undefined, protocolProblem)
@@ -419,7 +423,6 @@ export function App() {
       await mutate("approval.resolve", {
         approvalId: approval.id,
         decision,
-        client,
         ...(explanation ? { explanation } : {}),
       })
       setExplaining(false)
@@ -718,7 +721,7 @@ export function App() {
             sendProblem={sendProblem}
             skillLabel={skillSelectionLabel(chosenSkills)}
             access={clientAccess}
-            onWatchReceipt={() => setComposerFocused(false)}
+            onWatchReceipt={watchReceipt}
             onCancelQueuedSend={(queueId) => void cancelQueuedSend(openSession.id, queueId)}
             onComposerFocusChange={setComposerFocused}
             composerBottomInset={!composerFocused && tabFootprint > 0 ? tabFootprint + 8 : undefined}
@@ -810,12 +813,18 @@ export function App() {
             mode={pairingMode}
             permission={cameraPermission}
             requestPermission={requestCameraPermission}
+            device={tablet ? "tablet" : "phone"}
             onPaired={(credential) => {
               setUrl(credential.url)
               setToken(credential.token)
-              setPairingMode(undefined)
               setConnectTo(credential)
               void saveCredential(credential)
+            }}
+            // The paired card stays up until the person moves on, so the line
+            // about when a gate can reach this device is read, not flashed.
+            onDone={() => {
+              setPairingMode(undefined)
+              selectTab("sessions")
             }}
             onCancel={() => setPairingMode(undefined)}
           />
@@ -930,6 +939,7 @@ export function App() {
               themePreference={preference}
               onChangeTheme={setPreference}
               paired={!unpaired}
+              device={tablet ? "tablet" : "phone"}
               bottomInset={tabFootprint}
             />
           ) : null}

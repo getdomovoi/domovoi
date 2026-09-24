@@ -6,7 +6,7 @@ import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
 import { NewerWorkspaceStateError } from "./store.js"
-import { isLoopbackHost, pairingAddressFor } from "./pairing-address.js"
+import { isLoopbackHost } from "./pairing-address.js"
 import { renderQrToTerminal } from "./qr-terminal.js"
 import { runProfileCommand } from "./profile-command.js"
 import { configuredProfileDirectory, profileLocation } from "./profile-directory.js"
@@ -121,6 +121,10 @@ Environment:
   DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
   DOMOVOI_TAILNET_HOST            Explicit tailnet host for a non-loopback TLS listener
   DOMOVOI_SSH_TUNNELS             JSON list of source-local {machineId, endpoint} forwards
+  DOMOVOI_TOOL_PATH               Directories searched first for agent CLIs
+  DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY  Off-machine signer's relay public key
+  DOMOVOI_RELAY_CREDENTIAL_FILE   Absolute relay credential file instead of the keychain
+  DOMOVOI_WINDOWS_POWERSHELL      Guest path to powershell.exe for WSL service install
 `
 
 async function main() {
@@ -235,7 +239,6 @@ async function main() {
     const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
     process.exitCode = await runPairCommand(args, {
       issue: (targetClient) => requestPairingCode(config, token, targetClient),
-      pairingAddress: () => pairingAddressFor(config, (path) => readFileSync(path, "utf8")),
       renderCode: (payload) => renderQrToTerminal(payload),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),

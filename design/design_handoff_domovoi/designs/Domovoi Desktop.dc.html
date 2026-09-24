@@ -390,24 +390,38 @@
                   </div>
 
                   <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
-                    <sc-for list="{{ toolCalls }}" as="tc" hint-placeholder-count="3">
-                      <div style="border-top: 1px solid var(--border);">
-                        <div style="display: flex; align-items: center; gap: 10px; padding: 9px 14px;">
-                          <span style="{{ tc.dotStyle }}"></span>
-                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">{{ tc.name }}</span>
-                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ tc.arg }}</span>
-                          <span style="flex: 1;"></span>
-                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: {{ tc.metaColor }};">{{ tc.meta }}</span>
-                        </div>
-                        <sc-if value="{{ tc.log }}" hint-placeholder-val="{{ false }}">
-                          <div style="padding: 9px 14px 11px 35px; background: var(--sidebar); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.8; color: var(--muted-foreground); border-top: 1px solid var(--border);">
-                            <div>FAIL webhooks/replay.spec.ts › retries the same event twice</div>
-                            <div>  expected 2 handler invocations, received 1</div>
-                            <div style="color: var(--primary);">  → assertion encodes the bug; rewrite in step 4</div>
+                    <div onClick="{{ toggleTools }}" style="display: flex; align-items: center; gap: 9px; padding: 10px 14px; cursor: pointer;">
+                      <span style="{{ toolsChevronStyle }}">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg>
+                      </span>
+                      <span style="font-size: 11.5px; font-weight: 500;">Tool calls</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">{{ toolsSummary }}</span>
+                    </div>
+                    <sc-if value="{{ toolsOpen }}" hint-placeholder-val="{{ true }}">
+                      <sc-for list="{{ toolCalls }}" as="tc" hint-placeholder-count="3">
+                        <div style="border-top: 1px solid var(--border);">
+                          <div onClick="{{ tc.toggle }}" style="{{ tc.rowStyle }}">
+                            <span style="{{ tc.dotStyle }}"></span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">{{ tc.name }}</span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ tc.arg }}</span>
+                            <span style="flex: 1;"></span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: {{ tc.metaColor }};">{{ tc.meta }}</span>
+                            <sc-if value="{{ tc.log }}" hint-placeholder-val="{{ false }}">
+                              <span style="{{ tc.chevronStyle }}">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg>
+                              </span>
+                            </sc-if>
                           </div>
-                        </sc-if>
-                      </div>
-                    </sc-for>
+                          <sc-if value="{{ tc.logOpen }}" hint-placeholder-val="{{ false }}">
+                            <div style="padding: 9px 14px 11px 35px; background: var(--sidebar); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.8; color: var(--muted-foreground); border-top: 1px solid var(--border);">
+                              <div>FAIL webhooks/replay.spec.ts › retries the same event twice</div>
+                              <div>  expected 2 handler invocations, received 1</div>
+                              <div style="color: var(--primary);">  → assertion encodes the bug; rewrite in step 4</div>
+                            </div>
+                          </sc-if>
+                        </div>
+                      </sc-for>
+                    </sc-if>
                   </div>
 
                   <sc-if value="{{ approvalPending }}" hint-placeholder-val="{{ true }}">
@@ -1282,6 +1296,8 @@ class Component extends DCLogic {
     docMenuOpen: false,
     sidebarOpen: true,
     closedGroups: ["RECENT"],
+    toolsOpen: true,
+    openLogs: [2],
     machineIdx: 0,
     machineMenuOpen: false,
     addSkillOpen: false,
@@ -1737,13 +1753,26 @@ class Component extends DCLogic {
           (p.done ? "color-mix(in oklab, var(--success) 18%, transparent)" : "var(--muted)") + "; color: " + (p.done ? "var(--success)" : "var(--muted-foreground)") + ";"
       })),
 
+      toolsOpen: st.toolsOpen,
+      toolsSummary: st.toolsOpen ? "4 calls · 1 failed · 1 blocked" : "4 calls, hidden",
+      toggleTools: () => this.setState(s2 => ({ toolsOpen: !s2.toolsOpen })),
+      toolsChevronStyle: "display: inline-flex; color: var(--muted-foreground); transition: transform .15s; transform: rotate(" +
+        (st.toolsOpen ? "90deg" : "0deg") + ");",
+
       toolCalls: [
         { name: "read_file", arg: "src/webhooks/handler.ts", meta: "ok · 41ms", color: "var(--success)" },
         { name: "write_file", arg: "src/webhooks/replay.ts", meta: "ok · +71", color: "var(--success)" },
         { name: "bash", arg: "pnpm vitest run webhooks", meta: "1 failed · 6.42s", color: "var(--destructive)", log: true },
         { name: "bash", arg: "pnpm prisma migrate deploy", meta: "blocked · hard gate", color: "var(--warning)" }
-      ].map(t => ({
+      ].map((t, i) => ({
         name: t.name, arg: t.arg, meta: t.meta, metaColor: t.color, log: !!t.log,
+        logOpen: !!t.log && st.openLogs.includes(i),
+        toggle: t.log ? () => this.setState(s2 => ({
+          openLogs: s2.openLogs.includes(i) ? s2.openLogs.filter(x => x !== i) : s2.openLogs.concat([i])
+        })) : undefined,
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 9px 14px;" + (t.log ? " cursor: pointer;" : ""),
+        chevronStyle: "display: inline-flex; color: var(--muted-foreground); transition: transform .15s; transform: rotate(" +
+          (st.openLogs.includes(i) ? "90deg" : "0deg") + ");",
         dotStyle: this.dot(t.color, 6)
       })),
 
