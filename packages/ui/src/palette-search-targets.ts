@@ -29,16 +29,18 @@ export function paletteSearchTargets({ machines, access, homeMachineId, currentM
 
 // A row picked on another machine switches the window there, then opens the
 // session once that machine's snapshot arrives. The intent is dropped when the
-// session is gone on arrival or the window went somewhere else.
-export type PendingElsewhere = { from: string; machineId: string; sessionId: string }
+// session is gone on arrival, when the window went somewhere else, or when it
+// came back to where it started after reaching the target (the switch was
+// refused), so a later manual switch never opens a stale pick.
+export type PendingElsewhere = { from: string; machineId: string; sessionId: string; reached: boolean }
 
-export function pendingElsewhereStep(pending: PendingElsewhere, now: {
+export function advancePendingElsewhere(pending: PendingElsewhere, now: {
   currentMachineId: string | null
   snapshotMachineId: string | null
   sessionIds: readonly string[]
-}): "wait" | "open" | "drop" {
-  if (now.currentMachineId === pending.from) return "wait"
-  if (now.currentMachineId !== pending.machineId) return "drop"
-  if (now.snapshotMachineId !== pending.machineId) return "wait"
-  return now.sessionIds.includes(pending.sessionId) ? "open" : "drop"
+}): { next: PendingElsewhere | null; open?: string } {
+  if (now.currentMachineId === pending.from) return { next: pending.reached ? null : pending }
+  if (now.currentMachineId !== pending.machineId) return { next: null }
+  if (now.snapshotMachineId !== pending.machineId) return { next: pending.reached ? pending : { ...pending, reached: true } }
+  return now.sessionIds.includes(pending.sessionId) ? { next: null, open: pending.sessionId } : { next: null }
 }

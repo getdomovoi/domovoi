@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { paletteSearchTargets, pendingElsewhereStep } from "./palette-search-targets"
+import { advancePendingElsewhere, paletteSearchTargets } from "./palette-search-targets"
 
 const home = { id: "machine-home", label: "mac-mini-m4", connection: "local", self: true }
 const studio = { id: "machine-studio", label: "studio", connection: "tailnet", self: false }
@@ -28,26 +28,35 @@ describe("paletteSearchTargets", () => {
   })
 })
 
-describe("pendingElsewhereStep", () => {
-  const pending = { from: home.id, machineId: studio.id, sessionId: "s-1" }
+describe("advancePendingElsewhere", () => {
+  const pending = { from: home.id, machineId: studio.id, sessionId: "s-1", reached: false }
+  const at = (currentMachineId: string, snapshotMachineId: string | null, sessionIds: string[] = []) => ({ currentMachineId, snapshotMachineId, sessionIds })
 
   it("waits while the window is still on the machine it left from", () => {
-    expect(pendingElsewhereStep(pending, { currentMachineId: home.id, snapshotMachineId: home.id, sessionIds: [] })).toBe("wait")
+    expect(advancePendingElsewhere(pending, at(home.id, home.id))).toEqual({ next: pending })
   })
 
-  it("waits for the target machine's snapshot", () => {
-    expect(pendingElsewhereStep(pending, { currentMachineId: studio.id, snapshotMachineId: home.id, sessionIds: [] })).toBe("wait")
+  it("marks the target reached while its snapshot is on the way", () => {
+    expect(advancePendingElsewhere(pending, at(studio.id, home.id))).toEqual({ next: { ...pending, reached: true } })
   })
 
   it("opens the session once the target's snapshot holds it", () => {
-    expect(pendingElsewhereStep(pending, { currentMachineId: studio.id, snapshotMachineId: studio.id, sessionIds: ["s-1"] })).toBe("open")
+    expect(advancePendingElsewhere(pending, at(studio.id, studio.id, ["s-1"]))).toEqual({ next: null, open: "s-1" })
   })
 
   it("drops the intent when the session is gone on arrival", () => {
-    expect(pendingElsewhereStep(pending, { currentMachineId: studio.id, snapshotMachineId: studio.id, sessionIds: ["s-2"] })).toBe("drop")
+    expect(advancePendingElsewhere(pending, at(studio.id, studio.id, ["s-2"]))).toEqual({ next: null })
   })
 
   it("drops the intent when the window moved somewhere else", () => {
-    expect(pendingElsewhereStep(pending, { currentMachineId: wsl.id, snapshotMachineId: wsl.id, sessionIds: ["s-1"] })).toBe("drop")
+    expect(advancePendingElsewhere(pending, at(wsl.id, wsl.id, ["s-1"]))).toEqual({ next: null })
+  })
+
+  // Review 2026-09-23: a switch that reached the target and was then refused
+  // returns the window to where it came from. The pick is over; a later
+  // manual switch to that machine must not open the session.
+  it("drops the intent when the window returns to where it came from", () => {
+    const reached = advancePendingElsewhere(pending, at(studio.id, null)).next!
+    expect(advancePendingElsewhere(reached, at(home.id, home.id))).toEqual({ next: null })
   })
 })

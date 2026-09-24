@@ -50,7 +50,7 @@ import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
-import { paletteSearchTargets, pendingElsewhereStep, type PendingElsewhere } from "./palette-search-targets"
+import { advancePendingElsewhere, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
@@ -539,14 +539,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const windowMachineId = attached?.machineId ?? homeMachineId
   useEffect(() => {
     if (!pendingElsewhere) return
-    const step = pendingElsewhereStep(pendingElsewhere, {
+    const step = advancePendingElsewhere(pendingElsewhere, {
       currentMachineId: windowMachineId,
       snapshotMachineId: snapshot?.machine.id ?? null,
       sessionIds: snapshot?.sessions.map((session) => session.id) ?? [],
     })
-    if (step === "wait") return
-    setPendingElsewhere(null)
-    if (step === "open") openSessionInWorkspace(pendingElsewhere.sessionId)
+    if (step.next !== pendingElsewhere) setPendingElsewhere(step.next)
+    if (step.open) openSessionInWorkspace(step.open)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingElsewhere, windowMachineId, snapshot])
   const searchTargets = windowMachineId ? paletteSearchTargets({
@@ -570,7 +569,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       }
     },
     open: (machineId: string, sessionId: string) => {
-      if (windowMachineId && switchMachine(machineId)) setPendingElsewhere({ from: windowMachineId, machineId, sessionId })
+      if (windowMachineId && switchMachine(machineId)) setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(searchTargets), homeMachineId, accessSession, homeSearch, switchMachine])
