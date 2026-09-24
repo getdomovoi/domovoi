@@ -39,7 +39,11 @@ file itself when the card is raised, with lstat alone and without opening it: th
 and the path it really leads to. On Allow it reads the file the same way, and any difference is a
 change whatever the record says: a file swapped for a directory, a FIFO, a link, another hard link
 or another file, or removed, rewrites the card and refuses the Allow. A file with nothing at it
-then and now is unchanged. The path Claude Code blocked on is kept with the card in memory, so the
+then and now is unchanged. A file that cannot be read on Allow, at its path, in a directory on the
+way to where it leads, or there, counts as changed even when the reading kept with the card could
+not be read either, since two such readings match whatever lies beneath: the card is rewritten and
+the Allow refused, and each Allow is refused while the file stays unreadable. The path Claude Code
+blocked on is kept with the card in memory, so the
 file resolves on Allow as it did when the card was raised. A file-tool name with whitespace around
 it is that tool: the card, its record and what the card hides use the trimmed name.
 

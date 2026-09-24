@@ -26,17 +26,31 @@ const maximumLinksFollowed = 40
 // component that does not exist is kept as written. Undefined when the links
 // loop past the bound.
 export async function followPath(path: string): Promise<string | undefined> {
+  return (await walkPath(path))?.path
+}
+
+// The walk behind followPath. Unreadable is true when a component could not be
+// read for a reason other than being absent: what lies there, a link included,
+// is then unknown, and the path is only a guess.
+async function walkPath(path: string): Promise<{ path: string; unreadable: boolean } | undefined> {
   const root = parse(path).root
   let current = root
   const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
   let links = 0
+  let unreadable = false
   while (pending.length > 0) {
     const part = pending.shift()!
     if (part === ".") continue
     if (part === "..") { current = dirname(current); continue }
     const next = join(current, part)
     let isLink = false
-    try { isLink = (await lstat(next)).isSymbolicLink() } catch { /* absent or unreadable: kept as written */ }
+    try {
+      isLink = (await lstat(next)).isSymbolicLink()
+    } catch (error) {
+      // Absent or unreadable: kept as written.
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== "ENOENT" && code !== "ENOTDIR") unreadable = true
+    }
     if (!isLink) { current = next; continue }
     if (++links > maximumLinksFollowed) return undefined
     const target = await readlink(next)
@@ -44,7 +58,7 @@ export async function followPath(path: string): Promise<string | undefined> {
     if (targetRoot !== "") current = targetRoot
     pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
   }
-  return current
+  return { path: current, unreadable }
 }
 
 // The worktree and the target, each followed the same way. Undefined when
@@ -85,25 +99,36 @@ async function nodeIdentity(path: string): Promise<NodeIdentity> {
 }
 
 // Read a file target without opening it. It never throws: a path that cannot
-// be read is recorded as such, and compares unequal to anything readable.
+// be read, at the requested path, on the walk to where it leads, or there, is
+// recorded as such, with no real path.
 export async function fileTargetIdentity(workspace: string, path: string, cwd?: string): Promise<FileTargetIdentity> {
   const requested = requestedPath(workspace, path, cwd)
   const entry = await nodeIdentity(requested)
-  let realPath: string | undefined
-  try { realPath = await followPath(requested) } catch { realPath = undefined }
+  let walk: { path: string; unreadable: boolean } | undefined
+  try { walk = await walkPath(requested) } catch { walk = undefined }
+  const realPath = walk === undefined || walk.unreadable ? undefined : walk.path
   const target = realPath === undefined
     ? { kind: "unreadable" as const, dev: "", ino: "", nlink: "" }
     : await nodeIdentity(realPath)
   return { entry, realPath, target }
 }
 
+// Whether any part of a reading could not be read.
+function fileTargetUnreadable(identity: FileTargetIdentity): boolean {
+  return identity.entry.kind === "unreadable" || identity.realPath === undefined || identity.target.kind === "unreadable"
+}
+
 function sameNode(one: NodeIdentity, other: NodeIdentity): boolean {
   return one.kind === other.kind && one.dev === other.dev && one.ino === other.ino && one.nlink === other.nlink
 }
 
-// Whether a file target changed between two readings. With no earlier reading
-// to compare, only a regular file, or a path with nothing at it, stands.
+// Whether a file target changed between two readings. A target that cannot be
+// read now counts as changed whatever the earlier reading was: two unreadable
+// readings match field for field and say nothing about what lies beneath, so a
+// file replaced there would pass. With no earlier reading to compare, only a
+// regular file, or a path with nothing at it, stands.
 export function fileTargetChanged(before: FileTargetIdentity | undefined, now: FileTargetIdentity): boolean {
+  if (fileTargetUnreadable(now)) return true
   if (before === undefined) {
     return !(now.target.kind === "regular" || (now.entry.kind === "missing" && now.target.kind === "missing"))
   }

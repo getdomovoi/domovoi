@@ -12680,6 +12680,171 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  // The round 9 probe on #545: a file replaced beneath a directory the daemon
+  // cannot read leaves two unreadable readings that compare equal, and the
+  // record, Affects and risk equal too. A target that cannot be read at Allow
+  // is refused through the change path, and stays refused while it cannot be
+  // read. On Windows chmod only sets the read-only attribute and removes no
+  // access, so the locked directory stays readable there.
+  it.skipIf(process.platform === "win32")("refuses an Allow while the file target cannot be read, even when the unreadable readings match", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-unreadable-"))
+    scratchDirectories.push(workspacePath)
+    const rows = [
+      { requestId: 401, name: "locked-while-waiting", directory: join(workspacePath, "waiting") },
+      { requestId: 402, name: "locked-when-raised", directory: join(workspacePath, "raised") },
+      { requestId: 403, name: "readable", directory: join(workspacePath, "readable") },
+    ] as const
+    for (const row of rows) {
+      await mkdir(row.directory)
+      await writeFile(join(row.directory, "notes.json"), "{}")
+    }
+    const [waiting, raised, readable] = rows
+    const locked = [waiting.directory, raised.directory]
+    // Stands for a writer the daemon cannot see: the directory is opened for
+    // the replacement alone and locked again.
+    const replaceLocked = async (directory: string) => {
+      await chmod(directory, 0o700)
+      await writeFile(join(directory, "replacement"), "{\"swapped\":true}")
+      await rename(join(directory, "replacement"), join(directory, "notes.json"))
+      await chmod(directory, 0o000)
+    }
+    try {
+      const snapshot = structuredClone(demoWorkspace)
+      const session = snapshot.sessions[0]!
+      session.runtime = {
+        provider: "claude-code",
+        model: "sonnet",
+        reasoning: "high",
+        permissionMode: "build",
+        auto: false,
+      }
+      session.state = "idle"
+      session.workspacePath = workspacePath
+      session.providerThreadId = "thread-file-unreadable"
+      delete session.activeTurnId
+      snapshot.approvals = []
+      snapshot.approvalRules = []
+      let listener: ((event: AgentEvent) => void) | undefined
+      const agent = {
+        permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+        connect: vi.fn(async () => {}),
+        listModels: vi.fn(async () => [{
+          ...codexModels()[0]!,
+          provider: "claude-code",
+          id: "sonnet",
+        }]),
+        startThread: vi.fn(async () => "unused"),
+        resumeThread: vi.fn(async () => {}),
+        stopThread: vi.fn(async () => {}),
+        startTurn: vi.fn(async () => "turn-file-unreadable"),
+        steerTurn: vi.fn(async () => {}),
+        interruptTurn: vi.fn(async () => {}),
+        resolveApproval: vi.fn(),
+        onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+          listener = next
+          return () => { listener = undefined }
+        }),
+        close: vi.fn(async () => {}),
+      } satisfies AgentAdapter
+      const store = {
+        load: () => snapshot,
+        save: vi.fn(),
+        close: vi.fn(),
+      } satisfies WorkspaceStore
+      const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
+      running.push(daemon)
+      const address = await daemon.start()
+      const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      await identifyClient(socket)
+      type Card = { id: string; providerRequestId?: number; revision: number; execution: { state: string } }
+      const broadcasts: Card[][] = []
+      socket.on("message", (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as { method?: string; params?: { approvals?: Card[] } }
+        if (message.method === "workspace.changed" && message.params?.approvals) broadcasts.push(message.params.approvals)
+      })
+      let id = 0
+      const rpc = (method: string, params: Record<string, unknown>) => {
+        const requestId = ++id
+        const response = new Promise<Record<string, unknown>>((resolve) => {
+          const receive = (data: WebSocket.RawData) => {
+            const message = JSON.parse(data.toString()) as { id?: number }
+            if (message.id !== requestId) return
+            socket.off("message", receive)
+            resolve(message as Record<string, unknown>)
+          }
+          socket.on("message", receive)
+        })
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+        return response
+      }
+      const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+      const card = async (requestId: number) => (await cards()).find((candidate) => candidate.providerRequestId === requestId)!
+      const changed = "The file target changed; review the updated approval before allowing it"
+      const allowRefused = async (requestId: number, revision: number) => {
+        const shown = await card(requestId)
+        expect(shown.revision).toBe(revision)
+        const broadcastsBefore = broadcasts.length
+        await expect(rpc("approval.resolve", { approvalId: shown.id, decision: "allow-once", revision, client: "desktop" }))
+          .resolves.toMatchObject({ error: { message: changed } })
+        expect(agent.resolveApproval.mock.calls.some(([released]) => released === requestId)).toBe(false)
+        expect((await card(requestId)).revision).toBe(revision + 1)
+        expect(broadcasts.slice(broadcastsBefore).some((approvals) => approvals.some(
+          (candidate) => candidate.id === shown.id && candidate.revision === revision + 1,
+        ))).toBe(true)
+        expect(store.save.mock.calls.some(([saved]) => (saved as WorkspaceSnapshot).approvals.some(
+          (candidate) => candidate.id === shown.id && candidate.revision === revision + 1,
+        ))).toBe(true)
+      }
+
+      await rpc("session.send", { sessionId: session.id, prompt: "Edit the files", client: "desktop" })
+      // One directory is locked before its card is raised, so both readings of
+      // it are unreadable.
+      await chmod(raised.directory, 0o000)
+      for (const row of rows) {
+        listener!({
+          type: "approval-requested",
+          requestId: row.requestId,
+          threadId: session.providerThreadId,
+          turnId: "turn-file-unreadable",
+          reason: "Edit a file",
+          command: "Edit",
+          cwd: workspacePath,
+          path: join(row.directory, "notes.json"),
+        })
+      }
+      await vi.waitFor(async () => expect(await cards()).toHaveLength(rows.length), { timeout: 3_000 })
+      // A target that cannot be read when the card is raised leaves it
+      // unresolved, so no Always is offered.
+      expect(await card(raised.requestId)).toMatchObject({ revision: 0, execution: { state: "unresolved" } })
+
+      // While the cards wait, the other directory is locked, and both files are
+      // replaced beneath their locked directories.
+      await chmod(waiting.directory, 0o000)
+      await replaceLocked(waiting.directory)
+      await replaceLocked(raised.directory)
+
+      await allowRefused(raised.requestId, 0)
+      await allowRefused(waiting.requestId, 0)
+      // The rewritten card is still refused while its target cannot be read.
+      await allowRefused(waiting.requestId, 1)
+      await allowRefused(raised.requestId, 1)
+
+      // A readable target that did not change is released once.
+      const control = await card(readable.requestId)
+      await expect(rpc("approval.resolve", { approvalId: control.id, decision: "allow-once", revision: 0, client: "desktop" }))
+        .resolves.not.toHaveProperty("error")
+      expect(agent.resolveApproval.mock.calls).toEqual([[readable.requestId, "allow-once"]])
+      socket.close()
+    } finally {
+      // The scratch directory is removed after the test, which needs access.
+      await Promise.all(locked.map((directory) => chmod(directory, 0o700)))
+    }
+  })
+
   // A file tool is its name, whatever whitespace the request put around it, so
   // a padded Edit of a credential file hides the file like any other Edit.
   it("treats a padded file tool command as the file tool it names", async () => {
