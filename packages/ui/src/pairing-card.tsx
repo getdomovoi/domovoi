@@ -79,6 +79,8 @@ export function PairingCard({
 }) {
   const [kind, setKind] = useState<Kind>("phone")
   const [issued, setIssued] = useState<IssuedPairingCode | null>(null)
+  // The kind the shown code was issued for; the picker can move on without it.
+  const [issuedKind, setIssuedKind] = useState<Kind>("phone")
   const [replaced, setReplaced] = useState(false)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
@@ -97,9 +99,11 @@ export function PairingCard({
     setPending(true)
     setError("")
     try {
-      const next = await onIssueCode(kinds[kind].client)
+      const asked = kind
+      const next = await onIssueCode(kinds[asked].client)
       setReplaced(issued !== null && countdown(issued.expiresAt, Date.now()) > 0)
       setIssued(next)
+      setIssuedKind(asked)
       setNow(Date.now())
       setCopied(false)
     } catch (cause) {
@@ -110,7 +114,7 @@ export function PairingCard({
   }
 
   const address = issued ? pairingAddressOf(issued) : undefined
-  const problem = address ? problemFor(address, kind) : undefined
+  const problem = address ? problemFor(address, issuedKind) : undefined
   const expired = issued !== null && left === 0
   const codeShown = issued !== null && !expired && !problem && address !== undefined && !("problem" in address)
   const grants = phoneAndTabletPromise.map((line) => ({ text: line.text, tone: line.tone === "granted" ? "bg-success" : "bg-info" }))

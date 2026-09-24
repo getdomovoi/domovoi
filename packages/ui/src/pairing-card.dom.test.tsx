@@ -105,3 +105,13 @@ it("names the chosen kind and drops the command-line tail when no code can be sh
   expect(screen.getByText("This daemon serves no certificate, so a device has no address it can verify. Give it a DNS name with a certificate.")).toBeTruthy()
   expect(screen.queryByText(/run this again/)).toBeNull()
 })
+
+it("keeps naming the kind the code was issued for when the picker changes", async () => {
+  const { onIssueCode, user } = card()
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(await screen.findByText("No code: a phone cannot reach this daemon")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Tablet" }))
+  expect(screen.getByText("No code: a phone cannot reach this daemon")).toBeTruthy()
+  expect(screen.queryByText("No code: a tablet cannot reach this daemon")).toBeNull()
+})
