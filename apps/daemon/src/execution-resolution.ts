@@ -431,6 +431,14 @@ export function resolveCommandExecution(input: {
     : undefined)
 }
 
+// Whether resolveExecution reads the request's file path for this command:
+// a file tool is resolved only for a path in the worktree, and a read tool
+// is unresolved for a path outside it.
+export function resolutionReadsFilePath(command: string | undefined): boolean {
+  const tool = command?.trim()
+  return tool !== undefined && (fileTools.has(tool) || readTools.has(tool))
+}
+
 export async function resolveExecution(input: ExecutionInput): Promise<ExecutionResolution> {
   const command = input.command?.trim()
   if (!command) return unresolved("command-missing")

@@ -2251,7 +2251,8 @@ export class DomovoiDaemon {
   }
 
   // Approvals read back from disk are settled before anything else sees them,
-  // all under one lookup deadline, from their saved text and execution record.
+  // all under one lookup deadline, from their saved text. Each execution is
+  // resolved again, and a saved record that differs makes a hard gate.
   async #settleStoredApprovals(stored: readonly WorkspaceSnapshot["approvals"][number][]): Promise<boolean> {
     const deadline = OperationDeadline.start(realPathLookupBudgetMs)
     let changed = false
@@ -2265,7 +2266,6 @@ export class DomovoiDaemon {
               approval,
               workspace,
               session ? this.#approvalScope(session.runtime) : undefined,
-              approval.execution,
               () => approval.risk,
             ), deadline)).approval
         changed ||= !sameApproval(settled, approval)
@@ -2282,7 +2282,7 @@ export class DomovoiDaemon {
   // can move to a credential store, and a package script can change, after
   // the card was made. The operands come from the execution the card will
   // hold. A card that changed is saved and sent, and the refusal says why; a
-  // card loaded from disk is judged from its saved text.
+  // card loaded from disk is resolved again from its saved text.
   async #settleBeforeAllow(
     approval: WorkspaceSnapshot["approvals"][number],
     session: WorkspaceSnapshot["sessions"][number],
@@ -2303,10 +2303,9 @@ export class DomovoiDaemon {
         execution,
       }).risk
     }
-    const execution = reResolve ? "resolve" as const : approval.execution
     const settlement = await settleApproval(held
-      ? heldSettlementInput(approval, held, scope, execution, risk)
-      : savedSettlementInput(approval, workspace, scope, execution, risk))
+      ? heldSettlementInput(approval, held, scope, reResolve ? "resolve" : approval.execution, risk)
+      : savedSettlementInput(approval, workspace, scope, risk))
     const current = this.#snapshot.approvals.find((candidate) => candidate.id === approval.id)
     if (current === undefined || sameApproval(settlement.approval, current)) return undefined
     const executionChanged = !sameExecution(settlement.approval.execution, current.execution)

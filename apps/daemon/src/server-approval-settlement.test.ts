@@ -1,15 +1,16 @@
 import * as fs from "node:fs"
 import { once } from "node:events"
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, sep } from "node:path"
+import { dirname, join, sep } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
-import { demoWorkspace, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, executionRecordSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
+import { settleApproval } from "./approval-settlement.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { realPathLookupBudgetMs } from "./credential-stores.js"
-import { resolveExecution } from "./execution-resolution.js"
+import { resolveCommandExecution, resolveExecution } from "./execution-resolution.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -119,7 +120,9 @@ async function setup(
 }
 
 // A card as a daemon from before this check saved it: its directory is an
-// ordinary name, and only its real path is a store.
+// ordinary name, and only its real path is a store. Its record is the one a
+// daemon resolves for "ls" at the worktree, since a saved record is resolved
+// again at load and one that differs is a hard gate.
 function savedCard(directory: string, providerRequestId: number): Approval {
   return {
     id: `approval-saved-${providerRequestId}`,
@@ -137,7 +140,7 @@ function savedCard(directory: string, providerRequestId: number): Approval {
     checkpoint: "unavailable",
     providerRequestId,
     requestedAt: "2026-09-24T00:00:00.000Z",
-    execution: { state: "unresolved", reason: "unsupported-syntax" },
+    execution: resolveCommandExecution({ command: "ls" }),
   }
 }
 
@@ -306,13 +309,15 @@ describe("approval settlement", () => {
   })
 
   // A saved card names its file only in its file line. That file is judged on
-  // disk at load and again at Allow.
+  // disk at load and again at Allow. The request gave no command, so its
+  // record says so.
   function savedFileCard(directory: string, providerRequestId: number): Approval {
     return {
       ...savedCard(directory, providerRequestId),
       operation: "Edit a file",
       command: "Command details unavailable",
       affects: "The file notes.txt in the session worktree.",
+      execution: { state: "unresolved", reason: "command-missing" },
     }
   }
 
@@ -455,6 +460,196 @@ describe("approval settlement", () => {
     await expectSealed(card, store, outside)
     for (const line of plainLines(outside)) {
       expect(await card(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
+    }
+  })
+})
+
+// A saved card's execution record is not trusted at load: every path it can
+// hold, moved by a link into a store after the card was saved, makes the card
+// a hard gate with the record hidden.
+describe("a saved card whose record path moved into a store", () => {
+  type SchemaNode = {
+    _zod: {
+      def: {
+        type: string
+        shape?: Record<string, SchemaNode>
+        options?: SchemaNode[]
+        element?: SchemaNode
+        innerType?: SchemaNode
+        values?: unknown[]
+      }
+    }
+  }
+
+  // Every string field the record schema allows, named by where it sits: an
+  // object key, and a union member by its kind. A construct this walk does not
+  // know fails the test, so a new field cannot slip past it.
+  function stringFields(node: SchemaNode, at: string): string[] {
+    const def = node._zod.def
+    const child = (key: string) => (at === "" ? key : `${at}.${key}`)
+    switch (def.type) {
+      case "string": return [at]
+      case "literal":
+      case "enum":
+      case "number":
+      case "boolean": return []
+      case "nullable":
+      case "optional": return stringFields(def.innerType!, at)
+      case "array": return stringFields(def.element!, at)
+      case "object": return Object.entries(def.shape!).flatMap(([key, value]) => stringFields(value, child(key)))
+      case "union": return def.options!.flatMap((option) => {
+        const kind = option._zod.def.shape?.["kind"]?._zod.def.values?.[0]
+        if (typeof kind !== "string") throw new Error(`A union at ${at || "the record"} has a member without a kind`)
+        return stringFields(option, at === "" ? kind : `${at}(${kind})`)
+      })
+      default: throw new Error(`The record schema holds a ${def.type} at ${at || "the record"} this table does not read`)
+    }
+  }
+
+  // Each string field of the record: a path, or not a path and why.
+  const recordStringFields: Record<string, "path" | { notAPath: string }> = {
+    "shell.cwd": "path",
+    "shell.entries.source(package-script).manifest": "path",
+    "shell.entries.source(package-script).name": { notAPath: "a script name, which the schema limits to one segment" },
+    "shell.entries.source(package-script).arguments": "path",
+    "shell.entries.source(package-script).sourceDigest": { notAPath: "a sha256 digest" },
+    "shell.entries.parts.argv": "path",
+    "workspace-file-tool.cwd": "path",
+  }
+
+  // The file a card names sits on the card, not in the record, and is judged
+  // with them.
+  const cardFileField = "card.affects"
+
+  type Row = {
+    id: number
+    field: string
+    // Runs in the row's own directory before the card is saved.
+    prepare: (row: string) => Promise<void>
+    request: (row: string) => { cwd: string; command: string; path?: string }
+    // The path, relative to the row, that moves into the store.
+    moves: string
+  }
+
+  const manifest = (show: string) => JSON.stringify({ scripts: { show } })
+  const rows: Row[] = [
+    {
+      id: 101,
+      field: "shell.cwd",
+      prepare: (row) => mkdir(join(row, "sub")),
+      request: (row) => ({ cwd: join(row, "sub"), command: "ls" }),
+      moves: "sub",
+    },
+    {
+      id: 102,
+      field: "workspace-file-tool.cwd",
+      prepare: async (row) => {
+        await mkdir(join(row, "sub"))
+        await writeFile(join(row, "sub", "notes.txt"), "")
+      },
+      request: (row) => ({ cwd: join(row, "sub"), command: "Edit", path: "notes.txt" }),
+      moves: "sub",
+    },
+    {
+      id: 103,
+      field: "shell.entries.source(package-script).manifest",
+      prepare: async (row) => {
+        await writeFile(join(row, "package.json"), manifest("cat notes.txt"))
+        await writeFile(join(row, "notes.txt"), "")
+      },
+      request: (row) => ({ cwd: row, command: "pnpm run show" }),
+      moves: "package.json",
+    },
+    {
+      id: 104,
+      field: "shell.entries.source(package-script).arguments",
+      prepare: async (row) => {
+        await writeFile(join(row, "package.json"), manifest("cat"))
+        await writeFile(join(row, "notes.txt"), "")
+      },
+      request: (row) => ({ cwd: row, command: "pnpm run show -- notes.txt" }),
+      moves: "notes.txt",
+    },
+    {
+      id: 105,
+      field: "shell.entries.parts.argv",
+      prepare: (row) => writeFile(join(row, "notes.txt"), ""),
+      request: (row) => ({ cwd: row, command: "cat notes.txt" }),
+      moves: "notes.txt",
+    },
+    {
+      id: 106,
+      field: "shell.entries.parts.argv",
+      prepare: async (row) => {
+        await writeFile(join(row, "package.json"), manifest("cat notes.txt"))
+        await writeFile(join(row, "notes.txt"), "")
+      },
+      request: (row) => ({ cwd: row, command: "pnpm run show" }),
+      moves: "notes.txt",
+    },
+    {
+      id: 107,
+      field: cardFileField,
+      prepare: (row) => writeFile(join(row, "notes.txt"), ""),
+      request: (row) => ({ cwd: row, command: "Edit", path: "notes.txt" }),
+      moves: "notes.txt",
+    },
+  ]
+
+  it("hard-gates and hides the record for every path field the record schema allows", async () => {
+    const fields = stringFields(executionRecordSchema as unknown as SchemaNode, "")
+    expect(fields.sort()).toEqual(Object.keys(recordStringFields).sort())
+    for (const [field, kind] of Object.entries(recordStringFields)) {
+      if (kind === "path") expect(rows.some((row) => row.field === field), `no row moves ${field}`).toBe(true)
+    }
+    expect(rows.some((row) => row.field === cardFileField)).toBe(true)
+
+    const cards: Approval[] = []
+    const { card, store } = await setup(async (root) => {
+      for (const row of rows) {
+        const directory = join(root, `row-${row.id}`)
+        await mkdir(directory)
+        await row.prepare(directory)
+        const request = row.request(directory)
+        const { approval } = await settleApproval({
+          approval: {
+            id: `approval-moved-${row.id}`,
+            sessionId: demoWorkspace.sessions[0]!.id,
+            machine: "macbook-pro-m3",
+            agent: "claude-code / sonnet",
+            mode: "build",
+            estimatedDuration: "Unknown",
+            checkpoint: "unavailable",
+            providerRequestId: row.id,
+            requestedAt: "2026-09-24T00:00:00.000Z",
+          },
+          request: { workspace: root, reason: "Run a command", ...request },
+          scope: undefined,
+          execution: "resolve",
+          risk: () => "normal",
+        })
+        const saved = structuredClone(approval) as Approval
+        expect(saved, row.field).toMatchObject({ risk: "normal" })
+        if (row.field !== cardFileField) expect(saved.execution, row.field).toMatchObject({ state: "resolved" })
+        cards.push(saved)
+        // Move the path into a store, and leave a link where it was.
+        const from = join(directory, row.moves)
+        const into = join(root, ".aws", `row-${row.id}`, row.moves)
+        await mkdir(dirname(into), { recursive: true })
+        await rename(from, into)
+        await symlink(into, from)
+      }
+    }, undefined, { saved: () => cards })
+
+    const persisted = store.load().approvals
+    for (const row of rows) {
+      const label = `${row.field} (row ${row.id})`
+      const loaded = await card(row.id)
+      expect.soft(loaded, label).toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "sensitive-content" } })
+      expect.soft(JSON.stringify(loaded), label).not.toContain(".aws")
+      const saved = persisted.find((approval) => approval.providerRequestId === row.id)
+      expect.soft(saved, label).toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "sensitive-content" } })
+      expect.soft(JSON.stringify(saved), label).not.toContain(".aws")
     }
   })
 })

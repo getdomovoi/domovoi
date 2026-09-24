@@ -396,6 +396,15 @@ function savedFilePaths(affects: string): string[] | "hidden" | undefined {
   return rendered === affects ? paths : undefined
 }
 
+// The path a saved file line says the request named: the file in the
+// worktree, relative to it; the file outside it; or the link in the worktree
+// the request went through, relative to it. Undefined when the line does not
+// read back as paths, or hides them.
+export function savedRequestPath(affects: string): string | undefined {
+  const paths = savedFilePaths(affects)
+  return paths === undefined || paths === "hidden" ? undefined : paths[0]
+}
+
 // A file line read back from disk, judged as a new card's is: each path it
 // names is followed on disk now, under the request's deadline, and a link on
 // the way or the file it ends at that names a credential store hides the

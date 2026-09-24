@@ -87,7 +87,7 @@ describe("settleApproval for a saved file line", () => {
   }
 
   function settleSaved(approval: Approval, workspace: string, deadline?: OperationDeadline) {
-    return settleApproval(savedSettlementInput(approval, workspace, undefined, approval.execution, () => approval.risk), deadline)
+    return settleApproval(savedSettlementInput(approval, workspace, undefined, () => approval.risk), deadline)
   }
 
   it("hard-gates and hides a saved file that is now a link into a store", async () => {
@@ -138,6 +138,26 @@ describe("settleApproval for a saved file line", () => {
     expect(sensitive).toBe(true)
     expect(settled).toMatchObject({
       risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      execution: { state: "unresolved", reason: "sensitive-content" },
+    })
+  })
+
+  // A file tool's execution depends on the file it names. A saved line that
+  // hides that file cannot give the request back, so the card is sealed.
+  it("seals a saved file tool card whose file line hides the file", async () => {
+    const workspace = await worktree()
+    await writeFile(join(workspace, "notes.txt"), "")
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, cwd: workspace, path: "notes.txt", command: "Edit", reason: "Edit a file" },
+    }))
+    expect(approval).toMatchObject({ risk: "normal", execution: { state: "resolved" } })
+    const hidden = { ...approval, affects: "The file [REDACTED] in the session worktree." }
+    const { approval: settled, sensitive } = await settleSaved(hidden, workspace)
+    expect(sensitive).toBe(true)
+    expect(settled).toMatchObject({
+      risk: "hard-gate",
+      directory: "[REDACTED] in the session worktree",
       affects: "The file [REDACTED] in the session worktree.",
       execution: { state: "unresolved", reason: "sensitive-content" },
     })

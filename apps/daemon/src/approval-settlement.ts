@@ -15,6 +15,7 @@ import {
   requestOperands,
   resolveApprovalPath,
   savedApprovalAffects,
+  savedRequestPath,
   scriptOperands,
   unrestrictedApprovalScope,
   type ApprovalScope,
@@ -25,7 +26,7 @@ import {
   operandsReachCredentialPath,
   realPathLookupBudgetMs,
 } from "./credential-stores.js"
-import { resolveExecution } from "./execution-resolution.js"
+import { resolutionReadsFilePath, resolveExecution } from "./execution-resolution.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableCommand, redactDurableText } from "./secret-redaction.js"
@@ -39,7 +40,11 @@ import { executionContainsSecret } from "./workspace-redaction.js"
 // execution, judges every path the card or its record holds as written and at
 // its real path, makes the card a hard gate when any of them is a credential
 // path, and hides each such path. A request whose lookups do not finish in
-// time is a hard gate with every path hidden.
+// time is a hard gate with every path hidden. A card read back from disk
+// trusts no path in its saved execution record: the execution is resolved
+// again from the card's saved lines, and a record that differs, or any path
+// that reaches a credential store, makes it a hard gate with the record
+// hidden.
 
 export type Approval = WorkspaceSnapshot["approvals"][number]
 
@@ -61,16 +66,25 @@ export type ApprovalRequest = Readonly<{
   blockedPath?: string | undefined
 }>
 
-export type SavedCard = Readonly<{ directory: string; affects: string; network: string }>
+export type SavedCard = Readonly<{
+  directory: string
+  affects: string
+  network: string
+  // The record the saved card held. It is compared with the execution
+  // resolved now, never judged in its place.
+  execution: ExecutionResolution
+}>
 
 export type SettlementInput = Readonly<{
   approval: ApprovalIdentity
   request: ApprovalRequest
   // Set for a card read back from disk: its directory, file and network
-  // lines as saved, since the request behind them is gone.
+  // lines and its record as saved, since the request behind them is gone.
+  // Its execution is always resolved again.
   saved?: SavedCard | undefined
   scope: ApprovalScope | undefined
-  // Resolve the execution now, or judge the record the card holds.
+  // Resolve the execution now, or judge the record a held request's card
+  // holds.
   execution: "resolve" | ExecutionResolution
   // The permission policy's risk for this execution, when no path is a
   // credential path.
@@ -87,6 +101,9 @@ export type Settlement = Readonly<{
 }>
 
 const hiddenExecution: ExecutionResolution = { state: "unresolved", reason: "sensitive-content" }
+
+// The command line a card shows when the request gave no command.
+const commandUnavailable = "Command details unavailable"
 
 const minted = new WeakSet<object>()
 
@@ -135,7 +152,7 @@ function sealedCard(input: SettlementInput): SettledApproval {
     ...input.approval,
     risk: "hard-gate",
     operation: redactDurableText(input.request.reason ?? "Run a command").value,
-    command: redactDurableCommand(input.request.command ?? "Command details unavailable").value,
+    command: redactDurableCommand(input.request.command ?? commandUnavailable).value,
     directory,
     affects,
     network: saved !== undefined ? redactDurableText(saved.network).value : scope.network,
@@ -143,18 +160,46 @@ function sealedCard(input: SettlementInput): SettledApproval {
   })
 }
 
+type ResolutionRequest = { cwd: string; command?: string; filePath?: string; blockedPath?: string }
+
+// What a card read back from disk gives resolveExecution: its saved directory
+// and command, and for a file or read tool the file its saved line names,
+// located against the worktree. A saved card that does not give these back,
+// such as one whose directory or file line is hidden, cannot be resolved
+// again, and throws, so it is sealed. A blocked path lived only in memory; a
+// card that had one resolves differently now, and so is a hard gate.
+function savedResolutionRequest(request: ApprovalRequest, saved: SavedCard): ResolutionRequest {
+  if (savedDirectoryHidden(saved)) throw new Error("A saved card hides the directory its request ran in")
+  const command = request.command === commandUnavailable ? undefined : request.command
+  const resolution: ResolutionRequest = { cwd: request.cwd ?? request.workspace, ...(command === undefined ? {} : { command }) }
+  if (!resolutionReadsFilePath(command) || !saved.affects.startsWith("The file ")) return resolution
+  const path = savedRequestPath(redactDurableText(saved.affects).value)
+  if (path === undefined) throw new Error("A saved card's file line does not name the file its request named")
+  return { ...resolution, filePath: resolve(request.workspace, path) }
+}
+
+function heldResolutionRequest(request: ApprovalRequest): ResolutionRequest {
+  return {
+    cwd: request.cwd ?? request.workspace,
+    ...(request.command === undefined ? {} : { command: request.command }),
+    ...(request.path === undefined ? {} : { filePath: request.path }),
+    ...(request.blockedPath === undefined ? {} : { blockedPath: request.blockedPath }),
+  }
+}
+
 async function settleWithin(input: SettlementInput, deadline: OperationDeadline): Promise<Settlement> {
   const { request, saved } = input
-  const execution = input.execution === "resolve"
+  // A saved card's record is never judged in place of the execution: every
+  // path in it may lead somewhere else now.
+  const execution = saved !== undefined || input.execution === "resolve"
     ? await resolveExecution({
         workspaceRoot: request.workspace,
-        cwd: request.cwd ?? request.workspace,
-        ...(request.command === undefined ? {} : { command: request.command }),
-        ...(request.path === undefined ? {} : { filePath: request.path }),
-        ...(request.blockedPath === undefined ? {} : { blockedPath: request.blockedPath }),
+        ...(saved === undefined ? heldResolutionRequest(request) : savedResolutionRequest(request, saved)),
         deadline,
       })
     : input.execution
+  const savedRecord = saved?.execution
+  const recordMatches = savedRecord === undefined || sameExecution(execution, savedRecord)
   const directoryHidden = savedDirectoryHidden(saved)
   const written = requestDirectory(request.workspace, request.cwd)
   const realDirectory = directoryHidden ? undefined : await canonicalPath(written, undefined, deadline)
@@ -206,10 +251,9 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
   // A lookup that ran out of time gave no answer to trust.
   deadline.throwIfExpired()
 
-  const command = redactDurableCommand(request.command ?? "Command details unavailable")
+  const command = redactDurableCommand(request.command ?? commandUnavailable)
   const operation = redactDurableText(request.reason ?? "Run a command")
   const recordSecret = executionContainsSecret(execution)
-  const hideRecord = directory.sensitive || recordNames || recordSecret
   const sensitive = command.redacted
     || operation.redacted
     || directory.redacted
@@ -221,9 +265,18 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     || recordNames
     || recordSecret
     || (execution.state === "unresolved" && execution.reason === "sensitive-content")
+    || (savedRecord?.state === "unresolved" && savedRecord.reason === "sensitive-content")
+  // A saved card whose record differs from the one resolved now, or with any
+  // path or operand that reaches a credential store, is a hard gate and shows
+  // no record.
+  const hideRecord = directory.sensitive
+    || recordNames
+    || recordSecret
+    || !recordMatches
+    || (saved !== undefined && sensitive)
   const approval = mint({
     ...input.approval,
-    risk: sensitive ? "hard-gate" : input.risk(execution),
+    risk: sensitive || !recordMatches ? "hard-gate" : input.risk(execution),
     operation: operation.value,
     command: command.value,
     directory: directory.text,
@@ -247,13 +300,13 @@ export async function settleApproval(input: SettlementInput, deadline?: Operatio
 }
 
 // The settlement input for a card read back from disk: its command and
-// operation as saved, its directory unless the saved card hid it, and its
-// saved file and network lines.
+// operation as saved, its directory unless the saved card hid it, its saved
+// file and network lines, and the record it held. Its execution is resolved
+// again from these.
 export function savedSettlementInput(
   approval: Approval,
   workspace: string,
   scope: ApprovalScope | undefined,
-  execution: "resolve" | ExecutionResolution,
   risk: SettlementInput["risk"],
 ): SettlementInput {
   return {
@@ -264,9 +317,9 @@ export function savedSettlementInput(
       command: approval.command,
       reason: approval.operation,
     },
-    saved: { directory: approval.directory, affects: approval.affects, network: approval.network },
+    saved: { directory: approval.directory, affects: approval.affects, network: approval.network, execution: approval.execution },
     scope,
-    execution,
+    execution: "resolve",
     risk,
   }
 }
@@ -286,7 +339,7 @@ export function heldSettlementInput(
 // hidden, located against the worktree when there is one.
 export function sealedApproval(approval: Approval, workspace: string | undefined): SettledApproval {
   if (workspace !== undefined) {
-    return sealedCard(savedSettlementInput(approval, workspace, undefined, approval.execution, () => "hard-gate"))
+    return sealedCard(savedSettlementInput(approval, workspace, undefined, () => "hard-gate"))
   }
   return mint({
     ...approval,

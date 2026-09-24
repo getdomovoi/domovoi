@@ -113,6 +113,15 @@ function testAuthToken(label: string): string {
   return createHash("sha256").update(label).digest("base64url")
 }
 
+// The record a daemon saves for a card whose worktree does not exist on this
+// machine. A saved record is resolved again at load, and one that differs
+// makes the card a hard gate, so a fixture card in a missing worktree holds
+// this record.
+const missingWorktreeExecution: WorkspaceSnapshot["approvals"][number]["execution"] = {
+  state: "unresolved",
+  reason: "cwd-outside-project",
+}
+
 describe("helloProtocolCompatibility", () => {
   it("keeps a versionless client on its historical protocol after a breaking minor", () => {
     expect(helloProtocolCompatibility("0.2.0", undefined)).toEqual({
@@ -413,6 +422,7 @@ describe("DomovoiDaemon", () => {
 
   it("awaits async long-history persistence without starving timers", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.execution = missingWorktreeExecution
     snapshot.thread = Array.from({ length: 4_000 }, (_, index) => ({
       id: `long-history-${index}`,
       sessionId: snapshot.sessions[0]!.id,
@@ -1870,6 +1880,7 @@ describe("DomovoiDaemon", () => {
 
   it.each([false, true])("returns real evidence with file associations opt-in = %s without persisting it", async (includeFileAssociations) => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.execution = missingWorktreeExecution
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/session-evidence"
     snapshot.thread = snapshot.thread.filter((item) => item.sessionId !== session.id)
@@ -2188,6 +2199,7 @@ describe("DomovoiDaemon", () => {
 
   it("aborts timed-out evidence without accepting a late result", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.execution = missingWorktreeExecution
     const session = snapshot.sessions[0]!
     session.workspacePath = "/worktrees/session-evidence"
     let observedSignal: AbortSignal | undefined
@@ -2583,7 +2595,7 @@ describe("DomovoiDaemon", () => {
       checkpoint: session.baseCommit ?? "unavailable",
       providerRequestId: 91,
       requestedAt: new Date().toISOString(),
-      execution: snapshot.approvals[0]!.execution,
+      execution: missingWorktreeExecution,
     }, {
       id: "approval-before-restart-2",
       sessionId: session.id,
@@ -2600,7 +2612,7 @@ describe("DomovoiDaemon", () => {
       checkpoint: session.baseCommit ?? "unavailable",
       providerRequestId: 92,
       requestedAt: new Date().toISOString(),
-      execution: snapshot.approvals[0]!.execution,
+      execution: missingWorktreeExecution,
     }]
     snapshot.workingPlans = [{
       sessionId: session.id,
@@ -7189,7 +7201,6 @@ describe("DomovoiDaemon", () => {
       cwd: workspacePath,
       command: approval.command,
     })
-    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
     const agent = {
       connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
       startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
@@ -7204,6 +7215,9 @@ describe("DomovoiDaemon", () => {
     })
     running.push(daemon)
     const address = await daemon.start()
+    // The script changes after the card was loaded, while it waits. A change
+    // before the load makes the card a hard gate there.
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve)
@@ -7391,6 +7405,15 @@ describe("DomovoiDaemon", () => {
 
   it("issues immutable connection IDs for approval attribution", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    // A standing rule needs a card whose saved record still matches the
+    // command resolved in its worktree at load and at the click.
+    const workspacePath = await realpath(await mkdtemp(join(tmpdir(), "domovoi-connection-ids-")))
+    scratchDirectories.push(workspacePath)
+    const approval = snapshot.approvals[0]!
+    snapshot.sessions.find((session) => session.id === approval.sessionId)!.workspacePath = workspacePath
+    approval.directory = workspacePath
+    approval.command = "prisma migrate deploy"
+    approval.execution = await resolveExecution({ workspaceRoot: workspacePath, cwd: workspacePath, command: approval.command })
     snapshot.approvals[0]!.risk = "normal"
     snapshot.approvals[0]!.requestedAt = "2026-09-10T12:00:00.000Z"
     const daemon = new DomovoiDaemon({
@@ -10353,6 +10376,7 @@ describe("DomovoiDaemon", () => {
 
   it("forks a checkpoint idempotently without mutating the source selection", async () => {
     const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.execution = missingWorktreeExecution
     const source = snapshot.sessions.find((session) => session.id === "session-audit")!
     source.workspacePath = "/worktrees/session-audit"
     source.providerThreadId = "source-provider-thread"
