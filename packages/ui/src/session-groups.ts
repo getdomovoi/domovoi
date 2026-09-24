@@ -71,7 +71,3 @@ export function groupSessions(snapshot: WorkspaceSnapshot): SessionGroup[] {
   ]
   return groups.filter((group) => group.sessions.length > 0)
 }
-
-export function sessionsNeedingYou(snapshot: WorkspaceSnapshot): number {
-  return groupSessions(snapshot).find((group) => group.id === "needs-you")?.sessions.length ?? 0
-}
