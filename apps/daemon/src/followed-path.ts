@@ -55,3 +55,57 @@ export async function followedTarget(workspace: string, path: string, cwd?: stri
   if (target === undefined || realWorkspace === undefined) return undefined
   return { workspace: realWorkspace, target }
 }
+
+type NodeKind = "regular" | "directory" | "fifo" | "socket" | "device" | "symlink" | "missing" | "unreadable"
+
+// One filesystem entry as lstat reports it. Numbers are kept as decimal
+// strings from bigint stats, since a Windows file index can pass 2^53.
+type NodeIdentity = { kind: NodeKind; dev: string; ino: string; nlink: string }
+
+// What a file target is: the entry at the requested path (a link is its own
+// entry), the path it really leads to, and the entry there. Two readings that
+// differ in any field are two different targets.
+export type FileTargetIdentity = { entry: NodeIdentity; realPath: string | undefined; target: NodeIdentity }
+
+async function nodeIdentity(path: string): Promise<NodeIdentity> {
+  try {
+    // Only lstat reads it: opening a FIFO with no writer would block.
+    const stats = await lstat(path, { bigint: true })
+    const kind: NodeKind = stats.isFile() ? "regular"
+      : stats.isDirectory() ? "directory"
+      : stats.isSymbolicLink() ? "symlink"
+      : stats.isFIFO() ? "fifo"
+      : stats.isSocket() ? "socket"
+      : "device"
+    return { kind, dev: String(stats.dev), ino: String(stats.ino), nlink: String(stats.nlink) }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return { kind: code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unreadable", dev: "", ino: "", nlink: "" }
+  }
+}
+
+// Read a file target without opening it. It never throws: a path that cannot
+// be read is recorded as such, and compares unequal to anything readable.
+export async function fileTargetIdentity(workspace: string, path: string, cwd?: string): Promise<FileTargetIdentity> {
+  const requested = requestedPath(workspace, path, cwd)
+  const entry = await nodeIdentity(requested)
+  let realPath: string | undefined
+  try { realPath = await followPath(requested) } catch { realPath = undefined }
+  const target = realPath === undefined
+    ? { kind: "unreadable" as const, dev: "", ino: "", nlink: "" }
+    : await nodeIdentity(realPath)
+  return { entry, realPath, target }
+}
+
+function sameNode(one: NodeIdentity, other: NodeIdentity): boolean {
+  return one.kind === other.kind && one.dev === other.dev && one.ino === other.ino && one.nlink === other.nlink
+}
+
+// Whether a file target changed between two readings. With no earlier reading
+// to compare, only a regular file, or a path with nothing at it, stands.
+export function fileTargetChanged(before: FileTargetIdentity | undefined, now: FileTargetIdentity): boolean {
+  if (before === undefined) {
+    return !(now.target.kind === "regular" || (now.entry.kind === "missing" && now.target.kind === "missing"))
+  }
+  return !sameNode(before.entry, now.entry) || before.realPath !== now.realPath || !sameNode(before.target, now.target)
+}

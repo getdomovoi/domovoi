@@ -33,6 +33,16 @@ card is read again this way, including a card the daemon could not resolve (a fi
 hard link, say), and a change in its target, Affects line, sensitivity or execution record rewrites
 the card and refuses the Allow. An unresolved card still offers no Always.
 
+A blocked or unresolved record reads the same whatever is at the file, so the daemon also reads the
+file itself when the card is raised, with lstat alone and without opening it: the kind of entry
+(regular file, directory, FIFO, socket, device, link or nothing), its device, inode and link count,
+and the path it really leads to. On Allow it reads the file the same way, and any difference is a
+change whatever the record says: a file swapped for a directory, a FIFO, a link, another hard link
+or another file, or removed, rewrites the card and refuses the Allow. A file with nothing at it
+then and now is unchanged. The path Claude Code blocked on is kept with the card in memory, so the
+file resolves on Allow as it did when the card was raised. A file-tool name with whitespace around
+it is that tool: the card, its record and what the card hides use the trimmed name.
+
 A card whose Affects line shows [REDACTED] carries `{ state: "unresolved", reason:
 "sensitive-content" }` as its execution record in every copy the daemon saves or sends
 (`workspace.get`, `workspace.changed`, the saved store), so no client receives the path the line

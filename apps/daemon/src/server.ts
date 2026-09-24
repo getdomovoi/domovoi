@@ -219,6 +219,7 @@ import {
 } from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
 import { cardDirectory, fileTargetAffects } from "./file-target-affects.js"
+import { fileTargetChanged, fileTargetIdentity, type FileTargetIdentity } from "./followed-path.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
@@ -1375,10 +1376,16 @@ export class DomovoiDaemon {
   // not outlive the daemon either. When the card hides its file, the card
   // carries hiddenApprovalExecution in every copy saved or sent, and the
   // execution record naming the file is kept here alone, for that reading.
+  // The path the provider blocked on is kept so the file resolves the same way
+  // again, and so is what was at the file when the card's current revision was
+  // made: a blocked or unresolved record reads the same whatever is there, so
+  // only that reading tells an Allow the file was swapped.
   #fileApprovalTargets = new Map<string, {
     cwd: string
     filePath: string
     tool: string
+    blockedPath?: string
+    identity?: FileTargetIdentity
     hiddenExecution?: WorkspaceSnapshot["approvals"][number]["execution"]
   }>()
   // The execution record of a waiting card that is not a file tool's and
@@ -7104,6 +7111,11 @@ export class DomovoiDaemon {
             : requestedFile ?? (approvedRecord?.kind === "workspace-file-tool" && approvedRecord.scope === "file"
               ? { cwd, filePath: join(workspaceRoot, approvedRecord.path) }
               : undefined)
+          // What is at the file now, read before it is resolved again, the
+          // same way and in the same order as when the card was raised.
+          const currentIdentity = fileTarget === undefined || workspaceRoot === undefined
+            ? undefined
+            : await fileTargetIdentity(workspaceRoot, fileTarget.filePath, fileTarget.cwd)
           const currentExecution = workspaceRoot === undefined || cwd === undefined
             ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
             : fileTool !== undefined
@@ -7112,6 +7124,7 @@ export class DomovoiDaemon {
                   cwd: fileTarget?.cwd ?? cwd,
                   command: fileTool,
                   ...(fileTarget ? { filePath: fileTarget.filePath } : {}),
+                  ...(requestedFile?.blockedPath === undefined ? {} : { blockedPath: requestedFile.blockedPath }),
                 })
               : await resolveExecution({
                   workspaceRoot,
@@ -7144,13 +7157,21 @@ export class DomovoiDaemon {
           const executionChanged = cardExecution.state === "resolved"
             ? currentExecution.state !== "resolved" || currentExecution.digest !== cardExecution.digest
             : currentExecution.state !== "unresolved" || currentExecution.reason !== cardExecution.reason
+          // A blocked or unresolved record reads the same whatever is at the
+          // file, so what is there is compared on its own: any difference from
+          // the reading kept for this revision is a change, whatever the
+          // record says. A card with no reading kept stands only on a regular
+          // file or a path with nothing at it.
+          const targetChanged = currentIdentity !== undefined && fileTargetChanged(requestedFile?.identity, currentIdentity)
           if (
             executionChanged
+            || targetChanged
             || (currentAffects !== undefined && currentAffects.text !== approval.affects)
             || currentRisk !== approval.risk
           ) {
             // A card that hid its file keeps hiding it, and one whose file is
             // now hidden starts to; either way the record stays in memory.
+            // The reading of the file moves to the new revision with it.
             const keptTarget = requestedFile ?? (fileTarget !== undefined && fileTool !== undefined
               ? { cwd: fileTarget.cwd, filePath: fileTarget.filePath, tool: fileTool }
               : undefined)
@@ -7159,7 +7180,9 @@ export class DomovoiDaemon {
               || currentAffects?.redacted === true
               || currentAffects?.sensitive === true
             )
-            if (hidesFile) this.#fileApprovalTargets.set(approval.id, { ...keptTarget, hiddenExecution: currentExecution })
+            const reading = currentIdentity === undefined ? {} : { identity: currentIdentity }
+            if (hidesFile) this.#fileApprovalTargets.set(approval.id, { ...keptTarget, ...reading, hiddenExecution: currentExecution })
+            else if (requestedFile) this.#fileApprovalTargets.set(approval.id, { ...requestedFile, ...reading })
             // A card that hid its directory keeps hiding it.
             const hidesDirectory = !hidesFile && hiddenDirectoryExecution !== undefined
             if (hidesDirectory) this.#hiddenApprovalExecutions.set(approval.id, currentExecution)
@@ -9044,30 +9067,43 @@ export class DomovoiDaemon {
       const requestCwd = event.cwd !== undefined && event.cwd !== event.blockedPath
         ? event.cwd
         : session.workspacePath ?? project.path
+      // A file tool is named without the whitespace around it, on the card, in
+      // its record and in what the card hides, as execution resolution names it.
+      const command = event.command !== undefined && isFileToolCommand(event.command)
+        ? event.command.trim()
+        : event.command
+      // A file tool's card names the file the edit reaches. What is at that
+      // path is read before the request is resolved, so a swap after this
+      // reading shows as a change when the card is answered.
+      const fileTarget = event.path !== undefined
+        && event.tool === undefined
+        && command !== undefined
+        && isFileToolCommand(command)
+        ? {
+            cwd: requestCwd,
+            filePath: event.path,
+            tool: command,
+            ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
+            identity: await fileTargetIdentity(session.workspacePath ?? project.path, event.path, requestCwd),
+          }
+        : undefined
       const execution = await resolveExecution({
         workspaceRoot: session.workspacePath ?? project.path,
         cwd: requestCwd,
-        ...(event.command === undefined ? {} : { command: event.command }),
+        ...(command === undefined ? {} : { command }),
         ...(event.path === undefined ? {} : { filePath: event.path }),
         ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
         ...(event.tool === undefined ? {} : { tool: event.tool }),
       })
       const decision = permissionDecisionFor({
         runtime: session.runtime,
-        ...(event.command ? { command: event.command } : {}),
+        ...(command ? { command } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
         execution,
       })
-      const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
+      const commandCopy = redactDurableCommand(command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")
       const directoryCopy = cardDirectory({ directory: requestCwd, workspace: session.workspacePath ?? project.path })
-      // A file tool's card names the file the edit reaches.
-      const fileTarget = event.path !== undefined
-        && event.tool === undefined
-        && event.command !== undefined
-        && isFileToolCommand(event.command)
-        ? { cwd: requestCwd, filePath: event.path, tool: event.command }
-        : undefined
       const affectsCopy = fileTarget
         ? await fileTargetAffects({ workspace: session.workspacePath ?? project.path, path: fileTarget.filePath, cwd: fileTarget.cwd })
         : { text: "Files and processes in the session worktree.", redacted: false, sensitive: false }
@@ -9089,7 +9125,7 @@ export class DomovoiDaemon {
         rule.status === "inactive"
         && rule.inactiveReason === "legacy-text-only"
         && rule.projectId === project.id
-        && rule.command === event.command
+        && rule.command === command
           ? [rule.id]
           : []
       ))

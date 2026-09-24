@@ -12484,6 +12484,311 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  // The round 8 probe on #545: a blocked file resolves as unsupported syntax
+  // whatever sits at its path, so neither the record nor the card text can tell
+  // that the file was swapped. The daemon keeps what the target was when the
+  // card was raised, read with lstat alone, and any difference at Allow is a
+  // change, from a credential card and from a plain one alike.
+  it("refuses an Allow for a blocked file target swapped in any way while its card waits", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-identity-"))
+    scratchDirectories.push(workspacePath)
+    // Windows has no named pipe in the file tree, so there the FIFO row is left
+    // out (ruled 2026-09-24).
+    const swaps = process.platform === "win32"
+      ? ["directory", "symlink", "hard-link", "rename-over", "removal"] as const
+      : ["directory", "fifo", "symlink", "hard-link", "rename-over", "removal"] as const
+    type Swap = typeof swaps[number] | "unchanged" | "still-missing"
+    const origins = { credential: ".env", plain: "notes.json" } as const
+    const rows: Array<{ requestId: number; origin: keyof typeof origins; swap: Swap; path: string }> = []
+    let nextRequestId = 200
+    for (const origin of Object.keys(origins) as Array<keyof typeof origins>) {
+      for (const swap of [...swaps, "unchanged", ...(origin === "plain" ? ["still-missing"] as const : [])] as Swap[]) {
+        const directory = join(workspacePath, "cases", `${origin}-${swap}`)
+        await mkdir(directory, { recursive: true })
+        await writeFile(join(directory, "other.json"), "{}")
+        const path = join(directory, origins[origin])
+        if (swap !== "still-missing") await writeFile(path, "TOKEN=1")
+        rows.push({ requestId: nextRequestId++, origin, swap, path })
+      }
+    }
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-file-identity"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-file-identity"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    type Card = {
+      id: string
+      providerRequestId?: number
+      risk: string
+      affects: string
+      revision: number
+      execution: { state: string; reason?: string }
+    }
+    const received: string[] = []
+    const broadcasts: Card[][] = []
+    socket.on("message", (data: WebSocket.RawData) => {
+      received.push(data.toString())
+      const message = JSON.parse(data.toString()) as { method?: string; params?: { approvals?: Card[] } }
+      if (message.method === "workspace.changed" && message.params?.approvals) broadcasts.push(message.params.approvals)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+    const card = async (requestId: number) => (await cards()).find((candidate) => candidate.providerRequestId === requestId)!
+    const changed = "The file target changed; review the updated approval before allowing it"
+    // Nothing a client received and nothing saved names the credential file.
+    const neverNamed = () => {
+      for (const copy of [...received, JSON.stringify(store.save.mock.calls)]) expect(copy).not.toContain(".env")
+    }
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the files", client: "desktop" })
+    for (const row of rows) {
+      // Claude names the file it blocked on beside the request.
+      listener!({
+        type: "approval-requested",
+        requestId: row.requestId,
+        threadId: session.providerThreadId,
+        turnId: "turn-file-identity",
+        reason: "Edit a file",
+        command: "Edit",
+        cwd: workspacePath,
+        path: row.path,
+        blockedPath: row.path,
+      })
+    }
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(rows.length), { timeout: 3_000 })
+    for (const row of rows) {
+      expect(await card(row.requestId)).toMatchObject(row.origin === "credential"
+        ? { risk: "hard-gate", affects: "The file [REDACTED] in the session worktree.", revision: 0, execution: { state: "unresolved", reason: "sensitive-content" } }
+        : { risk: "normal", revision: 0, execution: { state: "unresolved", reason: "unsupported-syntax" } })
+    }
+    neverNamed()
+
+    // While the cards wait, each target is swapped.
+    const { execFileSync } = await import("node:child_process")
+    for (const row of rows) {
+      const directory = dirname(row.path)
+      if (row.swap === "directory") {
+        await unlink(row.path)
+        await mkdir(row.path)
+      } else if (row.swap === "fifo") {
+        await unlink(row.path)
+        execFileSync("mkfifo", [row.path])
+      } else if (row.swap === "symlink") {
+        await unlink(row.path)
+        await symlink(join(directory, "other.json"), row.path)
+      } else if (row.swap === "hard-link") {
+        await link(row.path, join(directory, "twin"))
+      } else if (row.swap === "rename-over") {
+        await writeFile(join(directory, "replacement"), "TOKEN=1")
+        await rename(join(directory, "replacement"), row.path)
+      } else if (row.swap === "removal") {
+        await unlink(row.path)
+      }
+    }
+
+    for (const row of rows.filter((candidate) => candidate.swap !== "unchanged" && candidate.swap !== "still-missing")) {
+      const shown = await card(row.requestId)
+      const broadcastsBefore = broadcasts.length
+      const name = `${row.origin} ${row.swap}`
+      const answer = await rpc("approval.resolve", { approvalId: shown.id, decision: "allow-once", revision: 0, client: "desktop" })
+      // Soft, so one run reports every row that lets the Allow through.
+      expect.soft({ name, refusal: (answer.error as { message?: string } | undefined)?.message }).toEqual({ name, refusal: changed })
+      expect.soft({ name, released: agent.resolveApproval.mock.calls.some(([requestId]) => requestId === row.requestId) })
+        .toEqual({ name, released: false })
+      expect.soft({ name, revision: (await card(row.requestId))?.revision }).toEqual({ name, revision: 1 })
+      expect.soft({ name, broadcast: broadcasts.slice(broadcastsBefore).some((approvals) => approvals.some(
+        (candidate) => candidate.id === shown.id && candidate.revision === 1,
+      )) }).toEqual({ name, broadcast: true })
+      expect.soft({ name, saved: store.save.mock.calls.some(([saved]) => (saved as WorkspaceSnapshot).approvals.some(
+        (candidate) => candidate.id === shown.id && candidate.revision === 1,
+      )) }).toEqual({ name, saved: true })
+    }
+    neverNamed()
+
+    // An unchanged target, and one missing when raised and still missing, is
+    // released once at the revision it shows.
+    for (const row of rows.filter((candidate) => candidate.swap === "unchanged" || candidate.swap === "still-missing")) {
+      const shown = await card(row.requestId)
+      await expect(rpc("approval.resolve", { approvalId: shown.id, decision: "allow-once", revision: 0, client: "desktop" }))
+        .resolves.not.toHaveProperty("error")
+      expect(agent.resolveApproval.mock.calls.filter(([requestId]) => requestId === row.requestId)).toEqual([[row.requestId, "allow-once"]])
+    }
+    expect(agent.resolveApproval.mock.calls.map(([requestId]) => requestId)).toEqual(
+      rows.filter((row) => row.swap === "unchanged" || row.swap === "still-missing").map((row) => row.requestId),
+    )
+    neverNamed()
+    socket.close()
+  })
+
+  // A file tool is its name, whatever whitespace the request put around it, so
+  // a padded Edit of a credential file hides the file like any other Edit.
+  it("treats a padded file tool command as the file tool it names", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-padded-"))
+    scratchDirectories.push(workspacePath)
+    await writeFile(join(workspacePath, ".env"), "TOKEN=1")
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-file-padded"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-file-padded"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const received: string[] = []
+    socket.on("message", (data: WebSocket.RawData) => { received.push(data.toString()) })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    type Card = { id: string; command: string; risk: string; affects: string; revision: number; execution: unknown }
+    const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the file", client: "desktop" })
+    listener!({
+      type: "approval-requested",
+      requestId: 301,
+      threadId: session.providerThreadId,
+      turnId: "turn-file-padded",
+      reason: "Edit a file",
+      command: "  Edit \t",
+      path: join(workspacePath, ".env"),
+    })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(1), { timeout: 3_000 })
+    const [padded] = await cards()
+    expect(padded).toMatchObject({
+      command: "Edit",
+      risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      revision: 0,
+      execution: { state: "unresolved", reason: "sensitive-content" },
+    })
+    expect(daemon.fileApprovalTargetIds).toEqual([padded!.id])
+    for (const copy of [...received, JSON.stringify(store.save.mock.calls)]) expect(copy).not.toContain(".env")
+
+    // The file is read again on Allow like any Edit's.
+    await unlink(join(workspacePath, ".env"))
+    await mkdir(join(workspacePath, ".env"))
+    await expect(rpc("approval.resolve", { approvalId: padded!.id, decision: "allow-once", revision: 0, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    for (const copy of [...received, JSON.stringify(store.save.mock.calls)]) expect(copy).not.toContain(".env")
+    socket.close()
+  })
+
   // The card hides the file, so no copy a client receives or the daemon
   // saves may name it; the daemon keeps the record in memory to read again.
   it("never sends or saves the path of a file its card hides, and still reads it again on Allow", async () => {

@@ -86,8 +86,10 @@ export function permissionHardGates(): { categories: HardGateCategory[] } {
 const fileToolCommands = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 
 // Whether an approval card is a file tool's, which names its target file.
+// Execution resolution trims the command before it names the tool, so a padded
+// name is the same tool here too.
 export function isFileToolCommand(command: string): boolean {
-  return fileToolCommands.has(command)
+  return fileToolCommands.has(command.trim())
 }
 
 const gitSummaryFlag = String.raw`--(?:stat|shortstat|numstat|name-only|name-status)`
