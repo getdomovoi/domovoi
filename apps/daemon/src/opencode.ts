@@ -209,17 +209,32 @@ export function openCodeMessageOrder(milliseconds: number, counter = 1): string 
   return ((BigInt(milliseconds) * 0x1000n + BigInt(counter)) & orderMask).toString(16).padStart(12, "0")
 }
 
+// The session already holds an id at the last order the servers can store,
+// so no id can sort after it.
+export class OpenCodeMessageIdsExhaustedError extends Error {
+  constructor() {
+    super("No message id sorts after the session's newest one")
+    this.name = "OpenCodeMessageIdsExhaustedError"
+  }
+}
+
 // Each id sorts after the last one this process made, even when the clock
 // steps back or a millisecond runs out of counter values, and after `after`,
-// the newest id the session is known to hold.
+// the newest id the session is known to hold. Past the 48-bit order an id is
+// refused rather than masked, because a masked id wraps to zero and sorts
+// first. The process-wide order follows the clock only; a session's floor
+// raises that session's id, never every other session's.
 export function openCodeMessageId(now = Date.now(), after?: string): string {
-  let order = BigInt(`0x${openCodeMessageOrder(now)}`)
-  if (order <= lastOrder) order = lastOrder + 1n
+  const clock = BigInt(`0x${openCodeMessageOrder(now)}`)
+  let order = clock > lastOrder ? clock : lastOrder + 1n
+  // The servers' own ids wrap here too (about every 795 days); follow the clock.
+  if (order > orderMask) order = clock
+  lastOrder = order
   const floor = after === undefined ? undefined : orderedMessageId.exec(after)?.[1]
   if (floor !== undefined && order <= BigInt(`0x${floor}`)) order = BigInt(`0x${floor}`) + 1n
-  lastOrder = order & orderMask
+  if (order > orderMask) throw new OpenCodeMessageIdsExhaustedError()
   const random = Array.from(randomBytes(14), (byte) => base62[byte % 62]).join("")
-  return `msg_${lastOrder.toString(16).padStart(12, "0")}${random}`
+  return `msg_${order.toString(16).padStart(12, "0")}${random}`
 }
 
 export function nextOpenCodeMessageId(after?: string): string {
@@ -579,7 +594,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   #nextMessageId(session: Session): string {
-    const id = this.#id(session.newestMessageId)
+    let id: string
+    try {
+      id = this.#id(session.newestMessageId)
+    } catch (error) {
+      if (!(error instanceof OpenCodeMessageIdsExhaustedError)) throw error
+      throw new Error(`${this.#identity.providerName} session has used the last message id the server can order, so it cannot take another message`, { cause: error })
+    }
     const newest = laterMessageId(session.newestMessageId, id)
     if (newest !== undefined) session.newestMessageId = newest
     return id

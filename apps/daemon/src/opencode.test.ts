@@ -12,6 +12,7 @@ import {
   domovoiOpenCodeConfig,
   openCodeAgentFor,
   openCodeMessageId,
+  OpenCodeMessageIdsExhaustedError,
   openCodeMessageOrder,
   type OpenCodeClient,
   type OpenCodeEvent,
@@ -724,6 +725,21 @@ describe("openCodeMessageId", () => {
 
     expect(openCodeMessageId(Date.now(), later) > later).toBe(true)
   })
+
+  // The servers keep 48 bits of order. Nothing sorts after the last value, so
+  // an id is refused there instead of wrapping to zero and sorting first.
+  it("refuses to follow an id at the last 48-bit order instead of wrapping to zero", () => {
+    const last = "msg_ffffffffffffAAAAAAAAAAAAAA"
+
+    expect(() => openCodeMessageId(Date.now(), last)).toThrow(OpenCodeMessageIdsExhaustedError)
+  })
+
+  it("keeps making ids for other sessions after one session's ids ran out", () => {
+    expect(() => openCodeMessageId(Date.now(), "msg_fffffffffffeAAAAAAAAAAAAAA")).not.toThrow()
+    const next = openCodeMessageId(Date.now())
+
+    expect(next.slice(4, 16) < "ffffffffffff").toBe(true)
+  })
 })
 
 describe("message order across processes", () => {
@@ -741,6 +757,18 @@ describe("message order across processes", () => {
       query: expect.objectContaining({ directory: "/worktree" }),
     }))
     expect(turnId > history).toBe(true)
+    await adapter.close()
+  })
+
+  it("refuses a turn in a session whose history holds the last message order", async () => {
+    const { client, factory } = harness()
+    client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: "msg_ffffffffffffAAAAAAAAAAAAAA" } }] })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    await expect(adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") }))
+      .rejects.toThrow("OpenCode session has used the last message id the server can order, so it cannot take another message")
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
     await adapter.close()
   })
 
