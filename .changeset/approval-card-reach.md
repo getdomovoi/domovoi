@@ -84,5 +84,9 @@ holds such a path is dropped.
 A saved card keeps its file only as its file line, so at load and at Allow each path that line names
 is followed on disk under the same 2 second deadline: a file that became a link into a credential
 store is hidden and the card becomes a hard gate, and a line that no longer reads back as a path
-(shortened, with an escaped character, or in another format) seals the card. A sealed card keeps a
+(shortened, with an escaped character, or in another format) seals the card. A saved file line is
+read back only when it reads exactly one way as one of the card's three file sentences, no path in
+it holds that sentence wording (" in the session worktree", ", outside the session worktree" or
+", through a link at "), and the reading renders back to the same line; any other line seals the
+card, so a file name that holds the wording cannot be read as other paths. A sealed card keeps a
 provider's own reach line and hides any other Affects line, whatever its format.
