@@ -25,17 +25,19 @@ of its checks, including the bounds of the UTF-16 length helpers, which JSON Sch
 cannot express.
 
 Notifications are recorded from `notificationMethods` in the protocol package, the
-map from each notification to the schema of its params. The daemon sends a
-notification only through that map: its payload must parse, and a field the schema
-does not describe, at any depth, is refused rather than sent. A refused
-notification is reported and not sent; a refused resync closes the slow client,
-which reconnects.
+map from each notification to the schema of its params. The daemon writes to an
+RPC client only through its RPC writer. The writer sends a response only if it
+has an id and no method, and a notification only as a frame built from that map:
+its payload must parse, and a field the schema does not describe, at any depth, is
+refused rather than sent. A refused notification is reported and not sent; a
+refused resync closes the slow client, which reconnects.
 
 `node scripts/protocol-wire.mjs check` compares the built package with the record of
 the highest release at or below its `protocolVersion`. In CI it runs with
 `--base <pull request base commit>`: a record that exists at the base must be
 byte for byte unchanged, and must not be removed. A record new since the base is
-a new release. At that same version, or a
+a new release. When `CI` is set, `check` fails without a base, or with one this
+checkout cannot resolve to a commit. At that same version, or a
 patch of it, any wire change fails and the changed entries are listed. With a higher
 minor or major, the check passes: the changes since that release share the bump. No
 release record at or below the current version also fails. The check needs no tags.

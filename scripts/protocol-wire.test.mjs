@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
@@ -140,6 +140,22 @@ test("refuses a release record changed or removed since the base commit", (conte
 
   rmSync(join(directory, wireReleasesPath, "0.7.0.json"))
   assert.match(releasedRecordRefusal(directory, base) ?? "", /0\.7\.0\.json was removed since/)
+})
+
+// In CI the base is required: without it a rewritten record would be trusted.
+test("fails closed in CI without a resolvable base commit", () => {
+  const run = (...args) => spawnSync(process.execPath, [join(root, "scripts/protocol-wire.mjs"), "check", ...args], {
+    cwd: root, encoding: "utf8", env: { ...process.env, CI: "true" },
+  })
+  const missing = run()
+  assert.equal(missing.status, 1, missing.stdout)
+  assert.match(missing.stderr, /In CI, check needs --base/)
+  const unknown = run("--base", "0".repeat(40))
+  assert.equal(unknown.status, 1, unknown.stdout)
+  assert.match(unknown.stderr, /cannot be resolved to a commit/)
+  const malformed = run("--base", "main")
+  assert.equal(malformed.status, 2, malformed.stdout)
+  assert.match(malformed.stderr, /full base commit SHA/)
 })
 
 test("verifies a release record against its release commit", () => {

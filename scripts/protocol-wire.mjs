@@ -13,6 +13,7 @@
 // All read a built package (`pnpm --filter @getdomovoi/protocol build` first);
 // `--package` reads another checkout, such as a release commit's tree. With
 // `--base`, a release record that existed at that commit must be unchanged.
+// When CI is set, check refuses to run without a base it can resolve.
 // The wire is what crosses a socket: every RPC's params and result, the payload
 // of every notification the daemon sends, and the error data it attaches.
 // Exported helpers and aliases are not the wire and are not recorded.
@@ -164,7 +165,9 @@ export async function wireOf(packageRoot = root) {
 }
 
 function git(repository, args) {
-  return execFileSync("git", ["-C", repository, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+  return execFileSync("git", ["-C", repository, ...args], {
+    encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+  })
 }
 
 // A release record is written once, from its release commit. Every record that
@@ -283,10 +286,20 @@ async function main(argv) {
     return 2
   }
   const base = option("--base")
+  if (base === undefined && process.env.CI) {
+    process.stderr.write("In CI, check needs --base <full base commit SHA>, so a rewritten release record cannot pass.\n")
+    return 1
+  }
   if (base !== undefined) {
     if (!/^[0-9a-f]{40}$/.test(base)) {
       process.stderr.write("--base needs the full base commit SHA.\n")
       return 2
+    }
+    try {
+      git(root, ["cat-file", "-e", `${base}^{commit}`])
+    } catch {
+      process.stderr.write(`--base ${base} cannot be resolved to a commit in this checkout.\n`)
+      return 1
     }
     const refusal = releasedRecordRefusal(root, base)
     if (refusal) {
