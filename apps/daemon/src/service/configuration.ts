@@ -31,7 +31,7 @@ const configurationSchema = z.object({
   tailnetHost: tailnetHostSchema.optional(),
   sshTunnels: configuredSshTunnelsSchema.optional(),
   allowedOrigins: z.array(z.string()).optional(),
-  webAppUrl: z.string().optional(),
+  webAppUrl: z.unknown().optional(),
   allowRemoteTransport: z.boolean(),
 }).strict()
 
@@ -111,10 +111,18 @@ export function serviceRegistrationBlocksProfile(home: string, profile: ProfileL
   }
 }
 
+// A saved address of the wrong type is a refused daemon setting, like a
+// refused string, not a malformed file.
+function webAppUrlSetting(value: unknown): string | undefined {
+  if (value === undefined || typeof value === "string") return value
+  throw new DaemonConfigurationError("DOMOVOI_WEB_APP_URL must be a string")
+}
+
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, ...required } = configurationSchema.parse(JSON.parse(text))
+    const webAppUrl = webAppUrlSetting(savedWebAppUrl)
     const config: ServiceConfiguration = {
       ...required,
       ...(wsl !== undefined ? { wsl } : {}),
@@ -156,7 +164,11 @@ export async function readServiceConfiguration(path: string): Promise<ServiceCon
     const text = await withinServiceDeadline(deadline, () => readFile(path, { encoding: "utf8", signal: deadline.signal }))
     return parseServiceConfiguration(text)
   } catch (error) {
-    throw new Error(`Could not load service configuration at ${path}. Reinstall the service before restarting.`, { cause: error })
+    // The parser already replaced any refused value with a fixed message.
+    const message = `Could not load service configuration at ${path}. Reinstall the service before restarting.`
+    throw error instanceof DaemonConfigurationError
+      ? new DaemonConfigurationError(message, { cause: error })
+      : new Error(message, { cause: error })
   } finally {
     deadline.clear()
   }

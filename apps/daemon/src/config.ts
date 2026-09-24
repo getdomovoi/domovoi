@@ -32,8 +32,8 @@ export type DaemonEnvironmentConfig = {
 }
 
 export class DaemonConfigurationError extends Error {
-  constructor(message: string) {
-    super(message)
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
     this.name = "DaemonConfigurationError"
   }
 }

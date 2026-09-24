@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { DaemonConfigurationError, parseDaemonEnvironment } from "../config.js"
-import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceEnvironment } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, readServiceConfiguration, serializeServiceConfiguration, serviceEnvironment } from "./configuration.js"
 
 describe("service configuration", () => {
   it.each(["linux", "darwin", "win32"])("round trips every daemon setting on %s", (platform) => {
@@ -77,6 +81,82 @@ describe("service configuration", () => {
     }
     expect(thrown).toBeInstanceOf(DaemonConfigurationError)
     expect((thrown as Error).message).toBe("Invalid service configuration. Reinstall with valid non-secret daemon settings.")
+  })
+
+  const sanitized = "Invalid service configuration. Reinstall with valid non-secret daemon settings."
+  const thrownBy = (run: () => unknown): unknown => {
+    try {
+      run()
+    } catch (error) {
+      return error
+    }
+    return undefined
+  }
+  const refusedWebAppUrls: Array<[string, unknown]> = [
+    ["null", null],
+    ["a number", 7717],
+    ["an object", { href: "https://person:secret@app.example.com/" }],
+    ["an array", ["https://person:secret@app.example.com/"]],
+    ["a refused string", "https://person:secret@app.example.com/"],
+  ]
+
+  it.each(refusedWebAppUrls)("refuses a saved web app address that is %s as a configuration error", (_label, webAppUrl) => {
+    const thrown = thrownBy(() => parseServiceConfiguration(JSON.stringify({ ...defaults, webAppUrl })))
+    expect(thrown).toBeInstanceOf(DaemonConfigurationError)
+    expect((thrown as Error).message).toBe(sanitized)
+    expect((thrown as Error).cause).toBeUndefined()
+  })
+
+  it.each([
+    ["malformed JSON", "{"],
+    ["an unknown field", JSON.stringify({ ...defaults, extra: "unexpected" })],
+  ])("keeps %s a plain error", (_label, text) => {
+    const thrown = thrownBy(() => parseServiceConfiguration(text))
+    expect(thrown).toBeInstanceOf(Error)
+    expect(thrown).not.toBeInstanceOf(DaemonConfigurationError)
+    expect((thrown as Error).message).toBe(sanitized)
+  })
+
+  describe("loading the saved file", () => {
+    let directory = ""
+    beforeEach(async () => {
+      directory = await mkdtemp(join(tmpdir(), "domovoi-service-configuration-"))
+    })
+    afterEach(async () => {
+      await rm(directory, { recursive: true, force: true })
+    })
+    const loaded = async (text: string): Promise<{ thrown: unknown, path: string }> => {
+      const path = join(directory, "service.json")
+      await writeFile(path, text)
+      try {
+        await readServiceConfiguration(path)
+      } catch (error) {
+        return { thrown: error, path }
+      }
+      return { thrown: undefined, path }
+    }
+
+    it.each(refusedWebAppUrls)("keeps a saved web app address that is %s a configuration error", async (_label, webAppUrl) => {
+      const { thrown, path } = await loaded(JSON.stringify({ ...defaults, webAppUrl }))
+      expect(thrown).toBeInstanceOf(DaemonConfigurationError)
+      expect((thrown as Error).message).toBe(`Could not load service configuration at ${path}. Reinstall the service before restarting.`)
+      const cause = (thrown as Error).cause
+      expect(cause).toBeInstanceOf(DaemonConfigurationError)
+      expect((cause as Error).message).toBe(sanitized)
+      expect((cause as Error).cause).toBeUndefined()
+      expect(`${(thrown as Error).message.replace(path, "")} ${(cause as Error).message}`).not.toMatch(/person:secret|7717|app\.example\.com/)
+    })
+
+    it.each([
+      ["malformed JSON", "{"],
+      ["an unknown field", JSON.stringify({ ...defaults, extra: "unexpected" })],
+    ])("keeps %s a plain error", async (_label, text) => {
+      const { thrown, path } = await loaded(text)
+      expect(thrown).toBeInstanceOf(Error)
+      expect(thrown).not.toBeInstanceOf(DaemonConfigurationError)
+      expect((thrown as Error).message).toBe(`Could not load service configuration at ${path}. Reinstall the service before restarting.`)
+      expect((thrown as Error).cause).not.toBeInstanceOf(DaemonConfigurationError)
+    })
   })
 
   it("bounds the saved configuration and refuses broken JSON", () => {
