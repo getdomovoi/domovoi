@@ -12,7 +12,7 @@ import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
 import {
-  developmentDaemonEnvironment,
+  developmentDaemonOverrides,
   inlineScriptHashes,
   isAuthorizedRendererEvent,
   isTrustedRendererFrameUrl,
@@ -125,10 +125,10 @@ const daemonSeam = developmentLoopModule
 // Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({
   // The window resolves its renderer target before the first acquisition, so a
-  // development daemon is told the origin its renderer is actually served from.
-  environment: mainRendererTarget
-    ? developmentDaemonEnvironment(process.env, mainRendererTarget)
-    : process.env,
+  // development daemon is told the origin its renderer is actually served from,
+  // as an override on top of process.env so the inherited bearer stays bound.
+  environment: process.env,
+  ...(mainRendererTarget ? { environmentOverrides: developmentDaemonOverrides(process.env, mainRendererTarget) } : {}),
   homeDirectory: homedir(),
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),

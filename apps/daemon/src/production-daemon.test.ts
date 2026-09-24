@@ -276,6 +276,31 @@ describe("createProductionDaemon", () => {
     })
   })
 
+  // The desktop in development adds its renderer origin to the daemon's
+  // settings. Passed as overrides on top of process.env, not as a copy of it,
+  // each acquisition still reads process.env itself and gets the kept bearer.
+  it("keeps the inherited bearer across acquisitions that add settings on top of the process environment", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const acquireWithOverrides = () => createProductionDaemonWithDependencies({
+        homeDirectory: home, environment: process.env, environmentOverrides: { DOMOVOI_ALLOWED_ORIGINS: "http://localhost:5173" },
+      }, {
+        ...productionDaemonDependencies,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon,
+      })
+      const first = await acquireWithOverrides()
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+      const second = await acquireWithOverrides()
+      running.push(second)
+      expect(second.authToken).toBe(authToken)
+      expect(createDaemon).toHaveBeenLastCalledWith(expect.objectContaining({ allowedOrigins: ["http://localhost:5173"] }))
+      expect(process.env.DOMOVOI_ALLOWED_ORIGINS).toBeUndefined()
+    })
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))

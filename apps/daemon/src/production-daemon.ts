@@ -31,6 +31,10 @@ import { withInheritedCredentials, withoutInheritedCredentials } from "./inherit
 
 export type ProductionDaemonOptions = {
   environment?: DaemonEnvironment
+  // Settings added on top of the environment for this daemon only. A caller
+  // that passes process.env with overrides, rather than a copy of it, keeps the
+  // inherited bearer across acquisitions: a copy is read as given.
+  environmentOverrides?: Readonly<Record<string, string>>
   homeDirectory?: string
   machineLabel?: string
   errorSink?: DaemonErrorSink
@@ -113,8 +117,8 @@ export async function createProductionDaemonWithDependencies(
   // The desktop passes process.env or a copy of it; either way the bearer
   // leaves process.env here and is read from the kept copy.
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
-  const settings = withInheritedCredentials(options.environment ?? process.env, homeDirectory)
-  const environment = withoutInheritedCredentials(options.environment ?? process.env)
+  const settings = { ...withInheritedCredentials(options.environment ?? process.env, homeDirectory), ...options.environmentOverrides }
+  const environment = withoutInheritedCredentials({ ...(options.environment ?? process.env), ...options.environmentOverrides })
   const machineLabel = options.machineLabel ?? hostname()
   let profile = profileLocation(homeDirectory)
   let lease = ownership?.lease
