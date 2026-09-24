@@ -174,7 +174,9 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
           onPress={() => onResolve(approval.id, "allow-once")}
         />
         <View className="flex-row gap-2">
-          {hardGate ? null : (
+          {/* The daemon refuses a standing rule on a hard gate and for a request
+              it could not resolve (ruled 2026-09-24). */}
+          {hardGate || approval.execution.state !== "resolved" ? null : (
             <Button title="Always here" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onResolve(approval.id, "always-project")} />
           )}
           <Button title="Deny" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onDenyExplain(approval.id)} />

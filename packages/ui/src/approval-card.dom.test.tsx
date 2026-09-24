@@ -129,3 +129,35 @@ it("names the agent and mode on the header line", () => {
   expect(terms).toContain("Machine")
   expect(terms).toContain("Est. duration")
 })
+
+// Ruled by fetzy 2026-09-24: a request the daemon could not resolve cannot
+// become a standing rule, so no surface offers Always for it.
+it.each(["desktop", "web"] as const)("offers no Always on the %s card for a request that cannot become a standing rule", (surface) => {
+  const snapshot = structuredClone(demoWorkspace)
+  const approval = snapshot.approvals[0]!
+  approval.risk = "normal"
+  approval.execution = { state: "unresolved", reason: "cwd-outside-project" }
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      surface={surface}
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+      onArchiveSession={vi.fn(async () => {})}
+    />,
+  )
+  expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
+})
+

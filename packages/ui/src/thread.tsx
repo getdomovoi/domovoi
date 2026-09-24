@@ -435,7 +435,11 @@ function ApprovalCard({
         ) : (
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
-            <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>{surface === "web" ? "Always here" : "Always in this project"}</Button>
+            {/* Ruled 2026-09-24: the daemon refuses a standing rule for a request it
+                could not resolve, so the card does not offer one. */}
+            {approval.execution.state === "resolved" ? (
+              <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>{surface === "web" ? "Always here" : "Always in this project"}</Button>
+            ) : null}
             <Button ref={explainTriggerRef} variant="outline" size="sm" onClick={() => setExplainOpen(true)}>Deny</Button>
             {surface === "web" ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}
           </div>

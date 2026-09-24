@@ -100,6 +100,14 @@ describe("TabletShell", () => {
     expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
   })
 
+  it("offers no standing rule for a request the daemon could not resolve", async () => {
+    await draw("normal", "full", (snapshot) => {
+      snapshot.approvals[0]!.execution = { state: "unresolved", reason: "cwd-outside-project" }
+    })
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
+  })
+
   it("offers a standing rule when the approval is not a hard gate", async () => {
     const { props, approval } = await draw("normal")
     expect(screen.getByText("Approval required")).toBeOnTheScreen()
