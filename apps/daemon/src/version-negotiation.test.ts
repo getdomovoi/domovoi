@@ -67,7 +67,7 @@ it("negotiates a compatible patch independently of product version and permits w
 })
 
 it.each([
-  ["0.8.0", "machine-ahead"], ["0.10.0", "machine-behind"], ["1.2.0", "machine-behind"],
+  ["0.7.0", "machine-ahead"], ["0.9.0", "machine-behind"], ["1.2.0", "machine-behind"],
   [undefined, "machine-ahead"],
 ] as const)("refuses %s with direction and keeps ordinary RPCs closed", async (version, compatibility) => {
   const { connect } = await fixture()
