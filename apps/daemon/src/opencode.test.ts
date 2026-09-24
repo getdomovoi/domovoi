@@ -712,20 +712,55 @@ describe("repository instruction files", () => {
 })
 
 describe("Kilo legacy repository configuration", () => {
-  it("opens and prompts a Kilo session even when the worktree has Kilo's legacy files", async () => {
+  it.each([
+    [".kilo/mcp.json"],
+    [".kilocode/mcp.json"],
+    [".kilocodemodes"],
+  ])("refuses a Kilo session before Kilo can load the worktree's %s", async (file) => {
     const worktree = await mkdtemp(join(tmpdir(), "domovoi-kilo-legacy-"))
     scratchDirectories.push(worktree)
-    for (const file of [".kilo/mcp.json", ".kilocode/mcp.json", ".kilocodemodes"]) {
-      await mkdir(join(worktree, file, ".."), { recursive: true })
-      await writeFile(join(worktree, file), "{}\n")
-    }
+    await mkdir(join(worktree, file, ".."), { recursive: true })
+    await writeFile(join(worktree, file), "{}\n")
     const { client, factory } = harness()
     const adapter = new KiloSdkAdapter(factory)
 
+    await expect(adapter.startThread({ cwd: worktree, runtime: runtime("build") }))
+      .rejects.toThrow(`Kilo would load ${file} from this worktree`)
+    await expect(adapter.resumeThread({ threadId: "kilo-thread", cwd: worktree, runtime: runtime("build") }))
+      .rejects.toThrow(`Kilo would load ${file} from this worktree`)
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.session.get).not.toHaveBeenCalled()
+    expect(client.event.subscribe).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("refuses a Kilo turn once the worktree gains a legacy MCP file", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-kilo-legacy-turn-"))
+    scratchDirectories.push(worktree)
+    const { client, factory } = harness()
+    const adapter = new KiloSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await mkdir(join(worktree, ".kilo"))
+    await writeFile(join(worktree, ".kilo", "mcp.json"), "{}\n")
+
+    await expect(adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") }))
+      .rejects.toThrow("Kilo would load .kilo/mcp.json from this worktree")
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("leaves OpenCode sessions in a worktree with Kilo legacy files alone", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-kilo-files-"))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, ".kilo"))
+    await writeFile(join(worktree, ".kilo", "mcp.json"), "{}\n")
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+
     const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
     await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
-    expect(client.session.create).toHaveBeenCalled()
-    expect(client.session.promptAsync).toHaveBeenCalled()
+
+    expect(client.session.promptAsync).toHaveBeenCalledOnce()
     await adapter.close()
   })
 })

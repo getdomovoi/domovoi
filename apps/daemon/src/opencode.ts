@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto"
+import { lstat } from "node:fs/promises"
+import { join } from "node:path"
 
 import {
   createOpencodeClient,
@@ -70,6 +72,7 @@ export type OpenCodeFactory = () => Promise<{
 export type OpenCodeAdapterIdentity = {
   providerId: string
   providerName: string
+  heldBackRepositoryFiles?: readonly string[]
 }
 
 type Session = {
@@ -191,6 +194,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+    await this.#refuseHeldBackRepositoryFiles(cwd)
     const client = await this.#client()
     const action = `${this.#identity.providerName} session creation`
     const created = requireSession(
@@ -224,6 +228,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<void> {
     if (this.#sessions.has(threadId)) return
+    await this.#refuseHeldBackRepositoryFiles(cwd)
     const pending = { cwd, cancelled: false }
     this.#pendingSessionLoads.set(threadId, pending)
     try {
@@ -345,6 +350,21 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     await this.#connection
   }
 
+  async #refuseHeldBackRepositoryFiles(cwd: string): Promise<void> {
+    for (const file of this.#identity.heldBackRepositoryFiles ?? []) {
+      try {
+        await lstat(join(cwd, file))
+      } catch {
+        continue
+      }
+      throw new Error(
+        `${this.#identity.providerName} would load ${file} from this worktree, and that file can start programs or change agent permissions. `
+        + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+        + `Remove ${file} from this worktree or use another provider here.`,
+      )
+    }
+  }
+
   async #client(): Promise<OpenCodeClient> {
     await this.connect()
     return this.#runtime!.client
@@ -425,6 +445,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     prompt: string,
     runtime: Runtime,
   ): Promise<void> {
+    await this.#refuseHeldBackRepositoryFiles(session.cwd)
     const client = await this.#client()
     const model = openCodeModel(runtime.model)
     const system = await projectInstructions(session.cwd, "opencode")

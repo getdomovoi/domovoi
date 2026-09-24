@@ -15,8 +15,7 @@ reach the agent: the daemon reads `CLAUDE.md` (with its `@path` imports inside t
 `CLAUDE.md` and `CONTEXT.md` for OpenCode and Kilo, and passes them as system prompt text. Project
 skills, subagents and commands under `.claude/` are not loaded for Claude Code sessions.
 
-Kilo 7.7.6 is the exception: it reads `.kilo/mcp.json`, `.kilocode/mcp.json` and `.kilocodemodes`
-from the worktree even with project configuration switched off, starts the MCP servers they list
-and loads their agents, with no approval card. The daemon cannot hold these back. A session that
-starts, is handed off or is forked to Kilo in a worktree with one of these files now shows a
-thread notice that names them.
+Kilo reads `.kilo/mcp.json`, `.kilocode/mcp.json` and `.kilocodemodes` from the session directory
+even with project configuration switched off, and starts the MCP servers they name. The daemon now
+refuses to open, resume or send a turn to a Kilo session in a worktree that contains one of them,
+and names the file.
