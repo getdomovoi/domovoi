@@ -17,7 +17,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
 import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
-import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, runServiceUpdate, trackInFlight, within, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, within, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
@@ -380,8 +380,10 @@ export type ServiceUpdateWaits = {
 // place. The saved service configuration is kept as it is; the service
 // definition changes. What the service ran before is read first, so any
 // failed step, a timeout included, puts it back. A start counts only once the
-// daemon reports ready, after the swap and after a restore alike.
-function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits) {
+// daemon reports ready, after the swap and after a restore alike. The caller
+// runs this under the service-operation lease (runServiceUpdate), with effects
+// tracked by trackInFlight.
+export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits) {
   return async (readDeadline: OperationDeadline): Promise<ServiceSwap<ServicePlan>> => {
     const plan = servicePlan(target)
     const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
@@ -526,11 +528,6 @@ function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, wai
       },
     }
   }
-}
-
-export function updateService(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits): Promise<ServicePlan> {
-  const tracked = trackInFlight(effects)
-  return runServiceUpdate(effects.claimServiceOperation, waits.budgetMs, prepareUpdate(target, tracked.effects, waits), tracked.inFlight)
 }
 
 // A service that was never installed is not an error to remove: the end state

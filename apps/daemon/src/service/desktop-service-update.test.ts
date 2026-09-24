@@ -719,6 +719,42 @@ describe("review round 2 probes", () => {
   })
 })
 
+// Security review of 79ba81e4: each finding as the fakes reproduce it.
+describe("security review round 1", () => {
+  const configurationPath = "/home/dl/.domovoi/service.json"
+  const intentPath = wslUpdateIntentPath(configurationPath)
+
+  function wslConfiguration(executable = oldRuntime.nodePath, entry = oldRuntime.daemonEntryPath): ServiceConfiguration {
+    return {
+      ...saved("linux", "/home/dl"),
+      wsl: {
+        distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        wsl: "C:\\Windows\\System32\\wsl.exe", executable, args: [entry],
+      },
+    }
+  }
+
+  // F1: a WSL removal held the service-operation lease and finished while
+  // the update waited for it. The update must read service.json under the
+  // lease, or it recreates and starts the service that was just removed.
+  it("F1: reads the saved configuration only once it holds the service-operation lease", async () => {
+    let configuration: ServiceConfiguration | undefined = wslConfiguration()
+    const effects = fake("linux", "/home/dl", {}, configuration)
+    effects.readConfiguration = vi.fn(() => configuration)
+    effects.claimServiceOperation = vi.fn(() => {
+      // The removal finishes, service.json goes, and the lease is free.
+      configuration = undefined
+      effects.order.push("service lease")
+      return effects.serviceLease
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "not-installed" })
+    expect(effects.order).toEqual(["service lease"])
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.capture).not.toHaveBeenCalled()
+    expect(effects.serviceLease.release).toHaveBeenCalledOnce()
+  })
+})
+
 it("names each outcome the desktop can tell apart", () => {
   expect(new DaemonServiceUpdateError("not-installed")).toBeInstanceOf(Error)
   expect(new DaemonServiceUpdateError("nothing-changed", new Error("x")).message).toMatch(nothingChanged)

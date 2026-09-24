@@ -9,10 +9,10 @@ import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
   nodeServiceEffects,
+  prepareServiceUpdate,
   removeService,
   servicePlan,
   serviceStatus,
-  updateService,
   type ServiceEffects,
   type ServiceStatus,
 } from "./install.js"
@@ -162,32 +162,44 @@ export async function updateDaemonService(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceInstallResult> {
   await checkRuntime(options.runtime, dependencies, "update")
-  let saved: ServiceConfiguration | undefined
-  try {
-    saved = dependencies.readConfiguration?.(dependencies.home, dependencies.platform)
-  } catch (cause) {
-    throw new DaemonServiceUpdateError("nothing-changed", cause)
-  }
-  if (!saved) throw new DaemonServiceUpdateError("not-installed")
   const waits = {
     profileWaitMs: dependencies.profileReleaseWaitMs ?? 10_000,
     readinessWaitMs: dependencies.readinessWaitMs ?? 20_000,
     budgetMs: dependencies.updateBudgetMs ?? 60_000,
   }
-  if (dependencies.platform === "linux" && saved.wsl) {
-    const tracked = trackInFlight(dependencies)
-    const updated = await runServiceUpdate(dependencies.claimServiceOperation, waits.budgetMs, prepareWslUpdate(saved, options.runtime, tracked.effects, waits), tracked.inFlight)
-    return { kind: "task", ...updated }
-  }
-  const plan = await updateService({
-    ...target(dependencies),
-    execPath: options.runtime.daemonEntryPath,
-    runtime: options.runtime.nodePath,
-    configuration: saved,
-  }, dependencies, waits)
-  return plan.kind === "file"
-    ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
-    : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+  const tracked = trackInFlight(dependencies)
+  return runServiceUpdate<DaemonServiceInstallResult>(dependencies.claimServiceOperation, waits.budgetMs, async (readDeadline) => {
+    // Read under the service-operation lease: a removal that held it has
+    // finished by now, and none can start before the update ends. A
+    // configuration read before the claim could name a service that was
+    // removed meanwhile, which a restore would then recreate and start.
+    let saved: ServiceConfiguration | undefined
+    try {
+      saved = dependencies.readConfiguration?.(dependencies.home, dependencies.platform)
+    } catch (cause) {
+      throw new DaemonServiceUpdateError("nothing-changed", cause)
+    }
+    if (!saved) throw new DaemonServiceUpdateError("not-installed")
+    if (dependencies.platform === "linux" && saved.wsl) {
+      const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits)(readDeadline)
+      return { ...steps, swap: async (deadline) => ({ kind: "task" as const, ...await steps.swap(deadline) }) }
+    }
+    const steps = await prepareServiceUpdate({
+      ...target(dependencies),
+      execPath: options.runtime.daemonEntryPath,
+      runtime: options.runtime.nodePath,
+      configuration: saved,
+    }, tracked.effects, waits)(readDeadline)
+    return {
+      ...steps,
+      swap: async (deadline): Promise<DaemonServiceInstallResult> => {
+        const plan = await steps.swap(deadline)
+        return plan.kind === "file"
+          ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
+          : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
+      },
+    }
+  }, tracked.inFlight)
 }
 
 export function readDaemonServiceStatus(
