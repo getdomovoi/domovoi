@@ -1,5 +1,5 @@
 import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
-import { useState } from "react"
+import { useId, useState } from "react"
 
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
@@ -42,7 +42,7 @@ export function SessionsDrawerTrigger({
 }) {
   const groups = groupSessions(snapshot)
   const needsYou = groups.find((group) => group.id === "needs-you")?.sessions.length ?? 0
-  const total = groups.reduce((count, group) => count + group.sessions.length, 0)
+  const total = groups.reduce((count, group) => count + group.sessions.filter((session) => !session.archived).length, 0)
   return (
     <button
       type="button"
@@ -82,6 +82,7 @@ export function SessionsDrawerColumn({
   className?: string
 }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<SessionGroupId>>(new Set())
+  const archivedNoteId = useId()
   if (!open) return null
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
@@ -155,11 +156,11 @@ export function SessionsDrawerColumn({
                         <DropdownMenuContent align="end" className="w-[214px]">
                           {entry.archived ? (
                             <>
-                              <DropdownMenuItem disabled title="Not built yet" className="justify-between">
+                              <DropdownMenuItem disabled title="Not built yet" aria-describedby={`${archivedNoteId}-${entry.id}`} className="justify-between">
                                 <span className="flex items-center gap-2"><GitBranchIcon />Start a new session from this branch</span>
                                 <span className="font-machine text-[10.5px] text-faint">later</span>
                               </DropdownMenuItem>
-                              <p className="m-0 px-2 py-1.5 text-[11px] leading-[1.5] text-muted-foreground">
+                              <p id={`${archivedNoteId}-${entry.id}`} className="m-0 px-2 py-1.5 text-[11px] leading-[1.5] text-muted-foreground">
                                 Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to.
                               </p>
                             </>
