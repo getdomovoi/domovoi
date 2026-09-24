@@ -4806,9 +4806,9 @@ export class DomovoiDaemon {
           if (active?.process === process) {
             // A terminal is where someone types a credential, and its output
             // goes to every connected client and into the replay a later
-            // client is handed. Both are redacted before they leave here, each
-            // read in the context of its whole current line, so a secret split
-            // across reads or idle beats is still caught.
+            // client is handed. Both are redacted before they leave here, and
+            // the redactor holds an unterminated line so a secret split across
+            // two reads is still caught.
             const emit = (text: string) => {
               if (!text) return
               active.replay.push(text)
@@ -4822,9 +4822,10 @@ export class DomovoiDaemon {
             }
             emit(active.redactor.push(data))
 
-            // The idle beat the output is batched on. The redactor holds back
-            // only a bare token still being printed, and keeps it through this
-            // beat; a prompt was already shown when it arrived.
+            // A prompt carries no newline, so what the redactor is still
+            // holding is released on the same beat the output is batched on.
+            // It stays as context for the rest of its line, so a value typed
+            // after a released name is still redacted.
             if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
             active.redactorFlush = setTimeout(() => {
               const current = this.#terminals.get(params.terminalId)
