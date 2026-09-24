@@ -7,7 +7,7 @@ export type LaunchPhase = {
   tone: "complete" | "active" | "waiting" | "failed"
 }
 
-function route(address: string): { label: string, kind: string } {
+export function route(address: string): { label: string, kind: string } {
   try {
     const url = new URL(address)
     const host = url.hostname || "Configured route"

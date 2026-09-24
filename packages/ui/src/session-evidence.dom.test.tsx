@@ -76,11 +76,11 @@ describe("SessionEvidenceContent revert and diff view", () => {
     expect(screen.getByText(/recovery checkpoint/i)).not.toBeNull()
     expect(screen.getByText(/before it changes the worktree/i)).not.toBeNull()
 
-    await user.click(screen.getByRole("button", { name: "Keep the changes" }))
+    await user.click(screen.getByRole("button", { name: "Keep it" }))
     expect(onRevertFile).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole("button", { name: "Revert src/generated.ts" }))
-    await user.click(screen.getByRole("button", { name: "Revert file" }))
+    await user.click(screen.getByRole("button", { name: "Revert this file" }))
     // This fixture carries no file associations, so there is no commit to bind
     // the confirmation to and the legacy revert is what runs.
     expect(onRevertFile).toHaveBeenCalledWith("src/generated.ts", undefined)
@@ -184,5 +184,27 @@ describe("SessionEvidenceContent revert and diff view", () => {
     const right = [...split.querySelectorAll("pre")].find((line) => line.textContent === "const after = 3")
     expect(left?.className).toContain("text-destructive")
     expect(right?.className).toContain("text-success")
+  })
+
+  // v2 heads the list with what the rows are for: evidence per file, what ran
+  // against each change and whether it passed.
+  it("heads the changed files as evidence per file", () => {
+    render(<SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} />)
+    const list = screen.getByRole("region", { name: "EVIDENCE PER FILE" })
+    expect(list.textContent).toContain("What ran against each change, and whether it passed.")
+    expect(list.textContent).toContain("src/app.ts")
+  })
+
+  it("opens the worktree in the editor from the foot of the list", async () => {
+    const user = userEvent.setup()
+    const onOpenInEditor = vi.fn()
+    render(<SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} onOpenInEditor={onOpenInEditor} />)
+    await user.click(screen.getByRole("button", { name: "Open in editor" }))
+    expect(onOpenInEditor).toHaveBeenCalledOnce()
+  })
+
+  it("offers no editor where the client has none", () => {
+    render(<SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} />)
+    expect(screen.queryByRole("button", { name: "Open in editor" })).toBeNull()
   })
 })
