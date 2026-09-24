@@ -29,7 +29,6 @@ export {
 export { StartupError } from "./startup-error"
 export { WorkspaceErrorBoundary } from "./error-boundary"
 export { DaemonCredentialPrompt } from "./daemon-credential-prompt"
-export { releasePageUrl, type AboutBuild } from "./settings-shell"
 export { BrowserLimitsPanel, type BrowserLimit, type BrowserLimitTone } from "./browser-limits-panel"
 export { AppearanceSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
 export { bridgeRelayPinStorage, createRelayPinStore, localStorageRelayPinStorage, readRelayPin, reconcileRelayPin, relayPinKey, type ClientRelayPinStore, type RelayPinStorage } from "./relay-pin"
