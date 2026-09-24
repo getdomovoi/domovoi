@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
-import { lstat, readFile, realpath } from "node:fs/promises"
+import { realpath } from "node:fs"
+import { lstat, readFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import {
@@ -13,6 +14,7 @@ import {
   type UnresolvedExecutionReason,
 } from "@getdomovoi/protocol"
 
+import { beforeDeadline, type OperationDeadline } from "./operation-deadline.js"
 import { redactDurableCommand } from "./secret-redaction.js"
 
 type ExecutionInput = {
@@ -21,6 +23,23 @@ type ExecutionInput = {
   command?: string
   filePath?: string
   blockedPath?: string
+  // Every filesystem lookup ends here, and a lookup that runs out of time
+  // rejects the whole resolution instead of reading as a missing path.
+  deadline?: OperationDeadline
+}
+
+function bounded<T>(operation: Promise<T>, deadline: OperationDeadline | undefined): Promise<T> {
+  return deadline === undefined ? operation : beforeDeadline(operation, deadline)
+}
+
+function realpathOf(path: string, deadline: OperationDeadline | undefined): Promise<string> {
+  return bounded(new Promise<string>((resolve, reject) => {
+    realpath.native(path, (error, resolved) => error ? reject(error) : resolve(resolved))
+  }), deadline)
+}
+
+function rethrowExpired(error: unknown, deadline: OperationDeadline | undefined): void {
+  if (deadline?.signal.aborted) throw error
 }
 
 type ParsedPart = {
@@ -70,13 +89,16 @@ function inside(root: string, candidate: string): boolean {
 async function canonicalCwd(
   workspaceRoot: string,
   cwd: string | undefined,
+  deadline: OperationDeadline | undefined,
 ): Promise<{ root: string; absolute: string; relative: string } | undefined> {
   try {
-    const root = await realpath(workspaceRoot)
+    const root = await realpathOf(workspaceRoot, deadline)
+    // A relative directory is read from the root as written: a link in it is
+    // followed before any ".." after it, as the filesystem does.
     const requested = cwd === undefined
       ? root
-      : isAbsolute(cwd) ? cwd : resolve(root, cwd)
-    const absolute = await realpath(requested)
+      : isAbsolute(cwd) ? cwd : `${root}${sep}${cwd}`
+    const absolute = await realpathOf(requested, deadline)
     if (!inside(root, absolute)) return undefined
     const fromRoot = relative(root, absolute)
     return {
@@ -84,24 +106,27 @@ async function canonicalCwd(
       absolute,
       relative: fromRoot === "" ? "." : fromRoot.split(sep).join("/"),
     }
-  } catch {
+  } catch (error) {
+    rethrowExpired(error, deadline)
     return undefined
   }
 }
 
-export async function pathStaysInside(root: string, cwd: string, path: string): Promise<boolean> {
+export async function pathStaysInside(root: string, cwd: string, path: string, deadline?: OperationDeadline): Promise<boolean> {
   let existing = resolve(cwd, path)
   while (true) {
     try {
-      return inside(root, await realpath(existing))
+      return inside(root, await realpathOf(existing, deadline))
     } catch (error) {
+      rethrowExpired(error, deadline)
       const code = (error as NodeJS.ErrnoException).code
       if (code !== "ENOENT" && code !== "ENOTDIR") return false
       // A broken link is an existing path whose target cannot be resolved. Do
       // not climb past it: the link could later point outside the worktree.
       try {
-        if ((await lstat(existing)).isSymbolicLink()) return false
+        if ((await bounded(lstat(existing), deadline)).isSymbolicLink()) return false
       } catch (metadataError) {
+        rethrowExpired(metadataError, deadline)
         const metadataCode = (metadataError as NodeJS.ErrnoException).code
         if (metadataCode !== "ENOENT" && metadataCode !== "ENOTDIR") return false
       }
@@ -254,12 +279,12 @@ function packageInvocation(
   }
 }
 
-async function readManifest(root: string, cwd: string): Promise<Manifest | undefined> {
+async function readManifest(root: string, cwd: string, deadline: OperationDeadline | undefined): Promise<Manifest | undefined> {
   const lexicalPath = join(cwd, "package.json")
   try {
-    const canonicalPath = await realpath(lexicalPath)
+    const canonicalPath = await realpathOf(lexicalPath, deadline)
     if (!inside(root, canonicalPath)) return undefined
-    const parsed: unknown = JSON.parse(await readFile(canonicalPath, "utf8"))
+    const parsed: unknown = JSON.parse(await bounded(readFile(canonicalPath, "utf8"), deadline))
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined
     const value = (parsed as { scripts?: unknown }).scripts
     if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
@@ -268,7 +293,8 @@ async function readManifest(root: string, cwd: string): Promise<Manifest | undef
     ))
     const pathFromRoot = relative(root, canonicalPath).split(sep).join("/")
     return { path: pathFromRoot, scripts }
-  } catch {
+  } catch (error) {
+    rethrowExpired(error, deadline)
     return undefined
   }
 }
@@ -408,13 +434,13 @@ export function resolveCommandExecution(input: {
 export async function resolveExecution(input: ExecutionInput): Promise<ExecutionResolution> {
   const command = input.command?.trim()
   if (!command) return unresolved("command-missing")
-  const directory = await canonicalCwd(input.workspaceRoot, input.cwd)
+  const directory = await canonicalCwd(input.workspaceRoot, input.cwd, input.deadline)
   if (!directory) return unresolved("cwd-outside-project")
   if (fileTools.has(command)) {
     if (
       input.blockedPath !== undefined
       || input.filePath === undefined
-      || !await pathStaysInside(directory.root, directory.absolute, input.filePath)
+      || !await pathStaysInside(directory.root, directory.absolute, input.filePath, input.deadline)
     ) return unresolved(input.filePath === undefined || input.blockedPath !== undefined
       ? "unsupported-syntax"
       : "cwd-outside-project")
@@ -430,11 +456,11 @@ export async function resolveExecution(input: ExecutionInput): Promise<Execution
   if (
     readTools.has(command)
     && input.filePath !== undefined
-    && !await pathStaysInside(directory.root, directory.absolute, input.filePath)
+    && !await pathStaysInside(directory.root, directory.absolute, input.filePath, input.deadline)
   ) return unresolved("cwd-outside-project")
   const parts = parseCommand(command)
   if (!parts) return unresolved("unsupported-syntax")
   const needsManifest = parts.some((part) => packageInvocation(part.argv) !== undefined)
-  const manifest = needsManifest ? await readManifest(directory.root, directory.absolute) : undefined
+  const manifest = needsManifest ? await readManifest(directory.root, directory.absolute, input.deadline) : undefined
   return resolveShell(command, directory.relative, manifest)
 }

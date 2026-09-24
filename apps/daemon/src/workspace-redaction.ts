@@ -7,7 +7,7 @@ import {
   redactDurableText,
 } from "./secret-redaction.js"
 
-function executionContainsSecret(
+export function executionContainsSecret(
   execution: WorkspaceSnapshot["approvals"][number]["execution"],
 ): boolean {
   if (executionNamesCredentialPath(execution)) return true

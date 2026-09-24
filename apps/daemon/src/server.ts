@@ -81,6 +81,7 @@ import {
   type TransferStatusResult,
   type SystemEmergencyStopResult,
   type ClientKind,
+  type ExecutionResolution,
   type Runtime,
   type TerminalOwner,
   type PairingAddress,
@@ -95,13 +96,19 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { type ApprovalScope } from "./approval-facts.js"
 import {
-  approvalOperands,
-  approvalTargetCard,
-  executionNamesCredentialPath,
-  type ApprovalScope,
-  type ApprovalTargets,
-} from "./approval-facts.js"
+  ApprovalLedger,
+  heldSettlementInput,
+  sameApproval,
+  sameExecution,
+  savedSettlementInput,
+  sealedApproval,
+  settleApproval,
+  type ApprovalRequest,
+  type SettledApproval,
+} from "./approval-settlement.js"
+import { realPathLookupBudgetMs } from "./credential-stores.js"
 import {
   boundedQueuedSendReason,
   SqliteWorkspaceStore,
@@ -218,7 +225,6 @@ import {
   permissionHardGates,
   permissionPolicyRefusalFor,
 } from "./permission-policy.js"
-import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
@@ -352,8 +358,8 @@ function withoutApprovals(
   updatedAt: string,
 ): {
   removed: WorkspaceSnapshot["approvals"]
+  removedIds: ReadonlySet<string>
   blockedIds: ReadonlySet<string>
-  approvals: WorkspaceSnapshot["approvals"]
   workingPlans: WorkspaceSnapshot["workingPlans"]
 } | undefined {
   const removed = snapshot.approvals.filter(predicate)
@@ -369,8 +375,8 @@ function withoutApprovals(
   const cleared = clearWorkingPlanApprovalBlockers(snapshot.workingPlans, removedIds, updatedAt)
   return {
     removed,
+    removedIds,
     blockedIds,
-    approvals: snapshot.approvals.filter((approval) => !removedIds.has(approval.id)),
     workingPlans: cleared.plans,
   }
 }
@@ -1339,7 +1345,11 @@ export class DomovoiDaemon {
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
   // What each waiting card's request can reach, as the agent gave it. Kept in
   // memory only; the card shows these paths hidden or not at all.
-  readonly #approvalTargets = new Map<string, ApprovalTargets>()
+  readonly #approvalTargets = new Map<string, ApprovalRequest>()
+  // Where approvals enter the snapshot. Saves and broadcasts seal any approval
+  // it did not admit, once the approvals loaded from disk are settled.
+  readonly #approvalLedger = new ApprovalLedger()
+  #approvalsSettled = false
   #agents: AgentRegistry
   #workspaceService: WorkspaceService
   #connectedAgents = new Set<string>()
@@ -1824,6 +1834,10 @@ export class DomovoiDaemon {
       this.#outgoingTransferTransactions.pruneExpired(),
     ])
     signal?.throwIfAborted()
+    const loaded = this.#snapshot.approvals
+    this.#snapshot.approvals = []
+    if (await this.#settleStoredApprovals(loaded)) await this.#persistSnapshot()
+    signal?.throwIfAborted()
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
@@ -2202,44 +2216,106 @@ export class DomovoiDaemon {
     })
   }
 
-  #holdApprovalTargets(approvalId: string, targets: ApprovalTargets): void {
+  #holdApprovalTargets(approvalId: string, request: ApprovalRequest): void {
     for (const held of this.#approvalTargets.keys()) {
       if (!this.#snapshot.approvals.some((approval) => approval.id === held)) this.#approvalTargets.delete(held)
     }
-    this.#approvalTargets.set(approvalId, targets)
+    this.#approvalTargets.set(approvalId, request)
   }
 
-  // Before an Allow, the card's targets are judged again on disk: a link can
-  // move to a credential store after the card was made while the command text
-  // and its execution digest stay the same. A card that now names one is made
-  // again as a hard gate with the path hidden, and true says it changed. A card
-  // loaded from disk is judged from its command and directory.
-  async #recardIfTargetsNowSensitive(
+  // The only write of an approval into the live snapshot.
+  #putApproval(approval: SettledApproval): void {
+    this.#approvalLedger.admit(this.#snapshot.approvals, approval)
+  }
+
+  #approvalWorkspace(approval: WorkspaceSnapshot["approvals"][number]): string | undefined {
+    return this.#snapshot.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
+      ?? this.#snapshot.project?.path
+  }
+
+  #approvalScope(runtime: Runtime): ApprovalScope | undefined {
+    try { return this.#agents.require(runtime.provider).approvalScope?.(runtime) } catch { return undefined }
+  }
+
+  // Every save and broadcast: an approval in the live snapshot that did not
+  // come out of settlement is sealed, a hard gate with its paths hidden.
+  #sealUnsettledApprovals(): void {
+    if (!this.#approvalsSettled) return
+    const sealed = this.#approvalLedger.sealUnsettled(
+      this.#snapshot.approvals,
+      (approval) => this.#approvalWorkspace(approval),
+    )
+    if (sealed.length > 0) {
+      this.#reportError("Domovoi sealed an approval that did not pass its path checks", new Error(sealed.join(", ")))
+    }
+  }
+
+  // Approvals read back from disk are settled before anything else sees them,
+  // all under one lookup deadline, from their saved text and execution record.
+  async #settleStoredApprovals(stored: readonly WorkspaceSnapshot["approvals"][number][]): Promise<boolean> {
+    const deadline = OperationDeadline.start(realPathLookupBudgetMs)
+    let changed = false
+    try {
+      for (const approval of stored) {
+        const workspace = this.#approvalWorkspace(approval)
+        const session = this.#snapshot.sessions.find((candidate) => candidate.id === approval.sessionId)
+        const settled = workspace === undefined
+          ? sealedApproval(approval, undefined)
+          : (await settleApproval(savedSettlementInput(
+              approval,
+              workspace,
+              session ? this.#approvalScope(session.runtime) : undefined,
+              approval.execution,
+              () => approval.risk,
+            ), deadline)).approval
+        changed ||= !sameApproval(settled, approval)
+        this.#putApproval(settled)
+      }
+    } finally {
+      deadline.clear()
+    }
+    this.#approvalsSettled = true
+    return changed
+  }
+
+  // Before an Allow, the card is settled again from the request now: a link
+  // can move to a credential store, and a package script can change, after
+  // the card was made. The operands come from the execution the card will
+  // hold. A card that changed is saved and sent, and the refusal says why; a
+  // card loaded from disk is judged from its saved text.
+  async #settleBeforeAllow(
     approval: WorkspaceSnapshot["approvals"][number],
     session: WorkspaceSnapshot["sessions"][number],
-  ): Promise<boolean> {
+  ): Promise<string | undefined> {
     const workspace = session.workspacePath ?? this.#snapshot.project?.path
-    if (workspace === undefined) return false
-    const targets = this.#approvalTargets.get(approval.id) ?? {
-      workspace,
-      ...(approval.directory.includes("[REDACTED]") ? {} : { cwd: approval.directory }),
-      operands: approvalOperands(approval.command, approval.execution),
+    if (workspace === undefined) return undefined
+    const reResolve = approval.execution.state === "resolved"
+      && approval.execution.record.kind === "shell"
+      && approval.execution.record.entries.some((entry) => entry.source.kind === "package-script")
+    const held = this.#approvalTargets.get(approval.id)
+    const scope = this.#approvalScope(session.runtime)
+    const risk = (execution: ExecutionResolution): WorkspaceSnapshot["approvals"][number]["risk"] => {
+      if (approval.risk === "hard-gate" || sameExecution(execution, approval.execution)) return approval.risk
+      return permissionDecisionFor({
+        runtime: session.runtime,
+        command: held?.command ?? approval.command,
+        reason: held?.reason ?? approval.operation,
+        execution,
+      }).risk
     }
-    let scope: ApprovalScope | undefined
-    try { scope = this.#agents.require(session.runtime.provider).approvalScope?.(session.runtime) } catch { scope = undefined }
-    const card = await approvalTargetCard(targets, scope)
-    if (!card.directory.sensitive && !card.facts.sensitive && !card.reachesCredentialStore) return false
+    const execution = reResolve ? "resolve" as const : approval.execution
+    const settlement = await settleApproval(held
+      ? heldSettlementInput(approval, held, scope, execution, risk)
+      : savedSettlementInput(approval, workspace, scope, execution, risk))
     const current = this.#snapshot.approvals.find((candidate) => candidate.id === approval.id)
-    if (current === undefined) return false
-    const affects = targets.path === undefined ? current.affects : card.facts.affects
-    if (current.risk === "hard-gate" && current.directory === card.directory.text && current.affects === affects) return false
-    current.risk = "hard-gate"
-    current.directory = card.directory.text
-    current.affects = affects
-    if (card.directory.sensitive) current.execution = { state: "unresolved", reason: "sensitive-content" }
+    if (current === undefined || sameApproval(settlement.approval, current)) return undefined
+    const executionChanged = !sameExecution(settlement.approval.execution, current.execution)
+    this.#putApproval(settlement.approval)
     await this.#persistSnapshot()
     this.#broadcastSnapshot()
-    return true
+    return settlement.sensitive || !executionChanged
+      ? "The file target changed; review the updated approval before allowing it"
+      : "The resolved command changed; review the updated approval before allowing it"
   }
 
   #broadcastSnapshot(): void {
@@ -2249,6 +2325,7 @@ export class DomovoiDaemon {
         ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }]
         : []),
     ))
+    this.#sealUnsettledApprovals()
     this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
   }
 
@@ -6760,75 +6837,18 @@ export class DomovoiDaemon {
           )
           return
         }
-        if (
-          params.decision !== "deny"
-          && params.decision !== "deny-explain"
-          && session
-          && await this.#recardIfTargetsNowSensitive(approval, session)
-        ) {
-          this.#error(
-            socket,
-            request.id,
-            invalidParams,
-            "The request now reaches a credential path; review the updated approval before allowing it",
-          )
-          return
-        }
-        let resolvedApprovalExecution = approval.execution.state === "resolved"
-          ? approval.execution
-          : undefined
-        if (
-          params.decision !== "deny"
-          && params.decision !== "deny-explain"
-          && resolvedApprovalExecution?.record.kind === "shell"
-          && resolvedApprovalExecution.record.entries.some(
-            (entry) => entry.source.kind === "package-script",
-          )
-        ) {
-          const project = this.#snapshot.project
-          const workspaceRoot = session?.workspacePath ?? project?.path
-          const cwd = workspaceRoot === undefined
-            ? undefined
-            : resolvedApprovalExecution.record.cwd === "."
-              ? workspaceRoot
-              : join(workspaceRoot, resolvedApprovalExecution.record.cwd)
-          const currentExecution = workspaceRoot === undefined
-            ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
-            : await resolveExecution({
-                workspaceRoot,
-                command: approval.command,
-                ...(cwd === undefined ? {} : { cwd }),
-              })
-          if (
-            currentExecution.state !== "resolved"
-            || currentExecution.digest !== resolvedApprovalExecution.digest
-          ) {
-            approval.execution = currentExecution
-            const currentDecision = permissionDecisionFor({
-              runtime: session?.runtime ?? {
-                provider: "claude-code",
-                model: "unknown",
-                reasoning: "high",
-                permissionMode: approval.mode,
-                auto: false,
-              },
-              command: approval.command,
-              reason: approval.operation,
-              execution: currentExecution,
-            })
-            approval.risk = currentDecision.risk
-            await this.#persistSnapshot()
-            this.#broadcastSnapshot()
-            this.#error(
-              socket,
-              request.id,
-              invalidParams,
-              "The resolved command changed; review the updated approval before allowing it",
-            )
+        // A standing rule, like an Allow, answers only a card that came out of
+        // settlement just now, and never a hard gate.
+        if (params.decision !== "deny" && params.decision !== "deny-explain" && session) {
+          const refusal = await this.#settleBeforeAllow(approval, session)
+          if (refusal !== undefined) {
+            this.#error(socket, request.id, invalidParams, refusal)
             return
           }
-          resolvedApprovalExecution = currentExecution
         }
+        const resolvedApprovalExecution = approval.execution.state === "resolved"
+          ? approval.execution
+          : undefined
         if (params.decision === "always-project" && !resolvedApprovalExecution) {
           this.#error(
             socket,
@@ -6973,9 +6993,11 @@ export class DomovoiDaemon {
             this.#reportError("Domovoi could not pass an approval decision to the agent", error)
             const undo = (snapshot: WorkspaceSnapshot) => {
               snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId)
-              if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
-                snapshot.approvals.push(structuredClone(undecided.approval))
-              }
+              this.#approvalLedger.restore(
+                snapshot.approvals,
+                undecided.approval,
+                (restored) => this.#approvalWorkspace(restored),
+              )
               if (newRule) {
                 snapshot.approvalRules = snapshot.approvalRules
                   .filter((rule) => rule.id !== newRule.id)
@@ -7377,12 +7399,13 @@ export class DomovoiDaemon {
           }
           this.#snapshot.sessions = restored?.sessions ?? []
           this.#snapshot.activeSessionId = restored?.activeSessionId ?? null
-          this.#snapshot.approvals = restored?.approvals ?? []
+          this.#snapshot.approvals = []
           this.#snapshot.approvalRules = restored?.approvalRules ?? []
           this.#snapshot.thread = restored?.thread ?? []
           this.#snapshot.artifacts = restored?.artifacts ?? []
           this.#snapshot.workingPlans = restored?.workingPlans ?? []
           this.#snapshot.annotations = restored?.annotations ?? []
+          await this.#settleStoredApprovals(restored?.approvals ?? [])
           this.#snapshot.queuedSends = []
           this.#loadQueuedSessionSends(false)
           this.#activeAssistantItems.clear()
@@ -8605,51 +8628,6 @@ export class DomovoiDaemon {
     if (event.type === "approval-requested") {
       const project = this.#snapshot.project
       if (!project) return
-      const execution = await resolveExecution({
-        workspaceRoot: session.workspacePath ?? project.path,
-        cwd: event.cwd ?? session.workspacePath ?? project.path,
-        ...(event.command === undefined ? {} : { command: event.command }),
-        ...(event.path === undefined ? {} : { filePath: event.path }),
-        ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
-      })
-      const factsWorkspace = session.workspacePath ?? project.path
-      const decision = permissionDecisionFor({
-        runtime: session.runtime,
-        ...(event.command ? { command: event.command } : {}),
-        ...(event.reason ? { reason: event.reason } : {}),
-        execution,
-      })
-      // Where each operand and the directory really are on disk: a link or a
-      // name the filesystem treats as another can reach a credential store
-      // that no written name shows.
-      const targets: ApprovalTargets = {
-        workspace: factsWorkspace,
-        cwd: event.cwd,
-        path: event.path,
-        operands: approvalOperands(event.command, execution),
-      }
-      const { directory: directoryCopy, facts, reachesCredentialStore } = await approvalTargetCard(
-        targets,
-        this.#agents.require(provider).approvalScope?.(session.runtime),
-      )
-      const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
-      const reasonCopy = redactDurableText(event.reason ?? "Run a command")
-      const containsSecret = commandCopy.redacted
-        || reasonCopy.redacted
-        || directoryCopy.redacted
-        || directoryCopy.sensitive
-        || reachesCredentialStore
-        || facts.redacted
-        || facts.sensitive
-        || (execution.state === "unresolved" && execution.reason === "sensitive-content")
-      const matchingRule = this.#snapshot.approvalRules.find(
-        (rule) => !containsSecret
-          && execution.state === "resolved"
-          && rule.status === "active"
-          && rule.useCount < Number.MAX_SAFE_INTEGER
-          && rule.projectId === project.id
-          && rule.execution.digest === execution.digest,
-      )
       const inactiveRuleIds = this.#snapshot.approvalRules.flatMap((rule) => (
         rule.status === "inactive"
         && rule.inactiveReason === "legacy-text-only"
@@ -8658,12 +8636,59 @@ export class DomovoiDaemon {
           ? [rule.id]
           : []
       ))
+      const request: ApprovalRequest = {
+        workspace: session.workspacePath ?? project.path,
+        cwd: event.cwd,
+        path: event.path,
+        command: event.command,
+        reason: event.reason,
+        blockedPath: event.blockedPath,
+      }
+      const policy = (execution: ExecutionResolution) => permissionDecisionFor({
+        runtime: session.runtime,
+        ...(event.command ? { command: event.command } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        execution,
+      })
+      // The card, the automatic allow and a standing rule all start from the
+      // settled request: its execution resolved and every path on it judged
+      // on disk, under one deadline.
+      const settlement = await settleApproval({
+        approval: {
+          id: `approval-${randomUUID()}`,
+          sessionId: session.id,
+          machine: this.#snapshot.machine.name,
+          agent: `${session.runtime.provider} / ${session.runtime.model}`,
+          mode: session.runtime.permissionMode,
+          estimatedDuration: "Unknown",
+          checkpoint: session.baseCommit ?? "unavailable",
+          providerRequestId: event.requestId,
+          requestedAt: createdAt,
+          ...(inactiveRuleIds.length === 0 ? {} : {
+            reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
+          }),
+        },
+        request,
+        scope: this.#approvalScope(session.runtime),
+        execution: "resolve",
+        risk: (execution) => policy(execution).risk,
+      })
+      const settled = settlement.approval
+      const decision = policy(settlement.execution)
+      const settledDigest = settled.risk === "normal" && settled.execution.state === "resolved"
+        ? settled.execution.digest
+        : undefined
+      const matchingRule = settledDigest === undefined ? undefined : this.#snapshot.approvalRules.find(
+        (rule) => rule.status === "active"
+          && rule.useCount < Number.MAX_SAFE_INTEGER
+          && rule.projectId === project.id
+          && rule.execution.digest === settledDigest,
+      )
+      const allowed = settled.risk === "normal" && decision.action === "allow"
       // The outcome has to describe what actually happened: during a
       // persistence lockout nothing is approved, so recording success would put
       // a decision in the audit log that was never made.
-      const autoResolved = !this.#persistenceUnavailable
-        && !containsSecret
-        && decision.action === "allow"
+      const autoResolved = !this.#persistenceUnavailable && allowed
       this.#appendAudit({
         actor: { kind: "provider", provider, providerThreadId: threadId },
         action: "provider.approval-requested",
@@ -8681,13 +8706,13 @@ export class DomovoiDaemon {
         this.#agents.require(provider).resolveApproval(event.requestId, "deny")
         this.#reportError(
           persistenceUnavailableContext,
-          new Error(`Denied ${reasonCopy.value} because state cannot reach disk`),
+          new Error(`Denied ${settled.operation} because state cannot reach disk`),
         )
         return
       }
-      if (!containsSecret && decision.action === "allow") {
+      if (allowed) {
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
-      } else if (decision.risk === "normal" && matchingRule) {
+      } else if (matchingRule) {
         matchingRule.useCount += 1
         try {
           await this.#persistSnapshot()
@@ -8710,32 +8735,9 @@ export class DomovoiDaemon {
         })
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else {
-        const approval: WorkspaceSnapshot["approvals"][number] = {
-          id: `approval-${randomUUID()}`,
-          sessionId: session.id,
-          risk: containsSecret ? "hard-gate" : decision.risk,
-          operation: reasonCopy.value,
-          command: commandCopy.value,
-          machine: this.#snapshot.machine.name,
-          agent: `${session.runtime.provider} / ${session.runtime.model}`,
-          mode: session.runtime.permissionMode,
-          directory: directoryCopy.text,
-          affects: facts.affects,
-          network: facts.network,
-          estimatedDuration: "Unknown",
-          checkpoint: session.baseCommit ?? "unavailable",
-          providerRequestId: event.requestId,
-          requestedAt: createdAt,
-          // The record's directory is hidden like the card's.
-          execution: directoryCopy.sensitive || executionNamesCredentialPath(execution)
-            ? { state: "unresolved", reason: "sensitive-content" }
-            : execution,
-          ...(inactiveRuleIds.length === 0 ? {} : {
-            reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
-          }),
-        }
-        this.#snapshot.approvals.push(approval)
-        this.#holdApprovalTargets(approval.id, targets)
+        const approval = settled
+        this.#putApproval(approval)
+        this.#holdApprovalTargets(approval.id, request)
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,
           session.id,
@@ -9079,7 +9081,7 @@ export class DomovoiDaemon {
       markDisconnected(candidate)
       const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
       if (candidateApprovals) {
-        candidate.approvals = candidateApprovals.approvals
+        candidate.approvals = candidate.approvals.filter((approval) => !candidateApprovals.removedIds.has(approval.id))
         candidate.workingPlans = candidateApprovals.workingPlans
       }
       if (held.length > 0) {
@@ -9115,7 +9117,7 @@ export class DomovoiDaemon {
     const next = withoutApprovals(this.#snapshot, predicate, updatedAt)
     if (!next) return []
     const { removed, blockedIds } = next
-    this.#snapshot.approvals = next.approvals
+    this.#snapshot.approvals = this.#snapshot.approvals.filter((approval) => !next.removedIds.has(approval.id))
     this.#snapshot.workingPlans = next.workingPlans
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
@@ -10146,6 +10148,7 @@ export class DomovoiDaemon {
     const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
       this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()
+      this.#sealUnsettledApprovals()
       try {
         if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
         else this.#store.save(this.#snapshot)

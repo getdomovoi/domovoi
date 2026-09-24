@@ -197,16 +197,16 @@ export function realPathNamesSecret(path: RealPath, names: (path: string) => boo
 
 // Whether any of these command operands reaches a credential store or a
 // secret file at its real path, each relative operand read from cwd. The
-// lookups share one deadline.
-export async function operandsReachCredentialPath(operands: readonly string[], cwd: string | undefined): Promise<boolean> {
-  const deadline = OperationDeadline.start(realPathLookupBudgetMs)
+// lookups share one deadline, the request's when it gives one.
+export async function operandsReachCredentialPath(operands: readonly string[], cwd: string | undefined, deadline?: OperationDeadline): Promise<boolean> {
+  const clock = deadline ?? OperationDeadline.start(realPathLookupBudgetMs)
   try {
     for (const operand of new Set(operands)) {
-      if (realPathNamesSecret(await canonicalPath(operand, cwd, deadline))) return true
+      if (realPathNamesSecret(await canonicalPath(operand, cwd, clock))) return true
     }
     return false
   } finally {
-    deadline.clear()
+    if (deadline === undefined) clock.clear()
   }
 }
 

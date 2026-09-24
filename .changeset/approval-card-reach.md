@@ -51,19 +51,32 @@ command and of a resolved script, and the directory the request runs in are reso
 filesystem, so a link with an ordinary name, or a name the filesystem treats as another, that reaches
 a credential store makes the gate a hard gate. A path that does not exist yet is followed one
 component at a time from its root, so a link is followed before a ".." after it, as the filesystem
-does. The lookups for one request share a 2 second deadline; a lookup that runs out of time, or that
-the filesystem refuses, treats the path as a credential path, so the card is a hard gate and the
-session is never held. The directory the request runs in is persisted and sent with the card, so a
-credential store there is shown as "[REDACTED]" with its location kept, the directory in the
-execution record is hidden too, and the gate is a hard gate.
+does, and the directory the request runs in is read the same way, so `deep-link/..` is the directory
+the link leads to. Operands are read from that real directory, and a script's operands from its
+package's directory.
 
-Before an Allow is accepted, the card's directory, file, and every operand are judged again on disk.
-If a link has moved to a credential path since the card was made, which leaves the command text and
-its execution digest unchanged, the Allow is refused and the card is shown again as a hard gate with
-the path hidden.
+Every approval card is made in one place. A new card, a card judged again before an Allow, a card
+read back from disk, and a request a standing rule would answer are all settled the same way: the
+execution is resolved, the operands come from the command and from that execution, and the
+directory as written and at its real path, the file, every operand, and the directory and manifest
+in the execution record are judged. Any credential path among them makes the card a hard gate and
+is hidden, and a manifest reached through a link into a store hides the execution record in every
+copy the daemon saves or sends. One 2 second deadline covers the whole request, the execution
+lookup included; a lookup that runs out of time, or that the filesystem refuses, gives a hard gate
+with the directory, the file and the execution record hidden, and the session is never held. Only
+a settled card enters the workspace state, and every save and broadcast seals any approval that did
+not, as a hard gate with its paths hidden. A standing rule answers only a settled request that is
+not a hard gate.
 
-An approval saved before this change is classified the same way, as written, when the state loads
-and whenever it is saved, so its stored copy is repaired: the directory, the directory in the
-execution record, the manifest a script came from, and a file line written before its path was
-classified are hidden, and the approval becomes a hard gate. A standing rule whose execution record
+Before an Allow is accepted, the card is settled again from the request as it is now: a link can
+move to a credential path, and a package script can change, after the card was made. If the card
+changes, it is saved and sent, and the Allow is refused with "The file target changed; review the
+updated approval before allowing it", or, when only the resolved command changed, "The resolved
+command changed; review the updated approval before allowing it".
+
+An approval saved before this change is classified as written when the state loads and whenever it
+is saved, so its stored copy is repaired: the directory, the directory in the execution record, the
+manifest a script came from, and a file line written before its path was classified are hidden, and
+the approval becomes a hard gate. When the daemon starts or opens a project, its saved approvals are
+then settled at their real paths before any client sees them. A standing rule whose execution record
 holds such a path is dropped.

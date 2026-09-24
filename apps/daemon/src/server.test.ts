@@ -1395,7 +1395,7 @@ describe("DomovoiDaemon", () => {
     await unlink(join(worktree, "link.txt"))
     await symlink(join(worktree, ".env"), join(worktree, "link.txt"))
     await expect(rpc("approval.resolve", { approvalId: ordinary!.id, decision: "allow-once", client: "desktop" }))
-      .resolves.toMatchObject({ error: { message: "The request now reaches a credential path; review the updated approval before allowing it" } })
+      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
     expect(agent.resolveApproval).not.toHaveBeenCalled()
     const recarded = (await rpc("workspace.get", {})).result.approvals
       .find((candidate) => candidate.providerRequestId === 202)

@@ -7,7 +7,6 @@ import {
   canonicalPath,
   commandOperands,
   operandPieces,
-  operandsReachCredentialPath,
   realPathLookupBudgetMs,
   realPathNamesSecret,
   unreadablePath,
@@ -124,18 +123,24 @@ async function followPath(path: string, deadline: OperationDeadline): Promise<{ 
 // the same way. Undefined when either loops, and then the lexical answer stands.
 // A lookup that runs out of time or fails gives the lexical answer with a real
 // path that could not be read, so the card treats the path as a credential path.
-export async function resolveApprovalPath(workspace: string, path: string, cwd?: string): Promise<ResolvedApprovalPath | undefined> {
+// The lookups end at the request's deadline when it gives one.
+export async function resolveApprovalPath(
+  workspace: string,
+  path: string,
+  cwd?: string,
+  deadline?: OperationDeadline,
+): Promise<ResolvedApprovalPath | undefined> {
   const requested = requestedPath(workspace, path, cwd)
-  const deadline = OperationDeadline.start(realPathLookupBudgetMs)
+  const clock = deadline ?? OperationDeadline.start(realPathLookupBudgetMs)
   try {
-    const followed = await followPath(requested, deadline)
-    const realWorkspace = await followPath(resolve(workspace), deadline)
+    const followed = await followPath(requested, clock)
+    const realWorkspace = await followPath(resolve(workspace), clock)
     if (followed === undefined || realWorkspace === undefined) return undefined
-    return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops, canonical: await canonicalPath(requested, undefined, deadline) }
+    return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops, canonical: await canonicalPath(requested, undefined, clock) }
   } catch {
     return { target: resolve(requested), workspace: resolve(workspace), hops: [], canonical: unreadablePath }
   } finally {
-    deadline.clear()
+    if (deadline === undefined) clock.clear()
   }
 }
 
@@ -187,7 +192,7 @@ export function approvalDirectory(input: { directory: string; workspace: string 
     || realPathNamesSecret(input.canonical, namesSecretPath)
   ) {
     const inside = workspace !== undefined && (directory === workspace || within(workspace, directory) !== undefined)
-    return { text: inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree", redacted: false, sensitive: true }
+    return { text: hiddenDirectory(inside), redacted: false, sensitive: true }
   }
   const copy = redactDurableText(input.directory)
   return { text: copy.value, redacted: copy.redacted, sensitive: false }
@@ -215,62 +220,64 @@ export function approvalFacts(input: {
   return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }
 
-// What a request can reach, as the daemon holds it while the card waits: the
-// worktree, the directory and file as the agent gave them, and every operand
-// of the command and of its resolved execution.
-export type ApprovalTargets = Readonly<{
-  workspace: string
-  cwd?: string | undefined
-  path?: string | undefined
-  operands: readonly string[]
-}>
+// The directory a request runs in as the agent wrote it, before anything is
+// collapsed: a link in it is followed before any ".." after it.
+export function requestDirectory(workspace: string, cwd: string | undefined): string {
+  if (cwd === undefined) return workspace
+  return isAbsolute(cwd) ? cwd : `${workspace}${sep}${cwd}`
+}
 
-// Every operand of a command line and of its resolved execution.
-export function approvalOperands(command: string | undefined, execution: ExecutionResolution): string[] {
+// Whether a directory is the worktree or inside it, read lexically.
+export function inWorktree(workspace: string, directory: string): boolean {
+  const root = resolve(workspace)
+  const target = resolve(root, directory)
+  return target === root || within(root, target) !== undefined
+}
+
+// Operands of a command line, read from the directory the request runs in.
+export function requestOperands(command: string | undefined, execution: ExecutionResolution): string[] {
   return [
     ...(command === undefined ? [] : commandOperands(command)),
     ...(execution.state === "resolved" && execution.record.kind === "shell"
-      ? execution.record.entries.flatMap((entry) => entry.parts.flatMap((part) => part.argv.flatMap(operandPieces)))
+      ? execution.record.entries.flatMap((entry) => entry.source.kind === "request"
+        ? entry.parts.flatMap((part) => part.argv.flatMap(operandPieces))
+        : [])
       : []),
   ]
 }
 
-// The card's directory and file lines for these targets, judged as written
-// and at their real paths on disk now, and whether any operand reaches a
-// credential store or secret file. Run when the card is made and again
-// before an Allow, since a link can move between the two.
-export async function approvalTargetCard(targets: ApprovalTargets, scope: ApprovalScope | undefined): Promise<{
-  directory: ReturnType<typeof approvalDirectory>
-  facts: ReturnType<typeof approvalFacts>
-  reachesCredentialStore: boolean
-}> {
-  const requestDirectory = resolve(targets.workspace, targets.cwd ?? ".")
-  const reachesCredentialStore = await operandsReachCredentialPath(targets.operands, requestDirectory)
-  const directory = approvalDirectory({
-    directory: targets.cwd ?? targets.workspace,
-    workspace: targets.workspace,
-    canonical: await canonicalPath(requestDirectory),
-  })
-  const facts = approvalFacts({
-    ...(targets.path === undefined ? {} : { path: targets.path }),
-    workspace: targets.workspace,
-    cwd: targets.cwd,
-    scope,
-    resolved: targets.path === undefined ? undefined : await resolveApprovalPath(targets.workspace, targets.path, targets.cwd),
-  })
-  return { directory, facts, reachesCredentialStore }
+// Operands of each package script body, grouped by the manifest it came from,
+// since a script runs in its package's directory.
+export function scriptOperands(execution: ExecutionResolution): { manifest: string; operands: string[] }[] {
+  if (execution.state !== "resolved" || execution.record.kind !== "shell") return []
+  return execution.record.entries.flatMap((entry) => entry.source.kind === "package-script"
+    ? [{ manifest: entry.source.manifest, operands: entry.parts.flatMap((part) => part.argv.flatMap(operandPieces)) }]
+    : [])
+}
+
+// Every operand of a command line and of its resolved execution.
+export function approvalOperands(command: string | undefined, execution: ExecutionResolution): string[] {
+  return [...requestOperands(command, execution), ...scriptOperands(execution).flatMap(({ operands }) => operands)]
+}
+
+// The paths a resolved execution record holds in fields the card does not
+// show: the directory it runs in, and the manifest each script came from, both
+// relative to the worktree's real path.
+export function executionRecordPaths(execution: ExecutionResolution): string[] {
+  if (execution.state !== "resolved") return []
+  const { record } = execution
+  return [
+    record.cwd,
+    ...(record.kind === "shell"
+      ? record.entries.flatMap((entry) => entry.source.kind === "package-script" ? [entry.source.manifest] : [])
+      : []),
+  ]
 }
 
 // Whether a resolved execution record holds a credential path in a field the
-// card does not show: the directory it runs in, or the manifest a script came
-// from. The command words stay the agent's own text.
+// card does not show. The command words stay the agent's own text.
 export function executionNamesCredentialPath(execution: ExecutionResolution): boolean {
-  if (execution.state !== "resolved") return false
-  const { record } = execution
-  return namesSecretPath(record.cwd)
-    || (record.kind === "shell" && record.entries.some((entry) => (
-      entry.source.kind === "package-script" && namesSecretPath(entry.source.manifest)
-    )))
+  return executionRecordPaths(execution).some(namesSecretPath)
 }
 
 // A file line saved before its path was classified. A word in it that names a
@@ -281,9 +288,23 @@ export function approvalAffects(affects: string): { text: string; sensitive: boo
     [word, word.replace(/[.,;]+$/u, "")].some((candidate) => operandPieces(candidate).some(namesSecretPath))
   ))
   if (!names) return { text: affects, sensitive: false }
-  const inside = affects.includes(" in the session worktree") && !affects.includes("outside the session worktree")
-  return {
-    text: inside ? "The file [REDACTED] in the session worktree." : "The file [REDACTED], outside the session worktree.",
-    sensitive: true,
-  }
+  return { text: hiddenFile(savedInWorktree(affects)), sensitive: true }
+}
+
+function savedInWorktree(affects: string): boolean {
+  return affects.includes(" in the session worktree") && !affects.includes("outside the session worktree")
+}
+
+export function hiddenFile(inside: boolean): string {
+  return inside ? "The file [REDACTED] in the session worktree." : "The file [REDACTED], outside the session worktree."
+}
+
+export function hiddenDirectory(inside: boolean): string {
+  return inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree"
+}
+
+// A saved file line with its path hidden, when the path could not be judged;
+// a line that names no file, such as a provider's reach, stays.
+export function hiddenAffects(affects: string): string {
+  return affects.startsWith("The file ") ? hiddenFile(savedInWorktree(affects)) : affects
 }

@@ -1,16 +1,41 @@
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises"
+import * as fs from "node:fs"
+import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, sep } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { removeScratchDirectories } from "./test-scratch.js"
 import { resolveExecution } from "./execution-resolution.js"
+import { OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 
 const scratch: string[] = []
 
 afterEach(async () => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
   await removeScratchDirectories(scratch)
+})
+
+describe("resolveExecution under a deadline", () => {
+  it("ends every filesystem lookup at the request's deadline", async () => {
+    const root = await project({ test: "vitest run" })
+    vi.useFakeTimers()
+    vi.spyOn(fs.realpath, "native").mockImplementation((() => {}) as never)
+    const deadline = OperationDeadline.start(2_000)
+    const resolution = resolveExecution({ workspaceRoot: root, cwd: root, command: "pnpm test", deadline })
+    const settled = resolution.then(() => "resolved", (error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(await settled).toBeInstanceOf(OperationDeadlineExceededError)
+  })
+
+  it("reads a relative directory through a link before its '..'", async () => {
+    const root = await realpath(await project())
+    await mkdir(join(root, "packages", "deep"), { recursive: true })
+    await symlink(join(root, "packages", "deep"), join(root, "deep-link"))
+    expect(await resolveExecution({ workspaceRoot: root, cwd: `deep-link${sep}..`, command: "git status" }))
+      .toMatchObject({ state: "resolved", record: { cwd: "packages" } })
+  })
 })
 
 async function project(scripts?: Record<string, string>) {
