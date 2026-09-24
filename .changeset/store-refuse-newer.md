@@ -2,8 +2,9 @@
 "@getdomovoi/daemon": patch
 ---
 
-A daemon that finds workspace state written by a newer protocol minor now refuses it and does not
-start. Until now it moved that state aside into a snapshot JSON file and started from the seed, so
-running an older build once, then the newer one again, lost the active workspace. The stored state
-is left exactly as it is, and the refusal names the path and both protocol versions. State from
-this version, or a patch ahead of it, opens as before.
+State written by a newer protocol minor is refused with `NewerWorkspaceStateError`, which names the
+path and both versions: "Domovoi state at <path> was written by a newer daemon (protocol <stored>),
+and this daemon speaks protocol <daemon>. It was left as it is and this daemon did not start. Run
+the newer Domovoi again, or update this one to protocol <stored major.minor> or later." `domovoid`
+prints that message and exits 1 instead of a stack, and the desktop's acquisition carries it as the
+refusal message instead of the generic profile one.
