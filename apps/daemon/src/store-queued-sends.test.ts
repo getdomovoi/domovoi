@@ -163,4 +163,48 @@ describe("queued sends that cannot be read", () => {
       expect(database.prepare("SELECT queue_id FROM queued_session_sends WHERE queue_id = 'queue-damaged'").all()).toEqual([])
     } finally { database.close() }
   })
+
+  it("moves an unreadable send aside even when the caller asks for no report", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = 'null' WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      expect(store.loadQueuedSessionSends().map((send) => send.id)).toEqual(["queue-readable"])
+      expect(store.auditLog.query({ action: "queued-send.quarantine" }).entries).toEqual([
+        expect.objectContaining({ outcome: "succeeded", target: "queue-damaged" }),
+      ])
+    } finally { await store.close() }
+    const database = new DatabaseSync(path)
+    try {
+      expect(database.prepare("SELECT queue_id FROM queued_session_send_quarantine").all()).toEqual([{ queue_id: "queue-damaged" }])
+    } finally { database.close() }
+  })
+
+  it("keeps loading when SQLite ends the quarantine transaction itself", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = ? WHERE queue_id = ?", "x".repeat(200_000), "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    const prepare = DatabaseSync.prototype.prepare
+    const limited: DatabaseSync[] = []
+    // A full database makes SQLite roll the transaction back on its own; a page
+    // limit on the store's connection produces exactly that.
+    const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (sql.includes("INSERT INTO queued_session_send_quarantine") && limited.length === 0) {
+        limited.push(this)
+        const pages = prepare.call(this, "PRAGMA page_count").get() as { page_count: number }
+        this.exec(`PRAGMA max_page_count = ${pages.page_count}`)
+      }
+      return prepare.call(this, sql)
+    })
+    try {
+      const unreadable = vi.fn()
+      expect(store.loadQueuedSessionSends(unreadable).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(limited).toHaveLength(1)
+      expect(unreadable).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged", quarantined: false }))
+    } finally {
+      spy.mockRestore()
+      for (const database of limited) database.exec("PRAGMA max_page_count = 1073741823")
+      await store.close()
+    }
+  })
 })

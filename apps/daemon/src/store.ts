@@ -1096,7 +1096,9 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
           queueId: String(row.queue_id),
           reason: describeFailure(error),
         }
-        onUnreadable?.({ ...described, quarantined: this.#quarantineQueuedSessionSend(row, described) })
+        // Move the row aside whether or not the caller asked for a report.
+        const quarantined = this.#quarantineQueuedSessionSend(row, described)
+        onUnreadable?.({ ...described, quarantined })
       }
     }
     return loaded
@@ -1144,8 +1146,22 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       // A store that cannot move the row still skips it for this run; the
       // row stays where it is and the next start tries again. A lock that
       // refused the transaction leaves nothing to roll back.
-      if (started) this.#database.exec("ROLLBACK")
+      if (started) this.#rollBackIfOpen()
       return false
+    }
+  }
+
+  // SQLite ends a transaction itself on some errors, such as a full
+  // database; a ROLLBACK then fails with "no transaction is active".
+  // isTransaction is absent before Node 22.16, so that error is tolerated there.
+  #rollBackIfOpen(): void {
+    const open = (this.#database as { isTransaction?: boolean }).isTransaction
+    if (open === false) return
+    try {
+      this.#database.exec("ROLLBACK")
+    } catch (error) {
+      if (open === undefined && error instanceof Error && error.message.includes("no transaction is active")) return
+      throw error
     }
   }
 
