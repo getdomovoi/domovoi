@@ -10,7 +10,8 @@ import { z } from "zod"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
-import { claimProfileAfterStop, currentInstance, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
+import { isDomovoiServiceProgram } from "./restore-target.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
 import { removeWindowsTask, WindowsTaskRemovalError, type WindowsTaskRemovalPlan } from "./windows-task.js"
@@ -81,16 +82,26 @@ function asSaved(configuration: ServiceConfiguration): ServiceConfiguration {
   return parseServiceConfiguration(serializeServiceConfiguration(configuration))
 }
 
+// The program the guest task runs for a saved runtime, as installedWslTask
+// builds it, checked as every restore target is (security review round 2):
+// the runtime, one daemon entry, and the supervise flag with this
+// configuration.
+function domovoiGuestRuntime(wsl: WslInstallation, configurationPath: string): boolean {
+  return isDomovoiServiceProgram(
+    { execPath: wsl.executable, args: [...wsl.args, "--service-supervise", configurationPath] },
+    { paths: "posix", flag: "--service-supervise", configurationPath },
+  )
+}
+
 // An update changes only the guest runtime, and writes it in the shape an
-// install does: an absolute executable and at most one absolute daemon entry.
-// A recorded configuration that differs from the saved one in anything else
-// (registration, profile, distribution, user, PowerShell or wsl.exe), or
-// names a runtime of another shape, was not written by an update of this
-// service, and nothing it names is registered or started.
+// install does: an absolute normalized executable and one absolute normalized
+// daemon entry. A recorded configuration that differs from the saved one in
+// anything else (registration, profile, distribution, user, PowerShell or
+// wsl.exe), or names a runtime of another shape, was not written by an update
+// of this service, and nothing it names is registered or started.
 function recordedByThisService(recorded: ServiceConfiguration, saved: ServiceConfiguration): boolean {
   if (!recorded.wsl || !saved.wsl) return false
-  const { executable, args } = recorded.wsl
-  if (args.length > 1 || ![executable, ...args].every((path) => posix.isAbsolute(path) && posix.normalize(path) === path)) return false
+  if (!domovoiGuestRuntime(recorded.wsl, serviceConfigurationPath(saved.homeDirectory, "linux"))) return false
   return isDeepStrictEqual(asSaved({ ...recorded, wsl: { ...recorded.wsl, executable: saved.wsl.executable, args: saved.wsl.args } }), asSaved(saved))
 }
 
@@ -193,6 +204,9 @@ export function prepareWslUpdate(
       }
     }
     if (!previous.wsl || !previous.registrationId) throw new Error("No saved WSL service registration; no systemd action was attempted")
+    // The old task is registered and started again on a failed step, so the
+    // saved runtime must be a Domovoi guest runtime (security review round 2).
+    if (!domovoiGuestRuntime(previous.wsl, path)) throw new DaemonServiceUpdateError("not-installed")
     const registrationId = previous.registrationId
     const old = installedWslTask(previous.wsl, registrationId, path)
     const updated = { ...previous, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }

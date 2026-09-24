@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -15,6 +15,7 @@ import {
 } from "../public.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, type CapturedRun, type ServiceEffects } from "./install.js"
+import { launchdPlist, systemdUnit } from "./units.js"
 import { installedWslTask } from "./wsl-registration.js"
 import { wslUpdateIntentPath } from "./wsl-install.js"
 
@@ -35,6 +36,10 @@ const runtime = {
 const agent = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
 const unit = "/home/dl/.config/systemd/user/domovoid.service"
 const registrationId = "5b7b2f0e-1111-4222-8333-444455556666"
+// What an install of the old runtime wrote: the only shape an update puts back.
+const oldArgs = (configurationPath: string) => [oldRuntime.daemonEntryPath, "--service-config", configurationPath]
+const oldAgent = launchdPlist({ execPath: oldRuntime.nodePath, args: oldArgs("/Users/dl/.domovoi/service.json") })
+const oldUnit = systemdUnit({ execPath: oldRuntime.nodePath, args: oldArgs("/home/dl/.domovoi/service.json") })
 
 type Fake = DaemonServiceDependencies & ServiceEffects & {
   order: string[]
@@ -77,8 +82,8 @@ function record(owner: NonNullable<Fake["owner"]>): LocalOwnerRecord {
 function fake(platform: string, home: string, overrides: Partial<Fake> = {}, configuration: ServiceConfiguration | null = saved(platform, home)): Fake {
   const order: string[] = []
   const files = new Map<string, string>([
-    [agent, `<plist>${oldRuntime.nodePath}</plist>`],
-    [unit, `[Service]\nExecStart=${oldRuntime.nodePath}\n`],
+    [agent, oldAgent],
+    [unit, oldUnit],
   ])
   let agentLoaded = true
   let starts = 0
@@ -243,7 +248,7 @@ describe("updateDaemonService with launchd", () => {
       "Domovoi could not start the service on the new runtime: Bootstrap failed: 5: Input/output error. The previous service was put back and is running.",
     )
     expect(effects.order.slice(-2)).toEqual([`write ${agent}`, `launchctl bootstrap gui/501 ${agent}`])
-    expect(effects.files.get(agent)).toBe(`<plist>${oldRuntime.nodePath}</plist>`)
+    expect(effects.files.get(agent)).toBe(oldAgent)
   })
 
   // Review of 77c28291 (P1): a bootstrap that succeeds is not a daemon that
@@ -253,7 +258,7 @@ describe("updateDaemonService with launchd", () => {
     await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
       "Domovoi could not start the service on the new runtime: the service did not report ready within 1 second. The previous service was put back and is running.",
     )
-    expect(effects.files.get(agent)).toBe(`<plist>${oldRuntime.nodePath}</plist>`)
+    expect(effects.files.get(agent)).toBe(oldAgent)
     expect(effects.owner).toEqual({ instanceId: "instance-1", state: "ready" })
   })
 
@@ -346,7 +351,7 @@ describe("updateDaemonService with launchd", () => {
     })
     await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(restored)
     expect(effects.order.slice(-1)).toEqual([`launchctl bootstrap gui/501 ${agent}`])
-    expect(effects.files.get(agent)).toBe(`<plist>${oldRuntime.nodePath}</plist>`)
+    expect(effects.files.get(agent)).toBe(oldAgent)
   })
 
   it("keeps the saved service configuration as it is", async () => {
@@ -377,13 +382,13 @@ describe("updateDaemonService with systemd", () => {
       "Domovoi could not start the service on the new runtime: Job for domovoid.service failed. The previous service was put back and is running.",
     )
     expect(effects.order.slice(-3)).toEqual([`write ${unit}`, "systemctl --user daemon-reload", "systemctl --user restart domovoid.service"])
-    expect(effects.files.get(unit)).toBe(`[Service]\nExecStart=${oldRuntime.nodePath}\n`)
+    expect(effects.files.get(unit)).toBe(oldUnit)
   })
 
   it("puts the previous unit back when a restarted Type=simple unit never reports ready", async () => {
     const effects = fake("linux", "/home/dl", { crashingStarts: 1 })
     await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(restored)
-    expect(effects.files.get(unit)).toBe(`[Service]\nExecStart=${oldRuntime.nodePath}\n`)
+    expect(effects.files.get(unit)).toBe(oldUnit)
   })
 
   it("says nothing changed when the new unit cannot be written", async () => {
@@ -777,7 +782,7 @@ describe("security review round 1", () => {
       await write(path, contents, deadline)
     })
     await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
-    expect(effects.files.get(unit)).toBe(`[Service]\nExecStart=${oldRuntime.nodePath}\n`)
+    expect(effects.files.get(unit)).toBe(oldUnit)
     expect(effects.order.indexOf("new unit write settled")).toBeLessThan(effects.order.lastIndexOf(`write ${unit}`))
     expect(effects.order.slice(-2)).toEqual(["systemctl --user daemon-reload", "systemctl --user restart domovoid.service"])
   })
@@ -808,7 +813,7 @@ describe("security review round 1", () => {
       expect(effects.profileLeases.filter((lease) => lease.release.mock.calls.length === 0)).toHaveLength(1)
       finish!()
       expect(await outcome).toMatchObject({ outcome: "swap-failed-restored" })
-      expect(effects.files.get(agent)).toBe(`<plist>${oldRuntime.nodePath}</plist>`)
+      expect(effects.files.get(agent)).toBe(oldAgent)
       expect(effects.order.indexOf("new agent write settled")).toBeLessThan(effects.order.lastIndexOf(`write ${agent}`))
       expect(effects.serviceLease.release).toHaveBeenCalledOnce()
     } finally {
@@ -932,6 +937,179 @@ describe("security review round 1", () => {
       deadline.clear()
       await rm(directory, { recursive: true, force: true })
     }
+  })
+})
+
+// Security review of 20c23ba7: what an update puts back on a failed step is
+// read from the installed service, a file or task this user's account can
+// change. Crafted private files and a crafted task action made the fake
+// managers bootstrap, restart or /create unrelated programs. Only the shape a
+// Domovoi install writes is put back; anything else is refused before any
+// change, as a service that is not Domovoi's.
+describe("security review round 2", () => {
+  const notInstalled = "No Domovoi service is installed for this user, so there is nothing to update. Install the service first."
+  const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
+  const oldNode = "C:\\Program Files\\Domovoi\\runtime-1\\node.exe"
+  const oldEntry = "C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js"
+  const windowsConfiguration = "C:\\Users\\dl\\.domovoi\\service.json"
+  const directories: string[] = []
+  afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
+
+  // The crafted definition is a private file on disk, as in the review's
+  // probe, served where the update reads the installed one.
+  async function planted(effects: Fake, path: string, contents: string): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-planted-"))
+    directories.push(directory)
+    const file = join(directory, "definition")
+    await writeFile(file, contents, { mode: 0o600 })
+    const read = effects.read!
+    effects.read = vi.fn(async (asked: string, deadline: OperationDeadline) => asked === path ? readFile(file, "utf8") : read(asked, deadline))
+  }
+
+  // The first start of the new runtime fails, so a restore would follow.
+  function failFirst(effects: Fake, failing: (args: string[]) => boolean): void {
+    const run = effects.run
+    let failed = false
+    effects.run = vi.fn(async (command: string, args: string[], deadline: OperationDeadline) => {
+      if (!failed && failing(args)) { failed = true; throw new Error("the new runtime would not start") }
+      await run(command, args, deadline)
+    })
+  }
+
+  it("refuses a crafted launch agent before any change, and never boots it in", async () => {
+    const configurationPath = "/Users/dl/.domovoi/service.json"
+    for (const crafted of [
+      launchdPlist({ execPath: "/usr/bin/open", args: ["-a", "Calculator"] }),
+      launchdPlist({ execPath: "/tmp/planted/node", args: ["/tmp/planted/index.js"] }),
+      launchdPlist({ execPath: oldRuntime.nodePath, args: oldArgs("/tmp/planted/service.json") }),
+      launchdPlist({ execPath: oldRuntime.nodePath, args: ["planted/index.js", "--service-config", configurationPath] }),
+      launchdPlist({ execPath: "/Applications/../tmp/planted/node", args: oldArgs(configurationPath) }),
+      launchdPlist({ execPath: oldRuntime.nodePath, args: [...oldArgs(configurationPath), "--inspect=0.0.0.0:9229"] }),
+      oldAgent.replace(`<string>${oldRuntime.nodePath}</string>`, "<string>node</string>"),
+      oldAgent.replace("<string>sh.domovoi.domovoid</string>", "<string>com.example.planted</string>"),
+      oldAgent.replace("    <key>RunAtLoad</key>", "    <key>EnvironmentVariables</key>\n    <dict>\n      <key>DYLD_INSERT_LIBRARIES</key>\n      <string>/tmp/planted.dylib</string>\n    </dict>\n    <key>RunAtLoad</key>"),
+    ]) {
+      const effects = fake("darwin", "/Users/dl")
+      await planted(effects, agent, crafted)
+      failFirst(effects, (args) => args[0] === "bootstrap")
+      const refused = updateDaemonService({ runtime }, effects)
+      await expect(refused).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      expect(effects.run).not.toHaveBeenCalled()
+      expect(effects.write).not.toHaveBeenCalled()
+      expect(effects.order).toEqual([])
+    }
+  })
+
+  it("refuses a crafted systemd unit before any change, and never restarts it", async () => {
+    const configurationPath = "/home/dl/.domovoi/service.json"
+    for (const crafted of [
+      systemdUnit({ execPath: "/usr/bin/python3", args: ["-c", "print(1)"] }),
+      systemdUnit({ execPath: oldRuntime.nodePath, args: oldArgs("/tmp/planted/service.json") }),
+      systemdUnit({ execPath: oldRuntime.nodePath, args: ["/opt/../tmp/planted.js", "--service-config", configurationPath] }),
+      oldUnit.replace(`ExecStart=${oldRuntime.nodePath}`, "ExecStart=node"),
+      oldUnit.replace("[Service]\n", "[Service]\nExecStartPre=/tmp/planted\n"),
+      oldUnit.replace("Type=simple\n", "Type=simple\nEnvironment=NODE_OPTIONS=--require=/tmp/planted.js\n"),
+    ]) {
+      const effects = fake("linux", "/home/dl")
+      await planted(effects, unit, crafted)
+      failFirst(effects, (args) => args[1] === "restart")
+      const refused = updateDaemonService({ runtime }, effects)
+      await expect(refused).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      expect(effects.run).not.toHaveBeenCalled()
+      expect(effects.write).not.toHaveBeenCalled()
+      expect(effects.order).toEqual([])
+    }
+  })
+
+  it("refuses a crafted Windows task action before any change, and never registers it", async () => {
+    for (const action of [
+      // The review's probe: a relative, unrelated program and no configuration.
+      { path: "calc.exe", arguments: "" },
+      { path: "C:\\Windows\\System32\\calc.exe", arguments: "" },
+      { path: oldNode, arguments: `"${oldEntry}"` },
+      { path: oldNode, arguments: `"daemon\\index.js" --service-config "${windowsConfiguration}"` },
+      { path: oldNode, arguments: `"${oldEntry}" --service-config "C:\\Users\\dl\\planted\\service.json"` },
+      { path: oldNode, arguments: `"${oldEntry}" --service-config "${windowsConfiguration}" & calc.exe` },
+      { path: "C:\\Program Files\\Domovoi\\..\\..\\Windows\\System32\\cmd.exe", arguments: `"${oldEntry}" --service-config "${windowsConfiguration}"` },
+      { path: `${oldNode}" & calc.exe & "`, arguments: `"${oldEntry}" --service-config "${windowsConfiguration}"` },
+      { path: "\\Program Files\\Domovoi\\runtime-1\\node.exe", arguments: `"${oldEntry}" --service-config "${windowsConfiguration}"` },
+    ]) {
+      const effects = fake("win32", "C:\\Users\\dl")
+      const capture = effects.capture
+      effects.capture = vi.fn(async (command: string, args: string[], deadline: OperationDeadline) => {
+        if (!script(args).includes("domovoi-task-action")) return capture(command, args, deadline)
+        effects.order.push("read task action")
+        return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ ...action, enabled: true, state: 4 })}\n` }
+      })
+      failFirst(effects, (args) => args[0] === "/run")
+      const refused = updateDaemonService({ runtime: windowsRuntime }, effects)
+      await expect(refused).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      expect(effects.run).not.toHaveBeenCalled()
+      expect(effects.order).toEqual(["read task action"])
+    }
+  })
+
+  // Control: Task Scheduler may report the program with the quotes schtasks
+  // was given. The same Domovoi command is put back, quoted once.
+  it("puts back a Domovoi task whose program is reported in quotes", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    const capture = effects.capture
+    effects.capture = vi.fn(async (command: string, args: string[], deadline: OperationDeadline) => {
+      if (!script(args).includes("domovoi-task-action")) return capture(command, args, deadline)
+      effects.order.push("read task action")
+      return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: `"${oldNode}"`, arguments: `"${oldEntry}" --service-config "${windowsConfiguration}"`, enabled: true, state: 4 })}\n` }
+    })
+    failFirst(effects, (args) => args[0] === "/run")
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
+    const restoredTask = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").at(-1)![1]
+    expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe(oldWindowsCommand)
+  })
+
+  it("refuses a saved WSL runtime of another shape before any change, and never registers it", async () => {
+    const wsl = (executable: string, args: string[]): ServiceConfiguration => ({
+      ...saved("linux", "/home/dl"),
+      wsl: {
+        distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        wsl: "C:\\Windows\\System32\\wsl.exe", executable, args,
+      },
+    })
+    for (const configuration of [
+      wsl("/usr/bin/xcalc", []),
+      wsl("/usr/bin/python3", ["-c", "print(1)"]),
+      wsl(oldRuntime.nodePath, ["planted/index.js"]),
+      wsl("/opt/../usr/bin/python3", [oldRuntime.daemonEntryPath]),
+    ]) {
+      const effects = fake("linux", "/home/dl", {}, configuration)
+      const capture = effects.capture
+      let registrations = 0
+      effects.capture = vi.fn(async (command: string, args: string[], deadline: OperationDeadline) => {
+        if (script(args).includes("RegisterTaskDefinition") && ++registrations === 1) return { code: 1, stdout: "", stderr: "Access is denied" }
+        return capture(command, args, deadline)
+      })
+      await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "not-installed", message: notInstalled })
+      expect(effects.order).toEqual([])
+    }
+  })
+
+  // The intent record's previous runtime had to have at most one daemon
+  // entry; none let it name any program. It now needs the entry.
+  it("refuses an intent record whose previous runtime has no daemon entry", async () => {
+    const configurationPath = "/home/dl/.domovoi/service.json"
+    const intentPath = wslUpdateIntentPath(configurationPath)
+    const genuine: ServiceConfiguration = {
+      ...saved("linux", "/home/dl"),
+      wsl: {
+        distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+      },
+    }
+    const previous = { ...genuine, wsl: { ...genuine.wsl!, executable: "/usr/bin/xcalc", args: [] } }
+    const effects = fake("linux", "/home/dl", {}, genuine)
+    effects.files.set(intentPath, JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(genuine) }))
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
+      "Domovoi could not update the service: the record of an interrupted update is unreadable. Nothing was changed, and the service was left as it was.",
+    )
+    expect(effects.order).toEqual([])
   })
 })
 

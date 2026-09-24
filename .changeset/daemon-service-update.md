@@ -13,4 +13,7 @@ reports ready. If any step fails, a timeout included, the previous service is pu
 own time budget and must report ready too; the error says which way that went, or that nothing
 was changed. The saved configuration is read under the service-operation lease, a restore waits
 for any write still pending, an unreadable owner record fails the update, and the WSL update
-record is read only as a private regular file that matches the saved registration.
+record is read only as a private regular file that matches the saved registration. The previous
+plist, unit, task action or WSL guest runtime is put back only in the shape a Domovoi install
+writes (absolute runtime and daemon entry, then the saved configuration path); any other shape is
+refused as no Domovoi service before anything changes.

@@ -15,8 +15,9 @@ import { createServiceConfiguration, parseServiceConfiguration, serializeService
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
-import { launchdPlist, systemdUnit } from "./units.js"
-import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
+import { isDomovoiServiceProgram } from "./restore-target.js"
+import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
@@ -383,6 +384,20 @@ export type ServiceUpdateWaits = {
   budgetMs: number
 }
 
+// The command a Domovoi logon task runs, as servicePlan writes it, rebuilt
+// from the task's action; undefined for an action of any other shape, which is
+// never registered again (security review round 2). Task Scheduler may report
+// the program with the quotes schtasks was given, so one pair is dropped.
+function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string): string | undefined {
+  const execPath = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
+  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
+  if (!quoted) return undefined
+  const [, entry = "", saved = ""] = quoted
+  const program = { execPath, args: [entry, "--service-config", saved] }
+  if (!isDomovoiServiceProgram(program, { paths: "win32", flag: "--service-config", configurationPath })) return undefined
+  return `"${execPath}" "${entry}" --service-config "${configurationPath}"`
+}
+
 // Ruled 2026-09-23: an update swaps the installed service to a new runtime in
 // place. The saved service configuration is kept as it is; the service
 // definition changes. What the service ran before is read first, so any
@@ -425,6 +440,12 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       if (!effects.read) throw new Error("the update needs to read the installed service file")
       const read = effects.read
       const previous = await withinServiceDeadline(readDeadline, () => read(plan.path, readDeadline))
+      // Put back on a failed step, so it must be a Domovoi service file.
+      // Security review round 2: anything else is not Domovoi's service.
+      const program = (target.platform === "linux" ? systemdUnitProgram : launchdPlistProgram)(previous)
+      if (!program || !isDomovoiServiceProgram(program, { paths: "posix", flag: "--service-config", configurationPath: plan.configuration.path })) {
+        throw new DaemonServiceUpdateError("not-installed")
+      }
 
       if (target.platform === "linux") {
         // The running daemon holds the profile across its own restart, so the
@@ -507,9 +528,11 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
     // command, which enables it, and run.
     const previous = await readWindowsTaskAction(displayName, effects, readDeadline)
     if (previous === "missing") throw new DaemonServiceUpdateError("not-installed")
+    const previousCommand = domovoiTaskCommand(previous, plan.configuration.path)
+    if (previousCommand === undefined) throw new DaemonServiceUpdateError("not-installed")
     const restoreCommands = plan.commands.map((command) => command.args[0] !== "/create" ? command : {
       ...command,
-      args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? `"${previous.path}" ${previous.arguments}` : arg),
+      args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
     })
     const stoppedInstance = currentInstance(readOwner, profile)
     return {
