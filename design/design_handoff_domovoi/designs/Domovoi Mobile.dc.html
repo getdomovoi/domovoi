@@ -11,6 +11,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Roboto:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
@@ -19,6 +20,8 @@
   a:hover { color: oklch(0.87 0.1 275); }
   ::-webkit-scrollbar { width: 0; height: 0; }
   * { scrollbar-width: none; -ms-overflow-style: none; }
+  @keyframes dvBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+  @keyframes dvPopIn { from { opacity: 0; transform: translateY(5px) scale(.97); } to { opacity: 1; transform: none; } }
   @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / .45); } 70% { box-shadow: 0 0 0 7px oklch(0.72 0.17 275 / 0); } 100% { box-shadow: 0 0 0 0 oklch(0.72 0.17 275 / 0); } }
   .dv-dark {
     --background: oklch(0.165 0.005 285); --sidebar: oklch(0.185 0.005 285); --card: oklch(0.205 0.006 285);
@@ -27,13 +30,28 @@
     --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
     --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
     --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-fill: oklch(0.79 0.13 62); --warn-fill-fg: oklch(0.2 0.04 62);
     --warn-bg: oklch(0.235 0.045 62); --warn-border: oklch(0.38 0.08 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
+    --danger-bg: oklch(0.225 0.05 25); --danger-border: oklch(0.37 0.1 25); --danger-fg: oklch(0.9 0.06 25); --danger-dim: oklch(0.74 0.09 25);
     --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240);
     --shadow-lg: oklch(0 0 0 / .6); --popover: var(--card); --ring: var(--primary); --radius: 0.65rem;
   }
+  .dv-dark.theme-light {
+    --background: oklch(0.985 0.003 90); --sidebar: oklch(0.965 0.004 90); --card: oklch(1 0 0);
+    --accent: oklch(0.945 0.005 90); --muted: oklch(0.925 0.005 90); --border: oklch(0.87 0.006 90);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.32 0.01 285); --muted-foreground: oklch(0.48 0.01 285);
+    --faint: oklch(0.6 0.01 285); --code: oklch(0.955 0.004 90); --desk: oklch(0.905 0.005 90);
+    --primary: oklch(0.52 0.19 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.5 0.14 158); --warning: oklch(0.53 0.145 68); --destructive: oklch(0.53 0.2 25); --info: oklch(0.5 0.14 245);
+    --warn-fill: oklch(0.85 0.15 82); --warn-fill-fg: oklch(0.32 0.07 62);
+    --warn-bg: oklch(0.975 0.032 85); --warn-border: oklch(0.875 0.075 75); --warn-fg: oklch(0.42 0.1 64); --warn-dim: oklch(0.5 0.095 64);
+    --danger-bg: oklch(0.975 0.02 25); --danger-border: oklch(0.88 0.06 25); --danger-fg: oklch(0.45 0.16 25); --danger-dim: oklch(0.53 0.14 25);
+    --info-bg: oklch(0.975 0.018 242); --info-border: oklch(0.88 0.045 242); --info-fg: oklch(0.42 0.09 242);
+    --shadow-lg: oklch(0.45 0.02 285 / .16);
+  }
 </style>
 </helmet>
-<div class="dv-dark" style="min-height: 100vh; min-width: max-content; padding: 32px 30px 46px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+<div class="dv-dark {{ themeExtra }}" style="min-height: 100vh; min-width: max-content; padding: 32px 30px 46px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
 
   <div style="display: flex; align-items: flex-end; gap: 18px; margin-bottom: 24px; flex-wrap: wrap;">
     <div>
@@ -46,9 +64,44 @@
         <div onClick="{{ pt.pick }}" style="{{ pt.style }}">{{ pt.label }}</div>
       </sc-for>
     </div>
+    <div style="display: flex; gap: 3px; padding: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 999px;">
+      <sc-for list="{{ themeTabs }}" as="th" hint-placeholder-count="2">
+        <div onClick="{{ th.pick }}" style="{{ th.style }}">{{ th.label }}</div>
+      </sc-for>
+    </div>
   </div>
 
   <div style="display: flex; align-items: flex-start; gap: 24px;">
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 0 34px 56px;">
+          <div style="{{ splashMarkStyle }}"></div>
+          <div style="{{ splashWordStyle }}">Domovoi</div>
+          <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px;">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--primary); animation: dvPulse 1.6s infinite;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ splashPhase }}</span>
+          </div>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 0 30px 34px; text-align: center;">
+          <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint);">Keys stay in the keychain on this phone. Nothing is fetched from a server on launch.</div>
+        </div>
+
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Launch. The mark is the working variant while daemons answer, and the phase line names what is happening rather than spinning.</div>
+    </div>
 
     <div style="display: flex; flex-direction: column; gap: 11px;">
       <div style="{{ frameStyle }}">
@@ -85,7 +138,7 @@
           <div style="font-size: 10.5px; color: var(--warn-dim); margin-top: 5px;">macbook-pro-m3 · billing webhooks</div>
         </div>
 
-        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px;">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 52px;">
           <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="5">
             <div style="{{ s.cardStyle }}">
               <div style="display: flex; align-items: flex-start; gap: 9px;">
@@ -106,16 +159,17 @@
           </sc-for>
         </div>
 
+        <div style="{{ tabbarSpacerStyle }}"></div>
         <div style="{{ tabbarStyle }}">
           <sc-for list="{{ tabbar }}" as="tb" hint-placeholder-count="4">
             <div style="{{ tb.style }}">
-              <span style="font-size: 15px;">{{ tb.glyph }}</span>
+              <span style="{{ tb.glyphStyle }}">{{ tb.icon }}</span>
               <span style="font-size: 9.5px; letter-spacing: .02em;">{{ tb.label }}</span>
             </div>
           </sc-for>
         </div>
         <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
-          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
             <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
           </div>
         </sc-if>
@@ -131,8 +185,574 @@
           <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
         </div>
 
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Sessions</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">5 machines · none running</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 0 34px 40px; text-align: center;">
+          <span style="display: flex; color: var(--faint);">{{ emptyIcon }}</span>
+          <div style="font-size: 14.5px; font-weight: 500;">No sessions running</div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground);">Every machine in the fleet reported in and has nothing open. Start a session here, or run the CLI on any connected machine and it appears within a second.</div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 8px 11px; border-radius: 8px; background: var(--code); border: 1px solid var(--border); color: var(--strong);">domovoi new --machine studio-arch</div>
+          <div style="display: flex; align-items: center; gap: 7px; margin-top: 4px; padding: 11px 16px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">
+            <span style="display: flex;">{{ newIcon }}</span>New session
+          </div>
+        </div>
+
+        <div style="{{ tabbarSpacerStyle }}"></div>
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbar }}" as="te" hint-placeholder-count="4">
+            <div style="{{ te.style }}">
+              <span style="{{ te.glyphStyle }}">{{ te.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ te.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Empty is not failure. The fleet is healthy and idle, so the screen says so and offers the two ways to start.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 12px;">
+          <span style="font-size: 12.5px; color: var(--primary); cursor: pointer;">Cancel</span>
+          <div style="flex: 1; min-width: 0; text-align: center; font-size: 13.5px; font-weight: 500;">New session</div>
+          <span style="font-size: 12.5px; color: transparent;">Cancel</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 52px; display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">MACHINE</div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
+              <sc-for list="{{ nsMachines }}" as="nm" hint-placeholder-count="4">
+                <div style="{{ nm.rowStyle }}">
+                  <span style="{{ nm.dotStyle }}"></span>
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ nm.name }}</div>
+                    <div style="font-size: 10px; color: var(--faint); margin-top: 2px;">{{ nm.meta }}</div>
+                  </div>
+                  <sc-if value="{{ nm.sel }}" hint-placeholder-val="{{ false }}">
+                    <span style="width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--primary); color: var(--primary-foreground);">{{ nm.check }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">AGENT</div>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+              <sc-for list="{{ nsAgents }}" as="na" hint-placeholder-count="3">
+                <div style="{{ na.style }}">{{ na.label }}</div>
+              </sc-for>
+            </div>
+            <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint); margin-top: 7px;">Only agents installed on macbook-pro-m3 are listed. Model is chosen on the first turn.</div>
+          </div>
+
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">PERMISSION MODE</div>
+            <div style="display: flex; gap: 3px; padding: 4px; background: var(--muted); border-radius: 999px;">
+              <sc-for list="{{ nsModes }}" as="nd" hint-placeholder-count="3">
+                <div onClick="{{ nd.pick }}" style="{{ nd.style }}">{{ nd.label }}</div>
+              </sc-for>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; margin-top: 9px; padding: 11px 12px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 12px;">Auto</div>
+                <div style="font-size: 10.5px; line-height: 1.5; color: var(--faint); margin-top: 2px;">Runs allowed tools without asking. Hard gates still stop it.</div>
+              </div>
+              <span onClick="{{ toggleAuto }}" style="{{ nsTrackStyle }}">
+                <span style="{{ nsKnobStyle }}"></span>
+              </span>
+            </div>
+          </div>
+
+          <sc-if value="{{ nsAuto }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: flex-start; gap: 9px; padding: 11px 12px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius);">
+              <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--warning); margin-top: 5px;"></span>
+              <span style="flex: 1; font-size: 10.5px; line-height: 1.55; color: var(--warn-dim);">Auto is on. Writes and commands in the allow list run without a prompt on this machine.</span>
+            </div>
+          </sc-if>
+
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">WORKTREE</div>
+            <div style="padding: 11px 12px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">~/work/acme-billing</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); margin-top: 6px;">session/refund-totals</div>
+            </div>
+            <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint); margin-top: 7px;">A fresh worktree is cut from main. Your checkout is not touched.</div>
+          </div>
+        </div>
+
+        <div style="{{ sheetSpacerStyle }}"></div>
+        <div style="{{ sheetBarStyle }}">
+          <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ nsSummary }}</span>
+          <div style="{{ sheetActionStyle }}">Start session</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">New session. Machine first, because it decides which agents exist. Offline machines stay listed and dimmed rather than disappearing.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 12px;">
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500;">Worktree</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">macbook-pro-m3</div>
+          </div>
+          <span style="display: flex; color: var(--muted-foreground); cursor: pointer;">{{ searchIcon }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 52px; display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">REPOSITORY</div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
+              <sc-for list="{{ wtRepos }}" as="wr" hint-placeholder-count="3">
+                <div style="{{ wr.rowStyle }}">
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ wr.path }}</div>
+                    <div style="font-size: 10px; color: var(--faint); margin-top: 2px;">{{ wr.meta }}</div>
+                  </div>
+                  <sc-if value="{{ wr.sel }}" hint-placeholder-val="{{ false }}">
+                    <span style="width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--primary); color: var(--primary-foreground);">{{ wr.check }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+            <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint); margin-top: 7px;">Repositories the daemon already has indexed on this machine.</div>
+          </div>
+
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">BRANCH FROM</div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
+              <sc-for list="{{ wtBases }}" as="wb" hint-placeholder-count="3">
+                <div style="{{ wb.rowStyle }}">
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 12px; color: var(--strong);">{{ wb.name }}</div>
+                    <div style="font-size: 10px; line-height: 1.45; color: var(--faint); margin-top: 2px;">{{ wb.meta }}</div>
+                  </div>
+                  <sc-if value="{{ wb.sel }}" hint-placeholder-val="{{ false }}">
+                    <span style="width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--primary); color: var(--primary-foreground);">{{ wb.check }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">NEW BRANCH</div>
+            <div style="display: flex; align-items: center; gap: 9px; padding: 12px; background: var(--card); border: 1px solid color-mix(in oklab, var(--primary) 35%, transparent); border-radius: var(--radius);">
+              <span style="display: flex; color: var(--primary);">{{ gitIcon }}</span>
+              <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--foreground);">session/refund-totals</span>
+              <span style="display: inline-block; width: 1.5px; height: 14px; background: var(--primary); animation: dvBlink 1.1s step-end infinite;"></span>
+            </div>
+            <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint); margin-top: 7px;">The worktree is cut at ~/.domovoi/worktrees. Your checkout keeps its own branch and index.</div>
+          </div>
+        </div>
+
+        <div style="{{ sheetSpacerStyle }}"></div>
+        <div style="{{ sheetBarStyle }}">
+          <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">acme-billing · from main</span>
+          <div style="{{ sheetActionStyle }}">Use worktree</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Selecting the worktree. Repository, base branch and the new branch name, with the dirty checkout listed but not selectable.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 12px;">
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500;">Worktree</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">studio-arch</div>
+          </div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 52px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 18px 14px 8px; text-align: center;">
+            <span style="display: flex; color: var(--faint);">{{ emptyRepoIcon }}</span>
+            <div style="font-size: 14px; font-weight: 500;">No repositories indexed here</div>
+            <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground);">The daemon on studio-arch has not been pointed at any code yet. Start one of two ways.</div>
+          </div>
+
+          <div style="display: flex; align-items: flex-start; gap: 11px; padding: 13px; background: var(--card); border: 1px solid color-mix(in oklab, var(--primary) 35%, transparent); border-radius: var(--radius); cursor: pointer;">
+            <span style="display: flex; color: var(--primary); margin-top: 1px;">{{ cloneIcon }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12.5px; font-weight: 500;">Clone from a remote</div>
+              <div style="font-size: 10.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 4px;">One decision with a checkable result. The remote is read on the machine, not on this phone.</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 8px; padding: 8px 10px; background: var(--code); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">git@github.com:getdomovoi/acme-ledger.git</div>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: flex-start; gap: 11px; padding: 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;">
+            <span style="display: flex; color: var(--muted-foreground); margin-top: 1px;">{{ folderPlusIcon }}</span>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 12.5px; font-weight: 500;">New directory</div>
+              <div style="font-size: 10.5px; line-height: 1.55; color: var(--muted-foreground); margin-top: 4px;">Pick the parent path and the agent scaffolds on its first turn. You review it as ordinary turns rather than filling in a setup form here.</div>
+              <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 8px; padding: 8px 10px; background: var(--code); border: 1px solid var(--border); border-radius: 8px;">~/work/acme-ledger</div>
+            </div>
+          </div>
+
+          <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint); padding: 0 2px;">Either way, a path the daemon has not indexed is a hard gate before anything is written.</div>
+        </div>
+
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Starting a project from the phone. Clone is the fast path, scaffolding becomes the session's first turn, and neither one writes before the gate.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
         <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
-          <span style="font-size: 15px; color: var(--primary); cursor: pointer;">{{ backGlyph }}</span>
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500;">Approval</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">studio-arch</div>
+          </div>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--warn-border); color: var(--warning);">HARD GATE</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px;">
+          <div style="padding: 13px 14px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.7; color: var(--warn-fg); white-space: pre-line;">mkdir -p ~/work/acme-ledger
+git init --initial-branch=main</div>
+          </div>
+
+          <div style="margin-top: 12px; padding: 12px 13px; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: var(--radius);">
+            <div style="font-size: 12px; font-weight: 500; color: var(--warn-fg);">Path is outside the allow list</div>
+            <div style="font-size: 11px; line-height: 1.55; color: var(--warn-dim); margin-top: 5px;">Allowing this creates the directory and adds it to the indexed set on studio-arch. This phone cannot see what is already at that path, so the daemon checked and reports it empty.</div>
+          </div>
+
+          <div style="margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+            <sc-for list="{{ gateFacts }}" as="gf" hint-placeholder-count="6">
+              <div style="{{ gf.rowStyle }}">
+                <span style="font-size: 10.5px; letter-spacing: .08em; color: var(--faint); flex: 0 0 92px;">{{ gf.k }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {{ gf.color }}; text-align: right; flex: 1;">{{ gf.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="margin-top: 12px; padding: 12px 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">Scaffolding after this runs as ordinary turns with their own approvals. Nothing installs dependencies on this decision.</div>
+          </div>
+        </div>
+
+        <div style="{{ decisionSpacerStyle }}"></div>
+        <div style="{{ decisionStyle }}">
+          <div style="{{ allowStyle }}">Create and index</div>
+          <div style="display: flex; gap: 8px;">
+            <div style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 500; text-align: center; color: var(--strong); cursor: pointer;">Deny</div>
+            <div style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;">Pick another path</div>
+          </div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">The path gate. Same shape as the migration gate, because it is the same kind of decision: a write on a machine you are not sitting at.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Sessions</div>
+          <div style="font-size: 11.5px; color: var(--danger-dim); margin-top: 3px;">No daemon reachable</div>
+        </div>
+
+        <div style="position: absolute; left: 12px; right: 12px; top: 104px; z-index: 5; padding: 11px 13px; background: color-mix(in oklab, var(--danger-bg) 88%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border: 1px solid var(--danger-border); border-radius: var(--radius); box-shadow: 0 8px 24px var(--shadow-lg); animation: dvPopIn 140ms cubic-bezier(.2,.7,.3,1);">
+          <div style="display: flex; align-items: center; gap: 9px;">
+            <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--destructive);"></span>
+            <span style="font-size: 12.5px; font-weight: 500; color: var(--danger-fg); flex: 1;">Lost the daemon on macbook-pro-m3</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--danger-dim);">2m</span>
+          </div>
+          <div style="font-size: 11px; line-height: 1.55; color: var(--danger-dim); margin-top: 6px;">Sessions keep running on the machine. This phone cannot see them until a route comes back, so their current state is not known from here.</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center;">
+          <span style="display: flex; color: var(--faint);">{{ offlineIcon }}</span>
+          <div style="font-size: 14.5px; font-weight: 500;">Three routes tried</div>
+          <div style="width: 100%; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); text-align: left;">
+            <sc-for list="{{ routes }}" as="rt" hint-placeholder-count="3">
+              <div style="{{ rt.rowStyle }}">
+                <span style="font-size: 10.5px; letter-spacing: .08em; color: var(--faint); flex: 0 0 52px;">{{ rt.k }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); flex: 1; text-align: right;">{{ rt.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; padding: 11px 16px; border-radius: 999px; border: 1px solid var(--border); color: var(--strong); font-size: 12.5px; font-weight: 500; cursor: pointer;">
+            <span style="display: flex;">{{ retryIcon }}</span>Retry now
+          </div>
+          <div style="font-size: 11px; line-height: 1.6; color: var(--faint);">Retrying every 15s. Last successful reach was 9:39 over the relay.</div>
+        </div>
+
+        <div style="{{ tabbarSpacerStyle }}"></div>
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbar }}" as="to" hint-placeholder-count="4">
+            <div style="{{ to.style }}">
+              <span style="{{ to.glyphStyle }}">{{ to.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ to.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Disconnected states name the routes tried and refuse to guess at session state. The fleet stays visible, dimmed, never hidden.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Sessions</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">No machines paired</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 26px 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; text-align: center;">
+          <span style="display: flex; color: var(--faint);">{{ layersIcon }}</span>
+          <div style="font-size: 14.5px; font-weight: 500;">Nothing runs here yet</div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground);">A session belongs to a machine, so there is nothing for this phone to list until a daemon accepts it. Pairing takes one scan.</div>
+          <div style="display: flex; align-items: center; gap: 7px; margin-top: 2px; padding: 11px 16px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">
+            <span style="display: flex;">{{ pairIcon }}</span>Pair a machine
+          </div>
+          <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint);">The phone is a client. It never runs an agent itself.</div>
+        </div>
+
+        <div style="{{ tabbarSpacerStyle }}"></div>
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbar }}" as="ts1" hint-placeholder-count="4">
+            <div style="{{ ts1.style }}">
+              <span style="{{ ts1.glyphStyle }}">{{ ts1.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ ts1.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Sessions, unpaired. The reason the list is empty is the architecture, so the copy says that rather than apologising.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Review</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">No machines paired</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 26px 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; text-align: center;">
+          <span style="display: flex; color: var(--faint);">{{ eyeIcon }}</span>
+          <div style="font-size: 14.5px; font-weight: 500;">Nothing to review</div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground);">Diffs, approvals and previews are read from a machine at the moment you open them. None is paired, so there is nothing to fetch.</div>
+          <div style="display: flex; align-items: center; gap: 7px; margin-top: 2px; padding: 11px 16px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">
+            <span style="display: flex;">{{ pairIcon }}</span>Pair a machine
+          </div>
+          <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint);">Approvals are never parked on a server, so nothing is queued and waiting.</div>
+        </div>
+
+        <div style="{{ tabbarSpacerStyle }}"></div>
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbarReview }}" as="tr1" hint-placeholder-count="4">
+            <div style="{{ tr1.style }}">
+              <span style="{{ tr1.glyphStyle }}">{{ tr1.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ tr1.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Review, unpaired. Worth saying explicitly that no approvals are sitting somewhere unseen.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Fleet</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">No machines paired</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 26px 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; text-align: center;">
+          <span style="display: flex; color: var(--faint);">{{ serverIcon }}</span>
+          <div style="font-size: 14.5px; font-weight: 500;">No machines paired</div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground);">Install the daemon on a computer, run the pair command, and scan what it prints. The exchange is direct between the machine and this phone.</div>
+          <div style="display: flex; align-items: center; gap: 7px; margin-top: 2px; padding: 11px 16px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">
+            <span style="display: flex;">{{ pairIcon }}</span>Pair a machine
+          </div>
+          <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint);">No account is involved in pairing.</div>
+        </div>
+
+        <div style="{{ tabbarSpacerStyle }}"></div>
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbarFleet }}" as="tf3" hint-placeholder-count="4">
+            <div style="{{ tf3.style }}">
+              <span style="{{ tf3.glyphStyle }}">{{ tf3.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ tf3.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Fleet, unpaired. The one screen in the set that owns the pairing action.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Settings</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">No machines paired</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 52px; display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">THIS PHONE</div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+              <sc-for list="{{ setRowsLocal }}" as="sl" hint-placeholder-count="4">
+                <div style="{{ sl.rowStyle }}">
+                  <span style="flex: 1; min-width: 0; font-size: 12.5px;">{{ sl.label }}</span>
+                  <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ sl.v }}</span>
+                  <span style="display: flex; color: var(--faint);">{{ sl.chev }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+
+          <div>
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint); margin-bottom: 7px;">NEEDS A PAIRED MACHINE</div>
+            <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+              <sc-for list="{{ setRowsMachine }}" as="sm" hint-placeholder-count="4">
+                <div style="{{ sm.rowStyle }}">
+                  <span style="flex: 1; min-width: 0; font-size: 12.5px;">{{ sm.label }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: .06em; color: var(--faint);">UNAVAILABLE</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint); margin-top: 7px;">These live on the machine, not on this phone. They stay listed so you can see what pairing unlocks.</div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 7px; align-self: flex-start; padding: 11px 16px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">
+            <span style="display: flex;">{{ pairIcon }}</span>Pair a machine
+          </div>
+        </div>
+
+        <div style="{{ tabbarSpacerStyle }}"></div>
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbarSettings }}" as="sn1" hint-placeholder-count="4">
+            <div style="{{ sn1.style }}">
+              <span style="{{ sn1.glyphStyle }}">{{ sn1.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ sn1.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Settings, unpaired. Device settings still work, machine-scoped ones stay visible and marked unavailable rather than being hidden.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
           <div style="flex: 1; min-width: 0;">
             <div style="font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Approval</div>
             <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">macbook-pro-m3</div>
@@ -140,10 +760,24 @@
           <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--warn-border); color: var(--warning);">HARD GATE</span>
         </div>
 
-        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 14px;">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px;">
           <div style="padding: 13px 14px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
             <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; color: var(--warn-fg);">pnpm -w prisma migrate deploy</div>
           </div>
+
+          <sc-for list="{{ diffFiles }}" as="df" hint-placeholder-count="3">
+            <div style="margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--code);">
+              <div style="display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--card);">
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; flex: 1; min-width: 0;">{{ df.path }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint); flex: 0 0 auto;">{{ df.count }}</span>
+              </div>
+              <div style="padding: 8px 0; overflow-x: auto;">
+                <sc-for list="{{ df.lines }}" as="dl" hint-placeholder-count="8">
+                  <div style="{{ dl.style }}"><span style="display: inline-block; width: 11px; opacity: .75;">{{ dl.gutter }}</span>{{ dl.s }}</div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
 
           <div style="margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
             <sc-for list="{{ facts }}" as="fa" hint-placeholder-count="7">
@@ -166,15 +800,16 @@
           </sc-if>
         </div>
 
-        <div style="flex: 0 0 auto; padding: 12px 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px;">
+        <div style="{{ decisionSpacerStyle }}"></div>
+        <div style="{{ decisionStyle }}">
           <div onClick="{{ allowOnce }}" style="{{ allowStyle }}">Allow once</div>
           <div style="display: flex; gap: 8px;">
-            <div onClick="{{ denyIt }}" style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; font-weight: 500; text-align: center; color: var(--strong); cursor: pointer;">Deny</div>
-            <div onClick="{{ denyIt }}" style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;">Deny and explain</div>
+            <div onClick="{{ denyIt }}" style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 500; text-align: center; color: var(--strong); cursor: pointer;">Deny</div>
+            <div onClick="{{ denyIt }}" style="flex: 1; padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;">Deny and explain</div>
           </div>
         </div>
         <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
-          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
             <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
           </div>
         </sc-if>
@@ -190,13 +825,67 @@
           <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
         </div>
 
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500;">Deny and explain</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">macbook-pro-m3</div>
+          </div>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--danger-border); color: var(--danger-fg);">DENYING</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="padding: 11px 13px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.5; color: var(--danger-fg); text-decoration: line-through; text-decoration-color: var(--danger-border);">pnpm -w prisma migrate deploy</div>
+            <div style="font-size: 10.5px; color: var(--faint); margin-top: 6px;">Will not run. The daemon holds the turn until this reply lands.</div>
+          </div>
+
+          <div style="padding: 12px 13px; background: var(--card); border: 1px solid color-mix(in oklab, var(--primary) 35%, transparent); border-radius: var(--radius);">
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint);">REASON SENT TO THE AGENT</div>
+            <div style="font-size: 12.5px; line-height: 1.6; color: var(--foreground); margin-top: 7px;">Prod migrations only go out in the Thursday window. Point step 3 at wsl-ubuntu-24 and leave prod alone.<span style="display: inline-block; width: 1.5px; height: 13px; background: var(--primary); margin-left: 2px; vertical-align: -2px; animation: dvBlink 1.1s step-end infinite;"></span></div>
+          </div>
+
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <sc-for list="{{ denyReasons }}" as="dr" hint-placeholder-count="4">
+              <div style="{{ dr.style }}">{{ dr.label }}</div>
+            </sc-for>
+          </div>
+
+          <div style="display: flex; align-items: flex-start; gap: 10px; padding: 12px 13px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);">
+            <span style="display: flex; color: var(--faint);">{{ banIcon }}</span>
+            <div style="flex: 1; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground);">The agent keeps the thread, the plan and the worktree. It gets the denial and this text, nothing else, and picks step 3 back up with your constraint in it.</div>
+          </div>
+        </div>
+
+        <div style="{{ denySpacerStyle }}"></div>
+        <div style="{{ denyBarStyle }}">
+          <div style="padding: 15px; background: var(--destructive); border-radius: 999px; font-size: 13.5px; font-weight: 500; color: oklch(0.99 0.01 25); text-align: center; cursor: pointer;">Send denial</div>
+          <div style="padding: 13px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; text-align: center; color: var(--muted-foreground); cursor: pointer;">Back to the decision</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Deny and explain. The command is struck through so it is clear nothing ran, and the reason is the only thing the agent receives.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
         <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 10px;">
-          <span style="font-size: 15px; color: var(--primary); cursor: pointer;">{{ backGlyph }}</span>
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
           <div style="flex: 1; min-width: 0;">
             <div style="font-size: 13.5px; font-weight: 500;">Onboarding v3</div>
             <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">design-studio · 3 variants</div>
           </div>
-          <span style="font-size: 15px; color: var(--muted-foreground);">⋯</span>
+          <span style="display: flex; align-items: center; color: var(--muted-foreground);">{{ moreIcon }}</span>
         </div>
 
         <div style="flex: 0 0 auto; display: flex; gap: 6px; padding: 0 14px 10px;">
@@ -205,7 +894,7 @@
           </sc-for>
         </div>
 
-        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 14px;">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px;">
           <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
             <div style="height: 300px; background-image: repeating-linear-gradient(135deg, var(--accent) 0px, var(--accent) 7px, var(--card) 7px, var(--card) 14px); display: flex; align-items: center; justify-content: center; position: relative;">
               <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.9; color: var(--muted-foreground); text-align: center; white-space: pre-line;">{{ variantCaption }}</span>
@@ -256,7 +945,7 @@
           </div>
         </div>
         <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
-          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
             <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
           </div>
         </sc-if>
@@ -273,18 +962,18 @@
         </div>
 
         <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
-          <span style="font-size: 15px; color: var(--primary); cursor: pointer;">{{ backGlyph }}</span>
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
           <div style="flex: 1; min-width: 0;">
             <div style="font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Billing webhooks</div>
             <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">claude-code · think: high</div>
           </div>
         </div>
 
-        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 14px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px; display: flex; flex-direction: column; gap: 12px;">
           <div style="align-self: flex-end; max-width: 84%; padding: 10px 13px; background: var(--accent); border: 1px solid var(--border); border-radius: 13px 13px 4px 13px; font-size: 12.5px; line-height: 1.55;">what is it waiting on?</div>
 
           <div style="display: flex; gap: 9px;">
-            <div style="width: 22px; flex: 0 0 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 9.5px; color: var(--primary);">◆</div>
+            <div style="width: 22px; flex: 0 0 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; color: var(--primary);">{{ agentIcon }}</div>
             <div style="flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.6;">The migration in step 3. Everything before it is done and the suite is green apart from the test that asserts the old behaviour.</div>
           </div>
 
@@ -312,12 +1001,24 @@
           </div>
         </div>
 
-        <div style="flex: 0 0 auto; padding: 10px 14px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 9px;">
-          <div style="flex: 1; padding: 11px 13px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--faint);">Reply…</div>
-          <div style="width: 40px; height: 40px; flex: 0 0 40px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: flex; align-items: center; justify-content: center; font-size: 15px; cursor: pointer;">↑</div>
+        <div style="{{ composerSpacerStyle }}"></div>
+        <div style="{{ composerStyle }}">
+          <sc-if value="{{ attachOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="{{ attachStyle }}">
+              <sc-for list="{{ attachItems }}" as="ai" hint-placeholder-count="4">
+                <div style="{{ ai.style }}" style-hover="background: var(--accent);">
+                  <span style="display: flex; color: var(--muted-foreground);">{{ ai.icon }}</span>
+                  <span style="flex: 1; min-width: 0;">{{ ai.label }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <div onClick="{{ toggleAttach }}" style="width: 34px; height: 34px; flex: 0 0 34px; border-radius: 999px; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);" aria-label="Add attachment"><span style="{{ attachSpinStyle }}">{{ attachIcon }}</span></div>
+          <div style="flex: 1; min-width: 0; padding: 0 4px; font-size: 12px; color: var(--faint);">Reply…</div>
+          <div style="width: 40px; height: 40px; flex: 0 0 40px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: flex; align-items: center; justify-content: center; cursor: pointer;">{{ sendIcon }}</div>
         </div>
         <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
-          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
             <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
           </div>
         </sc-if>
@@ -333,12 +1034,372 @@
           <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
         </div>
 
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Billing webhooks</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">claude-code · think: high</div>
+          </div>
+          <span style="display: flex; align-items: center; color: var(--muted-foreground); cursor: pointer;">{{ moreIcon }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; gap: 9px;">
+            <div style="width: 22px; flex: 0 0 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; color: var(--primary);">{{ agentIcon }}</div>
+            <div style="flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.6;">Step 3 is blocked on the migration. Tell me the window and I will queue it instead of asking again.</div>
+          </div>
+        </div>
+
+        <div style="{{ kbSpacerStyle }}"></div>
+
+        <div style="{{ kbComposerStyle }}">
+          <div style="width: 34px; height: 34px; flex: 0 0 34px; border-radius: 999px; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); cursor: pointer;">{{ attachIcon }}</div>
+          <div style="flex: 1; min-width: 0; padding: 0 4px; font-size: 12px; color: var(--foreground);">queue it for Thursday<span style="display: inline-block; width: 1.5px; height: 13px; background: var(--primary); margin-left: 2px; vertical-align: -2px; animation: dvBlink 1.1s step-end infinite;"></span></div>
+          <div style="width: 40px; height: 40px; flex: 0 0 40px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: flex; align-items: center; justify-content: center; cursor: pointer;">{{ sendIcon }}</div>
+        </div>
+
+        <div style="{{ kbStyle }}">
+          <div style="display: flex; align-items: center; gap: 2px; padding: 0 2px 5px; border-bottom: 1px solid var(--border);">
+            <sc-for list="{{ kbSuggestions }}" as="kg" hint-placeholder-count="3">
+              <div style="{{ kg.style }}">{{ kg.label }}</div>
+            </sc-for>
+          </div>
+          <div style="display: flex; gap: 5px;">
+            <sc-for list="{{ kbRow1 }}" as="k1" hint-placeholder-count="10">
+              <div style="{{ kbKey }}">{{ k1.c }}</div>
+            </sc-for>
+          </div>
+          <div style="display: flex; gap: 5px; padding: 0 18px;">
+            <sc-for list="{{ kbRow2 }}" as="k2" hint-placeholder-count="9">
+              <div style="{{ kbKey }}">{{ k2.c }}</div>
+            </sc-for>
+          </div>
+          <div style="display: flex; gap: 5px;">
+            <div style="{{ kbWide }}">⇧</div>
+            <sc-for list="{{ kbRow3 }}" as="k3" hint-placeholder-count="7">
+              <div style="{{ kbKey }}">{{ k3.c }}</div>
+            </sc-for>
+            <div style="{{ kbWide }}">⌫</div>
+          </div>
+          <div style="display: flex; gap: 5px;">
+            <div style="{{ kbWide }}">123</div>
+            <div style="{{ kbSpaceStyle }}">space</div>
+            <div style="{{ kbWide }}">return</div>
+          </div>
+        </div>
+
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Typing. The keyboard takes the bottom half, the composer rides just above it, and the tab bar is gone while the field has focus.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 12px;">
+          <span style="font-size: 12.5px; color: var(--primary); cursor: pointer;">Cancel</span>
+          <div style="flex: 1; min-width: 0; text-align: center;">
+            <div style="font-size: 13.5px; font-weight: 500;">Recents</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">2 selected</div>
+          </div>
+          <span style="display: flex; color: var(--muted-foreground); cursor: pointer;">{{ cameraIcon }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 46px;">
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;">
+            <sc-for list="{{ photoTiles }}" as="ph" hint-placeholder-count="9">
+              <div style="{{ ph.style }}">
+                <sc-if value="{{ ph.sel }}" hint-placeholder-val="{{ false }}">
+                  <span style="{{ ph.badgeStyle }}">{{ ph.n }}</span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <div style="{{ sheetSpacerStyle }}"></div>
+        <div style="{{ sheetBarStyle }}">
+          <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">Sent at full resolution</span>
+          <div style="{{ sheetActionStyle }}">Attach 2</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Photo or screenshot. Order of selection is kept, because a screenshot pair usually means before and after.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Billing webhooks</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">claude-code · think: high</div>
+          </div>
+          <span style="display: flex; align-items: center; color: var(--muted-foreground); cursor: pointer;">{{ moreIcon }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; gap: 9px;">
+            <div style="width: 22px; flex: 0 0 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; color: var(--primary);">{{ agentIcon }}</div>
+            <div style="flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.6;">The refund total renders from the cached invoice, so it can lag a webhook. If you can show me the state you are seeing I can tell which read path it came from.</div>
+          </div>
+          <div style="align-self: flex-end; max-width: 84%; padding: 10px 13px; background: var(--accent); border: 1px solid var(--border); border-radius: 13px 13px 4px 13px; font-size: 12.5px; line-height: 1.55;">easier to show you</div>
+        </div>
+
+        <div style="{{ draftSpacerStyle }}"></div>
+        <div style="{{ draftComposerStyle }}">
+          <div style="display: flex; gap: 8px; padding: 0 2px;">
+            <sc-for list="{{ draftThumbs }}" as="dt" hint-placeholder-count="2">
+              <div style="{{ dt.style }}">
+                <span style="position: absolute; right: 4px; top: 4px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--background); color: var(--strong); border: 1px solid var(--border); cursor: pointer;">{{ removeIcon }}</span>
+              </div>
+            </sc-for>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 3px;">
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">2 images · 2.1 MB</span>
+              <span style="font-size: 10.5px; color: var(--faint);">Uploaded to the daemon, not to a server</span>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 34px; height: 34px; flex: 0 0 34px; border-radius: 999px; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); cursor: pointer;">{{ attachIcon }}</div>
+            <div style="flex: 1; min-width: 0; padding: 0 4px; font-size: 12px; color: var(--foreground);">the total on the summary row</div>
+            <div style="width: 40px; height: 40px; flex: 0 0 40px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: flex; align-items: center; justify-content: center; cursor: pointer;">{{ sendIcon }}</div>
+          </div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Draft with two photos attached. The composer grows into a card, each thumb removable, and the size line says where the bytes go before you send.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 6px 14px 12px;">
+          <span style="display: flex; align-items: center; color: var(--primary); cursor: pointer;">{{ backIcon }}</span>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Billing webhooks</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">claude-code · think: high</div>
+          </div>
+          <span style="display: flex; align-items: center; color: var(--muted-foreground); cursor: pointer;">{{ moreIcon }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 14px 58px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; gap: 9px;">
+            <div style="width: 22px; flex: 0 0 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; color: var(--primary);">{{ agentIcon }}</div>
+            <div style="flex: 1; min-width: 0; font-size: 12.5px; line-height: 1.6;">Send whatever states you have. I will match each one to the read path that produced it.</div>
+          </div>
+        </div>
+
+        <div style="{{ manySpacerStyle }}"></div>
+        <div style="{{ manyComposerStyle }}">
+          <div style="display: flex; gap: 8px; padding: 0 2px 2px; overflow-x: auto;">
+            <sc-for list="{{ draftThumbsMany }}" as="dm" hint-placeholder-count="5">
+              <div style="{{ dm.style }}">
+                <span style="position: absolute; left: 4px; bottom: 4px; padding: 1px 5px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 9px; background: color-mix(in oklab, var(--background) 78%, transparent); color: var(--strong);">{{ dm.n }}</span>
+                <span style="position: absolute; right: 4px; top: 4px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--background); color: var(--strong); border: 1px solid var(--border); cursor: pointer;">{{ removeIcon }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 0 2px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); flex: 1; min-width: 0;">5 images · 6.4 MB</span>
+            <span style="font-size: 10.5px; color: var(--primary); cursor: pointer;">Clear all</span>
+          </div>
+          <div style="display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 13px; background: var(--warn-bg); border: 1px solid var(--warn-border);">
+            <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--warning); margin-top: 5px;"></span>
+            <span style="flex: 1; font-size: 10.5px; line-height: 1.55; color: var(--warn-dim);">All five go into one turn. Anything over 2000px is downscaled by the daemon before the model sees it.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div style="width: 34px; height: 34px; flex: 0 0 34px; border-radius: 999px; display: flex; align-items: center; justify-content: center; color: var(--muted-foreground); cursor: pointer;">{{ attachIcon }}</div>
+            <div style="flex: 1; min-width: 0; padding: 0 4px; font-size: 12px; color: var(--foreground);">every step of the refund flow</div>
+            <div style="width: 40px; height: 40px; flex: 0 0 40px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: flex; align-items: center; justify-content: center; cursor: pointer;">{{ sendIcon }}</div>
+          </div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Five attached. The strip scrolls sideways rather than wrapping, each thumb keeps its send order, and the turn cost is stated before you send.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 10px;">
+          <span style="font-size: 12.5px; color: var(--primary); cursor: pointer;">Cancel</span>
+          <div style="flex: 1; min-width: 0; text-align: center;">
+            <div style="font-size: 13.5px; font-weight: 500;">Worktree</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">macbook-pro-m3</div>
+          </div>
+          <span style="display: flex; color: var(--muted-foreground); cursor: pointer;">{{ searchIcon }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; margin: 0 12px 10px; padding: 9px 12px; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius); font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">~/work/acme-billing · session/billing-webhooks</div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 46px;">
+          <div style="border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card);">
+            <sc-for list="{{ worktreeFiles }}" as="wf" hint-placeholder-count="5">
+              <div style="{{ wf.rowStyle }}">
+                <span style="display: flex; color: var(--muted-foreground);">{{ wf.icon }}</span>
+                <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ wf.name }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ wf.meta }}</span>
+                <sc-if value="{{ wf.sel }}" hint-placeholder-val="{{ false }}">
+                  <span style="width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--primary); color: var(--primary-foreground);">{{ checkIcon }}</span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint); margin-top: 10px;">Only files the session has touched are listed. The file is read from the daemon at send time, not from a cached copy on this phone.</div>
+        </div>
+
+        <div style="{{ sheetSpacerStyle }}"></div>
+        <div style="{{ sheetBarStyle }}">
+          <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">webhooks.ts · 4.1 kB</span>
+          <div style="{{ sheetActionStyle }}">Attach</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">File from worktree. Scoped to what the session changed, with the branch named so you know which tree you are in.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 10px;">
+          <span style="font-size: 12.5px; color: var(--primary); cursor: pointer;">Cancel</span>
+          <div style="flex: 1; min-width: 0; text-align: center;">
+            <div style="font-size: 13.5px; font-weight: 500;">Terminal output</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">lines 214 to 217</div>
+          </div>
+          <span style="display: flex; color: var(--muted-foreground);">{{ termIcon }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; gap: 6px; padding: 0 12px 10px; overflow-x: auto;">
+          <sc-for list="{{ termScopes }}" as="ts" hint-placeholder-count="3">
+            <div style="{{ ts.style }}">{{ ts.label }}</div>
+          </sc-for>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow: auto; margin: 0 12px; padding: 9px 0; background: var(--code); border: 1px solid var(--border); border-radius: var(--radius);">
+          <sc-for list="{{ termLines }}" as="tl" hint-placeholder-count="8">
+            <div style="{{ tl.style }}">{{ tl.s }}</div>
+          </sc-for>
+        </div>
+
+        <div style="{{ sheetSpacerStyle }}"></div>
+        <div style="{{ sheetBarStyle }}">
+          <span style="flex: 1; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">4 lines · 218 bytes</span>
+          <div style="{{ sheetActionStyle }}">Attach</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Terminal output. Drag the selection, or take the last command whole. Byte count shown because it goes into the model context.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 10px;">
+          <span style="font-size: 12.5px; color: var(--primary); cursor: pointer;">Cancel</span>
+          <div style="flex: 1; min-width: 0; text-align: center;">
+            <div style="font-size: 13.5px; font-weight: 500;">Annotate</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted-foreground);">localhost:5173 · 2 pins</div>
+          </div>
+          <span style="font-size: 12.5px; color: var(--faint);">Clear</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; margin: 0 12px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; position: relative; background: repeating-linear-gradient(135deg, var(--accent) 0 11px, var(--card) 11px 22px);">
+          <span style="position: absolute; left: 26px; top: 78px; width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10px; display: flex; align-items: center; justify-content: center;">1</span>
+          <span style="position: absolute; right: 34px; bottom: 118px; width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-family: 'JetBrains Mono', monospace; font-size: 10px; display: flex; align-items: center; justify-content: center;">2</span>
+          <div style="position: absolute; left: 12px; right: 12px; bottom: 12px; padding: 10px 12px; border-radius: 12px; background: color-mix(in oklab, var(--card) 82%, transparent); backdrop-filter: blur(10px); border: 1px solid var(--border);">
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: var(--faint);">PIN 2</div>
+            <div style="font-size: 11.5px; line-height: 1.55; color: var(--strong); margin-top: 4px;">Total still shows the pre refund amount here.</div>
+          </div>
+        </div>
+
+        <div style="{{ sheetSpacerStyle }}"></div>
+        <div style="{{ sheetBarStyle }}">
+          <div style="flex: 1; min-width: 0; display: flex; gap: 2px;">
+            <sc-for list="{{ annoTools }}" as="at" hint-placeholder-count="4">
+              <div style="{{ at.style }}">{{ at.icon }}</div>
+            </sc-for>
+          </div>
+          <div style="{{ sheetActionStyle }}">Attach</div>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Annotate the preview. Pins carry a note each and travel to the agent as coordinates plus text, not as a flattened image.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
         <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
           <div style="{{ titleStyle }}">Fleet</div>
           <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">4 reachable · 1 offline</div>
         </div>
 
-        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 9px;">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 52px; display: flex; flex-direction: column; gap: 9px;">
           <sc-for list="{{ machines }}" as="mc" hint-placeholder-count="5">
             <div style="{{ mc.cardStyle }}">
               <div style="display: flex; align-items: center; gap: 10px;">
@@ -366,16 +1427,17 @@
           </div>
         </div>
 
+        <div style="{{ tabbarSpacerStyle }}"></div>
         <div style="{{ tabbarStyle }}">
           <sc-for list="{{ tabbarFleet }}" as="tb2" hint-placeholder-count="4">
             <div style="{{ tb2.style }}">
-              <span style="font-size: 15px;">{{ tb2.glyph }}</span>
-              <span style="font-size: 9.5px;">{{ tb2.label }}</span>
+              <span style="{{ tb2.glyphStyle }}">{{ tb2.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ tb2.label }}</span>
             </div>
           </sc-for>
         </div>
         <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
-          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
             <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
           </div>
         </sc-if>
@@ -385,9 +1447,100 @@
 
     <div style="display: flex; flex-direction: column; gap: 11px;">
       <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 8px 16px 12px;">
+          <div style="{{ titleStyle }}">Fleet</div>
+          <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 3px;">No machines paired</div>
+        </div>
+
+        <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 0 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center;">
+          <span style="display: flex; color: var(--faint);">{{ serverIcon }}</span>
+          <div style="font-size: 14.5px; font-weight: 500;">Nothing paired to this phone</div>
+          <div style="font-size: 11.5px; line-height: 1.65; color: var(--muted-foreground);">A machine appears here once its daemon is running and has accepted this device. The phone never runs an agent itself, so an empty fleet means there is nothing to show.</div>
+          <div style="width: 100%; padding: 12px 13px; border-radius: var(--radius); background: var(--code); border: 1px solid var(--border); text-align: left;">
+            <div style="font-size: 10px; letter-spacing: .08em; color: var(--faint);">ON THE MACHINE</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.8; color: var(--strong); margin-top: 6px; white-space: pre-line;">curl -fsSL domovoi.sh/install | sh
+domovoi pair</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 7px; margin-top: 2px; padding: 11px 16px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">
+            <span style="display: flex;">{{ qrIcon }}</span>Scan pairing code
+          </div>
+          <div style="font-size: 10.5px; line-height: 1.6; color: var(--faint);">Pairing is a direct exchange with the machine. No account is involved at this step.</div>
+        </div>
+
+        <div style="{{ tabbarSpacerStyle }}"></div>
+        <div style="{{ tabbarStyle }}">
+          <sc-for list="{{ tabbarFleet }}" as="tf2" hint-placeholder-count="4">
+            <div style="{{ tf2.style }}">
+              <span style="{{ tf2.glyphStyle }}">{{ tf2.icon }}</span>
+              <span style="font-size: 9.5px; letter-spacing: .02em;">{{ tf2.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Empty fleet. The two commands that create a machine, and the honest reason the list is empty.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
+        <div style="{{ statusStyle }}">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 500;">9:41</span>
+          <span style="flex: 1;"></span>
+          <span style="font-size: 9.5px; letter-spacing: .07em; color: var(--strong);">{{ statusIcons }}</span>
+        </div>
+
+        <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 6px 16px 12px;">
+          <span style="font-size: 12.5px; color: var(--primary); cursor: pointer;">Cancel</span>
+          <div style="flex: 1; min-width: 0; text-align: center; font-size: 13.5px; font-weight: 500;">Scan pairing code</div>
+          <span style="display: flex; color: var(--muted-foreground); cursor: pointer;">{{ torchIcon }}</span>
+        </div>
+
+        <div style="flex: 1; min-height: 0; margin: 0 12px; border-radius: var(--radius); overflow: hidden; position: relative; background: var(--code); display: flex; align-items: center; justify-content: center;">
+          <div style="position: absolute; inset: 0; background: repeating-linear-gradient(135deg, oklch(0.185 0.005 285) 0 14px, oklch(0.165 0.005 285) 14px 28px);"></div>
+          <div style="position: relative; width: 208px; height: 208px;">
+            <span style="{{ cornerBase }} left: 0; top: 0; border-right: none; border-bottom: none; border-radius: 12px 0 0 0;"></span>
+            <span style="{{ cornerBase }} right: 0; top: 0; border-left: none; border-bottom: none; border-radius: 0 12px 0 0;"></span>
+            <span style="{{ cornerBase }} left: 0; bottom: 0; border-right: none; border-top: none; border-radius: 0 0 0 12px;"></span>
+            <span style="{{ cornerBase }} right: 0; bottom: 0; border-left: none; border-top: none; border-radius: 0 0 12px 0;"></span>
+          </div>
+          <div style="position: absolute; left: 14px; right: 14px; bottom: 14px; padding: 11px 13px; border-radius: 13px; background: color-mix(in oklab, var(--card) 84%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--border);">
+            <div style="font-size: 11.5px; line-height: 1.55; color: var(--strong);">Point at the code the machine printed.</div>
+            <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 6px;">studio-arch $ domovoi pair</div>
+          </div>
+        </div>
+
+        <div style="flex: 0 0 auto; padding: 2px 12px 0; text-align: center; font-size: 10.5px; line-height: 1.6; color: var(--faint);">The code carries the machine's public key and expires in 60 seconds. Nothing is sent to a server to complete the pairing.</div>
+
+        <div style="{{ sheetSpacerStyle }}"></div>
+        <div style="{{ sheetBarStyle }}">
+          <span style="display: flex; color: var(--muted-foreground);">{{ keyboardIcon }}</span>
+          <span style="flex: 1; min-width: 0; font-size: 11.5px; color: var(--muted-foreground);">Enter the code by hand</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); cursor: pointer;">8 chars</span>
+        </div>
+        <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; pointer-events: none;">
+            <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
+          </div>
+        </sc-if>
+      </div>
+      <div style="{{ captionStyle }}">Pairing by camera. The viewfinder states what it is looking for, and the typed-code path stays available in the bar.</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 11px;">
+      <div style="{{ frameStyle }}">
         <div style="{{ lockStyle }}">
-          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--strong);">Tuesday 26 August</div>
-          <div style="font-size: 54px; font-weight: 500; letter-spacing: -.02em; margin-top: 2px;">9:41</div>
+          <div style="{{ lockDateStyle }}">Tuesday 26 August</div>
+          <div style="{{ lockClockStyle }}">9:41</div>
 
           <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 28px;">
             <sc-for list="{{ notifications }}" as="nt" hint-placeholder-count="3">
@@ -411,7 +1564,7 @@
           </div>
         </div>
         <sc-if value="{{ isIOS }}" hint-placeholder-val="{{ true }}">
-          <div style="height: 22px; flex: 0 0 22px; display: flex; align-items: center; justify-content: center;">
+          <div style="height: 22px; display: flex; align-items: center; justify-content: center; background: transparent; position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none;">
             <span style="width: 128px; height: 4px; border-radius: 4px; background: var(--muted);"></span>
           </div>
         </sc-if>
@@ -424,7 +1577,70 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:2600,&quot;height&quot;:1080}}">
 class Component extends DCLogic {
-  state = { plat: "ios", paused: false, decision: null, variant: 1, tapping: false, resolvedIds: [] };
+  state = { plat: "ios", paused: false, decision: null, variant: 1, tapping: false, resolvedIds: [], attachOpen: false, theme: "dark", nsMode: "Plan", nsAuto: false, splashPhase: "Reaching macbook-pro-m3" };
+
+  componentDidMount() {
+    if (window.lucide && window.lucide.icons) return;
+    let tries = 0;
+    this._iconTimer = setInterval(() => {
+      tries += 1;
+      if (window.lucide && window.lucide.icons) { clearInterval(this._iconTimer); this.forceUpdate(); }
+      else if (tries > 60) clearInterval(this._iconTimer);
+    }, 100);
+  }
+
+  componentWillUnmount() { clearInterval(this._iconTimer); clearInterval(this._splashTimer); }
+
+  componentDidUpdate() { if (!this._splashTimer) this.startSplash(); }
+
+  startSplash() {
+    const phases = ["Reaching macbook-pro-m3", "Keychain unlocked", "4 daemons answered", "Restoring 3 sessions"];
+    let i = 0;
+    clearInterval(this._splashTimer);
+    this._splashTimer = setInterval(() => {
+      i = (i + 1) % phases.length;
+      this.setState({ splashPhase: phases[i] });
+    }, 1400);
+  }
+
+  makeTabs(active, ios) {
+    return [
+      { ico: "Layers", label: "Sessions" },
+      { ico: "Eye", label: "Review" },
+      { ico: "Server", label: "Fleet" },
+      { ico: "Settings", label: "Settings" }
+    ].map(t => {
+      const on = t.label === active;
+      return {
+        icon: this.icon(t.ico, 20), label: t.label,
+        style: "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: " +
+          (ios ? "3px" : "2px") + "; padding: 2px 4px; background: transparent; color: " + (on ? "var(--primary)" : "var(--faint)") + ";",
+        glyphStyle: "display: flex; align-items: center; justify-content: center; height: " + (ios ? "22px" : "26px") +
+          "; width: " + (ios ? "auto" : "52px") + "; border-radius: 999px; background: " +
+          (on && !ios ? "color-mix(in oklab, var(--primary) 20%, transparent)" : "transparent") + ";"
+      };
+    });
+  }
+
+  icon(name, size) {
+    const set = window.lucide && window.lucide.icons;
+    const entry = set ? set[name] : null;
+    const nodes = entry && Array.isArray(entry[2]) ? entry[2] : entry;
+    const px = size || 20;
+    if (!nodes || !nodes.length) return React.createElement("span", { style: { display: "inline-block", width: px, height: px } });
+    return React.createElement("svg", {
+      width: px, height: px, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+      style: { display: "block", flex: "0 0 auto" }
+    }, nodes.map((n, i) => {
+      const attrs = {};
+      Object.keys(n[1] || {}).forEach(k => {
+        attrs[k.replace(/-([a-z])/g, (m, c) => c.toUpperCase())] = n[1][k];
+      });
+      attrs.key = i;
+      return React.createElement(n[0], attrs);
+    }));
+  }
 
   dot(c, s, pulse) {
     const n = s || 7;
@@ -462,38 +1678,319 @@ class Component extends DCLogic {
       frameStyle: "width: " + (ios ? "390px" : "412px") + "; height: " + (ios ? "844px" : "892px") +
         "; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--background); border: " +
         (ios ? "9px solid oklch(0.28 0.008 285)" : "8px solid oklch(0.26 0.008 285)") +
-        "; border-radius: " + (ios ? "44px" : "30px") + "; overflow: hidden; box-shadow: 0 30px 80px var(--shadow-lg); font-family: " + font + ";",
+        "; border-radius: " + (ios ? "44px" : "30px") + "; overflow: hidden; position: relative; box-shadow: 0 30px 80px var(--shadow-lg); font-family: " + font + ";",
       statusStyle: "height: " + (ios ? "42px" : "30px") + "; flex: 0 0 " + (ios ? "42px" : "30px") +
         "; display: flex; align-items: center; padding: 0 " + (ios ? "24px" : "16px") + "; position: relative;" +
         (ios ? " padding-top: 6px;" : ""),
       statusIcons: ios ? "▮▮▮ ⌁ 82%" : "◔ ▲ ▮ 82%",
       titleStyle: "font-size: " + (ios ? "26px" : "22px") + "; font-weight: 600; letter-spacing: " + (ios ? "-.02em" : "0") + ";",
-      backGlyph: ios ? "‹" : "←",
+      backIcon: this.icon(ios ? "ChevronLeft" : "ArrowLeft", 20),
+      moreIcon: this.icon("MoreHorizontal", 20),
       captionStyle: "width: " + (ios ? "390px" : "412px") + "; font-size: 11.5px; line-height: 1.6; color: var(--muted-foreground); text-align: center;",
 
-      tabbarStyle: "flex: 0 0 auto; display: flex; align-items: center; justify-content: space-around; padding: " +
-        (ios ? "9px 8px 4px" : "10px 8px") + "; border-top: 1px solid var(--border); background: " + (ios ? "var(--sidebar)" : "var(--card)") + ";",
-      tabbar: [
-        { glyph: "◈", label: "Sessions", on: true },
-        { glyph: "◫", label: "Review" },
-        { glyph: "⬡", label: "Fleet" },
-        { glyph: "⚙", label: "Settings" }
+      tabbarStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "22px" : "14px") + "; z-index: 4; display: flex; align-items: flex-start; padding: " +
+        (ios ? "8px 6px" : "9px 6px") + "; border-radius: 999px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") + "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 8px 24px var(--shadow-lg);",
+      splashPhase: st.splashPhase || "Reaching macbook-pro-m3",
+      splashMarkStyle: "width: 84px; height: 84px; background: currentColor; color: var(--primary); -webkit-mask: url(assets/mark-working.svg) center/contain no-repeat; mask: url(assets/mark-working.svg) center/contain no-repeat;",
+      splashWordStyle: "font-size: 25px; font-weight: 600; letter-spacing: -.025em; color: var(--foreground); line-height: 1;",
+      checkIcon: this.icon("Check", 13),
+      folderIcon: this.icon("Folder", 16),
+      fileIcon: this.icon("FileCode", 16),
+      termIcon: this.icon("Terminal", 16),
+      searchIcon: this.icon("Search", 15),
+      cameraIcon: this.icon("Camera", 20),
+      sheetBarStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "22px" : "14px") + "; z-index: 4; display: flex; align-items: center; gap: 10px; padding: " +
+        (ios ? "8px 8px 8px 16px" : "9px 9px 9px 16px") + "; border-radius: 999px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 8px 24px var(--shadow-lg);",
+      sheetSpacerStyle: "flex: 0 0 " + (ios ? "52px" : "46px") + "; height: " + (ios ? "52px" : "46px") + ";",
+      sheetActionStyle: "padding: 10px 16px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;",
+      photoTiles: [
+        { sel: 1 }, { sel: 0 }, { sel: 2 }, { sel: 0 }, { sel: 0 }, { sel: 0 }, { sel: 0 }, { sel: 0 }, { sel: 0 }
+      ].map(p => ({
+        sel: !!p.sel, n: p.sel,
+        style: "position: relative; aspect-ratio: 1; border-radius: 9px; overflow: hidden; background: repeating-linear-gradient(135deg, var(--accent) 0 9px, var(--card) 9px 18px); border: " +
+          (p.sel ? "2px solid var(--primary)" : "1px solid var(--border)") + ";",
+        badgeStyle: "position: absolute; right: 5px; top: 5px; width: 17px; height: 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; background: var(--primary); color: var(--primary-foreground);"
+      })),
+      worktreeFiles: [
+        { dir: false, name: "webhooks.ts", meta: "+9 −4", sel: true },
+        { dir: false, name: "migration.sql", meta: "+14 −2", sel: false },
+        { dir: false, name: "webhooks.test.ts", meta: "+22 −0", sel: false },
+        { dir: true, name: "src/billing/", meta: "3 changed", sel: false },
+        { dir: true, name: "prisma/migrations/", meta: "1 changed", sel: false }
+      ].map((w, i, arr) => ({
+        name: w.name, meta: w.meta, dir: w.dir, sel: w.sel,
+        icon: this.icon(w.dir ? "Folder" : "FileCode", 16),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer; background: " +
+          (w.sel ? "var(--accent)" : "transparent") + "; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      termLines: [
+        { t: "cmd", s: "$ pnpm -w test billing" },
+        { t: "out", s: "PASS src/billing/__tests__/refunds.test.ts" },
+        { t: "sel", s: "FAIL src/billing/__tests__/webhooks.test.ts" },
+        { t: "sel", s: "  ● drops a replayed stripe event" },
+        { t: "sel", s: "    expected true, received undefined" },
+        { t: "sel", s: "    at handleStripeEvent (webhooks.ts:47)" },
+        { t: "out", s: "Tests: 1 failed, 38 passed, 39 total" },
+        { t: "out", s: "Time:  6.412s" }
+      ].map(l => ({
+        s: l.s,
+        style: "font-family: 'JetBrains Mono', monospace; font-size: 10px; line-height: 1.85; white-space: pre; padding: 0 12px; color: " +
+          (l.t === "cmd" ? "var(--primary)" : l.t === "sel" ? "var(--foreground)" : "var(--muted-foreground)") +
+          "; background: " + (l.t === "sel" ? "color-mix(in oklab, var(--primary) 14%, transparent)" : "transparent") + ";"
+      })),
+      termScopes: [
+        { label: "Selection", on: true }, { label: "Last command", on: false }, { label: "Whole session", on: false }
+      ].map(c => ({
+        label: c.label,
+        style: "padding: 6px 11px; border-radius: 999px; font-size: 11px; cursor: pointer; border: 1px solid " +
+          (c.on ? "color-mix(in oklab, var(--primary) 45%, transparent)" : "var(--border)") + "; color: " +
+          (c.on ? "var(--primary)" : "var(--muted-foreground)") + "; background: " +
+          (c.on ? "color-mix(in oklab, var(--primary) 14%, transparent)" : "transparent") + ";"
+      })),
+      annoTools: [
+        { ico: "PenLine", on: true }, { ico: "Square", on: false }, { ico: "Type", on: false }, { ico: "Undo2", on: false }
       ].map(t => ({
-        glyph: t.glyph, label: t.label,
-        style: "display: flex; flex-direction: column; align-items: center; gap: 3px; padding: " + (ios ? "2px 10px" : "4px 14px") +
-          "; border-radius: " + (ios ? "0" : "999px") + "; background: " + (t.on && !ios ? "color-mix(in oklab, var(--primary) 20%, transparent)" : "transparent") +
-          "; color: " + (t.on ? "var(--primary)" : "var(--faint)") + ";"
+        icon: this.icon(t.ico, 17),
+        style: "width: 40px; height: 40px; border-radius: 999px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: " +
+          (t.on ? "var(--primary-foreground)" : "var(--muted-foreground)") + "; background: " + (t.on ? "var(--primary)" : "transparent") + ";"
+      })),
+      removeIcon: this.icon("X", 12),
+      themeExtra: st.theme === "light" ? "theme-light" : "",
+      themeTabs: [{ k: "dark", label: "Dark" }, { k: "light", label: "Light" }].map(t => ({
+        label: t.label,
+        pick: () => this.setState({ theme: t.k }),
+        style: "padding: 6px 13px; border-radius: 999px; font-size: 11.5px; cursor: pointer; color: " +
+          (st.theme === t.k ? "var(--foreground)" : "var(--muted-foreground)") + "; background: " +
+          (st.theme === t.k ? "var(--accent)" : "transparent") + "; border: 1px solid " +
+          (st.theme === t.k ? "var(--border)" : "transparent") + ";"
+      })),
+      tabbarReview: this.makeTabs("Review", ios),
+      tabbarSettings: this.makeTabs("Settings", ios),
+      layersIcon: this.icon("Layers", 24),
+      eyeIcon: this.icon("Eye", 24),
+      pairIcon: this.icon("QrCode", 15),
+      chevIcon: this.icon("ChevronRight", 15),
+      setRowsLocal: [
+        { label: "Appearance", v: "Dark" },
+        { label: "Notifications", v: "Approvals only" },
+        { label: "This device", v: "iPhone 15 Pro" },
+        { label: "About", v: "0.4.2" }
+      ].map((r, i, arr) => ({
+        label: r.label, v: r.v, chev: this.icon("ChevronRight", 14),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 12px 13px; background: var(--card); cursor: pointer; border-bottom: " +
+          (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      setRowsMachine: [
+        { label: "Agents and models" },
+        { label: "Permission allow list" },
+        { label: "Skills" },
+        { label: "Machine defaults" }
+      ].map((r, i, arr) => ({
+        label: r.label,
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 12px 13px; background: var(--card); opacity: .5; border-bottom: " +
+          (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      torchIcon: this.icon("Zap", 17),
+      keyboardIcon: this.icon("Keyboard", 17),
+      cornerBase: "position: absolute; width: 30px; height: 30px; border: 2.5px solid var(--primary);",
+      kbKey: "flex: 1 1 0; min-width: 0; height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: var(--muted); color: var(--foreground); font-size: 15px; box-shadow: 0 1px 0 var(--shadow-lg);",
+      kbWide: "flex: 1.5 1 0; min-width: 0; height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: var(--accent); color: var(--strong); font-size: 13px; box-shadow: 0 1px 0 var(--shadow-lg);",
+      kbSpaceStyle: "flex: 5 1 0; height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: var(--muted); color: var(--faint); font-size: 12px; box-shadow: 0 1px 0 var(--shadow-lg);",
+      kbRow1: "qwertyuiop".split("").map(c => ({ c: c })),
+      kbRow2: "asdfghjkl".split("").map(c => ({ c: c })),
+      kbRow3: "zxcvbnm".split("").map(c => ({ c: c })),
+      kbSuggestions: [
+        { label: "staging", on: false }, { label: "Thursday", on: true }, { label: "migration", on: false }
+      ].map(g => ({
+        label: g.label,
+        style: "flex: 1 1 0; min-width: 0; text-align: center; font-size: 12.5px; padding: 6px 4px; border-radius: 6px; color: " +
+          (g.on ? "var(--foreground)" : "var(--muted-foreground)") + "; background: " + (g.on ? "var(--accent)" : "transparent") + ";"
+      })),
+      kbStyle: "position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; padding: 6px 4px " + (ios ? "26px" : "10px") +
+        "; display: flex; flex-direction: column; gap: 7px; background: color-mix(in oklab, var(--sidebar) 94%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-top: 1px solid var(--border);",
+      kbComposerStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "248px" : "232px") + "; z-index: 4; display: flex; align-items: center; gap: 8px; padding: " +
+        (ios ? "6px 6px 6px 4px" : "7px 7px 7px 5px") + "; border-radius: 999px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 8px 24px var(--shadow-lg);",
+      kbSpacerStyle: "flex: 0 0 " + (ios ? "268px" : "252px") + "; height: " + (ios ? "268px" : "252px") + ";",
+      folderPlusIcon: this.icon("FolderPlus", 20),
+      cloneIcon: this.icon("GitBranch", 20),
+      emptyRepoIcon: this.icon("FolderSearch", 24),
+      gateFacts: [
+        { k: "MACHINE", v: "studio-arch", warn: false },
+        { k: "PATH", v: "/home/ada/work/acme-ledger", warn: false },
+        { k: "INDEXED", v: "no, would be added", warn: true },
+        { k: "ALLOW LIST", v: "not listed", warn: true },
+        { k: "CREATES", v: "1 directory, 1 git repo", warn: false },
+        { k: "ASKED BY", v: "claude-code · turn 1", warn: false }
+      ].map((g, i, arr) => ({
+        k: g.k, v: g.v,
+        color: g.warn ? "var(--warning)" : "var(--strong)",
+        rowStyle: "display: flex; align-items: baseline; gap: 10px; padding: 10px 13px; background: var(--card); border-bottom: " +
+          (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      gitIcon: this.icon("GitBranch", 15),
+      wtRepos: [
+        { path: "~/work/acme-billing", meta: "main · clean", sel: true },
+        { path: "~/work/acme-web", meta: "main · 3 uncommitted", sel: false },
+        { path: "~/work/infra", meta: "release/24.9 · clean", sel: false }
+      ].map((r, i, arr) => ({
+        path: r.path, meta: r.meta, sel: r.sel,
+        check: this.icon("Check", 12),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer; background: " +
+          (r.sel ? "var(--accent)" : "transparent") + "; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      wtBases: [
+        { name: "main", meta: "up to date with origin", sel: true },
+        { name: "release/24.9", meta: "4 commits behind main", sel: false },
+        { name: "Current checkout", meta: "3 uncommitted files, cannot branch cleanly", sel: false, off: true }
+      ].map((b, i, arr) => ({
+        name: b.name, meta: b.meta, sel: b.sel,
+        check: this.icon("Check", 12),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer; opacity: " + (b.off ? ".5" : "1") +
+          "; background: " + (b.sel ? "var(--accent)" : "transparent") + "; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      nsMachines: [
+        { name: "macbook-pro-m3", meta: "online · 2 sessions", c: "var(--success)", sel: true },
+        { name: "wsl-ubuntu-24", meta: "online · idle", c: "var(--success)", sel: false },
+        { name: "studio-arch", meta: "online · 1 session", c: "var(--success)", sel: false },
+        { name: "hetzner-cx42", meta: "offline · last seen 2m ago", c: "var(--destructive)", sel: false, off: true }
+      ].map((m, i, arr) => ({
+        name: m.name, meta: m.meta, sel: m.sel,
+        dotStyle: "width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: " + m.c + ";",
+        check: this.icon("Check", 12),
+        rowStyle: "display: flex; align-items: center; gap: 10px; padding: 11px 12px; cursor: pointer; opacity: " + (m.off ? ".55" : "1") +
+          "; background: " + (m.sel ? "var(--accent)" : "transparent") +
+          "; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      nsAgents: [
+        { label: "claude-code", on: true }, { label: "codex", on: false }, { label: "grok", on: false }
+      ].map(a => ({
+        label: a.label,
+        style: "font-family: 'JetBrains Mono', monospace; padding: 7px 12px; border-radius: 999px; font-size: 11px; cursor: pointer; border: 1px solid " +
+          (a.on ? "color-mix(in oklab, var(--primary) 45%, transparent)" : "var(--border)") + "; color: " +
+          (a.on ? "var(--primary)" : "var(--muted-foreground)") + "; background: " +
+          (a.on ? "color-mix(in oklab, var(--primary) 14%, transparent)" : "transparent") + ";"
+      })),
+      nsModes: ["Ask", "Plan", "Build"].map(label => {
+        const on = st.nsMode === label;
+        return {
+          label: label,
+          pick: () => this.setState({ nsMode: label }),
+          style: "flex: 1 1 0; padding: 9px 0; border-radius: 999px; text-align: center; font-size: 12px; cursor: pointer; transition: background 120ms; color: " +
+            (on ? "var(--foreground)" : "var(--muted-foreground)") + "; background: " + (on ? "var(--card)" : "transparent") +
+            "; border: 1px solid " + (on ? "var(--border)" : "transparent") + ";"
+        };
+      }),
+      nsAuto: st.nsAuto,
+      toggleAuto: () => this.setState(p => ({ nsAuto: !p.nsAuto })),
+      nsTrackStyle: "width: 38px; height: 22px; flex: 0 0 38px; border-radius: 999px; display: flex; align-items: center; padding: 2px; cursor: pointer; transition: background 140ms; background: " +
+        (st.nsAuto ? "var(--primary)" : "var(--muted)") + "; border: 1px solid " + (st.nsAuto ? "var(--primary)" : "var(--border)") + ";",
+      nsKnobStyle: "width: 16px; height: 16px; border-radius: 50%; transition: transform 140ms cubic-bezier(.2,.7,.3,1); background: " +
+        (st.nsAuto ? "var(--primary-foreground)" : "var(--faint)") + "; transform: translateX(" + (st.nsAuto ? "16px" : "0") + ");",
+      nsSummary: "claude-code · " + st.nsMode.toUpperCase() + (st.nsAuto ? " · AUTO" : ""),
+      banIcon: this.icon("Ban", 24),
+      denyReasons: [
+        { label: "Wrong environment", on: true },
+        { label: "After the release window", on: false },
+        { label: "Needs a second reviewer", on: false },
+        { label: "Run it on staging", on: false }
+      ].map(r => ({
+        label: r.label,
+        style: "padding: 7px 12px; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid " +
+          (r.on ? "color-mix(in oklab, var(--primary) 45%, transparent)" : "var(--border)") + "; color: " +
+          (r.on ? "var(--primary)" : "var(--muted-foreground)") + "; background: " +
+          (r.on ? "color-mix(in oklab, var(--primary) 14%, transparent)" : "transparent") + ";"
+      })),
+      denyBarStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "22px" : "14px") + "; z-index: 4; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 30px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 0 22px var(--shadow-lg), 0 10px 32px var(--shadow-lg);",
+      denySpacerStyle: "flex: 0 0 " + (ios ? "96px" : "88px") + "; height: " + (ios ? "96px" : "88px") + ";",
+      serverIcon: this.icon("Server", 24),
+      qrIcon: this.icon("QrCode", 15),
+      agentIcon: this.icon("Bot", 13),
+      draftThumbs: [
+        { name: "IMG_4831.png", meta: "1.2 MB" },
+        { name: "IMG_4832.png", meta: "0.9 MB" }
+      ].map(t => ({
+        name: t.name, meta: t.meta,
+        style: "position: relative; width: 62px; height: 62px; flex: 0 0 62px; border-radius: 11px; overflow: hidden; border: 1px solid var(--border); background: repeating-linear-gradient(135deg, var(--accent) 0 9px, var(--card) 9px 18px);"
+      })),
+      draftThumbsMany: [
+        { name: "IMG_4831.png" }, { name: "IMG_4832.png" }, { name: "IMG_4833.png" },
+        { name: "IMG_4834.png" }, { name: "IMG_4835.png" }
+      ].map((t, i) => ({
+        n: i + 1,
+        style: "position: relative; width: 62px; height: 62px; flex: 0 0 62px; border-radius: 11px; overflow: hidden; border: 1px solid var(--border); background: repeating-linear-gradient(135deg, var(--accent) 0 9px, var(--card) 9px 18px);"
+      })),
+      draftComposerStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "22px" : "14px") + "; z-index: 4; display: flex; flex-direction: column; gap: 9px; padding: 10px; border-radius: 24px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 8px 24px var(--shadow-lg);",
+      draftSpacerStyle: "flex: 0 0 " + (ios ? "132px" : "126px") + "; height: " + (ios ? "132px" : "126px") + ";",
+      manyComposerStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "22px" : "14px") + "; z-index: 4; display: flex; flex-direction: column; gap: 9px; padding: 10px; border-radius: 24px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") +
+        "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 8px 24px var(--shadow-lg);",
+      manySpacerStyle: "flex: 0 0 " + (ios ? "212px" : "204px") + "; height: " + (ios ? "212px" : "204px") + ";",
+      sendIcon: this.icon("ArrowUp", 18),
+      emptyIcon: this.icon("Layers", 24),
+      offlineIcon: this.icon("Unplug", 24),
+      retryIcon: this.icon("RotateCw", 15),
+      newIcon: this.icon("Plus", 15),
+      attachIcon: this.icon("Plus", 20),
+      attachSpinStyle: "display: flex; transition: transform 200ms var(--ease-out, cubic-bezier(.2,.7,.3,1)); transform: rotate(" + (st.attachOpen ? "135deg" : "0deg") + ");",
+      attachOpen: st.attachOpen,
+      toggleAttach: () => this.setState(p => ({ attachOpen: !p.attachOpen })),
+      attachStyle: "position: absolute; left: 0; bottom: 62px; width: 236px; z-index: 4; padding: 5px; border-radius: 16px; border: 1px solid var(--border); background: " + (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") + "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 8px 24px var(--shadow-lg); animation: dvPopIn 140ms var(--ease-out, cubic-bezier(.2,.7,.3,1));",
+      attachItems: [
+        { ico: "Image", label: "Photo or screenshot" },
+        { ico: "FileCode", label: "File from worktree" },
+        { ico: "Terminal", label: "Terminal output" },
+        { ico: "PenLine", label: "Annotate the preview" }
+      ].map((a, i, arr) => ({
+        label: a.label, icon: this.icon(a.ico, 16),
+        style: "display: flex; align-items: center; gap: 10px; padding: 10px 10px; border-radius: 11px; font-size: 12.5px; color: var(--strong); cursor: pointer;" +
+          (i === arr.length - 1 ? "" : " margin-bottom: 1px;")
+      })),
+      composerStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "22px" : "14px") + "; z-index: 4; display: flex; align-items: center; gap: 8px; padding: " +
+        (ios ? "6px 6px 6px 4px" : "7px 7px 7px 5px") + "; border-radius: 999px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") + "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 8px 24px var(--shadow-lg);",
+      composerSpacerStyle: "flex: 0 0 " + (ios ? "48px" : "42px") + "; height: " + (ios ? "48px" : "42px") + ";",
+      tabbarSpacerStyle: "flex: 0 0 " + (ios ? "52px" : "44px") + "; height: " + (ios ? "52px" : "44px") + ";",
+      tabbar: [
+        { ico: "Layers", label: "Sessions", on: true },
+        { ico: "Eye", label: "Review" },
+        { ico: "Server", label: "Fleet" },
+        { ico: "Settings", label: "Settings" }
+      ].map(t => ({
+        icon: this.icon(t.ico, 20), label: t.label,
+        style: "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: " +
+          (ios ? "3px" : "2px") + "; padding: 2px 4px; background: transparent; color: " + (t.on ? "var(--primary)" : "var(--faint)") + ";",
+        glyphStyle: "display: flex; align-items: center; justify-content: center; height: " + (ios ? "22px" : "26px") +
+          "; width: " + (ios ? "auto" : "52px") + "; border-radius: 999px; background: " +
+          (t.on && !ios ? "color-mix(in oklab, var(--primary) 20%, transparent)" : "transparent") + ";"
       })),
       tabbarFleet: [
-        { glyph: "◈", label: "Sessions" },
-        { glyph: "◫", label: "Review" },
-        { glyph: "⬡", label: "Fleet", on: true },
-        { glyph: "⚙", label: "Settings" }
+        { ico: "Layers", label: "Sessions" },
+        { ico: "Eye", label: "Review" },
+        { ico: "Server", label: "Fleet", on: true },
+        { ico: "Settings", label: "Settings" }
       ].map(t => ({
-        glyph: t.glyph, label: t.label,
-        style: "display: flex; flex-direction: column; align-items: center; gap: 3px; padding: " + (ios ? "2px 10px" : "4px 14px") +
-          "; border-radius: " + (ios ? "0" : "999px") + "; background: " + (t.on && !ios ? "color-mix(in oklab, var(--primary) 20%, transparent)" : "transparent") +
-          "; color: " + (t.on ? "var(--primary)" : "var(--faint)") + ";"
+        icon: this.icon(t.ico, 20), label: t.label,
+        style: "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: " +
+          (ios ? "3px" : "2px") + "; padding: 2px 4px; background: transparent; color: " + (t.on ? "var(--primary)" : "var(--faint)") + ";",
+        glyphStyle: "display: flex; align-items: center; justify-content: center; height: " + (ios ? "22px" : "26px") +
+          "; width: " + (ios ? "auto" : "52px") + "; border-radius: 999px; background: " +
+          (t.on && !ios ? "color-mix(in oklab, var(--primary) 20%, transparent)" : "transparent") + ";"
       })),
 
       paused: st.paused,
@@ -532,7 +2029,74 @@ class Component extends DCLogic {
         rowStyle: "display: flex; align-items: baseline; gap: 10px; padding: 10px 13px; background: var(--card); border-bottom: " +
           (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
       })),
-      allowStyle: "padding: 15px; background: var(--warning); border-radius: var(--radius); font-size: 13.5px; font-weight: 500; color: oklch(0.2 0.04 62); text-align: center; cursor: pointer;",
+      routes: [
+        { k: "tailnet", v: "100.84.19.6 · route dropped 2m ago" },
+        { k: "relay", v: "eu-central · no session offered" },
+        { k: "lan", v: "192.168.1.24:7433 · not on this network" }
+      ].map((r, i, arr) => ({
+        k: r.k, v: r.v,
+        rowStyle: "display: flex; align-items: baseline; gap: 10px; padding: 9px 12px; border-bottom: " + (i === arr.length - 1 ? "none" : "1px solid var(--border)") + ";"
+      })),
+      diffFiles: [
+        {
+          path: "prisma/migrations/20260903_webhook_idempotency/migration.sql",
+          count: "+14 −2",
+          lines: [
+            { t: "hunk", s: "@@ -1,4 +1,16 @@" },
+            { t: "ctx", s: "-- billing webhook replay guard" },
+            { t: "add", s: 'CREATE TABLE "WebhookEvent" (' },
+            { t: "add", s: '  "id" TEXT NOT NULL,' },
+            { t: "add", s: '  "idempotencyKey" TEXT NOT NULL,' },
+            { t: "add", s: '  "receivedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP' },
+            { t: "add", s: ");" },
+            { t: "del", s: 'DROP INDEX "BillingEvent_stripeId_idx";' },
+            { t: "add", s: 'CREATE UNIQUE INDEX "WebhookEvent_idempotencyKey_key"' },
+            { t: "add", s: '  ON "WebhookEvent"("idempotencyKey");' }
+          ]
+        },
+        {
+          path: "src/billing/webhooks.ts",
+          count: "+9 −4",
+          lines: [
+            { t: "hunk", s: "@@ -41,10 +41,15 @@" },
+            { t: "ctx", s: "export async function handleStripeEvent(" },
+            { t: "del", s: "  const seen = await cache.get(event.id);" },
+            { t: "del", s: "  if (seen) return { ok: true };" },
+            { t: "add", s: "  const claimed = await db.webhookEvent.create({" },
+            { t: "add", s: "    data: { idempotencyKey: event.id }," },
+            { t: "add", s: "  }).catch(isUniqueViolation);" },
+            { t: "add", s: "  if (!claimed) return { ok: true, replayed: true };" },
+            { t: "ctx", s: "  return process(event);" }
+          ]
+        },
+        {
+          path: "src/billing/__tests__/webhooks.test.ts",
+          count: "+22 −0",
+          lines: [
+            { t: "hunk", s: "@@ -0,0 +1,22 @@" },
+            { t: "add", s: 'it("drops a replayed stripe event", async () => {' },
+            { t: "add", s: "  await handleStripeEvent(evt);" },
+            { t: "add", s: "  const second = await handleStripeEvent(evt);" },
+            { t: "add", s: "  expect(second.replayed).toBe(true);" },
+            { t: "add", s: "});" }
+          ]
+        }
+      ].map(f => ({
+        path: f.path, count: f.count,
+        lines: f.lines.map(l => ({
+          s: l.s,
+          style: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; line-height: 1.75; white-space: pre; padding: 0 12px; color: " +
+            (l.t === "add" ? "var(--success)" : l.t === "del" ? "var(--destructive)" : l.t === "hunk" ? "var(--faint)" : "var(--muted-foreground)") +
+            "; background: " + (l.t === "add" ? "color-mix(in oklab, var(--success) 12%, transparent)"
+              : l.t === "del" ? "color-mix(in oklab, var(--destructive) 12%, transparent)" : "transparent") + ";",
+          gutter: l.t === "add" ? "+" : l.t === "del" ? "−" : " "
+        }))
+      })),
+      decisionStyle: "position: absolute; left: " + (ios ? "14px" : "12px") + "; right: " + (ios ? "14px" : "12px") +
+        "; bottom: " + (ios ? "22px" : "14px") + "; z-index: 4; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 30px; border: 1px solid var(--border); background: " +
+        (ios ? "color-mix(in oklab, var(--sidebar) 60%, transparent)" : "color-mix(in oklab, var(--card) 60%, transparent)") + "; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 0 22px var(--shadow-lg), 0 10px 32px var(--shadow-lg);",
+      decisionSpacerStyle: "flex: 0 0 " + (ios ? "96px" : "88px") + "; height: " + (ios ? "96px" : "88px") + ";",
+      allowStyle: "padding: 15px; background: var(--warn-fill); border-radius: 999px; font-size: 13.5px; font-weight: 500; color: var(--warn-fill-fg); text-align: center; cursor: pointer;",
       allowOnce: () => this.setState({ decision: "allowed" }),
       denyIt: () => this.setState({ decision: "denied" }),
       decided: st.decision !== null,
@@ -580,14 +2144,14 @@ class Component extends DCLogic {
       }),
 
       plan: [
-        { mark: "✓", title: "Replay table with a unique event-id claim", meta: "done · 3 tools", k: "done" },
-        { mark: "✓", title: "Handlers claim then commit before side effects", meta: "done · 5 tools", k: "done" },
+        { mark: "done", title: "Replay table with a unique event-id claim", meta: "done · 3 tools", k: "done" },
+        { mark: "done", title: "Handlers claim then commit before side effects", meta: "done · 5 tools", k: "done" },
         { mark: "3", title: "Apply the migration on this machine", meta: "blocked · waiting on you", k: "blocked" },
         { mark: "4", title: "Rewrite replay.spec.ts for exactly-once", meta: "queued", k: "queued" }
       ].map((p, i, arr) => {
         const c = p.k === "done" ? "var(--success)" : p.k === "blocked" ? "var(--warning)" : "var(--faint)";
         return {
-          mark: p.mark, title: p.title, meta: p.meta,
+          mark: p.mark === "done" ? this.icon("Check", 11) : p.mark, title: p.title, meta: p.meta,
           color: p.k === "queued" ? "var(--muted-foreground)" : "var(--foreground)",
           markStyle: "width: 17px; height: 17px; flex: 0 0 17px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 9px; margin-top: 1px; background: " +
             (p.k === "done" ? "color-mix(in oklab, var(--success) 18%, transparent)" : p.k === "blocked" ? "color-mix(in oklab, var(--warning) 18%, transparent)" : "var(--muted)") + "; color: " + c + ";",
@@ -616,7 +2180,9 @@ class Component extends DCLogic {
       })),
 
       lockStyle: "flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: " + (ios ? "center" : "flex-start") +
-        "; padding: " + (ios ? "58px 16px 16px" : "44px 14px 16px") + "; background: linear-gradient(170deg, oklch(0.2 0.02 285) 0%, var(--background) 55%);",
+        "; padding: " + (ios ? "58px 16px 16px" : "44px 14px 16px") + "; background: linear-gradient(170deg, oklch(0.2 0.02 285) 0%, oklch(0.3 0.03 285) 55%);",
+      lockClockStyle: "font-size: 54px; font-weight: 500; letter-spacing: -.02em; margin-top: 2px; color: oklch(0.98 0.004 285);",
+      lockDateStyle: "font-family: 'JetBrains Mono', monospace; font-size: 12px; color: oklch(0.86 0.006 285);",
       lockCaption: ios
         ? "Lock screen. Approval notifications carry Allow, Deny and View as actions, so a migration can be cleared without opening the app."
         : "Lock screen. Notification actions match: Allow, Deny, View. Grouped under one Domovoi channel with a separate high-priority channel for approvals.",

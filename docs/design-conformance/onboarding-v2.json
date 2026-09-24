@@ -1,13 +1,13 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 Onboarding.dc.html",
-  "sha256": "a55724831e09e5f9a944db23d648a9b3ecd40b2c26b51a12a9d1af00519a4da1",
-  "derivedOn": "2026-09-20",
+  "sha256": "136599f8db13471d9d2c9d0766b180f774af32cb4ca6ce215c43080e59141873",
+  "derivedOn": "2026-09-23",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "apps/desktop/src/**/*.{ts,tsx}",
     "packages/ui/src/**/*.{ts,tsx}"
   ],
-  "note": "Inventory re-derived from the current v2 design. Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "note": "Inventory re-derived 2026-09-23 from the handoff vendored that day. The design gained the login-service install (J24), the unsigned-build line (J10), the tailnet reach card (J25, drawn in TailnetReach and inventoried in tailnet-reach-v2.json), SSH hosts (J41), and the account-free lines replaced (I59). Repository browsing moved into the imported RemoteBrowser (J40, remote-browser-v2.json). Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
   "elements": [
     {
       "id": "onboarding.daemon",
@@ -22,15 +22,56 @@
         "WHAT THE DAEMON DOES",
         "My machine is somewhere else",
         "Sign in to Domovoi Cloud and connect from here instead.",
-        "Daemon 0.9.4 is running as a login service. It starts with the machine and answers on loopback only until you pair something.",
         "Sign in to Domovoi Cloud",
         "So your machines can find each other off-network. Not where code, tokens or sessions live.",
         "You probably do not need this. A tailnet is up on this machine and two of its nodes already run a daemon, so they reach each other directly. Domovoi Cloud would only add the phone app when you are off the tailnet.",
-        "Use the tailnet, skip the account"
+        "Connect over the tailnet",
+        "Use the tailnet directly"
       ],
       "missing": {
         "since": "2026-09-20",
         "reason": "The current clients do not implement the signed-in onboarding flow drawn by this design."
+      }
+    },
+    {
+      "id": "onboarding.service-install",
+      "name": "Install the daemon as a login service",
+      "where": "after Install it for me (J24): the steps for your user only, the lingering-refused line with its command, WHAT FAILED and WHAT STILL WORKS",
+      "states": [
+        "installing",
+        "installed",
+        "lingering refused",
+        "failed"
+      ],
+      "copy": [
+        "For your user only. Nothing is system-wide.",
+        "The system refused lingering, so the daemon stops when you log out. To keep it running, run this once.",
+        "WHAT FAILED",
+        "WHAT STILL WORKS",
+        "This app's own daemon never stopped. Sessions, worktrees and loopback are as they were, and quitting the app still stops them."
+      ],
+      "evidence": [
+        "For your user only. Nothing is system-wide.",
+        "WHAT STILL WORKS"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J24; no client installs the daemon as a login service, and the desktop only reports whether an installed service answered"
+      }
+    },
+    {
+      "id": "onboarding.build-line",
+      "name": "The unsigned build line",
+      "where": "foot of the install card (J10): version, then the build is unsigned and does not update itself",
+      "copy": [
+        "This build is unsigned and does not update itself."
+      ],
+      "evidence": [
+        "This build is unsigned and does not update itself."
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J10; no client says the build is unsigned"
       }
     },
     {
@@ -44,11 +85,10 @@
         "Or continue with GitHub, Google or a passkey.",
         "HJ4K-9QZ2",
         "Enter this at domovoi.sh/device on any signed-in browser. This window is waiting.",
-        "expires in 9m 41s \u00b7 this machine will be named mac-mini-m4",
+        "expires in 9m 41s · this machine will be named mac-mini-m4",
         "Simulate approval",
         "WHAT THE ACCOUNT DOES AND DOES NOT DO",
         "Skip, use this machine only",
-        "Loopback works with no account. You can sign in later from Settings.",
         "Connect an agent on mac-mini-m4",
         "Agents you already have. Tokens stay in this machine's keychain, so each machine authenticates separately.",
         "Add another machine",
@@ -59,12 +99,72 @@
         "Domovoi did not configure this network",
         "Paste into your ACLs and tag the machines",
         "tag:domovoi",
-        "Open a repository on mac-mini-m4"
+        "Open a repository on mac-mini-m4",
+        "Loopback stays on this machine, with no Domovoi server in the path.",
+        "Clients here reach the daemon over loopback. Add Domovoi Cloud later from Settings."
       ],
       "blocked": {
         "since": "2026-09-20",
         "needs": "platform",
         "reason": "Cloud account sign-in and off-network pairing are Phase 2 platform work."
+      }
+    },
+    {
+      "id": "onboarding.tailnet-reach",
+      "name": "This machine on the tailnet",
+      "where": "Add a machine over the tailnet (J25): THIS MACHINE, the optional line, then the imported TailnetReach card",
+      "copy": [
+        "THIS MACHINE",
+        "Optional. A phone can pair with this machine only once it is on."
+      ],
+      "evidence": [
+        "A phone can pair with this machine only once it is on."
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J25; onboarding does not exist in the clients (see onboarding.daemon)"
+      }
+    },
+    {
+      "id": "onboarding.ssh-host",
+      "name": "Add an SSH host",
+      "where": "Other ways to add a machine (J41): SSH ADDRESS resolved from the SSH config, the three steps Host, Commands and the install, the live log, the host joined to the fleet, lingering refused on the host, no agent installed",
+      "states": [
+        "resolving",
+        "platform detected",
+        "commands running",
+        "joined",
+        "lingering refused"
+      ],
+      "copy": [
+        "Other ways to add a machine",
+        "SSH ADDRESS",
+        "Resolved from your SSH config",
+        "Opens no connection.",
+        "Your keys stay in your agent. BatchMode is on, so ssh never prompts and Domovoi never sees a passphrase.",
+        "Platform",
+        "Detected by one command on the host",
+        "Each host line runs through your own ssh as",
+        "Fleet",
+        "Added just now",
+        "ON THE HOST NOW",
+        "The install finished, but the host refused lingering, so its daemon stops when you log out. Run this once to fix it. Domovoi does not run sudo.",
+        "Domovoi does not install agents. Install one on the host and it appears on the next health check.",
+        "Add an SSH host",
+        "Host",
+        "Commands",
+        "The host joins the fleet when the last command passes.",
+        "Live log",
+        "also in the audit log"
+      ],
+      "evidence": [
+        "Add an SSH host",
+        "BatchMode"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no daemon, CLI or RPC path installs a daemon on another host over SSH; J41 was drawn as an owner decision, not settled"
       }
     },
     {
@@ -78,18 +178,25 @@
         "Clone from a URL",
         "The first is this computer's dialog. The second asks that machine's daemon.",
         "FOUND ON THIS MACHINE",
-        "A dirty checkout is fine: the worktree comes off the last commit.",
-        "Nothing here that the daemon may read. One level at a time, no recursive scan.",
-        "~/Documents is outside the roots you allowed on this machine. Reading it needs an approval, and your answer becomes a rule.",
-        "Ask for access",
-        "Not now",
-        "Open this directory",
-        "A directory that is not a repository is fine, the agent can git init it."
+        "A dirty checkout is fine: the worktree comes off the last commit."
       ],
       "missing": {
         "since": "2026-09-20",
         "reason": "The current first-run clients do not implement this repository browser and access prompt as drawn."
       }
     }
-  ]
+  ],
+  "annotations": [
+    "1",
+    "2",
+    "3"
+  ],
+  "sample": [
+    "domovoi 0.9.4",
+    "ssh://dana@hetzner-cx42",
+    "Host hetzner-cx42 · ~/.ssh/config",
+    "hetzner-cx42",
+    "2 machines"
+  ],
+  "humanRead": []
 }
