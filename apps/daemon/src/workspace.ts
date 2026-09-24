@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
 import { constants } from "node:fs"
-import { chmod, lstat, mkdir, open, readFile, readlink, realpath, unlink, writeFile } from "node:fs/promises"
+import { chmod, copyFile, lstat, mkdir, open, readFile, readlink, realpath, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 
@@ -238,6 +238,35 @@ const trustedConfigScopes = new Set(["system", "global", "unknown"])
 // run or apply. The message names the setting and where it is set.
 export class RepositoryConfigRefusedError extends Error {}
 
+// A checkpoint records a submodule by the commit it is at, not by its files,
+// so a submodule's local changes would be left out of it. Ruled 2026-09-23:
+// such a snapshot is refused rather than taken without them.
+export class SubmoduleChangesRefusedError extends Error {
+  constructor() {
+    super("A submodule has local changes a checkpoint cannot hold")
+    this.name = "SubmoduleChangesRefusedError"
+  }
+}
+
+// Whether any submodule has changed tracked content or untracked files: the
+// M or U in the submodule field ("S<c><m><u>") of a porcelain v2 record.
+async function submoduleHasLocalChanges(worktreePath: string, signal?: AbortSignal): Promise<boolean> {
+  // No optional locks: status must not refresh the index the agent shares.
+  const status = await git(worktreePath, [
+    "--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--untracked-files=no",
+  ], signal)
+  const records = status.split("\0")
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!
+    const fields = record.split(" ")
+    if (fields[0] === "2") index += 1
+    if (fields[0] !== "1" && fields[0] !== "2" && fields[0] !== "u") continue
+    const submodule = fields[2] ?? ""
+    if (submodule.startsWith("S") && (submodule[2] === "M" || submodule[3] === "U")) return true
+  }
+  return false
+}
+
 export class RepositoryFilterRefusedError extends RepositoryConfigRefusedError {
   readonly filters: readonly string[]
 
@@ -405,6 +434,9 @@ export interface WorkspaceService {
   // already merged says 0. Read before the worktree is removed at archive.
   sessionBranchFacts?(worktreePath: string, sourcePath: string, signal?: AbortSignal): Promise<SessionBranchFacts>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
+  // A checkpoint taken while an agent may be working: recorded under
+  // refs/domovoi/checkpoints without moving HEAD or changing the index or files.
+  snapshot?(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
   revertFile?(worktreePath: string, path: string, signal?: AbortSignal, expectedBaseCommit?: string): Promise<FileRevert>
   evidence?(worktreePath: string, signal?: AbortSignal, includeRevertTargets?: boolean): Promise<WorkspaceEvidence>
@@ -581,6 +613,24 @@ async function git(
     signal,
   }))
   return result.stdout.trim()
+}
+
+// Git run against a separate index file, so a snapshot never touches the
+// index the person and the agent share. Output is returned untrimmed.
+async function gitWithIndex(
+  repositoryPath: string,
+  indexPath: string,
+  arguments_: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted()
+  const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
+    env: { ...gitEnvironment(), GIT_INDEX_FILE: indexPath },
+    encoding: "utf8",
+    maxBuffer: maximumGitOutputBytes,
+    signal,
+  }))
+  return result.stdout
 }
 
 type IndexSnapshot = { path: string; head: string | undefined; bytes: Buffer | undefined }
@@ -1465,6 +1515,63 @@ export class GitWorkspaceService implements WorkspaceService {
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     return { commit, changedFiles }
+  }
+
+  // The worktree as a checkpoint commit whose parent is HEAD, built in a
+  // temporary index. HEAD, the branch, the shared index and every file stay as
+  // they were, so an agent mid-turn sees nothing. The temporary index starts as
+  // a copy of the shared one, so files tracked despite an ignore rule stay in.
+  async snapshot(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
+    await refuseRepositoryFilters(worktreePath, signal)
+    if (await submoduleHasLocalChanges(worktreePath, signal)) throw new SubmoduleChangesRefusedError()
+    const sharedIndex = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
+    const temporaryIndex = resolve(
+      worktreePath,
+      await git(worktreePath, ["rev-parse", "--git-path", `domovoi-snapshot-${randomUUID()}.index`], signal),
+    )
+    const head = await currentHead(worktreePath, signal)
+    try {
+      try {
+        await copyFile(sharedIndex, temporaryIndex)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+        if (head !== undefined) await gitWithIndex(worktreePath, temporaryIndex, ["read-tree", head], signal)
+      }
+      await gitWithIndex(worktreePath, temporaryIndex, ["add", "--all"], signal)
+      await this.#afterCheckpointStaging?.()
+      // Against the HEAD captured above, not whatever HEAD is now: the agent may
+      // commit meanwhile, and the snapshot's parent is the captured one.
+      const names = await gitWithIndex(worktreePath, temporaryIndex, head === undefined
+        ? ["ls-files", "-z"]
+        : ["diff", "--cached", "--no-renames", "--name-only", "-z", head, "--"], signal)
+      const changedFiles = names.split("\0").filter(Boolean)
+      let commit = head
+      if (commit === undefined || changedFiles.length > 0) {
+        const tree = (await gitWithIndex(worktreePath, temporaryIndex, ["write-tree"], signal)).trim()
+        commit = (await gitWithIndex(worktreePath, temporaryIndex, [
+          "-c",
+          "user.name=Domovoi",
+          "-c",
+          "user.email=domovoi@localhost",
+          "-c",
+          "commit.gpgsign=false",
+          "commit-tree",
+          "--no-gpg-sign",
+          tree,
+          ...(head === undefined ? [] : ["-p", head]),
+          "-m",
+          `chore(domovoi): checkpoint ${label}`,
+        ], signal)).trim()
+      }
+      await git(worktreePath, ["update-ref", checkpointRef(commit), commit], signal)
+      return { commit, changedFiles }
+    } finally {
+      for (const path of [temporaryIndex, `${temporaryIndex}.lock`]) {
+        await unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error
+        })
+      }
+    }
   }
 
   // What this machine already holds for a session, so a source can send only
