@@ -7248,6 +7248,76 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  // The script changed while the daemon was down: the record the card saved
+  // no longer matches the one resolved at load. Nothing on the card names a
+  // credential path, so only the mismatch makes it a hard gate.
+  it("hard-gates a saved card whose resolved script changed before the load, and hides its record", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-stale-saved-record-"))
+    scratchDirectories.push(workspacePath)
+    const manifestPath = join(workspacePath, "package.json")
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run" } }))
+    const snapshot = structuredClone(demoWorkspace)
+    const approval = snapshot.approvals[0]!
+    approval.risk = "normal"
+    approval.operation = "Run the test suite"
+    approval.command = "pnpm test"
+    approval.directory = workspacePath
+    approval.providerRequestId = 93
+    snapshot.sessions[0]!.workspacePath = workspacePath
+    approval.execution = await resolveExecution({
+      workspaceRoot: workspacePath,
+      cwd: workspacePath,
+      command: approval.command,
+    })
+    expect(approval.execution).toMatchObject({ state: "resolved" })
+    await writeFile(manifestPath, JSON.stringify({ scripts: { test: "vitest run --changed" } }))
+    const agent = {
+      connect: vi.fn(async () => {}), listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}), startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(), onEvent: vi.fn(() => () => {}), close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = new SqliteWorkspaceStore(":memory:", snapshot)
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: { "claude-code": agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const rpc = (id: number, method: string, params: Record<string, unknown>) => {
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    const hidden = { risk: "hard-gate", execution: { state: "unresolved", reason: "sensitive-content" } }
+    const loaded = await rpc(2, "workspace.get", {}) as { result: WorkspaceSnapshot }
+    expect(loaded.result.approvals.find((candidate) => candidate.id === approval.id)).toMatchObject(hidden)
+    expect(store.load().approvals.find((candidate) => candidate.id === approval.id)).toMatchObject(hidden)
+
+    await expect(rpc(3, "approval.resolve", { approvalId: approval.id, decision: "always-project", client: "desktop" }))
+      .resolves.toMatchObject({ error: { code: -32602, message: "Hard-gate approvals cannot create standing rules" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    expect(store.load().approvalRules).toEqual([])
+    socket.close()
+  })
+
   it("reuses a standing rule only while its resolved execution digest matches", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-rule-digest-"))
     scratchDirectories.push(workspacePath)

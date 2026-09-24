@@ -177,6 +177,65 @@ describe("settleApproval for a saved file line", () => {
   })
 })
 
+// A card read back from disk is resolved again, and a saved record that
+// differs from the fresh one is a hard gate with the record hidden, even when
+// no path on the card or in either record is a credential path.
+describe("settleApproval for a saved record", () => {
+  async function savedScriptCard(workspace: string): Promise<Approval> {
+    await writeFile(join(workspace, "package.json"), JSON.stringify({ scripts: { show: "cat notes.txt" } }))
+    await writeFile(join(workspace, "notes.txt"), "")
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, cwd: workspace, command: "pnpm run show", reason: "Run a command" },
+    }))
+    expect(approval).toMatchObject({ risk: "normal", directory: workspace, execution: { state: "resolved" } })
+    return approval
+  }
+
+  function settleSaved(approval: Approval, workspace: string) {
+    return settleApproval(savedSettlementInput(approval, workspace, undefined, () => approval.risk))
+  }
+
+  it("keeps a saved record that matches the one resolved now", async () => {
+    const workspace = await worktree()
+    const approval = await savedScriptCard(workspace)
+    const { approval: settled, sensitive } = await settleSaved(approval, workspace)
+    expect(sensitive).toBe(false)
+    expect(settled).toMatchObject({ risk: "normal", execution: approval.execution })
+  })
+
+  const mismatches: { name: string; change: (workspace: string, approval: Approval) => Promise<Approval> }[] = [
+    {
+      name: "a script body that changed on disk",
+      change: async (workspace, approval) => {
+        await writeFile(join(workspace, "package.json"), JSON.stringify({ scripts: { show: "cat notes.txt --number" } }))
+        return approval
+      },
+    },
+    {
+      name: "a saved digest that differs",
+      change: async (_, approval) => {
+        if (approval.execution.state !== "resolved") throw new Error("Fixture record was not resolved")
+        return { ...approval, execution: { ...approval.execution, digest: `sha256:${"0".repeat(64)}` } }
+      },
+    },
+  ]
+
+  for (const mismatch of mismatches) {
+    it(`hard-gates and hides a saved record that differs: ${mismatch.name}`, async () => {
+      const workspace = await worktree()
+      const approval = await mismatch.change(workspace, await savedScriptCard(workspace))
+      const { approval: settled, execution, sensitive } = await settleSaved(approval, workspace)
+      expect(execution).toMatchObject({ state: "resolved" })
+      expect(sensitive).toBe(false)
+      expect(settled).toMatchObject({
+        risk: "hard-gate",
+        directory: workspace,
+        execution: { state: "unresolved", reason: "sensitive-content" },
+      })
+    })
+  }
+})
+
 describe("ApprovalLedger", () => {
   it("admits only an approval settleApproval made", async () => {
     const workspace = await worktree()

@@ -121,8 +121,11 @@ async function setup(
 
 // A card as a daemon from before this check saved it: its directory is an
 // ordinary name, and only its real path is a store. Its record is the one a
-// daemon resolves for "ls" at the worktree, since a saved record is resolved
-// again at load and one that differs is a hard gate.
+// daemon resolves for "ls" at the worktree root. A saved record is resolved
+// again at load, so a card saved at the root keeps it. A card saved in another
+// directory, such as a link inside the worktree, resolves to a different
+// record there, and that alone makes it a hard gate; the load test checks the
+// directory line for what the path check adds.
 function savedCard(directory: string, providerRequestId: number): Approval {
   return {
     id: `approval-saved-${providerRequestId}`,
