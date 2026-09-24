@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto"
+import { lstat } from "node:fs/promises"
+import { join } from "node:path"
 
 import {
   createOpencodeClient,
@@ -10,6 +12,7 @@ import type { ApprovalDecision, ProviderModel, Runtime } from "@getdomovoi/proto
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
+import { projectInstructions } from "./project-instructions.js"
 
 type OpenCodeResult<T> = { data?: T; error?: unknown }
 
@@ -76,6 +79,7 @@ export type OpenCodeFactory = () => Promise<{
 export type OpenCodeAdapterIdentity = {
   providerId: string
   providerName: string
+  heldBackRepositoryFiles?: readonly string[]
 }
 
 type Session = {
@@ -354,6 +358,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+    await this.#refuseHeldBackRepositoryFiles(cwd)
     const client = await this.#client()
     const action = `${this.#identity.providerName} session creation`
     const created = requireSession(
@@ -387,6 +392,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<void> {
     if (this.#sessions.has(threadId)) return
+    await this.#refuseHeldBackRepositoryFiles(cwd)
     const pending = { cwd, cancelled: false }
     this.#pendingSessionLoads.set(threadId, pending)
     try {
@@ -556,6 +562,21 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     this.#runtime?.server.close()
     this.#runtime = undefined
     await this.#connection
+  }
+
+  async #refuseHeldBackRepositoryFiles(cwd: string): Promise<void> {
+    for (const file of this.#identity.heldBackRepositoryFiles ?? []) {
+      try {
+        await lstat(join(cwd, file))
+      } catch {
+        continue
+      }
+      throw new Error(
+        `${this.#identity.providerName} would load ${file} from this worktree, and that file can start programs or change agent permissions. `
+        + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+        + `Remove ${file} from this worktree or use another provider here.`,
+      )
+    }
   }
 
   // The servers page a session newest-first by creation time, and a clock that
@@ -737,8 +758,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     prompt: string,
     runtime: Runtime,
   ): Promise<void> {
+    await this.#refuseHeldBackRepositoryFiles(session.cwd)
     const client = await this.#client()
     const model = openCodeModel(runtime.model)
+    const system = await projectInstructions(session.cwd, "opencode")
     ensureSuccess(await client.session.promptAsync({
       path: { id: session.threadId },
       query: { directory: session.cwd },
@@ -746,6 +769,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         messageID: messageId,
         agent: openCodeAgentFor(runtime),
         ...(model ? { model } : {}),
+        ...(system ? { system } : {}),
         parts: [{ type: "text", text: prompt }],
       },
       throwOnError: true,
@@ -1274,6 +1298,7 @@ const defaultOpenCodeFactory: OpenCodeFactory = async () => {
     passwordEnvironment: "OPENCODE_SERVER_PASSWORD",
     usernameEnvironment: "OPENCODE_SERVER_USERNAME",
     username: "opencode",
+    environment: { OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
     config: domovoiOpenCodeConfig,
     startServer: createOpencodeServer,
     createClient: createOpencodeClient,

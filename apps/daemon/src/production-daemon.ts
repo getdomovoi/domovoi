@@ -27,9 +27,16 @@ import { skillTrustPath } from "./skill-signing.js"
 import { profileDirectory, profileLocation } from "./profile-directory.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 import { wslHostFacts } from "./wsl-host.js"
+import { captureInheritedCredentials, refuseCredentialOverrides, withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
 
 export type ProductionDaemonOptions = {
   environment?: DaemonEnvironment
+  // Settings added on top of the environment for this daemon only. A caller
+  // that passes process.env with overrides, rather than a copy of it, keeps the
+  // inherited bearer across acquisitions: a copy is read as given. Overrides
+  // may not set DOMOVOI_AUTH_TOKEN, DOMOVOI_CREDENTIAL_PATH or
+  // DOMOVOI_RELAY_CREDENTIAL_FILE; the acquisition throws if they do.
+  environmentOverrides?: Readonly<Record<string, string>>
   homeDirectory?: string
   machineLabel?: string
   errorSink?: DaemonErrorSink
@@ -108,9 +115,13 @@ export async function createProductionDaemonWithDependencies(
   dependencies: ProductionDaemonDependencies,
   ownership?: { lease: ProfileLease; deadline: OperationDeadline },
 ): Promise<ProductionDaemonHandle> {
+  // First, before anything can throw: the inherited bearer leaves process.env.
+  captureInheritedCredentials(() => options.homeDirectory)
+  refuseCredentialOverrides(options.environmentOverrides)
   const deadline = ownership?.deadline ?? OperationDeadline.start(30_000)
-  const environment = options.environment ?? process.env
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
+  const settings = withInheritedCredentials(options.environment ?? process.env, homeDirectory, options.environmentOverrides)
+  const environment = withoutInheritedCredentials({ ...(options.environment ?? process.env), ...options.environmentOverrides })
   const machineLabel = options.machineLabel ?? hostname()
   let profile = profileLocation(homeDirectory)
   let lease = ownership?.lease
@@ -120,7 +131,7 @@ export async function createProductionDaemonWithDependencies(
   let relaySettled = false
   let relayResult: ProvisionedRelayChannel | undefined
   try {
-    const config = dependencies.parseEnvironment(environment, homeDirectory)
+    const config = dependencies.parseEnvironment(settings, homeDirectory)
     profile = profileLocation(homeDirectory, config.profileDirectory)
     if (options.owner === "desktop" && options.serviceRegistrationId !== undefined) throw new Error("Desktop cannot claim a service registration")
     // Validate transport before any secret or listener side effect. Store
