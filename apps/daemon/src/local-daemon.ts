@@ -20,6 +20,7 @@ import {
   type ProductionDaemonHandle, type ProductionDaemonOptions,
 } from "./production-daemon.js"
 import { serviceRegistrationBlocksProfile } from "./service/configuration.js"
+import { NewerWorkspaceStateError } from "./store.js"
 import { configuredProfileDirectory, profileLocation, type ProfileLocation } from "./profile-directory.js"
 
 export type LocalDaemonRefusalReason =
@@ -51,8 +52,8 @@ const refusalMessages = {
 class LocalDiscoveryError extends Error {
   constructor(readonly reason: LocalDaemonRefusalReason) { super(refusalMessages[reason]); this.name = "LocalDiscoveryError" }
 }
-function refused(reason: LocalDaemonRefusalReason): Extract<LocalDaemonHandle, { kind: "refused" }> {
-  return { kind: "refused", reason, message: refusalMessages[reason] }
+function refused(reason: LocalDaemonRefusalReason, message = refusalMessages[reason]): Extract<LocalDaemonHandle, { kind: "refused" }> {
+  return { kind: "refused", reason, message }
 }
 
 // A step that bounds itself reports its own expiry and carries the deadline as
@@ -72,12 +73,21 @@ function causes(error: unknown): unknown[] {
   return found
 }
 
+// State a newer daemon wrote says what wrote it and what to do; the desktop
+// shows that message, not the generic profile one, wherever in the chain the
+// store's refusal is.
+function startupRefusal(error: unknown): { reason: LocalDaemonRefusalReason, message?: string } {
+  if (error instanceof LocalDiscoveryError) return { reason: error.reason }
+  const chain = causes(error)
+  const newer = chain.find((cause) => cause instanceof NewerWorkspaceStateError)
+  if (newer) return { reason: "profile-invalid", message: newer.message }
+  return { reason: startupRefusalReason(error, chain) }
+}
+
 // Operational causes the owner can act on get their own reason; everything
 // else keeps the profile reason, and the cause itself goes to the error log.
-function startupRefusal(error: unknown): LocalDaemonRefusalReason {
-  if (error instanceof LocalDiscoveryError) return error.reason
+function startupRefusalReason(error: unknown, chain: unknown[]): LocalDaemonRefusalReason {
   if (expiredDeadline(error)) return "owner-unreachable"
-  const chain = causes(error)
   const code = (cause: unknown) => (cause as { code?: unknown } | null)?.code
   if (chain.some((cause) => code(cause) === "EADDRINUSE")) return "port-in-use"
   // SQLite's own result codes: SQLITE_BUSY (5) and SQLITE_LOCKED (6), as
@@ -232,7 +242,8 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
         // The refusal below still reaches the caller.
       }
     }
-    return refused(startupRefusal(error))
+    const refusal = startupRefusal(error)
+    return refused(refusal.reason, refusal.message)
   } finally {
     lease?.release()
     deadline.clear()

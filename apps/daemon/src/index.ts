@@ -5,6 +5,7 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
+import { NewerWorkspaceStateError } from "./store.js"
 import { renderQrToTerminal } from "./qr-terminal.js"
 import { runProfileCommand } from "./profile-command.js"
 import { configuredProfileDirectory, profileLocation } from "./profile-directory.js"
@@ -272,12 +273,22 @@ async function main() {
     return
   }
 
-  const daemon = await createProductionDaemon({
-    environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
-    homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
-    ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
-    machineLabel: hostname(),
-  })
+  let daemon: Awaited<ReturnType<typeof createProductionDaemon>>
+  try {
+    daemon = await createProductionDaemon({
+      environment: serviceConfig ? serviceEnvironment(serviceConfig) : process.env,
+      homeDirectory: serviceConfig?.homeDirectory ?? homedir(),
+      ...(serviceConfig?.registrationId ? { serviceRegistrationId: serviceConfig.registrationId } : {}),
+      machineLabel: hostname(),
+    })
+  } catch (error) {
+    // State a newer daemon wrote says what wrote it and what to do; that is
+    // the whole message, not a stack.
+    if (!(error instanceof NewerWorkspaceStateError)) throw error
+    process.stderr.write(`${error.message}\n`)
+    process.exitCode = 1
+    return
+  }
 
   const address = await daemon.start()
   process.stdout.write(`domovoid listening on ${address.url}\n`)

@@ -432,6 +432,21 @@ function openWorkspaceDatabase(path: string): DatabaseSync {
   return database
 }
 
+// State a newer daemon wrote is left exactly as it is. Reading it would mean
+// guessing at fields this daemon does not know, and moving it aside would
+// replace a person's sessions with the seed. The daemon does not start.
+export class NewerWorkspaceStateError extends Error {
+  constructor(
+    readonly path: string,
+    readonly storedProtocolVersion: string,
+    readonly daemonProtocolVersion: string,
+  ) {
+    const minor = storedProtocolVersion.split(".").slice(0, 2).join(".")
+    super(`Domovoi state at ${path} was written by a newer daemon (protocol ${storedProtocolVersion}), and this daemon speaks protocol ${daemonProtocolVersion}. It was left as it is and this daemon did not start. Run the newer Domovoi again, or update this one to protocol ${minor} or later.`)
+    this.name = "NewerWorkspaceStateError"
+  }
+}
+
 function quarantineStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-")
 }
@@ -467,12 +482,8 @@ function newerStoredProtocol(value: unknown): string | undefined {
     : undefined
 }
 
-function refuseNewerStoredState(path: string, stored: string): Error {
-  const [major, minor] = stored.split(".")
-  return new Error(
-    `Stored state at ${path} was written by Domovoi protocol ${stored}, which is newer than this build's protocol ${protocolVersion}. ` +
-    `This build left it unchanged. Run a Domovoi build that speaks protocol ${major}.${minor} or later to open it.`,
-  )
+function refuseNewerStoredState(path: string, stored: string): NewerWorkspaceStateError {
+  return new NewerWorkspaceStateError(path, stored, protocolVersion)
 }
 
 function quotedColumn(name: string): string {
