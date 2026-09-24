@@ -9363,10 +9363,11 @@ export class DomovoiDaemon {
       // The archived notice names the kept branch and what the source never
       // received; both are read while the worktree still exists. A failure
       // here does not stop the archive: the notice then says less.
-      if (this.#workspaceService.sessionBranchFacts) {
+      const sourcePath = this.#snapshot.project?.path
+      if (this.#workspaceService.sessionBranchFacts && sourcePath) {
         try {
           const facts = await this.#withAbortTimeout(
-            (signal) => this.#workspaceService.sessionBranchFacts!(workspacePath, signal),
+            (signal) => this.#workspaceService.sessionBranchFacts!(workspacePath, sourcePath, signal),
             this.#agentTimeoutMs,
             "Archive branch facts timed out",
           )

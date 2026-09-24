@@ -11386,7 +11386,7 @@ describe("DomovoiDaemon", () => {
       // The archived notice: the kept branch and what the source never received.
       expect.objectContaining({ id: session.id, state: "archived", archiveCheckpoint: "d".repeat(40), branch: "domovoi/session-billing", unmergedFiles: 7 }),
     ]) } })
-    expect(workspaceService.sessionBranchFacts).toHaveBeenCalledWith(sessionWorkspacePath, expect.any(AbortSignal))
+    expect(workspaceService.sessionBranchFacts).toHaveBeenCalledWith(sessionWorkspacePath, store.snapshot.project!.path, expect.any(AbortSignal))
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
     expect(agent.stopThread).toHaveBeenCalledWith("thread-billing")
     expect(agent.resolveApproval).toHaveBeenCalledWith(11, "deny")

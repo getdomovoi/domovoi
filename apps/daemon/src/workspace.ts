@@ -403,7 +403,7 @@ export interface WorkspaceService {
   // the source checkout never received: files differing between the merge
   // base with the source's HEAD and the worktree's HEAD. A branch the source
   // already merged says 0. Read before the worktree is removed at archive.
-  sessionBranchFacts?(worktreePath: string, signal?: AbortSignal): Promise<SessionBranchFacts>
+  sessionBranchFacts?(worktreePath: string, sourcePath: string, signal?: AbortSignal): Promise<SessionBranchFacts>
   checkpoint(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint>
   restore(worktreePath: string, commit: string, signal?: AbortSignal): Promise<RestoreResult>
   revertFile?(worktreePath: string, path: string, signal?: AbortSignal, expectedBaseCommit?: string): Promise<FileRevert>
@@ -654,6 +654,23 @@ async function gitDirectory(
     signal,
   })
   return result.stdout.trim()
+}
+
+// Git's output as it is, for NUL-delimited records whose first or last name
+// may begin or end with whitespace.
+async function rawGit(
+  repositoryPath: string,
+  arguments_: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted()
+  const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
+    env: gitEnvironment(),
+    encoding: "utf8",
+    maxBuffer: maximumGitOutputBytes,
+    signal,
+  }))
+  return result.stdout
 }
 
 async function boundedGit(
@@ -1951,16 +1968,21 @@ export class GitWorkspaceService implements WorkspaceService {
     }
   }
 
-  async sessionBranchFacts(worktreePath: string, signal?: AbortSignal): Promise<SessionBranchFacts> {
+  async sessionBranchFacts(worktreePath: string, sourcePath: string, signal?: AbortSignal): Promise<SessionBranchFacts> {
     const resolved = await this.#resolveManagedWorktree(worktreePath, signal)
     if (!resolved) throw new Error("Session worktree does not exist")
     const branch = await git(resolved.path, ["branch", "--show-current"], signal)
     if (!branch) throw new Error("Session worktree is not on a branch")
-    const sourceHead = await gitDirectory(resolved.commonDirectory, ["rev-parse", "HEAD"], signal)
+    // The checkout the session came from, which may itself be a linked
+    // worktree: its HEAD, not the main checkout's, is what received the work.
+    const sourceHead = await git(sourcePath, ["rev-parse", "HEAD"], signal)
     const mergeBase = await git(resolved.path, ["merge-base", sourceHead, "HEAD"], signal)
-    const names = await git(resolved.path, ["diff", "--name-only", "-z", mergeBase, "HEAD"], signal)
+    // Submodule updates count whatever the repository's diff settings say, and
+    // the NUL-delimited names are read untrimmed, so a name of spaces counts.
+    const names = await rawGit(resolved.path, ["diff", "--name-only", "-z", "--ignore-submodules=none", mergeBase, "HEAD"], signal)
     return { branch, unmergedFiles: names.split("\0").filter(Boolean).length }
   }
+
 
   async archiveSessionWorkspace(worktreePath: string, signal?: AbortSignal): Promise<void> {
     const resolved = await this.#resolveManagedWorktree(worktreePath, signal)
