@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
-import { lstat, readFile, realpath } from "node:fs/promises"
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { constants } from "node:fs"
+import { lstat, open, realpath } from "node:fs/promises"
+import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import {
   executionRecordSchema,
@@ -13,6 +14,7 @@ import {
   type UnresolvedExecutionReason,
 } from "@getdomovoi/protocol"
 
+import { followedTarget } from "./followed-path.js"
 import { redactDurableCommand } from "./secret-redaction.js"
 
 type ExecutionInput = {
@@ -91,44 +93,12 @@ async function canonicalCwd(
   }
 }
 
-// The real location of a path that may not exist yet: its nearest existing
-// ancestor resolved, with the rest of the path appended.
-async function canonicalTarget(path: string): Promise<string> {
-  const missing: string[] = []
-  let current = path
-  for (;;) {
-    try {
-      return join(await realpath(current), ...missing)
-    } catch {
-      const parent = dirname(current)
-      if (parent === current) return path
-      missing.unshift(basename(current))
-      current = parent
-    }
-  }
-}
-
+// Whether a path, read the way the filesystem reads it (links followed before
+// the ".." after them, a dangling link to where it points, a relative path
+// from cwd), ends inside the worktree.
 export async function pathStaysInside(root: string, cwd: string, path: string): Promise<boolean> {
-  let existing = resolve(cwd, path)
-  while (true) {
-    try {
-      return inside(root, await realpath(existing))
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== "ENOENT" && code !== "ENOTDIR") return false
-      // A broken link is an existing path whose target cannot be resolved. Do
-      // not climb past it: the link could later point outside the worktree.
-      try {
-        if ((await lstat(existing)).isSymbolicLink()) return false
-      } catch (metadataError) {
-        const metadataCode = (metadataError as NodeJS.ErrnoException).code
-        if (metadataCode !== "ENOENT" && metadataCode !== "ENOTDIR") return false
-      }
-      const parent = dirname(existing)
-      if (parent === existing) return false
-      existing = parent
-    }
-  }
+  const followed = await followedTarget(root, path, cwd)
+  return followed !== undefined && inside(followed.workspace, followed.target)
 }
 
 function parseCommand(command: string): ParsedPart[] | undefined {
@@ -273,12 +243,38 @@ function packageInvocation(
   }
 }
 
+// package.json is read only when it is a regular file, and within a size and
+// time bound: a FIFO, a device or a file that never finishes reading leaves
+// the run unresolved, which still raises a card, instead of holding it.
+const maximumManifestBytes = 1024 * 1024
+const manifestReadTimeoutMs = 2_000
+
+async function readRegularFile(path: string): Promise<string | undefined> {
+  if (!(await lstat(path)).isFile()) return undefined
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
+  try {
+    const stats = await handle.stat()
+    if (!stats.isFile() || stats.size > maximumManifestBytes) return undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<undefined>((done) => { timer = setTimeout(() => done(undefined), manifestReadTimeoutMs) })
+    try {
+      return await Promise.race([handle.readFile({ encoding: "utf8" }), timedOut])
+    } finally {
+      clearTimeout(timer)
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
 async function readManifest(root: string, cwd: string): Promise<Manifest | undefined> {
   const lexicalPath = join(cwd, "package.json")
   try {
     const canonicalPath = await realpath(lexicalPath)
     if (!inside(root, canonicalPath)) return undefined
-    const parsed: unknown = JSON.parse(await readFile(canonicalPath, "utf8"))
+    const text = await readRegularFile(canonicalPath)
+    if (text === undefined || text.length > maximumManifestBytes) return undefined
+    const parsed: unknown = JSON.parse(text)
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined
     const value = (parsed as { scripts?: unknown }).scripts
     if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
@@ -441,15 +437,13 @@ async function resolveExecutionOrThrow(input: ExecutionInput): Promise<Execution
   const directory = await canonicalCwd(input.workspaceRoot, input.cwd)
   if (!directory) return unresolved("cwd-outside-project")
   if (fileTools.has(command)) {
-    if (
-      input.blockedPath !== undefined
-      || input.filePath === undefined
-      || !await pathStaysInside(directory.root, directory.absolute, input.filePath)
-    ) return unresolved(input.filePath === undefined || input.blockedPath !== undefined
-      ? "unsupported-syntax"
-      : "cwd-outside-project")
-    const target = await canonicalTarget(resolve(directory.absolute, input.filePath))
-    const path = relative(directory.root, target).split(sep).join("/")
+    if (input.blockedPath !== undefined || input.filePath === undefined) return unresolved("unsupported-syntax")
+    // The record names the file the edit really reaches, found the way the
+    // filesystem finds it, so a rule for an inside file never matches a path
+    // that a link carries outside.
+    const followed = await followedTarget(directory.root, input.filePath, directory.absolute)
+    if (!followed || !inside(followed.workspace, followed.target)) return unresolved("cwd-outside-project")
+    const path = relative(followed.workspace, followed.target).split(sep).join("/")
     // The worktree root itself names no file, so no file-scoped rule fits it.
     if (path === "" || path === ".") return unresolved("unsupported-syntax")
     return fingerprint({

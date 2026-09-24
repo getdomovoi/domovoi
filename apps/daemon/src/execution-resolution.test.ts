@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -255,6 +256,49 @@ describe("resolveExecution", () => {
         .resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
     }
   })
+
+  // The target is read the way the filesystem reads it: each link is followed
+  // before the ".." after it applies, a dangling link leads where it points,
+  // and a relative path starts at the request's cwd.
+  it.runIf(process.platform !== "win32").each([
+    ["a link then .. leaving the worktree", "link/../src/index.ts", ".", undefined],
+    ["the same from a cwd subdirectory", "../link/../src/index.ts", "sub", undefined],
+    ["a link in a cwd subdirectory then ..", "sublink/../src/index.ts", "sub", undefined],
+    ["a dangling link pointing outside", "dangling-out", ".", undefined],
+    ["a dangling link pointing inside", "dangling-in", ".", "src/soon.ts"],
+    ["a relative path from a cwd subdirectory", "../src/index.ts", "sub", "src/index.ts"],
+    ["a link inside the worktree then ..", "inner/../src/index.ts", ".", "deep/src/index.ts"],
+  ] as const)("resolves the edit target through %s", async (_label, filePath, cwd, expected) => {
+    const root = await project()
+    const outside = await project()
+    await mkdir(join(root, "src"))
+    await mkdir(join(root, "sub"))
+    await mkdir(join(root, "deep", "inner"), { recursive: true })
+    await mkdir(join(outside, "nested"))
+    await symlink(join(outside, "nested"), join(root, "link"))
+    await symlink(join(outside, "nested"), join(root, "sub", "sublink"))
+    await symlink(join(outside, "missing.ts"), join(root, "dangling-out"))
+    await symlink(join(root, "src", "soon.ts"), join(root, "dangling-in"))
+    await symlink(join(root, "deep", "inner"), join(root, "inner"))
+    await mkdir(join(root, "deep", "src"))
+    const execution = await resolveExecution({
+      workspaceRoot: root,
+      cwd: join(root, cwd),
+      command: "Edit",
+      filePath,
+    })
+    if (expected === undefined) expect(execution).toEqual({ state: "unresolved", reason: "cwd-outside-project" })
+    else expect(execution).toMatchObject({ state: "resolved", record: { path: expected } })
+  })
+
+  it.runIf(process.platform !== "win32")("never hangs on a package.json that is not a regular file, and leaves the run unresolved", async () => {
+    const root = await project()
+    execFileSync("mkfifo", [join(root, "package.json")])
+    const started = Date.now()
+    const execution = await resolveExecution({ workspaceRoot: root, cwd: root, command: "pnpm test" })
+    expect(Date.now() - started).toBeLessThan(3_000)
+    expect(execution.state).toBe("unresolved")
+  }, 10_000)
 
   it("rejects blocked, missing, and outside-worktree file targets", async () => {
     const root = await project()
