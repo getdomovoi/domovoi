@@ -61,4 +61,21 @@ describe("RpcWriter", () => {
     expect(() => writer.notify(socket, forged, () => undefined)).toThrow(/notificationMessage/)
     expect(socket.sent).toEqual([])
   })
+
+  // The schema lookup coerces a method with toString while JSON.stringify
+  // calls toJSON, so an object method could be checked as one name and sent
+  // as another.
+  it("refuses a method that is not a primitive string", () => {
+    const socket = new FakeSocket()
+    const writer = new RpcWriter()
+    const method = { toString: () => "terminal.output", toJSON: () => "unrecorded.notice" }
+
+    expect(() => {
+      const frame = notificationMessage(method as unknown as "terminal.output", { terminalId: "t", data: "x" })
+      writer.notify(socket, frame, () => undefined)
+    }).toThrow(/method/)
+    expect(() => notificationMessage(new String("terminal.output") as unknown as "terminal.output", { terminalId: "t", data: "x" }))
+      .toThrow(/method/)
+    expect(socket.sent).toEqual([])
+  })
 })
