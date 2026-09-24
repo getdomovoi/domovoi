@@ -116,12 +116,7 @@ export function fleetProductionHarness() {
     let nextId = 0
     async function call<M extends RpcMethod>(method: M, params: RpcParams<M>) {
       const id = ++nextId
-      const measureStarted = Number(process.hrtime.bigint() / 1_000_000n)
-      return new Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }>((resolveCall, reject) => {
-        const resolve = (value: { result?: unknown; error?: { code: number; message: string; data?: unknown } }) => {
-          console.info(`RPCTIME ${JSON.stringify({ method, ms: Number(process.hrtime.bigint() / 1_000_000n) - measureStarted })}`)
-          resolveCall(value)
-        }
+      return new Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }>((resolve, reject) => {
         const cleanup = () => { clearTimeout(timer); socket.off("message", receive); socket.off("close", closed) }
         const closed = () => { cleanup(); reject(new Error(`Socket closed during ${method}`)) }
         // The daemon keeps working on an abandoned call, so name the budget
