@@ -72,6 +72,36 @@ ANJ+5NnKvR9pysWc4WcT72EO/pxvdG/9w15K3uyfLZs3
 -----END CERTIFICATE-----
 `
 
+// Generated with openssl for review of 9ce73cda. The first names
+// "example.com/path", a DNS entry that is no host name; the second names a
+// valid 139-character host, longer than a label on the wire may be.
+const pathName = `-----BEGIN CERTIFICATE-----
+MIIBbzCCARWgAwIBAgIURgz7KuQcB5qVHI1vkNJnnlwBwRgwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjAzNTNaFw0zNjA5MjEwNjAzNTNa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQANlim
+mapmVdlMR2VGNwISSDsuehRSy//BQ2ZriBJvcvFGs/mOyrqYiFXhcXWqJaVXl9Vk
+xZCRCVh5/1EdfxVWo08wTTAbBgNVHREEFDASghBleGFtcGxlLmNvbS9wYXRoMA8G
+A1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFCCLk4PqZEd/K5BH7V+OS+cJSiVWMAoG
+CCqGSM49BAMCA0gAMEUCIBw6GmF+DXM2q6HuoI2yikwhtHX3jHZKahdVRI3+1vKf
+AiEArY0HXhpIEIoQYN6fX2C+tRKM9m5/HtuTO+vlTURrW2o=
+-----END CERTIFICATE-----
+`
+const longName = `-----BEGIN CERTIFICATE-----
+MIIB8TCCAZagAwIBAgIUYStdrWjoJw5Urbi/lcKPMLbsKEYwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjAzNTNaFw0zNjA5MjEwNjAzNTNa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT/WTrm
+c3smp1D6Aa5z/nwZAlqHCRavK0wZhKGks0rzZMUTcLsyW+yfXIVxYHX9qpTqPIkG
+SMYK2oAYxGZt2RRko4HPMIHMMIGZBgNVHREEgZEwgY6CgYthYWFhYWFhYWFhYWFh
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh
+YWEuYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJi
+YmJiYmJiYmJiYmJiYmJiYmJiLmNjY2NjY2MubmV0MA8GA1UdEwEB/wQFMAMBAf8w
+HQYDVR0OBBYEFBM1lWBp4iAMPZSaHh9C8/U4ejhZMAoGCCqGSM49BAMCA0kAMEYC
+IQDy+9eYtDf5gswEGBeoMP3hB2Acx/L3wrs3tYSQcoFCHwIhAPM7LpWFRTWVGFI2
++7T+oXkxdOHWF42i5+Ym6w5KbU5q
+-----END CERTIFICATE-----
+`
+const longHost = `${"a".repeat(63)}.${"b".repeat(63)}.ccccccc.net`
+
 describe("the address a pairing code tells a device to dial", () => {
   it("is the loopback listener itself when there is no certificate", () => {
     const address = pairingAddressFor({ host: "127.0.0.1", port: 47831 }, () => { throw new Error("no certificate") })
@@ -141,5 +171,37 @@ describe("the address a pairing code tells a device to dial", () => {
       label: "djs-test.raptor-pompano.ts.net",
       loopback: true,
     })
+  })
+
+  // Review of 9ce73cda (P2): a DNS entry that is no host name gave a URL whose
+  // host the certificate does not name, so TLS would fail on the device.
+  it("does not carry a certificate entry that is no host name", () => {
+    expect(certificateHostNames(pathName)).toEqual([])
+    const result = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => pathName)
+    expect(result).toEqual({ problem: expect.stringContaining("names no host") })
+  })
+
+  // Review of 9ce73cda (P2): a valid host longer than a label may be keeps its
+  // URL, and goes without the label, so the code can still be issued.
+  it("keeps a long host's URL and leaves out a label the wire cannot carry", () => {
+    expect(longHost).toHaveLength(139)
+    const result = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => longName)
+    expect(result).toEqual({ url: `wss://${longHost}:47831/rpc`, loopback: false })
+    expect(pairingAddressSchema.safeParse(result).success).toBe(true)
+  })
+
+  // Review of 9ce73cda (P2): all of 127.0.0.0/8 and IPv4-mapped loopback
+  // answer only this machine.
+  it.each(["127.0.0.2", "127.255.255.254", "::ffff:127.0.0.1", "localhost"])("says a TLS listener on %s answers only this machine", (host) => {
+    expect(pairingAddressFor({ host, port: 47831, tls: { certPath: "/c" } }, () => oneName)).toMatchObject({ loopback: true })
+  })
+
+  // Without a certificate the wire takes ws:// only on 127.0.0.1, ::1 and
+  // localhost, so another loopback address gets the no-certificate problem
+  // rather than a URL the device would refuse.
+  it.each(["127.0.0.2", "::ffff:127.0.0.1"])("gives a plain listener on %s a problem the wire accepts", (host) => {
+    const result = pairingAddressFor({ host, port: 47831 }, () => { throw new Error("no certificate") })
+    expect(result).toEqual({ problem: expect.stringContaining("serves no certificate") })
+    expect(pairingAddressSchema.safeParse(result).success).toBe(true)
   })
 })
