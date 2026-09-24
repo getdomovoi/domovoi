@@ -1810,6 +1810,12 @@ export class DomovoiDaemon {
     return this.#authToken
   }
 
+  // The waiting cards whose requested file path is held in memory, for
+  // checking that no path outlives its card.
+  get fileApprovalTargetIds(): readonly string[] {
+    return [...this.#fileApprovalTargets.keys()]
+  }
+
   async start(signal?: AbortSignal): Promise<{ host: string; port: number }> {
     signal?.throwIfAborted()
     if (this.#stopping || this.#stopped) throw new Error("Daemon cannot restart after shutdown")
@@ -2209,7 +2215,20 @@ export class DomovoiDaemon {
     })
   }
 
+  // A card leaves by many routes (a decision, archive, a provider disconnect,
+  // session close, emergency stop, expiry), so rather than each route
+  // forgetting its paths, they are trimmed to the waiting cards whenever cards
+  // are removed and whenever state is saved or broadcast.
+  #forgetDepartedFileApprovalTargets(): void {
+    if (this.#fileApprovalTargets.size === 0) return
+    const waiting = new Set(this.#snapshot.approvals.map((approval) => approval.id))
+    for (const approvalId of this.#fileApprovalTargets.keys()) {
+      if (!waiting.has(approvalId)) this.#fileApprovalTargets.delete(approvalId)
+    }
+  }
+
   #broadcastSnapshot(): void {
+    this.#forgetDepartedFileApprovalTargets()
     this.#flushPendingWorkspaceDeltas()
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
@@ -6803,7 +6822,9 @@ export class DomovoiDaemon {
               socket,
               request.id,
               invalidParams,
-              "The resolved command changed; review the updated approval before allowing it",
+              approvedRecord.kind === "workspace-file-tool"
+                ? "The file target changed; review the updated approval before allowing it"
+                : "The resolved command changed; review the updated approval before allowing it",
             )
             return
           }
@@ -9115,6 +9136,7 @@ export class DomovoiDaemon {
     const { removed, blockedIds } = next
     this.#snapshot.approvals = next.approvals
     this.#snapshot.workingPlans = next.workingPlans
+    this.#forgetDepartedFileApprovalTargets()
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
       this.#appendAudit({
@@ -10150,6 +10172,7 @@ export class DomovoiDaemon {
   // start is carried by that write. Sharing it keeps the backlog to one
   // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
+    this.#forgetDepartedFileApprovalTargets()
     this.#syncArtifactWatchActivity()
     const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
       this.#pendingSnapshotPersist = undefined

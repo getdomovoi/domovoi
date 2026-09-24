@@ -36,4 +36,10 @@ Edit rule's digest, a Claude file tool is always named by its tool, and a Bash r
 sends a file path. Approving a file-tool card reads its target again first, the way a changed
 package script already was: if the file the edit reaches changed while the card waited, for
 example because a directory on its path became a link out of the worktree, the edit is not
-released and the card is updated for review. A card updated this way keeps its hard gate.
+released and the card is updated for review. A card updated this way keeps its hard gate. The
+refusal for a file-tool card reads "The file target changed; review the updated approval before
+allowing it"; a shell or script card keeps "The resolved command changed". The check runs when the
+card is answered, not when the provider writes, so a target swapped in between still reaches the
+provider. The path each waiting file-tool card was raised for is held in memory and dropped once
+the card leaves, whether it was answered, archived, cleared by a provider disconnect, session close
+or emergency stop, or expired.
