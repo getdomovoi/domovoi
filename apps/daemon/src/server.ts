@@ -246,6 +246,7 @@ import {
 } from "./rpc-outbound.js"
 import { RpcWriter } from "./rpc-writer.js"
 import { notificationMessage, type NotificationFrame } from "./notification-message.js"
+import { errorResponseMessage, responseMessage, type ResponseFrame, type RpcErrorObject } from "./response-message.js"
 import type { NotificationMethod, NotificationParams } from "@getdomovoi/protocol"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
@@ -2063,13 +2064,39 @@ export class DomovoiDaemon {
     )
   }
 
-  #send(socket: RpcOutboundSocket, payload: unknown): void {
-    this.#completeAudit(socket, payload)
-    this.#sendWithoutAudit(socket, payload)
+  #send(socket: RpcOutboundSocket, frame: ResponseFrame): void {
+    this.#completeAudit(socket, frame.response)
+    this.#sendWithoutAudit(socket, frame)
   }
 
-  #sendWithoutAudit(socket: RpcOutboundSocket, payload: unknown): void {
-    this.#rpcOutbound.respond(socket, payload)
+  #sendWithoutAudit(socket: RpcOutboundSocket, frame: ResponseFrame): void {
+    this.#rpcOutbound.respond(socket, frame)
+  }
+
+  // A result its method's schema refuses is not sent. The client gets an
+  // internal error for its request instead of waiting for an answer.
+  #sendResult(
+    socket: RpcOutboundSocket,
+    method: RpcMethod,
+    response: { jsonrpc: "2.0", id: string | number, result: unknown },
+  ): void {
+    let frame: ResponseFrame
+    try {
+      frame = responseMessage(method, response.id, response.result)
+    } catch (error) {
+      this.#reportError(`Domovoi did not send the ${method} result: it does not match the protocol schema`, error)
+      frame = errorResponseMessage(response.id, { code: internalError, message: internalRpcErrorMessage })
+    }
+    this.#send(socket, frame)
+  }
+
+  #errorFrame(id: string | number | null, error: RpcErrorObject): ResponseFrame {
+    try {
+      return errorResponseMessage(id, error)
+    } catch (failure) {
+      this.#reportError("Domovoi did not send an error: it does not match the protocol schema", failure)
+      return errorResponseMessage(id, { code: internalError, message: internalRpcErrorMessage })
+    }
   }
 
   #appendAudit(input: AuditAppendInput): void {
@@ -2334,11 +2361,7 @@ export class DomovoiDaemon {
     message: string,
     data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal,
   ): void {
-    this.#send(socket, {
-      jsonrpc: "2.0",
-      id,
-      error: { code, message, ...(data ? { data } : {}) },
-    })
+    this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
   }
 
   #refusedTransferPreview(
@@ -4259,7 +4282,7 @@ export class DomovoiDaemon {
     if (method === "relay.recovery") {
       try {
         const source = this.#socketSources.get(socket) ?? (socket instanceof DaemonRelaySocket ? "admitted-relay" : undefined)
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.relayRecovery(request.params ?? {}, source) })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: this.relayRecovery(request.params ?? {}, source) })
       } catch {
         this.#error(socket, request.id, invalidParams, "Relay recovery is unavailable")
       }
@@ -4434,7 +4457,7 @@ export class DomovoiDaemon {
           outcome: "succeeded",
           target: paired.device.id,
         })
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(paired),
@@ -4486,7 +4509,7 @@ export class DomovoiDaemon {
           outcome: "succeeded",
           target: paired.claim.deviceId,
         })
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({ ...paired, machine: this.#machineDescriptor(),
@@ -4533,7 +4556,7 @@ export class DomovoiDaemon {
         }
         this.#appendAudit({ actor: { kind: "machine", machineId: params.machineId },
           action: "device.confirmClaim", outcome: "succeeded", target: device.id })
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ device }) })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ device }) })
         this.#disconnectInactiveDevices()
       } catch (error) {
         // Storage failure is not proof the capability is invalid. The source
@@ -4563,11 +4586,7 @@ export class DomovoiDaemon {
         action: "security.duplicate-request-id",
         outcome: "denied",
       })
-      this.#sendWithoutAudit(socket, {
-        jsonrpc: "2.0",
-        id: request.id,
-        error: { code: invalidRequest, message: "Request id is already in flight" },
-      })
+      this.#sendWithoutAudit(socket, this.#errorFrame(request.id, { code: invalidRequest, message: "Request id is already in flight" }))
       return
     }
 
@@ -4617,7 +4636,7 @@ export class DomovoiDaemon {
       let changed = false
       let alreadyPersisted = false
       if (method === "permission.hardGates") {
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(permissionHardGates()) })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(permissionHardGates()) })
         return
       }
       if (method === "approvalRule.revoke") {
@@ -4658,7 +4677,7 @@ export class DomovoiDaemon {
         const result = method === "update.status" ? this.#updates.status()
           : method === "update.check" ? await this.#updates.check(paramsResult.data as RpcParams<"update.check">)
             : this.#updates.activate(paramsResult.data as RpcParams<"update.activate">)
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
         return
       }
       if (method === "device.current") {
@@ -4672,13 +4691,13 @@ export class DomovoiDaemon {
               clientAccess: verified.binding.clientAccess,
             }
           : { kind: "daemon", machineId: this.#snapshot.machine.id }
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
         return
       }
       if (method === "fleet.clientRoute") {
         const result = await this.#clientRoute(paramsResult.data as RpcParams<"fleet.clientRoute">, signal)
         if (result.outcome === "refused") this.#amendPendingAudit(socket, request.id, { outcome: "denied", detail: `reason=${result.reason}` })
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result })
         return
       }
       if (method === "fleet.heartbeat" || method === "device.revokeCurrent") {
@@ -4688,13 +4707,13 @@ export class DomovoiDaemon {
           return
         }
         if (method === "fleet.heartbeat") {
-          this.#send(socket, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
+          this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
         } else {
           this.#store.devices!.revoke(credential.device.id)
           this.#amendPendingAudit(socket, request.id, { target: credential.device.id })
           // The response precedes the close frame so the source can distinguish
           // confirmed revocation from an ambiguous disconnected socket.
-          this.#send(socket, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
+          this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
           this.#disconnectInactiveDevices()
         }
         return
@@ -4704,7 +4723,7 @@ export class DomovoiDaemon {
         const actor = this.#authenticatedActors.get(socket)
         const client = actor?.kind === "client" ? actor.client : params.client
         const result = await this.#enqueueEmergencyStop(client)
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(result),
@@ -4722,7 +4741,7 @@ export class DomovoiDaemon {
           this.#auditReadTimeoutMs,
           "Audit query timed out",
         )
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(result),
@@ -4758,7 +4777,7 @@ export class DomovoiDaemon {
           // Provider quota reporting is optional. Ledger usage remains useful
           // when the provider does not support it or cannot answer this read.
         }
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(
@@ -4769,7 +4788,7 @@ export class DomovoiDaemon {
       }
       if (method === "usage.window") {
         const params = paramsResult.data as RpcParams<"usage.window">
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(
@@ -4789,7 +4808,7 @@ export class DomovoiDaemon {
           this.#auditReadTimeoutMs,
           "Audit export timed out",
         )
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(result),
@@ -4833,7 +4852,7 @@ export class DomovoiDaemon {
             }))
           }
           existing.audience.add(socket)
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({
@@ -4944,7 +4963,7 @@ export class DomovoiDaemon {
         })
         activeTerminal.disposeData = () => dataDisposable.dispose()
         activeTerminal.disposeExit = () => exitDisposable.dispose()
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
@@ -4980,7 +4999,7 @@ export class DomovoiDaemon {
           owner: terminal.owner,
         })
         this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: ownership })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: ownership })
         return
       }
 
@@ -4996,7 +5015,7 @@ export class DomovoiDaemon {
           return
         }
         terminal.process.write(params.data)
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({ accepted: true }),
@@ -5018,7 +5037,7 @@ export class DomovoiDaemon {
         terminal.process.resize(params.cols, params.rows)
         terminal.cols = params.cols
         terminal.rows = params.rows
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({ accepted: true }),
@@ -5038,7 +5057,7 @@ export class DomovoiDaemon {
           return
         }
         this.#closeTerminal(params.terminalId)
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({ accepted: true }),
@@ -5059,7 +5078,7 @@ export class DomovoiDaemon {
           return
         }
         const expiresAt = Math.floor(Date.now() / 1_000) + this.#artifactAccessTtlSeconds
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
@@ -5089,7 +5108,7 @@ export class DomovoiDaemon {
 
       if (method === "runtime.discover") {
         const params = paramsResult.data as RpcParams<"runtime.discover">
-        this.#send(socket, { jsonrpc: "2.0", id: request.id,
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id,
           result: rpcMethods[method].result.parse(await this.#discoverRuntime(params.provider)),
         })
         return
@@ -5107,7 +5126,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, error.message)
           return
         }
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(models),
@@ -5127,7 +5146,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "Provider diagnostics could not be refreshed")
           return
         }
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(workspaceSnapshotForClient(this.#snapshot)),
@@ -5136,7 +5155,7 @@ export class DomovoiDaemon {
       }
 
       if (method === "provider.secret.list") {
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(this.#providerSecrets.status()),
@@ -5146,7 +5165,7 @@ export class DomovoiDaemon {
 
       if (method === "skill.list") {
         const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(await catalog.list()),
@@ -5187,7 +5206,7 @@ export class DomovoiDaemon {
               : Promise.resolve(false),
             this.#targetTransferCapabilities(),
           )
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(result),
@@ -5202,7 +5221,7 @@ export class DomovoiDaemon {
             return
           }
           if (params.manifest.targetMachineId !== this.#snapshot.machine.id) {
-            this.#send(socket, {
+            this.#sendResult(socket, method, {
               jsonrpc: "2.0",
               id: request.id,
               result: rpcMethods[method].result.parse({
@@ -5223,7 +5242,7 @@ export class DomovoiDaemon {
               params.manifest.transferId,
               params.manifestDigest,
             )
-            this.#send(socket, {
+            this.#sendResult(socket, method, {
               jsonrpc: "2.0",
               id: request.id,
               result: rpcMethods[method].result.parse({
@@ -5265,7 +5284,7 @@ export class DomovoiDaemon {
                   ? { existingGeneration: ready.existingGeneration }
                   : {}),
               }
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(result),
@@ -5279,7 +5298,7 @@ export class DomovoiDaemon {
           try {
             sourceMachineId = await this.#transferTransactions.sourceMachineId(params.transferId)
           } catch {
-            this.#send(socket, {
+            this.#sendResult(socket, method, {
               jsonrpc: "2.0",
               id: request.id,
               result: rpcMethods[method].result.parse({
@@ -5294,7 +5313,7 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, daemonAuthenticationErrorCode, "Transfer source identity changed")
             return
           }
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(
@@ -5318,7 +5337,7 @@ export class DomovoiDaemon {
             params.transferId,
             params.manifestDigest,
           )
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({
@@ -5358,7 +5377,7 @@ export class DomovoiDaemon {
                   ownershipGeneration: origin.generation,
                 })
               : result
-            this.#send(socket, { jsonrpc: "2.0", id: request.id, result: durable })
+            this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: durable })
             return
           }
         }
@@ -5371,7 +5390,7 @@ export class DomovoiDaemon {
           return
         }
         if (method === "transfer.status") {
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(await this.#transferTransactions.status(
@@ -5382,7 +5401,7 @@ export class DomovoiDaemon {
           return
         }
         if (method === "transfer.abort") {
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(await this.#transferTransactions.abort(
@@ -5500,7 +5519,7 @@ export class DomovoiDaemon {
             params.manifestDigest,
           )
         }
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(committed.result),
@@ -5530,7 +5549,7 @@ export class DomovoiDaemon {
           return
         }
         const prepared = await this.#prepareTransferPreview(params, signal)
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: prepared.preview,
@@ -5593,7 +5612,7 @@ export class DomovoiDaemon {
             this.#reportError("Domovoi could not remove a released conflict package", error)
           }
         })
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: workspaceSnapshotForClient(this.#snapshot),
@@ -5695,7 +5714,7 @@ export class DomovoiDaemon {
             remote,
             new Date().toISOString(),
           )
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: workspaceSnapshotForClient(this.#snapshot),
@@ -5709,7 +5728,7 @@ export class DomovoiDaemon {
             "session-resource-unavailable",
             new Date().toISOString(),
           )
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: workspaceSnapshotForClient(this.#snapshot),
@@ -5761,7 +5780,7 @@ export class DomovoiDaemon {
           startedAt: lifecycle.startedAt,
           completedAt: recoveredAt,
         })
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: workspaceSnapshotForClient(this.#snapshot),
@@ -5825,7 +5844,7 @@ export class DomovoiDaemon {
           const reason = prepared.preview.allowed
             ? "session-state-invalid"
             : prepared.preview.reason
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({ outcome: "refused", reason }),
@@ -5833,7 +5852,7 @@ export class DomovoiDaemon {
           return
         }
         if (prepared.preview.intentDigest !== params.intentDigest) {
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({
@@ -5860,7 +5879,7 @@ export class DomovoiDaemon {
             transferSignal,
           )
           if (outcome.outcome === "incomplete") this.#scheduleSessionTransferRecovery()
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(outcome),
@@ -5889,7 +5908,7 @@ export class DomovoiDaemon {
           return
         }
         const params = paramsResult.data as RpcParams<"device.issueCode">
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
@@ -5961,7 +5980,7 @@ export class DomovoiDaemon {
           if (method === "device.revoke" || method === "device.rotate") {
             this.#disconnectInactiveDevices()
           }
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({ ...result,
@@ -5983,7 +6002,7 @@ export class DomovoiDaemon {
         this.#scheduleSessionTransferRecovery()
         this.#scheduleRecoveredOwnershipChecks()
         try {
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0", id: request.id,
             result: rpcMethods[method].result.parse(fleetClientSnapshot(
               await this.#fleetEnrollment.list(),
@@ -6012,14 +6031,14 @@ export class DomovoiDaemon {
             : "remoteRevocation" in result ? `remoteRevocation=${result.remoteRevocation}` : "authenticated-enrollment",
         })
         const clientResult = result.outcome === "refused" ? result : { ...result, fleet: fleetClientSnapshot(result.fleet) }
-        this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(clientResult) })
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(clientResult) })
         return
       }
 
       if (method === "skill.inventory") {
         const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         const machine = this.#snapshot.machine
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
@@ -6040,7 +6059,7 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"skill.read">
         const catalog = this.#skillCatalogFor(this.#snapshot.project?.path)
         try {
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(await catalog.read(params.id)),
@@ -6061,7 +6080,7 @@ export class DomovoiDaemon {
           && review.contentDigest === params.contentDigest,
         ) || this.#skillReviews?.find(params.id, params.contentDigest) !== undefined
         const revision = reviewed ? this.#skillReviews?.revisions?.read(params.id, params.contentDigest) : undefined
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(revision ?? {
@@ -6172,7 +6191,7 @@ export class DomovoiDaemon {
           reviews.revoke(current.id)
         }
         if (catalog instanceof FileSkillCatalog) catalog.invalidate()
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse((await catalog.read(params.id)).skill),
@@ -6188,7 +6207,7 @@ export class DomovoiDaemon {
           return
         }
         try {
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse(await catalog.installPreview(params.source)),
@@ -6233,7 +6252,7 @@ export class DomovoiDaemon {
           target: installed.id,
           detail: `${skillInstallAuditDetail(params)} digest=${installed.contentDigest} path=${installed.path}`,
         })
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(installed),
@@ -6253,7 +6272,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "History cursor does not exist")
           return
         }
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(page),
@@ -6279,7 +6298,7 @@ export class DomovoiDaemon {
           }
           matches.push({ session, matchedIn })
         }
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
@@ -6321,7 +6340,7 @@ export class DomovoiDaemon {
         }
         const items = this.#snapshot.thread.filter((item) => item.sessionId === session.id)
         const { revertTargets: _revertTargets, ...publicWorkspace } = workspace
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
@@ -6590,7 +6609,7 @@ export class DomovoiDaemon {
         await this.#persistSnapshot()
         this.#flushPendingWorkspaceDeltas()
         const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
@@ -6678,7 +6697,7 @@ export class DomovoiDaemon {
         await this.#persistSnapshot()
         this.#flushPendingWorkspaceDeltas()
         const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
@@ -7498,7 +7517,7 @@ export class DomovoiDaemon {
             )
             return
           }
-          this.#send(socket, {
+          this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: workspaceSnapshotForClient(this.#snapshot),
@@ -7705,7 +7724,7 @@ export class DomovoiDaemon {
         this.#activeAssistantItems.clear()
         this.#clearCommittedSessionCreations()
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
-        this.#send(socket, {
+        this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: workspaceSnapshotForClient(this.#snapshot),
@@ -8279,7 +8298,7 @@ export class DomovoiDaemon {
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
           }
         : clientSnapshot
-      this.#send(socket, {
+      this.#sendResult(socket, method, {
         jsonrpc: "2.0",
         id: request.id,
         result: rpcMethods[method].result.parse(result),

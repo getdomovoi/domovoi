@@ -26,12 +26,19 @@ cannot express.
 
 Notifications are recorded from `notificationMethods` in the protocol package, the
 map from each notification to the schema of its params. The daemon writes to an
-RPC client only through its RPC writer. The writer sends a response only if it
-has an id and no method, and a notification only as a frame built from that map:
-its payload must parse, and a field the schema does not describe, at any depth, is
-refused rather than sent. Both checks read back the serialized text that is sent,
-so a `toJSON` method cannot change the payload after it is checked. A refused notification is reported and not sent; a
-refused resync closes the slow client, which reconnects.
+RPC client only through its RPC writer. The writer sends a notification only as a
+frame built from that map: its payload must parse, and a field the schema does not
+describe, at any depth, is refused rather than sent. It sends a response only as a
+frame built the same way: the envelope must be a JSON-RPC 2.0 response with a
+string, number or null id and exactly one of result or error, a result must parse
+against its method's result schema in `rpcMethods`, error data must be one of the
+declared error data kinds, and an undeclared field at any depth is refused. The
+protocol declares no error data per method or per error code, so error data is
+checked against the declared kinds, not against the code it came with. Every
+check reads back the serialized text that is sent, so a `toJSON` method cannot
+change the payload after it is checked. A refused notification is reported and
+not sent; a refused resync closes the slow client, which reconnects. A refused
+result is reported and the request gets an internal error instead.
 
 `node scripts/protocol-wire.mjs check` compares the built package with the record of
 the highest release at or below its `protocolVersion`. In CI it runs with

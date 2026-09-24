@@ -1,5 +1,7 @@
 import { notificationMethods, type NotificationMethod, type NotificationParams } from "@getdomovoi/protocol"
 
+import { isRecord, undeclaredFields } from "./undeclared-fields.js"
+
 export type NotificationFrame = { readonly method: NotificationMethod, readonly text: string }
 
 const issuedFrames = new WeakSet<NotificationFrame>()
@@ -37,20 +39,4 @@ export function notificationMessage<M extends NotificationMethod>(method: M, par
   const frame = Object.freeze({ method, text })
   issuedFrames.add(frame)
   return frame
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function undeclaredFields(sent: unknown, parsed: unknown, path: string): string[] {
-  if (Array.isArray(sent) && Array.isArray(parsed)) {
-    return sent.flatMap((item, index) => undeclaredFields(item, parsed[index], `${path}[${index}]`))
-  }
-  if (!isRecord(sent) || !isRecord(parsed)) return []
-  return Object.entries(sent).flatMap(([key, value]) => {
-    const at = path === "" ? key : `${path}.${key}`
-    if (value === undefined) return []
-    return Object.hasOwn(parsed, key) ? undeclaredFields(value, parsed[key], at) : [at]
-  })
 }
