@@ -1199,7 +1199,7 @@ describe("SqliteWorkspaceStore", () => {
       const bytesBefore = await readFile(databasePath)
 
       expect(() => new SqliteWorkspaceStore(databasePath, createEmptyWorkspace(demoWorkspace.machine)))
-        .toThrow(`was written by Domovoi protocol ${newer}, which is newer than this build's protocol ${protocolVersion}`)
+        .toThrow(`was written by a newer daemon (protocol ${newer}), and this daemon speaks protocol ${protocolVersion}`)
       expect((await readdir(scratch)).sort()).toEqual(entriesBefore)
       expect((await readFile(databasePath)).equals(bytesBefore)).toBe(true)
       const database = new DatabaseSync(databasePath)
