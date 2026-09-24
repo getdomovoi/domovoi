@@ -415,7 +415,8 @@ export class NewerWorkspaceStateError extends Error {
     readonly storedProtocolVersion: string,
     readonly daemonProtocolVersion: string,
   ) {
-    super(`Workspace state at ${path} uses protocol ${storedProtocolVersion}, newer than this daemon's ${daemonProtocolVersion}`)
+    const minor = storedProtocolVersion.split(".").slice(0, 2).join(".")
+    super(`Domovoi state at ${path} was written by a newer daemon (protocol ${storedProtocolVersion}), and this daemon speaks protocol ${daemonProtocolVersion}. It was left as it is and this daemon did not start. Run the newer Domovoi again, or update this one to protocol ${minor} or later.`)
     this.name = "NewerWorkspaceStateError"
   }
 }

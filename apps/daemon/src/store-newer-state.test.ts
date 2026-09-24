@@ -62,6 +62,9 @@ describe("state written by a newer daemon", () => {
     }
     expect(refusal).toBeInstanceOf(store.NewerWorkspaceStateError)
     expect(refusal).toMatchObject({ path: databasePath, storedProtocolVersion: ahead(protocolVersion), daemonProtocolVersion: protocolVersion })
+    // The copy ruled 2026-09-23.
+    const [major, minor] = ahead(protocolVersion).split(".")
+    expect((refusal as Error).message).toBe(`Domovoi state at ${databasePath} was written by a newer daemon (protocol ${ahead(protocolVersion)}), and this daemon speaks protocol ${protocolVersion}. It was left as it is and this daemon did not start. Run the newer Domovoi again, or update this one to protocol ${major}.${minor} or later.`)
     await unchanged(scratch, databasePath, written, bytes)
   })
 
