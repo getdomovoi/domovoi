@@ -534,6 +534,35 @@ describe("authenticated client identity", () => {
     expect(schema.safeParse({ ...demoWorkspace, clientAccess: "read-only" }).success).toBe(false)
   })
 
+  it("names stored state the daemon moved aside at startup", () => {
+    const schema = rpcMethods["system.hello"].result
+    const stateRecovery = {
+      kind: "snapshot",
+      quarantinedPath: "/Users/person/.domovoi/state.sqlite.snapshot-corrupt-2026-09-22T12-00-00-000Z.json",
+      reason: "ZodError: protocolVersion is invalid",
+      occurredAt: "2026-09-22T12:00:00.000Z",
+      pairedDevicesKept: true,
+      workspaceKept: false,
+    }
+    expect(schema.parse(demoWorkspace).stateRecovery).toBeUndefined()
+    expect(schema.parse({ ...demoWorkspace, stateRecovery }).stateRecovery).toEqual(stateRecovery)
+    const { quarantinedPath: _path, reason: _reason, ...flag } = stateRecovery
+    expect(schema.parse({ ...demoWorkspace, stateRecovery: flag }).stateRecovery).toEqual(flag)
+    expect(schema.parse({ ...demoWorkspace, stateRecovery: { ...stateRecovery, kind: "database", pairedDevicesKept: false } })
+      .stateRecovery?.kind).toBe("database")
+    for (const invalid of [
+      { ...stateRecovery, kind: "project" },
+      { ...stateRecovery, quarantinedPath: "" },
+      { ...stateRecovery, occurredAt: "yesterday" },
+      { ...stateRecovery, pairedDevicesKept: "yes" },
+      { ...stateRecovery, workspaceKept: undefined },
+      { ...stateRecovery, reason: "x".repeat(4_097) },
+      { ...stateRecovery, extra: true },
+    ]) {
+      expect(schema.safeParse({ ...demoWorkspace, stateRecovery: invalid }).success).toBe(false)
+    }
+  })
+
   it("carries the protocol version in the handshake", () => {
     // A hello with no version is a client from before the field existed and is
     // accepted; the daemon treats it as speaking this protocol version.

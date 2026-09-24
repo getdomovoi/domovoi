@@ -44,7 +44,7 @@ describe("fresh session start", () => {
     }
     const call = vi.fn(async (method: string, _params: unknown) => method === "runtime.discover" ? discovery : created)
 
-    const sessionId = await startFreshSession(snapshot, "Cover the claim-expiry case", call)
+    const sessionId = await startFreshSession(snapshot, "Cover the claim-expiry case", call, "phone")
 
     expect(sessionId).toBe("session-new")
     expect(call.mock.calls.map(([method]) => method)).toEqual([
@@ -59,6 +59,12 @@ describe("fresh session start", () => {
       prompt: "Cover the claim-expiry case",
       client: "phone",
     })
+
+    // A credential paired from a tablet code greets as a tablet, and the
+    // daemon refuses any later call that names another kind.
+    call.mockClear()
+    await startFreshSession(snapshot, "Cover the claim-expiry case", call, "tablet")
+    expect(call.mock.calls.map(([, params]) => (params as { client: string }).client)).toEqual(["tablet", "tablet", "tablet"])
   })
 
   it("keeps the action visible but disabled with the project reason", () => {

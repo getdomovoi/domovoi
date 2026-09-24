@@ -32,6 +32,9 @@ export type BrowserInstallHost = {
 }
 
 export type BrowserPlatformEnvironment = {
+  // Loads the page again, for new code after a chunk failed to load. Absent
+  // where the host has no page to reload.
+  reloadPage?: (() => void) | undefined
   secureContext: boolean
   notifications: BrowserNotificationHost | undefined
   clipboard: BrowserClipboardHost | undefined
@@ -79,7 +82,11 @@ function installState(environment: BrowserPlatformEnvironment): WorkspaceInstall
 }
 
 export function createBrowserPlatform(environment: BrowserPlatformEnvironment): WorkspacePlatform {
+  const reloadPage = environment.reloadPage
   return {
+    // A browser keeps a failed dynamic import for the life of the page, and a
+    // deploy removes the old chunk, so new code needs a reload.
+    ...(reloadPage ? { code: { reloadForNewCode: () => reloadPage() } } : {}),
     dialogs: {
       // A directory handle from the File System Access API names a folder on the
       // device holding the browser, never one on the execution machine, so this
@@ -161,6 +168,7 @@ export type BrowserGlobals = {
   matchMedia(query: string): { matches: boolean }
   addEventListener(type: string, listener: (event: Event) => void): void
   focus(): void
+  location?: { reload(): void } | undefined
 }
 
 function permissionOf(value: string): BrowserNotificationPermission {
@@ -186,7 +194,9 @@ export function browserPlatformEnvironment(globals: BrowserGlobals): BrowserPlat
 
   const notification = globals.Notification
 
+  const location = globals.location
   return {
+    ...(location ? { reloadPage: () => location.reload() } : {}),
     secureContext: globals.isSecureContext,
     clipboard: globals.navigator.clipboard,
     notifications: notification
