@@ -23,6 +23,8 @@ async function fixture() {
   const listeners = new Set<(event: AgentEvent) => void>()
   let turn = 0
   const startedTurns: string[] = []
+  const interruptedTurns: string[] = []
+  const stoppedThreads: string[] = []
   let parkNextTurn = false
   let releaseTurn = () => {}
   const agent = {
@@ -33,8 +35,8 @@ async function fixture() {
     }],
     startThread: async () => "provider-thread-1",
     resumeThread: async () => {},
-    stopThread: async () => {},
-    interruptTurn: async () => {},
+    stopThread: async (threadId: string) => { stoppedThreads.push(threadId) },
+    interruptTurn: async (_threadId: string, turnId: string) => { interruptedTurns.push(turnId) },
     startTurn: async () => {
       const turnId = `provider-turn-${++turn}`
       startedTurns.push(turnId)
@@ -111,7 +113,7 @@ async function fixture() {
     return rpc("project.open", { path, client: "desktop", confirmation: first.error.data })
   }
   return {
-    rpc, completeTurn, openProject, errors, startedTurns,
+    rpc, completeTurn, openProject, errors, startedTurns, interruptedTurns, stoppedThreads,
     parkNextTurn: () => { parkNextTurn = true },
     releaseTurn: () => releaseTurn(),
   }
@@ -121,7 +123,7 @@ const runtime = { provider: "codex", model: "gpt-5.6-sol", reasoning: "medium", 
 
 describe("a queued send released while an emergency stop runs", () => {
   it("does not start the turn the stop was meant to prevent", async () => {
-    const { rpc, completeTurn, openProject, startedTurns, parkNextTurn, releaseTurn } = await fixture()
+    const { rpc, completeTurn, openProject, startedTurns, interruptedTurns, stoppedThreads, parkNextTurn, releaseTurn } = await fixture()
     await openProject("/code/one")
     const created = await rpc("session.create", { title: "One", runtime, client: "desktop" })
     const sessionId = created.result?.activeSessionId as string
@@ -142,6 +144,8 @@ describe("a queued send released while an emergency stop runs", () => {
       const session = workspace.sessions!.find((candidate) => candidate.id === sessionId)!
       expect(session.activeTurnId).toBeUndefined()
       expect(session.state).not.toBe("active")
+      // The turn the provider started after the stop must not keep running.
+      expect(interruptedTurns.includes("provider-turn-2") || stoppedThreads.includes("provider-thread-1")).toBe(true)
     })
   })
 })
