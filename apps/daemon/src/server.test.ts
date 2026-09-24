@@ -1072,6 +1072,21 @@ describe("DomovoiDaemon", () => {
     expect(JSON.stringify(pathApproval)).not.toContain(pathToken)
     expect(pathApproval?.affects).toContain("[REDACTED]")
 
+    // A credential file named only by the path is a hard gate too.
+    listener!({
+      type: "approval-requested",
+      requestId: 93,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "cat config",
+      reason: "Read a file",
+      cwd: "/repo",
+      path: "config/.env.production",
+    })
+    const envApproval = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 93)
+    expect(envApproval).toMatchObject({ risk: "hard-gate" })
+
     listener!({
       type: "command-output",
       threadId: session.providerThreadId,

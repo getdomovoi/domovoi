@@ -8569,6 +8569,7 @@ export class DomovoiDaemon {
         || reasonCopy.redacted
         || directoryCopy.redacted
         || facts.redacted
+        || facts.sensitive
         || (execution.state === "unresolved" && execution.reason === "sensitive-content")
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret

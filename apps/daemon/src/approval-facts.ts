@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
+import { namesSecretFile } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
 // What an approval card says the request can reach. These facts sit next to
@@ -51,16 +52,24 @@ function within(workspace: string, target: string): string | undefined {
 
 export type ResolvedApprovalPath = Readonly<{ target: string; workspace: string }>
 
-// Where the path really leads: the file itself when it exists, else its parent
-// directory, with the worktree resolved the same way. Undefined when neither
-// exists, and then the lexical answer stands.
+// Where the path really leads: the nearest part of it that exists, resolved,
+// with the parts that do not exist yet appended, and the worktree resolved the
+// same way. Undefined only when nothing up to the root resolves.
 export async function resolveApprovalPath(workspace: string, path: string): Promise<ResolvedApprovalPath | undefined> {
   const target = resolve(workspace, path)
-  let real: string
-  try {
-    real = await realpath(target)
-  } catch {
-    try { real = join(await realpath(dirname(target)), basename(target)) } catch { return undefined }
+  let existing = target
+  const missing: string[] = []
+  let real: string | undefined
+  for (;;) {
+    try {
+      real = join(await realpath(existing), ...missing)
+      break
+    } catch {
+      const parent = dirname(existing)
+      if (parent === existing) return undefined
+      missing.unshift(basename(existing))
+      existing = parent
+    }
   }
   let realWorkspace: string
   try { realWorkspace = await realpath(workspace) } catch { realWorkspace = resolve(workspace) }
@@ -92,9 +101,14 @@ export function approvalFacts(input: {
   workspace: string
   scope: ApprovalScope | undefined
   resolved?: ResolvedApprovalPath | undefined
-}): { affects: string; network: string; redacted: boolean } {
+}): { affects: string; network: string; redacted: boolean; sensitive: boolean } {
   const scope = input.scope ?? unrestrictedApprovalScope
-  if (input.path === undefined) return { affects: scope.command, network: scope.network, redacted: false }
+  if (input.path === undefined) return { affects: scope.command, network: scope.network, redacted: false, sensitive: false }
   const file = affectedFile({ path: input.path, workspace: input.workspace, resolved: input.resolved })
-  return { affects: file.text, network: scope.network, redacted: file.redacted }
+  // A credential file is a hard gate whether the agent named it or a link
+  // with an ordinary name leads to it.
+  const sensitive = namesSecretFile(input.path)
+    || namesSecretFile(resolve(input.workspace, input.path))
+    || (input.resolved !== undefined && namesSecretFile(input.resolved.target))
+  return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }

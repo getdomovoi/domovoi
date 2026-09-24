@@ -268,9 +268,9 @@ export class StdioCodexTransport implements CodexTransport {
 // both read the whole disk. Neither has network: workspace-write sets it off,
 // and read-only's networkAccess defaults to false in the app-server schema.
 export function codexApprovalScope(runtime: Runtime): ApprovalScope {
-  const sandbox = codexPolicyFor(runtime, "/").sandboxPolicy.type
+  const profile = codexPolicyFor(runtime).permissions
   return {
-    command: sandbox === "readOnly"
+    command: profile === "domovoi-read"
       ? "Reads anything this user account can read and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
       : "Writes only in the session worktree and reads anything this user account can read while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
     network: "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access.",

@@ -25,6 +25,7 @@ describe("approvalFacts", () => {
       affects: unrestrictedApprovalScope.command,
       network: unrestrictedApprovalScope.network,
       redacted: false,
+      sensitive: false,
     })
     expect(unrestrictedApprovalScope.network).not.toMatch(/no .*network/i)
   })
@@ -70,6 +71,48 @@ describe("approvalFacts", () => {
     const facts = approvalFacts({ workspace, path: long, scope: undefined })
     expect(facts.affects.length).toBeLessThanOrEqual("The file  in the session worktree.".length + 512)
     expect(facts.affects).toMatch(/^The file a+…b+\.ts in the session worktree\.$/u)
+  })
+
+  // A request about a credential file is a hard gate, whether the name is in
+  // the path the agent gave or in where that path really leads.
+  it.each([".env", "config/.env.production", "../other/.npmrc", "/home/u/.ssh/id_rsa", "certs/server.pem", "/home/u/.aws/credentials"])(
+    "marks a sensitive file named by the path: %s",
+    (path) => {
+      expect(approvalFacts({ workspace, path, scope: undefined }).sensitive).toBe(true)
+    },
+  )
+
+  it("does not mark an ordinary file as sensitive", () => {
+    expect(approvalFacts({ workspace, path: "src/environment.ts", scope: undefined }).sensitive).toBe(false)
+    expect(approvalFacts({ workspace, scope: undefined }).sensitive).toBe(false)
+  })
+
+  it("marks a sensitive file reached through a link with an ordinary name", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-facts-")))
+    directories.push(root)
+    const tree = join(root, "worktree")
+    await mkdir(tree)
+    await mkdir(join(root, "keys"))
+    await writeFile(join(root, "keys", "id_rsa"), "")
+    await symlink(join(root, "keys", "id_rsa"), join(tree, "notes.txt"))
+    const path = join(tree, "notes.txt")
+    expect(approvalFacts({ workspace: tree, path, scope: undefined, resolved: await resolveApprovalPath(tree, path) }).sensitive)
+      .toBe(true)
+  })
+
+  // A write can name directories that do not exist yet. Where it lands is
+  // decided by the nearest ancestor that does exist, which may be a link out.
+  it("follows a link out of the worktree even when the rest of the path does not exist yet", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-facts-")))
+    directories.push(root)
+    const tree = join(root, "worktree")
+    const outside = join(root, "outside")
+    await mkdir(tree)
+    await mkdir(outside)
+    await symlink(outside, join(tree, "link"))
+    const path = join(tree, "link", "new", "nested", "file.txt")
+    expect(approvalFacts({ workspace: tree, path, scope: undefined, resolved: await resolveApprovalPath(tree, path) }).affects)
+      .toBe(`The file ${join(outside, "new", "nested", "file.txt")}, outside the session worktree, through a link at link/new/nested/file.txt.`)
   })
 
   // Inside or outside is decided on the real path, so a link in the worktree
