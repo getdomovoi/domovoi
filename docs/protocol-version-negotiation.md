@@ -17,14 +17,25 @@ an older schema or feature negotiation.
 CI enforces the bump, per release: every wire change between two protocol releases
 shares one minor bump. Each released protocol version has a record of its wire in
 `packages/protocol/wire-releases/<version>.json`, written once, from the release
-commit, with `node scripts/protocol-wire.mjs record`. The wire is what crosses a
-socket: every RPC's params and result, the payload of every notification the daemon
-sends, and the structured data it attaches to errors. Each entry is a digest of the
-schema's JSON Schema and of its checks, including the bounds of the UTF-16 length
-helpers, which JSON Schema cannot express.
+commit, with `node scripts/protocol-wire.mjs record`. The record names that commit
+as `releaseCommit`. The wire is what crosses a socket: every RPC's params and
+result, the payload of every notification the daemon sends, and the structured
+data it attaches to errors. Each entry is a digest of the schema's JSON Schema and
+of its checks, including the bounds of the UTF-16 length helpers, which JSON Schema
+cannot express.
+
+Notifications are recorded from `notificationMethods` in the protocol package, the
+map from each notification to the schema of its params. The daemon sends a
+notification only through that map: its payload must parse, and a field the schema
+does not describe, at any depth, is refused rather than sent. A refused
+notification is reported and not sent; a refused resync closes the slow client,
+which reconnects.
 
 `node scripts/protocol-wire.mjs check` compares the built package with the record of
-the highest release at or below its `protocolVersion`. At that same version, or a
+the highest release at or below its `protocolVersion`. In CI it runs with
+`--base <pull request base commit>`: a record that exists at the base must be
+byte for byte unchanged, and must not be removed. A record new since the base is
+a new release. At that same version, or a
 patch of it, any wire change fails and the changed entries are listed. With a higher
 minor or major, the check passes: the changes since that release share the bump. No
 release record at or below the current version also fails. The check needs no tags.
@@ -33,9 +44,19 @@ At a protocol release, commit its record from the release commit:
 `pnpm --filter @getdomovoi/protocol build`, then
 `node scripts/protocol-wire.mjs record`. To record an earlier release, build that
 commit in another checkout and pass `--package <that checkout>`.
+`node scripts/protocol-wire.mjs verify --package <that checkout>` rebuilds the
+wire at the checkout and compares it, and the checkout's commit, with the record.
+CI does not rebuild a release commit, so a new record is verified this way before
+it is committed. The 0.7.0 record verifies against 3e396ce1.
 
-Descriptions, titles and examples are left out of the digest: they document a
-schema and do not change what parses.
+Released records do not change, so a change to how the digest is computed makes
+every entry differ from the last record. At that release's own version the check
+then refuses; above it, the change shares the next bump like any other.
+
+Descriptions, titles, examples and `$comment` are left out of the digest where
+they are JSON Schema keywords: they document a schema and do not change what
+parses. A field with one of those names, and data under `const`, `enum` or
+`default`, stays in the digest.
 
 Known limit: a custom check's function source is part of the digest, but a value
 it captures in a closure is not. A changed bound captured inside a custom check

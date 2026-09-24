@@ -6,14 +6,17 @@
 // highest release at or below its protocolVersion: at that same version the wire
 // must not have changed; above it, every change since shares the bump.
 //
-//   node scripts/protocol-wire.mjs check                      compare the build
+//   node scripts/protocol-wire.mjs check [--base <sha>]       compare the build
 //   node scripts/protocol-wire.mjs record [--package <root>]  write a release record
+//   node scripts/protocol-wire.mjs verify [--package <root>]  compare a record with its release commit
 //
-// Both read a built package (`pnpm --filter @getdomovoi/protocol build` first);
-// `record --package` reads another checkout, such as a release commit's tree.
+// All read a built package (`pnpm --filter @getdomovoi/protocol build` first);
+// `--package` reads another checkout, such as a release commit's tree. With
+// `--base`, a release record that existed at that commit must be unchanged.
 // The wire is what crosses a socket: every RPC's params and result, the payload
 // of every notification the daemon sends, and the error data it attaches.
 // Exported helpers and aliases are not the wire and are not recorded.
+import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
@@ -23,8 +26,9 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 export const wireReleasesPath = "packages/protocol/wire-releases"
 
-// Notification method to the exported schema of its payload. A test keeps this
-// in step with the daemon's broadcast calls.
+// Notification method to the exported schema of its payload, for a package
+// built before the protocol exported notificationMethods. A newer package is
+// read from notificationMethods, the map the daemon checks every payload with.
 export const notificationSchemas = {
   "workspace.changed": "workspaceSnapshotSchema",
   "workspace.delta": "workspaceDeltaSchema",
@@ -110,17 +114,25 @@ export function checksOf(schema, { requireSemantics = false } = {}) {
 }
 
 // Descriptions, titles and examples document a schema; they do not change what
-// parses, so they are not a wire change.
+// parses, so they are not a wire change. They are dropped only where they are
+// keywords of a schema: under `properties` and the other name maps the same
+// words are field names, and under `const`, `enum` and `default` they are data.
 const documentationKeys = new Set(["description", "title", "examples", "$comment"])
+const nameMaps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"])
+const dataKeywords = new Set(["const", "enum", "default", "required", "dependentRequired"])
 
-function withoutDocumentation(value) {
-  if (Array.isArray(value)) return value.map(withoutDocumentation)
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value)
-      .filter(([key]) => !documentationKeys.has(key))
-      .map(([key, item]) => [key, withoutDocumentation(item)]))
+function withoutDocumentation(schema) {
+  if (Array.isArray(schema)) return schema.map(withoutDocumentation)
+  if (!schema || typeof schema !== "object") return schema
+  const kept = []
+  for (const [key, value] of Object.entries(schema)) {
+    if (documentationKeys.has(key)) continue
+    if (dataKeywords.has(key)) kept.push([key, value])
+    else if (nameMaps.has(key) && value && typeof value === "object" && !Array.isArray(value)) {
+      kept.push([key, Object.fromEntries(Object.entries(value).map(([name, item]) => [name, withoutDocumentation(item)]))])
+    } else kept.push([key, withoutDocumentation(value)])
   }
-  return value
+  return Object.fromEntries(kept)
 }
 
 export function fingerprintOf(z, schema, options = {}) {
@@ -140,13 +152,54 @@ export async function wireOf(packageRoot = root) {
     schemas[`rpc.${method}.params`] = fingerprint(z, protocol.rpcMethods[method].params)
     schemas[`rpc.${method}.result`] = fingerprint(z, protocol.rpcMethods[method].result)
   }
-  for (const [method, name] of Object.entries(notificationSchemas)) {
-    if (isSchema(protocol[name])) schemas[`notification.${method}`] = fingerprint(z, protocol[name])
+  const notifications = protocol.notificationMethods
+    ?? Object.fromEntries(Object.entries(notificationSchemas).map(([method, name]) => [method, protocol[name]]))
+  for (const method of Object.keys(notifications).sort()) {
+    if (isSchema(notifications[method])) schemas[`notification.${method}`] = fingerprint(z, notifications[method])
   }
   for (const name of errorDataSchemas) {
     if (isSchema(protocol[name])) schemas[`errorData.${name}`] = fingerprint(z, protocol[name])
   }
   return { protocolVersion: protocol.protocolVersion, schemas }
+}
+
+function git(repository, args) {
+  return execFileSync("git", ["-C", repository, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+}
+
+// A release record is written once, from its release commit. Every record that
+// existed at `base` must still exist here, byte for byte: a rewritten record
+// would let a changed wire clear the check it is measured against. A record
+// new since `base` is a new release.
+export function releasedRecordRefusal(repository, base) {
+  const listed = git(repository, ["ls-tree", "-r", "--name-only", base, "--", wireReleasesPath])
+    .split("\n").filter((path) => /\.json$/.test(path))
+  const problems = []
+  for (const path of listed) {
+    const name = path.slice(wireReleasesPath.length + 1)
+    const current = join(repository, path)
+    if (!existsSync(current)) problems.push(`${name} was removed since ${base}`)
+    else if (readFileSync(current, "utf8") !== git(repository, ["show", `${base}:${path}`])) {
+      problems.push(`${name} changed since ${base}`)
+    }
+  }
+  if (problems.length === 0) return undefined
+  return `Released wire records are written once: ${problems.join("; ")}. Restore them; a new release gets a new record.`
+}
+
+// A record names the commit it was recorded from. Built at that commit, the
+// protocol must produce the same wire.
+export function recordMismatch(record, wire, commit) {
+  if (record.releaseCommit !== commit) {
+    return `The record for ${record.protocolVersion} names release commit ${record.releaseCommit ?? "(none)"}, but the package was built from ${commit}.`
+  }
+  if (record.protocolVersion !== wire.protocolVersion) {
+    return `The record is for protocol ${record.protocolVersion}, but the package at its release commit is ${wire.protocolVersion}.`
+  }
+  const names = new Set([...Object.keys(record.schemas), ...Object.keys(wire.schemas)])
+  const changed = [...names].sort().filter((name) => record.schemas[name] !== wire.schemas[name])
+  if (changed.length === 0) return undefined
+  return `The record for ${record.protocolVersion} differs from the wire built at its release commit: ${changed.join(", ")}.`
 }
 
 function versionParts(version) {
@@ -194,23 +247,52 @@ function releasedVersions() {
 
 async function main(argv) {
   const [command, ...rest] = argv
-  if (command === "record") {
-    const packageIndex = rest.indexOf("--package")
-    const packageRoot = packageIndex >= 0 ? resolve(rest[packageIndex + 1] ?? "") : root
+  const option = (name) => {
+    const index = rest.indexOf(name)
+    return index >= 0 ? rest[index + 1] ?? "" : undefined
+  }
+  const packageRoot = option("--package") === undefined ? root : resolve(option("--package"))
+  if (command === "record" || command === "verify") {
     const wire = await wireOf(packageRoot)
-    mkdirSync(join(root, wireReleasesPath), { recursive: true })
+    const releaseCommit = git(packageRoot, ["rev-parse", "HEAD"]).trim()
     const path = join(root, wireReleasesPath, `${wire.protocolVersion}.json`)
+    if (command === "verify") {
+      if (!existsSync(path)) {
+        process.stderr.write(`No release record for protocol ${wire.protocolVersion} in ${wireReleasesPath}.\n`)
+        return 1
+      }
+      const mismatch = recordMismatch(JSON.parse(readFileSync(path, "utf8")), wire, releaseCommit)
+      if (mismatch) {
+        process.stderr.write(`${mismatch}\n`)
+        return 1
+      }
+      process.stdout.write(`The record for protocol ${wire.protocolVersion} matches its release commit ${releaseCommit}.\n`)
+      return 0
+    }
+    mkdirSync(join(root, wireReleasesPath), { recursive: true })
     if (existsSync(path) && !rest.includes("--replace")) {
       process.stderr.write(`${path} exists; a release record is written once. Pass --replace to rewrite it.\n`)
       return 1
     }
-    writeFileSync(path, `${JSON.stringify(wire, null, 2)}\n`)
-    process.stdout.write(`Recorded the wire of protocol ${wire.protocolVersion}.\n`)
+    writeFileSync(path, `${JSON.stringify({ protocolVersion: wire.protocolVersion, releaseCommit, schemas: wire.schemas }, null, 2)}\n`)
+    process.stdout.write(`Recorded the wire of protocol ${wire.protocolVersion} from ${releaseCommit}.\n`)
     return 0
   }
   if (command !== "check") {
-    process.stderr.write("Usage: node scripts/protocol-wire.mjs check | record [--package <root>] [--replace]\n")
+    process.stderr.write("Usage: node scripts/protocol-wire.mjs check [--base <sha>] | record [--package <root>] [--replace] | verify [--package <root>]\n")
     return 2
+  }
+  const base = option("--base")
+  if (base !== undefined) {
+    if (!/^[0-9a-f]{40}$/.test(base)) {
+      process.stderr.write("--base needs the full base commit SHA.\n")
+      return 2
+    }
+    const refusal = releasedRecordRefusal(root, base)
+    if (refusal) {
+      process.stderr.write(`${refusal}\n`)
+      return 1
+    }
   }
   const current = await wireOf()
   const baseline = releaseBaseline(releasedVersions(), current.protocolVersion)

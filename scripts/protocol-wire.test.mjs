@@ -1,12 +1,15 @@
 import assert from "node:assert/strict"
-import { readdirSync, readFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import test from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import {
-  checksOf, errorDataSchemas, fingerprintOf, notificationSchemas, releaseBaseline, wireChangeRefusal, wireOf, wireReleasesPath,
+  checksOf, errorDataSchemas, fingerprintOf, notificationSchemas, recordMismatch, releaseBaseline, releasedRecordRefusal,
+  wireChangeRefusal, wireOf, wireReleasesPath,
 } from "./protocol-wire.mjs"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -92,6 +95,62 @@ test("leaves documentation out of the digest", () => {
   assert.equal(fingerprintOf(z, plain), fingerprintOf(z, described))
 })
 
+// Documentation keywords are dropped only where JSON Schema reads them as
+// keywords. A property with the same name is part of the wire.
+test("records a property named like a documentation keyword", () => {
+  const plain = z.object({ id: z.string() }).strict()
+  for (const name of ["description", "title", "examples", "$comment"]) {
+    const added = z.object({ id: z.string(), [name]: z.string().optional() }).strict()
+    assert.notEqual(fingerprintOf(z, plain), fingerprintOf(z, added), name)
+    const nested = z.object({ id: z.object({ [name]: z.string() }).strict() }).strict()
+    const renamed = z.object({ id: z.object({ other: z.string() }).strict() }).strict()
+    assert.notEqual(fingerprintOf(z, nested), fingerprintOf(z, renamed), `nested ${name}`)
+  }
+})
+
+function git(directory, ...args) {
+  return execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim()
+}
+
+function repositoryWithRecord(text) {
+  const directory = mkdtempSync(join(tmpdir(), "domovoi-wire-records-"))
+  git(directory, "init", "-q")
+  git(directory, "config", "user.email", "wire@example.invalid")
+  git(directory, "config", "user.name", "wire")
+  git(directory, "config", "commit.gpgsign", "false")
+  mkdirSync(join(directory, wireReleasesPath), { recursive: true })
+  writeFileSync(join(directory, wireReleasesPath, "0.7.0.json"), text)
+  git(directory, "add", "-A")
+  git(directory, "commit", "-q", "-m", "release 0.7.0")
+  return { directory, base: git(directory, "rev-parse", "HEAD") }
+}
+
+// A release record is written once. Rewriting it would let a changed wire
+// clear the check it is measured against.
+test("refuses a release record changed or removed since the base commit", (context) => {
+  const { directory, base } = repositoryWithRecord('{"protocolVersion":"0.7.0","schemas":{"a":"sha256:a"}}\n')
+  context.after(() => rmSync(directory, { recursive: true, force: true }))
+  assert.equal(releasedRecordRefusal(directory, base), undefined)
+
+  writeFileSync(join(directory, wireReleasesPath, "0.8.0.json"), '{"protocolVersion":"0.8.0","schemas":{}}\n')
+  assert.equal(releasedRecordRefusal(directory, base), undefined)
+
+  writeFileSync(join(directory, wireReleasesPath, "0.7.0.json"), '{"protocolVersion":"0.7.0","schemas":{"a":"sha256:b"}}\n')
+  assert.match(releasedRecordRefusal(directory, base) ?? "", /0\.7\.0\.json changed since/)
+
+  rmSync(join(directory, wireReleasesPath, "0.7.0.json"))
+  assert.match(releasedRecordRefusal(directory, base) ?? "", /0\.7\.0\.json was removed since/)
+})
+
+test("verifies a release record against its release commit", () => {
+  const record = { protocolVersion: "0.7.0", releaseCommit: "a".repeat(40), schemas: { x: "sha256:1" } }
+  const wire = { protocolVersion: "0.7.0", schemas: { x: "sha256:1" } }
+  assert.equal(recordMismatch(record, wire, "a".repeat(40)), undefined)
+  assert.match(recordMismatch(record, wire, "b".repeat(40)) ?? "", /release commit/)
+  assert.match(recordMismatch(record, { ...wire, schemas: { x: "sha256:2" } }, "a".repeat(40)) ?? "", /x/)
+  assert.match(recordMismatch({ ...record, releaseCommit: undefined }, wire, "a".repeat(40)) ?? "", /release commit/)
+})
+
 test("records the wire only: RPC params and results, notifications and error data", async () => {
   const wire = await wireOf()
   const names = Object.keys(wire.schemas)
@@ -104,10 +163,23 @@ test("records the wire only: RPC params and results, notifications and error dat
   }
 })
 
-test("names every notification the daemon broadcasts", () => {
+// The daemon's send helpers take only a method of notificationMethods and check
+// each payload against its schema, so the record covers what is sent.
+test("fingerprints the notification map the daemon checks payloads with", async () => {
+  const wire = await wireOf()
+  const recorded = Object.keys(wire.schemas).filter((name) => name.startsWith("notification.")).sort()
+  assert.deepEqual(recorded, Object.keys(protocol.notificationMethods).map((method) => `notification.${method}`).sort())
+  for (const [method, name] of Object.entries(notificationSchemas)) {
+    assert.equal(protocol.notificationMethods[method], protocol[name], method)
+  }
+  assert.deepEqual(Object.keys(notificationSchemas).sort(), Object.keys(protocol.notificationMethods).sort())
+})
+
+test("names every notification the daemon sends", () => {
   const server = readFileSync(join(root, "apps/daemon/src/server.ts"), "utf8")
-  const sent = new Set([...server.matchAll(/#broadcastNotification\(\s*"([^"]+)"/g)].map((match) => match[1]))
-  assert.deepEqual([...sent].sort(), Object.keys(notificationSchemas).sort())
+  const helpers = /#(?:broadcastNotification|notifyTerminalAudience|notifyClients|notificationMessage)\(\s*(?:[\w.#[\]]+,\s*)?"([^"]+)"/g
+  const sent = new Set([...server.matchAll(helpers)].map((match) => match[1]))
+  assert.deepEqual([...sent].sort(), Object.keys(protocol.notificationMethods).sort())
 })
 
 test("keeps the current build within its release rule", async () => {
