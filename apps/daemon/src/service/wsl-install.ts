@@ -129,7 +129,7 @@ async function readWslUpdateIntent(
 // the swap saves that before the new task has reported ready.
 function finishedUpdate(recorded: WslUpdateIntent, saved: ServiceConfiguration | undefined): boolean {
   return recorded.completed !== undefined && saved !== undefined
-    && serializeServiceConfiguration(recorded[recorded.completed]) === serializeServiceConfiguration(saved)
+    && isDeepStrictEqual(asSaved(recorded[recorded.completed]), asSaved(saved))
 }
 
 // Ruled 2026-09-23: inside an update, the old task's removal failing is named
