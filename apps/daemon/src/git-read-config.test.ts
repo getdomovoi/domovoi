@@ -135,6 +135,11 @@ describe("gitReadCanRunProgram", () => {
     ["diff.astextplain.textconv", "astextplain --verbose", true],
     ["diff.astextplain.textconv", "/tmp/astextplain", true],
     ["diff.other.textconv", "astextplain", true],
+    // Git keeps a subsection's case: these are other drivers, which Git runs.
+    ["diff.ASTEXTPLAIN.textconv", "astextplain", true],
+    ["diff.AsTextPlain.textconv", "astextplain", true],
+    // Section and variable names are case-insensitive to Git.
+    ["DIFF.astextplain.TEXTCONV", "astextplain", false],
   ] as const)("treats %s = %s in the repository as asking: %s", async (key, value, asks) => {
     const { root, set } = await repository()
     await set(key, value)
@@ -152,6 +157,25 @@ describe("gitReadCanRunProgram", () => {
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(false)
     await set("filter.crypt.clean", "/tmp/crypt")
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
+  })
+
+  it.each([
+    ["filter.LFS.clean", "git-lfs clean -- %f"],
+    ["filter.Lfs.smudge", "git-lfs smudge -- %f"],
+    ["filter.LFS.process", "git-lfs filter-process"],
+  ] as const)("asks for %s = %s, a filter driver other than lfs", async (key, value) => {
+    const { root, set } = await repository()
+    await set(key, value)
+
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(true)
+  })
+
+  it("allows the git lfs filter lines with the section and variable in any case", async () => {
+    const { root, set } = await repository()
+    await set("FILTER.lfs.Clean", "git-lfs clean -- %f")
+    await set("Filter.lfs.SMUDGE", "git-lfs smudge -- %f")
+
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(false)
   })
 
   it("asks in a repository with a submodule, since git status runs each submodule under its own configuration", async () => {

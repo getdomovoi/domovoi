@@ -56,6 +56,17 @@ const falseValues = new Set(["false", "no", "off", "0", ""])
 const programEnvironment = ["GIT_EXTERNAL_DIFF", "GIT_EXEC_PATH"] as const
 const limits = { timeout: 3_000, maxBuffer: 1024 * 1024 }
 
+// Git compares section and variable names without case and a subsection
+// exactly: [diff "ASTEXTPLAIN"] is a different driver from [diff "astextplain"],
+// and Git runs it. `git config --list` prints section.Subsection.variable with
+// the subsection as written, so an allowed line is matched on that form.
+function exceptionKey(key: string): string {
+  const first = key.indexOf(".")
+  const last = key.lastIndexOf(".")
+  if (first === -1 || first === last) return key.toLowerCase()
+  return `${key.slice(0, first).toLowerCase()}.${key.slice(first + 1, last)}.${key.slice(last + 1).toLowerCase()}`
+}
+
 function run(directory: string, args: string[], env: NodeJS.ProcessEnv): Promise<string | undefined> {
   return new Promise((done) => {
     execFile("git", ["-C", directory, ...args], { ...limits, env }, (error, stdout) => {
@@ -71,10 +82,12 @@ export async function gitReadCanRunProgram(directory: string, env: NodeJS.Proces
   for (const entry of listed.split("\0")) {
     if (entry.length === 0) continue
     const separator = entry.indexOf("\n")
-    const key = (separator === -1 ? entry : entry.slice(0, separator)).toLowerCase()
+    const listedKey = separator === -1 ? entry : entry.slice(0, separator)
+    const key = listedKey.toLowerCase()
+    const allowedKey = exceptionKey(listedKey)
     const raw = separator === -1 ? undefined : entry.slice(separator + 1)
     const value = raw === undefined ? "true" : raw.trim().toLowerCase()
-    if (raw !== undefined && Object.hasOwn(standardLfsFilter, key) && standardLfsFilter[key] === raw) continue
+    if (raw !== undefined && Object.hasOwn(standardLfsFilter, allowedKey) && standardLfsFilter[allowedKey] === raw) continue
     if (programKeys.some((pattern) => pattern.test(key))) return true
     if (switchedKeys.has(key) && !falseValues.has(value)) return true
     if (promisorKey.test(key) && !falseValues.has(value)) return true
