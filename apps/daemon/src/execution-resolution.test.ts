@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises"
+import { link, mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -226,6 +226,39 @@ describe("resolveExecution", () => {
     expect(await digest(join(root, "package.json"))).not.toBe(source)
     expect(await digest(join(root, "vitest.config.ts"))).not.toBe(source)
     expect(await digest(join(root, "src", "index.ts"))).toBe(source)
+  })
+
+  it("leaves a file target with more than one link unresolved, since its other names reach the same bytes", async () => {
+    const root = await project()
+    const outside = await project()
+    await mkdir(join(root, "src"))
+    await writeFile(join(outside, "credentials.json"), "{}")
+    await link(join(outside, "credentials.json"), join(root, "src", "settings.json"))
+
+    for (const command of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+      await expect(resolveExecution({
+        workspaceRoot: root,
+        cwd: root,
+        command,
+        filePath: join(root, "src", "settings.json"),
+      })).resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+    }
+  })
+
+  it("still resolves an existing file target that has a single link", async () => {
+    const root = await project()
+    await mkdir(join(root, "src"))
+    await writeFile(join(root, "src", "settings.json"), "{}")
+
+    await expect(resolveExecution({
+      workspaceRoot: root,
+      cwd: root,
+      command: "Edit",
+      filePath: join(root, "src", "settings.json"),
+    })).resolves.toMatchObject({
+      state: "resolved",
+      record: { kind: "workspace-file-tool", scope: "file", path: "src/settings.json" },
+    })
   })
 
   it.each(["WebFetch", "WebSearch", "mcp__github__create_issue", "Task"])(

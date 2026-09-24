@@ -43,3 +43,8 @@ card is answered, not when the provider writes, so a target swapped in between s
 provider. The path each waiting file-tool card was raised for is held in memory and dropped once
 the card leaves, whether it was answered, archived, cleared by a provider disconnect, session close
 or emergency stop, or expired.
+
+A file-tool target that is a file with more than one hard link stays unresolved: its other names
+share its bytes and may lie outside the worktree, so no standing rule applies to it and its card
+offers no Always. A target replaced by such a link while its card waits is refused when the card
+is answered, with the file-target text above. A file that does not exist yet is unaffected.

@@ -1,6 +1,6 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, chmod, mkdir, mkdtemp, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, chmod, link, mkdir, mkdtemp, realpath, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
@@ -11707,6 +11707,153 @@ describe("DomovoiDaemon", () => {
       approvalRules: Array<{ execution: { digest: string } }>
     }).approvalRules
     expect(rules.map((rule) => rule.execution.digest)).toEqual([kept.execution.digest])
+    socket.close()
+  })
+
+  // A hard link keeps the path, so the record and its digest stay the same,
+  // while a write through it changes the file it shares bytes with.
+  it("holds an edit whose target file has another link, at the card and when it is answered", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-hard-link-"))
+    const outside = await mkdtemp(join(tmpdir(), "domovoi-file-hard-link-outside-"))
+    scratchDirectories.push(workspacePath, outside)
+    await mkdir(join(workspacePath, "src"), { recursive: true })
+    await writeFile(join(outside, "credentials.json"), "{}")
+    for (const name of ["ruled.json", "once.json", "always.json", "plain.json"]) {
+      await writeFile(join(workspacePath, "src", name), "{}")
+    }
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-file-hard-link"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    const ruled = await resolveExecution({
+      workspaceRoot: workspacePath,
+      cwd: workspacePath,
+      command: "Edit",
+      filePath: join(workspacePath, "src", "ruled.json"),
+    })
+    expect(ruled.state).toBe("resolved")
+    snapshot.approvalRules.push({
+      id: "rule-ruled-edit",
+      useCount: 0,
+      projectId: snapshot.project!.id,
+      operation: "Edit a file",
+      command: "Edit",
+      status: "active",
+      execution: ruled as Extract<typeof ruled, { state: "resolved" }>,
+      createdBy: "desktop",
+      createdAt: new Date().toISOString(),
+    })
+    // After the rule was made, the file it names becomes a second link to a
+    // file outside the worktree.
+    await unlink(join(workspacePath, "src", "ruled.json"))
+    await link(join(outside, "credentials.json"), join(workspacePath, "src", "ruled.json"))
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-file-hard-link"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    type Card = { id: string; providerRequestId?: number; execution: { state: string; reason?: string } }
+    const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the config", client: "desktop" })
+    const files = { 51: "ruled.json", 52: "once.json", 53: "always.json", 54: "plain.json" } as const
+    for (const [requestId, name] of Object.entries(files)) {
+      listener!({
+        type: "approval-requested",
+        requestId: Number(requestId),
+        threadId: session.providerThreadId,
+        turnId: "turn-file-hard-link",
+        reason: "Edit a file",
+        command: "Edit",
+        path: join(workspacePath, "src", name),
+      })
+    }
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(4), { timeout: 3_000 })
+    const waiting = await cards()
+    const card = (requestId: number) => waiting.find((candidate) => candidate.providerRequestId === requestId)!
+
+    // The standing rule does not reach the linked file; it gets a card instead.
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(51, expect.anything())
+    expect(card(51).execution).toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+    await expect(rpc("approval.resolve", { approvalId: card(51).id, decision: "always-project", client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "Unresolved commands cannot create standing rules" } })
+    for (const requestId of [52, 53, 54]) expect(card(requestId).execution.state).toBe("resolved")
+
+    // While the cards wait, two targets are replaced by links to the outside file.
+    for (const name of ["once.json", "always.json"]) {
+      await unlink(join(workspacePath, "src", name))
+      await link(join(outside, "credentials.json"), join(workspacePath, "src", name))
+    }
+    for (const [requestId, decision] of [[52, "allow-once"], [53, "always-project"]] as const) {
+      await expect(rpc("approval.resolve", { approvalId: card(requestId).id, decision, client: "desktop" }))
+        .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+      expect(agent.resolveApproval).not.toHaveBeenCalledWith(requestId, expect.anything())
+      expect((await cards()).find((candidate) => candidate.id === card(requestId).id)!.execution)
+        .toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+    }
+
+    await expect(rpc("approval.resolve", { approvalId: card(54).id, decision: "allow-once", client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(54, "allow-once")
+    const rules = ((await rpc("workspace.get", {})).result as { approvalRules: Array<{ id: string }> }).approvalRules
+    expect(rules.map((rule) => rule.id)).toEqual(["rule-ruled-edit"])
     socket.close()
   })
 

@@ -101,6 +101,19 @@ export async function pathStaysInside(root: string, cwd: string, path: string): 
   return followed !== undefined && inside(followed.workspace, followed.target)
 }
 
+// A target that does not exist yet has no other name. Any other failure to
+// read it throws, which leaves the request unresolved.
+async function hasOtherLinks(target: string): Promise<boolean> {
+  try {
+    const stats = await lstat(target)
+    return stats.isFile() && stats.nlink > 1
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT" || code === "ENOTDIR") return false
+    throw error
+  }
+}
+
 function parseCommand(command: string): ParsedPart[] | undefined {
   if (command.length === 0 || command.length > 8_192 || /[\r\n\0]/u.test(command)) return undefined
   const parts: ParsedPart[] = []
@@ -456,6 +469,9 @@ async function resolveExecutionOrThrow(input: ExecutionInput): Promise<Execution
     const path = relative(followed.workspace, followed.target).split(sep).join("/")
     // The worktree root itself names no file, so no file-scoped rule fits it.
     if (path === "" || path === ".") return unresolved("unsupported-syntax")
+    // A file with another link shares its bytes with a name the record does
+    // not hold, possibly outside the worktree, so no record can stand for it.
+    if (await hasOtherLinks(followed.target)) return unresolved("unsupported-syntax")
     return fingerprint({
       version: 1,
       coverage: "tool-and-file",
