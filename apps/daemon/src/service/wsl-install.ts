@@ -9,7 +9,7 @@ import { z } from "zod"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
-import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, OwnerInstances, type ServiceSwap } from "./update-outcome.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
 import { removeWindowsTask, WindowsTaskRemovalError, type WindowsTaskRemovalPlan } from "./windows-task.js"
@@ -176,15 +176,14 @@ export function prepareWslUpdate(
 
     return {
       swap: async (deadline) => {
-        try {
-          await writeIn(deadline)(intentPath, intent)
-        } catch (cause) {
-          throw new DaemonServiceUpdateError("nothing-changed", cause)
-        }
         if (interrupted === undefined) {
           if (!/^domovoi-task:(missing|[1-4])$/.test(await confirmedIn(deadline)(old.disable))) throw new Error("WSL task disable was not confirmed")
         }
         await withinServiceDeadline(deadline, () => stopSupervisor(path, deadline))
+        // Written just before the delete, once the old task is disabled and
+        // its guest supervisor stopped, so status never reports an
+        // interrupted update while the old task still runs.
+        await writeIn(deadline)(intentPath, intent)
         try {
           if (interrupted === undefined) await removeWindowsTask(old.removal, effects, deadline)
           else await removeRegisteredTask(candidates, effects, deadline)

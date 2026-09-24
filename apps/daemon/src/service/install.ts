@@ -500,7 +500,19 @@ function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, wai
     const stoppedInstance = currentInstance(readOwner, profile)
     return {
       swap: async (deadline) => {
-        await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        try {
+          await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        } catch (cause) {
+          // A refused stop may have changed nothing: the task still enabled,
+          // running the command it ran before. Then the service was left as
+          // it was, and there is nothing to put back.
+          const now = await readWindowsTaskAction(displayName, effects, deadline).catch(() => undefined)
+          if (now !== undefined && now !== "missing" && now.enabled && now.state === 4
+            && now.path === previous.path && now.arguments === previous.arguments) {
+            throw new DaemonServiceUpdateError("nothing-changed", cause)
+          }
+          throw cause
+        }
         await whileHeldIn(deadline, stoppedInstance)(async () => {})
         await startIn(deadline)(plan.commands)
         return plan

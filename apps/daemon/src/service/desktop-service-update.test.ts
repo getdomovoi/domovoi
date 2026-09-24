@@ -132,7 +132,8 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
       }
       if (body.includes("domovoi-task-action")) {
         order.push("read task action")
-        return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: "C:\\Program Files\\Domovoi\\runtime-1\\node.exe", arguments: "\"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-config \"C:\\Users\\dl\\.domovoi\\service.json\"" })}\n` }
+        const [path, ...rest] = effects.task.definition.split("\" ")
+        return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: path!.replace(/^"/u, ""), arguments: rest.join("\" "), enabled: true, state: effects.task.running ? 4 : 3 })}\n` }
       }
       if (body.includes("DeleteTask")) { order.push("delete task"); return { code: 0, stdout: "domovoi-task:deleted\n" } }
       if (body.includes("$task.Stop(0)")) {
@@ -474,9 +475,13 @@ describe("updateDaemonService with a WSL guest service (ruled B)", () => {
     const effects = fake("linux", "/home/dl", {}, configuration)
     const next = installedWslTask({ ...configuration.wsl!, executable: runtime.nodePath, args: [runtime.daemonEntryPath] }, registrationId, configurationPath)
     expect(await updateDaemonService({ runtime }, effects)).toEqual({ kind: "task", name: next.name, configurationPath })
+    // Review round 3 (P3): the record is written just before the delete, once
+    // the old task is disabled and its guest supervisor stopped, so status
+    // does not report an interrupted update while the old task still runs.
     expect(effects.order).toEqual([
+      "disable task", "stop guest supervisor",
       `write ${intentPath}`,
-      "disable task", "stop guest supervisor", "stop task", "delete task",
+      "stop task", "delete task",
       "claim", `write ${configurationPath}`, "release",
       "register task", "start task",
       `remove ${intentPath}`,
@@ -581,20 +586,25 @@ describe("review round 2 probes", () => {
     expect(effects.order.slice(-3)).toEqual(["stop task", expect.stringMatching(/^schtasks \/create /), "schtasks /run /tn Domovoi daemon"])
   })
 
-  // W1: the stop fails while the old task runs. The restore must stop it too,
-  // and must not say "not running" while the old daemon runs.
-  it("W1: stops the running task before putting the old one back after a failed stop", async () => {
-    const effects = fake("win32", "C:\\Users\\dl")
-    const capture = effects.capture
-    let stops = 0
-    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
-      if (script(args).includes("$task.Stop(0)") && ++stops === 1) return { code: 1, stdout: "", stderr: "Access is denied." }
-      return capture(command, args, deadline)
-    })
-    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
-    expect(effects.task.runningDefinition).toBe(oldWindowsCommand)
-    expect(effects.owner).toMatchObject({ state: "ready" })
-    expect(effects.owner!.instanceId).not.toBe("instance-old")
+  // W1 (round 2, then round 3): the stop is refused while the old task runs.
+  // The task still runs the old command, so nothing changed: no restore, and
+  // no text saying the service is not running.
+  it("W1: says nothing changed when the stop is refused and the old task still runs", async () => {
+    for (const refusals of [1, Number.POSITIVE_INFINITY]) {
+      const effects = fake("win32", "C:\\Users\\dl")
+      const capture = effects.capture
+      let stops = 0
+      effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
+        if (script(args).includes("$task.Stop(0)") && ++stops <= refusals) { effects.order.push("stop refused"); return { code: 1, stdout: "", stderr: "Access is denied." } }
+        return capture(command, args, deadline)
+      })
+      await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(
+        "Domovoi could not update the service: Access is denied. Nothing was changed, and the service was left as it was.",
+      )
+      expect(effects.run).not.toHaveBeenCalled()
+      expect(effects.task.runningDefinition).toBe(oldWindowsCommand)
+      expect(effects.owner).toEqual({ instanceId: "instance-old", state: "ready" })
+    }
   })
 
   // R1: the owner read right before the restart fails. The old instance's
