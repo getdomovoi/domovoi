@@ -12483,6 +12483,153 @@ describe("DomovoiDaemon", () => {
     socket.close()
   })
 
+  // The card hides the file, so no copy a client receives or the daemon
+  // saves may name it; the daemon keeps the record in memory to read again.
+  it("never sends or saves the path of a file its card hides, and still reads it again on Allow", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-hidden-record-"))
+    scratchDirectories.push(workspacePath)
+    const secretName = "ghp_abcdefghijklmnop"
+    await writeFile(join(workspacePath, ".env"), "TOKEN=1")
+    await writeFile(join(workspacePath, `${secretName}.txt`), "notes")
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-file-hidden-record"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-file-hidden-record"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    type Card = {
+      id: string
+      providerRequestId?: number
+      risk: string
+      affects: string
+      revision: number
+      execution: { state: string; reason?: string }
+    }
+    const received: string[] = []
+    socket.on("message", (data: WebSocket.RawData) => { received.push(data.toString()) })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+    const card = async (requestId: number) => (await cards()).find((candidate) => candidate.providerRequestId === requestId)!
+    const hiddenExecution = { state: "unresolved", reason: "sensitive-content" }
+    // Nothing a client received and nothing saved names either file.
+    const neverNamed = () => {
+      const copies = [...received, JSON.stringify(store.save.mock.calls)]
+      for (const copy of copies) {
+        expect(copy).not.toContain(secretName)
+        expect(copy).not.toContain(".env")
+      }
+    }
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the files", client: "desktop" })
+    for (const [requestId, name] of [[91, ".env"], [92, `${secretName}.txt`]] as const) {
+      listener!({
+        type: "approval-requested",
+        requestId,
+        threadId: session.providerThreadId,
+        turnId: "turn-file-hidden-record",
+        reason: "Edit a file",
+        command: "Edit",
+        path: join(workspacePath, name),
+      })
+    }
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(2), { timeout: 3_000 })
+    const credential = await card(91)
+    const redacted = await card(92)
+    expect(credential).toMatchObject({
+      risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      revision: 0,
+      execution: hiddenExecution,
+    })
+    expect(redacted).toMatchObject({
+      risk: "hard-gate",
+      affects: "The file [REDACTED].txt in the session worktree.",
+      revision: 0,
+      execution: hiddenExecution,
+    })
+    neverNamed()
+
+    // An unchanged hidden file is read again against the record the daemon
+    // kept, so its Allow is released at the revision shown.
+    await expect(rpc("approval.resolve", { approvalId: redacted.id, decision: "allow-once", revision: 0, client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(92, "allow-once")
+
+    // A hidden file that becomes a directory changes only the record the
+    // daemon kept, and that is still a change.
+    await unlink(join(workspacePath, ".env"))
+    await mkdir(join(workspacePath, ".env"))
+    await expect(rpc("approval.resolve", { approvalId: credential.id, decision: "allow-once", revision: 0, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(91, expect.anything())
+    expect(await card(91)).toMatchObject({ risk: "hard-gate", revision: 1, execution: hiddenExecution })
+    neverNamed()
+    await expect(rpc("approval.resolve", { approvalId: credential.id, decision: "allow-once", revision: 1, client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
+    neverNamed()
+    socket.close()
+  })
+
   it("forgets a file card's requested path when the card leaves without an answer", async () => {
     const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-target-leaves-"))
     scratchDirectories.push(workspacePath)

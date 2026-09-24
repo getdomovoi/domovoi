@@ -32,3 +32,9 @@ new line under the next revision, broadcast, and the Allow is refused. Every All
 card is read again this way, including a card the daemon could not resolve (a file with another
 hard link, say), and a change in its target, Affects line, sensitivity or execution record rewrites
 the card and refuses the Allow. An unresolved card still offers no Always.
+
+A card whose Affects line shows [REDACTED] carries `{ state: "unresolved", reason:
+"sensitive-content" }` as its execution record in every copy the daemon saves or sends
+(`workspace.get`, `workspace.changed`, the saved store), so no client receives the path the line
+hides. The daemon keeps the real record in memory only, for the reading on Allow, and forgets it
+when the card leaves.

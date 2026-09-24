@@ -1297,6 +1297,11 @@ export type DaemonErrorEntry = {
 
 export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
 
+// What a card that hides its file carries in place of its execution record,
+// which would name the file: the shape #541 gives a card whose record holds a
+// credential path, so every saved and sent copy stays free of the path.
+const hiddenApprovalExecution = { state: "unresolved", reason: "sensitive-content" } as const
+
 // All closed terminal records together: sixteen full records at the replay
 // budget, 1,048,576 characters, the same figure as the WebSocket high-water
 // mark in the terminal throughput budget.
@@ -1367,8 +1372,15 @@ export class DomovoiDaemon {
   // The file a waiting file-tool card was raised for, exactly as the provider
   // asked for it, keyed by approval id. approval.resolve reads it again before
   // releasing the edit. Held in memory: the provider request it answers does
-  // not outlive the daemon either.
-  #fileApprovalTargets = new Map<string, { cwd: string; filePath: string; tool: string }>()
+  // not outlive the daemon either. When the card hides its file, the card
+  // carries hiddenApprovalExecution in every copy saved or sent, and the
+  // execution record naming the file is kept here alone, for that reading.
+  #fileApprovalTargets = new Map<string, {
+    cwd: string
+    filePath: string
+    tool: string
+    hiddenExecution?: WorkspaceSnapshot["approvals"][number]["execution"]
+  }>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
@@ -7045,11 +7057,14 @@ export class DomovoiDaemon {
           )
           return
         }
-        let resolvedApprovalExecution = approval.execution.state === "resolved"
-          ? approval.execution
+        const requestedFile = this.#fileApprovalTargets.get(approval.id)
+        // A card that hides its file is answered for the record the daemon
+        // kept, not the placeholder every copy of the card carries.
+        const cardExecution = requestedFile?.hiddenExecution ?? approval.execution
+        let resolvedApprovalExecution = cardExecution.state === "resolved"
+          ? cardExecution
           : undefined
         const approvedRecord = resolvedApprovalExecution?.record
-        const requestedFile = this.#fileApprovalTargets.get(approval.id)
         // A package script can change while its card waits, and so can the
         // file an edit reaches: a directory on its path can become a link to
         // somewhere else, and a file with another link can be replaced by a
@@ -7116,16 +7131,26 @@ export class DomovoiDaemon {
           const currentRisk = approval.risk === "hard-gate" || currentAffects?.redacted === true || currentAffects?.sensitive === true
             ? "hard-gate"
             : currentDecision.risk
-          const shownExecution = approval.execution
-          const executionChanged = shownExecution.state === "resolved"
-            ? currentExecution.state !== "resolved" || currentExecution.digest !== shownExecution.digest
-            : currentExecution.state !== "unresolved" || currentExecution.reason !== shownExecution.reason
+          const executionChanged = cardExecution.state === "resolved"
+            ? currentExecution.state !== "resolved" || currentExecution.digest !== cardExecution.digest
+            : currentExecution.state !== "unresolved" || currentExecution.reason !== cardExecution.reason
           if (
             executionChanged
             || (currentAffects !== undefined && currentAffects.text !== approval.affects)
             || currentRisk !== approval.risk
           ) {
-            approval.execution = currentExecution
+            // A card that hid its file keeps hiding it, and one whose file is
+            // now hidden starts to; either way the record stays in memory.
+            const keptTarget = requestedFile ?? (fileTarget !== undefined && fileTool !== undefined
+              ? { cwd: fileTarget.cwd, filePath: fileTarget.filePath, tool: fileTool }
+              : undefined)
+            const hidesFile = keptTarget !== undefined && (
+              requestedFile?.hiddenExecution !== undefined
+              || currentAffects?.redacted === true
+              || currentAffects?.sensitive === true
+            )
+            if (hidesFile) this.#fileApprovalTargets.set(approval.id, { ...keptTarget, hiddenExecution: currentExecution })
+            approval.execution = hidesFile ? { ...hiddenApprovalExecution } : currentExecution
             approval.revision += 1
             if (currentAffects !== undefined) approval.affects = currentAffects.text
             approval.risk = currentRisk
@@ -9102,6 +9127,9 @@ export class DomovoiDaemon {
         })
         this.#agents.require(provider).resolveApproval(event.requestId, "allow-once")
       } else {
+        // A card that hides its file, whole or in part, carries no record
+        // that names it; approval.resolve reads the kept record instead.
+        const hidesFile = fileTarget !== undefined && (affectsCopy.redacted || affectsCopy.sensitive)
         const approval: WorkspaceSnapshot["approvals"][number] = {
           id: `approval-${randomUUID()}`,
           sessionId: session.id,
@@ -9119,14 +9147,16 @@ export class DomovoiDaemon {
           providerRequestId: event.requestId,
           ...(event.itemId && event.itemId.length <= 256 ? { itemId: event.itemId } : {}),
           requestedAt: createdAt,
-          execution,
+          execution: hidesFile ? { ...hiddenApprovalExecution } : execution,
           revision: 0,
           ...(inactiveRuleIds.length === 0 ? {} : {
             reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
           }),
         }
         this.#snapshot.approvals.push(approval)
-        if (fileTarget) this.#fileApprovalTargets.set(approval.id, fileTarget)
+        if (fileTarget) {
+          this.#fileApprovalTargets.set(approval.id, hidesFile ? { ...fileTarget, hiddenExecution: execution } : fileTarget)
+        }
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,
           session.id,
