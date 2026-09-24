@@ -1,7 +1,19 @@
 import { lstat, readlink } from "node:fs/promises"
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 
-import { canonicalPath } from "./credential-stores.js"
+import type { ExecutionResolution } from "@getdomovoi/protocol"
+
+import {
+  canonicalPath,
+  commandOperands,
+  operandPieces,
+  operandsReachCredentialPath,
+  realPathLookupBudgetMs,
+  realPathNamesSecret,
+  unreadablePath,
+  type RealPath,
+} from "./credential-stores.js"
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
@@ -59,7 +71,7 @@ export type ResolvedApprovalPath = Readonly<{
   target: string
   workspace: string
   hops: readonly string[]
-  canonical?: string | undefined
+  canonical?: RealPath
 }>
 
 // The path as the request gave it, relative to the directory the request runs
@@ -79,8 +91,9 @@ const maximumLinksFollowed = 40
 // whose target does not exist yet, is replaced by its target before the rest
 // of the path is read; ".." then leaves the directory the link led to. A
 // component that does not exist is kept as written. Every link followed is
-// recorded. Undefined when the links loop past the bound.
-async function followPath(path: string): Promise<{ target: string; hops: string[] } | undefined> {
+// recorded. Undefined when the links loop past the bound. Every lookup ends at
+// the deadline.
+async function followPath(path: string, deadline: OperationDeadline): Promise<{ target: string; hops: string[] } | undefined> {
   const root = parse(path).root
   let current = root
   const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
@@ -92,10 +105,13 @@ async function followPath(path: string): Promise<{ target: string; hops: string[
     if (part === "..") { current = dirname(current); continue }
     const next = join(current, part)
     let isLink = false
-    try { isLink = (await lstat(next)).isSymbolicLink() } catch { /* absent or unreadable: kept as written */ }
+    try { isLink = (await beforeDeadline(lstat(next), deadline)).isSymbolicLink() } catch (error) {
+      if (deadline.signal.aborted) throw error
+      /* absent or unreadable: kept as written */
+    }
     if (!isLink) { current = next; continue }
     if (++links > maximumLinksFollowed) return undefined
-    const target = await readlink(next)
+    const target = await beforeDeadline(readlink(next), deadline)
     hops.push(next, target, isAbsolute(target) ? target : join(current, target))
     const targetRoot = parse(target).root
     if (targetRoot !== "") current = targetRoot
@@ -106,12 +122,21 @@ async function followPath(path: string): Promise<{ target: string; hops: string[
 
 // Where the path really leads, and where the worktree really is, each followed
 // the same way. Undefined when either loops, and then the lexical answer stands.
+// A lookup that runs out of time or fails gives the lexical answer with a real
+// path that could not be read, so the card treats the path as a credential path.
 export async function resolveApprovalPath(workspace: string, path: string, cwd?: string): Promise<ResolvedApprovalPath | undefined> {
   const requested = requestedPath(workspace, path, cwd)
-  const followed = await followPath(requested)
-  const realWorkspace = await followPath(resolve(workspace))
-  if (followed === undefined || realWorkspace === undefined) return undefined
-  return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops, canonical: await canonicalPath(requested) }
+  const deadline = OperationDeadline.start(realPathLookupBudgetMs)
+  try {
+    const followed = await followPath(requested, deadline)
+    const realWorkspace = await followPath(resolve(workspace), deadline)
+    if (followed === undefined || realWorkspace === undefined) return undefined
+    return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops, canonical: await canonicalPath(requested, undefined, deadline) }
+  } catch {
+    return { target: resolve(requested), workspace: resolve(workspace), hops: [], canonical: unreadablePath }
+  } finally {
+    deadline.clear()
+  }
 }
 
 // A path that names a credential file is hidden whole on the card; the line
@@ -149,7 +174,7 @@ function affectedFile(input: {
 // sent like the file path, so a credential store there, or inside one, as
 // written or at its real path, is hidden whole and the line keeps only where
 // the directory is; the request is then a hard gate.
-export function approvalDirectory(input: { directory: string; workspace: string | undefined; canonical?: string | undefined }): {
+export function approvalDirectory(input: { directory: string; workspace: string | undefined; canonical?: RealPath }): {
   text: string
   redacted: boolean
   sensitive: boolean
@@ -159,7 +184,7 @@ export function approvalDirectory(input: { directory: string; workspace: string 
   if (
     namesSecretPath(input.directory)
     || namesSecretPath(directory)
-    || (input.canonical !== undefined && namesSecretPath(input.canonical))
+    || realPathNamesSecret(input.canonical, namesSecretPath)
   ) {
     const inside = workspace !== undefined && (directory === workspace || within(workspace, directory) !== undefined)
     return { text: inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree", redacted: false, sensitive: true }
@@ -185,7 +210,80 @@ export function approvalFacts(input: {
     || (input.resolved !== undefined
       && (namesSecretPath(input.resolved.target)
         || input.resolved.hops.some(namesSecretPath)
-        || (input.resolved.canonical !== undefined && namesSecretPath(input.resolved.canonical))))
+        || realPathNamesSecret(input.resolved.canonical, namesSecretPath)))
   const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
   return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
+}
+
+// What a request can reach, as the daemon holds it while the card waits: the
+// worktree, the directory and file as the agent gave them, and every operand
+// of the command and of its resolved execution.
+export type ApprovalTargets = Readonly<{
+  workspace: string
+  cwd?: string | undefined
+  path?: string | undefined
+  operands: readonly string[]
+}>
+
+// Every operand of a command line and of its resolved execution.
+export function approvalOperands(command: string | undefined, execution: ExecutionResolution): string[] {
+  return [
+    ...(command === undefined ? [] : commandOperands(command)),
+    ...(execution.state === "resolved" && execution.record.kind === "shell"
+      ? execution.record.entries.flatMap((entry) => entry.parts.flatMap((part) => part.argv.flatMap(operandPieces)))
+      : []),
+  ]
+}
+
+// The card's directory and file lines for these targets, judged as written
+// and at their real paths on disk now, and whether any operand reaches a
+// credential store or secret file. Run when the card is made and again
+// before an Allow, since a link can move between the two.
+export async function approvalTargetCard(targets: ApprovalTargets, scope: ApprovalScope | undefined): Promise<{
+  directory: ReturnType<typeof approvalDirectory>
+  facts: ReturnType<typeof approvalFacts>
+  reachesCredentialStore: boolean
+}> {
+  const requestDirectory = resolve(targets.workspace, targets.cwd ?? ".")
+  const reachesCredentialStore = await operandsReachCredentialPath(targets.operands, requestDirectory)
+  const directory = approvalDirectory({
+    directory: targets.cwd ?? targets.workspace,
+    workspace: targets.workspace,
+    canonical: await canonicalPath(requestDirectory),
+  })
+  const facts = approvalFacts({
+    ...(targets.path === undefined ? {} : { path: targets.path }),
+    workspace: targets.workspace,
+    cwd: targets.cwd,
+    scope,
+    resolved: targets.path === undefined ? undefined : await resolveApprovalPath(targets.workspace, targets.path, targets.cwd),
+  })
+  return { directory, facts, reachesCredentialStore }
+}
+
+// Whether a resolved execution record holds a credential path in a field the
+// card does not show: the directory it runs in, or the manifest a script came
+// from. The command words stay the agent's own text.
+export function executionNamesCredentialPath(execution: ExecutionResolution): boolean {
+  if (execution.state !== "resolved") return false
+  const { record } = execution
+  return namesSecretPath(record.cwd)
+    || (record.kind === "shell" && record.entries.some((entry) => (
+      entry.source.kind === "package-script" && namesSecretPath(entry.source.manifest)
+    )))
+}
+
+// A file line saved before its path was classified. A word in it that names a
+// credential store or secret file hides the whole line's path, and the line
+// keeps only where the file is.
+export function approvalAffects(affects: string): { text: string; sensitive: boolean } {
+  const names = affects.split(/\s+/u).some((word) => (
+    [word, word.replace(/[.,;]+$/u, "")].some((candidate) => operandPieces(candidate).some(namesSecretPath))
+  ))
+  if (!names) return { text: affects, sensitive: false }
+  const inside = affects.includes(" in the session worktree") && !affects.includes("outside the session worktree")
+  return {
+    text: inside ? "The file [REDACTED] in the session worktree." : "The file [REDACTED], outside the session worktree.",
+    sensitive: true,
+  }
 }

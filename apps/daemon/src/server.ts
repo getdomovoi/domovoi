@@ -95,8 +95,13 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { approvalDirectory, approvalFacts, resolveApprovalPath } from "./approval-facts.js"
-import { canonicalPath, commandOperands, operandPieces, operandsReachCredentialPath } from "./credential-stores.js"
+import {
+  approvalOperands,
+  approvalTargetCard,
+  executionNamesCredentialPath,
+  type ApprovalScope,
+  type ApprovalTargets,
+} from "./approval-facts.js"
 import {
   boundedQueuedSendReason,
   SqliteWorkspaceStore,
@@ -1332,6 +1337,9 @@ export class DomovoiDaemon {
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
+  // What each waiting card's request can reach, as the agent gave it. Kept in
+  // memory only; the card shows these paths hidden or not at all.
+  readonly #approvalTargets = new Map<string, ApprovalTargets>()
   #agents: AgentRegistry
   #workspaceService: WorkspaceService
   #connectedAgents = new Set<string>()
@@ -2192,6 +2200,46 @@ export class DomovoiDaemon {
         ? { projectId: project.id }
         : {}),
     })
+  }
+
+  #holdApprovalTargets(approvalId: string, targets: ApprovalTargets): void {
+    for (const held of this.#approvalTargets.keys()) {
+      if (!this.#snapshot.approvals.some((approval) => approval.id === held)) this.#approvalTargets.delete(held)
+    }
+    this.#approvalTargets.set(approvalId, targets)
+  }
+
+  // Before an Allow, the card's targets are judged again on disk: a link can
+  // move to a credential store after the card was made while the command text
+  // and its execution digest stay the same. A card that now names one is made
+  // again as a hard gate with the path hidden, and true says it changed. A card
+  // loaded from disk is judged from its command and directory.
+  async #recardIfTargetsNowSensitive(
+    approval: WorkspaceSnapshot["approvals"][number],
+    session: WorkspaceSnapshot["sessions"][number],
+  ): Promise<boolean> {
+    const workspace = session.workspacePath ?? this.#snapshot.project?.path
+    if (workspace === undefined) return false
+    const targets = this.#approvalTargets.get(approval.id) ?? {
+      workspace,
+      ...(approval.directory.includes("[REDACTED]") ? {} : { cwd: approval.directory }),
+      operands: approvalOperands(approval.command, approval.execution),
+    }
+    let scope: ApprovalScope | undefined
+    try { scope = this.#agents.require(session.runtime.provider).approvalScope?.(session.runtime) } catch { scope = undefined }
+    const card = await approvalTargetCard(targets, scope)
+    if (!card.directory.sensitive && !card.facts.sensitive && !card.reachesCredentialStore) return false
+    const current = this.#snapshot.approvals.find((candidate) => candidate.id === approval.id)
+    if (current === undefined) return false
+    const affects = targets.path === undefined ? current.affects : card.facts.affects
+    if (current.risk === "hard-gate" && current.directory === card.directory.text && current.affects === affects) return false
+    current.risk = "hard-gate"
+    current.directory = card.directory.text
+    current.affects = affects
+    if (card.directory.sensitive) current.execution = { state: "unresolved", reason: "sensitive-content" }
+    await this.#persistSnapshot()
+    this.#broadcastSnapshot()
+    return true
   }
 
   #broadcastSnapshot(): void {
@@ -6712,6 +6760,20 @@ export class DomovoiDaemon {
           )
           return
         }
+        if (
+          params.decision !== "deny"
+          && params.decision !== "deny-explain"
+          && session
+          && await this.#recardIfTargetsNowSensitive(approval, session)
+        ) {
+          this.#error(
+            socket,
+            request.id,
+            invalidParams,
+            "The request now reaches a credential path; review the updated approval before allowing it",
+          )
+          return
+        }
         let resolvedApprovalExecution = approval.execution.state === "resolved"
           ? approval.execution
           : undefined
@@ -8560,27 +8622,18 @@ export class DomovoiDaemon {
       // Where each operand and the directory really are on disk: a link or a
       // name the filesystem treats as another can reach a credential store
       // that no written name shows.
-      const requestDirectory = resolve(factsWorkspace, event.cwd ?? ".")
-      const reachesCredentialStore = await operandsReachCredentialPath([
-        ...(event.command === undefined ? [] : commandOperands(event.command)),
-        ...(execution.state === "resolved" && execution.record.kind === "shell"
-          ? execution.record.entries.flatMap((entry) => entry.parts.flatMap((part) => part.argv.flatMap(operandPieces)))
-          : []),
-      ], requestDirectory)
-      const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
-      const reasonCopy = redactDurableText(event.reason ?? "Run a command")
-      const directoryCopy = approvalDirectory({
-        directory: event.cwd ?? factsWorkspace,
-        workspace: factsWorkspace,
-        canonical: await canonicalPath(requestDirectory),
-      })
-      const facts = approvalFacts({
-        ...(event.path === undefined ? {} : { path: event.path }),
+      const targets: ApprovalTargets = {
         workspace: factsWorkspace,
         cwd: event.cwd,
-        scope: this.#agents.require(provider).approvalScope?.(session.runtime),
-        resolved: event.path === undefined ? undefined : await resolveApprovalPath(factsWorkspace, event.path, event.cwd),
-      })
+        path: event.path,
+        operands: approvalOperands(event.command, execution),
+      }
+      const { directory: directoryCopy, facts, reachesCredentialStore } = await approvalTargetCard(
+        targets,
+        this.#agents.require(provider).approvalScope?.(session.runtime),
+      )
+      const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
+      const reasonCopy = redactDurableText(event.reason ?? "Run a command")
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted
         || directoryCopy.redacted
@@ -8673,12 +8726,16 @@ export class DomovoiDaemon {
           checkpoint: session.baseCommit ?? "unavailable",
           providerRequestId: event.requestId,
           requestedAt: createdAt,
-          execution,
+          // The record's directory is hidden like the card's.
+          execution: directoryCopy.sensitive || executionNamesCredentialPath(execution)
+            ? { state: "unresolved", reason: "sensitive-content" }
+            : execution,
           ...(inactiveRuleIds.length === 0 ? {} : {
             reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
           }),
         }
         this.#snapshot.approvals.push(approval)
+        this.#holdApprovalTargets(approval.id, targets)
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,
           session.id,

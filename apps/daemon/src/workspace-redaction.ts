@@ -1,6 +1,6 @@
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { approvalDirectory } from "./approval-facts.js"
+import { approvalAffects, approvalDirectory, executionNamesCredentialPath } from "./approval-facts.js"
 import {
   redactDurableCommand,
   redactDurableOutput,
@@ -10,6 +10,7 @@ import {
 function executionContainsSecret(
   execution: WorkspaceSnapshot["approvals"][number]["execution"],
 ): boolean {
+  if (executionNamesCredentialPath(execution)) return true
   if (execution.state !== "resolved" || execution.record.kind !== "shell") return false
   return execution.record.entries.some((entry) => (
     entry.parts.some((part) => redactDurableCommand(part.argv.join(" ")).redacted)
@@ -31,18 +32,20 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
         ?? sanitized.project?.path,
     })
     const affects = redactDurableText(approval.affects)
+    // A file line saved before its path was classified is judged here too.
+    const affectsLine = approvalAffects(affects.value)
     const network = redactDurableText(approval.network)
     const unsafeExecution = executionContainsSecret(approval.execution)
     return {
       ...approval,
       risk: command.redacted || operation.redacted || directory.redacted || directory.sensitive
-        || affects.redacted || network.redacted || unsafeExecution
+        || affects.redacted || affectsLine.sensitive || network.redacted || unsafeExecution
         ? "hard-gate"
         : approval.risk,
       command: command.value,
       operation: operation.value,
       directory: directory.text,
-      affects: affects.value,
+      affects: affectsLine.text,
       network: network.value,
       execution: unsafeExecution
         ? { state: "unresolved", reason: "sensitive-content" }

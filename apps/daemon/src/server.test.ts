@@ -1301,6 +1301,113 @@ describe("DomovoiDaemon", () => {
     reopened.close()
   })
 
+  it("hides a credential directory in the execution record and rechecks targets before an Allow", async () => {
+    const worktree = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-recheck-")))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, ".aws"))
+    await writeFile(join(worktree, "notes.txt"), "")
+    await writeFile(join(worktree, ".env"), "")
+    await symlink(join(worktree, "notes.txt"), join(worktree, "link.txt"))
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "active"
+    session.runtime.provider = "claude-code"
+    session.workspacePath = worktree
+    session.providerThreadId = "thread-approval-recheck"
+    session.activeTurnId = "turn-approval-recheck"
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-approval-recheck"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { "claude-code": agent },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    let id = 0
+    const rpc = <M extends RpcMethod>(method: M, params: object) => new Promise<TestRpcResponse<M>>((resolve) => {
+      const requestId = ++id
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
+        if (message.id !== requestId) return
+        socket.off("message", receive)
+        resolve(message as TestRpcResponse<M>)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+    })
+    await rpc("session.send", { sessionId: session.id, prompt: "Continue the recheck test", client: "desktop" })
+
+    // The directory is hidden on the card, and in the execution record too.
+    listener!({
+      type: "approval-requested",
+      requestId: 201,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "ls",
+      reason: "List files",
+      cwd: join(worktree, ".aws"),
+    })
+    const inStore = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 201)
+    expect(inStore).toMatchObject({ risk: "hard-gate", directory: "[REDACTED] in the session worktree" })
+    expect(JSON.stringify(inStore)).not.toContain(".aws")
+
+    // An ordinary file behind a link gets a normal card. The link then moves
+    // to .env: the command text and its execution digest are unchanged, so
+    // only a recheck of the targets at Allow sees it.
+    listener!({
+      type: "approval-requested",
+      requestId: 202,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "cat link.txt",
+      reason: "Read a file",
+      cwd: worktree,
+      path: "link.txt",
+    })
+    const ordinary = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 202)
+    expect(ordinary).toMatchObject({ risk: "normal" })
+    await unlink(join(worktree, "link.txt"))
+    await symlink(join(worktree, ".env"), join(worktree, "link.txt"))
+    await expect(rpc("approval.resolve", { approvalId: ordinary!.id, decision: "allow-once", client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: "The request now reaches a credential path; review the updated approval before allowing it" } })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    const recarded = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 202)
+    expect(recarded).toMatchObject({ id: ordinary!.id, risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
+
+    // The hard gate, now shown for what it is, takes an explicit Allow.
+    await expect(rpc("approval.resolve", { approvalId: ordinary!.id, decision: "allow-once", client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(202, "allow-once")
+    socket.close()
+  })
+
   it("reads context occupancy only for the active provider runtime and thread", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!

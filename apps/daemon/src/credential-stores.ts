@@ -1,7 +1,8 @@
 import { realpath } from "node:fs"
 import { homedir } from "node:os"
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
-import { promisify } from "node:util"
+import { dirname, isAbsolute, join, parse, sep } from "node:path"
+
+import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 
 // Credential stores in the home directory. The Codex sandbox refuses reads of
 // each location, and an approval card hides and hard-gates a path or command
@@ -129,45 +130,84 @@ export function isCredentialPath(path: string): boolean {
     || wholeStores.some((root) => namesWholeStore(written, root) || namesWholeStore(collapsed, root))
 }
 
-const realpathNative = promisify(realpath.native)
-
 // Longer than any path the system resolves.
 const maximumResolvedPathLength = 4096
 
-// Where a path really is on this machine: the real path of the path, or of
-// its nearest existing ancestor with the rest as written, so a link, or a
-// name the filesystem treats as another, reads as the name it reaches. A
-// relative path is read from base; undefined without one. Asynchronous, so a
-// slow or automounted path never stalls the daemon.
-export async function canonicalPath(path: string, base?: string): Promise<string | undefined> {
+// How long the real paths behind one request may take to read. A stalled
+// network or automounted path ends here instead of holding the session.
+export const realPathLookupBudgetMs = 2_000
+
+// A path whose real location could not be read: the lookup ran out of time,
+// or the filesystem refused it. It is judged as a credential path.
+export const unreadablePath = Object.freeze({ unreadable: true } as const)
+export type RealPath = string | typeof unreadablePath | undefined
+
+const componentSeparator = process.platform === "win32" ? /[\\/]+/u : /\/+/u
+
+function realpathBefore(path: string, deadline: OperationDeadline): Promise<string> {
+  return beforeDeadline(new Promise<string>((resolve, reject) => {
+    realpath.native(path, (error, resolved) => error ? reject(error) : resolve(resolved))
+  }), deadline)
+}
+
+function isAbsent(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === "ENOENT" || code === "ENOTDIR"
+}
+
+// Where a path really is on this machine, so a link, or a name the filesystem
+// treats as another, reads as the name it reaches. A path that does not exist
+// yet is followed one component at a time from its root the way the
+// filesystem does: each existing component at its real path, a link before
+// any ".." after it, and the rest from the first missing component as
+// written. A relative path is read from base; undefined without one. Every
+// lookup shares the deadline, and a lookup that times out or is refused gives
+// unreadablePath.
+export async function canonicalPath(path: string, base?: string, deadline?: OperationDeadline): Promise<RealPath> {
   const expanded = /^~(?:[/\\]|$)/u.test(path) ? `${homedir()}${path.slice(1)}` : path
   if (expanded.length > maximumResolvedPathLength || (!isAbsolute(expanded) && base === undefined)) return undefined
   const requested = isAbsolute(expanded) ? expanded : `${base!}${sep}${expanded}`
-  try { return await realpathNative(requested) } catch { /* absent or unreadable: try its ancestors */ }
-  let current = resolve(requested)
-  const rest: string[] = []
-  for (;;) {
-    const parent = dirname(current)
-    if (parent === current) return undefined
-    rest.unshift(basename(current))
-    current = parent
-    try { return join(await realpathNative(current), ...rest) } catch { /* keep walking up */ }
+  const clock = deadline ?? OperationDeadline.start(realPathLookupBudgetMs)
+  try {
+    try { return await realpathBefore(requested, clock) } catch (error) {
+      if (!isAbsent(error)) return unreadablePath
+    }
+    const root = parse(requested).root
+    const parts = requested.slice(root.length).split(componentSeparator).filter((part) => part !== "")
+    let current = root
+    for (const [index, part] of parts.entries()) {
+      if (part === ".") continue
+      if (part === "..") { current = dirname(current); continue }
+      try { current = await realpathBefore(join(current, part), clock) } catch (error) {
+        if (!isAbsent(error)) return unreadablePath
+        return `${current.endsWith(sep) ? current : `${current}${sep}`}${parts.slice(index).join(sep)}`
+      }
+    }
+    return current
+  } finally {
+    if (deadline === undefined) clock.clear()
   }
 }
 
-// Whether a path names a credential store or a secret file at its real path.
-async function isCredentialPathOnDisk(path: string, base?: string): Promise<boolean> {
-  const canonical = await canonicalPath(path, base)
-  return canonical !== undefined && isCredentialPath(canonical)
+// Whether a real path names a credential store or a secret file by this
+// classifier; a real path that could not be read does.
+export function realPathNamesSecret(path: RealPath, names: (path: string) => boolean = isCredentialPath): boolean {
+  return typeof path === "string" ? names(path) : path === unreadablePath
 }
 
 // Whether any of these command operands reaches a credential store or a
-// secret file at its real path, each relative operand read from cwd.
+// secret file at its real path, each relative operand read from cwd. The
+// lookups share one deadline.
 export async function operandsReachCredentialPath(operands: readonly string[], cwd: string | undefined): Promise<boolean> {
-  for (const operand of new Set(operands)) {
-    if (await isCredentialPathOnDisk(operand, cwd)) return true
+  const deadline = OperationDeadline.start(realPathLookupBudgetMs)
+  try {
+    for (const operand of new Set(operands)) {
+      if (realPathNamesSecret(await canonicalPath(operand, cwd, deadline))) return true
+    }
+    return false
+  } finally {
+    deadline.clear()
   }
-  return false
 }
 
 type QuotedText = { text: string; end: number }
@@ -201,50 +241,80 @@ function doubleQuoted(characters: readonly string[], start: number, escapes: boo
   return { text, end: index + 1 }
 }
 
-const ansiEscapes: Readonly<Record<string, string>> = {
-  a: "\u0007", b: "\b", e: "\u001b", E: "\u001b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v",
-  "\\": "\\", "'": "'", "\"": "\"", "?": "?",
+const ansiEscapes: Readonly<Record<string, number>> = {
+  a: 0x07, b: 0x08, e: 0x1b, E: 0x1b, f: 0x0c, n: 0x0a, r: 0x0d, t: 0x09, v: 0x0b,
+  "\\": 0x5c, "'": 0x27, "\"": 0x22, "?": 0x3f,
 }
 
-// Up to count digits of one base from start, as a character.
-function escapedCharacter(characters: readonly string[], start: number, digits: RegExp, count: number, radix: number): QuotedText | undefined {
-  let value = ""
-  while (value.length < count && digits.test(characters[start + value.length] ?? "")) value += characters[start + value.length]
-  const point = Number.parseInt(value, radix)
-  if (value === "" || point > 0x10ffff) return undefined
-  return { text: String.fromCodePoint(point), end: start + value.length }
-}
+const utf8 = new TextEncoder()
+const utf8Text = new TextDecoder()
 
-// An ANSI-C quoted string, $'...': the escapes decoded the way the shell does
-// before the command runs.
-function ansiCQuoted(characters: readonly string[], start: number): QuotedText {
+// Up to count digits of one base from start, as a number.
+function escapedValue(characters: readonly string[], start: number, digits: RegExp, count: number, radix: number): { value: number; end: number } | undefined {
   let text = ""
+  while (text.length < count && digits.test(characters[start + text.length] ?? "")) text += characters[start + text.length]
+  return text === "" ? undefined : { value: Number.parseInt(text, radix), end: start + text.length }
+}
+
+// A \u or \U value as bash writes it: one byte through 0x7f, then the UTF-8
+// pattern stretched to six bytes, surrogates included; nothing past 0x7fffffff.
+function unicodeBytes(value: number): number[] {
+  if (value <= 0x7f) return [value]
+  if (value > 0x7fffffff) return []
+  const length = value <= 0x7ff ? 2 : value <= 0xffff ? 3 : value <= 0x1fffff ? 4 : value <= 0x3ffffff ? 5 : 6
+  const bytes = Array.from({ length }, (_, index) => 0x80 | ((value >>> (6 * (length - 1 - index))) & 0x3f))
+  bytes[0] = ((0xff00 >> length) & 0xff) | (value >>> (6 * (length - 1)))
+  return bytes
+}
+
+// An ANSI-C quoted string, $'...', decoded the way bash does before the
+// command runs. Bash works on bytes: a literal character is its UTF-8 bytes,
+// an octal escape keeps the low byte of its value, \x is one byte, \u and \U
+// are UTF-8, and \c is the control form of the next byte. The quoted text ends
+// at its first NUL byte, the rest of the word goes on after the closing quote,
+// and the bytes read as UTF-8.
+function ansiCQuoted(characters: readonly string[], start: number): QuotedText {
+  const bytes: number[] = []
   let index = start
   while (index < characters.length && characters[index] !== "'") {
     const character = characters[index]!
     const next = characters[index + 1]
     if (character !== "\\" || next === undefined) {
-      text += character
+      bytes.push(...utf8.encode(character))
       index += 1
       continue
     }
-    const decoded = Object.hasOwn(ansiEscapes, next) ? { text: ansiEscapes[next]!, end: index + 2 }
-      : /[0-7]/u.test(next) ? escapedCharacter(characters, index + 1, /[0-7]/u, 3, 8)
-      : next === "x" ? escapedCharacter(characters, index + 2, /[0-9a-f]/iu, 2, 16)
-      : next === "u" ? escapedCharacter(characters, index + 2, /[0-9a-f]/iu, 4, 16)
-      : next === "U" ? escapedCharacter(characters, index + 2, /[0-9a-f]/iu, 8, 16)
-      : next === "c" && characters[index + 2] !== undefined
-        ? { text: String.fromCodePoint(characters[index + 2]!.codePointAt(0)! & 0x1f), end: index + 3 }
-        : undefined
-    if (decoded === undefined) {
-      text += character + next
+    let escaped: { bytes: number[]; end: number } | undefined
+    if (Object.hasOwn(ansiEscapes, next)) {
+      escaped = { bytes: [ansiEscapes[next]!], end: index + 2 }
+    } else if (/[0-7]/u.test(next)) {
+      const octal = escapedValue(characters, index + 1, /[0-7]/u, 3, 8)!
+      escaped = { bytes: [octal.value & 0xff], end: octal.end }
+    } else if (next === "x" || next === "u" || next === "U") {
+      const hex = escapedValue(characters, index + 2, /[0-9a-f]/iu, next === "x" ? 2 : next === "u" ? 4 : 8, 16)
+      if (hex !== undefined) escaped = { bytes: next === "x" ? [hex.value] : unicodeBytes(hex.value), end: hex.end }
+    } else if (next === "c" && characters[index + 2] !== undefined && characters[index + 2] !== "'") {
+      // A backslash after \c escapes the character after it for the quote,
+      // so \c\\ and \c\' are the control form of the backslash, and the
+      // quote in \c\' stays in the text.
+      const target = characters[index + 2]!
+      const after = characters[index + 3]
+      const [first, ...rest] = utf8.encode(target)
+      const control = first === 0x3f ? 0x7f : first! & 0x1f
+      escaped = target === "\\" && (after === "\\" || after === "'")
+        ? { bytes: after === "'" ? [control, 0x27] : [control], end: index + 4 }
+        : { bytes: [control, ...rest], end: index + 3 }
+    }
+    if (escaped === undefined) {
+      bytes.push(...utf8.encode(character + next))
       index += 2
     } else {
-      text += decoded.text
-      index = decoded.end
+      bytes.push(...escaped.bytes)
+      index = escaped.end
     }
   }
-  return { text, end: index + 1 }
+  const nul = bytes.indexOf(0)
+  return { text: utf8Text.decode(new Uint8Array(nul === -1 ? bytes : bytes.slice(0, nul))), end: index + 1 }
 }
 
 // A command line read the way a shell splits words: quotes group and are

@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite"
 import { createEmptyWorkspace, demoWorkspace, machineIdSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { resolveCommandExecution } from "./execution-resolution.js"
 import {
   isCorruption,
   storedProtocolVersion,
@@ -506,6 +507,70 @@ describe("SqliteWorkspaceStore", () => {
     reopened.save(legacy)
     expect(readStored()).not.toMatch(/\/home\/u\/\.aws|legacy-directory\/\.ssh/)
     expect(readStored()).toContain("[REDACTED], outside the session worktree")
+    reopened.close()
+  })
+
+  // Every other saved approval field that can hold a path: the directory in
+  // the execution record, the manifest a script came from, and a file line
+  // written before its path was classified. Each is hidden and hard-gates the
+  // approval; a standing rule that holds one is dropped.
+  it("hides credential paths in a saved approval's execution record and file line", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-paths-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    approval.risk = "normal"
+    approval.directory = "/worktrees/legacy-paths/src"
+    approval.affects = "The file src/app.ts in the session worktree."
+    const inStore = resolveCommandExecution({ command: "ls", cwd: ".aws" })
+    const fromManifest = resolveCommandExecution({
+      command: "pnpm test",
+      packageScripts: { test: "vitest run" },
+      manifest: ".ssh/package.json",
+    })
+    const ordinary = resolveCommandExecution({ command: "ls", cwd: "src" })
+    legacy.approvals = [
+      { ...structuredClone(approval), id: "approval-record-cwd", execution: inStore },
+      { ...structuredClone(approval), id: "approval-record-manifest", execution: fromManifest },
+      {
+        ...structuredClone(approval),
+        id: "approval-legacy-affects",
+        affects: "The file /home/u/.conﬁg/gh/config.yml, outside the session worktree.",
+      },
+      { ...structuredClone(approval), id: "approval-ordinary", execution: ordinary },
+    ]
+    legacy.approvalRules = [{
+      id: "rule-record-cwd", projectId: legacy.project!.id,
+      operation: "List files", command: "ls", status: "active",
+      execution: inStore as Extract<typeof inStore, { state: "resolved" }>,
+      createdBy: "desktop", createdAt: "2026-09-01T00:00:00.000Z", useCount: 0,
+    }]
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const visible = reopened.load()
+    const hidden = { state: "unresolved", reason: "sensitive-content" }
+    expect(visible.approvals).toEqual([
+      expect.objectContaining({ id: "approval-record-cwd", risk: "hard-gate", execution: hidden }),
+      expect.objectContaining({ id: "approval-record-manifest", risk: "hard-gate", execution: hidden }),
+      expect.objectContaining({
+        id: "approval-legacy-affects",
+        risk: "hard-gate",
+        affects: "The file [REDACTED], outside the session worktree.",
+      }),
+      expect.objectContaining({ id: "approval-ordinary", risk: "normal", execution: ordinary }),
+    ])
+    expect(visible.approvalRules).toEqual([])
+    const database = new DatabaseSync(databasePath)
+    const stored = JSON.stringify(database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get())
+    database.close()
+    expect(stored).not.toMatch(/\.aws|\.ssh|\.conﬁg/u)
     reopened.close()
   })
 

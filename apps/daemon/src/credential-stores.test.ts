@@ -1,13 +1,22 @@
+import * as fs from "node:fs"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, sep } from "node:path"
 
 import { type Runtime } from "@getdomovoi/protocol"
-import { afterAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 
 import { approvalDirectory, approvalFacts, resolveApprovalPath } from "./approval-facts.js"
 import { codexAppServerArguments, codexSecretLocations } from "./codex.js"
-import { canonicalPath, commandOperands, credentialStores, operandsReachCredentialPath } from "./credential-stores.js"
+import {
+  canonicalPath,
+  commandOperands,
+  credentialStores,
+  operandsReachCredentialPath,
+  realPathLookupBudgetMs,
+  shellWords,
+  unreadablePath,
+} from "./credential-stores.js"
 import { resolveCommandExecution } from "./execution-resolution.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 
@@ -211,9 +220,34 @@ describe("words the shell assembles before running the command", () => {
     expect(permissionDecisionFor({ runtime, command })).toEqual(hardGate)
   })
 
+  // Bash keeps the low byte of an octal escape past \377, reads \x and octal
+  // escapes as bytes and the whole quote as UTF-8, and ends the quoted text at
+  // the first NUL byte, however it is written. Each word below was decoded by
+  // bash 5.3 to the name in the comment.
+  it.each([
+    "cat $'\\456env'", // .env
+    "cat $'prod\\456env'", // prod.env
+    "cat $'prod\\x2eenv\\0junk'", // prod.env
+    "cat $'prod\\x2eenv\\x00junk'", // prod.env
+    "cat $'secrets\\x2eenv\\u0000junk'", // secrets.env
+    "cat $'app\\x2eenvrc\\U00000000junk'", // app.envrc
+    "cat $'prod\\x2eenv\\c@junk'", // prod.env
+    "cat $'prod\\x2eenv\\400junk'", // prod.env
+    "cat ~/$'\\x2eaws\\0junk'/credentials", // ~/.aws/credentials
+    "cp -r ~/$'.con\\xef\\xac\\x81g/gh' /tmp/x", // ~/.conﬁg/gh
+  ])("hard-gates %j as bash decodes it", (command) => {
+    expect(permissionDecisionFor({ runtime, command })).toEqual(hardGate)
+  })
+
+  it("reads the rest of the word after a quote that a NUL ended", () => {
+    expect(shellWords("cat $'.en\\0junk'v")).toEqual(["cat", ".env"])
+    expect(shellWords("cat $'\\777'")).toEqual(["cat", "�"])
+  })
+
   it.each([
     "cat '.e\\\nnv'",
     "cat $'notes\\x2etxt'",
+    "cat $'notes\\456txt'",
   ])("gives %j a normal gate", (command) => {
     expect(permissionDecisionFor({ runtime, command })).toEqual({ action: "review", risk: "normal" })
   })
@@ -236,11 +270,23 @@ describe("the real path of a name on disk", () => {
     await writeFile(join(root, ".docker", "Dockerfile"), "")
     await mkdir(join(root, "notes"))
     await writeFile(join(root, "notes", "a.txt"), "")
+    await mkdir(join(root, ".aws", "deep"))
     await symlink(join(root, ".aws"), join(root, "plain"))
     await symlink(join(root, ".docker"), join(root, "box"))
     await symlink(join(root, "notes"), join(root, "ordinary"))
+    await symlink(join(root, ".aws", "deep"), join(root, "deep-link"))
     return root
   }
+
+  // The filesystem follows deep-link before it applies the "..", so a file
+  // created at deep-link/../new-file lands inside the store.
+  it("follows a link before the .. after it when the file does not exist yet", async () => {
+    const base = await layout()
+    expect(await canonicalPath([base, "deep-link", "..", "new-file"].join(sep))).toBe(join(base, ".aws", "new-file"))
+    expect(await operandsReachCredentialPath(commandOperands("touch deep-link/../new-file"), base)).toBe(true)
+    expect(approvalDirectory({ directory: "deep-link/../new-dir", workspace: base, canonical: await canonicalPath(`deep-link${sep}..${sep}new-dir`, base) }))
+      .toEqual({ text: "[REDACTED] in the session worktree", redacted: false, sensitive: true })
+  })
 
   it.each([
     { label: "a file through a link to a store", path: "plain/credentials" },
@@ -270,6 +316,39 @@ describe("the real path of a name on disk", () => {
       expect(approvalFacts({ workspace, path: absolute, scope: undefined, resolved }).sensitive).toBe(false)
       expect(await operandsReachCredentialPath(commandOperands(`cat ${path}`), base)).toBe(false)
     }
+  })
+})
+
+// A lookup that stalls or cannot read the path does not hold the request: it
+// ends at the deadline, and a path whose real location is unknown is treated
+// as a credential path.
+describe("a real path the filesystem does not give", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it("fails closed when a lookup stalls past the deadline", async () => {
+    vi.useFakeTimers()
+    vi.spyOn(fs.realpath, "native").mockImplementation((() => {}) as never)
+    const lookup = canonicalPath(join(home, "notes.txt"))
+    const operands = operandsReachCredentialPath(["notes.txt"], home)
+    const card = resolveApprovalPath(workspace, join(home, "notes.txt"))
+    await vi.advanceTimersByTimeAsync(realPathLookupBudgetMs)
+    expect(await lookup).toBe(unreadablePath)
+    expect(await operands).toBe(true)
+    expect(approvalFacts({ workspace, path: join(home, "notes.txt"), scope: undefined, resolved: await card }))
+      .toMatchObject({ affects: "The file [REDACTED], outside the session worktree.", sensitive: true })
+    expect(approvalDirectory({ directory: home, workspace, canonical: unreadablePath }))
+      .toEqual({ text: "[REDACTED], outside the session worktree", redacted: false, sensitive: true })
+  })
+
+  it("fails closed when the path cannot be read", async () => {
+    vi.spyOn(fs.realpath, "native").mockImplementation(((_path: string, callback: (error: Error) => void) => {
+      callback(Object.assign(new Error("permission denied"), { code: "EACCES" }))
+    }) as never)
+    expect(await canonicalPath(join(home, "notes.txt"))).toBe(unreadablePath)
+    expect(await operandsReachCredentialPath(["notes.txt"], home)).toBe(true)
   })
 })
 
