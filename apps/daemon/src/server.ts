@@ -69,6 +69,7 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
+  type SessionSearchMatch,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -82,6 +83,7 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
   type StateRecovery,
@@ -235,6 +237,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer } from "./terminal-replay.js"
+import { pairingAddressFor } from "./pairing-address.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -410,6 +413,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "skill.reviewRevision",
   "skill.installPreview",
   "session.history",
+  "session.search",
   "session.evidence",
   "audit.query",
   "fleet.heartbeat",
@@ -1628,6 +1632,19 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // The address a code issued here tells a device to dial: the name on the
+  // certificate this daemon serves, never the address it binds, or the one
+  // problem that leaves a device nothing to dial. One source for every surface
+  // that draws a code.
+  #pairingAddress(): PairingAddress {
+    const port = this.address?.port ?? this.requestedPort
+    const tls = this.#tls
+    return pairingAddressFor(
+      { host: this.host, port, ...(tls ? { tls: { certPath: "the certificate this daemon serves" } } : {}) },
+      () => tls!.cert.toString("utf8"),
     )
   }
 
@@ -5848,9 +5865,10 @@ export class DomovoiDaemon {
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(
-            this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
-          ),
+          result: rpcMethods[method].result.parse({
+            ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
+            pairingAddress: this.#pairingAddress(),
+          }),
         })
         return
       }
@@ -6212,6 +6230,32 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(page),
+        })
+        return
+      }
+
+      if (method === "session.search") {
+        const params = paramsResult.data as RpcParams<"session.search">
+        const needle = params.query.toLowerCase()
+        const matches: SessionSearchMatch[] = []
+        let truncated = false
+        for (const session of this.#snapshot.sessions) {
+          const matchedIn = session.title.toLowerCase().includes(needle)
+            ? "title"
+            : this.#sessionSummaryText(session.id)?.toLowerCase().includes(needle)
+              ? "summary"
+              : undefined
+          if (!matchedIn) continue
+          if (matches.length >= params.limit) {
+            truncated = true
+            break
+          }
+          matches.push({ session, matchedIn })
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
         })
         return
       }
@@ -9740,6 +9784,15 @@ export class DomovoiDaemon {
     if (failures >= maximumAuthenticationFailures) {
       setTimeout(() => socket.close(1008, "authentication failed"), 0)
     }
+  }
+
+  // A session's summary for search: the newest assistant message the daemon
+  // still holds for it in the snapshot window. Older history is not searched.
+  #sessionSummaryText(sessionId: string): string | undefined {
+    const newest = this.#snapshot.thread.findLast(
+      (item) => item.sessionId === sessionId && item.kind === "assistant",
+    )
+    return newest?.kind === "assistant" ? newest.body : undefined
   }
 
   #closeTerminal(terminalId: string): boolean {

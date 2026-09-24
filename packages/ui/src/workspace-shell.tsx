@@ -51,6 +51,7 @@ import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
+import { advancePendingElsewhere, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
@@ -243,7 +244,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
-  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, revokeDevice, rotateDevice, renameDevice } = home
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
   const {
     activateSession,
@@ -538,6 +539,46 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // machine change drops it rather than opening controls on the wrong thread.
   const [rowIntent, setRowIntent] = useState<{ action: "fork" | "move", sessionId: string } | null>(null)
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null)
+  // A row picked on another machine (J39) switches this window to that
+  // machine, then opens the session once its snapshot arrives.
+  const [pendingElsewhere, setPendingElsewhere] = useState<PendingElsewhere | null>(null)
+  const windowMachineId = attached?.machineId ?? homeMachineId
+  useEffect(() => {
+    if (!pendingElsewhere) return
+    const step = advancePendingElsewhere(pendingElsewhere, {
+      currentMachineId: windowMachineId,
+      snapshotMachineId: snapshot?.machine.id ?? null,
+      sessionIds: snapshot?.sessions.map((session) => session.id) ?? [],
+    })
+    if (step.next !== pendingElsewhere) setPendingElsewhere(step.next)
+    if (step.open) openSessionInWorkspace(step.open)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingElsewhere, windowMachineId, snapshot])
+  const searchTargets = windowMachineId ? paletteSearchTargets({
+    machines: fleetMachines(fleet?.entries ?? []),
+    access: fleetClientAccess,
+    homeMachineId,
+    currentMachineId: windowMachineId,
+    currentLabel: snapshot?.machine.name ?? windowMachineId,
+  }) : null
+  const homeSearch = home.searchSessions
+  const machineSearch = useMemo(() => !searchTargets || searchTargets.others.length === 0 ? undefined : {
+    here: searchTargets.here,
+    machines: searchTargets.others,
+    search: async (machineId: string, query: string, signal: AbortSignal) => {
+      if (machineId !== homeMachineId) return accessSession.search(machineId, query, signal)
+      const deadline = Deadline.start(10_000)
+      try {
+        return await homeSearch({ query, limit: 20 }, { deadline, signal })
+      } finally {
+        deadline.clear()
+      }
+    },
+    open: (machineId: string, sessionId: string) => {
+      if (windowMachineId && switchMachine(machineId)) setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(searchTargets), homeMachineId, accessSession, homeSearch, switchMachine])
   const sessionRowAction = (action: SessionRowAction, sessionId: string) => {
     if (watching) return
     if (action === "stop") {
@@ -1255,6 +1296,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onAction={watching ? undefined : sessionRowAction}
             machineAvailability={machineAvailability}
             onOpenMachines={() => setSurface("fleet")}
+            {...(clientKind === "web" && !attached ? {
+              scope: { machine: snapshot.machine.name, note: "this machine only" },
+              credentialNote: { label: "Paired for this tab", meta: "ends when it closes" },
+            } : {})}
           />
           <AlertDialog open={archiveTarget !== null} onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}>
             <AlertDialogContent>
@@ -1285,6 +1330,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             secrets={providerSecrets}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon } : {})}
+            {...(attached || clientKind !== "desktop" ? {} : {
+              pairing: {
+                connected: home.connected,
+                onIssueCode: issueDeviceCode,
+                onCopy: (text: string) => platform ? platform.clipboard.writeText(text) : Promise.reject(new Error("This client has no clipboard")),
+                onListDevices: listDevices,
+                inAppDaemon: localDaemon?.inApp ?? false,
+              },
+            })}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {
@@ -1358,6 +1412,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onAuthorizeClient={(machineId, credential, signal) => accessSession.authorize(machineId, credential, signal)}
             onRemoveClientAccess={removeClientAccess}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
+            devicesMachineLabel={home.snapshot?.machine.name}
             currentSessionCount={activeSessionCount(snapshot)}
             providers={snapshot.machine.providers}
             onOpenSkills={() => setSurface("skills")}
@@ -1491,6 +1546,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           commands={workspaceCommands}
           onOpenChange={setCommandPaletteOpen}
           restoreFocusTo={commandPaletteFocusRef.current}
+          machineSearch={machineSearch}
           {...(firstRunEnabled && !watching ? {
             onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
           } : {})}

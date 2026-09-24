@@ -1,5 +1,5 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -182,4 +182,21 @@ it("retains aria-current while leaving the active state to the drawer row", asyn
   expect(other().getAttribute("aria-current")).toBe("true")
   expect(open().getAttribute("aria-current")).toBeNull()
   expect(other().textContent).not.toContain("Current")
+})
+
+// A browser tab over the tailnet reaches one machine and holds its credential
+// for the tab only; the column says both where the design draws them.
+it("names the tab's scope and credential when asked to", async () => {
+  const user = userEvent.setup()
+  function Scoped() {
+    const [open, setOpen] = useState(false)
+    return <SessionsDrawer snapshot={snapshotWith()} open={open} onOpenChange={setOpen} onActivate={vi.fn()} scope={{ machine: demoWorkspace.machine.name, note: "this machine only" }} credentialNote={{ label: "Paired for this tab", meta: "ends when it closes" }} />
+  }
+  render(<Scoped />)
+  await user.click(screen.getByRole("button", { name: /^Sessions / }))
+  const column = screen.getByRole("complementary", { name: "Sessions" })
+  expect(within(column).getByText(demoWorkspace.machine.name)).toBeTruthy()
+  expect(within(column).getByText("this machine only")).toBeTruthy()
+  expect(within(column).getByText("Paired for this tab")).toBeTruthy()
+  expect(within(column).getByText("ends when it closes")).toBeTruthy()
 })

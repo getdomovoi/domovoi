@@ -493,11 +493,7 @@
       "evidence": [
         "Phone and tablet",
         "Rename, rotate and unpair them on Machines"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no client surface on the desktop shows a device pairing code (device.issueCode has no caller outside the daemon's own CLI); the earlier presence string Pairing matched code comments, and the pairing dialog that exists pairs this client to another machine"
-      }
+      ]
     },
     {
       "id": "settings.paired-devices",
@@ -518,18 +514,10 @@
         "Each daemon keeps its own list. Pair a new one from Settings."
       ],
       "evidence": [
-        "Paired devices",
+        "Devices paired with",
         "Copy once",
         "Each daemon keeps its own list"
-      ],
-      "presence": [
-        "Paired devices",
-        "Copy once"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "rows, rename, rotate and one-time copy exist on Machines; the per-machine heading and the per-daemon note are not drawn"
-      }
+      ]
     },
     {
       "id": "settings.providers",
@@ -1725,11 +1713,7 @@
       ],
       "evidence": [
         "SESSIONS ON OTHER MACHINES"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J39; the palette searches the connected machine only"
-      }
+      ]
     },
     {
       "id": "composer.action-row",
@@ -1837,6 +1821,16 @@
       "id": "palette",
       "since": "2026-09-23",
       "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "settings.pairing",
+      "since": "2026-09-23",
+      "note": "Shown to desktop clients only: device.issueCode takes the daemon credential, which a web tab (a paired device) does not hold. The card's problem states that point at a tailnet setting draw no action while TailnetReach is blocked; the reach and certificate lines come from the pairingAddress the daemon sends with the code."
+    },
+    {
+      "id": "palette.other-machines",
+      "since": "2026-09-23",
+      "note": "Grouped per machine (the design's layout A). The window's own machine is searched too and counted by its answer; its summary matches join the SESSIONS group, marked in summary. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
     }
   ],
   "annotations": [
