@@ -38,6 +38,10 @@ const standardLfsFilter: Readonly<Record<string, string>> = {
   "filter.lfs.smudge": "git-lfs smudge -- %f",
   "filter.lfs.process": "git-lfs filter-process",
   "filter.lfs.required": "true",
+  // Git for Windows' own system configuration (owner ruling 2026-09-23):
+  // git-for-windows/build-extra c8241c75 git-extra/gitconfig lines 11-12,
+  // [diff "astextplain"] textconv = astextplain. Any other value still asks.
+  "diff.astextplain.textconv": "astextplain",
 }
 const switchedKeys = new Set(["core.fsmonitor", "log.showsignature"])
 const promisorKey = /^remote\..+\.promisor$/

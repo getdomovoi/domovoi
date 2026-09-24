@@ -43,6 +43,19 @@ describe("committedCodexSecretPaths", () => {
     await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toEqual([".env", ".env.example", "certs/dev.pem"])
   })
 
+  it("runs the scan with Git for Windows' default system configuration", async () => {
+    const { root, run } = await repository()
+    await writeFile(join(root, ".env"), "TOKEN=1\n")
+    await run("add", ".")
+    await run("commit", "-qm", "one")
+    const system = join(root, ".git", "system.gitconfig")
+    await writeFile(system, "[diff \"astextplain\"]\n\ttextconv = astextplain\n")
+    const env: NodeJS.ProcessEnv = { ...isolated, GIT_CONFIG_SYSTEM: system }
+    delete env.GIT_CONFIG_NOSYSTEM
+
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env })).resolves.toEqual([".env"])
+  })
+
   it("lists nothing for a history without denied files", async () => {
     const { root, run } = await repository()
     await writeFile(join(root, "app.ts"), "export {}\n")

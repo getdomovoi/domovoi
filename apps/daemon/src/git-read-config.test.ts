@@ -120,6 +120,28 @@ describe("gitReadCanRunProgram", () => {
     await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(false)
   })
 
+  it("allows Git for Windows' default astextplain textconv from the system configuration, exactly", async () => {
+    const { root } = await repository()
+    const system = join(root, ".git", "system.gitconfig")
+    await writeFile(system, "[diff \"astextplain\"]\n\ttextconv = astextplain\n")
+    const withSystem: NodeJS.ProcessEnv = { ...isolated, GIT_CONFIG_SYSTEM: system }
+    delete withSystem.GIT_CONFIG_NOSYSTEM
+
+    await expect(gitReadCanRunProgram(root, withSystem)).resolves.toBe(false)
+  })
+
+  it.each([
+    ["diff.astextplain.textconv", "astextplain", false],
+    ["diff.astextplain.textconv", "astextplain --verbose", true],
+    ["diff.astextplain.textconv", "/tmp/astextplain", true],
+    ["diff.other.textconv", "astextplain", true],
+  ] as const)("treats %s = %s in the repository as asking: %s", async (key, value, asks) => {
+    const { root, set } = await repository()
+    await set(key, value)
+
+    await expect(gitReadCanRunProgram(root, isolated)).resolves.toBe(asks)
+  })
+
   it("allows the filter lines git lfs install writes, exactly", async () => {
     const { root, set } = await repository()
     await set("filter.lfs.clean", "git-lfs clean -- %f")
