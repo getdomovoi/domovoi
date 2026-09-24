@@ -8,8 +8,11 @@ import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
 // this module checks itself. The daemon is loaded at run time (daemon-module),
 // so its class is not importable here; both are recognised by name and shape.
 export class DaemonServiceRuntimeMissingError extends Error {
-  constructor(readonly part: "node" | "daemon", readonly path: string) {
-    super(`${part === "node" ? "The Node runtime this app ships" : "The Domovoi daemon this app ships"} was not found at ${path}. No service was installed and no service files were changed.`)
+  constructor(readonly part: "node" | "daemon", readonly path: string, operation: "install" | "update" = "install") {
+    const outcome = operation === "install"
+      ? "No service was installed and no service files were changed."
+      : "The service was not updated and no service files were changed."
+    super(`${part === "node" ? "The Node runtime this app ships" : "The Domovoi daemon this app ships"} was not found at ${path}. ${outcome}`)
     this.name = "DaemonServiceRuntimeMissingError"
   }
 }
@@ -43,16 +46,22 @@ export type DaemonServiceOutcome =
   // What became of the app's own daemon: never stopped, started again, or
   // stopped and not back.
   | { ok: false; reason: "failed"; message: string; daemon: "untouched" | "restarted" | "stopped" }
+  // An in-place update that did not end with the new service running. The
+  // message is the daemon's own, approved 2026-09-23 (update-outcome.ts).
+  | { ok: false; reason: "update-failed"; message: string }
 
 export type DaemonServiceStatusReport = DaemonServiceStatus | { unavailable: string }
 
 export type DesktopDaemonServiceDependencies = {
   // Copies the shipped runtime under the profile and names the copy, or
   // throws DaemonServiceRuntimeMissingError naming the part that is not there.
-  stageRuntime: () => Promise<DaemonServiceRuntime>
+  stageRuntime: (operation: "install" | "update") => Promise<DaemonServiceRuntime>
   install: (options: DaemonServiceOptions) => Promise<DaemonServiceInstallResult>
   status: () => Promise<DaemonServiceStatus>
   remove: () => Promise<DaemonServiceRemovalResult>
+  // Moves the installed service to the staged runtime in place (ruled
+  // 2026-09-23, B). Throws the daemon's DaemonServiceUpdateError on failure.
+  update: (options: { runtime: DaemonServiceRuntime }) => Promise<DaemonServiceInstallResult>
   // The turns running and gates waiting in the daemon's own workspace, named
   // as the renderer names them, or undefined when there are none. Throws when
   // the workspace cannot be read.
@@ -100,10 +109,12 @@ export async function stageDaemonRuntime(input: {
   copy: (from: string, to: string) => Promise<void>
   remove: (path: string) => Promise<void>
   rename: (from: string, to: string) => Promise<void>
+  // The words for a missing part follow what was asked (approved 2026-09-23).
+  operation?: "install" | "update"
 }): Promise<DaemonServiceRuntime> {
   const shipped = daemonRuntimeLayout(input.resourcesPath, input.platform)
   for (const [part, path] of [["node", shipped.nodePath], ["daemon", shipped.daemonEntryPath]] as const) {
-    if (!(await input.exists(path))) throw new DaemonServiceRuntimeMissingError(part, path)
+    if (!(await input.exists(path))) throw new DaemonServiceRuntimeMissingError(part, path, input.operation ?? "install")
   }
   const pathApi = input.platform === "win32" ? win32 : posix
   const destination = profileRuntimeDirectory(input.home, input.version, input.platform)
@@ -147,7 +158,7 @@ export class DesktopDaemonService {
       if (refused) return refused
       let installed: DaemonServiceInstallResult
       try {
-        const runtime = await this.deps.stageRuntime()
+        const runtime = await this.deps.stageRuntime("install")
         installed = await this.deps.install({
           runtime,
           releaseInAppDaemon: async () => {
@@ -198,6 +209,43 @@ export class DesktopDaemonService {
         : { ok: true, kind: "task", target: removed.name, ...recovery, daemonRunning }
     } catch (cause) {
       return { ok: false, reason: "failed", message: message(cause), daemon: "untouched" }
+    } finally {
+      if (held) this.deps.daemon.endHandoff()
+      this.#busy = false
+    }
+  }
+
+  // The app is attached to the service, so there is no daemon of its own to
+  // stop. Reconnects are held while the service restarts on the new runtime.
+  async update(): Promise<DaemonServiceOutcome> {
+    if (this.#busy) return { ok: false, reason: "busy", message: "A service change is already in progress." }
+    this.#busy = true
+    let held = false
+    try {
+      const refused = await this.#refusal()
+      if (refused) return refused
+      held = true
+      this.deps.daemon.beginHandoff()
+      let updated: DaemonServiceInstallResult
+      try {
+        const runtime = await this.deps.stageRuntime("update")
+        updated = await this.deps.update({ runtime })
+      } catch (cause) {
+        const missing = runtimeMissing(cause)
+        if (missing) return { ok: false, reason: "runtime-missing", ...missing }
+        return { ok: false, reason: "update-failed", message: message(cause) }
+      }
+      const target = updated.kind === "file" ? updated.path : updated.name
+      let attached: DesktopDaemonAcquisition
+      try {
+        attached = await this.deps.daemon.attachOnly()
+      } catch (cause) {
+        return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: message(cause) }
+      }
+      if (attached.kind === "refused") {
+        return { ok: false, reason: "installed-not-attached", kind: updated.kind, target, message: attached.message }
+      }
+      return { ok: true, kind: updated.kind, target, configurationPath: updated.configurationPath, daemonRunning: true }
     } finally {
       if (held) this.deps.daemon.endHandoff()
       this.#busy = false

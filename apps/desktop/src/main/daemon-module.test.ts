@@ -49,6 +49,14 @@ describe("where the in-app daemon is loaded from", () => {
       .rejects.toThrow(/is missing readDaemonServiceRuntimeVersion\./)
   })
 
+  // Ruled 2026-09-23 (#577, B): the in-place update comes from the same runtime.
+  it("exposes the in-place service update from the runtime", async () => {
+    const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
+    const { updateDaemonService: _omitted, ...without } = module
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+      .rejects.toThrow(/is missing updateDaemonService\./)
+  })
+
   it("names the path when the runtime cannot be imported, as a load error", async () => {
     const failed = loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => { throw new Error("Cannot find module") })
     await expect(failed).rejects.toBeInstanceOf(DaemonRuntimeLoadError)

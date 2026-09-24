@@ -131,7 +131,7 @@ const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resour
   app.exit(1)
   return process.exit(1)
 })
-const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, readDaemonServiceRuntimeVersion, readLocalServiceHandoffRefusal, removeDaemonService } = daemonModule.module
+const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, readDaemonServiceRuntimeVersion, readLocalServiceHandoffRefusal, removeDaemonService, updateDaemonService } = daemonModule.module
 if (launchSmoke) console.info(`DOMOVOI_DESKTOP_DAEMON_MODULE ${daemonModule.from}`)
 const daemonSeam = developmentLoopModule
   ? developmentLoopModule.resolveDesktopDaemonSeam({
@@ -160,7 +160,8 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
 // J24: the login service. The shipped runtime is copied under the profile
 // first, so the service never points into the app bundle.
 const desktopDaemonService = new DesktopDaemonService({
-  stageRuntime: () => stageDaemonRuntime({
+  stageRuntime: (operation) => stageDaemonRuntime({
+    operation,
     resourcesPath: process.resourcesPath,
     home: homedir(),
     version: app.getVersion(),
@@ -173,6 +174,7 @@ const desktopDaemonService = new DesktopDaemonService({
   install: (options) => installDaemonService(options),
   status: () => readDaemonServiceStatus(),
   remove: () => removeDaemonService(),
+  update: (options) => updateDaemonService(options),
   // The same check the renderer draws, applied to the daemon's own workspace.
   refusal: async () => {
     const endpoint = desktopDaemon.current()
@@ -383,6 +385,7 @@ registerDesktopIpc(ipcMain, {
     status: () => desktopDaemonService.status(),
     install: () => desktopDaemonService.install(),
     remove: () => desktopDaemonService.remove(),
+    update: () => desktopDaemonService.update(),
   },
   notifications: desktopNotifications,
   deepLinks,

@@ -20,6 +20,7 @@ export const daemonModuleExports = [
   "readDaemonServiceStatus",
   "readDaemonServiceRuntimeVersion",
   "removeDaemonService",
+  "updateDaemonService",
   "DaemonServiceRuntimeMissingError",
 ] as const
 
