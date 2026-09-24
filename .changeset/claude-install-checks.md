@@ -20,3 +20,6 @@ says the problem when no other provider is ready.
 The version is read without blocking the daemon's event loop, before a session starts or models
 are listed, and once per executable and modification time. A bare `claude` that a probe with no
 PATH ran on Windows is not called a shim, since Windows starts `claude.exe` for it.
+A `claude` the operating system cannot start at all, such as a `claude.exe` that is not a Windows
+program, leaves the version unknown instead of failing the session start or the model list with
+a raw spawn error.

@@ -64,7 +64,9 @@ export function parseClaudeVersion(output: string): string | undefined {
 // The version of an executable the SDK is about to start, read once per path
 // and modification time, so an update is seen without a daemon restart. It is
 // read without blocking the event loop: a claude slow to answer must not stop
-// every client, terminal and approval meanwhile.
+// every client, terminal and approval meanwhile. A claude the OS cannot start
+// throws inside execFile rather than rejecting, so the call runs inside the
+// promise chain: any failure to run it leaves the version unknown.
 const versions = new Map<string, Promise<string | undefined>>()
 const execFileAsync = promisify(execFile)
 
@@ -77,7 +79,7 @@ export async function installedClaudeVersion(executable: string): Promise<string
   }
   let version = versions.get(key)
   if (version === undefined) {
-    version = execFileAsync(executable, ["--version"], { encoding: "utf8", timeout: 5_000 }).then(
+    version = Promise.resolve().then(() => execFileAsync(executable, ["--version"], { encoding: "utf8", timeout: 5_000 })).then(
       ({ stdout }) => parseClaudeVersion(stdout),
       () => undefined,
     )

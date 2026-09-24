@@ -70,6 +70,17 @@ describe("the Claude executable", () => {
     await adapter.close()
   })
 
+  it("lists models when the OS cannot start claude to read its version", async () => {
+    const executable = join(directory, process.platform === "win32" ? "claude.exe" : "claude")
+    await writeFile(executable, "not a program\n")
+    await chmod(executable, 0o755)
+    const adapter = new ClaudeAgentSdkAdapter()
+
+    await expect(adapter.listModels()).resolves.toEqual([expect.objectContaining({ id: "sonnet" })])
+    expect(sdk.query.mock.calls[0]?.[0].options.pathToClaudeCodeExecutable).toBe(executable)
+    await adapter.close()
+  })
+
   it("refuses to start without an installed claude", async () => {
     const adapter = new ClaudeAgentSdkAdapter()
 

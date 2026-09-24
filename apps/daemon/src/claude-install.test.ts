@@ -114,4 +114,17 @@ describe("reading the installed claude's version", () => {
     expect(await timerDelay).toBeLessThan(500)
     await expect(version).resolves.toBe("2.1.300")
   })
+
+  // A claude the OS refuses to start fails inside spawn itself: ENOEXEC here,
+  // UNKNOWN for a claude.exe that is not a Windows program. The version is then
+  // unknown; the check must not throw.
+  it("reports an unknown version when the OS cannot start claude", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-claude-unstartable-"))
+    directories.push(directory)
+    const executable = join(directory, process.platform === "win32" ? "claude.exe" : "claude")
+    await writeFile(executable, "not a program\n")
+    await chmod(executable, 0o755)
+
+    await expect(installedClaudeVersion(executable)).resolves.toBeUndefined()
+  })
 })
