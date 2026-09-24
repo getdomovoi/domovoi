@@ -8,6 +8,7 @@ import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { waitForDaemon } from "./test-wait-for.js"
+import { SubmoduleChangesRefusedError } from "./workspace.js"
 import type { WorkspaceService } from "./workspace.js"
 
 // J34, ruled 2026-09-23: when a person allows a gated command, the daemon
@@ -159,5 +160,13 @@ describe("a checkpoint before an approved write", () => {
     emit({ type: "item", phase: "completed", params: { threadId: "thread-billing", turnId: "turn-billing-2", item: { id: "call_migrate", type: "commandExecution", status: "completed" } } })
     await rpc("workspace.get", {})
     expect((await snapshot()).thread.find((item) => item.kind === "receipt")).not.toHaveProperty("ranForMs")
+  })
+
+  it("says a submodule's local changes are why, and keeps the gate", async () => {
+    const { provider, rpc, snapshot, approvalId } = await start({ checkpoint: async () => { throw new SubmoduleChangesRefusedError() } })
+    const refused = await rpc("approval.resolve", allow(approvalId))
+    expect(refused.error?.message).toBe("Domovoi could not take a checkpoint: a submodule has local changes a checkpoint cannot hold, so the command did not run")
+    expect(provider.resolveApproval).not.toHaveBeenCalled()
+    expect((await snapshot()).approvals.map(({ id }) => id)).toEqual([approvalId])
   })
 })

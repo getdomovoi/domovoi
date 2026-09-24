@@ -7,7 +7,7 @@ import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { removeScratchDirectories } from "./test-scratch.js"
-import { GitWorkspaceService, RepositoryFilterRefusedError } from "./workspace.js"
+import { GitWorkspaceService, RepositoryFilterRefusedError, SubmoduleChangesRefusedError } from "./workspace.js"
 
 const execute = promisify(execFile)
 const scratchDirectories: string[] = []
@@ -179,5 +179,49 @@ describe("GitWorkspaceService.snapshot", () => {
     expect((await gitOut(path, "rev-list", "--parents", "-n", "1", snapshot.commit)).trim()).toBe(snapshot.commit)
     await expect(gitOut(path, "rev-parse", "--verify", "-q", "HEAD")).rejects.toThrow()
     expect(await gitOut(path, "status", "--porcelain")).toBe("?? \" \"\n?? first.txt\n")
+  })
+
+  // Ruled 2026-09-23 (A): a checkpoint records a submodule by its commit, not
+  // its files, so local changes inside one are refused rather than left out.
+  describe("with a submodule", () => {
+    async function withSubmodule() {
+      const scratch = await mkdtemp(join(tmpdir(), "domovoi-snapshot-submodule-"))
+      scratchDirectories.push(scratch)
+      const library = join(scratch, "library")
+      await execute("git", ["init", "--initial-branch=main", library])
+      await writeFile(join(library, "lib.txt"), "library\n")
+      await execute("git", ["-C", library, "add", "."])
+      await execute("git", ["-C", library, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "library"])
+      const path = join(scratch, "project")
+      await execute("git", ["init", "--initial-branch=main", path])
+      await writeFile(join(path, "tracked.txt"), "base\n")
+      await execute("git", ["-C", path, "-c", "protocol.file.allow=always", "submodule", "add", "--quiet", library, "vendor/library"])
+      await execute("git", ["-C", path, "add", "."])
+      await execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+      await writeFile(join(path, "tracked.txt"), "agent edit\n")
+      return { service: new GitWorkspaceService(join(scratch, "worktrees")), path }
+    }
+
+    it("records a repository whose submodule is clean", async () => {
+      const { service, path } = await withSubmodule()
+      const snapshot = await service.snapshot(path, "before approved command")
+      expect(snapshot.changedFiles).toEqual(["tracked.txt"])
+    })
+
+    it.each([
+      ["a changed tracked file", "lib.txt", "changed\n"],
+      ["an untracked file", "new.txt", "untracked\n"],
+    ])("refuses when the submodule has %s, and changes nothing", async (_kind, name, contents) => {
+      const { service, path } = await withSubmodule()
+      await writeFile(join(path, "vendor", "library", name), contents)
+      const head = (await gitOut(path, "rev-parse", "HEAD")).trim()
+      const gitDirectory = (await readdir((await gitOut(path, "rev-parse", "--absolute-git-dir")).trim())).sort()
+
+      await expect(service.snapshot(path, "before approved command")).rejects.toBeInstanceOf(SubmoduleChangesRefusedError)
+
+      expect((await gitOut(path, "rev-parse", "HEAD")).trim()).toBe(head)
+      expect((await readdir((await gitOut(path, "rev-parse", "--absolute-git-dir")).trim())).sort()).toEqual(gitDirectory)
+      expect(await gitOut(path, "for-each-ref", "refs/domovoi/checkpoints")).toBe("")
+    })
   })
 })

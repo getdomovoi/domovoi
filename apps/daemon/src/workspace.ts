@@ -233,6 +233,35 @@ const trustedConfigScopes = new Set(["system", "global", "unknown"])
 // run or apply. The message names the setting and where it is set.
 export class RepositoryConfigRefusedError extends Error {}
 
+// A checkpoint records a submodule by the commit it is at, not by its files,
+// so a submodule's local changes would be left out of it. Ruled 2026-09-23:
+// such a snapshot is refused rather than taken without them.
+export class SubmoduleChangesRefusedError extends Error {
+  constructor() {
+    super("A submodule has local changes a checkpoint cannot hold")
+    this.name = "SubmoduleChangesRefusedError"
+  }
+}
+
+// Whether any submodule has changed tracked content or untracked files: the
+// M or U in the submodule field ("S<c><m><u>") of a porcelain v2 record.
+async function submoduleHasLocalChanges(worktreePath: string, signal?: AbortSignal): Promise<boolean> {
+  // No optional locks: status must not refresh the index the agent shares.
+  const status = await git(worktreePath, [
+    "--no-optional-locks", "status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--untracked-files=no",
+  ], signal)
+  const records = status.split("\0")
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!
+    const fields = record.split(" ")
+    if (fields[0] === "2") index += 1
+    if (fields[0] !== "1" && fields[0] !== "2" && fields[0] !== "u") continue
+    const submodule = fields[2] ?? ""
+    if (submodule.startsWith("S") && (submodule[2] === "M" || submodule[3] === "U")) return true
+  }
+  return false
+}
+
 export class RepositoryFilterRefusedError extends RepositoryConfigRefusedError {
   readonly filters: readonly string[]
 
@@ -1467,6 +1496,7 @@ export class GitWorkspaceService implements WorkspaceService {
   // a copy of the shared one, so files tracked despite an ignore rule stay in.
   async snapshot(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
     await refuseRepositoryFilters(worktreePath, signal)
+    if (await submoduleHasLocalChanges(worktreePath, signal)) throw new SubmoduleChangesRefusedError()
     const sharedIndex = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
     const temporaryIndex = resolve(
       worktreePath,

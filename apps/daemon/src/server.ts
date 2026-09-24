@@ -162,6 +162,7 @@ import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
   RepositoryConfigRefusedError,
+  SubmoduleChangesRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -6711,6 +6712,10 @@ export class DomovoiDaemon {
             approvedCheckpoint = { id: `checkpoint-${randomUUID()}`, commit: taken.commit }
           } catch (error) {
             this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
+            if (error instanceof SubmoduleChangesRefusedError) {
+              this.#error(socket, request.id, invalidParams, "Domovoi could not take a checkpoint: a submodule has local changes a checkpoint cannot hold, so the command did not run")
+              return
+            }
             this.#error(socket, request.id, internalError, "Domovoi could not take a checkpoint, so the command did not run; decide again")
             return
           }
