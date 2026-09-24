@@ -93,6 +93,11 @@ const safeBuildAutoPatterns = [
   /^pwd$/i,
 ] as const
 
+// A Git read that prints no file content and names no path or output file.
+export function isReadOnlyGitCommand(command: string): boolean {
+  return /^git\s/i.test(command) && safeBuildAutoPatterns.some((pattern) => pattern.test(command))
+}
+
 const ambiguousShellSyntax = /[\r\n`$<>(){}\\]/
 const skillInstallerPackage = String.raw`(?:@[a-z0-9._-]+\/)?(?:skills?|skill-installer)(?:@[^\s]+)?`
 const skillCliInstallPatterns = [

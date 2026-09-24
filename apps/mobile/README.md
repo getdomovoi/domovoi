@@ -158,30 +158,33 @@ fails after 30 seconds, or 15 seconds for the first workspace read
 
 ## What the phone stores
 
-Two values, written through `expo-secure-store` to the device keychain
-(`apps/mobile/src/lib/credentials.ts`):
+Every value goes through `expo-secure-store` to the device keychain
+(`apps/mobile/src/lib/credentials.ts`, `apps/mobile/src/lib/relay-pin.ts`,
+`apps/mobile/src/theme/theme-provider.tsx`):
 
 | Key | Holds | Access |
 | --- | --- | --- |
 | `domovoi.daemon.url` | the daemon address | store default |
 | `domovoi.daemon.token` | the pairing token | `WHEN_UNLOCKED_THIS_DEVICE_ONLY` |
+| `domovoi.daemon.client` | `phone` or `tablet`, the kind the daemon accepted for the token; absent for a token saved before the app kept it or typed into Settings, until the daemon accepts one | store default |
+| `domovoi.daemon.relayPin.<machine id>` | the daemon's pinned relay identity, one per machine, written after the daemon answers the greeting | `WHEN_UNLOCKED_THIS_DEVICE_ONLY` |
+| `domovoi.appearance` | light, dark or system | store default |
 
-Forget this daemon removes both. Nothing else is written to the phone: sessions, approvals, plans,
-and diffs live in memory from the daemon's snapshot and are gone when the app restarts.
+Forget this daemon removes the address, the token and the kind. It leaves the relay pin and the appearance
+choice in place. Sessions, approvals, plans and diffs live in memory from the daemon's snapshot
+and are gone when the app restarts.
 
 ## Limits today
 
 - One daemon at a time. Settings holds one address and one token.
-- No pairing flow on the phone. It takes the daemon credential; it cannot claim a pairing code
-  (`SHIP-PLAN.md`, `S3.3`: pairing by camera is first).
 - Fleet lists the machines paired with the daemon and their health. Use and Terminal on a remote
   machine are not offered on the phone. The desktop admits them (`docs/fleet-client-admission.md`;
   the fleet client smoke proves Use and Terminal against two production daemons).
 - No terminal on the phone. A terminal artifact is listed with a note that it is watched on the
-  desktop (`apps/mobile/src/artifact-rows.ts`). A preview needs a signed fetch the phone cannot
-  make yet. Plans and diffs render up to 400 lines and count the rest.
+  desktop (`apps/mobile/src/artifact-rows.ts`). A preview renders from a signed grant the phone
+  asks for with `artifact.authorize` (`apps/mobile/src/artifact-url.ts`). Plans and diffs render
+  up to 400 lines and count the rest.
 - Session transfer is not offered from the phone (`apps/mobile/src/lib/request-timeout.ts`).
-- Dark theme only (`apps/mobile/tailwind.config.js`).
 - The fonts ship in the bundle. If they have not loaded after 3 seconds, the app draws with the
   platform font (`apps/mobile/src/theme/font-gate.ts`).
 

@@ -8,6 +8,8 @@ import type {
 } from "@getdomovoi/protocol"
 
 import { artifactBody, artifactRows, diffLines } from "./artifact-rows"
+import type { ConnectionNotice } from "./connection-notice"
+import { ConnectionBanner } from "./components/connection-banner"
 import { cn } from "./lib/cn"
 import { planForSession, planSummary } from "./plan-rows"
 import { sessionDetail, type SessionDetail, type ThreadEntry } from "./session-detail"
@@ -19,13 +21,15 @@ import { Icon } from "./components/ui/icon"
 import { Text } from "./components/ui/text"
 import { PageScroller } from "./components/page-scroller"
 import { approvalFacts } from "./screens/approval"
+import { PolicyRefusalCards } from "./screens/session"
 
 type TabletDecision = Extract<ApprovalDecision, "allow-once" | "always-project">
 type ReviewTab = "changes" | "diff" | "plan" | "review"
 
-function TabletSessionRow({ row, selected, onPress }: {
+function TabletSessionRow({ row, selected, access, onPress }: {
   row: SessionRow
   selected: boolean
+  access: ClientAccess
   onPress: () => void
 }) {
   return (
@@ -46,16 +50,19 @@ function TabletSessionRow({ row, selected, onPress }: {
       <View className="min-w-0 flex-1">
         <Text className="text-[13px] leading-[18px] text-strong" numberOfLines={2}>{row.title}</Text>
         <Text variant="machine" className="mt-1 text-faint">
-          {row.attention === "approval" ? "waiting on you" : row.dot === "active" ? "running" : "quiet"}
+          {row.attention === "approval"
+            ? access === "full" ? "waiting on you" : "waiting on a full-access device"
+            : row.dot === "active" ? "running" : "quiet"}
         </Text>
       </View>
     </Pressable>
   )
 }
 
-export function TabletSessionsPane({ snapshot, selectedSessionId, onSelectSession, onNewSession, onOpenMachines }: {
+export function TabletSessionsPane({ snapshot, selectedSessionId, access, onSelectSession, onNewSession, onOpenMachines }: {
   snapshot: WorkspaceSnapshot
   selectedSessionId: string | undefined
+  access: ClientAccess
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
   onOpenMachines: () => void
@@ -82,6 +89,7 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, onSelectSessio
                 key={row.id}
                 row={row}
                 selected={row.id === selectedSessionId}
+                access={access}
                 onPress={() => onSelectSession(row.id)}
               />
             ))}
@@ -204,7 +212,12 @@ function TabletThreadEntry({ entry }: { entry: ThreadEntry }) {
     ) : <Text className="text-[14px] leading-[22px]">{entry.body}</Text>
   }
   if (entry.kind === "policy-refusal") {
-    return <Card><Text className="text-destructive">{entry.operation}</Text><Text variant="machine">{entry.command}</Text></Card>
+    return (
+      <View className="gap-3">
+        <Text variant="nav">{entry.operation}</Text>
+        <PolicyRefusalCards refusal={entry} />
+      </View>
+    )
   }
   return <Text variant="note">{entry.body}{entry.meta ? ` · ${entry.meta}` : ""}</Text>
 }
@@ -276,15 +289,32 @@ export function TabletComposer({ detail, draft, sending, onChangeDraft, onSend }
   )
 }
 
-export function TabletReviewSheet({ open, snapshot, sessionId, onPostReview, onClose }: {
+export function TabletReviewSheet({ open, snapshot, sessionId, access, onPostReview, onClose }: {
   open: boolean
   snapshot: WorkspaceSnapshot
   sessionId: string
-  onPostReview: (artifactId: string, body: string) => void
+  access: ClientAccess
+  onPostReview: (artifactId: string, body: string) => Promise<void>
   onClose: () => void
 }) {
   const [tab, setTab] = useState<ReviewTab>("changes")
   const [draft, setDraft] = useState("")
+  const [posting, setPosting] = useState(false)
+  const [postProblem, setPostProblem] = useState("")
+  // The draft is cleared only once the daemon has the comment, so a refusal
+  // leaves what was written in place beside the reason.
+  const post = async (artifactId: string) => {
+    setPosting(true)
+    setPostProblem("")
+    try {
+      await onPostReview(artifactId, draft.trim())
+      setDraft("")
+    } catch (cause) {
+      setPostProblem(`Not posted: ${cause instanceof Error ? cause.message : "the daemon did not take the comment"}`)
+    } finally {
+      setPosting(false)
+    }
+  }
   const artifacts = artifactRows(snapshot, sessionId)
   const diff = snapshot.artifacts.find((artifact) => artifact.sessionId === sessionId && artifact.type === "diff")
   const preview = snapshot.artifacts.find((artifact) => artifact.sessionId === sessionId && artifact.type === "preview")
@@ -325,6 +355,9 @@ export function TabletReviewSheet({ open, snapshot, sessionId, onPostReview, onC
           {tab === "review" ? (
             preview ? <>
               <Card className="gap-2"><Text variant="title">{preview.title}</Text><Text variant="note">Tap a bubble to comment. Comments reference that element in this render.</Text></Card>
+              {access !== "full" ? (
+                <Text variant="note">Watching only. A device paired with full access can post a review.</Text>
+              ) : (
               <Card className="gap-2 border-primary">
                 <TextInput
                   multiline
@@ -334,11 +367,13 @@ export function TabletReviewSheet({ open, snapshot, sessionId, onPostReview, onC
                   accessibilityLabel="Review comment"
                   className="min-h-[66px] font-sans text-[14px] text-foreground"
                 />
+                {postProblem ? <Text variant="note" className="text-destructive">{postProblem}</Text> : null}
                 <View className="flex-row gap-2">
-                  <Button title="Post" variant="primary" disabled={!draft.trim()} onPress={() => { onPostReview(preview.id, draft.trim()); setDraft("") }} />
-                  <Button title="Cancel" onPress={() => setDraft("")} />
+                  <Button title="Post" variant="primary" disabled={!draft.trim() || posting} onPress={() => void post(preview.id)} />
+                  <Button title="Cancel" onPress={() => { setDraft(""); setPostProblem("") }} />
                 </View>
               </Card>
+              )}
             </> : <Text variant="note">No design render is available for review.</Text>
           ) : null}
         </PageScroller>
@@ -349,6 +384,7 @@ export function TabletReviewSheet({ open, snapshot, sessionId, onPostReview, onC
 
 export function TabletShell({
   snapshot,
+  notice,
   selectedSessionId,
   draft,
   access,
@@ -363,6 +399,9 @@ export function TabletShell({
   onPostReview,
 }: {
   snapshot: WorkspaceSnapshot
+  // What the connection says when it is not simply working, including a frame
+  // this app could not read. The tablet shows it as the phone screens do.
+  notice?: ConnectionNotice | undefined
   selectedSessionId: string | undefined
   draft: string
   access: ClientAccess
@@ -374,7 +413,7 @@ export function TabletShell({
   onSend: (sessionId: string) => void
   onResolve: (approvalId: string, decision: TabletDecision) => void
   onDenyExplain: (approvalId: string) => void
-  onPostReview: (artifactId: string, body: string) => void
+  onPostReview: (artifactId: string, body: string) => Promise<void>
 }) {
   const [reviewOpen, setReviewOpen] = useState(false)
   const fallbackSessionId = snapshot.activeSessionId ?? snapshot.sessions[0]?.id
@@ -393,12 +432,14 @@ export function TabletShell({
       <TabletSessionsPane
         snapshot={snapshot}
         selectedSessionId={sessionId}
+        access={access}
         onSelectSession={onSelectSession}
         onNewSession={onNewSession}
         onOpenMachines={onOpenMachines}
       />
       <View className="min-w-0 flex-1">
         <TabletThreadHeader snapshot={snapshot} detail={detail} artifactCount={artifactCount} onOpenReview={() => setReviewOpen(true)} />
+        {notice ? <View className="px-6 pt-3"><ConnectionBanner notice={notice} /></View> : null}
         <TabletThread
           snapshot={snapshot}
           detail={detail}
@@ -409,7 +450,7 @@ export function TabletShell({
         />
         <TabletComposer detail={detail} draft={draft} sending={sending} onChangeDraft={onChangeDraft} onSend={() => onSend(sessionId)} />
       </View>
-      <TabletReviewSheet open={reviewOpen} snapshot={snapshot} sessionId={sessionId} onPostReview={onPostReview} onClose={() => setReviewOpen(false)} />
+      <TabletReviewSheet open={reviewOpen} snapshot={snapshot} sessionId={sessionId} access={access} onPostReview={onPostReview} onClose={() => setReviewOpen(false)} />
     </View>
   )
 }

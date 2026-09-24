@@ -15,17 +15,6 @@ export type AnnotationRow = {
   meta: string
 }
 
-export type ReviewRow = {
-  id: string
-  sessionId: string
-  sessionTitle: string
-  title: string
-  detail: string
-  variantLabel: string | undefined
-  open: number
-  resolved: number
-}
-
 // Who left a comment, in the words the rest of the app uses for a client. The
 // phone says "this phone" about itself, because "phone" reads as some other
 // device when you are holding the one that said it.
@@ -72,33 +61,3 @@ export function openAnnotationCount(rows: readonly AnnotationRow[]): number {
 // Everything the workspace has produced that a person can look at, with the
 // ones still carrying an open comment first. A phone opened to review is opened
 // to answer what is outstanding, not to browse what is finished.
-export function reviewRows(snapshot: WorkspaceSnapshot): ReviewRow[] {
-  const titles = new Map(snapshot.sessions.map((session) => [session.id, session.title]))
-  return snapshot.artifacts
-    .map((artifact) => {
-      const rows = annotationRows(snapshot, artifact.id)
-      const open = openAnnotationCount(rows)
-      return {
-        id: artifact.id,
-        sessionId: artifact.sessionId,
-        sessionTitle: titles.get(artifact.sessionId) ?? artifact.sessionId,
-        title: artifact.title,
-        detail: `${artifact.type} · revision ${artifact.revision}`,
-        variantLabel: artifact.variant?.label,
-        open,
-        resolved: rows.length - open,
-      }
-    })
-    .sort((left, right) => {
-      if (left.open !== right.open) return right.open - left.open
-      const session = left.sessionTitle.localeCompare(right.sessionTitle)
-      return session !== 0 ? session : left.title.localeCompare(right.title)
-    })
-}
-
-// The same grammar the other two tabs summarise themselves with: what there is,
-// then what wants a person.
-export function reviewSummary(rows: readonly ReviewRow[]): string {
-  const open = rows.reduce((total, row) => total + row.open, 0)
-  return `${rows.length} artifact${rows.length === 1 ? "" : "s"} · ${open} open`
-}

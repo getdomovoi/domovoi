@@ -17,6 +17,9 @@ import type {
   AgentVisualContext,
   AgentWorkingPlanStep,
 } from "./agents.js"
+import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } from "./claude-read-scope.js"
+import { gitReadCanRunProgram } from "./git-read-config.js"
+import { permissionDecisionFor } from "./permission-policy.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { resolveCommandPathSync } from "./tool-path.js"
 import { normalizeProviderUsage } from "./usage.js"
@@ -88,6 +91,7 @@ export type ClaudeQueryOptions = {
   tools?: string[]
   disallowedTools?: string[]
   systemPrompt?: { type: "preset"; preset: "claude_code" }
+  hooks?: { PreToolUse?: Array<{ hooks: ClaudePreToolUseHook[] }> }
   stderr?: (data: string) => void
   canUseTool?: (
     toolName: string,
@@ -95,6 +99,24 @@ export type ClaudeQueryOptions = {
     context: ClaudePermissionContext,
   ) => Promise<PermissionResult | null>
 }
+
+export type ClaudePreToolUseHook = (
+  input: {
+    hook_event_name: string
+    cwd?: string
+    tool_name?: string
+    tool_input?: unknown
+    tool_use_id?: string
+  },
+  toolUseID: string | undefined,
+  options: { signal: AbortSignal },
+) => Promise<{
+  hookSpecificOutput?: {
+    hookEventName: "PreToolUse"
+    permissionDecision: "ask" | "deny"
+    permissionDecisionReason: string
+  }
+}>
 
 export interface ClaudeQuery extends AsyncIterable<ClaudeSdkMessage> {
   initializationResult(): Promise<unknown>
@@ -119,6 +141,9 @@ type Session = {
   query: ClaudeQuery
   runtime: Runtime
   tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string }>
+  // Tool calls the PreToolUse hook sent to an approval, by tool use id, with
+  // the reason the approval card should give.
+  screenedReads: Map<string, { reason: string; path?: string }>
   stderr: ClaudeStderrTail
   activeTurnId?: string
   assistantError?: string
@@ -340,10 +365,22 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       allowDangerouslySkipPermissions: permission.allowDangerouslySkipPermissions,
       canUseTool: (toolName, toolInput, context) =>
         this.#requestApproval(threadId, cwd, toolName, toolInput, context),
+      hooks: {
+        PreToolUse: [{ hooks: [(hookInput) => this.#screenToolUse(threadId, cwd, hookInput)] }],
+      },
       stderr: (data) => stderr.push(data),
     }
     const query = this.#factory(input, options)
-    const session: Session = { threadId, cwd, input, query, runtime, tools: new Map(), stderr }
+    const session: Session = {
+      threadId,
+      cwd,
+      input,
+      query,
+      runtime,
+      tools: new Map(),
+      screenedReads: new Map(),
+      stderr,
+    }
     this.#sessions.set(threadId, session)
     void this.#consume(session).then(
       () => this.#endSession(session, "Claude session connection closed before the turn completed"),
@@ -372,6 +409,56 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     session.runtime = runtime
   }
 
+  // Claude Code runs its read-only commands and approves reads inside its
+  // working directory before canUseTool is asked. A read that can leave the
+  // session worktree, or that names a secret, is sent back through the
+  // approval path instead; Ask has no approvals, so there it is refused.
+  async #screenToolUse(
+    threadId: string,
+    cwd: string,
+    hookInput: Parameters<ClaudePreToolUseHook>[0],
+  ): Promise<Awaited<ReturnType<ClaudePreToolUseHook>>> {
+    const session = this.#sessions.get(threadId)
+    const toolName = hookInput.tool_name
+    if (!session || hookInput.hook_event_name !== "PreToolUse" || typeof toolName !== "string") return {}
+    if (toolName !== "Bash" && !isClaudeReadTool(toolName)) return {}
+    const toolInput = asRecord(hookInput.tool_input) ?? {}
+    const outside = await claudeReadOutsideWorktree(toolName, toolInput, cwd, hookInput.cwd ?? cwd)
+    const command = typeof toolInput.command === "string" ? toolInput.command : toolName
+    const operation = [command, ...Object.values(toolInput).filter((value) => typeof value === "string")].join("\n")
+    const secret = permissionDecisionFor({ runtime: session.runtime, command: operation }).risk === "hard-gate"
+    // Outside the short list, a Bash read may reach paths only known at run
+    // time, so it asks even when every path it names stays inside.
+    const listed = toolName !== "Bash" || claudeShellReadIsListed(command)
+    // A listed Git read still runs any program Git is configured to run.
+    const unresolved = !listed || (toolName === "Bash" && /(?:^|[;&|]\s*)git\s/.test(command)
+      && await gitReadCanRunProgram(resolve(cwd, hookInput.cwd ?? cwd)))
+    if (outside === undefined && !secret && !unresolved) return {}
+    const reason = outside !== undefined
+      ? `Reads outside the session worktree: ${outside}`
+      : secret
+        ? "Reads credentials, private keys or environment secrets"
+        : "Domovoi cannot tell which files this command reads"
+    const itemId = hookInput.tool_use_id
+    if (session.runtime.permissionMode === "ask") {
+      this.#emit({
+        type: "policy-refused",
+        threadId,
+        ...(session.activeTurnId ? { turnId: session.activeTurnId } : {}),
+        ...(itemId ? { itemId } : {}),
+        command,
+        reason,
+      })
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }
+    }
+    // A command Domovoi only cannot place keeps Claude's own card text.
+    if (itemId && (outside !== undefined || secret)) {
+      const path = typeof toolInput.path === "string" && isClaudeReadTool(toolName) ? toolInput.path : undefined
+      session.screenedReads.set(itemId, { reason, ...(path ? { path } : {}) })
+    }
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: reason } }
+  }
+
   #requestApproval(
     threadId: string,
     cwd: string,
@@ -381,7 +468,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   ): Promise<PermissionResult> {
     const session = this.#requireSession(threadId)
     const command = typeof input.command === "string" ? input.command : toolName
-    const reason = context.title ?? context.description ?? context.decisionReason
+    const screened = session.screenedReads.get(context.toolUseID)
+    session.screenedReads.delete(context.toolUseID)
+    const reason = screened?.reason ?? context.title ?? context.description ?? context.decisionReason
     if (session.runtime.permissionMode === "ask") {
       if (!claudeAskTools.includes(toolName as typeof claudeAskTools[number])) {
         this.#emit({
@@ -397,7 +486,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return Promise.resolve({ behavior: "allow", updatedInput: input })
     }
     const requestId = ++this.#nextApprovalId
-    const filePath = typeof input.file_path === "string" ? input.file_path.trim() : undefined
+    const filePath = typeof input.file_path === "string"
+      ? input.file_path.trim()
+      : typeof input.notebook_path === "string" ? input.notebook_path.trim() : screened?.path?.trim()
     this.#emit({
       type: "approval-requested",
       requestId,

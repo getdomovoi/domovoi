@@ -51,6 +51,14 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
+| `DOMOVOI_TOOL_PATH` | Directories searched first for agent CLIs, in the platform's PATH form; then the login shell's PATH, then the launcher's (`src/tool-path.ts`) |
+| `DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY` | Off-machine signer's Ed25519 public key for relay provisioning; see [relay key provisioning](../../docs/relay-key-provisioning.md) |
+| `DOMOVOI_RELAY_CREDENTIAL_FILE` | Absolute file for relay credentials instead of the OS keychain; see [relay key provisioning](../../docs/relay-key-provisioning.md) |
+| `DOMOVOI_WINDOWS_POWERSHELL` | Guest path to `powershell.exe` for `service install` inside WSL, instead of asking `wslpath` |
+
+`DOMOVOI_WSL_EXPECTED_MOUNT_ROOT`, `DOMOVOI_WSL_NATIVE_BUDGET_MS` and
+`DOMOVOI_WSL_NATIVE_TRANSPORT` are inputs to the native WSL CI proofs (`scripts/wsl-ci.mjs`), not
+daemon settings.
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
 reuses a high-entropy credential at `<profile>/daemon.token`. On POSIX, private state files are
@@ -142,11 +150,11 @@ The local recovery CLI also bounds shutdown. If native work will not acknowledge
 it prints the shutdown failure, waits up to one second for a piped stderr to take it, and exits
 nonzero instead of leaving the terminal waiting.
 
-This does not change the installed native library's missing-value semantics. Its
-[1.3.0 synchronous getter](https://github.com/Brooooooklyn/keyring-node/blob/v1.3.0/src/entry.rs)
-converts native read errors into a missing result, so not every OS failure can
-be distinguished from an absent credential. The worker isolates blocking and exceptions; it
-does not claim to repair that upstream distinction.
+The native library is `@napi-rs/keyring` 2.0.0. A locked or inaccessible keychain throws from
+every read and write, and a delete returns false only when nothing was there. The daemon wraps
+each throw in `MachineCredentialUnavailableError` (`src/machine-credentials.ts`), so a keychain
+that does not answer is reported as unavailable, never as an absent credential. A null read is
+the only "no credential".
 
 Admission is limited to 128 machine entries, including the local machine and pending enrollment
 reservations. At capacity, re-pairing an existing row requires its `expectedMachineId`; an unnamed
@@ -406,8 +414,12 @@ journal path. It covers chunk reads and writes, final publication, and chunk-dir
 A competing receive gets the existing `chunk-out-of-order` refusal without waiting; a retry after
 the owner finishes can adopt its durable chunk or completed member. Other members can progress
 independently. This prevents cleanup racing a retry's open chunk handle within one daemon process,
-which Windows can reject with `EPERM`. It does not coordinate separate daemon processes sharing a
-journal directory.
+which Windows can reject with `EPERM`. Separate daemon processes sharing a journal directory are
+excluded by an exclusive OS-backed file lease at `<journal-root>/.receive-lease.sqlite`: another
+process cannot receive until every active receive in the owning process settles, and it gets the
+same immediate `chunk-out-of-order` refusal. See
+[transfer receive leases](../../docs/transfer-receive-leases.md) for what the lease does not
+cover.
 
 Production transfer RPCs share a per-transfer resource queue across sockets. A reconnected retry
 or abort waits for the original handler to finish; dropping its socket does not release that
@@ -422,10 +434,56 @@ refuses mutating RPC methods with `daemonPersistenceUnavailableErrorCode` (`-320
 running on state nobody will get back. Every failure is still reported through the daemon error
 sink, and `system.emergencyStop` still reports a `persistence` failure in its bounded outcome.
 
+An approval decision is saved before the agent is told. If that save fails, `approval.resolve`
+answers `-32014`, the agent is not answered, no standing rule is created, and the approval stays
+pending, so a client that shows the gate as still waiting is telling the truth. If the save
+succeeds but the agent cannot be told, the daemon undoes the decision with a second save (the
+approval is pending again, and its receipt and any new standing rule are removed) and answers
+"Domovoi could not reach the agent, so this decision was not applied. The approval is still
+waiting." If that second save also fails, the answer is `-32014` as above. A decision whose
+approval an emergency stop or another path removed during the save is not applied and not sent to
+the agent.
+
 Read-only methods keep working, including `workspace.get`, so an operator can read the state that
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
 again as soon as one write succeeds, since each write stores the whole snapshot.
+
+## When stored state cannot be read
+
+At startup the daemon reads `state.sqlite` and its stored workspace snapshot. What happens next
+depends on why a read fails:
+
+- **Written by a newer build.** Before it changes anything, the daemon reads the stored protocol
+  version without opening the file for writing and without creating or removing a `-wal` or `-shm`
+  file: the main file is read as immutable, or, when the write-ahead log holds changes, a private
+  copy is read. A snapshot whose protocol major or minor is newer than this build's is left byte for
+  byte as it was, and startup fails with a message that names the file, both protocol versions, and
+  the build needed to open it. Running that newer build again restores everything. If the version
+  cannot be read for an operational reason (permission, I/O), startup fails instead of guessing.
+- **An unreadable snapshot row.** Malformed JSON, or a value this build's schema rejects, is copied
+  beside the database as `state.sqlite.snapshot-corrupt-<time>.json` and the workspace starts from
+  the initial snapshot. The rest of the database stays, including paired devices, the audit log,
+  the fleet registry, and queued sends.
+- **An unreadable database.** A file that is not a SQLite database, or one where `PRAGMA
+  quick_check` finds damage in any table, is renamed to `state.sqlite.corrupt-<time>` with its
+  `-wal` and `-shm` files, and a new database is created. The whole-file check runs only when the
+  database and its log total 256 MB or less; a larger file skips it, and damage there is found when
+  a table is read. From the renamed file the daemon keeps
+  what it can still read and validate: the workspace snapshot (after the same migration and
+  validation as a normal start), other projects' saved state, and paired devices. Copied devices go
+  through the registry's migrations again, and a row that no longer reads as a paired device is
+  dropped. Anything it cannot keep must be set up again; for devices that means pairing again.
+
+A busy, locked, read-only, or permission-denied file is never moved aside; startup fails instead.
+
+Every recovery is reported three ways: a `state.quarantine` audit receipt whose target is the
+kept file and whose detail says whether the workspace and paired devices were kept, a line in the
+daemon error log, and a `stateRecovery` field on every client `system.hello` result until the
+daemon restarts. Connections that use this machine's own credential get the kind, the kept path,
+the reason, when it happened, `workspaceKept` and `pairedDevicesKept`. Paired devices get the same
+without the path and the reason. Nothing is deleted. The kept file holds the earlier state; Domovoi
+does not restore it automatically.
 
 ## Provider prompt budget
 
@@ -528,11 +586,22 @@ inside the distribution. The runner that starts `git` inside a distribution asks
 wherever the distribution mounts it, not only under `/mnt`.
 
 What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
-the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
-the listing answers or refuses within its deadline and that a distribution that does not exist is
-refused; the path round trip and the drive refusal need a running distribution and skip there.
-Discovery, open, authentication, repository ownership, Git, and restart against a running
-distribution are not verified by CI.
+the real `wsl.exe` on the ordinary Windows CI job, which has no running WSL 2 distribution. Four
+prove that the listing answers or refuses within its deadline and that a distribution that does
+not exist is refused; the path round trip and the drive refusal need a running distribution and
+skip there.
+
+A separate `wsl-native` workflow (`.github/workflows/wsl.yml`) provisions a real WSL 2 Ubuntu
+guest on Windows 2025 (`scripts/wsl-ci.mjs`, run by `.github/workflows/wsl.yml`). It requires two
+exact sets of named proofs, each passed once with none skipped: fifteen discovery, transport and
+repository boundary tests (`requiredWslProofs`: six discovery, four transport, five repository),
+then, in a separate run, two service proofs (`requiredWslServiceProofs`): installing and removing
+the guest supervisor through the daemon CLI, and propagating a guest failure, restarting it and
+removing only its WSL task.
+It runs on pull requests that touch its path list, nightly at 09:23 UTC, and by manual dispatch.
+It still does not cover two distribution identities, Windows 11 mirrored networking or VPNs, the
+host keychain, or multi-distribution port collisions. [Native WSL CI](../../docs/wsl-ci.md) has
+the full contract.
 
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.
@@ -638,6 +707,28 @@ Domovoi process using that worktree root and its supervisor, confirm no restore 
 remove only the named claim file. Keep the session worktree, repository and Git refs intact. The
 token check catches an already-replaced claim; it is not an atomic compare-and-unlink and does not
 make live manual claim deletion safe.
+
+## Live provider contract
+
+The adapter unit tests drive fakes that submit every tool call for approval, so they cannot see a
+call a real provider approves on its own. `src/live-provider-contract.test.ts` runs the providers
+installed on the machine (`claude`, `codex`, `opencode`, `kilo`; a missing one is reported as skipped) through
+the real adapters in Ask, Build and Build auto. Each provider talks to a local stand-in for its
+model API that asks for one shell command: reading a committed `.env` that holds a planted token,
+writing a file outside the worktree, or `rm -rf build`. The suite denies every approval and checks
+that the effect did not happen (the token never came back to the stand-in, the file does not
+exist, `build/` is intact). Every case also checks that the stand-in sent its tool call, since a
+case where it never did tested nothing. In Build (except Codex) the request must reach the adapter
+as an approval or a policy refusal first; otherwise the turn must have ended or shown a card. No
+model is called and no account is used; it runs under a scratch `HOME`. The outside-the-worktree
+target is a scratch directory under the real `~/.cache` (`~/.cache/domovoi-live-contract-*`),
+because Codex's workspace sandbox keeps the temporary directory writable. The suite removes it
+afterwards; a run that is killed can leave it behind. It is opt-in and not for hosted CI:
+
+```sh
+cd apps/daemon
+DOMOVOI_LIVE_PROVIDERS=1 npx vitest run src/live-provider-contract.test.ts --coverage.enabled=false
+```
 
 ## Loaded fixture checks
 

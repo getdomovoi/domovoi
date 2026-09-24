@@ -12,6 +12,8 @@ import {
   type ApprovalDecision,
   type FleetEntry,
   type PermissionMode,
+  type RpcMethod,
+  type RpcParams,
   type SkillSummary,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -28,8 +30,7 @@ import { StopSheet } from "./components/stop-sheet"
 import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { normalizeTab, TabBar, type Tab } from "./components/tab-bar"
-import { clearCredential, loadCredential, saveCredential } from "./lib/credentials"
-import { clientKind } from "./lib/protocol-facts"
+import { clearCredential, loadCredential, saveCredential, type DaemonCredential } from "./lib/credentials"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
@@ -72,7 +73,7 @@ export function App() {
   const selectTab = useCallback((value: unknown) => setTab(normalizeTab(value)), [])
   const [url, setUrl] = useState("")
   const [token, setToken] = useState("")
-  const [connectTo, setConnectTo] = useState<{ url: string, token: string } | undefined>(undefined)
+  const [connectTo, setConnectTo] = useState<DaemonCredential | undefined>(undefined)
   const [pairingMode, setPairingMode] = useState<"scan" | "type" | undefined>(undefined)
   const [cameraPermission, requestCameraPermission] = usePairCameraPermission()
   const [restoring, setRestoring] = useState(true)
@@ -151,6 +152,8 @@ export function App() {
   const [freshStarting, setFreshStarting] = useState(false)
   const [freshProblem, setFreshProblem] = useState("")
   const [composerFocused, setComposerFocused] = useState(false)
+  // Stable, so the thread's memoized rows are not redrawn on every keystroke.
+  const watchReceipt = useCallback(() => setComposerFocused(false), [])
   // How long an approval has been waiting is only true for as long as the
   // clock it was measured against. It ticks while the list is on screen and
   // stops when it is not, because nothing off screen needs a fresh minute.
@@ -183,16 +186,23 @@ export function App() {
     setProblem: setFleetProblem,
   }))
 
-  const { snapshot, status, fault, call, refresh, reconnect, imageAttachments, clientAccess } = useDaemon(
+  // What the daemon knows this device as. The pairing code decided it, and
+  // every call names it, because the daemon refuses one that names another. A
+  // credential of unknown kind is kept with the kind the daemon accepted.
+  const { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess, client } = useDaemon(
     connectTo?.url,
     connectTo?.token,
+    connectTo?.client,
     fleetLoads.accept,
+    (kind) => {
+      if (connectTo) void saveCredential({ ...connectTo, client: kind })
+    },
   )
   const mutate = useCallback(
-    (method: string, params: unknown) => mutationCall(clientAccess, call, method, params),
+    <M extends RpcMethod>(method: M, params: RpcParams<M>) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
   )
-  const notice = connectionNotice(status, fault, snapshot !== undefined)
+  const notice = connectionNotice(status, fault, snapshot !== undefined, protocolProblem)
   const shell = shellState({
     restoringCredential: restoring,
     hasCredential: connectTo !== undefined,
@@ -298,7 +308,7 @@ export function App() {
           purpose: "preview",
           bridgeChannel: channel,
           parentOrigin: previewParentOrigin,
-          client: clientKind,
+          client,
         }))
         if (current) setPreviewRender({ state: "ready", url: artifactUrlFor(url, access), channel })
       } catch (cause) {
@@ -306,7 +316,7 @@ export function App() {
       }
     })()
     return () => { current = false }
-  }, [call, openPreviewId, openPreviewRevision, openPreviewSessionId, renderAttempt, url])
+  }, [call, client, openPreviewId, openPreviewRevision, openPreviewSessionId, renderAttempt, url])
 
   const openPlan = useMemo(() => {
     if (!snapshot || !openSessionId) return undefined
@@ -413,7 +423,6 @@ export function App() {
       await mutate("approval.resolve", {
         approvalId: approval.id,
         decision,
-        client: clientKind,
         ...(explanation ? { explanation } : {}),
       })
       setExplaining(false)
@@ -445,7 +454,7 @@ export function App() {
       baseSteps: edit.baseSteps,
       draftSteps: edit.draftSteps,
       ...(edit.replacesPendingEditId ? { replacesPendingEditId: edit.replacesPendingEditId } : {}),
-      client: clientKind,
+      client,
     })
   }
 
@@ -461,7 +470,7 @@ export function App() {
       ...(artifact.variant ? { variantId: artifact.variant.id } : {}),
       anchor,
       body,
-      client: clientKind,
+      client,
     })
   }
 
@@ -481,11 +490,11 @@ export function App() {
       const created = workspaceSnapshotSchema.parse(await mutate("session.create", {
         title: request.title,
         runtime: request.runtime,
-        client: clientKind,
+        client,
       }))
       const startedId = created.activeSessionId
       if (!startedId) throw new Error("The daemon created the session but did not say which")
-      await mutate("session.send", { sessionId: startedId, prompt: request.prompt, client: clientKind })
+      await mutate("session.send", { sessionId: startedId, prompt: request.prompt, client })
       setOpenSessionId(startedId)
       setOpenArtifactId(undefined)
       setDraft("")
@@ -502,7 +511,7 @@ export function App() {
   const pauseSession = async (sessionId: string) => {
     setPausing(true)
     try {
-      await mutate("session.pause", { sessionId, client: clientKind })
+      await mutate("session.pause", { sessionId, client })
     } finally {
       setPausing(false)
     }
@@ -513,7 +522,7 @@ export function App() {
     setFreshStarting(true)
     setFreshProblem("")
     try {
-      const sessionId = await startFreshSession(snapshot, prompt, mutate)
+      const sessionId = await startFreshSession(snapshot, prompt, mutate, client)
       setFreshOpen(false)
       setOpenSessionId(sessionId)
     } catch (cause) {
@@ -525,7 +534,7 @@ export function App() {
 
   const cancelQueuedSend = async (sessionId: string, queueId: string) => {
     const queued = snapshot?.queuedSends?.find((candidate) => candidate.sessionId === sessionId)
-    const params = queuedCancelParams(queued, sessionId, queueId)
+    const params = queuedCancelParams(queued, sessionId, queueId, client)
     if (!params) return
     await mutate("session.cancelQueuedSend", params)
   }
@@ -573,7 +582,7 @@ export function App() {
       await mutate("session.send", {
         sessionId,
         prompt: draft.trim(),
-        client: clientKind,
+        client,
         ...(session ? sendDelivery(session) : {}),
         ...(selection ? { skillSelection: selection } : {}),
         ...(attachments.length > 0
@@ -653,6 +662,7 @@ export function App() {
         <SafeAreaView edges={["top", "left", "right", "bottom"]} className="flex-1 bg-background">
           <TabletShell
             snapshot={snapshot}
+            notice={notice}
             selectedSessionId={openSessionId ?? snapshot.activeSessionId ?? undefined}
             draft={draft}
             access={clientAccess}
@@ -681,7 +691,7 @@ export function App() {
               setOpenApprovalId(approvalId)
               setExplaining(true)
             }}
-            onPostReview={(artifactId, body) => void commentOnElement(artifactId, { cssSelector: "body" }, body)}
+            onPostReview={(artifactId, body) => commentOnElement(artifactId, { cssSelector: "body" }, body)}
           />
           <FreshSessionSheet
             open={freshOpen}
@@ -711,7 +721,7 @@ export function App() {
             sendProblem={sendProblem}
             skillLabel={skillSelectionLabel(chosenSkills)}
             access={clientAccess}
-            onWatchReceipt={() => setComposerFocused(false)}
+            onWatchReceipt={watchReceipt}
             onCancelQueuedSend={(queueId) => void cancelQueuedSend(openSession.id, queueId)}
             onComposerFocusChange={setComposerFocused}
             composerBottomInset={!composerFocused && tabFootprint > 0 ? tabFootprint + 8 : undefined}
@@ -803,12 +813,18 @@ export function App() {
             mode={pairingMode}
             permission={cameraPermission}
             requestPermission={requestCameraPermission}
+            device={tablet ? "tablet" : "phone"}
             onPaired={(credential) => {
               setUrl(credential.url)
               setToken(credential.token)
-              setPairingMode(undefined)
               setConnectTo(credential)
               void saveCredential(credential)
+            }}
+            // The paired card stays up until the person moves on, so the line
+            // about when a gate can reach this device is read, not flashed.
+            onDone={() => {
+              setPairingMode(undefined)
+              selectTab("sessions")
             }}
             onCancel={() => setPairingMode(undefined)}
           />
@@ -908,7 +924,8 @@ export function App() {
               onChangeUrl={setUrl}
               onChangeToken={setToken}
               onConnect={() => {
-                const next = { url: url.trim(), token: token.trim() }
+                // A typed token carries no kind; the connection finds it out.
+                const next = { url: url.trim(), token: token.trim(), client: undefined }
                 setConnectTo(next)
                 void saveCredential(next)
               }}
@@ -922,6 +939,7 @@ export function App() {
               themePreference={preference}
               onChangeTheme={setPreference}
               paired={!unpaired}
+              device={tablet ? "tablet" : "phone"}
               bottomInset={tabFootprint}
             />
           ) : null}
@@ -946,11 +964,11 @@ export function App() {
           open={confirmPause}
           onOpenStop={() => {
             setConfirmPause(false)
-            void mutate("system.pauseAll", { client: clientKind })
+            void mutate("system.pauseAll", { client })
           }}
           onEmergencyStop={() => {
             setConfirmPause(false)
-            void mutate("system.emergencyStop", { client: clientKind })
+            void mutate("system.emergencyStop", { client })
           }}
           onCancel={() => setConfirmPause(false)}
         />

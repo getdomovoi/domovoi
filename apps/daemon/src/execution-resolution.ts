@@ -45,6 +45,7 @@ type Manifest = {
 }
 
 const fileTools = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
+const readTools = new Set(["Read", "Glob", "Grep", "LS", "NotebookRead"])
 const packageManagers = new Set(["npm", "pnpm", "yarn", "bun"])
 const packageSubcommands = new Set([
   "add", "audit", "create", "dedupe", "dlx", "exec", "i", "init", "install", "link",
@@ -107,7 +108,7 @@ async function canonicalTarget(path: string): Promise<string> {
   }
 }
 
-async function pathStaysInside(root: string, cwd: string, path: string): Promise<boolean> {
+export async function pathStaysInside(root: string, cwd: string, path: string): Promise<boolean> {
   let existing = resolve(cwd, path)
   while (true) {
     try {
@@ -448,6 +449,11 @@ export async function resolveExecution(input: ExecutionInput): Promise<Execution
       path,
     })
   }
+  if (
+    readTools.has(command)
+    && input.filePath !== undefined
+    && !await pathStaysInside(directory.root, directory.absolute, input.filePath)
+  ) return unresolved("cwd-outside-project")
   // WebFetch, MCP tools and the like act through inputs a command record cannot
   // hold (a URL, arguments), so no rule may stand for all of them at once.
   if (input.tool !== undefined) return unresolved("unsupported-syntax")

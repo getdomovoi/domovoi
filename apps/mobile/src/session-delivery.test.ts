@@ -23,12 +23,13 @@ describe("session delivery", () => {
       skillIds: [],
       attachments: [],
     }
-    expect(queuedCancelParams(queued, "session-billing", "queue-1")).toEqual({
+    expect(queuedCancelParams(queued, "session-billing", "queue-1", "phone")).toEqual({
       sessionId: "session-billing",
       queueId: "queue-1",
       client: "phone",
     })
-    expect(queuedCancelParams(queued, "session-other", "queue-1")).toBeUndefined()
-    expect(queuedCancelParams(queued, "session-billing", "queue-stale")).toBeUndefined()
+    expect(queuedCancelParams(queued, "session-other", "queue-1", "phone")).toBeUndefined()
+    expect(queuedCancelParams(queued, "session-billing", "queue-stale", "phone")).toBeUndefined()
+    expect(queuedCancelParams(queued, "session-billing", "queue-1", "tablet")?.client).toBe("tablet")
   })
 })

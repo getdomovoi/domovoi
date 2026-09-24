@@ -268,6 +268,20 @@ describe("resolveExecution", () => {
     })).resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
   })
 
+  it.each(["Read", "Glob", "Grep", "LS", "NotebookRead"])(
+    "never fingerprints a %s outside the worktree, so no standing rule can cover it",
+    async (command) => {
+      const root = await project()
+      const outside = await project()
+      await expect(resolveExecution({
+        workspaceRoot: root,
+        cwd: root,
+        command,
+        filePath: join(outside, "credentials"),
+      })).resolves.toEqual({ state: "unresolved", reason: "cwd-outside-project" })
+    },
+  )
+
   it("rejects a missing command", async () => {
     const root = await project()
     await expect(resolveExecution({ workspaceRoot: root, cwd: root }))

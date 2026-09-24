@@ -22,6 +22,10 @@ import {
   rpcMethodMutations,
   protocolVersionMismatchErrorCode,
   rpcMethods,
+  maximumSessionSearchQueryLength,
+  maximumSessionSearchResults,
+  sessionSearchParamsSchema,
+  sessionSearchResultSchema,
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -532,6 +536,35 @@ describe("authenticated client identity", () => {
     expect(schema.parse({ ...demoWorkspace, clientAccess: "full" }).clientAccess).toBe("full")
     expect(schema.parse({ ...demoWorkspace, clientAccess: "watching" }).clientAccess).toBe("watching")
     expect(schema.safeParse({ ...demoWorkspace, clientAccess: "read-only" }).success).toBe(false)
+  })
+
+  it("names stored state the daemon moved aside at startup", () => {
+    const schema = rpcMethods["system.hello"].result
+    const stateRecovery = {
+      kind: "snapshot",
+      quarantinedPath: "/Users/person/.domovoi/state.sqlite.snapshot-corrupt-2026-09-22T12-00-00-000Z.json",
+      reason: "ZodError: protocolVersion is invalid",
+      occurredAt: "2026-09-22T12:00:00.000Z",
+      pairedDevicesKept: true,
+      workspaceKept: false,
+    }
+    expect(schema.parse(demoWorkspace).stateRecovery).toBeUndefined()
+    expect(schema.parse({ ...demoWorkspace, stateRecovery }).stateRecovery).toEqual(stateRecovery)
+    const { quarantinedPath: _path, reason: _reason, ...flag } = stateRecovery
+    expect(schema.parse({ ...demoWorkspace, stateRecovery: flag }).stateRecovery).toEqual(flag)
+    expect(schema.parse({ ...demoWorkspace, stateRecovery: { ...stateRecovery, kind: "database", pairedDevicesKept: false } })
+      .stateRecovery?.kind).toBe("database")
+    for (const invalid of [
+      { ...stateRecovery, kind: "project" },
+      { ...stateRecovery, quarantinedPath: "" },
+      { ...stateRecovery, occurredAt: "yesterday" },
+      { ...stateRecovery, pairedDevicesKept: "yes" },
+      { ...stateRecovery, workspaceKept: undefined },
+      { ...stateRecovery, reason: "x".repeat(4_097) },
+      { ...stateRecovery, extra: true },
+    ]) {
+      expect(schema.safeParse({ ...demoWorkspace, stateRecovery: invalid }).success).toBe(false)
+    }
   })
 
   it("carries the protocol version in the handshake", () => {
@@ -1392,12 +1425,35 @@ describe("phone and tablet credential scope", () => {
   })
 
   it("carries the pairing card's list", () => {
-    // The card's list as step 10 draws it: the limit last, and the line the
-    // daemon does not keep yet marked rather than dropped.
-    expect(phoneAndTabletPromise).toHaveLength(5)
+    // The card's list as PairingCard draws it (2026-09-23): the three grants,
+    // the gates-while-open limit, the line the daemon does not keep yet marked
+    // rather than dropped, and the repository limit last.
+    expect(phoneAndTabletPromise).toHaveLength(6)
+    expect(phoneAndTabletPromise[3]).toEqual({ text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", tone: "limit" })
     expect(phoneAndTabletPromise.at(-1)).toEqual({ text: "It cannot pull the repository down. Files stay here.", tone: "limit" })
     expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
-      { text: "Terminal output is not on a phone yet. Everything else here works.", tone: "unbuilt" },
+      { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
     ])
+  })
+})
+
+describe("session search", () => {
+  it("takes a bounded query and limit, and answers with matches and whether it cut them", () => {
+    expect(sessionSearchParamsSchema.parse({ query: " webhooks " })).toEqual({ query: "webhooks", limit: 20 })
+    expect(sessionSearchParamsSchema.parse({ query: "webhooks", limit: 5 })).toEqual({ query: "webhooks", limit: 5 })
+    expect(sessionSearchParamsSchema.safeParse({ query: "   " }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "x".repeat(maximumSessionSearchQueryLength + 1) }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", limit: 0 }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", limit: maximumSessionSearchResults + 1 }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", sessionId: "session-1" }).success).toBe(false)
+    const session = demoWorkspace.sessions[0]!
+    const result = { query: "webhooks", matches: [{ session, matchedIn: "title" }], truncated: false }
+    expect(sessionSearchResultSchema.parse(result)).toEqual(result)
+    expect(sessionSearchResultSchema.safeParse({ ...result, matches: [{ session, matchedIn: "body" }] }).success).toBe(false)
+    expect(sessionSearchResultSchema.safeParse({ query: "webhooks", matches: [] }).success).toBe(false)
+    expect(rpcMethodAuthorizations["session.search"]).toBe("observe")
+    expect(rpcMethodMutations["session.search"]).toBe("read-only")
+    // The palette fans out from a desktop or web client; the phone list is unchanged.
+    expect(phoneAndTabletRpcMethods.has("session.search")).toBe(false)
   })
 })

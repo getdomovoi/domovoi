@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
@@ -41,7 +41,10 @@ const textTone: Record<PlanRow["tone"], string> = {
   queued: "text-muted-foreground",
 }
 
-function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
+// Memoized, with a stable onWatch from the screen: a keystroke or a streamed
+// batch re-renders the screen, and a row that has not changed is not drawn or
+// parsed again.
+const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
   if (entry.kind === "receipt") {
     return (
       <Card className="gap-3 border-ok-border bg-ok-bg">
@@ -89,7 +92,7 @@ function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) 
       </View>
     </View>
   )
-}
+})
 
 function PolicyRefusal({ refusal }: {
   refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
@@ -97,6 +100,16 @@ function PolicyRefusal({ refusal }: {
   return (
     <View className="gap-3">
       <Text variant="title" className="text-[24px] leading-[30px]">Nothing to approve</Text>
+      <PolicyRefusalCards refusal={refusal} />
+    </View>
+  )
+}
+
+export function PolicyRefusalCards({ refusal }: {
+  refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
+}) {
+  return (
+    <>
       <Card className="gap-2 border-danger-border bg-danger-bg">
         <Text variant="nav" className="text-danger-fg">Refused by policy</Text>
         <Text variant="meta" className="text-danger-fg">The daemon refused before the command ran. No approval can override it.</Text>
@@ -114,7 +127,7 @@ function PolicyRefusal({ refusal }: {
         <Text variant="label">WHAT YOU CAN DO</Text>
         <Text variant="meta">{refusal.remedy}</Text>
       </Card>
-    </View>
+    </>
   )
 }
 
@@ -455,7 +468,7 @@ export function SessionScreen({
   onWatchReceipt: () => void
   onCancelQueuedSend: (queueId: string) => void
   onComposerFocusChange: (focused: boolean) => void
-  composerBottomInset?: number
+  composerBottomInset?: number | undefined
   onOpenApproval: (approvalId: string) => void
   onOpenArtifact: (artifactId: string) => void
   onPause: () => void
@@ -499,6 +512,10 @@ export function SessionScreen({
   // itself instead of a count. Back at the bottom, by hand or by the pill,
   // the count clears.
   const thread = useRef<PageScrollerHandle>(null)
+  const watchReceipt = useCallback(() => {
+    onWatchReceipt()
+    thread.current?.scrollToEnd()
+  }, [onWatchReceipt])
   const [atEnd, setAtEnd] = useState(true)
   const [unseen, setUnseen] = useState(0)
   const seenEntries = useRef(detail.entries.length)
@@ -604,14 +621,7 @@ export function SessionScreen({
           />
         ) : null}
         {detail.entries.map((entry) => (
-          <Entry
-            key={entry.id}
-            entry={entry}
-            onWatch={() => {
-              onWatchReceipt()
-              thread.current?.scrollToEnd()
-            }}
-          />
+          <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
         ))}
 
         {access === "full" ? <Card className="gap-2">
@@ -655,7 +665,7 @@ export function SessionScreen({
         />
       ) : null}
 
-      <JumpPill state={follow} unseen={unseen} above={composerFootprint} onPress={() => thread.current?.scrollToEnd()} />
+      <JumpPill state={follow} unseen={unseen} above={composerFootprint} watching={access !== "full"} onPress={() => thread.current?.scrollToEnd()} />
       {!detail.policyRefusal ? <Composer
         draft={draft}
         readiness={detail.sending}
