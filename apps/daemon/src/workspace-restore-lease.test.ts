@@ -267,4 +267,41 @@ describe("restore owner reclamation", () => {
     expect(() => new RestoreOperationLease(f.root, "session-test", randomUUID())).toThrow("no readable recovery record")
     await expect(readFile(f.claimPath, "utf8")).resolves.toBe(f.token)
   })
+
+  it("observes a command that fails while its PID record is still being written", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-restore-early-exit-"))
+    directories.push(root)
+    const lease = new RestoreOperationLease(root, "session-test", randomUUID())
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+    let releaseWrite!: () => void
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve })
+    let writes = 0
+    vi.mocked(writeFile).mockImplementation(async (...args: Parameters<typeof writeFile>) => {
+      writes += 1
+      if (writes === 2) await writeGate
+      return actual.writeFile(...args)
+    })
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on("unhandledRejection", onUnhandled)
+    const child = new EventEmitter() as ChildProcess
+    Object.defineProperty(child, "pid", { value: 45678 })
+    const failure = new Error("Git exited with status 1")
+    const result = lease.run(() => trackRestoreCommand(() => Object.assign(Promise.reject(failure), { child }) as PromiseWithChild<never>))
+    const observed = result.catch((error: unknown) => error)
+    try {
+      await vi.waitFor(() => expect(writes).toBe(2), { timeout: 5_000 })
+      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+      releaseWrite()
+      child.emit("close", 1, null)
+      expect(await observed).toBe(failure)
+      expect(unhandled).toEqual([])
+    } finally {
+      releaseWrite()
+      child.emit("close", 1, null)
+      process.off("unhandledRejection", onUnhandled)
+      vi.mocked(writeFile).mockImplementation(actual.writeFile)
+      lease.release()
+    }
+  })
 })

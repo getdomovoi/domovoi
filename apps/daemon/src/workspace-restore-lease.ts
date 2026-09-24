@@ -117,6 +117,9 @@ export class RestoreOperationLease {
     let outcome: { value: T } | { error: unknown }
     try {
       pending = launch()
+      // Observe the result at once: the child can exit while its PID record
+      // is still being written, and an unobserved rejection would escape.
+      const settled = pending.then((value): { value: T } => ({ value }), (error: unknown) => ({ error }))
       // execFile can reject on abort before its child closes. Keep both the
       // operation lease and durable child identity until actual settlement.
       closed = new Promise<void>((resolve) => pending!.child.once("close", (_code, signal) => {
@@ -127,7 +130,10 @@ export class RestoreOperationLease {
       this.#owner.starting--
       if (pid !== undefined) this.#owner.children.push(pidSchema.parse(pid))
       await this.#publish()
-      outcome = { value: await pending }
+      outcome = await settled
+      if ("error" in outcome && outcome.error instanceof Error && outcome.error.name === "AbortError") {
+        this.#owner.descendantsUnknown = true
+      }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") this.#owner.descendantsUnknown = true
       outcome = { error }
