@@ -584,7 +584,7 @@ function salvagePairedDevices(database: DatabaseSync, quarantinedPath: string): 
     database.exec("COMMIT")
     return invalid.length === 0
   } catch {
-    database.exec("ROLLBACK")
+    rollBackIfOpen(database)
     return false
   }
 }
