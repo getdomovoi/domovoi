@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { pairingCodeSchema } from "./devices.js"
+import { pairingUrlSchema } from "./pairing-url.js"
 import { utf16MaxLength } from "./validation.js"
 
 // What a pairing QR carries: the daemon's WebSocket address and a single-use
@@ -24,15 +25,7 @@ export const pairingPayloadPrefix = "domovoi-pair:1:"
 // sides agree on what a pairing code can be.
 export const maximumPairingPayloadLength = 6144
 
-const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]"])
-
-export const pairingUrlSchema = z.string().check(utf16MaxLength(512)).refine((value) => {
-  let url: URL
-  try { url = new URL(value) } catch { return false }
-  if (url.username || url.password || url.search || url.hash) return false
-  if (url.protocol === "wss:") return true
-  return url.protocol === "ws:" && loopbackHosts.has(url.hostname)
-}, "Pairing address must be wss://, or ws:// on loopback only")
+export { pairingUrlSchema } from "./pairing-url.js"
 
 export const pairingPayloadSchema = z.object({
   v: z.literal(1),

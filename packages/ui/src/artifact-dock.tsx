@@ -84,6 +84,7 @@ import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGr
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import { WorkingPlanCard } from "./working-plan"
 import { RulesPanel } from "./rules-panel.js"
+import { checkpointBlockedReason } from "./checkpoint-actions.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import type { TerminalControls } from "./terminal-pane"
 import { SessionEvidencePanel } from "./session-evidence"
@@ -182,6 +183,8 @@ export function ArtifactDock({
   onRestoreCheckpoint,
   worktreeName,
   onForkCheckpoint,
+  onTakeCheckpoint,
+  onOpenInEditor,
   onRevokeApprovalRule,
   onLoadHardGates,
   restoreBusy = false,
@@ -255,6 +258,9 @@ export function ArtifactDock({
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
   worktreeName?: string | undefined
   onForkCheckpoint?: ((checkpointId: string) => void) | undefined
+  onTakeCheckpoint?: ((sessionId: string, label?: string) => Promise<void>) | undefined
+  // Present only where the platform can open the worktree in an editor.
+  onOpenInEditor?: (() => void) | undefined
   restoreBusy?: boolean
   // The Rules tab revokes through approvalRule.revoke and reads the daemon's
   // hard-gate categories rather than carrying a copy of the policy.
@@ -874,6 +880,7 @@ export function ArtifactDock({
             sessionId={snapshot.activeSessionId}
             onLoad={onLoadSessionEvidence}
             onRevertFile={onRevertSessionFile}
+            onOpenInEditor={onOpenInEditor}
           />
         </TabsContent>
         <TabsContent value="terminal" className="min-h-0 bg-code">
@@ -923,6 +930,10 @@ export function ArtifactDock({
             onLoad={onLoadSessionHistory}
             onRestoreCheckpoint={onRestoreCheckpoint}
             onForkCheckpoint={onForkCheckpoint}
+            onTakeCheckpoint={onTakeCheckpoint && snapshot.activeSessionId && !readOnly
+              ? (label) => onTakeCheckpoint(snapshot.activeSessionId!, label)
+              : undefined}
+            takeBlockedReason={checkpointBlockedReason(activeSession(snapshot)?.activeTurnId)}
             restoreBlocked={
               readOnly
               || restoreBusy

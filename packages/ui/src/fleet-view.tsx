@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import {
   CheckIcon,
   CircleStopIcon,
@@ -1002,6 +1002,7 @@ export function FleetView({
   entries,
   fleetOverflow,
   currentMachineId,
+  devicesMachineLabel,
   currentSessionCount,
   providers,
   onListDevices,
@@ -1023,6 +1024,7 @@ export function FleetView({
   entries: FleetEntry[]
   fleetOverflow: FleetSnapshotOverflow | null
   currentMachineId: string
+  devicesMachineLabel: string | undefined
   currentSessionCount: number
   providers?: WorkspaceSnapshot["machine"]["providers"] | undefined
   onOpenSkills: () => void
@@ -1048,6 +1050,7 @@ export function FleetView({
   useEffect(() => {
     if (removedAccess && clientAccess[removedAccess.machineId]?.state === "admitted") setRemovedAccess(null)
   }, [clientAccess, removedAccess])
+  const pairedDevicesHeadingId = useId()
   const [devices, setDevices] = useState<PairedDeviceSummary[] | null>(null)
   const [devicesError, setDevicesError] = useState("")
   const [actionError, setActionError] = useState("")
@@ -1240,11 +1243,10 @@ export function FleetView({
             )}
           </section>
 
-          <section className="mt-7" aria-label="Paired devices">
-            <h2 className="m-0 text-[13.5px] font-medium">Paired devices</h2>
+          <section className="mt-7" aria-labelledby={pairedDevicesHeadingId}>
+            <h2 id={pairedDevicesHeadingId} className="m-0 text-[13.5px] font-medium">Devices paired with {devicesMachineLabel ?? "this machine"}</h2>
             <p className="mt-1.5 max-w-[620px] text-[12.5px] leading-[1.6] text-muted-foreground">
-              Every credential this machine accepts, and what holds it. A revoked credential cannot
-              reconnect. Rotating issues a new one and retires the old one.
+              Each daemon keeps its own list. Pair a new one from Settings.
             </p>
 
             {actionError ? (
