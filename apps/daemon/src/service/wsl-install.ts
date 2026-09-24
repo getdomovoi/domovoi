@@ -4,13 +4,15 @@ import { posix, win32 } from "node:path"
 import type { OperationDeadline } from "../operation-deadline.js"
 import { profileLocation } from "../profile-directory.js"
 import { localOwnerRemovalReceiptPath } from "../local-owner-removal.js"
-import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
+import { z } from "zod"
+
+import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
-import { claimProfileAfterStop, restoreAfterFailure } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, waitUntilReady, type ServiceSwap } from "./update-outcome.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
-import { removeWindowsTask } from "./windows-task.js"
+import { removeWindowsTask, type WindowsTaskRemovalPlan } from "./windows-task.js"
 
 async function capture(command: ServiceCommand, dependencies: ServiceCommandDependencies, deadline: OperationDeadline) {
   const result = await withinServiceDeadline(deadline, () => dependencies.capture(command.command, command.args, deadline))
@@ -46,66 +48,128 @@ async function discover(dependencies: ServiceCommandDependencies, deadline: Oper
   }
 }
 
-export type WslServiceUpdateEffects = Pick<ServiceEffects, "write" | "capture" | "claimProfile" | "stopSupervisor">
+export type WslServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "exists" | "remove" | "capture" | "claimProfile" | "stopSupervisor" | "readOwner">
+
+// Written before the old task is deleted and removed once the update ends
+// either way. Between the delete and the new registration there is no task;
+// if the update stops there (a timeout, or the desktop quitting), the next
+// update finds this record and starts from the configuration named here as
+// previous, whatever service.json says by then.
+export function wslUpdateIntentPath(configurationPath: string): string {
+  return `${configurationPath}.update-intent.json`
+}
+
+const wslUpdateIntentSchema = z.object({
+  version: z.literal(1),
+  previous: z.string().min(1),
+  next: z.string().min(1),
+}).strict()
+
+// Removes whichever of these tasks is registered under the shared name. Each
+// task's checks refuse another task's action before changing anything, so a
+// refusal moves on to the next candidate.
+async function removeRegisteredTask(plans: readonly WindowsTaskRemovalPlan[], effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<void> {
+  let failure: unknown
+  for (const plan of plans) {
+    try {
+      await removeWindowsTask(plan, effects, deadline)
+      return
+    } catch (error) {
+      failure = error
+    }
+  }
+  throw failure
+}
 
 // Ruled 2026-09-23 (B): a WSL guest service is updated in place too. Its
 // Windows task runs the guest runtime by name, and Task Scheduler checks that
 // action on every step, so the old task is retired (disabled, its guest
 // supervisor stopped and proved stopped, then deleted), the new runtime is
-// saved with the profile held, and a task for it is registered and started.
-// Any failed step puts the old task and its saved runtime back and starts it.
-export async function updateWslService(
+// saved with the profile held, and a task for it is registered and started
+// and must report ready. Any failed step puts the old task and its saved
+// runtime back, starts it and waits for it to report ready.
+export function prepareWslUpdate(
   saved: ServiceConfiguration,
   runtime: { nodePath: string; daemonEntryPath: string },
   effects: WslServiceUpdateEffects,
-  options: { profileWaitMs: number },
-  deadline: OperationDeadline,
-): Promise<{ name: string; configurationPath: string }> {
-  if (!saved.wsl || !saved.registrationId) throw new Error("No saved WSL service registration; no systemd action was attempted")
-  const path = serviceConfigurationPath(saved.homeDirectory, "linux")
-  const old = installedWslTask(saved.wsl, saved.registrationId, path)
-  const updated = { ...saved, wsl: { ...saved.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
-  const next = installedWslTask(updated.wsl, saved.registrationId, path)
-  const stopSupervisor = effects.stopSupervisor
-  if (!stopSupervisor) throw new Error("WSL guest shutdown proof is unavailable")
-  const profile = profileLocation(saved.homeDirectory, saved.profileDirectory)
-  const confirmed = async (command: ServiceCommand) => {
-    const result = await withinServiceDeadline(deadline, () => effects.capture(command.command, command.args, deadline))
-    if (result.code !== 0) throw new Error(result.stderr?.trim() || `Task Scheduler command exited with code ${result.code}`)
-    return result.stdout.trim()
-  }
-  const register = async (task: typeof old) => {
-    if (await confirmed(task.register) !== "domovoi-task:created") throw new Error("WSL task registration was not confirmed")
-    if (!/^domovoi-task:[1-4]$/.test(await confirmed(task.start))) throw new Error("WSL task start was not confirmed")
-  }
-  // Which task Task Scheduler holds under the shared name, so a restore
-  // removes the right one: each task's checks refuse the other's action.
-  let registered: "old" | "none" | "new" = "old"
-  let configurationChanged = false
-  const restore = async () => {
-    if (registered !== "none") await removeWindowsTask(registered === "old" ? old.removal : next.removal, effects, deadline)
-    registered = "none"
-    if (configurationChanged) await withinServiceDeadline(deadline, () => effects.write(path, serializeServiceConfiguration(saved), deadline))
-    await register(old)
-  }
-  try {
-    if (!/^domovoi-task:(missing|[1-4])$/.test(await confirmed(old.disable))) throw new Error("WSL task disable was not confirmed")
-    await withinServiceDeadline(deadline, () => stopSupervisor(path, deadline))
-    await removeWindowsTask(old.removal, effects, deadline)
-    registered = "none"
-    const lease = await claimProfileAfterStop(effects.claimProfile, profile, options.profileWaitMs, deadline)
-    try {
-      configurationChanged = true
-      await withinServiceDeadline(deadline, () => effects.write(path, serializeServiceConfiguration(updated), deadline))
-    } finally {
-      if (!deadline.signal.aborted) lease.release()
+  waits: { profileWaitMs: number; readinessWaitMs: number },
+) {
+  return async (readDeadline: OperationDeadline): Promise<ServiceSwap<{ name: string; configurationPath: string }>> => {
+    const path = serviceConfigurationPath(saved.homeDirectory, "linux")
+    const intentPath = wslUpdateIntentPath(path)
+    const stopSupervisor = effects.stopSupervisor
+    if (!stopSupervisor) throw new Error("WSL guest shutdown proof is unavailable")
+    const readOwner = effects.readOwner
+    if (!readOwner) throw new Error("the update needs to read the daemon's owner record")
+    const read = effects.read
+    if (!read) throw new Error("the update needs to read the saved service configuration")
+    // An update that stopped between deleting the old task and registering
+    // the new one left a record of where it started.
+    let interrupted: ServiceConfiguration | undefined
+    let previous = saved
+    if (await withinServiceDeadline(readDeadline, () => effects.exists(intentPath, readDeadline))) {
+      const text = await withinServiceDeadline(readDeadline, () => read(intentPath, readDeadline))
+      const parsed: unknown = JSON.parse(text)
+      const intent = wslUpdateIntentSchema.parse(parsed)
+      previous = parseServiceConfiguration(intent.previous)
+      interrupted = parseServiceConfiguration(intent.next)
     }
-    registered = "new"
-    await register(next)
-  } catch (cause) {
-    return restoreAfterFailure(cause, restore)
+    if (!previous.wsl || !previous.registrationId) throw new Error("No saved WSL service registration; no systemd action was attempted")
+    const registrationId = previous.registrationId
+    const old = installedWslTask(previous.wsl, registrationId, path)
+    const updated = { ...previous, wsl: { ...previous.wsl, executable: runtime.nodePath, args: [runtime.daemonEntryPath] } }
+    const next = installedWslTask(updated.wsl, registrationId, path)
+    const candidates = [old.removal, next.removal,
+      ...(interrupted?.wsl ? [installedWslTask(interrupted.wsl, registrationId, path).removal] : [])]
+    const profile = profileLocation(previous.homeDirectory, previous.profileDirectory)
+    const stoppedInstance = currentInstance(readOwner, profile)
+    const intent = `${JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(updated) })}\n`
+
+    const confirmedIn = (deadline: OperationDeadline) => async (command: ServiceCommand) => {
+      const result = await withinServiceDeadline(deadline, () => effects.capture(command.command, command.args, deadline))
+      if (result.code !== 0) throw new Error(result.stderr?.trim() || `Task Scheduler command exited with code ${result.code}`)
+      return result.stdout.trim()
+    }
+    const startIn = (deadline: OperationDeadline) => async (task: typeof old) => {
+      const before = currentInstance(readOwner, profile)
+      if (await confirmedIn(deadline)(task.register) !== "domovoi-task:created") throw new Error("WSL task registration was not confirmed")
+      if (!/^domovoi-task:[1-4]$/.test(await confirmedIn(deadline)(task.start))) throw new Error("WSL task start was not confirmed")
+      await waitUntilReady(readOwner, profile, registrationId, before, waits.readinessWaitMs, deadline)
+    }
+    const writeIn = (deadline: OperationDeadline) => (file: string, contents: string) => withinServiceDeadline(deadline, () => effects.write(file, contents, deadline))
+    const removeIntentIn = (deadline: OperationDeadline) => () => withinServiceDeadline(deadline, () => effects.remove(intentPath, deadline))
+
+    return {
+      swap: async (deadline) => {
+        try {
+          await writeIn(deadline)(intentPath, intent)
+        } catch (cause) {
+          throw new DaemonServiceUpdateError("nothing-changed", cause)
+        }
+        if (interrupted === undefined) {
+          if (!/^domovoi-task:(missing|[1-4])$/.test(await confirmedIn(deadline)(old.disable))) throw new Error("WSL task disable was not confirmed")
+        }
+        await withinServiceDeadline(deadline, () => stopSupervisor(path, deadline))
+        if (interrupted === undefined) await removeWindowsTask(old.removal, effects, deadline)
+        else await removeRegisteredTask(candidates, effects, deadline)
+        const lease = await claimProfileAfterStop(effects.claimProfile, readOwner, profile, stoppedInstance, waits.profileWaitMs, deadline)
+        try {
+          await writeIn(deadline)(path, serializeServiceConfiguration(updated))
+        } finally {
+          lease.release()
+        }
+        await startIn(deadline)(next)
+        await removeIntentIn(deadline)()
+        return { name: next.name, configurationPath: path }
+      },
+      restore: async (deadline) => {
+        await removeRegisteredTask(candidates, effects, deadline)
+        await writeIn(deadline)(path, serializeServiceConfiguration(previous))
+        await startIn(deadline)(old)
+        await removeIntentIn(deadline)()
+      },
+    }
   }
-  return { name: next.name, configurationPath: path }
 }
 
 export async function runWslServiceCommand(verb: string, dependencies: ServiceCommandDependencies, deadline: OperationDeadline): Promise<number> {

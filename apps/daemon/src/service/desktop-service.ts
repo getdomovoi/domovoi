@@ -5,19 +5,19 @@ import { posix, win32 } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
 import { createServiceConfiguration } from "./configuration.js"
+import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
   nodeServiceEffects,
   removeService,
-  serviceOperation,
   servicePlan,
   serviceStatus,
   updateService,
   type ServiceEffects,
   type ServiceStatus,
 } from "./install.js"
-import { DaemonServiceUpdateError } from "./update-outcome.js"
-import { updateWslService } from "./wsl-install.js"
+import { DaemonServiceUpdateError, runServiceUpdate } from "./update-outcome.js"
+import { prepareWslUpdate } from "./wsl-install.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
 
@@ -72,8 +72,14 @@ export type DaemonServiceDependencies = {
   user?: string
   runtimeFile: (path: string, part: "node" | "daemon") => Promise<RuntimeFileState>
   // How long an update waits for a stopped service's daemon to let the
-  // profile go before it counts the profile as taken. Defaults to 5 seconds.
+  // profile go. Defaults to 10 seconds.
   profileReleaseWaitMs?: number
+  // How long an update waits for a started service to report ready.
+  // Defaults to 20 seconds.
+  readinessWaitMs?: number
+  // The budget of an update's swap, and separately of its restore. Defaults
+  // to 60 seconds each.
+  updateBudgetMs?: number
 }
 
 const taskName = "Domovoi daemon"
@@ -156,11 +162,20 @@ export async function updateDaemonService(
   dependencies: DaemonServiceDependencies & ServiceEffects = nodeDaemonServiceDependencies(),
 ): Promise<DaemonServiceInstallResult> {
   await checkRuntime(options.runtime, dependencies, "update")
-  const saved = dependencies.readConfiguration?.(dependencies.home, dependencies.platform)
+  let saved: ServiceConfiguration | undefined
+  try {
+    saved = dependencies.readConfiguration?.(dependencies.home, dependencies.platform)
+  } catch (cause) {
+    throw new DaemonServiceUpdateError("nothing-changed", cause)
+  }
   if (!saved) throw new DaemonServiceUpdateError("not-installed")
-  const profileWaitMs = dependencies.profileReleaseWaitMs ?? 5_000
+  const waits = {
+    profileWaitMs: dependencies.profileReleaseWaitMs ?? 10_000,
+    readinessWaitMs: dependencies.readinessWaitMs ?? 20_000,
+    budgetMs: dependencies.updateBudgetMs ?? 60_000,
+  }
   if (dependencies.platform === "linux" && saved.wsl) {
-    const updated = await serviceOperation(dependencies, (deadline) => updateWslService(saved, options.runtime, dependencies, { profileWaitMs }, deadline))
+    const updated = await runServiceUpdate(dependencies.claimServiceOperation, waits.budgetMs, prepareWslUpdate(saved, options.runtime, dependencies, waits))
     return { kind: "task", ...updated }
   }
   const plan = await updateService({
@@ -168,7 +183,7 @@ export async function updateDaemonService(
     execPath: options.runtime.daemonEntryPath,
     runtime: options.runtime.nodePath,
     configuration: saved,
-  }, dependencies, { profileWaitMs })
+  }, dependencies, waits)
   return plan.kind === "file"
     ? { kind: "file", path: plan.path, configurationPath: plan.configuration.path }
     : { kind: "task", name: taskName, configurationPath: plan.configuration.path }
