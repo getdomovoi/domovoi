@@ -15,7 +15,9 @@ const checkpoint = (over: Record<string, unknown>) => ({
 })
 
 async function panel(items: ReturnType<typeof checkpoint>[]) {
+  const importStarted = performance.now()
   const { HistoryPanel } = await import("./workspace-shell")
+  console.info(`SHELLIMPORT ${JSON.stringify({ test: expect.getState().currentTestName, ms: Math.round(performance.now() - importStarted) })}`)
   render(
     <HistoryPanel
       sessionId="session-billing"

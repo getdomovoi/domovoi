@@ -1,0 +1,50 @@
+name: measure-windows
+
+# Temporary: times the workspace-shell import in a UI dom test on
+# windows-latest. Removed before this pull request is ready.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @getdomovoi/protocol build
+      - name: The file alone, twice, coverage on as in CI
+        working-directory: packages/ui
+        run: |
+          for round in 1 2; do
+            npx vitest run --reporter=verbose src/history-session-start.dom.test.tsx 2>&1 | tee -a ../../alone.log || true
+          done
+      - name: The whole UI suite, coverage on as in CI
+        working-directory: packages/ui
+        run: npx vitest run --reporter=verbose 2>&1 | tee ../../suite.log || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ui-measure-${{ matrix.attempt }}
+          path: |
+            alone.log
+            suite.log
