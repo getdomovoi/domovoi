@@ -226,5 +226,36 @@ describe("shell quoting in flag and property values", () => {
     expect(shown).toContain("visible output\r\n")
     expect(shown).not.toContain("qqqq")
   })
+
+  it.each([
+    ["\u2028", "flag"], ["\u2029", "flag"], ["\u0085", "flag"],
+    ["\u2028", "property"], ["\u2029", "property"], ["\u0085", "property"],
+  ])("hides a quoted value where a backslash comes before %j, in a %s", (separator, form) => {
+    // Review round 6 (P1): a backslash escapes any character short of a line
+    // end. `.` does not match U+2028 or U+2029, so the quote seemed to end there.
+    const line = form === "flag" ? `curl --token "abc\\${separator}zqxjwvkm" -s` : `java -Dpassword="abc\\${separator}zqxjwvkm" -jar app.jar`
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactDurableText(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+    }
+    const stream = new DurableOutputRedactor()
+    expect(`${stream.push(`${line}\n`)}${stream.flush()}`).not.toContain("zqxjwvkm")
+    const terminal = new TerminalOutputRedactor()
+    expect(`${terminal.push(`${line}\r\n`)}${terminal.flush()}`).not.toContain("zqxjwvkm")
+  })
+
+  it.each([false, true])("keeps the next line after an oversized quoted value that holds a name and value, idle beat between: %s", (idle) => {
+    // Review round 6 (P2): the "token=" inside the quoted value is part of it,
+    // and the value closes before the line ends.
+    const terminal = new TerminalOutputRedactor()
+    const shown = [
+      terminal.push(`API_KEY="${"q".repeat(8_200)} token=zqxjwvkm"`),
+      idle ? terminal.release() : "",
+      terminal.push(" visible output\r\n"),
+      terminal.flush(),
+    ].join("")
+    expect(shown).toContain(" visible output\r\n")
+    expect(shown).not.toContain("zqxjwvkm")
+    expect(shown).not.toContain("qqqq")
+  })
 })
 
