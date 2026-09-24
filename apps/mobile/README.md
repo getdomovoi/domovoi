@@ -166,10 +166,11 @@ Every value goes through `expo-secure-store` to the device keychain
 | --- | --- | --- |
 | `domovoi.daemon.url` | the daemon address | store default |
 | `domovoi.daemon.token` | the pairing token | `WHEN_UNLOCKED_THIS_DEVICE_ONLY` |
+| `domovoi.daemon.client` | `phone` or `tablet`, the kind the daemon accepted for the token; absent for a token saved before the app kept it or typed into Settings, until the daemon accepts one | store default |
 | `domovoi.daemon.relayPin.<machine id>` | the daemon's pinned relay identity, one per machine, written after the daemon answers the greeting | `WHEN_UNLOCKED_THIS_DEVICE_ONLY` |
 | `domovoi.appearance` | light, dark or system | store default |
 
-Forget this daemon removes the address and the token. It leaves the relay pin and the appearance
+Forget this daemon removes the address, the token and the kind. It leaves the relay pin and the appearance
 choice in place. Sessions, approvals, plans and diffs live in memory from the daemon's snapshot
 and are gone when the app restarts.
 

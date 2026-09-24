@@ -107,7 +107,8 @@ use the same watched Electron window: renderer edits apply in place, while main 
 relaunch onto the same selected daemon.
 
 Every watched save prints a line naming the file and what should happen next. An edit under
-`packages/ui/src` or `apps/desktop/src/renderer` applies in place and keeps the window state; if
+`packages/ui/src`, `apps/desktop/src/renderer` or `apps/desktop/src/dev` prints a renderer-update
+line and applies in place, keeping the window state; if
 Fast Refresh cannot apply it, a second line says the renderer reloaded and the window state is
 gone. An edit under `apps/desktop/src/main` or `apps/desktop/src/preload` relaunches the window on
 the same selected daemon, and the relaunched window prints a boot line. Saves elsewhere, and saves

@@ -131,7 +131,7 @@ either fails until both agree.
 | Titlebar | 46px | 38px | unstated |
 | Header | 62px, not used by the desktop shell | 62px | unstated |
 | Control height | 34px | 34px | unstated |
-| Touch target | 44px minimum | 44px minimum | 44pt iOS, 48dp Android |
+| Touch target | 44px minimum is the requirement, not met: the titlebar icon buttons are 28px (`size-7` in `packages/ui/src/app-bar.tsx`) | 44px minimum | 44pt iOS, 48dp Android |
 
 Before v2, Claude Design settled the desktop chrome on 2026-09-03 in `ui_kits/desktop/README.md` of
 the Domovoi Design System project. The desktop shell is a 38px titlebar carrying traffic lights, project,

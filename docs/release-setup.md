@@ -61,7 +61,7 @@ same protected environment as subsequent OIDC releases. [npm trust prerequisites
 6. **Enable versioning only.** In Settings, Secrets and variables, Actions, Variables, create
    **`RELEASE_PUBLISHING=version-only`**. The next main push or a manual `release` run with
    **first_publish unchecked** can open the version PR after that commit's CI passes.
-   Approve any pending CI runs on the bot-created PR, review all six versions and changelogs,
+   Approve any pending CI runs on the bot-created PR, review all eight versions and changelogs,
    then merge. Wait for the merge commit's full CI verdict. Publishing remains disabled.
    [GitHub's bot-triggered PR approval behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
 7. **Create the one-time credential.** On npm, Access Tokens, Generate New Token: use granular
