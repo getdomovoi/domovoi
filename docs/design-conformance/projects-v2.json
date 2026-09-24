@@ -67,8 +67,8 @@
         "Keep Domovoi open to answer gates. Nothing is pushed to this phone yet."
       ],
       "evidence": [
-        "Plan preview",
-        "Stop the agent"
+        "Ends this turn at its next tool boundary",
+        "<PlanStrip"
       ]
     },
     {

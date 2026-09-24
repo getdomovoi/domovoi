@@ -34,8 +34,8 @@
         "Domovoi"
       ],
       "evidence": [
-        "DomovoiMark",
-        "aria-label=\"Theme\""
+        "<DomovoiMark reduced className=\"size-5 shrink-0 text-primary\"",
+        "Use dark theme"
       ]
     },
     {
@@ -115,7 +115,7 @@
         "Switch"
       ],
       "evidence": [
-        "sessions-drawer"
+        "<SessionsDrawerColumn"
       ]
     },
     {
