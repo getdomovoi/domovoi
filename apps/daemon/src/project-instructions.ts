@@ -73,17 +73,18 @@ async function collectClaudeFile(
 // <code>, <pre>, <kbd> or <samp> and its closing tag is skipped too. The whole
 // document is read as one sequence in order, with one stack of open code tags.
 //
-// The stack fails closed. Any HTML node can open a code tag: its markup is read
-// for opening tags, skipping comments and quoted attribute values. Only a node
+// The stack fails closed. Any HTML node can open a code tag: its start tags
+// are read, with quoted attribute values skipped. Only a node
 // whose whole trimmed text is exactly one closing tag, such as </code>, closes
 // one, popping back to its own name. Nothing else closes: not a comment, a
 // processing instruction, CDATA, a declaration, a script or style body, nor a
 // node with attributes or any other text beside the closing tag. A node whose
-// markup ends inside an unfinished tag, quoted value, comment, processing
-// instruction, CDATA section or declaration hides everything after it, and
-// so does an end tag that carries attributes or an unfinished quote. The
-// cost: an import after a code tag closed in any other way stays hidden, and
-// so does one after a <pre> block, whose closing tag shares its HTML block.
+// markup ends inside an unfinished tag or quoted value hides everything after
+// it, and so does an end tag that carries attributes or an unfinished quote,
+// and so does any comment, processing instruction, CDATA section or
+// declaration, finished or not. The cost: an import after any of those, after
+// a code tag closed in any other way, or after a <pre> block, whose closing tag
+// shares its HTML block, stays hidden.
 //
 // An import is read from the text as written, not as CommonMark decodes it,
 // the way Claude Code reads its lexer's text tokens: a backslash escape
@@ -100,6 +101,7 @@ type MarkdownNode = {
 const backslashEscape = /\\[!-/:-@[-`{-~]/
 const codeTagNames = new Set(["code", "pre", "kbd", "samp"])
 const tagStart = /<([A-Za-z][A-Za-z0-9-]*)/y
+const endTagStart = /<\/([A-Za-z][A-Za-z0-9-]*)/y
 const closingCodeTag = /^<\/(code|pre|kbd|samp)\s*>$/i
 const unfinished = Symbol("unfinished markup")
 
@@ -107,48 +109,40 @@ const unfinished = Symbol("unfinished markup")
 // inside something unfinished.
 function openedCodeTags(html: string): { opened: string[]; unfinished: boolean } {
   const opened: string[] = []
-  const skipTo = (from: number, terminator: string): number => {
-    const found = html.indexOf(terminator, from)
-    return found === -1 ? -1 : found + terminator.length
-  }
   let at = 0
   while (at < html.length) {
     const open = html.indexOf("<", at)
     if (open === -1) break
-    let next: number
-    if (html.startsWith("<!--", open)) next = skipTo(open + 4, "-->")
-    else if (html.startsWith("<![CDATA[", open)) next = skipTo(open + 9, "]]>")
-    else if (html.startsWith("<?", open)) next = skipTo(open + 2, "?>")
-    else if (html.startsWith("<!", open)) next = skipTo(open + 2, ">")
-    else {
-      // Start and end tags are scanned alike, with quoted values tracked. An
-      // end tag carries nothing but its name, so one with attributes or an
-      // unfinished quote is treated as unfinished markup.
-      const closing = html.startsWith("</", open)
-      tagStart.lastIndex = closing ? open + 1 : open
-      const tag = tagStart.exec(html)
-      if (!tag) {
-        if (closing) return { opened, unfinished: true }
-        at = open + 1
-        continue
-      }
-      let end = tagStart.lastIndex
-      let quote: string | undefined
-      for (; end < html.length; end += 1) {
-        const character = html[end]
-        if (quote) {
-          if (character === quote) quote = undefined
-        } else if (character === "\"" || character === "'") quote = character
-        else if (character === ">") break
-      }
-      if (end >= html.length) return { opened, unfinished: true }
-      if (closing && html.slice(tagStart.lastIndex, end).trim() !== "") return { opened, unfinished: true }
-      const name = tag[1]!.toLowerCase()
-      if (!closing && codeTagNames.has(name)) opened.push(name)
-      next = end + 1
+    // A comment, CDATA section, processing instruction or declaration fails
+    // closed: HTML ends each of them in more ways than a scanner should guess
+    // at, so its markup counts as unfinished and hides every later import.
+    if (html.startsWith("<!", open) || html.startsWith("<?", open)) return { opened, unfinished: true }
+    // Start and end tags are scanned alike, with quoted values tracked. An end
+    // tag carries nothing but its name, so one with attributes, an unfinished
+    // quote or no name is treated as unfinished markup.
+    const closing = html.startsWith("</", open)
+    const pattern = closing ? endTagStart : tagStart
+    pattern.lastIndex = open
+    const tag = pattern.exec(html)
+    if (!tag) {
+      if (closing) return { opened, unfinished: true }
+      at = open + 1
+      continue
     }
-    if (next === -1) return { opened, unfinished: true }
-    at = next
+    let end = pattern.lastIndex
+    let quote: string | undefined
+    for (; end < html.length; end += 1) {
+      const character = html[end]
+      if (quote) {
+        if (character === quote) quote = undefined
+      } else if (character === "\"" || character === "'") quote = character
+      else if (character === ">") break
+    }
+    if (end >= html.length) return { opened, unfinished: true }
+    if (closing && html.slice(pattern.lastIndex, end).trim() !== "") return { opened, unfinished: true }
+    const name = tag[1]!.toLowerCase()
+    if (!closing && codeTagNames.has(name)) opened.push(name)
+    at = end + 1
   }
   return { opened, unfinished: false }
 }

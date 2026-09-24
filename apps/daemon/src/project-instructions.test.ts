@@ -67,6 +67,13 @@ describe("importReferences code boundaries", () => {
     ["an HTML block that ends inside an unfinished tag", "<div title=\"never closed\n\n@hidden.md"],
     ["a code tag whose only closing tag follows an end tag with an unfinished quote", "<code>\n\n</div title=\"first>\n\n</code>\n\nlast\">\n\n@hidden.md"],
     ["a code tag whose only closing tag follows an end tag that carries attributes", "<code>\n\n</div class=x>\n\n</code>\n\n@hidden.md"],
+    ["an abrupt comment that hides a code tag", "<!--> <code> -->\n\n@probe.md"],
+    ["a comment closed by --!> that hides a code tag", "<!--x--!> <code> -->\n\n@probe.md"],
+    ["a CDATA section that hides a code tag", "<![CDATA[ > <code> ]]>\n\n@probe.md"],
+    ["a processing instruction that hides a code tag", "<?x > <code> ?>\n\n@probe.md"],
+    ["any HTML comment, which hides every later import", "<!-- a note -->\n\n@later.md"],
+    ["an inline HTML comment, even one that only mentions a code tag", "A <!-- <code> --> @real.md"],
+    ["a declaration, which hides every later import", "<!DOCTYPE html>\n\n@later.md"],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
@@ -80,9 +87,10 @@ describe("importReferences code boundaries", () => {
     ["an import after code tags closed in a later block", "<code>\n\n@sample.md\n\n</code>\n\n@real.md", ["real.md"]],
     ["an import after an HTML block that opens and closes a code tag", "<code>x</code>\n\n@real.md", ["real.md"]],
     ["an import after an HTML block whose attribute quotes a code tag", "<div title=\"<code>\">\n\n@real.md", ["real.md"]],
+    ["an import after an ordinary end tag", "A <b>bold</b> @real.md", ["real.md"]],
+    ["an import after an end tag with space before its bracket", "A <b>bold</b > @real.md", ["real.md"]],
     ["an import between other inline tags", "A <b>@real.md</b> rule", ["real.md"]],
     ["an import in a tag whose attribute quotes an opening code tag", "<span title=\"<code>\">@real.md</span>", ["real.md"]],
-    ["an import after an HTML comment that mentions a code tag", "A <!-- <code> --> @real.md", ["real.md"]],
     ["an import after a closing tag that ends an outer code tag", "<code><kbd>x</code> @real.md", ["real.md"]],
     ["an import after a code tag closed inside emphasis", "*<code>x</code>* @real.md", ["real.md"]],
     ["only the import after a fence inside a list item", "- ~~~\n  @sample.md\n  ~~~\n\n@real.md", ["real.md"]],
