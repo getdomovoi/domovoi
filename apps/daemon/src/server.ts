@@ -4932,14 +4932,14 @@ export class DomovoiDaemon {
 
             // A prompt carries no newline, so what the redactor is still
             // holding is released on the same beat the output is batched on.
-            // Anything split across that beat is not caught, which is the
-            // price of a terminal that shows a prompt.
+            // It stays as context for the rest of its line, so a value typed
+            // after a released name is still redacted.
             if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
             active.redactorFlush = setTimeout(() => {
               const current = this.#terminals.get(params.terminalId)
               if (current !== active) return
               active.redactorFlush = undefined
-              emit(active.redactor.flush())
+              emit(active.redactor.release())
             }, terminalOutputBatchDelayMilliseconds)
             active.redactorFlush.unref?.()
           }
