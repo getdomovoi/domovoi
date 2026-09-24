@@ -5,9 +5,17 @@ import {
 import { describe, expect, it } from "vitest"
 
 import { connectionFault } from "./connection-fault"
-import { DaemonError } from "./daemon"
+import { DaemonError, DaemonProtocolError } from "./daemon"
 
 describe("connectionFault", () => {
+  it("stops retrying a hello this app could not read, and says to update", () => {
+    const fault = connectionFault(new DaemonProtocolError("The daemon answered system.hello with something this app could not read"))
+
+    expect(fault.retriable).toBe(false)
+    expect(fault.headline).toBe("This app is out of date with the daemon")
+    expect(fault.detail).toContain("system.hello")
+  })
+
   it("stops retrying a credential the daemon rejected, and says how to fix it", () => {
     const fault = connectionFault(
       new DaemonError("Daemon authentication failed", daemonAuthenticationErrorCode, undefined),

@@ -106,10 +106,25 @@ tooling. Anything that crosses that line is split into two commits, protocol fir
    - `enforce_admins: true`, so it is a rule rather than a convention.
    - `allow_force_pushes: false` and `allow_deletions: false`. A rewrite of `main` is now refused
      rather than merely regretted.
-   - `required_linear_history: false`, deliberately. This repository merges rather than squashes,
-     and every tick citation depends on the cited sha surviving the merge.
-   - No required reviews and `strict: false`, so neither agent is blocked waiting on the other or
-     forced to rebase before every merge.
+   - `required_linear_history: false`, deliberately, so a merge commit stays possible.
+   - No required reviews, so neither agent is blocked waiting on the other.
+
+   **Read back 2026-09-22, and two lines above had gone stale.** `strict` is now `true`, so a pull
+   request must be up to date with `main` before it merges. And most changes land as a squash: 93
+   of the last 100 first-parent commits on `main` have one parent. The settings, as read:
+
+       $ gh api repos/getdomovoi/domovoi/branches/main/protection --jq '{strict: .required_status_checks.strict, contexts: .required_status_checks.contexts, enforce_admins: .enforce_admins.enabled, linear: .required_linear_history.enabled, reviews: (.required_pull_request_reviews != null), force: .allow_force_pushes.enabled, deletions: .allow_deletions.enabled}'
+       {"contexts":["verify (ubuntu-latest)","verify (macos-latest)","verify (windows-latest)","audit","native"],"deletions":false,"enforce_admins":true,"force":false,"linear":false,"reviews":false,"strict":true}
+       $ gh api repos/getdomovoi/domovoi --jq '{merge: .allow_merge_commit, squash: .allow_squash_merge, rebase: .allow_rebase_merge, auto: .allow_auto_merge}'
+       {"auto":false,"merge":true,"rebase":true,"squash":true}
+
+   `native` is the path-filtered job in `.github/workflows/wsl.yml`. A pull request outside its
+   paths never reports it, so the check stays expected and the merge is refused, `--admin`
+   included. The procedure ruled 2026-09-12: untick `native` in the required checks for that
+   merge, merge, then put all five back, and record both on the pull request. A manual
+   `workflow_dispatch` run of `wsl-native` does not satisfy the check. `gh api
+   repos/getdomovoi/domovoi/rulesets` returns an empty list, so this branch protection is the
+   whole of it. Read these settings again before relying on them.
 
    `CodeRabbit` is deliberately **not** required: it returns `Review rate limited` under load, and
    requiring it would make a quota outage a merge outage. Rule 6 covers reading it; a required
@@ -193,6 +208,13 @@ tooling. Anything that crosses that line is split into two commits, protocol fir
    would be wrong about `main` — the exact shape of a check that looks green while proving
    nothing. If the merge policy ever changes, this convention has to change with it.
 
+   **It changed, and the convention changed with it.** Most pull requests now land as a squash
+   (see rule 9's 2026-09-22 read-back), so the paragraph above no longer describes `main`. The
+   rule that replaced it lives in `SHIP-PLAN.md` under "Ticks are claims with a date": a citation
+   must resolve on a fresh clone of `main`, so a tick never cites a commit from the pull request
+   that lands it. Tick in a follow-up and cite the squash sha. A pull request that lands as a
+   merge commit keeps its branch shas reachable, and only then may a tick cite them.
+
    **A fourth, 2026-09-18, in the other direction: the checker ran and answered a different
    question.** `pnpm lint | grep -cE '^\s+[0-9]+:[0-9]+'` reported `0` on a branch with five
    ESLint errors, and the PR body said lint was clean. `\s` is not POSIX ERE; BSD `grep -E`
@@ -217,6 +239,11 @@ tooling. Anything that crosses that line is split into two commits, protocol fir
    each later pull request carries the tick edits for its own commits, citing shas that are
    present in it by construction. This extends rule 7 by one clause: the owner ticks, citing the
    other agent's sha, **in the pull request that lands it**.
+
+   **Superseded for squash merges, 2026-09-14.** A squash replaces every in-pull-request sha, so
+   a tick written this way fails on `main` the moment the pull request lands (#395 did on
+   2026-09-13, squashed as 6f729747). For a pull request that will squash, tick in a follow-up that cites the squash sha;
+   `SHIP-PLAN.md` "Ticks are claims with a date" is the rule now.
 10. **When CodeRabbit is exhausted, the other agent reviews — and it is named as a different
    reviewer, not as CodeRabbit.** Set 2026-09-10. Codex hit the CLI's rolling three-review
    limit mid-stack and `#362`, `#363`, `#364` stalled with no review of any kind. The standing
