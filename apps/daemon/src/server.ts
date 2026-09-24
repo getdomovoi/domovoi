@@ -69,7 +69,6 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
-  type SessionSearchMatch,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -241,6 +240,7 @@ import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifac
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer } from "./terminal-replay.js"
 import { pairingAddressFor } from "./pairing-address.js"
+import { searchSessions } from "./session-search.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -6277,22 +6277,7 @@ export class DomovoiDaemon {
 
       if (method === "session.search") {
         const params = paramsResult.data as RpcParams<"session.search">
-        const needle = params.query.toLowerCase()
-        const matches: SessionSearchMatch[] = []
-        let truncated = false
-        for (const session of this.#snapshot.sessions) {
-          const matchedIn = session.title.toLowerCase().includes(needle)
-            ? "title"
-            : this.#sessionSummaryText(session.id)?.toLowerCase().includes(needle)
-              ? "summary"
-              : undefined
-          if (!matchedIn) continue
-          if (matches.length >= params.limit) {
-            truncated = true
-            break
-          }
-          matches.push({ session, matchedIn })
-        }
+        const { matches, truncated } = searchSessions(this.#snapshot, params.query, params.limit)
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
@@ -9885,15 +9870,6 @@ export class DomovoiDaemon {
     if (failures >= maximumAuthenticationFailures) {
       setTimeout(() => socket.close(1008, "authentication failed"), 0)
     }
-  }
-
-  // A session's summary for search: the newest assistant message the daemon
-  // still holds for it in the snapshot window. Older history is not searched.
-  #sessionSummaryText(sessionId: string): string | undefined {
-    const newest = this.#snapshot.thread.findLast(
-      (item) => item.sessionId === sessionId && item.kind === "assistant",
-    )
-    return newest?.kind === "assistant" ? newest.body : undefined
   }
 
   #closeTerminal(terminalId: string): boolean {
