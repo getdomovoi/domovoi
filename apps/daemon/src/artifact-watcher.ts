@@ -246,9 +246,10 @@ export class ArtifactWatcher {
   // A failure that repeats on every poll is reported once, and again only
   // after a scan has succeeded in between.
   setBusy(busy: boolean): void {
-    const was = this.#busy
+    // #active reads whether the session was idle, so it runs before the flag
+    // that makes every session read as busy.
+    if (busy && !this.#busy) this.#active()
     this.#busy = busy
-    if (busy && !was) this.#active()
   }
 
   #pollDelay(): number {

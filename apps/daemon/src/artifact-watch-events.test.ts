@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ArtifactWatcher, artifactIdleAfterScans, artifactIdlePollIntervalMs, artifactPollIntervalMs, watchFactoryFor, type ArtifactWatchFactory } from "./artifact-watcher.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { waitForDaemon } from "./test-wait-for.js"
 
 const scratchDirectories: string[] = []
 afterEach(async () => {
@@ -71,7 +72,7 @@ describe("artifact watch events", () => {
 
     holding = true
     const first = watcher.rescan()
-    await vi.waitFor(() => expect(hold).toBeDefined())
+    await waitForDaemon(() => expect(hold).toBeDefined())
     holding = false
     const queued = Array.from({ length: 10 }, () => watcher.rescan())
     hold!()
@@ -107,25 +108,42 @@ describe("artifact watch events", () => {
 
   // fetzy, 2026-09-23: after a few unchanged scans an idle session is scanned
   // every 10 s; activity snaps it back to 2 s. "A few" is three.
+  // Each wait ends on the tick it is for and then waits for that tick's scan
+  // itself. A count of event loop turns is not a wait for the scan: its file
+  // system calls finish when the system answers them, later on a slower disk,
+  // and the poll arms its next timer only once the scan is done. Every
+  // directory read here is held for a few real milliseconds, so a wait that
+  // does not follow the scan fails on every platform, not only a slow one.
   describe("idle backoff on the polled platforms", () => {
-    const io = async () => {
-      for (let turn = 0; turn < 40; turn += 1) await new Promise((resolve) => setImmediate(resolve))
-    }
-
     async function polledWatcher() {
       const root = await mkdtemp(join(tmpdir(), "domovoi-artifact-idle-"))
       scratchDirectories.push(root)
       const realRoot = await realpath(root)
-      const openDirectory = vi.fn(opendir)
+      const realSetTimeout = globalThis.setTimeout
+      const openDirectory = vi.fn(async (path: Parameters<typeof opendir>[0]) => {
+        await new Promise((resolve) => realSetTimeout(resolve, 5))
+        return opendir(path)
+      })
       const onChange = vi.fn()
+      let inFlight: Promise<void> | undefined
+      const polled = watchFactoryFor("linux")
+      const watchFactory: ArtifactWatchFactory = (watched, onEvent, onError, poll) => polled(watched, onEvent, onError, poll && {
+        delay: poll.delay,
+        tick: () => (inFlight = poll.tick()),
+      })
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
-      const watcher = new ArtifactWatcher({ root, onChange, openDirectory, watchFactory: watchFactoryFor("linux") })
+      const watcher = new ArtifactWatcher({ root, onChange, openDirectory, watchFactory })
       await watcher.start()
-      await io()
       const scans = () => openDirectory.mock.calls.filter(([path]) => path === realRoot).length
       const wait = async (ms: number) => {
         await vi.advanceTimersByTimeAsync(ms)
-        await io()
+        while (inFlight) {
+          const scan = inFlight
+          await scan.catch(() => undefined)
+          if (inFlight === scan) inFlight = undefined
+        }
+        // The poll arms its next timer a few promise steps after the scan.
+        await new Promise((resolve) => setImmediate(resolve))
       }
       return { root, watcher, scans, wait, onChange }
     }
@@ -150,7 +168,8 @@ describe("artifact watch events", () => {
 
     it("goes back to 2 s once a scan finds a new artifact", async () => {
       const { root, watcher, scans, wait, onChange } = await polledWatcher()
-      await wait(4_000)
+      await wait(2_000)
+      await wait(2_000)
       const idle = scans()
       await mkdir(join(root, "plans"))
       await writeFile(join(root, "plans", "next-plan.md"), "# Next")
@@ -165,7 +184,8 @@ describe("artifact watch events", () => {
 
     it("scans within 2 s of a turn starting and stays at 2 s while it runs", async () => {
       const { watcher, scans, wait } = await polledWatcher()
-      await wait(4_000)
+      await wait(2_000)
+      await wait(2_000)
       const idle = scans()
       watcher.setBusy(true)
       await wait(2_000)
