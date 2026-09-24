@@ -171,9 +171,11 @@ function git(repository, args) {
 }
 
 // A release record is written once, from its release commit. Every record that
-// existed at `base` must still exist here, byte for byte: a rewritten record
-// would let a changed wire clear the check it is measured against. A record
-// new since `base` is a new release. The base must be an ancestor of HEAD.
+// existed at `base` must still exist here, and hash to the same blob git would
+// store for it: a rewritten record would let a changed wire clear the check it
+// is measured against. The working copy is hashed through the checkout's own
+// filters, so a line ending conversion such as core.autocrlf is not a change.
+// A record new since `base` is a new release. The base must be an ancestor of HEAD.
 export function releasedRecordRefusal(repository, base) {
   try {
     git(repository, ["merge-base", "--is-ancestor", base, "HEAD"])
@@ -187,7 +189,7 @@ export function releasedRecordRefusal(repository, base) {
     const name = path.slice(wireReleasesPath.length + 1)
     const current = join(repository, path)
     if (!existsSync(current)) problems.push(`${name} was removed since ${base}`)
-    else if (readFileSync(current, "utf8") !== git(repository, ["show", `${base}:${path}`])) {
+    else if (git(repository, ["hash-object", `--path=${path}`, "--", path]) !== git(repository, ["rev-parse", `${base}:${path}`])) {
       problems.push(`${name} changed since ${base}`)
     }
   }
