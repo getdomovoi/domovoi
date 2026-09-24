@@ -730,4 +730,31 @@ describe("an interrupted turn's end that arrives late", () => {
     await waitForDaemon(() => expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1))
     await adapter.close()
   })
+
+  // A run that ends through the processor's halt publishes an error and then
+  // sets the session idle. Both belong to the interrupted run.
+  it("ignores both the error and the idle an interrupted run ends with", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
+    })))
+    await adapter.close()
+  })
 })

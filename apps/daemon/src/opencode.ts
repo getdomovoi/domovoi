@@ -81,9 +81,9 @@ type Session = {
   // idle or error that comes before them is the interrupted turn's, not this
   // one's.
   activeTurnStarted?: true
-  // The turn an interrupt was sent for, until the first idle or error after
-  // it. Only an interrupt arms the wait above; without one, the first idle or
-  // error ends the active turn as before.
+  // The turn an interrupt was sent for, until the first idle after it (an
+  // error before that idle is the same run's). Only an interrupt arms the wait
+  // above; without one, the first idle or error ends the active turn as before.
   interruptedTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
@@ -546,7 +546,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     if (event.type === "session.error" || event.type === "session.idle") {
       const interrupted = session.interruptedTurnId
-      delete session.interruptedTurnId
+      // An interrupted run can end with an error and then an idle (the
+      // processor's halt publishes both), so the record lasts until the idle.
+      if (event.type === "session.idle") delete session.interruptedTurnId
       // The interrupted run's own end, arriving after the next turn took the
       // slot and before that turn's messages. It ends nothing.
       if (interrupted !== undefined && session.activeTurnId !== interrupted && !session.activeTurnStarted) return
