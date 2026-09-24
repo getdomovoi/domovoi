@@ -1,5 +1,5 @@
 import type { RpcParams, SessionHistoryEntry, SessionHistoryPage, WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { CircleStopIcon, GitCommitHorizontalIcon, SaveIcon } from "lucide-react"
+import { CircleStopIcon, GitCommitHorizontalIcon } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
@@ -69,6 +69,13 @@ function TakeCheckpoint({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
   const blocked = Boolean(blockedReason)
+  const takeButton = useRef<HTMLButtonElement>(null)
+  const wasOpen = useRef(false)
+
+  useEffect(() => {
+    if (wasOpen.current && !open) takeButton.current?.focus()
+    wasOpen.current = open
+  }, [open])
 
   const take = async () => {
     setPending(true)
@@ -87,13 +94,14 @@ function TakeCheckpoint({
   return (
     <>
       <Button
+        ref={takeButton}
         variant="outline"
         size="sm"
-        className="shrink-0"
+        className="shrink-0 rounded-full"
         disabled={blocked || open}
         onClick={() => setOpen(true)}
       >
-        <SaveIcon data-icon="inline-start" />
+        <GitCommitHorizontalIcon data-icon="inline-start" />
         Take a checkpoint
       </Button>
       {blockedReason ? <p className="basis-full text-right text-[11px] text-faint">{blockedReason}</p> : null}
