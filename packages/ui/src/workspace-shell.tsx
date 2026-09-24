@@ -21,6 +21,7 @@ import type {
 } from "@getdomovoi/protocol"
 import { selectableTurnSkills, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
+import { StateRecoveryNotice } from "./state-recovery-notice"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,6 +51,7 @@ import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
+import { advancePendingElsewhere, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
@@ -242,7 +244,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
-  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, revokeDevice, rotateDevice, renameDevice } = home
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
   const {
     activateSession,
@@ -252,6 +254,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     closeTerminal,
     connected,
     clientAccess: workspaceAccess,
+    stateRecovery,
     createCheckpoint,
     createAnnotation,
     createSession,
@@ -450,6 +453,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The web reloads the page for a surface whose chunk failed to load; the
   // desktop leaves it unset and loads the chunk again.
   const reloadForNewCode = platform?.code?.reloadForNewCode
+  const [dismissedStateRecovery, setDismissedStateRecovery] = useState<string | null>(null)
+  const visibleStateRecovery = stateRecovery && stateRecovery.occurredAt !== dismissedStateRecovery
+    ? stateRecovery
+    : null
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
@@ -532,6 +539,46 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // machine change drops it rather than opening controls on the wrong thread.
   const [rowIntent, setRowIntent] = useState<{ action: "fork" | "move", sessionId: string } | null>(null)
   const [archiveTarget, setArchiveTarget] = useState<string | null>(null)
+  // A row picked on another machine (J39) switches this window to that
+  // machine, then opens the session once its snapshot arrives.
+  const [pendingElsewhere, setPendingElsewhere] = useState<PendingElsewhere | null>(null)
+  const windowMachineId = attached?.machineId ?? homeMachineId
+  useEffect(() => {
+    if (!pendingElsewhere) return
+    const step = advancePendingElsewhere(pendingElsewhere, {
+      currentMachineId: windowMachineId,
+      snapshotMachineId: snapshot?.machine.id ?? null,
+      sessionIds: snapshot?.sessions.map((session) => session.id) ?? [],
+    })
+    if (step.next !== pendingElsewhere) setPendingElsewhere(step.next)
+    if (step.open) openSessionInWorkspace(step.open)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingElsewhere, windowMachineId, snapshot])
+  const searchTargets = windowMachineId ? paletteSearchTargets({
+    machines: fleetMachines(fleet?.entries ?? []),
+    access: fleetClientAccess,
+    homeMachineId,
+    currentMachineId: windowMachineId,
+    currentLabel: snapshot?.machine.name ?? windowMachineId,
+  }) : null
+  const homeSearch = home.searchSessions
+  const machineSearch = useMemo(() => !searchTargets || searchTargets.others.length === 0 ? undefined : {
+    here: searchTargets.here,
+    machines: searchTargets.others,
+    search: async (machineId: string, query: string, signal: AbortSignal) => {
+      if (machineId !== homeMachineId) return accessSession.search(machineId, query, signal)
+      const deadline = Deadline.start(10_000)
+      try {
+        return await homeSearch({ query, limit: 20 }, { deadline, signal })
+      } finally {
+        deadline.clear()
+      }
+    },
+    open: (machineId: string, sessionId: string) => {
+      if (windowMachineId && switchMachine(machineId)) setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(searchTargets), homeMachineId, accessSession, homeSearch, switchMachine])
   const sessionRowAction = (action: SessionRowAction, sessionId: string) => {
     if (watching) return
     if (action === "stop") {
@@ -961,7 +1008,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
   const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: { ...current.previewBuildBasis, [sessionId]: artifactId } })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: { ...current.previewBuildBasis, [sessionId]: artifactId } })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
   const shellTitle = launcherMode
@@ -1249,6 +1296,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onAction={watching ? undefined : sessionRowAction}
             machineAvailability={machineAvailability}
             onOpenMachines={() => setSurface("fleet")}
+            {...(clientKind === "web" && !attached ? {
+              scope: { machine: snapshot.machine.name, note: "this machine only" },
+              credentialNote: { label: "Paired for this tab", meta: "ends when it closes" },
+            } : {})}
           />
           <AlertDialog open={archiveTarget !== null} onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}>
             <AlertDialogContent>
@@ -1279,6 +1330,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             secrets={providerSecrets}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon } : {})}
+            {...(attached || clientKind !== "desktop" ? {} : {
+              pairing: {
+                connected: home.connected,
+                onIssueCode: issueDeviceCode,
+                onCopy: (text: string) => platform ? platform.clipboard.writeText(text) : Promise.reject(new Error("This client has no clipboard")),
+                onListDevices: listDevices,
+                inAppDaemon: localDaemon?.inApp ?? false,
+              },
+            })}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {
@@ -1352,6 +1412,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onAuthorizeClient={(machineId, credential, signal) => accessSession.authorize(machineId, credential, signal)}
             onRemoveClientAccess={removeClientAccess}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
+            devicesMachineLabel={home.snapshot?.machine.name}
             currentSessionCount={activeSessionCount(snapshot)}
             providers={snapshot.machine.providers}
             onOpenSkills={() => setSurface("skills")}
@@ -1425,15 +1486,26 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <ThreadSkeleton reading={readingLabel} />
           </main>
         )}
-        {workspaceError ? (
-          <Alert
-            variant="destructive"
-            className="absolute bottom-3 left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]"
-          >
-            <CircleStopIcon />
-            <AlertTitle>Workspace action failed</AlertTitle>
-            <AlertDescription>{workspaceError}</AlertDescription>
-          </Alert>
+        {workspaceError || visibleStateRecovery ? (
+          <div className="absolute bottom-3 left-3 z-50 flex max-w-sm flex-col gap-2">
+            {visibleStateRecovery ? (
+              <StateRecoveryNotice
+                recovery={visibleStateRecovery}
+                onDismiss={() => setDismissedStateRecovery(visibleStateRecovery.occurredAt)}
+                className="w-auto shadow-[var(--shadow-md)]"
+              />
+            ) : null}
+            {workspaceError ? (
+              <Alert
+                variant="destructive"
+                className="w-auto shadow-[var(--shadow-md)]"
+              >
+                <CircleStopIcon />
+                <AlertTitle>Workspace action failed</AlertTitle>
+                <AlertDescription>{workspaceError}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
         ) : null}
         {snapshot && !watching ? <LauncherDialog
           mode={launcherMode}
@@ -1474,6 +1546,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           commands={workspaceCommands}
           onOpenChange={setCommandPaletteOpen}
           restoreFocusTo={commandPaletteFocusRef.current}
+          machineSearch={machineSearch}
           {...(firstRunEnabled && !watching ? {
             onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
           } : {})}

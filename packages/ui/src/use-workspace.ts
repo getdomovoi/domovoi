@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
@@ -106,6 +106,7 @@ export function useWorkspace(
   }))
   const [connected, setConnected] = useState(false)
   const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
+  const [stateRecovery, setStateRecovery] = useState<StateRecovery | null>(null)
   const [endpointUrl, setEndpointUrl] = useState(url)
   const [reconnecting, setReconnecting] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
@@ -216,6 +217,7 @@ export function useWorkspace(
       const access = hello?.clientAccess ?? "full"
       client.setClientAccess(access)
       setClientAccess(access)
+      setStateRecovery(hello?.stateRecovery ?? null)
       if (hello) reconcilePin(hello)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
@@ -518,6 +520,15 @@ export function useWorkspace(
     return client.getSkillInventory(options)
   }, [])
 
+  const searchSessions = useCallback(async (
+    params: RpcParams<"session.search">,
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"session.search">> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.searchSessions(params, options)
+  }, [])
+
   const listProviderSecrets = useCallback(async () => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -631,6 +642,12 @@ export function useWorkspace(
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.releaseSession(params, options)
+  }, [])
+
+  const issueDeviceCode = useCallback(async (targetClient: ClientKind) => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.issueDeviceCode(targetClient)
   }, [])
 
   const listDevices = useCallback(async (
@@ -837,6 +854,7 @@ export function useWorkspace(
     closeTerminal,
     connected,
     clientAccess,
+    stateRecovery,
     createCheckpoint,
     createAnnotation,
     createTerminal,
@@ -852,11 +870,13 @@ export function useWorkspace(
     forgetMachine,
     forkSession,
     getSkillInventory,
+    searchSessions,
     listSkills,
     loadSessionHistory,
     loadSessionEvidence,
     listFleet,
     listDevices,
+    issueDeviceCode,
     listModels,
     discoverRuntime,
     listProviderSecrets,

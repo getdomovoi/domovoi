@@ -69,6 +69,7 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
+  type SessionSearchMatch,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -85,6 +86,7 @@ import {
   type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
+  type StateRecovery,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
@@ -93,7 +95,14 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
+import {
+  boundedQueuedSendReason,
+  SqliteWorkspaceStore,
+  type QueuedSessionSendTransition,
+  type StoredQueuedSessionSend,
+  type UnreadableQueuedSessionSend,
+  type WorkspaceStore,
+} from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
@@ -141,7 +150,9 @@ import {
 } from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
+  codexSandboxNotice,
 } from "./codex.js"
+import { committedCodexSecretPaths } from "./codex-git-secrets.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
@@ -315,6 +326,48 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+type CommandOutputRemainder = { key: string, itemId: string, remainder: string }
+
+function appendCommandOutputRemainders(
+  snapshot: WorkspaceSnapshot,
+  remainders: readonly CommandOutputRemainder[],
+): void {
+  for (const { itemId, remainder } of remainders) {
+    if (!remainder) continue
+    const item = snapshot.thread.find((candidate) => candidate.id === itemId)
+    if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
+  }
+}
+
+function withoutApprovals(
+  snapshot: WorkspaceSnapshot,
+  predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
+  updatedAt: string,
+): {
+  removed: WorkspaceSnapshot["approvals"]
+  blockedIds: ReadonlySet<string>
+  approvals: WorkspaceSnapshot["approvals"]
+  workingPlans: WorkspaceSnapshot["workingPlans"]
+} | undefined {
+  const removed = snapshot.approvals.filter(predicate)
+  if (removed.length === 0) return undefined
+  const removedIds = new Set(removed.map((approval) => approval.id))
+  const blockedIds = new Set(snapshot.workingPlans.flatMap((plan) =>
+    plan.steps.flatMap((step) => (
+      step.blocker && removedIds.has(step.blocker.approvalId)
+        ? [step.blocker.approvalId]
+        : []
+    )),
+  ))
+  const cleared = clearWorkingPlanApprovalBlockers(snapshot.workingPlans, removedIds, updatedAt)
+  return {
+    removed,
+    blockedIds,
+    approvals: snapshot.approvals.filter((approval) => !removedIds.has(approval.id)),
+    workingPlans: cleared.plans,
+  }
+}
+
 function skillInstallAuditDetail(values: Record<string, unknown>): string {
   const source = values.source && typeof values.source === "object"
     ? (values.source as Record<string, unknown>).path
@@ -362,6 +415,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "skill.reviewRevision",
   "skill.installPreview",
   "session.history",
+  "session.search",
   "session.evidence",
   "audit.query",
   "fleet.heartbeat",
@@ -432,6 +486,17 @@ function sessionReadOnlyMessage(
     return "This session has conflicting owners and is read-only"
   }
   return undefined
+}
+
+// A paired device learns that stored state was moved aside and what survived,
+// not where the kept file lives on this machine or why it failed to read.
+function stateRecoveryFlag(recovery: StateRecovery): StateRecovery {
+  return {
+    kind: recovery.kind,
+    occurredAt: recovery.occurredAt,
+    pairedDevicesKept: recovery.pairedDevicesKept,
+    workspaceKept: recovery.workspaceKept,
+  }
 }
 
 function sessionIsReadOnly(
@@ -770,6 +835,20 @@ export function isTestCommandTitle(title: string): boolean {
       + "|(?:go|cargo|dotnet|swift|mix)\\s+test(?:\\s|$)"
       + "|(?:\\./)?gradle(?:w)?\\s+test(?:\\s|$)|mvn(?:\\s+\\S+)*\\s+test(?:\\s|$))",
   ).test(command)
+}
+
+function codexSandboxNoticeFor(
+  sessionId: string,
+  runtime: Runtime,
+  createdAt: string,
+  committed: readonly string[] | undefined,
+): WorkspaceSnapshot["thread"] {
+  if (runtime.provider !== "codex") return []
+  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexSandboxNotice(committed), createdAt }]
+}
+
+function committedSecretsFor(runtime: Runtime, worktree: string): Promise<string[] | undefined> {
+  return runtime.provider === "codex" ? committedCodexSecretPaths(worktree) : Promise.resolve(undefined)
 }
 
 function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { kind: "system" }>): boolean {
@@ -1219,6 +1298,9 @@ type ActiveTerminal = {
   // A released ownership waits through a grace window for the next connection
   // to re-claim it, then the terminal is reaped rather than stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  // The connections that opened or claimed this terminal. Its output, owner
+  // changes and close go to these and nowhere else.
+  audience: Set<RpcOutboundSocket>
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -1242,10 +1324,12 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
+  #pendingSnapshotPersist: Promise<void> | undefined
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -1490,6 +1574,14 @@ export class DomovoiDaemon {
           ?? options.statePath === undefined,
       },
     )
+    this.#stateRecovery = this.#store.recovery
+    if (this.#stateRecovery) {
+      const { kind, quarantinedPath, reason } = this.#stateRecovery
+      this.#reportError(
+        "Domovoi moved unreadable stored state aside",
+        new Error(`The stored ${kind === "database" ? "state database" : "workspace snapshot"} was kept at ${quarantinedPath}. ${reason}`),
+      )
+    }
     this.#snapshot = this.#store.load()
     this.#loadQueuedSessionSends(true)
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
@@ -2147,9 +2239,29 @@ export class DomovoiDaemon {
   }
 
   #broadcastNotification(method: string, params: unknown): void {
+    this.#notifyClients(this.#rpcClients, method, params)
+  }
+
+  // Terminals are not on the pairing card: a phone or tablet credential, and a
+  // watching-only one, is never an audience for one.
+  #mayWatchTerminals(socket: RpcOutboundSocket): boolean {
+    const binding = this.#deviceCredentials.get(socket)?.verified?.binding
+    if (binding?.kind !== "client") return true
+    return binding.client !== "phone" && binding.client !== "tablet" && binding.clientAccess !== "watching"
+  }
+
+  #notifyTerminalAudience(terminal: ActiveTerminal, method: string, params: unknown): void {
+    this.#notifyClients(
+      [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket)),
+      method,
+      params,
+    )
+  }
+
+  #notifyClients(clients: Iterable<RpcOutboundSocket>, method: string, params: unknown): void {
     const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
-    for (const client of this.#rpcClients) {
+    for (const client of clients) {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
@@ -2407,7 +2519,15 @@ export class DomovoiDaemon {
   // belongs to the project being left and is not loaded.
   #loadQueuedSessionSends(afterRestart: boolean): void {
     this.#queuedSessionSends.clear()
-    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+    const unreadable = (row: UnreadableQueuedSessionSend) => this.#reportError(
+      row.quarantined
+        ? "Domovoi moved an unreadable queued message aside"
+        : "Domovoi skipped an unreadable queued message it could not move aside",
+      new Error(row.quarantined
+        ? `Queued message ${row.queueId} for ${row.sessionId} was moved to queued_session_send_quarantine. ${row.reason}`
+        : `Queued message ${row.queueId} for ${row.sessionId} stays in queued_session_sends; the next load tries again. ${row.reason}`),
+    )
+    for (const loaded of this.#store.loadQueuedSessionSends?.(unreadable) ?? []) {
       if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
       const queued = afterRestart && loaded.state === "releasing"
         ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
@@ -2429,15 +2549,22 @@ export class DomovoiDaemon {
   }
 
   #syncQueuedSendMetadata(): void {
-    const durable = [...this.#queuedSessionSends.values()].map((queued) => this.#queuedSendMetadata(queued))
+    this.#snapshot.queuedSends = this.#queuedSendsFor(this.#snapshot, this.#queuedSessionSends.values())
+  }
+
+  #queuedSendsFor(
+    snapshot: WorkspaceSnapshot,
+    queuedSends: Iterable<StoredQueuedSessionSend>,
+  ): QueuedSessionSend[] {
+    const durable = [...queuedSends].map((queued) => this.#queuedSendMetadata(queued))
     const durableSessions = new Set(durable.map((queued) => queued.sessionId))
-    const sessions = new Set(this.#snapshot.sessions.map((session) => session.id))
-    const delivered = (this.#snapshot.queuedSends ?? []).filter(
+    const sessions = new Set(snapshot.sessions.map((session) => session.id))
+    const delivered = (snapshot.queuedSends ?? []).filter(
       (queued) => queued.state === "delivered"
         && !durableSessions.has(queued.sessionId)
         && sessions.has(queued.sessionId),
     )
-    this.#snapshot.queuedSends = [...durable, ...delivered]
+    return [...durable, ...delivered]
       .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
   }
 
@@ -2495,14 +2622,29 @@ export class DomovoiDaemon {
   ): boolean {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.id !== queueId || !from.includes(queued.state)) return false
+    // One bound for memory and disk, so the snapshot never carries a reason
+    // the stored row does not.
+    const bounded = boundedQueuedSendReason(reason)
     if (this.#store.transitionQueuedSessionSend
-      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, reason)) return false
+      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, bounded)) return false
     const updated = { ...queued, state }
-    if (reason) updated.reason = reason
+    if (bounded) updated.reason = bounded
     else delete updated.reason
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()
     return true
+  }
+
+  #commitQueuedSendTransitions(transitions: readonly QueuedSessionSendTransition[]): boolean[] {
+    if (transitions.length === 0) return []
+    if (this.#store.transitionQueuedSessionSends) return this.#store.transitionQueuedSessionSends(transitions)
+    return transitions.map((transition) => this.#store.transitionQueuedSessionSend?.(
+      transition.sessionId,
+      transition.queueId,
+      transition.from,
+      transition.to,
+      transition.reason,
+    ) ?? true)
   }
 
   #holdQueuedSessionSend(sessionId: string, reason: string): boolean {
@@ -3317,11 +3459,8 @@ export class DomovoiDaemon {
       ))
     }
     try {
-      if (this.#store.saveAsync) await this.#store.saveAsync(authoritative)
-      else this.#store.save(authoritative)
-      this.#persistenceSucceeded()
+      await this.#persistSnapshot()
     } catch (error) {
-      this.#persistenceFailed(error)
       this.#reportError("Domovoi could not persist a detected ownership conflict", error)
     }
   }
@@ -4680,11 +4819,13 @@ export class DomovoiDaemon {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
             }
-            this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+            existing.audience.add(socket)
+            this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
             }))
           }
+          existing.audience.add(socket)
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -4714,7 +4855,7 @@ export class DomovoiDaemon {
           () => output.resume(params.terminalId),
         )
         const output = new TerminalOutputBatcher((terminalId, data) => {
-          this.#broadcastNotification("terminal.output", { terminalId, data })
+          this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
           return outputBackpressure.observe()
         })
         const activeTerminal: ActiveTerminal = {
@@ -4729,6 +4870,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
+          audience: new Set([socket]),
           reapTimer: undefined,
           output,
           outputBackpressure,
@@ -4787,7 +4929,7 @@ export class DomovoiDaemon {
           active.outputBackpressure.dispose()
           active.disposeData()
           active.disposeExit()
-          this.#broadcastNotification("terminal.closed", {
+          this.#notifyTerminalAudience(active, "terminal.closed", {
             terminalId: params.terminalId,
             exitCode,
             ...(signal === undefined ? {} : { signal }),
@@ -4821,6 +4963,7 @@ export class DomovoiDaemon {
         }
         terminal.owner = { client: params.client, clientId: params.clientId }
         terminal.ownerSocket = socket
+        terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -4829,7 +4972,7 @@ export class DomovoiDaemon {
           terminalId: params.terminalId,
           owner: terminal.owner,
         })
-        this.#broadcastNotification("terminal.ownership", ownership)
+        this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: ownership })
         return
       }
@@ -5250,9 +5393,8 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "This machine cannot commit session transfers")
           return
         }
-        const before = this.#snapshot
         const committed = await commitPreparedSessionTransfer({
-          snapshot: before,
+          snapshot: this.#snapshot,
           transferId: params.transferId,
           manifestDigest: params.manifestDigest,
           transactions: this.#transferTransactions,
@@ -5303,9 +5445,28 @@ export class DomovoiDaemon {
               this.#usageLedger.replaceTransferredSession!(sessionId, records)
             ),
           },
-          save: async (candidate, ownership) => {
+          save: (candidate, ownership) => this.#serializeSnapshotPersistence(async () => {
+            // The candidate was built from the snapshot captured before the
+            // repository restore. Other sessions, and other arriving commits,
+            // changed the live snapshot since, so only this session's slice is
+            // imported into it, on the same serializer as every other write.
+            const live = this.#snapshot
+            if (
+              live.machine.id !== candidate.machine.id
+              || live.project?.id !== candidate.project?.id
+            ) {
+              throw new SessionTransferStateError("target-project-missing")
+            }
+            if (live.sessions.some((session) => session.id === manifest.sessionId)) {
+              throw new SessionTransferStateError("target-session-diverged")
+            }
+            const imported = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
+              ...mergeSessionSnapshotSlice(latest, slice, manifest.sessionId),
+              activeSessionId: candidate.activeSessionId,
+            })
+            const persisted = imported(live, candidate)
             try {
-              await this.#store.saveTransferredSnapshot!(candidate, ownership)
+              await this.#store.saveTransferredSnapshot!(persisted, ownership)
             } catch (error) {
               this.#persistenceFailed(error)
               throw error
@@ -5315,21 +5476,14 @@ export class DomovoiDaemon {
             // atomically, this process must adopt them before touching the
             // disposable transaction journal. A later journal failure cannot
             // make the target overwrite its now-authoritative imported state.
-            this.#snapshot = candidate
+            this.#snapshot = imported(this.#snapshot, persisted)
             this.#activeAssistantItems.clear()
             this.#sessionHistory.invalidate(manifest.sessionId)
             this.#syncArtifactWatchers()
             this.#broadcastSnapshot()
-          },
+          }),
           now: () => new Date().toISOString(),
         })
-        if (committed.snapshot !== before && this.#snapshot !== committed.snapshot) {
-          this.#snapshot = committed.snapshot
-          this.#activeAssistantItems.clear()
-          this.#sessionHistory.invalidate(manifest.sessionId)
-          this.#syncArtifactWatchers()
-          this.#broadcastSnapshot()
-        }
         if (committed.result.state === "committed") {
           // The imported session and ownership row are now authoritative.
           // Keep replay idempotent through that canonical state instead of
@@ -6101,6 +6255,32 @@ export class DomovoiDaemon {
         return
       }
 
+      if (method === "session.search") {
+        const params = paramsResult.data as RpcParams<"session.search">
+        const needle = params.query.toLowerCase()
+        const matches: SessionSearchMatch[] = []
+        let truncated = false
+        for (const session of this.#snapshot.sessions) {
+          const matchedIn = session.title.toLowerCase().includes(needle)
+            ? "title"
+            : this.#sessionSummaryText(session.id)?.toLowerCase().includes(needle)
+              ? "summary"
+              : undefined
+          if (!matchedIn) continue
+          if (matches.length >= params.limit) {
+            truncated = true
+            break
+          }
+          matches.push({ session, matchedIn })
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
+        })
+        return
+      }
+
       if (method === "session.evidence") {
         const params = paramsResult.data as RpcParams<"session.evidence">
         const session = this.#snapshot.sessions.find(
@@ -6599,42 +6779,54 @@ export class DomovoiDaemon {
           )
           return
         }
-        if (approval.providerRequestId !== undefined && session) {
-          this.#agents.require(session.runtime.provider)
-            .resolveApproval(
-              approval.providerRequestId,
-              params.decision === "always-project" ? "allow-once" : params.decision,
-            )
+        const project = this.#snapshot.project
+        if (params.decision === "always-project" && !project) {
+          this.#error(socket, request.id, internalError, "Approval has no open project")
+          return
         }
-        if (params.decision === "always-project") {
-          const project = this.#snapshot.project
-          if (!project) {
-            this.#error(socket, request.id, internalError, "Approval has no open project")
-            return
-          }
-          const ruleId = `rule-${approval.id}-${Date.now()}`
-          this.#snapshot.approvalRules.push({
-            id: ruleId,
-            projectId: project.id,
-            operation: approval.operation,
-            command: approval.command,
-            status: "active",
-            execution: resolvedApprovalExecution!,
-            createdBy: actor.client,
-            createdByConnectionId: connectionId,
-            createdAt: new Date().toISOString(),
-            useCount: 0,
-          })
-          for (const inactiveRuleId of approval.reapproval?.inactiveRuleIds ?? []) {
-            const inactive = this.#snapshot.approvalRules.find(
-              (rule) => rule.id === inactiveRuleId && rule.status === "inactive",
-            )
-            if (inactive?.status === "inactive" && inactive.inactiveReason !== "revoked") inactive.replacedByRuleId = ruleId
-          }
-        }
+        // The decision is saved before the agent hears it. A decision the
+        // agent acts on but the daemon never stored would leave the person
+        // told the gate is still waiting while the command runs, and a
+        // standing rule they were told failed would reach disk later.
         const decidedAt = new Date().toISOString()
-        this.#snapshot.thread.push({
-          id: `receipt-${approval.id}-${Date.now()}`,
+        const receiptId = `receipt-${approval.id}-${Date.now()}`
+        const undecided = {
+          approval: structuredClone(approval),
+          sessionState: session?.state,
+          plans: structuredClone(this.#snapshot.workingPlans.filter((plan) => plan.steps.some(
+            (step) => step.blocker?.approvalId === approval.id,
+          ))),
+          replacedBy: new Map<string, string | undefined>(),
+        }
+        const candidate = structuredClone(this.#snapshot)
+        const newRule = params.decision === "always-project"
+          ? {
+              id: `rule-${approval.id}-${Date.now()}`,
+              projectId: project!.id,
+              operation: approval.operation,
+              command: approval.command,
+              status: "active" as const,
+              execution: resolvedApprovalExecution!,
+              createdBy: actor.client,
+              createdByConnectionId: connectionId,
+              createdAt: decidedAt,
+              useCount: 0,
+            }
+          : undefined
+        const replacedRuleIds = new Set(newRule ? approval.reapproval?.inactiveRuleIds ?? [] : [])
+        const withRule = (rules: WorkspaceSnapshot["approvalRules"]): WorkspaceSnapshot["approvalRules"] => {
+          if (!newRule) return rules
+          return [
+            ...rules.filter((rule) => rule.id !== newRule.id).map((rule) => (
+              replacedRuleIds.has(rule.id) && rule.status === "inactive" && rule.inactiveReason !== "revoked"
+                ? { ...rule, replacedByRuleId: newRule.id }
+                : rule
+            )),
+            newRule,
+          ]
+        }
+        candidate.thread.push({
+          id: receiptId,
           sessionId: approval.sessionId,
           kind: "receipt",
           decision: params.decision,
@@ -6648,16 +6840,136 @@ export class DomovoiDaemon {
             : {}),
           createdAt: decidedAt,
         })
-        this.#removeApprovals(
-          (candidate) => candidate.id === params.approvalId,
+        const blockedPlan = candidate.workingPlans.some((plan) => plan.steps.some(
+          (step) => step.blocker?.approvalId === approval.id,
+        ))
+        candidate.approvals = candidate.approvals.filter((candidateApproval) => candidateApproval.id !== approval.id)
+        candidate.workingPlans = clearWorkingPlanApprovalBlockers(
+          candidate.workingPlans,
+          new Set([approval.id]),
           decidedAt,
-        )
-        if (session) {
-          session.state = params.decision === "deny" || params.decision === "deny-explain"
+        ).plans
+        const decidedSession = candidate.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+        if (decidedSession) {
+          decidedSession.state = params.decision === "deny" || params.decision === "deny-explain"
             ? "idle"
             : "active"
         }
+        const decided = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
+          ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
+          approvalRules: withRule(latest.approvalRules),
+        })
+        const stillPending = () => this.#snapshot.approvals.some((pending) => pending.id === approval.id)
+        let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
+        try {
+          await this.#serializeSnapshotPersistence(async () => {
+            if (!stillPending()) return
+            undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+              rule.id,
+              "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+            ]))
+            const persisted = decided(this.#snapshot, candidate)
+            if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+            else this.#store.save(persisted)
+            if (!stillPending()) {
+              outcome = "cancelled-after-write"
+              return
+            }
+            this.#snapshot = decided(this.#snapshot, persisted)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            outcome = "committed"
+          })
+        } catch (error) {
+          this.#persistenceFailed(error)
+          this.#reportError("Domovoi could not save an approval decision", error)
+          this.#error(
+            socket,
+            request.id,
+            daemonPersistenceUnavailableErrorCode,
+            "Domovoi could not save this decision, so the agent was not told",
+          )
+          return
+        }
+        if (outcome !== "cancelled") this.#persistenceSucceeded()
+        if (outcome !== "committed") {
+          if (outcome === "cancelled-after-write") {
+            try {
+              await this.#persistSnapshot()
+            } catch (error) {
+              this.#reportError("Domovoi could not save state after a cancelled approval decision", error)
+            }
+          }
+          this.#error(socket, request.id, invalidParams, "Approval does not exist")
+          return
+        }
+        this.#activeAssistantItems.clear()
+        if (approval.providerRequestId !== undefined && session) {
+          try {
+            this.#agents.require(session.runtime.provider)
+              .resolveApproval(
+                approval.providerRequestId,
+                params.decision === "always-project" ? "allow-once" : params.decision,
+              )
+          } catch (error) {
+            this.#reportError("Domovoi could not pass an approval decision to the agent", error)
+            const undo = (snapshot: WorkspaceSnapshot) => {
+              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId)
+              if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
+                snapshot.approvals.push(structuredClone(undecided.approval))
+              }
+              if (newRule) {
+                snapshot.approvalRules = snapshot.approvalRules
+                  .filter((rule) => rule.id !== newRule.id)
+                  .map((rule) => {
+                    if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+                    const { replacedByRuleId: _replaced, ...restored } = rule
+                    const previous = undecided.replacedBy.get(rule.id)
+                    return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+                  })
+              }
+              snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
+                structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
+              const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+              if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
+            }
+            const rolledBack = structuredClone(this.#snapshot)
+            undo(rolledBack)
+            workspaceSnapshotSchema.parse(rolledBack)
+            undo(this.#snapshot)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            try {
+              await this.#persistSnapshot()
+            } catch (rollbackError) {
+              this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+              this.#error(
+                socket,
+                request.id,
+                daemonPersistenceUnavailableErrorCode,
+                "Domovoi could not save this decision, so the agent was not told",
+              )
+              return
+            }
+            this.#error(
+              socket,
+              request.id,
+              internalError,
+              "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
+            )
+            return
+          }
+        }
+        if (blockedPlan) {
+          this.#appendAudit({
+            actor: { kind: "daemon", component: "working-plan" },
+            action: "plan.approval-blocker-cleared",
+            outcome: "succeeded",
+            sessionId: approval.sessionId,
+            ...(project ? { projectId: project.id } : {}),
+            target: approval.id,
+          })
+        }
         changed = true
+        alreadyPersisted = true
       }
 
       if (method === "session.setRuntime") {
@@ -6774,6 +7086,9 @@ export class DomovoiDaemon {
             }
             throw error
           }
+          const committed = previousRuntime.provider !== runtime.provider
+            ? await committedSecretsFor(runtime, currentSession.workspacePath)
+            : undefined
           const createdAt = new Date().toISOString()
           currentSession.runtime = runtime
           currentSession.providerThreadId = nextThreadId
@@ -6811,6 +7126,9 @@ export class DomovoiDaemon {
               : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
+          if (previousRuntime.provider !== runtime.provider) {
+            this.#snapshot.thread.push(...codexSandboxNoticeFor(currentSession.id, runtime, createdAt, committed))
+          }
         } else {
           currentSession.runtime = runtime
           delete currentSession.providerFailure
@@ -6870,35 +7188,41 @@ export class DomovoiDaemon {
             )
             signal.throwIfAborted()
           }
-          const candidate = structuredClone(this.#snapshot)
-          const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
-          if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
-            throw new PublicRpcError(invalidParams, "Session is no longer ready to restart its provider")
-          }
-          const createdAt = new Date().toISOString()
-          currentSession.runtime = runtime
-          currentSession.providerThreadId = threadId
-          currentSession.state = "idle"
-          currentSession.updatedAt = createdAt
-          delete currentSession.activeTurnId
-          delete currentSession.providerFailure
-          candidate.thread.push({
-            id: `system-${randomUUID()}`,
-            sessionId: currentSession.id,
-            kind: "system",
-            body: `Provider thread restarted by ${client}.`,
-            detail: `Connection ${connectionId}. The existing worktree, history, checkpoints, artifacts, and annotations were preserved.`,
-            createdAt,
+          // The synchronous write joins the persistence serializer, so a
+          // worker write posted before it cannot land afterwards and put the
+          // provider thread it records back out of the stored snapshot.
+          await this.#serializeSnapshotPersistence(async () => {
+            signal?.throwIfAborted()
+            const candidate = structuredClone(this.#snapshot)
+            const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
+            if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
+              throw new PublicRpcError(invalidParams, "Session is no longer ready to restart its provider")
+            }
+            const createdAt = new Date().toISOString()
+            currentSession.runtime = runtime
+            currentSession.providerThreadId = threadId
+            currentSession.state = "idle"
+            currentSession.updatedAt = createdAt
+            delete currentSession.activeTurnId
+            delete currentSession.providerFailure
+            candidate.thread.push({
+              id: `system-${randomUUID()}`,
+              sessionId: currentSession.id,
+              kind: "system",
+              body: `Provider thread restarted by ${client}.`,
+              detail: `Connection ${connectionId}. The existing worktree, history, checkpoints, artifacts, and annotations were preserved.`,
+              createdAt,
+            })
+            workspaceSnapshotSchema.parse(candidate)
+            try {
+              this.#store.save(candidate)
+            } catch (error) {
+              this.#persistenceFailed(error)
+              throw error
+            }
+            this.#persistenceSucceeded()
+            this.#snapshot = candidate
           })
-          workspaceSnapshotSchema.parse(candidate)
-          try {
-            this.#store.save(candidate)
-          } catch (error) {
-            this.#persistenceFailed(error)
-            throw error
-          }
-          this.#persistenceSucceeded()
-          this.#snapshot = candidate
           this.#activeAssistantItems.clear()
           this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, threadId))
           changed = true
@@ -6984,7 +7308,7 @@ export class DomovoiDaemon {
           await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
           if (this.#snapshot.project) await this.#persistSnapshot()
-          const restored = this.#store.loadProject?.(projectId)
+          const restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
@@ -7113,6 +7437,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         this.#snapshot.sessions.push({
           ...creationDraft,
@@ -7141,6 +7466,7 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
+        this.#snapshot.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         changed = true
       }
 
@@ -7304,6 +7630,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         const candidate = structuredClone(this.#snapshot)
         candidate.sessions.push({
@@ -7331,9 +7658,21 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
+        candidate.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         try {
-          if (this.#store.saveAsync) await this.#store.saveAsync(candidate)
-          else this.#store.save(candidate)
+          // Other sessions keep streaming while the fork is written, so only
+          // the fork's own slice is merged into the live snapshot, before and
+          // after the write, on the same serializer as every other write.
+          await this.#serializeSnapshotPersistence(async () => {
+            const persisted = workspaceSnapshotSchema.parse(
+              mergeSessionSnapshotSlice(this.#snapshot, candidate, sessionId),
+            )
+            if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+            else this.#store.save(persisted)
+            this.#snapshot = workspaceSnapshotSchema.parse(
+              mergeSessionSnapshotSlice(this.#snapshot, persisted, sessionId),
+            )
+          })
           this.#persistenceSucceeded()
         } catch (error) {
           this.#persistenceFailed(error)
@@ -7357,7 +7696,6 @@ export class DomovoiDaemon {
           }
           throw error
         }
-        this.#snapshot = candidate
         this.#activeAssistantItems.clear()
         this.#clearCommittedSessionCreations()
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
@@ -7927,6 +8265,9 @@ export class DomovoiDaemon {
                   clientAccess: helloCredential?.binding.kind === "client"
                     ? helloCredential.binding.clientAccess
                     : "full",
+                  ...(this.#stateRecovery
+                    ? { stateRecovery: helloCredential ? stateRecoveryFlag(this.#stateRecovery) : this.#stateRecovery }
+                    : {}),
                 }
               : {}),
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
@@ -8603,61 +8944,99 @@ export class DomovoiDaemon {
     }
     if (!hadConnection) return
 
+    // A frozen transfer source or an unfinished archive keeps its provider
+    // thread, but its lifecycle is not the provider's to change: marking it
+    // failed leaves transfer or archive metadata on a state that cannot hold
+    // it, and the invalid snapshot then refuses every save and every RPC.
+    // Its turn and approvals belonged to the exited process, so they go.
+    const affected = this.#snapshot.sessions.filter((session) =>
+      session.runtime.provider === provider
+      && session.providerThreadId !== undefined)
+    if (affected.length === 0) return
+    const failing = affected.filter((session) => !sessionIsReadOnly(session))
+
     const createdAt = new Date().toISOString()
     const providerName = provider === "codex" ? "Codex" : provider
-    let changed = false
-    const affectedSessionIds = new Set<string>()
-    for (const session of this.#snapshot.sessions) {
-      if (session.runtime.provider !== provider || !session.providerThreadId) continue
-      affectedSessionIds.add(session.id)
-      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
-      session.state = "failed"
-      session.providerFailure = classifyProviderFailure(new Error(reason))
-      this.#flushCommandOutputStreams(session.id)
-      delete session.activeTurnId
-      session.updatedAt = createdAt
-      this.#snapshot.thread.push({
-        id: `system-${randomUUID()}`,
-        sessionId: session.id,
-        kind: "system",
-        body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
-        detail: redactDurableText(reason).value,
-        createdAt,
-      })
-      changed = true
+    const affectedSessionIds = new Set(affected.map((session) => session.id))
+    const failingSessionIds = new Set(failing.map((session) => session.id))
+    const notices = failing.map((session) => ({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system" as const,
+      body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
+      detail: redactDurableText(reason).value,
+      createdAt,
+    }))
+    const remainders = affected.flatMap((session) => this.#peekCommandOutputStreams(session.id))
+    const holdReason = "The provider disconnected before the queued send could release."
+    const holds = failing.flatMap((session) => {
+      const queued = this.#queuedSessionSends.get(session.id)
+      return queued && (queued.state === "waiting" || queued.state === "releasing")
+        ? [{ ...queued, state: "held" as const, reason: holdReason }]
+        : []
+    })
+    const heldByAffected = (approval: WorkspaceSnapshot["approvals"][number]) =>
+      affectedSessionIds.has(approval.sessionId)
+    const markDisconnected = (snapshot: WorkspaceSnapshot) => {
+      appendCommandOutputRemainders(snapshot, remainders)
+      for (const session of snapshot.sessions) {
+        if (!affectedSessionIds.has(session.id)) continue
+        if (!failingSessionIds.has(session.id)) {
+          if (session.activeTurnId === undefined) continue
+          delete session.activeTurnId
+          session.updatedAt = createdAt
+          continue
+        }
+        session.state = "failed"
+        session.providerFailure = classifyProviderFailure(new Error(reason))
+        delete session.activeTurnId
+        session.updatedAt = createdAt
+      }
+      snapshot.thread.push(...structuredClone(notices))
     }
-    if (affectedSessionIds.size > 0) {
-      this.#removeApprovals(
-        (approval) => affectedSessionIds.has(approval.sessionId),
-        createdAt,
-      )
+    const validateCandidate = (held: readonly StoredQueuedSessionSend[]) => {
+      const candidate = structuredClone(this.#snapshot)
+      markDisconnected(candidate)
+      const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
+      if (candidateApprovals) {
+        candidate.approvals = candidateApprovals.approvals
+        candidate.workingPlans = candidateApprovals.workingPlans
+      }
+      if (held.length > 0) {
+        const candidateQueue = new Map(this.#queuedSessionSends)
+        for (const queued of held) candidateQueue.set(queued.sessionId, queued)
+        candidate.queuedSends = this.#queuedSendsFor(candidate, candidateQueue.values())
+      }
+      workspaceSnapshotSchema.parse(candidate)
     }
-    if (changed) await this.#flushAgentState()
+    validateCandidate(holds)
+    const committed = this.#commitQueuedSendTransitions(holds.map((held) => ({
+      sessionId: held.sessionId,
+      queueId: held.id,
+      from: ["waiting", "releasing"],
+      to: "held",
+      reason: holdReason,
+    })))
+    const held = holds.filter((_, index) => committed[index] === true)
+    if (held.length !== holds.length) validateCandidate(held)
+
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    for (const queued of held) this.#queuedSessionSends.set(queued.sessionId, queued)
+    if (held.length > 0) this.#syncQueuedSendMetadata()
+    markDisconnected(this.#snapshot)
+    this.#removeApprovals(heldByAffected, createdAt)
+    await this.#flushAgentState()
   }
 
   #removeApprovals(
     predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
     updatedAt: string,
   ): WorkspaceSnapshot["approvals"] {
-    const removed = this.#snapshot.approvals.filter(predicate)
-    if (removed.length === 0) return []
-    const removedIds = new Set(removed.map((approval) => approval.id))
-    const blockedIds = new Set(this.#snapshot.workingPlans.flatMap((plan) =>
-      plan.steps.flatMap((step) => (
-        step.blocker && removedIds.has(step.blocker.approvalId)
-          ? [step.blocker.approvalId]
-          : []
-      )),
-    ))
-    this.#snapshot.approvals = this.#snapshot.approvals.filter(
-      (approval) => !removedIds.has(approval.id),
-    )
-    const cleared = clearWorkingPlanApprovalBlockers(
-      this.#snapshot.workingPlans,
-      removedIds,
-      updatedAt,
-    )
-    this.#snapshot.workingPlans = cleared.plans
+    const next = withoutApprovals(this.#snapshot, predicate, updatedAt)
+    if (!next) return []
+    const { removed, blockedIds } = next
+    this.#snapshot.approvals = next.approvals
+    this.#snapshot.workingPlans = next.workingPlans
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
       this.#appendAudit({
@@ -8677,15 +9056,16 @@ export class DomovoiDaemon {
   }
 
   #flushCommandOutputStreams(sessionId: string): void {
+    const remainders = this.#peekCommandOutputStreams(sessionId)
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    appendCommandOutputRemainders(this.#snapshot, remainders)
+  }
+
+  #peekCommandOutputStreams(sessionId: string): CommandOutputRemainder[] {
     const prefix = `${sessionId}\u0000`
-    for (const [key, stream] of this.#commandOutputRedactors) {
-      if (!key.startsWith(prefix)) continue
-      const remainder = stream.redactor.flush()
-      this.#commandOutputRedactors.delete(key)
-      if (!remainder) continue
-      const item = this.#snapshot.thread.find((candidate) => candidate.id === stream.itemId)
-      if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
-    }
+    return [...this.#commandOutputRedactors]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, stream]) => ({ key, itemId: stream.itemId, remainder: stream.redactor.peek() }))
   }
 
   #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
@@ -9437,6 +9817,15 @@ export class DomovoiDaemon {
     }
   }
 
+  // A session's summary for search: the newest assistant message the daemon
+  // still holds for it in the snapshot window. Older history is not searched.
+  #sessionSummaryText(sessionId: string): string | undefined {
+    const newest = this.#snapshot.thread.findLast(
+      (item) => item.sessionId === sessionId && item.kind === "assistant",
+    )
+    return newest?.kind === "assistant" ? newest.body : undefined
+  }
+
   #closeTerminal(terminalId: string): boolean {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
@@ -9453,12 +9842,13 @@ export class DomovoiDaemon {
     terminal.output.flush(terminalId)
     terminal.outputBackpressure.dispose()
     terminal.process.kill()
-    this.#broadcastNotification("terminal.closed", { terminalId })
+    this.#notifyTerminalAudience(terminal, "terminal.closed", { terminalId })
     return true
   }
 
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
+      terminal.audience.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
@@ -9668,8 +10058,13 @@ export class DomovoiDaemon {
     )
   }
 
+  // Each write carries the whole live snapshot as it stands when the write
+  // starts, so every change that arrives while a write is still waiting to
+  // start is carried by that write. Sharing it keeps the backlog to one
+  // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
-    await this.#serializeSnapshotPersistence(async () => {
+    const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
+      this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()
       try {
         if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
@@ -9681,6 +10076,7 @@ export class DomovoiDaemon {
       this.#persistenceSucceeded()
       this.#clearCommittedSessionCreations()
     })
+    await pending
   }
 
   #persistenceFailed(error: unknown): void {

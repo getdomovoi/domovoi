@@ -5,7 +5,6 @@ import { homedir, hostname, userInfo } from "node:os"
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { runPairCommand } from "./pair-command.js"
-import { isLoopbackHost } from "./pairing-address.js"
 import { renderQrToTerminal } from "./qr-terminal.js"
 import { runProfileCommand } from "./profile-command.js"
 import { configuredProfileDirectory, profileLocation } from "./profile-directory.js"
@@ -15,7 +14,7 @@ import { MachineCredentialWorker } from "./machine-credential-worker.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { callDaemon, type CliRpcTarget } from "./cli-rpc.js"
 import { runOpenCommand } from "./open-command.js"
-import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
+import { publishEndpointFile, publishesEndpointFor, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
 import type { OpenTarget } from "./wsl-open-target.js"
 import { connectionForTarget } from "./open-connection.js"
@@ -42,10 +41,6 @@ async function requestPairingCode(
     target: config, token, method: "device.issueCode",
     params: targetClient === undefined ? {} : { targetClient },
   }) as DeviceIssueCodeResult
-}
-
-function isLoopbackListener(host: string): boolean {
-  return isLoopbackHost(host)
 }
 
 async function requestProjectOpen(
@@ -121,6 +116,10 @@ Environment:
   DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
   DOMOVOI_TAILNET_HOST            Explicit tailnet host for a non-loopback TLS listener
   DOMOVOI_SSH_TUNNELS             JSON list of source-local {machineId, endpoint} forwards
+  DOMOVOI_TOOL_PATH               Directories searched first for agent CLIs
+  DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY  Off-machine signer's relay public key
+  DOMOVOI_RELAY_CREDENTIAL_FILE   Absolute relay credential file instead of the keychain
+  DOMOVOI_WINDOWS_POWERSHELL      Guest path to powershell.exe for WSL service install
 `
 
 async function main() {
@@ -290,7 +289,7 @@ async function main() {
   // A daemon inside a WSL distribution is found by its endpoint file, which is
   // why it is published only once the listener is actually up, and taken away
   // when it stops.
-  const published = isLoopbackListener(address.host)
+  const published = publishesEndpointFor(address.host)
     ? { host: address.host, port: address.port, token: daemon.authToken }
     : undefined
   const daemonHome = profileLocation(serviceConfig?.homeDirectory ?? homedir(),

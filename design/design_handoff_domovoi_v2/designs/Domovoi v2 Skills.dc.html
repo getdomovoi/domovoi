@@ -12,6 +12,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/motion.css">
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--desk); }
@@ -79,6 +80,11 @@
       <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
       <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
       <div style="width: 1px; height: 18px; background: var(--border);"></div>
+      <div style="display: flex; align-items: center; gap: 2px;">
+        <div onClick="{{ goInventory }}" style="{{ tabSkills }}">Skills</div>
+        <div onClick="{{ goToolsAgent }}" style="{{ tabTools }}">Tools</div>
+      </div>
+      <div style="width: 1px; height: 18px; background: var(--border);"></div>
       <span style="font-size: 12px; color: var(--muted-foreground);">{{ chromeLabel }}</span>
       <span style="flex: 1;"></span>
       <span style="{{ chromePillStyle }}">{{ chromePill }}</span>
@@ -121,7 +127,7 @@
                       <div style="display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;">
                         <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ s.name }}</span>
                         <span style="{{ s.trustStyle }}">{{ s.trust }}</span>
-                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ s.source }}</span>
+                        <span style="display: inline-flex; align-items: center; gap: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);"><sc-if value="{{ s.hasSourceMark }}" hint-placeholder-val="{{ false }}"><span role="img" aria-label="{{ s.sourceMark }}" style="display: block; width: 11px; height: 11px; flex: 0 0 11px; background: currentColor; -webkit-mask: url(assets/harness/{{ s.sourceMark }}.svg) center / contain no-repeat; mask: url(assets/harness/{{ s.sourceMark }}.svg) center / contain no-repeat;"></span></sc-if>{{ s.source }}</span>
                       </div>
                       <div style="font-size: 11.5px; color: var(--muted-foreground); margin-top: 4px;">{{ s.desc }}</div>
                       <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); margin-top: 4px;">{{ s.caps }}</div>
@@ -365,12 +371,261 @@
           <div style="flex: 0 0 auto; padding: 13px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 12px; color: var(--muted-foreground); line-height: 1.6;">The delivery record keeps this partition, so an odd turn is explainable.</div>
         </div>
       </sc-if>
+
+      <sc-if value="{{ isTools }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 940px; display: flex; flex-direction: column; gap: 20px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap;">
+              <span style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">{{ toolsTitle }}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--muted-foreground);">{{ toolsWhere }}</span>
+            </div>
+            <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground); text-wrap: pretty;">Domovoi reads these files and reports what they declare. It installs, enables and changes nothing.</div>
+          </div>
+
+          <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <div style="display: flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); background: var(--card);">
+              <div onClick="{{ goToolsAgent }}" style="{{ segAgent }}">By agent</div>
+              <div onClick="{{ goToolsFile }}" style="{{ segFile }}">By source file</div>
+            </div>
+            <span style="display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted-foreground);">{{ iEye }}Read only</span>
+            <span style="flex: 1;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ toolsReadMeta }}</span>
+          </div>
+
+          <sc-if value="{{ hasRepoRuns }}" hint-placeholder-val="{{ true }}">
+            <div style="flex: 0 0 auto; border: 1px solid var(--info-border); border-radius: var(--radius); background: var(--info-bg); overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 10px; padding: 12px 15px;">
+                <span style="display: inline-flex; color: var(--info-fg);">{{ iRepo }}</span>
+                <span style="font-size: 13px; font-weight: 500; color: var(--info-fg);">{{ repoRunsTitle }}</span>
+                <span style="flex: 1;"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--info-dim);">{{ repoRunsMeta }}</span>
+              </div>
+              <sc-for list="{{ repoRuns }}" as="r" hint-placeholder-count="3">
+                <div style="display: flex; align-items: center; gap: 11px; padding: 9px 15px; border-top: 1px solid var(--info-border);">
+                  <span style="display: inline-flex; color: var(--info-dim);">{{ r.icon }}</span>
+                  <span style="font-size: 11.5px; color: var(--info-fg); width: 84px; flex: 0 0 84px;">{{ r.kind }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--info-fg); width: 150px; flex: 0 0 150px;">{{ r.name }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--info-dim); flex: 1; min-width: 0; overflow-wrap: anywhere;">{{ r.detail }}</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--info-dim);">{{ r.file }}</span>
+                </div>
+              </sc-for>
+              <div style="padding: 9px 15px 11px; border-top: 1px solid var(--info-border); font-size: 11.5px; color: var(--info-dim);">Listed before any session opens. Reading them does not start them.</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ noRepoRuns }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 12px 15px; border: 1px dashed var(--border); border-radius: var(--radius); font-size: 12px; color: var(--muted-foreground);">
+              <span style="display: inline-flex; color: var(--muted-foreground);">{{ iRepo }}</span>
+              <span>Nothing from this repository can run when a session starts.</span>
+            </div>
+          </sc-if>
+
+          <sc-for list="{{ toolPanels }}" as="p" hint-placeholder-count="2">
+            <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+              <sc-if value="{{ p.hasLead }}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; align-items: center; gap: 9px; padding-top: 4px;">
+                  <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ p.lead }}</span>
+                  <span style="font-size: 11.5px; color: var(--faint);">{{ p.leadMeta }}</span>
+                </div>
+              </sc-if>
+              <div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+                <div style="display: flex; align-items: center; gap: 10px; padding: 11px 14px; flex-wrap: wrap;">
+                  <sc-if value="{{ p.isAgent }}" hint-placeholder-val="{{ true }}">
+                    <span role="img" aria-label="{{ p.agent }}" style="{{ p.markStyle }}"></span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: var(--foreground);">{{ p.agent }}</span>
+                  </sc-if>
+                  <sc-if value="{{ p.isFile }}" hint-placeholder-val="{{ false }}">
+                    <span style="display: inline-flex; color: var(--muted-foreground);">{{ p.fileIcon }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: var(--foreground);">{{ p.path }}</span>
+                    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ p.srcLabel }}</span>
+                    <span style="display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; background: var(--accent); font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);"><span role="img" aria-label="{{ p.agent }}" style="{{ p.chipMarkStyle }}"></span>{{ p.agent }}</span>
+                  </sc-if>
+                  <span style="flex: 1;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ p.meta }}</span>
+                </div>
+                <sc-if value="{{ p.hasNonePassed }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; align-items: center; gap: 11px; padding: 11px 14px; border-top: 1px solid var(--border);">
+                    <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--faint);"></span>
+                    <span style="font-size: 11.5px; color: var(--muted-foreground); width: 84px; flex: 0 0 84px;">Tool servers</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">none passed</span>
+                    <span style="font-size: 11.5px; color: var(--muted-foreground);">This agent starts with no tool servers passed.</span>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ p.isEmpty }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 22px 16px 16px; border-top: 1px solid var(--border);">
+                    <span style="display: inline-flex; color: var(--muted-foreground);">{{ iEmpty }}</span>
+                    <span style="font-size: 13px; color: var(--foreground);">No tool servers, hooks or permission rules in the files read.</span>
+                  </div>
+                  <sc-for list="{{ p.checked }}" as="c" hint-placeholder-count="5">
+                    <div style="display: flex; align-items: center; gap: 11px; padding: 9px 16px; border-top: 1px solid var(--border);">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); flex: 1; min-width: 0;">{{ c.path }}</span>
+                      <span style="font-size: 11.5px; color: var(--muted-foreground); width: 130px; flex: 0 0 130px;">{{ c.srcLabel }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); width: 150px; flex: 0 0 150px; text-align: right;">{{ c.state }}</span>
+                    </div>
+                  </sc-for>
+                </sc-if>
+                <sc-for list="{{ p.groups }}" as="g" hint-placeholder-count="2">
+                  <div style="display: flex; align-items: center; gap: 9px; padding: 8px 14px; background: var(--sidebar); border-top: 1px solid var(--border);">
+                    <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ g.label }}</span>
+                    <span style="font-size: 11.5px; color: var(--faint);">{{ g.meta }}</span>
+                  </div>
+                  <sc-for list="{{ g.rows }}" as="r" hint-placeholder-count="3">
+                    <sc-if value="{{ r.isEntry }}" hint-placeholder-val="{{ true }}">
+                      <div style="display: flex; align-items: flex-start; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--border);">
+                        <span style="display: inline-flex; color: var(--muted-foreground); margin-top: 1px;">{{ r.icon }}</span>
+                        <span style="font-size: 11.5px; color: var(--muted-foreground); width: 84px; flex: 0 0 84px; line-height: 1.5;">{{ r.kind }}</span>
+                        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                          <div style="display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ r.name }}</span>
+                            <sc-if value="{{ r.starts }}" hint-placeholder-val="{{ false }}">
+                              <span style="font-size: 10.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--info-border); background: var(--info-bg); color: var(--info-fg);">Runs when a session starts</span>
+                            </sc-if>
+                          </div>
+                          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); line-height: 1.5; overflow-wrap: anywhere;">{{ r.detail }}</span>
+                        </div>
+                        <sc-if value="{{ r.showSrc }}" hint-placeholder-val="{{ true }}">
+                          <div style="width: 240px; flex: 0 0 240px; display: flex; flex-direction: column; gap: 4px; align-items: flex-end; text-align: right;">
+                            <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ r.srcLabel }}</span>
+                            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere;">{{ r.file }}</span>
+                          </div>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ r.isError }}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; align-items: flex-start; gap: 11px; padding: 12px 14px; border-top: 1px solid var(--danger-border); background: var(--danger-bg);">
+                        <span style="width: 7px; height: 7px; flex: 0 0 7px; margin-top: 6px; border-radius: 50%; background: var(--destructive);"></span>
+                        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                          <div style="font-size: 12.5px; color: var(--danger-fg);">Could not read <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">{{ r.file }}</span></div>
+                          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim);">{{ r.reason }}</div>
+                          <div style="font-size: 11.5px; color: var(--danger-fg); line-height: 1.55;">Its entries are not listed. Domovoi does not guess what the file holds.</div>
+                        </div>
+                        <span style="font-size: 11.5px; color: var(--danger-dim);">{{ r.srcLabel }}</span>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ r.isNote }}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; align-items: center; gap: 11px; padding: 11px 14px; border-top: 1px solid var(--border);">
+                        <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ r.text }}</span>
+                        <span style="flex: 1;"></span>
+                        <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ r.files }}</span>
+                      </div>
+                    </sc-if>
+                  </sc-for>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+
+          <sc-if value="{{ hasToolsFoot }}" hint-placeholder-val="{{ false }}">
+            <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 11px; padding: 12px 15px; border: 1px dashed var(--border); border-radius: var(--radius);">
+              <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--faint);"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">codex</span>
+              <span style="font-size: 11.5px; color: var(--muted-foreground);">Tool servers</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong);">none passed</span>
+              <span style="font-size: 11.5px; color: var(--muted-foreground);">This agent starts with no tool servers passed.</span>
+              <span style="flex: 1;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ toolsFootAbsent }}</span>
+            </div>
+          </sc-if>
+
+          <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+            <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 13px; font-weight: 600;">Tools on your other machines</span>
+              <span style="font-size: 11px; color: var(--muted-foreground);">Each daemon reads its own files.</span>
+            </div>
+            <sc-for list="{{ toolInventories }}" as="m" hint-placeholder-count="3">
+              <div style="{{ m.rowStyle }}">
+                <span style="{{ m.dot }}"></span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); width: 160px; flex: 0 0 160px;">{{ m.name }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); width: 190px; flex: 0 0 190px;">{{ m.platform }}</span>
+                <span style="{{ m.stateStyle }}">{{ m.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isToolGate }}" hint-placeholder-val="{{ false }}">
+        <div style="width: 100%; max-width: 1200px; display: flex; flex-direction: column; gap: 20px; padding: 32px 0 40px;">
+          <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">A tool call at the gate</div>
+            <div style="font-size: 13px; line-height: 1.65; color: var(--muted-foreground);">The card names the server and the file that declared it. A phone stacks the facts and keeps every one.</div>
+          </div>
+          <div style="flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 28px; align-items: start;">
+            <div style="display: flex; flex-direction: column; gap: 8px; min-width: 0;">
+              <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">DESKTOP, THREAD LANE</span>
+              <div style="max-width: 760px; border: 1.5px solid var(--warning); border-radius: 16px; background: var(--warn-bg); overflow: hidden; box-shadow: 0 18px 44px color-mix(in oklab, var(--warning) 14%, transparent);">
+                <div style="display: flex; align-items: center; gap: 11px; padding: 14px 16px 12px;">
+                  <span style="width: 9px; height: 9px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+                  <span style="font-size: 15px; font-weight: 600; letter-spacing: -.01em; color: var(--warn-fg);">Waiting on your decision</span>
+                  <span style="flex: 1;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">step 3 of 4 · claude-code · ask</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; padding: 0 16px 11px; color: var(--warn-fg);">
+                  <span style="display: inline-flex; color: var(--warn-dim);">{{ iServer }}</span>
+                  <div style="font-size: 12.5px; color: var(--warn-fg);">Tool from server <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">postgres-dev</span> (<span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px;">.mcp.json</span>)</div>
+                </div>
+                <div style="padding: 0 16px 13px;">
+                  <div style="display: flex; flex-direction: column; gap: 6px; padding: 13px 15px; border-radius: calc(var(--radius) - 2px); background: var(--warn-bg-deep); font-family: 'JetBrains Mono', monospace;">
+                    <span style="font-size: 13.5px; color: var(--warn-fg);">postgres-dev.run_query</span>
+                    <span style="font-size: 11.5px; line-height: 1.6; color: var(--warn-dim); overflow-wrap: anywhere;">sql: DELETE FROM webhook_replay WHERE received_at &lt; now() - interval '30 days'</span>
+                  </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; padding: 0 16px 14px; flex-wrap: wrap;">
+                  <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--warning); color: var(--warning-foreground); font-size: 13px; font-weight: 600; cursor: pointer;">Allow once</div>
+                  <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12px; cursor: pointer;">Always for postgres-dev.run_query here</div>
+                  <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12px; cursor: pointer;">Deny</div>
+                </div>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--warn-border); border-top: 1px solid var(--warn-border);">
+                  <sc-for list="{{ gateFacts }}" as="af" hint-placeholder-count="6">
+                    <div style="padding: 10px 14px; background: var(--warn-bg);">
+                      <div style="font-size: 10.5px; letter-spacing: .13em; color: var(--warn-dim);">{{ af.k }}</div>
+                      <div style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-fg); margin-top: 4px; line-height: 1.4; overflow-wrap: anywhere;">{{ af.v }}</div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">PHONE, FACTS STACKED</span>
+              <div style="border: 1.5px solid var(--warning); border-radius: 16px; background: var(--warn-bg); overflow: hidden;">
+                <div style="display: flex; flex-direction: column; gap: 5px; padding: 14px 14px 10px;">
+                  <div style="display: flex; align-items: center; gap: 9px;">
+                    <span style="width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+                    <span style="font-size: 15px; font-weight: 600; color: var(--warn-fg);">Waiting on your decision</span>
+                  </div>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">step 3 of 4 · claude-code · ask</span>
+                </div>
+                <div style="padding: 0 14px 10px; font-size: 13px; line-height: 1.5; color: var(--warn-fg);">Tool from server <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">postgres-dev</span> (<span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">.mcp.json</span>)</div>
+                <div style="padding: 0 14px 12px;">
+                  <div style="display: flex; flex-direction: column; gap: 6px; padding: 11px 12px; border-radius: calc(var(--radius) - 2px); background: var(--warn-bg-deep); font-family: 'JetBrains Mono', monospace;">
+                    <span style="font-size: 12.5px; color: var(--warn-fg);">postgres-dev.run_query</span>
+                    <span style="font-size: 11px; line-height: 1.6; color: var(--warn-dim); overflow-wrap: anywhere;">sql: DELETE FROM webhook_replay WHERE received_at &lt; now() - interval '30 days'</span>
+                  </div>
+                </div>
+                <div style="border-top: 1px solid var(--warn-border);">
+                  <sc-for list="{{ gateFactsStacked }}" as="af" hint-placeholder-count="6">
+                    <div style="{{ af.rowStyle }}">
+                      <span style="font-size: 10.5px; letter-spacing: .13em; color: var(--warn-dim); width: 104px; flex: 0 0 104px; padding-top: 1px;">{{ af.k }}</span>
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--warn-fg); flex: 1; min-width: 0; line-height: 1.45; overflow-wrap: anywhere;">{{ af.v }}</span>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 14px; border-top: 1px solid var(--warn-border);">
+                  <div style="min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: calc(var(--radius) - 2px); background: var(--warning); color: var(--warning-foreground); font-size: 14px; font-weight: 600;">Allow once</div>
+                  <div style="min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 13px;">Always for postgres-dev.run_query here</div>
+                  <div style="min-height: 44px; display: flex; align-items: center; justify-content: center; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 13px;">Deny</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
     </div>
   </div>
 </div>
 
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1620,&quot;height&quot;:1120},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;mac&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;,&quot;linux&quot;],&quot;tsType&quot;:&quot;\&quot;mac\&quot; | \&quot;windows\&quot; | \&quot;linux\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;}}">
 class Component extends DCLogic {
   state = {
     screen: "inventory",
@@ -388,6 +643,206 @@ class Component extends DCLogic {
     return () => this.setState({ screen: screen });
   }
 
+  componentDidMount() {
+    if (!window.lucide) this._lt = setInterval(() => { if (window.lucide) { clearInterval(this._lt); this.forceUpdate(); } }, 150);
+  }
+
+  componentWillUnmount() { clearInterval(this._lt); }
+
+  icon(name, size) {
+    const L = window.lucide;
+    const node = L && L.icons && L.icons[name];
+    const kids = node ? (node[0] === "svg" ? node[2] : node) : [];
+    return React.createElement("svg", {
+      width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5,
+      strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", style: { display: "block", flex: "0 0 auto" }
+    }, (kids || []).map((c, i) => React.createElement(c[0], Object.assign({ key: i }, c[1]))));
+  }
+
+  machineFor(plat) {
+    return ({ windows: "win-desk", linux: "thinkpad-x1" })[plat] || "mac-mini-m4";
+  }
+
+  maskStyle(name, size) {
+    return "display: block; width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; background: currentColor; color: var(--muted-foreground); -webkit-mask: url(assets/harness/" +
+      name + ".svg) center / contain no-repeat; mask: url(assets/harness/" + name + ".svg) center / contain no-repeat;";
+  }
+
+  toolsVals(sc, plat) {
+    const mode = sc === "toolsNone" ? "none" : sc === "toolsUnread" ? "unread" : sc === "toolsNonePassed" ? "nonepassed" : "normal";
+    const byFile = sc === "toolsFile";
+    const win = plat === "windows" && mode !== "none";
+    const H = p => win ? "%USERPROFILE%\\" + p.replace(/\//g, "\\") : "~/" + p;
+    const machine = mode === "none" ? "hetzner-cx42" : this.machineFor(plat);
+    const SRC = { repo: "repository file", project: "project settings", local: "local settings", user: "user settings" };
+    const inRepo = s => s === "repo" || s === "project";
+    const KIND = { server: ["Tool server", "Server"], hook: ["Hook", "Webhook"], rule: ["Rule", "ShieldCheck"] };
+    const stopHook = ({
+      mac: "afplay /System/Library/Sounds/Glass.aiff",
+      linux: "paplay /usr/share/sounds/freedesktop/stereo/complete.oga",
+      windows: "powershell -c [console]::beep(880,200)"
+    })[plat] || "afplay /System/Library/Sounds/Glass.aiff";
+
+    const files = [
+      { id: "mcp", path: ".mcp.json", src: "repo", agent: "claude-code" },
+      { id: "proj", path: ".claude/settings.json", src: "project", agent: "claude-code" },
+      { id: "cproj", path: ".codex/config.toml", src: "project", agent: "codex", state: "absent" },
+      { id: "local", path: ".claude/settings.local.json", src: "local", agent: "claude-code" },
+      { id: "ujson", path: H(".claude.json"), src: "user", agent: "claude-code" },
+      { id: "uset", path: H(".claude/settings.json"), src: "user", agent: "claude-code" },
+      { id: "codex", path: H(".codex/config.toml"), src: "user", agent: "codex" }
+    ].map(f => {
+      let state = f.state || "read";
+      if (mode === "unread" && f.id === "local") state = "error";
+      if (mode === "none") state = f.id === "ujson" ? "empty" : "absent";
+      return Object.assign({}, f, { state: state });
+    });
+    const fileOf = id => files.find(f => f.id === id);
+
+    const ALL = [
+      { f: "mcp", kind: "server", name: "postgres-dev", detail: "stdio · npx -y @acme/pg-mcp · environment values not read", starts: true },
+      { f: "mcp", kind: "server", name: "linear", detail: "http · https://mcp.linear.app/mcp", starts: true },
+      { f: "proj", kind: "hook", name: "SessionStart", detail: "./scripts/dev-bootstrap.sh", starts: true },
+      { f: "proj", kind: "hook", name: "PreToolUse · Bash", detail: "./scripts/guard-prod.sh" },
+      { f: "proj", kind: "rule", name: "allow", detail: "Bash(pnpm test:*)" },
+      { f: "proj", kind: "rule", name: "deny", detail: "Read(./.env*)" },
+      { f: "local", kind: "rule", name: "allow", detail: "Bash(psql:*)" },
+      { f: "ujson", kind: "server", name: "github", detail: "stdio · gh-mcp serve · environment values not read" },
+      { f: "uset", kind: "hook", name: "Stop", detail: stopHook },
+      { f: "uset", kind: "rule", name: "allow", detail: "WebFetch(domain:docs.stripe.com)" },
+      { f: "codex", kind: "rule", name: "approval_policy", detail: "on-request" },
+      { f: "codex", kind: "rule", name: "sandbox_mode", detail: "workspace-write" }
+    ];
+    const entries = ALL.filter(e => fileOf(e.f).state === "read");
+    const agents = mode === "none" ? ["claude-code"] : mode === "nonepassed" ? ["codex"] : ["claude-code", "codex"];
+
+    const entryRow = (e, showSrc) => {
+      const f = fileOf(e.f);
+      return {
+        isEntry: true, isError: false, isNote: false,
+        icon: this.icon(KIND[e.kind][1], 16), kind: KIND[e.kind][0], name: e.name, detail: e.detail,
+        starts: !!e.starts, showSrc: showSrc, srcLabel: SRC[f.src], file: f.path
+      };
+    };
+    const errorRow = f => ({
+      isEntry: false, isError: true, isNote: false, file: f.path, srcLabel: SRC[f.src],
+      reason: "EACCES · owned by root, mode 0600"
+    });
+    const noteRow = (text, fl) => ({ isEntry: false, isError: false, isNote: true, text: text, files: fl });
+
+    let panels = [];
+    if (!byFile) {
+      panels = agents.map(a => {
+        const af = files.filter(f => f.agent === a);
+        const ae = entries.filter(e => fileOf(e.f).agent === a);
+        const read = af.filter(f => f.state === "read" || f.state === "empty").length;
+        const errs = af.filter(f => f.state === "error").length;
+        const grp = (label, meta, pred) => {
+          const gf = af.filter(f => pred(f.src));
+          const rows = ae.filter(e => pred(fileOf(e.f).src)).map(e => entryRow(e, true))
+            .concat(gf.filter(f => f.state === "error").map(errorRow));
+          const absent = gf.filter(f => f.state === "absent").map(f => f.path);
+          if (!rows.length) rows.push(noteRow("Nothing found.", absent.length ? "not present: " + absent.join(", ") : ""));
+          return { label: label, meta: meta, rows: rows };
+        };
+        const isEmpty = mode === "none";
+        return {
+          isAgent: true, isFile: false, agent: a, markStyle: this.maskStyle(a, 18),
+          hasLead: false, lead: "", leadMeta: "",
+          meta: (errs ? read + " of " + (read + errs) : read) + " files read · " + ae.length + " entries",
+          hasNonePassed: a === "codex",
+          isEmpty: isEmpty,
+          checked: isEmpty ? af.map(f => ({ path: f.path, srcLabel: SRC[f.src], state: f.state === "empty" ? "read, nothing declared" : "not present" })) : [],
+          groups: isEmpty ? [] : [
+            grp("FROM THIS REPOSITORY", "Project settings and repository files. They can run when a session starts.", inRepo),
+            grp("THIS MACHINE ONLY", "User and local settings, not committed.", s => !inRepo(s))
+          ]
+        };
+      });
+    } else {
+      const shown = files.filter(f => agents.indexOf(f.agent) !== -1 && (f.state === "read" || f.state === "error"));
+      shown.sort((x, y) => (inRepo(y.src) ? 1 : 0) - (inRepo(x.src) ? 1 : 0));
+      let seenRepo = false, seenMachine = false;
+      panels = shown.map(f => {
+        const r = inRepo(f.src);
+        const lead = r ? (!seenRepo ? "FROM THIS REPOSITORY" : "") : (!seenMachine ? "THIS MACHINE ONLY" : "");
+        if (r) seenRepo = true; else seenMachine = true;
+        const fe = entries.filter(e => e.f === f.id);
+        return {
+          isAgent: false, isFile: true, agent: f.agent, path: f.path, srcLabel: SRC[f.src],
+          fileIcon: this.icon("FileText", 16), chipMarkStyle: this.maskStyle(f.agent, 11),
+          hasLead: !!lead, lead: lead, leadMeta: r ? "These can run when a session starts." : "User and local settings, not committed.",
+          meta: f.state === "error" ? "not read" : fe.length + " entries",
+          hasNonePassed: false, isEmpty: false, checked: [],
+          groups: [{
+            label: f.state === "error" ? "UNREAD" : "DECLARES",
+            meta: f.state === "error" ? "" : [["server", "tool servers"], ["hook", "hooks"], ["rule", "rules"]]
+              .map(k => fe.filter(e => e.kind === k[0]).length + " " + k[1]).join(" · "),
+            rows: f.state === "error" ? [errorRow(f)] : fe.map(e => entryRow(e, false))
+          }]
+        };
+      });
+    }
+
+    const runs = mode === "none" ? [] : entries.filter(e => e.starts);
+    const shownFiles = files.filter(f => agents.indexOf(f.agent) !== -1);
+    const readN = shownFiles.filter(f => f.state === "read" || f.state === "empty").length;
+    const absentAll = shownFiles.filter(f => f.state === "absent").map(f => f.path);
+
+    const inv = (mode === "none" ? [
+      { name: "mac-mini-m4", platform: "macos · arm64 · 0.9.4", state: "read 14:02, 12 entries, 3 can run when a session starts", k: "success" }
+    ] : [
+      { name: "hetzner-cx42", platform: "linux · x64 · 0.9.4", state: "read 14:01, nothing found in queue-worker", k: "success" }
+    ]).concat([
+      { name: "wsl-ubuntu-24", platform: "linux · x64 · 0.9.4", state: "unreachable, last read 2d old", k: "destructive" },
+      { name: "iPhone 16 Pro", platform: "not a daemon", state: "unknown, phones do not hold tools", k: "faint" }
+    ]);
+
+    const gateFacts = [
+      { k: "MACHINE", v: this.machineFor(plat) + " · loopback" },
+      { k: "SERVER", v: "postgres-dev · stdio" },
+      { k: "SOURCE", v: "repository file · .mcp.json" },
+      { k: "STARTED WITH", v: "npx -y @acme/pg-mcp" },
+      { k: "AFFECTS", v: "dev database acme_dev" },
+      { k: "ENVIRONMENT", v: "values not read" }
+    ];
+
+    return {
+      isTools: ["toolsAgent", "toolsFile", "toolsNone", "toolsUnread", "toolsNonePassed"].indexOf(sc) !== -1,
+      isToolGate: sc === "toolGate",
+      goToolsAgent: this.go("toolsAgent"),
+      goToolsFile: this.go("toolsFile"),
+      segAgent: "padding: 5px 11px; border-radius: calc(var(--radius) - 4px); font-size: 12px; cursor: pointer; color: var(--" +
+        (!byFile ? "foreground" : "muted-foreground") + "); background: " + (!byFile ? "var(--accent)" : "transparent") + ";",
+      segFile: "padding: 5px 11px; border-radius: calc(var(--radius) - 4px); font-size: 12px; cursor: pointer; color: var(--" +
+        (byFile ? "foreground" : "muted-foreground") + "); background: " + (byFile ? "var(--accent)" : "transparent") + ";",
+      iEye: this.icon("Eye", 16), iRepo: this.icon("FolderGit2", 16), iEmpty: this.icon("SearchX", 24), iServer: this.icon("Server", 16),
+      toolsTitle: "Tools on " + machine,
+      toolsWhere: mode === "none" ? "queue-worker · ~/srv/queue-worker" : "acme-api · " + (win ? "C:\\Users\\dana\\src\\acme-api" : "~/src/acme-api"),
+      toolsReadMeta: "read 14:02:31 · " + readN + " files" + (mode === "unread" ? " · 1 unreadable" : ""),
+      hasRepoRuns: runs.length > 0,
+      noRepoRuns: runs.length === 0,
+      repoRunsTitle: runs.length + " entries from this repository can run when a session starts",
+      repoRunsMeta: "acme-api · all agents",
+      repoRuns: runs.map(e => ({ icon: this.icon(KIND[e.kind][1], 16), kind: KIND[e.kind][0], name: e.name, detail: e.detail, file: fileOf(e.f).path })),
+      toolPanels: panels,
+      hasToolsFoot: byFile,
+      toolsFootAbsent: absentAll.length ? "not present: " + absentAll.join(", ") : "",
+      toolInventories: inv.map((m, i) => ({
+        name: m.name, platform: m.platform, state: m.state,
+        dot: this.dot("var(--" + m.k + ")", 6),
+        stateStyle: "font-size: 11.5px; color: var(--" + (m.k === "success" ? "muted-foreground" : m.k) + ");",
+        rowStyle: "display: flex; align-items: center; gap: 11px; padding: 10px 14px;" + (i ? " border-top: 1px solid var(--border);" : "") +
+          (m.k === "faint" ? " opacity: .6;" : "")
+      })),
+      gateFacts: gateFacts,
+      gateFactsStacked: gateFacts.map((f, i) => ({
+        k: f.k, v: f.v,
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 9px 14px;" + (i ? " border-top: 1px solid var(--warn-border);" : "")
+      }))
+    };
+  }
+
   renderVals() {
     const st = this.state;
     const sc = st.screen;
@@ -398,8 +853,18 @@ class Component extends DCLogic {
       { id: "install", num: "2", label: "Install from a path", note: "A path is the only source in the protocol. No bundle, no registry, no installer command, so nothing executes to install." },
       { id: "detail", num: "3", label: "Skill and review", note: "Signature and trust are separate. Enablement is a per-project review pinned to a digest and a manifest." },
       { id: "changed", num: "4", label: "Review changed", note: "Editing a skill invalidates the review. The turn refusal reason is review-changed, and it comes from the daemon." },
-      { id: "turn", num: "5", label: "This turn's skills", note: "Eight at most, and every omission carries one of four reasons: not-enabled, unavailable, review-changed, policy." }
+      { id: "turn", num: "5", label: "This turn's skills", note: "Eight at most, and every omission carries one of four reasons: not-enabled, unavailable, review-changed, policy." },
+      { id: "toolsAgent", num: "6", label: "Tools by agent", note: "Read and report only. Every entry names its source, and repository entries lead because they can run when a session starts." },
+      { id: "toolsFile", num: "7", label: "Tools by source file", note: "The same entries, one panel per file read. Repository files come first, before anyone starts a session." },
+      { id: "toolGate", num: "8", label: "Tool at the gate", note: "The gate names the server and its source file. A phone stacks the facts but drops none of them." },
+      { id: "toolsNone", num: "9", label: "None found", note: "Nothing found is a result, so the panel lists every file it read to reach it." },
+      { id: "toolsUnread", num: "10", label: "Could not read", note: "An unreadable file is named with its reason. Its entries are not listed or guessed." },
+      { id: "toolsNonePassed", num: "11", label: "None passed", note: "This agent starts with no tool servers passed, so it says none passed, not none found." }
     ];
+    const plat = this.props.platform ?? "mac";
+    const isToolsSc = ["toolsAgent", "toolsFile", "toolsNone", "toolsUnread", "toolsNonePassed", "toolGate"].indexOf(sc) !== -1;
+    const tabStyle = on => "padding: 4px 10px; border-radius: calc(var(--radius) - 3px); font-size: 12px; cursor: pointer; color: var(--" +
+      (on ? "foreground" : "muted-foreground") + "); background: " + (on ? "var(--accent)" : "transparent") + ";";
 
     const turnList = [
       { name: "pr-triage", digest: "sha256:4b91…e7c · manifest v1" },
@@ -430,7 +895,7 @@ class Component extends DCLogic {
       const tr = trustChip(s.trust);
       const blocked = s.trust.indexOf("blocked") === 0;
       return {
-        name: s.name, desc: s.desc, source: s.source,
+        name: s.name, desc: s.desc, source: s.source, sourceMark: ({ claude: "claude-code", codex: "codex", kilo: "kilo" })[s.source] || "", hasSourceMark: !!({ claude: 1, codex: 1, kilo: 1 })[s.source],
         caps: s.caps.join(" · "),
         trust: tr.label,
         trustStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--" +
@@ -470,8 +935,12 @@ class Component extends DCLogic {
       })),
       stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
 
-      chromeLabel: sc === "install" ? "Install a skill" : sc === "detail" ? "pr-triage" : sc === "changed" ? "sql-explain" : sc === "turn" ? "Turn selection" : "Skills",
-      chromePill: sc === "changed" ? "review-changed" : "mac-mini-m4 · 9 skills",
+      ...this.toolsVals(sc, plat),
+      tabSkills: tabStyle(!isToolsSc),
+      tabTools: tabStyle(isToolsSc),
+      chromeLabel: sc === "install" ? "Install a skill" : sc === "detail" ? "pr-triage" : sc === "changed" ? "sql-explain" : sc === "turn" ? "Turn selection" :
+        sc === "toolGate" ? "postgres-dev.run_query" : sc === "toolsFile" ? "By source file" : isToolsSc ? "By agent" : "Skills",
+      chromePill: sc === "changed" ? "review-changed" : sc === "toolsNone" ? "hetzner-cx42 · read only" : isToolsSc ? this.machineFor(plat) + " · read only" : "mac-mini-m4 · 9 skills",
       chromePillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--" +
         (sc === "changed" ? "warn-bg" : "accent") + "); color: var(--" + (sc === "changed" ? "warn-fg" : "muted-foreground") + ");",
 
