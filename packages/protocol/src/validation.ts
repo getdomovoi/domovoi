@@ -33,6 +33,21 @@ function declareWireBound<T extends { _zod: { def: object } }>(check: T, bound: 
   return check
 }
 
+export type WireSemantics = { rule: string } & Record<string, string | number | boolean | readonly (string | number)[]>
+
+// A `.refine`, `.superRefine` or custom `.check` declares what it enforces for
+// the wire record: a rule name and every value its function captures. Wrap the
+// schema right after adding the check. Validation does not read this.
+export function wireRule<T extends { _zod: { def: { checks?: readonly { _zod: { def: object } }[] } } }>(
+  schema: T,
+  semantics: WireSemantics,
+): T {
+  const check = schema._zod.def.checks?.at(-1)
+  if (!check) throw new Error(`wireRule(${semantics.rule}) found no check to describe`)
+  Object.assign(check._zod.def, { wire: semantics })
+  return schema
+}
+
 // Zod 4.4 admitted valid minute-precision timestamps. Keep that existing grammar
 // explicit in 4.5: persisted state and hashed transfer manifests must still parse
 // without rewriting their bytes. Both alternatives validate the calendar and

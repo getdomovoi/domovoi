@@ -34,9 +34,15 @@ At a protocol release, commit its record from the release commit:
 `node scripts/protocol-wire.mjs record`. To record an earlier release, build that
 commit in another checkout and pass `--package <that checkout>`.
 
+Descriptions, titles and examples are left out of the digest: they document a
+schema and do not change what parses.
+
 Known limit: a custom check's function source is part of the digest, but a value a
 check captures in a closure is not, unless the check declares it the way
-`utf16MaxLength` and `utf16Length` do.
+`utf16MaxLength` and `utf16Length` do, or through `wireRule(schema, { rule, ...values })`.
+The digest can refuse any custom check that declares nothing (fail closed), but
+the wire record does not require that yet: whether to annotate every custom check
+or to keep this stated gap is still to be decided.
 
 For example, with a daemon on `0.6.0`:
 

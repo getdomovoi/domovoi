@@ -61,8 +61,14 @@ function isSchema(value) {
 // JSON Schema leaves out custom checks, so a tightened `.check`, `.refine` or
 // `.superRefine` would not move it. Every check in the schema tree is recorded
 // too: its kind and plain parameters, the source of a custom check's function,
-// and the `wire` bound a helper such as utf16MaxLength declares.
-export function checksOf(schema) {
+// and the `wire` semantics a helper such as utf16MaxLength or wireRule declares.
+//
+// A bound a custom check captures in a closure is invisible here. With
+// `requireSemantics`, a custom check that declares no `wire` semantics is
+// refused rather than recorded as if it were understood (fail closed). The
+// wire record does not require it yet: whether to fail closed, and annotate
+// every custom check, or to state the gap, is pending an owner decision.
+export function checksOf(schema, { requireSemantics = false } = {}) {
   const found = []
   const seen = new Set()
   const plain = (value) => value === null || ["string", "number", "boolean"].includes(typeof value)
@@ -77,12 +83,18 @@ export function checksOf(schema) {
       const def = value._zod.def
       for (const [index, check] of (def.checks ?? []).entries()) {
         const checkDef = check?._zod?.def ?? {}
-        const entry = { at: `${path}.checks[${index}]` }
+        const at = `${path}.checks[${index}]`
+        if (requireSemantics && checkDef.check === "custom" && checkDef.wire === undefined) {
+          throw new Error(`The custom check at ${at} declares no wire semantics. Wrap its schema with wireRule(schema, { rule, ...captured values }) from @getdomovoi/protocol.`)
+        }
+        const entry = { at }
         for (const [key, item] of Object.entries(checkDef)) {
           if (plain(item)) entry[key] = item
           else if (key === "wire") entry.wire = item
           else if (typeof item === "function") entry[key] = String(item)
         }
+        // A superRefine keeps its function on the check itself, not its def.
+        if (typeof check?._zod?.check === "function") entry.run = String(check._zod.check)
         found.push(entry)
       }
       for (const [key, item] of Object.entries(def)) {
@@ -97,11 +109,27 @@ export function checksOf(schema) {
   return found
 }
 
-function fingerprint(z, schema) {
-  const document = z.toJSONSchema(schema, { unrepresentable: "any", io: "input" })
-  const text = canonical({ jsonSchema: document, checks: checksOf(schema) })
+// Descriptions, titles and examples document a schema; they do not change what
+// parses, so they are not a wire change.
+const documentationKeys = new Set(["description", "title", "examples", "$comment"])
+
+function withoutDocumentation(value) {
+  if (Array.isArray(value)) return value.map(withoutDocumentation)
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !documentationKeys.has(key))
+      .map(([key, item]) => [key, withoutDocumentation(item)]))
+  }
+  return value
+}
+
+export function fingerprintOf(z, schema, options = {}) {
+  const document = withoutDocumentation(z.toJSONSchema(schema, { unrepresentable: "any", io: "input" }))
+  const text = canonical({ jsonSchema: document, checks: checksOf(schema, options) })
   return `sha256:${createHash("sha256").update(text).digest("hex")}`
 }
+
+const fingerprint = (z, schema) => fingerprintOf(z, schema)
 
 export async function wireOf(packageRoot = root) {
   const protocolPackage = join(packageRoot, "packages/protocol/package.json")

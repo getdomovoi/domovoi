@@ -6,7 +6,7 @@ import test from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import {
-  checksOf, errorDataSchemas, notificationSchemas, releaseBaseline, wireChangeRefusal, wireOf, wireReleasesPath,
+  checksOf, errorDataSchemas, fingerprintOf, notificationSchemas, releaseBaseline, wireChangeRefusal, wireOf, wireReleasesPath,
 } from "./protocol-wire.mjs"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
@@ -54,6 +54,42 @@ test("records a tightened custom check that JSON Schema cannot see", () => {
     checksOf(z.string().refine((value) => value.startsWith("a"))),
     checksOf(z.string().refine((value) => value.startsWith("b"))),
   )
+})
+
+// A custom check's function can capture a bound the digest cannot see, so an
+// unannotated one is refused rather than recorded as if it were understood.
+const closureBound = {
+  check: (maximum) => z.string().check(z.check(({ value, issues }) => {
+    if (value.length > maximum) issues.push({ code: "custom", input: value, message: "too long" })
+  })),
+  superRefine: (maximum) => z.string().superRefine((value, context) => {
+    if (value.length > maximum) context.addIssue({ code: "custom", message: "too long" })
+  }),
+  refine: (maximum) => z.string().refine((value) => value.length <= maximum),
+}
+
+const strict = { requireSemantics: true }
+
+for (const [kind, build] of Object.entries(closureBound)) {
+  test(`cannot see a closure bound of an unannotated custom ${kind}`, () => {
+    assert.equal(fingerprintOf(z, build(8)), fingerprintOf(z, build(4)))
+  })
+
+  test(`refuses an unannotated custom ${kind} when semantics are required`, () => {
+    assert.throws(() => fingerprintOf(z, build(8), strict), /declares no wire semantics/)
+  })
+
+  test(`records the declared bound of an annotated custom ${kind}`, () => {
+    const annotated = (maximum) => protocol.wireRule(build(maximum), { rule: `closure-${kind}`, maximum })
+    assert.equal(fingerprintOf(z, annotated(8), strict), fingerprintOf(z, annotated(8), strict))
+    assert.notEqual(fingerprintOf(z, annotated(8), strict), fingerprintOf(z, annotated(4), strict))
+  })
+}
+
+test("leaves documentation out of the digest", () => {
+  const plain = z.object({ id: z.string() })
+  const described = z.object({ id: z.string().describe("The session id") }).describe("A session reference")
+  assert.equal(fingerprintOf(z, plain), fingerprintOf(z, described))
 })
 
 test("records the wire only: RPC params and results, notifications and error data", async () => {
