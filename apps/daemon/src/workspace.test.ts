@@ -86,7 +86,10 @@ describe("GitWorkspaceService", () => {
 
   describe("a file whose name is only whitespace", () => {
     // git() trims its output, which strips such a name from a NUL-delimited
-    // list when it is the first or last entry.
+    // list when it is the first or last entry. The name is a no-break space:
+    // whitespace to String.prototype.trim, and a name every system can
+    // create. Windows cannot create a name of plain spaces, since it drops
+    // trailing spaces from a name.
     async function sessionWithWhitespaceFile(prefix: string) {
       const scratch = await mkdtemp(join(tmpdir(), prefix))
       scratchDirectories.push(scratch)
@@ -100,22 +103,22 @@ describe("GitWorkspaceService", () => {
       await execute("git", ["-C", repositoryPath, "commit", "-m", "initial"])
       const service = new GitWorkspaceService(join(scratch, "worktrees"))
       const workspace = await service.createSessionWorkspace(repositoryPath, `session-${prefix.replace(/\W/g, "")}`)
-      await writeFile(join(workspace.path, " "), "space\n")
+      await writeFile(join(workspace.path, "\u00a0"), "space\n")
       return { service, workspace }
     }
 
     it("is checkpointed when it is the only change", async () => {
       const { service, workspace } = await sessionWithWhitespaceFile("domovoi-checkpoint-space-")
       const checkpoint = await service.checkpoint(workspace.path, "space")
-      expect(checkpoint.changedFiles).toEqual([" "])
+      expect(checkpoint.changedFiles).toEqual(["\u00a0"])
       const listed = (await execute("git", ["-C", workspace.path, "show", "--name-only", "-z", "--format=", checkpoint.commit])).stdout
-      expect(listed.split("\0").filter(Boolean)).toEqual([" "])
+      expect(listed.split("\0").filter(Boolean)).toEqual(["\u00a0"])
     })
 
     it("is named in the session's evidence", async () => {
       const { service, workspace } = await sessionWithWhitespaceFile("domovoi-evidence-space-")
       const evidence = await service.evidence(workspace.path)
-      expect(evidence.files.map(({ path }) => path)).toContain(" ")
+      expect(evidence.files.map(({ path }) => path)).toContain("\u00a0")
     })
   })
 
