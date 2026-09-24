@@ -50,7 +50,10 @@ async function worktreeWithWork() {
   await execute("git", ["-C", path, "add", "staged.txt"])
   await writeFile(join(path, "staged.txt"), "person staged, then edited\n")
   await writeFile(join(path, "new.txt"), "untracked\n")
-  await writeFile(join(path, " "), "whitespace name\n")
+  // A space then a no-break space: whitespace to String.prototype.trim, first
+  // in git's name order, and a name every system can create. Windows cannot
+  // create a name of plain spaces, since it drops trailing spaces from a name.
+  await writeFile(join(path, " \u00a0"), "whitespace name\n")
   await writeFile(join(path, "build", "out.js"), "ignored\n")
   return { service, path, repositoryPath }
 }
@@ -63,7 +66,7 @@ async function observe(path: string) {
     index: await readFile(indexPath),
     status: await gitOut(path, "status", "--porcelain=v1", "-z", "--untracked-files=all"),
     stagedDiff: await gitOut(path, "diff", "--cached"),
-    files: Object.fromEntries(await Promise.all(["tracked.txt", "staged.txt", "new.txt", " "].map(
+    files: Object.fromEntries(await Promise.all(["tracked.txt", "staged.txt", "new.txt", " \u00a0"].map(
       async (name) => [name, await readFile(join(path, name), "utf8")] as const,
     ))),
     gitDirectory: (await readdir((await gitOut(path, "rev-parse", "--absolute-git-dir")).trim())).sort(),
@@ -83,24 +86,24 @@ describe("GitWorkspaceService.snapshot", () => {
     expect((await gitOut(path, "rev-parse", `refs/domovoi/checkpoints/${snapshot.commit}^{commit}`)).trim()).toBe(snapshot.commit)
     expect((await gitOut(path, "rev-parse", `${snapshot.commit}^`)).trim()).toBe(before.head)
     expect(await gitOut(path, "log", "-1", "--format=%s", snapshot.commit)).toBe("chore(domovoi): checkpoint before approved command\n")
-    expect([...snapshot.changedFiles].sort()).toEqual([" ", "doomed.txt", "new.txt", "staged.txt", "tracked.txt"])
+    expect([...snapshot.changedFiles].sort()).toEqual([" \u00a0", "doomed.txt", "new.txt", "staged.txt", "tracked.txt"])
     const files = (await gitOut(path, "ls-tree", "-r", "-z", "--name-only", snapshot.commit)).split("\0").filter(Boolean).sort()
-    expect(files).toEqual([" ", ".gitignore", "build/keep.js", "new.txt", "staged.txt", "tracked.txt"])
+    expect(files).toEqual([" \u00a0", ".gitignore", "build/keep.js", "new.txt", "staged.txt", "tracked.txt"])
     expect(await gitOut(path, "show", `${snapshot.commit}:staged.txt`)).toBe("person staged, then edited\n")
-    expect(await gitOut(path, "show", `${snapshot.commit}: `)).toBe("whitespace name\n")
+    expect(await gitOut(path, "show", `${snapshot.commit}: \u00a0`)).toBe("whitespace name\n")
   })
 
   it("restores the worktree to what the snapshot recorded", async () => {
     const { service, path } = await worktreeWithWork()
     const snapshot = await service.snapshot(path, "before approved command")
     await writeFile(join(path, "tracked.txt"), "the command broke this\n")
-    await rm(join(path, " "))
+    await rm(join(path, " \u00a0"))
     await writeFile(join(path, "new.txt"), "overwritten\n")
 
     await service.restore(path, snapshot.commit)
 
     expect(await readFile(join(path, "tracked.txt"), "utf8")).toBe("agent edit\n")
-    expect(await readFile(join(path, " "), "utf8")).toBe("whitespace name\n")
+    expect(await readFile(join(path, " \u00a0"), "utf8")).toBe("whitespace name\n")
     expect(await readFile(join(path, "new.txt"), "utf8")).toBe("untracked\n")
     expect(await readFile(join(path, "staged.txt"), "utf8")).toBe("person staged, then edited\n")
     await expect(readFile(join(path, "doomed.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
@@ -171,14 +174,14 @@ describe("GitWorkspaceService.snapshot", () => {
     const path = join(scratch, "project")
     await execute("git", ["init", "--initial-branch=main", path])
     await writeFile(join(path, "first.txt"), "first\n")
-    await writeFile(join(path, " "), "whitespace name\n")
+    await writeFile(join(path, " \u00a0"), "whitespace name\n")
 
     const snapshot = await new GitWorkspaceService(join(scratch, "worktrees")).snapshot(path, "before approved command")
 
-    expect([...snapshot.changedFiles].sort()).toEqual([" ", "first.txt"])
+    expect([...snapshot.changedFiles].sort()).toEqual([" \u00a0", "first.txt"])
     expect((await gitOut(path, "rev-list", "--parents", "-n", "1", snapshot.commit)).trim()).toBe(snapshot.commit)
     await expect(gitOut(path, "rev-parse", "--verify", "-q", "HEAD")).rejects.toThrow()
-    expect(await gitOut(path, "status", "--porcelain")).toBe("?? \" \"\n?? first.txt\n")
+    expect(await gitOut(path, "status", "--porcelain")).toBe("?? \" \\302\\240\"\n?? first.txt\n")
   })
 
   // Ruled 2026-09-23 (A): a checkpoint records a submodule by its commit, not
