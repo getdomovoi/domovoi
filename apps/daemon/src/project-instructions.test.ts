@@ -29,6 +29,30 @@ describe("importReferences", () => {
   })
 })
 
+describe("importReferences code boundaries", () => {
+  it.each([
+    ["a double-backtick span", "See ``@double/span.md`` here."],
+    ["a span with a backtick inside", "See `` a ` @inner/tick.md `` here."],
+    ["a code span across lines", "See `code\n@multi/line.md` done."],
+    ["a fence indented by three spaces", "   ```\n@indented/fence.md\n   ```"],
+    ["a tilde fence closed by a longer fence", "~~~\n@tilde/fence.md\n~~~~~"],
+    ["a fence left open to the end", "```\n@open/fence.md\nmore"],
+    ["an indented code block", "Intro.\n\n    @indented/block.md\n"],
+    ["a tab-indented code block", "\t@tab/block.md"],
+  ])("skips an import inside %s", (_label, text) => {
+    expect(importReferences(text)).toEqual([])
+  })
+
+  it.each([
+    ["prose after a closed double span", "See ``code`` then @after/span.md", ["after/span.md"]],
+    ["a lone backtick", "A ` stray tick and @stray/tick.md", ["stray/tick.md"]],
+    ["an indented line that continues a paragraph", "Intro line\n    @continued.md", ["continued.md"]],
+    ["a fence closed by a shorter run, which does not close it", "````\n```\n@still/inside.md\n````\n@outside.md", ["outside.md"]],
+  ])("keeps %s", (_label, text, expected) => {
+    expect(importReferences(text)).toEqual(expected)
+  })
+})
+
 describe("projectInstructions", () => {
   it("follows nested Claude imports inside the worktree only", async () => {
     const root = await scratch()
@@ -70,6 +94,37 @@ describe("projectInstructions", () => {
     await symlink(join(root, "outside.md"), join(worktree, "AGENTS.md"))
 
     await expect(projectInstructions(worktree, "opencode")).resolves.toBeUndefined()
+  })
+
+  it("reads nothing from a nested repository or from Git metadata", async () => {
+    const worktree = await scratch()
+    await mkdir(join(worktree, "vendor", "lib", ".git"), { recursive: true })
+    await writeFile(join(worktree, "vendor", "lib", "rules.md"), "nested repo rule\n")
+    await mkdir(join(worktree, "sub"), { recursive: true })
+    await writeFile(join(worktree, "sub", ".git"), "gitdir: ../.git/modules/sub\n")
+    await writeFile(join(worktree, "sub", "rules.md"), "submodule rule\n")
+    await mkdir(join(worktree, ".git"), { recursive: true })
+    await writeFile(join(worktree, ".git", "config"), "[core]\n\tgit metadata\n")
+    await writeFile(join(worktree, "CLAUDE.md"), "@vendor/lib/rules.md\n@sub/rules.md\n@.git/config\ntop rule\n")
+
+    const text = await projectInstructions(worktree, "claude")
+
+    expect(text).toContain("top rule")
+    expect(text).not.toContain("nested repo rule")
+    expect(text).not.toContain("submodule rule")
+    expect(text).not.toContain("git metadata")
+  })
+
+  it.runIf(process.platform !== "win32")("refuses a root instruction file that links into a submodule", async () => {
+    const worktree = await scratch()
+    await mkdir(join(worktree, "sub"), { recursive: true })
+    await writeFile(join(worktree, "sub", ".git"), "gitdir: ../.git/modules/sub\n")
+    await writeFile(join(worktree, "sub", "AGENTS.md"), "submodule rule\n")
+    await symlink(join(worktree, "sub", "AGENTS.md"), join(worktree, "AGENTS.md"))
+    await symlink(join(worktree, "sub", "AGENTS.md"), join(worktree, "CLAUDE.md"))
+
+    await expect(projectInstructions(worktree, "opencode")).resolves.toBeUndefined()
+    await expect(projectInstructions(worktree, "claude")).resolves.toBeUndefined()
   })
 
   it("gives OpenCode the first root instruction file in its own order", async () => {
