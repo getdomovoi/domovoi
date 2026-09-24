@@ -14,16 +14,29 @@ minor could not parse the change anyway. This rule also applies after wire versi
 `1.0.0`; a minor increment is not implicitly compatible. There is no downgrade to
 an older schema or feature negotiation.
 
-CI enforces the bump. `packages/protocol/wire-schema.json` records a digest of the
-JSON Schema of every schema the protocol package exports and of every RPC's params
-and result. `node scripts/protocol-wire.mjs check --base <ref>` fails when that
-record is stale against the built package, or when it differs from the record at
-the last protocol release tag (or, with no tag yet, the pull request's base)
-without a minor or major increase of `protocolVersion`. A base from before the
-record existed, such as the tag of the last shipped protocol, cannot say which
-schemas changed, so against it the check passes only when `protocolVersion` is
-above the version that base declares, and says which case applied. After a schema change, run
-`pnpm --filter @getdomovoi/protocol build`, then `node scripts/protocol-wire.mjs write`.
+CI enforces the bump, per release: every wire change between two protocol releases
+shares one minor bump. Each released protocol version has a record of its wire in
+`packages/protocol/wire-releases/<version>.json`, written once, from the release
+commit, with `node scripts/protocol-wire.mjs record`. The wire is what crosses a
+socket: every RPC's params and result, the payload of every notification the daemon
+sends, and the structured data it attaches to errors. Each entry is a digest of the
+schema's JSON Schema and of its checks, including the bounds of the UTF-16 length
+helpers, which JSON Schema cannot express.
+
+`node scripts/protocol-wire.mjs check` compares the built package with the record of
+the highest release at or below its `protocolVersion`. At that same version, or a
+patch of it, any wire change fails and the changed entries are listed. With a higher
+minor or major, the check passes: the changes since that release share the bump. No
+release record at or below the current version also fails. The check needs no tags.
+
+At a protocol release, commit its record from the release commit:
+`pnpm --filter @getdomovoi/protocol build`, then
+`node scripts/protocol-wire.mjs record`. To record an earlier release, build that
+commit in another checkout and pass `--package <that checkout>`.
+
+Known limit: a custom check's function source is part of the digest, but a value a
+check captures in a closure is not, unless the check declares it the way
+`utf16MaxLength` and `utf16Length` do.
 
 For example, with a daemon on `0.6.0`:
 

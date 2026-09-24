@@ -1,4 +1,4 @@
 ---
 ---
 
-Repository tooling only: CI checks that every protocol schema change raises the protocol minor, with a committed wire-schema record and the check script. No package changes.
+Repository tooling only: CI checks that every protocol wire change since the last protocol release raises the protocol minor, against a record committed per release. The protocol package's UTF-16 length helpers gain metadata that the check reads; validation is unchanged.
