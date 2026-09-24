@@ -78,6 +78,8 @@ it("lets a person type a new code after a code from the address bar was refused"
   rerender(<WebConnectPage {...base} initialCode="hearth-quiet-ember-42" fromUrl />)
   const field = screen.getByRole("textbox", { name: "Web code" })
   expect(field.hasAttribute("readonly")).toBe(false)
+  expect(screen.queryByText("Opened from the QR on the machine. Check the machine name above, then pair.")).toBeNull()
+  expect(screen.getByText("Type the web code shown on the machine, in Settings under Phone and tablet.")).toBeTruthy()
   await user.clear(field)
   await user.type(field, "amber-still-river-07")
   expect((field as HTMLInputElement).value).toBe("amber-still-river-07")

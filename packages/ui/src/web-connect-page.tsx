@@ -85,7 +85,7 @@ export function WebConnectPage({
           </div>
           <span className="font-machine text-[13px] text-strong">{host}</span>
           <p className="m-0 text-[13px] leading-[1.6] text-muted-foreground">
-            {fromUrl ? "Opened from the QR on the machine. Check the machine name above, then pair." : "Type the web code shown on the machine, in Settings under Phone and tablet."}
+            {filledFromUrl ? "Opened from the QR on the machine. Check the machine name above, then pair." : "Type the web code shown on the machine, in Settings under Phone and tablet."}
           </p>
         </div>
 
