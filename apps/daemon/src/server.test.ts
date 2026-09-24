@@ -86,6 +86,7 @@ import { FileSkillCatalog, SkillNotFoundError, type SkillCatalog } from "./skill
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
+  RepositoryFilterRefusedError,
   WorkspaceEvidenceUnstableError,
   type WorkspaceService,
 } from "./workspace.js"
@@ -9297,6 +9298,18 @@ describe("DomovoiDaemon", () => {
       error: { code: -32603, message: "Checkpoint timed out" },
     })
     expect(checkpointAborted).toBe(true)
+
+    workspaceService.checkpoint.mockRejectedValueOnce(
+      new RepositoryFilterRefusedError([{ scope: "local", key: "filter.crypt.clean" }]),
+    )
+    const refusedCheckpoint = await rpc("checkpoint.create", {
+      sessionId,
+      label: "repository filter",
+      client: "desktop",
+    })
+    expect(refusedCheckpoint).toMatchObject({
+      error: { code: -32602, message: expect.stringContaining("filter.crypt.clean in local Git config") },
+    })
 
     const checkpointed = await rpc("checkpoint.create", {
       sessionId,

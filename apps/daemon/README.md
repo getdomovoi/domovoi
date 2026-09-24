@@ -426,10 +426,56 @@ refuses mutating RPC methods with `daemonPersistenceUnavailableErrorCode` (`-320
 running on state nobody will get back. Every failure is still reported through the daemon error
 sink, and `system.emergencyStop` still reports a `persistence` failure in its bounded outcome.
 
+An approval decision is saved before the agent is told. If that save fails, `approval.resolve`
+answers `-32014`, the agent is not answered, no standing rule is created, and the approval stays
+pending, so a client that shows the gate as still waiting is telling the truth. If the save
+succeeds but the agent cannot be told, the daemon undoes the decision with a second save (the
+approval is pending again, and its receipt and any new standing rule are removed) and answers
+"Domovoi could not reach the agent, so this decision was not applied. The approval is still
+waiting." If that second save also fails, the answer is `-32014` as above. A decision whose
+approval an emergency stop or another path removed during the save is not applied and not sent to
+the agent.
+
 Read-only methods keep working, including `workspace.get`, so an operator can read the state that
 is not reaching disk. `system.pauseAll`, `session.pause`, and `system.emergencyStop` also keep
 working, because they reduce what an unpersisted daemon is still doing. The daemon accepts changes
 again as soon as one write succeeds, since each write stores the whole snapshot.
+
+## When stored state cannot be read
+
+At startup the daemon reads `state.sqlite` and its stored workspace snapshot. What happens next
+depends on why a read fails:
+
+- **Written by a newer build.** Before it changes anything, the daemon reads the stored protocol
+  version without opening the file for writing and without creating or removing a `-wal` or `-shm`
+  file: the main file is read as immutable, or, when the write-ahead log holds changes, a private
+  copy is read. A snapshot whose protocol major or minor is newer than this build's is left byte for
+  byte as it was, and startup fails with a message that names the file, both protocol versions, and
+  the build needed to open it. Running that newer build again restores everything. If the version
+  cannot be read for an operational reason (permission, I/O), startup fails instead of guessing.
+- **An unreadable snapshot row.** Malformed JSON, or a value this build's schema rejects, is copied
+  beside the database as `state.sqlite.snapshot-corrupt-<time>.json` and the workspace starts from
+  the initial snapshot. The rest of the database stays, including paired devices, the audit log,
+  the fleet registry, and queued sends.
+- **An unreadable database.** A file that is not a SQLite database, or one where `PRAGMA
+  quick_check` finds damage in any table, is renamed to `state.sqlite.corrupt-<time>` with its
+  `-wal` and `-shm` files, and a new database is created. The whole-file check runs only when the
+  database and its log total 256 MB or less; a larger file skips it, and damage there is found when
+  a table is read. From the renamed file the daemon keeps
+  what it can still read and validate: the workspace snapshot (after the same migration and
+  validation as a normal start), other projects' saved state, and paired devices. Copied devices go
+  through the registry's migrations again, and a row that no longer reads as a paired device is
+  dropped. Anything it cannot keep must be set up again; for devices that means pairing again.
+
+A busy, locked, read-only, or permission-denied file is never moved aside; startup fails instead.
+
+Every recovery is reported three ways: a `state.quarantine` audit receipt whose target is the
+kept file and whose detail says whether the workspace and paired devices were kept, a line in the
+daemon error log, and a `stateRecovery` field on every client `system.hello` result until the
+daemon restarts. Connections that use this machine's own credential get the kind, the kept path,
+the reason, when it happened, `workspaceKept` and `pairedDevicesKept`. Paired devices get the same
+without the path and the reason. Nothing is deleted. The kept file holds the earlier state; Domovoi
+does not restore it automatically.
 
 ## Provider prompt budget
 

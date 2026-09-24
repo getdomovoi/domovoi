@@ -15,7 +15,7 @@ Read-only checks against `getdomovoi/domovoi` and the public npm registry found:
 | Actions policy | Default token permissions `read`; `can_approve_pull_request_reviews: false` | Enable PR creation, not repository-wide write defaults |
 | npm packages | Both `@getdomovoi/protocol` and `@getdomovoi/daemon` return 404 | Bootstrap their first public versions |
 | Prerelease state | All six manifests are `0.0.1`; no `.changeset/pre.json` | Review and enter alpha mode before versioning |
-| Release protection | No main branch protection/ruleset or GitHub release | Retain the exact-commit CI gate and protect environment admission |
+| Release protection | Recorded 2026-09-06: no `main` protection, ruleset or GitHub release. Since 2026-09-11 `main` requires five checks; see [working rules](working-rules.md), rule 9 | Retain the exact-commit CI gate and protect environment admission |
 
 npm organization ownership and name availability were not established by those package 404s.
 Do not treat missing packages as proof that the organization is available.

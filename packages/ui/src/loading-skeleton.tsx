@@ -22,30 +22,6 @@ function Bar({ className }: { className?: string }) {
   return <span aria-hidden className={cn("skeleton-bar block rounded-sm", className)} />
 }
 
-export function SessionListSkeleton({ reading }: { reading: string }) {
-  return (
-    <div data-testid="session-list-skeleton" className="flex min-h-0 flex-1 flex-col">
-      {/* Five rows because the rail draws five. Fewer would settle upward as
-          real sessions arrive, which is the jump the shape exists to stop. */}
-      <div className="flex flex-col gap-[9px] px-2.5 py-2">
-        {[0, 1, 2, 3, 4].map((row) => (
-          <div key={row} className="flex gap-[9px] px-1 py-2">
-            <Bar className="mt-1 size-1.5 shrink-0 rounded-full" />
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <Bar className="h-2.5 w-full" />
-              <Bar className="h-2 w-1/2" />
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="flex-1" />
-      <p role="status" className="border-t px-3 py-2 font-machine text-mono-xs text-faint">
-        {reading}
-      </p>
-    </div>
-  )
-}
-
 export function ThreadSkeleton({ reading }: { reading: string }) {
   return (
     <div data-testid="thread-skeleton" className="flex min-h-0 flex-1 flex-col gap-4 p-4">
