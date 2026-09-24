@@ -128,6 +128,21 @@ describe("settleApproval for a saved file line", () => {
     })
   })
 
+  // A card never writes a control character unescaped, so a line that holds
+  // one did not come from the card's own sentence and is not read back.
+  it("seals a saved file line that does not render back to itself", async () => {
+    const workspace = await worktree()
+    await writeFile(join(workspace, "notes\u202e.txt"), "")
+    const approval = { ...await savedFileCard(workspace), affects: "The file notes\u202e.txt in the session worktree." }
+    const { approval: settled, sensitive } = await settleSaved(approval, workspace)
+    expect(sensitive).toBe(true)
+    expect(settled).toMatchObject({
+      risk: "hard-gate",
+      affects: "The file [REDACTED] in the session worktree.",
+      execution: { state: "unresolved", reason: "sensitive-content" },
+    })
+  })
+
   it("seals a saved file card when the lookup deadline has run out", async () => {
     const workspace = await worktree()
     const approval = await savedFileCard(workspace)

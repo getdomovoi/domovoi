@@ -359,4 +359,102 @@ describe("approval settlement", () => {
     expect(sealed).toMatchObject({ risk: "hard-gate" })
     expect(sealed!.affects).not.toContain(".aws")
   })
+
+  // A saved file line is read back only when it parses one way into the three
+  // forms a card writes, and that parse renders back to the same line. A file
+  // name that holds a form's own wording could be read as other paths, so the
+  // card is sealed rather than judged at the wrong path.
+  const formWording = [
+    " in the session worktree.",
+    ", outside the session worktree.",
+    ", outside the session worktree, through a link at ",
+  ]
+
+  type WordedLine = { id: number; affects: string; path: (root: string, outside: string) => string }
+
+  // Each form with each wording in a file name: the file in the worktree, a
+  // file outside it, and a link in the worktree that leads outside. path is
+  // where that name sits on disk.
+  function wordedLines(outside: string): WordedLine[] {
+    return formWording.flatMap((wording, index) => {
+      const name = (form: string) => `tricky-${form}-${index}${wording}end`
+      return [
+        { id: 80 + index, affects: `The file ${name("in")} in the session worktree.`, path: (root) => join(root, name("in")) },
+        {
+          id: 83 + index,
+          affects: `The file ${join(outside, name("out"))}, outside the session worktree.`,
+          path: (_, away) => join(away, name("out")),
+        },
+        {
+          id: 86 + index,
+          affects: `The file ${join(outside, "plain.txt")}, outside the session worktree, through a link at ${name("link")}.`,
+          path: (root) => join(root, name("link")),
+        },
+      ]
+    })
+  }
+
+  // The same three forms with ordinary names, which read back as they are.
+  function plainLines(outside: string): { id: number; affects: string }[] {
+    return [
+      { id: 90, affects: "The file notes.txt in the session worktree." },
+      { id: 91, affects: `The file ${join(outside, "plain.txt")}, outside the session worktree.` },
+      { id: 92, affects: `The file ${join(outside, "plain.txt")}, outside the session worktree, through a link at plain-link.` },
+    ]
+  }
+
+  async function outsideDirectory(): Promise<string> {
+    const outside = await realpath(await mkdtemp(join(tmpdir(), "domovoi-settle-outside-")))
+    roots.push(outside)
+    await writeFile(join(outside, "plain.txt"), "")
+    return outside
+  }
+
+  function wordedCards(root: string, outside: string): Approval[] {
+    return [...wordedLines(outside), ...plainLines(outside)]
+      .map((line) => ({ ...savedFileCard(root, line.id), affects: line.affects }))
+  }
+
+  async function expectSealed(card: (id: number) => Promise<Approval | undefined>, store: SqliteWorkspaceStore, outside: string) {
+    const persisted = store.load().approvals
+    for (const line of wordedLines(outside)) {
+      const loaded = await card(line.id)
+      expect(loaded, line.affects).toMatchObject({ risk: "hard-gate" })
+      expect(loaded!.affects, line.affects).toMatch(/^The file \[REDACTED\](?: in the session worktree|, outside the session worktree)\.$/u)
+      expect(JSON.stringify(loaded), line.affects).not.toContain("tricky")
+      const saved = persisted.find((approval) => approval.providerRequestId === line.id)
+      expect(saved, line.affects).toMatchObject({ risk: "hard-gate", affects: loaded!.affects })
+      expect(JSON.stringify(saved), line.affects).not.toContain("tricky")
+    }
+  }
+
+  it("seals a saved file line whose file name holds the line's own wording", async () => {
+    const outside = await outsideDirectory()
+    const { card, store } = await setup(async (root) => {
+      await symlink(join(outside, "plain.txt"), join(root, "plain-link"))
+      for (const line of wordedLines(outside)) {
+        const path = line.path(root, outside)
+        if (line.id >= 86) await symlink(join(outside, "plain.txt"), path)
+        else await writeFile(path, "")
+      }
+    }, undefined, { saved: (root) => wordedCards(root, outside) })
+    await expectSealed(card, store, outside)
+    for (const line of plainLines(outside)) {
+      expect(await card(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
+    }
+  })
+
+  it("seals a saved file line whose worded file name became a link into a credential file", async () => {
+    const outside = await outsideDirectory()
+    const { card, store } = await setup(async (root) => {
+      await mkdir(join(root, ".aws"))
+      await writeFile(join(root, ".aws", "credentials"), "")
+      await symlink(join(outside, "plain.txt"), join(root, "plain-link"))
+      for (const line of wordedLines(outside)) await symlink(join(root, ".aws", "credentials"), line.path(root, outside))
+    }, undefined, { saved: (root) => wordedCards(root, outside) })
+    await expectSealed(card, store, outside)
+    for (const line of plainLines(outside)) {
+      expect(await card(line.id), line.affects).toMatchObject({ risk: "normal", affects: line.affects })
+    }
+  })
 })

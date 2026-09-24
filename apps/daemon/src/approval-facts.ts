@@ -177,18 +177,65 @@ function affectedFile(input: {
   const real = input.resolved ? within(input.resolved.workspace, input.resolved.target) : lexical
   if (real !== undefined) {
     const name = shown(lexical ?? real)
-    return { text: `The file ${name.text} in the session worktree.`, redacted: name.redacted }
+    return { text: fileLine({ form: "inside", file: name.text }), redacted: name.redacted }
   }
   if (lexical !== undefined && input.resolved) {
     const destination = shown(input.resolved.target)
     const link = shown(lexical)
     return {
-      text: `The file ${destination.text}, outside the session worktree, through a link at ${link.text}.`,
+      text: fileLine({ form: "link", file: destination.text, link: link.text }),
       redacted: destination.redacted || link.redacted,
     }
   }
   const name = shown(target)
-  return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted }
+  return { text: fileLine({ form: "outside", file: name.text }), redacted: name.redacted }
+}
+
+// The three sentences a card's file line takes: the file in the worktree,
+// relative to it; a file outside it; and a file outside it reached through a
+// link in it. The saved line is read back against these same sentences.
+type FileLine =
+  | Readonly<{ form: "inside"; file: string }>
+  | Readonly<{ form: "outside"; file: string }>
+  | Readonly<{ form: "link"; file: string; link: string }>
+
+const fileLineStart = "The file "
+const insideEnd = " in the session worktree."
+const outsideEnd = ", outside the session worktree."
+const linkMiddle = ", outside the session worktree, through a link at "
+
+function fileLine(line: FileLine): string {
+  switch (line.form) {
+    case "inside": return `${fileLineStart}${line.file}${insideEnd}`
+    case "outside": return `${fileLineStart}${line.file}${outsideEnd}`
+    case "link": return `${fileLineStart}${line.file}${linkMiddle}${line.link}.`
+  }
+}
+
+// The wording that separates a line's paths from its sentence. A path that
+// holds any of it can be read as other paths, or as another form.
+const fileLineWording = [" in the session worktree", ", outside the session worktree", ", through a link at "]
+
+// Every way a saved line reads as one of the three sentences: the inside and
+// outside forms at most once each, and the link form once at each place its
+// middle wording appears.
+function fileLineReadings(affects: string): FileLine[] {
+  if (!affects.startsWith(fileLineStart)) return []
+  const body = affects.slice(fileLineStart.length)
+  const readings: FileLine[] = []
+  if (body.endsWith(insideEnd)) readings.push({ form: "inside", file: body.slice(0, -insideEnd.length) })
+  if (body.endsWith(outsideEnd)) readings.push({ form: "outside", file: body.slice(0, -outsideEnd.length) })
+  if (body.endsWith(".")) {
+    const rest = body.slice(0, -1)
+    for (let at = rest.indexOf(linkMiddle); at !== -1; at = rest.indexOf(linkMiddle, at + 1)) {
+      readings.push({ form: "link", file: rest.slice(0, at), link: rest.slice(at + linkMiddle.length) })
+    }
+  }
+  return readings.filter((reading) => fileLinePaths(reading).every((path) => path !== ""))
+}
+
+function fileLinePaths(line: FileLine): string[] {
+  return line.form === "link" ? [line.link, line.file] : [line.file]
 }
 
 // The directory a request runs in, as the card shows it. It is persisted and
@@ -320,23 +367,33 @@ function savedInWorktree(affects: string): boolean {
   return affects.includes(" in the session worktree") && !affects.includes("outside the session worktree")
 }
 
-// The paths a saved file line names, in the three forms affectedFile writes:
-// the file in the worktree, relative to it; a file outside it; and a file
-// outside it reached through a link in it. "hidden" when the line already
-// hides its path. Undefined when the line cannot be read back as paths: not
-// one of those forms, or a path shortened or with a character escaped, which
-// no longer names the file on disk. A Windows path whose separator is
-// followed by n, r, t or u reads as escaped too, and so is sealed.
+// The paths a saved file line names, in the three sentences affectedFile
+// writes. The line is read back only when it reads exactly one way as those
+// sentences, no path in that reading holds the sentences' own wording, and
+// the reading, rendered again as a card renders a path, gives back the same
+// line. A file whose name holds that wording could otherwise be read as other
+// paths, and judged at the wrong place. "hidden" when the line already hides
+// its path. Undefined when the line cannot be read back as paths: none of
+// those sentences, more than one reading, a path that holds their wording, a
+// line that does not render back to itself, or a path shortened or with a
+// character escaped, which no longer names the file on disk. A Windows path
+// whose separator is followed by n, r, t or u reads as escaped too, and so is
+// sealed.
 const shortenedOrEscaped = /…|\\(?:[nrt]|u[0-9a-f]{4})/u
 
 function savedFilePaths(affects: string): string[] | "hidden" | undefined {
-  const link = /^The file (.+), outside the session worktree, through a link at (.+)\.$/su.exec(affects)
-  const outside = /^The file (.+), outside the session worktree\.$/su.exec(affects)
-  const inside = /^The file (.+) in the session worktree\.$/su.exec(affects)
-  const paths = link ? [link[2]!, link[1]!] : outside ? [outside[1]!] : inside ? [inside[1]!] : undefined
-  if (paths === undefined) return undefined
+  const readings = fileLineReadings(affects)
+  const reading = readings.length === 1 ? readings[0] : undefined
+  if (reading === undefined) return undefined
+  const paths = fileLinePaths(reading)
+  if (paths.some((path) => fileLineWording.some((wording) => path.includes(wording)))) return undefined
   if (paths.some((path) => path.includes("[REDACTED]"))) return "hidden"
-  return paths.some((path) => shortenedOrEscaped.test(path)) ? undefined : paths
+  if (paths.some((path) => shortenedOrEscaped.test(path))) return undefined
+  const shown = (path: string) => shownPath(path).text
+  const rendered = fileLine(reading.form === "link"
+    ? { form: "link", file: shown(reading.file), link: shown(reading.link) }
+    : { form: reading.form, file: shown(reading.file) })
+  return rendered === affects ? paths : undefined
 }
 
 // A file line read back from disk, judged as a new card's is: each path it
