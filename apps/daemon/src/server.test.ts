@@ -1053,6 +1053,25 @@ describe("DomovoiDaemon", () => {
     await rpc("approval.resolve", { approvalId, decision: "allow-once", client: "desktop" })
     expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
 
+    // A secret only in the file path is redacted on the card and makes the
+    // gate hard, like a secret in the command.
+    const pathToken = `ghp_${"a1B2".repeat(9)}`
+    listener!({
+      type: "approval-requested",
+      requestId: 92,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "cat notes.txt",
+      reason: "Read a file",
+      cwd: "/repo",
+      path: `/tmp/${pathToken}/x`,
+    })
+    const pathApproval = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 92)
+    expect(pathApproval).toMatchObject({ risk: "hard-gate" })
+    expect(JSON.stringify(pathApproval)).not.toContain(pathToken)
+    expect(pathApproval?.affects).toContain("[REDACTED]")
+
     listener!({
       type: "command-output",
       threadId: session.providerThreadId,

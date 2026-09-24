@@ -178,15 +178,23 @@ export class StdioCodexTransport implements CodexTransport {
   }
 }
 
-// Codex runs a command inside its sandbox (writes to the worktree, no network)
-// unless the request is to run outside it, which is what most approvals are.
-export const codexApprovalScope: ApprovalScope = {
-  command: "The session worktree while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
-  network: "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access.",
+// Codex runs a command inside its sandbox unless the request is to run outside
+// it, which is what most approvals are. The sandbox is the one codexPolicyFor
+// picks for the mode: read-only in Ask and Plan, workspace-write in Build, and
+// both read the whole disk. Neither has network: workspace-write sets it off,
+// and read-only's networkAccess defaults to false in the app-server schema.
+export function codexApprovalScope(runtime: Runtime): ApprovalScope {
+  const sandbox = codexPolicyFor(runtime, "/").sandboxPolicy.type
+  return {
+    command: sandbox === "readOnly"
+      ? "Reads anything this user account can read and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
+      : "Writes only in the session worktree and reads anything this user account can read while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
+    network: "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access.",
+  }
 }
 
 export class CodexAppServerAdapter implements AgentAdapter {
-  readonly approvalScope = codexApprovalScope
+  approvalScope(runtime: Runtime): ApprovalScope { return codexApprovalScope(runtime) }
   readonly permissionCapabilities = { ask: "read-only", buildAuto: "unsupported" } as const
   #transportFactory: () => CodexTransport
   #transport: CodexTransport | undefined

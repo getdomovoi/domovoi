@@ -93,7 +93,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { approvalFacts } from "./approval-facts.js"
+import { approvalFacts, resolveApprovalPath } from "./approval-facts.js"
 import {
   boundedQueuedSendReason,
   SqliteWorkspaceStore,
@@ -8461,9 +8461,17 @@ export class DomovoiDaemon {
       const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")
       const directoryCopy = redactDurableText(event.cwd ?? session.workspacePath ?? project.path)
+      const factsWorkspace = session.workspacePath ?? project.path
+      const facts = approvalFacts({
+        ...(event.path === undefined ? {} : { path: event.path }),
+        workspace: factsWorkspace,
+        scope: this.#agents.require(provider).approvalScope?.(session.runtime),
+        resolved: event.path === undefined ? undefined : await resolveApprovalPath(factsWorkspace, event.path),
+      })
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted
         || directoryCopy.redacted
+        || facts.redacted
         || (execution.state === "unresolved" && execution.reason === "sensitive-content")
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret
@@ -8543,11 +8551,8 @@ export class DomovoiDaemon {
           agent: `${session.runtime.provider} / ${session.runtime.model}`,
           mode: session.runtime.permissionMode,
           directory: directoryCopy.value,
-          ...approvalFacts({
-            ...(event.path === undefined ? {} : { path: event.path }),
-            workspace: session.workspacePath ?? project.path,
-            scope: this.#agents.require(provider).approvalScope,
-          }),
+          affects: facts.affects,
+          network: facts.network,
           estimatedDuration: "Unknown",
           checkpoint: session.baseCommit ?? "unavailable",
           providerRequestId: event.requestId,

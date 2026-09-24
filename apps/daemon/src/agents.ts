@@ -62,8 +62,8 @@ export type AgentVisualContext = {
 export interface AgentAdapter {
   readonly permissionCapabilities?: AgentPermissionCapabilities
   readonly capabilities?: AgentCapabilities
-  /** What an approved command can reach. Absent means no sandbox at all. */
-  readonly approvalScope?: ApprovalScope
+  /** What an approved command can reach in this runtime. Absent means no sandbox at all. */
+  approvalScope?(runtime: Runtime): ApprovalScope
   connect(): Promise<void>
   /** Discard connection state while keeping the adapter reusable. */
   resetConnection?(): Promise<void>
