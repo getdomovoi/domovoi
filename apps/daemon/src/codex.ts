@@ -5,6 +5,7 @@ import type { Readable } from "node:stream"
 import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
+import { codexRepositoryConfigFile, codexRepositoryConfigRefusal } from "./codex-repository-config.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
@@ -300,6 +301,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async startThread({ cwd, runtime }: { cwd: string; runtime: Runtime }): Promise<string> {
+    refuseRepositoryConfig(cwd)
     const policy = codexPolicyFor(runtime)
     const sandbox = policy.permissions === "domovoi-read" ? "read-only" : "workspace-write"
     // thread/start developerInstructions replaces the person's own
@@ -380,11 +382,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await this.#request("thread/archive", { threadId })
   }
 
-  async resumeThread({ threadId }: {
+  async resumeThread({ threadId, cwd }: {
     threadId: string
     cwd: string
     runtime: Runtime
   }): Promise<void> {
+    refuseRepositoryConfig(cwd)
     const result = await this.#request("thread/resume", { threadId })
     if (nestedId(result, "thread") !== threadId) {
       throw new Error("Codex did not resume the requested thread")
@@ -415,6 +418,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     prompt: string
     runtime: Runtime
   }): Promise<string> {
+    refuseRepositoryConfig(cwd)
     const policy = codexPolicyFor(runtime)
     const params = {
       threadId,
@@ -655,6 +659,14 @@ export class CodexAppServerAdapter implements AgentAdapter {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
   }
+}
+
+// A trusted project's own Codex configuration can start programs and change
+// permissions. Until a trust gate ships, a session is refused before Codex is
+// asked anything about a worktree that holds it.
+function refuseRepositoryConfig(cwd: string): void {
+  const file = codexRepositoryConfigFile(cwd)
+  if (file !== undefined) throw new Error(codexRepositoryConfigRefusal(file))
 }
 
 function resolvedDeveloperInstructions(result: unknown): string | undefined {
