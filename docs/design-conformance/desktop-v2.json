@@ -1496,12 +1496,17 @@
         "Take a checkpoint",
         "Take checkpoint"
       ],
-      "evidence": [
+      "presence": [
+        "Take a checkpoint",
         "Take checkpoint"
       ],
-      "missing": {
+      "evidence": [
+        "Take checkpoint",
+        "taken at the next tool boundary"
+      ],
+      "partial": {
         "since": "2026-09-23",
-        "reason": "checkpoint.create is reachable from the palette only; the tab has no take action"
+        "reason": "mid-turn deferred take (design: taken at the next tool boundary) needs daemon support"
       }
     },
     {
@@ -1540,15 +1545,20 @@
         "EVIDENCE PER FILE",
         "Revert this file",
         "Keep it",
-        "Open in editor"
+        "Open in editor",
+        {
+          "absent": "<AlertDialog",
+          "in": "packages/ui/src/session-evidence.tsx"
+        }
       ],
       "presence": [
         "<SessionEvidencePanel",
+        "EVIDENCE PER FILE",
         "Revert this file"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "evidence per file and revert exist; the header, the keep/revert ask and the dock-local editor action are not the design's"
+        "since": "2026-09-23",
+        "reason": "copy and actions match; the design asks Revert this file / Keep it inline in the file row, the implementation asks in a dialog, and keeps the worktree diff and observed runs below the list instead of in each row"
       }
     },
     {
