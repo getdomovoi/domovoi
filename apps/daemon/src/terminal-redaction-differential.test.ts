@@ -8,9 +8,9 @@ import {
   redactDurableCommand as mainRedactDurableCommand,
   redactDurableOutput as mainRedactDurableOutput,
   TerminalOutputRedactor as MainTerminalOutputRedactor,
-} from "./terminal-redaction-main.test-support.js"
+} from "./secret-redaction-baseline.js"
 
-// Differential fuzz: the terminal redactor against a frozen copy of main's
+// Differential fuzz: the terminal redactor against main's own code
 // (8bda137f). Inputs are generated from secret and plain forms with random
 // formatting, carriage returns, whitespace runs, quotes, escapes and long
 // values, cut into random reads with idle beats between some. For every value
@@ -35,6 +35,9 @@ function random(seed: number): () => number {
 const valueLetters = "zqxjwvkm"
 const names = ["API_KEY", "password", "token", "client_secret", "GITHUB_TOKEN", "access-token", "Password"]
 const formatting = ["\x1b[0m", "\x1b[1m", "\x1b[32m", "\x1b[2K"]
+// Characters a JavaScript pattern treats as line terminators (U+2028, U+2029)
+// or that some tools treat as one (U+0085, NEL), though a terminal does not.
+const separators = ["\u2028", "\u2029", "\u0085"]
 
 function generate(next: () => number): Case {
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
@@ -64,6 +67,10 @@ function generate(next: () => number): Case {
   const quote = chance(0.35) ? pick(['"', "'"]) : ""
   let value = valueBody()
   if (quote && chance(0.3)) { features.push("inner-space"); value = `${value} ${word(6)}` }
+  // A name and value inside the quoted value, which is still one value.
+  if (quote && chance(0.15)) { features.push("embedded-assignment"); value = `${value} ${pick(names)}=${word(6)}` }
+  if (quote && chance(0.1)) { features.push("separator"); value = `${word(4)}${pick(separators)}${value}` }
+  if (quote && chance(0.1)) { features.push("escaped-separator"); value = `${word(4)}\\${pick(separators)}${value}` }
   if (quote === '"' && chance(0.3)) { features.push("escaped-quote"); value = `${word(4)}\\"${value}` }
   // In shell single quotes a backslash is literal and cannot escape the quote.
   if (quote === "'" && chance(0.3)) { features.push("single-quote-backslash"); value = `${value}\\` }

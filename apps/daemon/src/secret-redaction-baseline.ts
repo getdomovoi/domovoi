@@ -1,6 +1,3 @@
-// A frozen copy of apps/daemon/src/secret-redaction.ts at 8bda137f (main before
-// the terminal redaction rewrite). Test only: the differential fuzz test holds
-// the new terminal redactor to hiding at least what this one hid.
 const replacement = "[REDACTED]"
 
 export const maximumDurableCommandLength = 8_192

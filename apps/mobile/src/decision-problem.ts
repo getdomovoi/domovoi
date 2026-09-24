@@ -14,12 +14,21 @@ export function decisionProblem(cause: unknown): string {
   if (cause instanceof DaemonNotSentError) {
     return `Not sent: ${lowerFirst(trimStop(cause.message))}. The gate is still waiting.`
   }
-  if (cause instanceof DaemonError) return `The daemon refused: ${trimStop(cause.message)}. The gate is still waiting.`
+  if (cause instanceof DaemonError) {
+    return daemonSaysStillWaiting.test(cause.message)
+      ? `The daemon refused: ${cause.message.trim()}`
+      : `The daemon refused: ${trimStop(cause.message)}. The gate is still waiting.`
+  }
   if (cause instanceof DaemonUnconfirmedError || cause instanceof DaemonTimeoutError) {
     return "The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which."
   }
   return "The decision did not come back confirmed. When the connection returns, this screen shows whether the gate is still waiting."
 }
+
+// The daemon states this itself as its closing sentence when a decision was
+// not applied. Only that whole closing sentence counts; the words anywhere
+// else in a message leave the phone's own line in place.
+const daemonSaysStillWaiting = /(?:^|\.\s+)The approval is still waiting\.\s*$/
 
 function trimStop(text: string): string {
   return text.replace(/\.$/, "")
