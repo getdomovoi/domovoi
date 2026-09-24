@@ -7,6 +7,7 @@ import { WebSocket } from "ws"
 
 import { beforeDeadline, OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 import { verifyLocalOwnerProof } from "./local-owner-proof.js"
+import { StoredMachineIdentityMismatchError } from "./machine-identity.js"
 import {
   readLocalOwnerCredential, readLocalOwnerRecord, readLocalOwnerSecret, readLocalProfileFile, writeLocalOwnerRecord,
   type ReadyLocalOwner,
@@ -78,12 +79,13 @@ function startupRefusal(error: unknown): LocalDaemonRefusalReason {
   if (expiredDeadline(error)) return "owner-unreachable"
   const chain = causes(error)
   const code = (cause: unknown) => (cause as { code?: unknown } | null)?.code
-  const message = (cause: unknown) => cause instanceof Error ? cause.message : ""
   if (chain.some((cause) => code(cause) === "EADDRINUSE")) return "port-in-use"
-  if (chain.some((cause) => code(cause) === "SQLITE_BUSY" || /database is locked/i.test(message(cause)))) return "state-locked"
-  if (chain.some((cause) => message(cause).startsWith("Stored workspace machine identity does not match this daemon"))) {
-    return "identity-mismatch"
-  }
+  // SQLite's own result codes: SQLITE_BUSY (5) and SQLITE_LOCKED (6), as
+  // file-lease.ts matches them.
+  const sqliteCode = (cause: unknown) => (cause as { errcode?: unknown } | null)?.errcode
+  if (chain.some((cause) => sqliteCode(cause) === 5 || sqliteCode(cause) === 6
+    || code(cause) === "SQLITE_BUSY" || code(cause) === "SQLITE_LOCKED")) return "state-locked"
+  if (chain.some((cause) => cause instanceof StoredMachineIdentityMismatchError)) return "identity-mismatch"
   return "profile-invalid"
 }
 

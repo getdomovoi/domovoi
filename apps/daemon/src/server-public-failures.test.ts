@@ -1,7 +1,7 @@
 import { once } from "node:events"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { WebSocket } from "ws"
+import { WebSocket, WebSocketServer } from "ws"
 import { demoWorkspace, protocolVersion, workspaceSnapshotSchema } from "@getdomovoi/protocol"
 
 import type { AgentAdapter } from "./codex.js"
@@ -117,5 +117,79 @@ describe("failures a person can act on", () => {
     const session = workspace.sessions.find((candidate) => candidate.id === sessionId)!
     expect(session.providerFailure).toMatchObject({ kind, message })
     expect(session.activeTurnId).toBeUndefined()
+  })
+
+  const gitFailure = (fields: Record<string, unknown>) => Object.assign(new Error(String(fields.message ?? "Command failed: git")), fields)
+
+  it.each([
+    ["an unknown HEAD", gitFailure({ code: 128, stderr: "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.\n" })],
+    ["no repository", gitFailure({ code: 128, stderr: "fatal: not a git repository (or any of the parent directories): .git\n" })],
+  ])("answers the public message for %s", async (_name, failure) => {
+    const daemon = new DomovoiDaemon({
+      port: 0, statePath: ":memory:", workspaceService: workspaceService(async () => { throw failure }), errorSink: vi.fn(), agents: {},
+    })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+    expect((await rpc("project.open", { path: "/code/empty", client: "desktop" })).error)
+      .toEqual({ code: -32602, message: "That folder is not a Git repository with at least one commit" })
+  })
+
+  it.each([
+    ["git missing from PATH", gitFailure({ message: "spawn git ENOENT", code: "ENOENT", errno: -2, syscall: "spawn git", path: "git" })],
+    ["a dubious ownership refusal", gitFailure({ code: 128, stderr: "fatal: detected dubious ownership in repository at '/mnt/c/code/app'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /mnt/c/code/app\n" })],
+    ["a permission error", gitFailure({ message: "EACCES: permission denied, scandir '/code/locked'", code: "EACCES" })],
+  ])("does not call %s a folder without a repository", async (_name, failure) => {
+    const daemon = new DomovoiDaemon({
+      port: 0, statePath: ":memory:", workspaceService: workspaceService(async () => { throw failure }), errorSink: vi.fn(), agents: {},
+    })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+    const refused = await rpc("project.open", { path: "/code/app", client: "desktop" })
+    expect(refused.error?.message).not.toBe("That folder is not a Git repository with at least one commit")
+  })
+
+  it("keeps a running turn free of a provider failure when steering it fails", async () => {
+    const { snapshot, sessionId } = idleSession()
+    const store = { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore
+    const codex = agent({
+      startTurn: vi.fn(async () => "turn-running"),
+      steerTurn: vi.fn(async () => { throw new Error("429 rate limit exceeded") }),
+    })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex }, errorSink: vi.fn() })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+    expect((await rpc("session.send", { sessionId, prompt: "go", client: "desktop" })).error).toBeUndefined()
+    const steered = await rpc("session.send", { sessionId, prompt: "also this", client: "desktop" })
+    expect(steered.error?.code).toBe(-32602)
+    const workspace = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    const session = workspace.sessions.find((candidate) => candidate.id === sessionId)!
+    expect(session.activeTurnId).toBe("turn-running")
+    expect(session.providerFailure).toBeUndefined()
+  })
+
+  it("reports a WebSocket server error once it is listening", async () => {
+    const handlers: Array<(error: Error) => void> = []
+    const on = WebSocketServer.prototype.on
+    const spy = vi.spyOn(WebSocketServer.prototype, "on").mockImplementation(function (
+      this: WebSocketServer, event: string | symbol, listener: (...values: unknown[]) => void,
+    ) {
+      if (event === "error") handlers.push(listener as (error: Error) => void)
+      return on.call(this, event, listener as Parameters<typeof on>[1])
+    } as typeof on)
+    const errorSink = vi.fn()
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", errorSink, agents: {} })
+    daemons.push(daemon)
+    try {
+      await daemon.start()
+    } finally { spy.mockRestore() }
+    expect(handlers).toHaveLength(1)
+    handlers[0]!(new Error("accept failed: too many open files"))
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "Domovoi WebSocket server failed",
+      detail: expect.stringContaining("too many open files"),
+    }))
   })
 })

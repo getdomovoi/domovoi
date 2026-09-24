@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
+import { StoredMachineIdentityMismatchError } from "./machine-identity.js"
 import { readLocalOwnerRecord, writeLocalOwnerRecord } from "./local-owner-record.js"
 import { productionDaemonDependencies } from "./production-daemon.js"
 import { claimProfile } from "./profile-lease.js"
@@ -65,9 +66,12 @@ it("names a port another program holds instead of calling the profile invalid", 
   }))
 })
 
-it("names a state database another process holds", async () => {
+it.each([
+  ["busy (5)", "database is locked", 5],
+  ["locked (6)", "database table is locked", 6],
+])("names a state database another process holds: SQLite %s", async (_name, text, errcode) => {
   vi.spyOn(productionDaemonDependencies, "createDaemon").mockImplementation(() => {
-    throw Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 })
+    throw Object.assign(new Error(text), { code: "ERR_SQLITE_ERROR", errcode })
   })
   const { handle, errorSink } = await acquire(await home())
   expect(handle).toMatchObject({ kind: "refused", reason: "state-locked" })
@@ -76,10 +80,18 @@ it("names a state database another process holds", async () => {
 
 it("names a stored workspace that belongs to another machine identity", async () => {
   vi.spyOn(productionDaemonDependencies, "createDaemon").mockImplementation(() => {
-    throw new Error("Stored workspace machine identity does not match this daemon; restore the matching identity and state before restarting")
+    throw new StoredMachineIdentityMismatchError()
   })
   const { handle } = await acquire(await home())
   expect(handle).toMatchObject({ kind: "refused", reason: "identity-mismatch" })
+})
+
+it("does not take an error that only quotes the identity message for a mismatch", async () => {
+  vi.spyOn(productionDaemonDependencies, "createDaemon").mockImplementation(() => {
+    throw new Error("Stored workspace machine identity does not match this daemon; quoted by another component")
+  })
+  const { handle } = await acquire(await home())
+  expect(handle).toMatchObject({ kind: "refused", reason: "profile-invalid" })
 })
 
 it("still calls an unreadable owner record an invalid profile, and logs the cause", async () => {

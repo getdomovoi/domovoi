@@ -141,3 +141,17 @@ function safeString(value: unknown, maximumLength: number): string {
 // project.open answers a folder that is not a repository with this fixed text,
 // which quotes nothing from the machine, so a CLI may repeat it.
 export const notARepositoryMessage = "That folder is not a Git repository with at least one commit"
+
+// Only git's own "no repository here" answers map to notARepositoryMessage: no
+// repository, no commit behind HEAD, or a folder that does not exist. A git
+// binary that is missing, a safe.directory ownership refusal or a permission
+// error is a different problem and keeps the internal path.
+export function isMissingRepository(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const code = (error as { code?: unknown }).code
+  if (typeof code === "string") return false
+  const stderr = (error as { stderr?: unknown }).stderr
+  const text = `${typeof stderr === "string" ? stderr : ""}\n${error.message}`
+  if (/detected dubious ownership/i.test(text)) return false
+  return /not a git repository|unknown revision or path not in the working tree|bad revision 'HEAD'|cannot change to '/i.test(text)
+}

@@ -6036,11 +6036,9 @@ describe("DomovoiDaemon", () => {
       params: { path: "/code/private", client: "desktop" },
     }))
 
-    // A folder the repository check refuses is the person's to fix, so it is
-    // answered with fixed public text; the machine's detail stays in the log.
     await expect(response).resolves.toMatchObject({
       id: 41,
-      error: { code: -32602, message: "That folder is not a Git repository with at least one commit" },
+      error: { code: -32603, message: "Internal daemon error" },
     })
     expect(errorEntries).toHaveLength(1)
     expect(errorEntries[0]).toMatchObject({
