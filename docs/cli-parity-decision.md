@@ -1,8 +1,27 @@
 # CLI parity decision
 
-Status: decided by fetzy on 2026-09-10. Implementation pending.
+Status: decided by fetzy on 2026-09-10. Partly implemented, differently from the record below;
+see "State on 2026-09-22".
 Applies to S1.6 in [SHIP-PLAN.md](../SHIP-PLAN.md).
 Source checkout: `e2d598f` on `feat/launcher-entity-rows`.
+
+## State on 2026-09-22
+
+The user-facing `domovoi` binary shipped as its own package, `@getdomovoi/cli` in `apps/cli`
+(3375cd96, 2026-09-11), not as an entry in `@getdomovoi/daemon` as "Migration target" below
+records. It carries `pair`, `status`, `doctor`, `logs` and `skill install <path>`
+(`apps/cli/src/index.ts`). `skill push` does not exist.
+
+No human command has moved off `domovoid`. Its help (`apps/daemon/src/index.ts`) still lists
+`pair`, `fleet-keychain`, `open`, `wsl list`, `secret`, `service install|status|remove`,
+`skill keygen|sign|trust` and `profile recover`. The two surfaces do not yet meet at pairing:
+`domovoid pair --client cli --label <device label>` prints a one-time pairing code, while
+`domovoi pair` accepts only a client credential and refuses a code. No `domovoid` command prints
+a client credential today; that gap is open.
+
+Not decided yet: whether the separate package replaces the one-package target below, and which
+`domovoid` commands still move to `domovoi`. Until that is recorded, the rest of this document is
+the 2026-09-10 decision, not a description of the code.
 
 ## Decision and evidence
 
@@ -41,7 +60,8 @@ the product spelling or prove the complete onboarding behavior exists.
 `pair`, `open`, `wsl list`, provider secret commands, fleet-keychain recovery, and profile
 recovery also exist. [runSkillCommand, lines 48-71](../apps/daemon/src/skill-command.ts#L48)
 accepts `keygen`, `sign`, `trust`, and `add`. The top-level help currently omits `skill add`.
-`doctor`, `logs`, and `skill push` have no handlers or defined behavior.
+At the source checkout, `doctor`, `logs`, and `skill push` had no handlers or defined behavior.
+`doctor` and `logs` now exist in `apps/cli`; `skill push` still does not.
 
 ## Migration target
 

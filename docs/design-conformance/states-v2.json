@@ -1,7 +1,7 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi v2 States.dc.html",
-  "sha256": "47bfa0bf66ab5b6686c42ba496a8401c33616058f6ef9766fd56bee15e5e6998",
-  "derivedOn": "2026-09-20",
+  "sha256": "3dc5ca1575cd71a966e1285f676c077e68583635a87f47951c9e0c77692e9a8d",
+  "derivedOn": "2026-09-23",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/ui/src/**/*.{ts,tsx}",
@@ -24,12 +24,14 @@
         "reading the thread from mac-mini-m4"
       ],
       "evidence": [
-        "Start a session",
-        "SESSIONS"
+        "No sessions yet on",
+        "READY ON THIS MACHINE",
+        "Clone a repository"
       ],
-      "presence": [
-        "Start a session"
-      ]
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no client draws the empty sessions state as designed: none of its lines exist. The earlier evidence matched the palette's SESSIONS group heading and the phone's Start a session, not this state"
+      }
     },
     {
       "id": "states.failed-read",
@@ -57,11 +59,11 @@
       "name": "Cross-machine search state",
       "where": "search state",
       "copy": [
-        "searched 3 machines",
         "Nothing matched on the two machines that answered",
         "wsl-ubuntu-24 did not answer, so its sessions were not searched. This is not the same as having no results, and Domovoi will not round it down to one.",
         "Search only what answered",
-        "Worktree ready"
+        "Worktree ready",
+        "searched 2 of 3 machines"
       ],
       "missing": {
         "since": "2026-09-20",
@@ -92,5 +94,8 @@
         "Nothing has run yet"
       ]
     }
-  ]
+  ],
+  "annotations": [],
+  "sample": [],
+  "humanRead": []
 }

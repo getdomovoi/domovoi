@@ -1,0 +1,89 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/RemoteBrowser.dc.html",
+  "sha256": "4bed5348da81028b89046bfbf0d02927626b32c9c864de3477458261f0f60940",
+  "derivedOn": "2026-09-23",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts",
+    "apps/desktop/src/**/*.{ts,tsx}"
+  ],
+  "note": "A component, imported by the Desktop V2 launcher and v2 Onboarding (Open a repository), answering J40. Row labels, crumbs, scenario notes and refusal lines live in the component's data.",
+  "sample": [
+    "no reply in 10s · last answer 14:02"
+  ],
+  "annotations": [],
+  "elements": [
+    {
+      "id": "remote-browser.list",
+      "name": "Browse projects on a machine",
+      "where": "launcher and onboarding: Project on <machine>, Recent projects, the folder list one level at a time with Up one level and Go to a path, Allowed roots, Chosen and Last session tags, Close",
+      "states": [
+        "recent",
+        "browsing",
+        "empty level",
+        "chosen"
+      ],
+      "copy": [
+        "Close",
+        "Up one level",
+        "Go to a path",
+        "Project on",
+        "Recent projects",
+        "Chosen",
+        "Last session",
+        "Inside",
+        "Allowed roots",
+        "Go",
+        "No folders at this level."
+      ],
+      "evidence": [
+        "Recent projects",
+        "Allowed roots",
+        "Up one level"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no RPC lists a machine's recent projects or its folders under the allowed roots"
+      }
+    },
+    {
+      "id": "remote-browser.outside-roots",
+      "name": "Read a folder outside the roots",
+      "where": "an inline gate: Read a folder outside the roots, what it lists, Allow once, Deny",
+      "copy": [
+        "Read a folder outside the roots",
+        "Lists folder names one level down. Allowed roots here:",
+        "Allow once",
+        "Deny"
+      ],
+      "evidence": [
+        "Read a folder outside the roots"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "same as remote-browser.list, and no approval kind covers reading a folder"
+      }
+    },
+    {
+      "id": "remote-browser.silent",
+      "name": "The machine did not answer",
+      "where": "no reply: the last answer, nothing listed, Ask again, Start locked",
+      "copy": [
+        "Nothing was listed, so there are no recent projects or folders to show.",
+        "Ask again",
+        "Start stays locked until the daemon answers."
+      ],
+      "evidence": [
+        "Start stays locked until the daemon answers."
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "same as remote-browser.list"
+      }
+    }
+  ],
+  "humanRead": []
+}
