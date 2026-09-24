@@ -55,8 +55,25 @@ type ServicePhase =
   | { kind: "installing" }
   | { kind: "removing" }
   | { kind: "installed"; target: string }
-  | { kind: "removed" }
+  | { kind: "removed"; daemonRunning: boolean; recovery?: string | undefined }
+  | { kind: "waits"; refusal: string }
+  | { kind: "unchecked"; message: string }
+  | { kind: "not-attached"; message: string }
   | { kind: "failed"; action: "install" | "remove"; message: string; still: string }
+
+const profileRecoverCommand = "domovoid profile recover --confirm-no-supervisor"
+
+// The daemon installer's own words for a removal that leaves the profile owner
+// unresolved (service/install.ts), led by what did happen.
+function removalRecovery(outcome: Extract<DaemonServiceOutcome, { ok: true }>): string | undefined {
+  if (outcome.profileRecovery === "proof-unavailable" && outcome.profileRecoveryDetail) {
+    return `Removed. ${outcome.profileRecoveryDetail}. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run this in a terminal.`
+  }
+  if (outcome.profileRecovery === "operator-confirmation-required" || outcome.profileRecovery === "proof-unavailable") {
+    return "Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal."
+  }
+  return undefined
+}
 
 function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> } }) {
   const service = loginServices[daemon.platform]
@@ -68,11 +85,18 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
     setPhase({ kind: action === "install" ? "installing" : "removing" })
     try {
       const outcome = await (action === "install" ? live.install() : live.remove())
-      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target } : { kind: "removed" })
+      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target } : { kind: "removed", daemonRunning: outcome.daemonRunning, recovery: removalRecovery(outcome) })
+      else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
+      else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
+      else if (outcome.reason === "installed-not-attached") setPhase({ kind: "not-attached", message: outcome.message })
       else setPhase({ kind: "failed", action, message: outcome.message, still: outcome.reason === "runtime-missing"
         ? "No service was installed and no service files were changed."
         : outcome.reason === "busy" ? "Nothing changed." : action === "install"
-          ? (outcome.restarted ? "The daemon is back inside this app. Nothing else was touched." : "Nothing was installed.")
+          ? (outcome.daemon === "restarted"
+            ? "The daemon is back inside this app. Nothing else was touched."
+            : outcome.daemon === "stopped"
+              ? "Nothing was installed. The daemon inside this app stopped and did not start again, so no session is running. Quit and reopen Domovoi to start it."
+              : "Nothing was installed.")
           : `Nothing was removed. The ${service.kind} still holds the daemon, and every session keeps running.` })
     } catch (cause) {
       setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: "Nothing changed." })
@@ -95,7 +119,7 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
     ? (phase.kind === "installing" ? "Both wait until the install finishes." : "Both wait until the removal finishes.")
     : on ? "Install is off: the service is already installed." : "Remove is off: nothing is installed."
   const installLocked = !live || on || busy || Boolean(live.refusal)
-  const removeLocked = !live || !on || busy
+  const removeLocked = !live || !on || busy || Boolean(live.refusal)
   return (
     <section aria-labelledby="settings-daemon" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-col gap-1">
@@ -121,7 +145,33 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
           <span className="font-machine text-[10.5px] opacity-80">{phase.target}</span>
         </div>
       ) : null}
-      {phase.kind === "removed" ? <p className="m-0 rounded-md border px-3 py-2 text-[11.5px]" role="status">Removed. Quitting Domovoi now stops the daemon and every session on it.</p> : null}
+      {phase.kind === "removed" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border px-3 py-2 text-[11.5px]" role="status">
+          {phase.recovery ? (
+            <>
+              <span>{phase.recovery}</span>
+              <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{profileRecoverCommand}</span>
+            </>
+          ) : phase.daemonRunning ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
+          {phase.daemonRunning ? null : <span>Removed. The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.</span>}
+        </div>
+      ) : null}
+      {phase.kind === "waits" ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{`The switch waits: ${phase.refusal} Nothing is interrupted.`}</p> : null}
+      {phase.kind === "unchecked" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">
+          <span>Could not check for running turns or waiting gates, so the switch waits. Nothing is interrupted.</span>
+          <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
+        </div>
+      ) : null}
+      {phase.kind === "not-attached" ? (
+        <div className="flex flex-col gap-1.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="alert">
+          <span className="font-medium">Installed, but this window could not reach the daemon</span>
+          <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
+          <span>{`The ${service.kind} is installed and the daemon inside this app is stopped. Whether the service started is not known from here.`}</span>
+          <span>To check, run this in a terminal.</span>
+          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />domovoid service status</span>
+        </div>
+      ) : null}
       {phase.kind === "failed" ? (
         <div className="flex flex-col gap-1.5 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground" role="alert">
           <span className="font-medium">{phase.action === "install" ? "Could not install the service" : "Could not remove the service"}</span>

@@ -27,13 +27,14 @@ describe("desktop daemon assembly", () => {
           .map((name) => name.trim())
           .filter((name) => name.length > 0 && !name.startsWith("type "))
         for (const name of values) {
-          // Route verification uses an existing home owner; it cannot construct
-          // or acquire a daemon. The login-service calls (J24, ruled 2026-09-23)
+          // Route verification and the handoff check read an existing home
+          // owner; neither can construct or acquire a daemon. The login-service calls (J24, ruled 2026-09-23)
           // hand the daemon to the platform's service manager; none constructs
           // one here. Neither the constructor nor factory is allowed.
           if (![
             "acquireLocalDaemon",
             "verifyLocalFleetClientRoute",
+            "readLocalServiceHandoffRefusal",
             "installDaemonService",
             "readDaemonServiceStatus",
             "removeDaemonService",

@@ -18,7 +18,7 @@ async function skipFirstRun(user: ReturnType<typeof userEvent.setup>) {
 }
 const settle = () => act(async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve() })
 
-function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string }>): DesktopWindowBridge {
+function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string; daemonRunning: boolean }>): DesktopWindowBridge {
   return {
     platform: "darwin",
     getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
@@ -35,14 +35,14 @@ function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string 
     minimize: () => {},
     maximize: () => {},
     close: () => {},
-    daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true, kind: "file", target: "/p" }) },
+    daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true, kind: "file", target: "/p", daemonRunning: true }) },
   }
 }
 
 // J24: the shell refuses the handoff by name from its own snapshot, and once
 // the installer answers, tells the desktop so it resolves its daemon again.
 it("refuses while a turn runs, then installs and reports the change", async () => {
-  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true }))
   const onLocalDaemonChanged = vi.fn()
   const running = workspaceSnapshot()
   render(<WorkspaceShell clientKind="desktop" windowBridge={bridge(install)} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app" }} onLocalDaemonChanged={onLocalDaemonChanged} />)
@@ -61,7 +61,7 @@ it("refuses while a turn runs, then installs and reports the change", async () =
 })
 
 it("installs when idle and tells the desktop the daemon changed", async () => {
-  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true }))
   const onLocalDaemonChanged = vi.fn()
   const section = () => screen.getByRole("region", { name: "Daemon on this machine" })
   const user = userEvent.setup()

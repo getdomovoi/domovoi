@@ -1,9 +1,10 @@
 import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
-import { access, cp, realpath, stat } from "node:fs/promises"
+import { access, cp, realpath, rm, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { acquireLocalDaemon, installDaemonService, readDaemonServiceStatus, removeDaemonService, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
+import { acquireLocalDaemon, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService, verifyLocalFleetClientRoute } from "@getdomovoi/daemon"
+import { publishFileDurably } from "@getdomovoi/credential-store"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
@@ -148,12 +149,22 @@ const desktopDaemonService = new DesktopDaemonService({
     version: app.getVersion(),
     platform: process.platform,
     exists: async (path) => { try { await access(path); return true } catch { return false } },
-    copy: (from, to) => cp(from, to, { recursive: true, force: true }),
+    copy: (from, to) => cp(from, to, { recursive: true, errorOnExist: true, force: false }),
+    remove: (path) => rm(path, { recursive: true, force: true }),
+    rename: (from, to) => publishFileDurably(from, to),
   }),
   install: (options) => installDaemonService(options),
   status: () => readDaemonServiceStatus(),
   remove: () => removeDaemonService(),
+  // The same check the renderer draws, applied to the daemon's own workspace.
+  refusal: async () => {
+    const endpoint = desktopDaemon.current()
+    if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
+    return readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
+  },
   daemon: {
+    beginHandoff: () => desktopDaemon.beginHandoff(),
+    endHandoff: () => desktopDaemon.endHandoff(),
     stopOwned: () => desktopDaemon.stopOwned(),
     attachOnly: () => desktopDaemon.attachOnly(),
     restart: () => desktopDaemon.restart(),

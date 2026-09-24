@@ -29,8 +29,30 @@ describe("createDesktopWindowBridge", () => {
     await expect(bridge.openExternal({ editor: "system", path: "/project" })).resolves.toBe(true)
     expect(target.invoke).toHaveBeenCalledWith("domovoi:clipboard-write", "copy me")
     expect(target.invoke).toHaveBeenCalledWith("domovoi:open-external", { editor: "system", path: "/project" })
-    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/c" }))
-    await expect(bridge.daemonService?.install()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" })
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", configurationPath: "/c", daemonRunning: true }))
+    await expect(bridge.daemonService?.install()).resolves.toEqual({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true })
+    for (const [answer, drawn] of [
+      [{ ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false },
+        { ok: true, kind: "task", target: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record could not be read", daemonRunning: false }],
+      [{ ok: true, kind: "file", target: "/p", profileRecovery: "operator-confirmation-required", daemonRunning: true },
+        { ok: true, kind: "file", target: "/p", profileRecovery: "operator-confirmation-required", daemonRunning: true }],
+      [{ ok: false, reason: "installed-not-attached", kind: "file", target: "/p", message: "The daemon did not answer" },
+        { ok: false, reason: "installed-not-attached", kind: "file", target: "/p", message: "The daemon did not answer" }],
+      [{ ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." }, { ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." }],
+      [{ ok: false, reason: "check-failed", message: "connect ECONNREFUSED" }, { ok: false, reason: "check-failed", message: "connect ECONNREFUSED" }],
+      [{ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped" }, { ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped" }],
+    ] as const) {
+      target.invoke.mockImplementationOnce(async () => answer)
+      await expect(bridge.daemonService?.remove()).resolves.toEqual(drawn)
+    }
+    for (const answer of [
+      { ok: true, kind: "file", target: "/p" },
+      { ok: true, kind: "file", target: "/p", daemonRunning: true, profileRecovery: "whatever" },
+      { ok: false, reason: "failed", message: "m", daemon: "maybe" },
+    ]) {
+      target.invoke.mockImplementationOnce(async () => answer)
+      await expect(bridge.daemonService?.remove()).rejects.toThrow("invalid service outcome")
+    }
     target.invoke.mockImplementationOnce(async () => ({ installed: true, running: true, detail: "pid 1" }))
     await expect(bridge.daemonService?.status()).resolves.toEqual({ installed: true, running: true, detail: "pid 1" })
     target.invoke.mockImplementationOnce(async () => ({ nonsense: true }))
