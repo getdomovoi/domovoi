@@ -1926,6 +1926,18 @@ These are valuable but must not displace the secure single-user fleet workflow:
 - [ ] parallel agents in isolated worktrees with explicit merge/review workflows
 - [ ] reusable session templates and automation schedules
 - [ ] plugin marketplace and signed third-party integration bundles
+- [ ] session adoption: attach an agent session that was started outside Domovoi, for example in
+  a terminal, by its provider session id, and continue it in place. Decided 2026-09-18: adopt in
+  place and say so in the thread; moving it into a worktree is a later opt-in; read the
+  provider's session registry and never write its socket. Proposed in the 2026-09-22 audit as
+  J43, which also leaves open whether checkpoint refs may be written into an adopted repository.
+  Requested by the maintainer 2026-09-22.
+- [ ] cross-session reference: in one Domovoi session, refer to another session by id so that
+  session's facts (thread summary, files touched, checkpoints, plan) come into the prompt as
+  documented Domovoi state, never hidden provider reasoning, the same rule cross-provider
+  handoffs follow (`AGENTS.md`). Needs a protocol addition with runtime validation and tests in
+  `packages/protocol`, a prompt-builder change in the daemon, and a ruling on whether the call
+  joins `phoneAndTabletRpcMethods`. Requested by the maintainer 2026-09-22.
 
 ## Unresolved product decisions
 
