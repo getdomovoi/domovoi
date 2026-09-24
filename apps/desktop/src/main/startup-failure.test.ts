@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
+import { daemonErrorLogSink, recordDaemonRuntimeFailure, recordStartupFailure } from "./startup-failure.js"
 
 describe("recordStartupFailure", () => {
   it("appends the failure cause to the log and names the log in the dialog detail", () => {
@@ -52,5 +52,30 @@ describe("daemonErrorLogSink", () => {
     const sink = daemonErrorLogSink("/logs/domovoi-main.log", () => { throw new Error("closed") })
 
     expect(() => sink({ context: "context", detail: "detail" })).not.toThrow()
+  })
+})
+
+// Approved 2026-09-23: a shipped runtime that is missing or does not load
+// reaches the startup-failure screen with the path and what is missing.
+describe("recordDaemonRuntimeFailure", () => {
+  it("says the shipped runtime could not be loaded when it cannot be imported", () => {
+    const append = vi.fn()
+    const detail = recordDaemonRuntimeFailure({
+      error: new Error("file:///r/daemon-runtime/daemon/dist/public.js could not be imported: Cannot find module"),
+      logPath: "/logs/domovoi-main.log",
+      append,
+      now: () => new Date("2026-09-23T12:00:00.000Z"),
+    })
+    expect(detail).toBe("The daemon runtime this app ships could not be loaded.\n\nfile:///r/daemon-runtime/daemon/dist/public.js could not be imported: Cannot find module\n\nReinstall Domovoi to restore it. Details: /logs/domovoi-main.log")
+    expect(append).toHaveBeenCalledWith("/logs/domovoi-main.log", "2026-09-23T12:00:00.000Z startup failed: file:///r/daemon-runtime/daemon/dist/public.js could not be imported: Cannot find module\n")
+  })
+
+  it("names the missing exports when the runtime does not match", () => {
+    const detail = recordDaemonRuntimeFailure({
+      error: new Error("file:///r/daemon-runtime/daemon/dist/public.js is missing readLocalServiceHandoffRefusal. The shipped daemon runtime does not match this app."),
+      logPath: "/logs/domovoi-main.log",
+      append: () => { throw new Error("read-only") },
+    })
+    expect(detail).toBe("The daemon runtime this app ships could not be loaded.\n\nfile:///r/daemon-runtime/daemon/dist/public.js is missing readLocalServiceHandoffRefusal. The shipped daemon runtime does not match this app.\n\nReinstall Domovoi to restore it. Details: /logs/domovoi-main.log")
   })
 })

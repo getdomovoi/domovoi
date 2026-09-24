@@ -12,7 +12,7 @@ import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { DesktopDaemonService, stageDaemonRuntime } from "./daemon-service.js"
 import { loadDaemonModule } from "./daemon-module.js"
-import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
+import { daemonErrorLogSink, recordDaemonRuntimeFailure, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonEnvironment,
   inlineScriptHashes,
@@ -119,7 +119,17 @@ const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
 // One copy of the daemon (fetzy, 2026-09-23): a packaged app runs its in-app
 // daemon from the runtime it ships in resources, the files the login service
 // runs; the archive carries none of it.
-const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath })
+// A runtime that is missing or does not load stops startup here, before any
+// window, with the path and what is missing, instead of Electron's own error.
+const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }).catch((error: unknown) => {
+  if (launchSmoke) {
+    console.error("Desktop launch smoke could not load the daemon runtime", error)
+  } else {
+    dialog.showErrorBox("Domovoi could not start", recordDaemonRuntimeFailure({ error, logPath: domovoiMainLogPath(), append: appendDomovoiMainLog }))
+  }
+  app.exit(1)
+  return process.exit(1)
+})
 const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService } = daemonModule.module
 if (launchSmoke) console.info(`DOMOVOI_DESKTOP_DAEMON_MODULE ${daemonModule.from}`)
 const daemonSeam = developmentLoopModule

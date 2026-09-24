@@ -32,13 +32,27 @@ export function daemonModuleSpecifier({ isPackaged, resourcesPath }: DaemonModul
     : "@getdomovoi/daemon"
 }
 
+// The shipped runtime is missing, cannot be imported, or does not carry what
+// the app uses. Startup names it rather than dying with Electron's own error.
+export class DaemonRuntimeLoadError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "DaemonRuntimeLoadError"
+  }
+}
+
 export async function loadDaemonModule(
   location: DaemonModuleLocation,
   importer: (specifier: string) => Promise<Record<string, unknown>> = (specifier) => import(specifier) as Promise<Record<string, unknown>>,
 ): Promise<{ module: DaemonModule; from: string }> {
   const from = daemonModuleSpecifier(location)
-  const loaded = await importer(from)
+  let loaded: Record<string, unknown>
+  try {
+    loaded = await importer(from)
+  } catch (cause) {
+    throw new DaemonRuntimeLoadError(`${from} could not be imported: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
   const missing = daemonModuleExports.filter((name) => typeof loaded[name] !== "function")
-  if (missing.length) throw new Error(`${from} is missing ${missing.join(", ")}. The shipped daemon runtime does not match this app.`)
+  if (missing.length) throw new DaemonRuntimeLoadError(`${from} is missing ${missing.join(", ")}. The shipped daemon runtime does not match this app.`)
   return { module: loaded as unknown as DaemonModule, from }
 }
