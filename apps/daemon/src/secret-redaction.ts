@@ -301,8 +301,10 @@ class HeldTailRedactor {
 
 // A name and its separator at the end of a line's text, and any part of the
 // value already there.
+// A bare name starts at a word boundary, as main's own patterns read it:
+// total_token or has_secret is an ordinary identifier, not a name.
 const valueAtEnd = new RegExp(
-  String.raw`(?:(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)|-D${sensitiveName}\s*=\s*|${sensitiveName}\b["']?\s*[:=]\s*)([^\s;&|]*)$`,
+  String.raw`(?:(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)|-D${sensitiveName}\s*=\s*|\b${sensitiveName}\b["']?\s*[:=]\s*)([^\s;&|]*)$`,
   "iu",
 )
 
@@ -340,7 +342,7 @@ function valueEndingText(text: string): ValueRead | undefined {
 // Values are read left to right, each from its name to its end, so a name
 // inside an earlier value never starts one of its own.
 const namesAndSeparators = new RegExp(
-  String.raw`(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)|-D${sensitiveName}\s*=\s*|${sensitiveName}\b["']?\s*[:=]\s*`,
+  String.raw`(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)|-D${sensitiveName}\s*=\s*|\b${sensitiveName}\b["']?\s*[:=]\s*`,
   "giu",
 )
 

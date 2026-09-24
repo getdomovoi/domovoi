@@ -111,6 +111,14 @@ function generate(next: () => number): Case {
   }
   const ending = pick(["\r\n", "\n", "\r\n", ""])
   if (chance(0.3)) return generateComposed(next, word)
+  // A sensitive name as the end of an ordinary identifier is not that name:
+  // where main shows such a line whole, so must this.
+  if (chance(0.12)) {
+    const identifier = pick(["total_token", "has_secret", "max_password_length", "session_cookie_count", "last_accesstoken", "retry_credentials", "xpassword"])
+    const separator = pick(["=", ": ", " = ", ":"])
+    const shown = pick(["5", "false", "12", "none", "true"])
+    return { shape: "identifier-suffix", text: `${pick(["", "export ", "set ", "{\""])}${identifier}${separator}${shown}${ending || "\r\n"}`, kept: [] }
+  }
   if (chance(0.25)) {
     const plain = pick([
       "passwords are hashed", "Enter password below", "token count 5", "me@host:~$ ls -la",

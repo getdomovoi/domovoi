@@ -149,5 +149,17 @@ describe("TerminalOutputRedactor", () => {
       expect(output, prefix).toContain(" done\r\n")
     }
   })
+
+  // Review round 8: a sensitive name at the end of an ordinary identifier is
+  // not a name, before or after an idle beat, as main reads it.
+  it.each([
+    ["total_token=", "5\r\n"],
+    ["has_secret=", "false\r\n"],
+    ["max_password_length: ", "12\r\n"],
+  ])("keeps %j then %j as it is across an idle beat", (name, value) => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = [redactor.push(name), redactor.release(), redactor.push(value), redactor.flush()].join("")
+    expect(shown).toBe(`${name}${value}`)
+  })
 })
 
