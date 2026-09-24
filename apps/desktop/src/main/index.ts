@@ -33,7 +33,6 @@ import {
   type DesktopPlatform,
 } from "./desktop-platform.js"
 import {
-  isWindowDecoration,
   readWindowDecoration,
   serializeWindowDecoration,
   windowDecorationFileName,
@@ -311,16 +310,6 @@ function serveRendererPolicy(): void {
   })
 }
 
-ipcMain.handle("domovoi:window-decoration-get", (event) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  return activeWindowDecoration
-})
-ipcMain.handle("domovoi:window-decoration-set", (event, decoration: unknown) => {
-  if (!authorizedDesktopSender(event)) throw new Error("Desktop request is not authorized")
-  if (!isWindowDecoration(decoration)) throw new Error("Window decoration is invalid")
-  return persistWindowDecoration(decoration)
-})
-
 registerDesktopIpc(ipcMain, {
   fleetRoute: (machineId, budgetMs) => fleetOrigins.authorize(machineId, budgetMs),
   forgetFleetRoute: (machineId) => fleetOrigins.forget(machineId),
@@ -346,6 +335,10 @@ registerDesktopIpc(ipcMain, {
   rendererDeepLinkSink: {
     get: () => rendererDeepLinkSink,
     set: (sink) => { rendererDeepLinkSink = sink },
+  },
+  windowDecoration: {
+    get: () => activeWindowDecoration,
+    set: persistWindowDecoration,
   },
   launchSmoke: {
     enabled: launchSmoke,

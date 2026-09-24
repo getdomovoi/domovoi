@@ -9,7 +9,7 @@ import type { PairingPayload } from "@getdomovoi/protocol"
 import type { PairedCredential } from "../lib/redeem-pairing-code"
 
 const payload = { v: 1 as const, url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", code: "hearth-quiet-ember-42", label: "djs-macbook-pro-1" }
-const credential: PairedCredential = { url: payload.url, token: "t".repeat(43) }
+const credential: PairedCredential = { url: payload.url, token: "t".repeat(43), client: "phone" }
 
 // A fake camera: after it mounts, it reports the text a QR would carry, the
 // way the real one reports a frame.
