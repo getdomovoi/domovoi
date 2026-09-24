@@ -75,10 +75,12 @@ describe("CliProviderProbe", () => {
       version: "2.1.100",
       problem: "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.",
     })
-    await expect(new CliProviderProbe(run("2.1.280", false), { platform: "win32" }).inspectProvider("claude-code")).resolves.toMatchObject({
-      command: "claude",
-      problem: expect.stringMatching(/native claude\.exe/),
-    })
+    // With no PATH the probe runs the bare name, which Windows starts as
+    // claude.exe, so a bare claude is not a shim. A resolved script path is
+    // (claude-install.test.ts).
+    const bare = await new CliProviderProbe(run("2.1.280", false), { platform: "win32" }).inspectProvider("claude-code")
+    expect(bare).toMatchObject({ command: "claude", status: "ready" })
+    expect(bare).not.toHaveProperty("problem")
     const native = await new CliProviderProbe(run("2.1.280"), { platform: "win32" }).inspectProvider("claude-code")
     expect(native).toMatchObject({ command: "claude.exe", status: "ready" })
     expect(native).not.toHaveProperty("problem")
