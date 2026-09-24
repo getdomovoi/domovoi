@@ -76,12 +76,6 @@ export function permissionHardGates(): { categories: HardGateCategory[] } {
     .map((id) => ({ id, label: hardGateGroups[id].label })) }
 }
 
-const fileToolCommands = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
-
-export function isFileToolCommand(command: string): boolean {
-  return fileToolCommands.has(command)
-}
-
 const gitSummaryFlag = String.raw`--(?:stat|shortstat|numstat|name-only|name-status)`
 const safeBuildAutoPatterns = [
   /^git\s+status(?:\s+(?:--(?:porcelain(?:=v[12])?|short|branch|long|untracked-files(?:=(?:no|normal|all))?)|-[sb]+|-u(?:no|normal|all)?))*$/i,

@@ -13,6 +13,16 @@ import {
 import type { AgentAdapter } from "./codex.js"
 import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceStore } from "./store.js"
+import type { WorkspaceService } from "./workspace.js"
+
+// A person's allow takes a snapshot checkpoint before the decision is saved
+// (J34), so these gates need a worktree that can take one.
+function checkpointingWorkspace(): WorkspaceService {
+  return {
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
+    snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+  }
+}
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -99,7 +109,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -149,7 +159,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -187,7 +197,7 @@ describe("approval decisions", () => {
       saveAsync: vi.fn(async () => {}),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -224,7 +234,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -271,7 +281,7 @@ describe("approval decisions", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -326,7 +336,7 @@ describe("standing rule replacement links", () => {
       saveAsync: vi.fn(async () => {}),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
@@ -363,7 +373,7 @@ describe("standing rule replacement links", () => {
       }),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, errorSink: vi.fn() })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { codex: provider }, workspaceService: checkpointingWorkspace(), errorSink: vi.fn() })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const first = await connect(daemon, port)

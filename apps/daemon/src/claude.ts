@@ -21,7 +21,7 @@ import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } 
 import { gitReadCanRunProgram } from "./git-read-config.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
-import { resolveCommandPathSync } from "./tool-path.js"
+import { checkClaudeInstall, resolveClaudeSdkExecutable } from "./claude-install.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
@@ -61,6 +61,8 @@ export type ClaudeSdkMessage = {
   tool_use_result?: unknown
   usage?: unknown
   total_cost_usd?: unknown
+  user_message_uuid?: unknown
+  user_message_uuids?: unknown
 }
 
 type ClaudePermissionContext = {
@@ -145,6 +147,13 @@ type Session = {
   screenedReads: Map<string, { reason: string; path?: string }>
   stderr: ClaudeStderrTail
   activeTurnId?: string
+  // The uuids of the user messages sent for the active turn: its prompt and
+  // any steering. A result names the messages it answered.
+  turnMessageIds: Set<string>
+  // The uuids of turns that were interrupted and whose own result has not come
+  // back yet. Only a result naming one of these is dropped: a result naming a
+  // uuid the SDK made itself (a compaction, a merged queue) ends the turn.
+  interruptedMessageIds: Set<string>
   assistantError?: string
   // Set once a turn has been sent. Claude has no conversation to resume until
   // then, so a reopen before it must start a fresh one.
@@ -175,6 +184,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly capabilities = { vision: true } as const
   readonly #factory: ClaudeQueryFactory
   readonly #id: () => ClaudeMessageId
+  readonly #preflight: (() => Promise<void>) | undefined
   #sessions = new Map<string, Session>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
@@ -183,15 +193,25 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   constructor(
     factory: ClaudeQueryFactory = defaultClaudeQueryFactory,
     id: () => ClaudeMessageId = randomUUID,
+    // The install check runs here, asynchronously, before the synchronous
+    // factory. An injected factory brings no executable to check.
+    preflight: (() => Promise<void>) | undefined = factory === defaultClaudeQueryFactory
+      ? () => checkClaudeInstall(process.env.PATH ?? "", process.platform)
+      : undefined,
   ) {
     this.#factory = factory
     this.#id = id
+    this.#preflight = preflight
   }
 
   async connect(): Promise<void> {}
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     signal?.throwIfAborted()
+    if (this.#preflight) {
+      await this.#preflight()
+      signal?.throwIfAborted()
+    }
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const runtime = this.#factory(input, {
@@ -287,6 +307,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     delete session.assistantError
     await this.#applyRuntime(session, runtime)
     session.activeTurnId = turnId
+    session.turnMessageIds = new Set([turnId])
     session.input.push(userMessage(threadId, turnId, prompt, visualContexts))
     session.started = true
     return turnId
@@ -300,12 +321,21 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   ): Promise<void> {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) throw new Error("Claude turn is no longer active")
-    session.input.push(userMessage(threadId, this.#id(), prompt, visualContexts))
+    const messageId = this.#id()
+    session.turnMessageIds.add(messageId)
+    session.input.push(userMessage(threadId, messageId, prompt, visualContexts))
   }
 
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) return
+    for (const id of session.turnMessageIds) session.interruptedMessageIds.add(id)
+    // Bounded: a result that never comes must not hold its uuids forever.
+    while (session.interruptedMessageIds.size > maximumInterruptedMessageIds) {
+      const oldest = session.interruptedMessageIds.values().next().value
+      if (oldest === undefined) break
+      session.interruptedMessageIds.delete(oldest)
+    }
     await session.query.interrupt()
   }
 
@@ -351,6 +381,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     runtime: Runtime,
     resume: boolean,
   ): Promise<void> {
+    if (this.#preflight) await this.#preflight()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
@@ -378,6 +409,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       runtime,
       tools: new Map(),
       screenedReads: new Map(),
+      turnMessageIds: new Set(),
+      interruptedMessageIds: new Set(),
       stderr,
     }
     this.#sessions.set(threadId, session)
@@ -562,6 +595,16 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return
     }
     if (message.type === "result") {
+      // An interrupted turn's own result arrives after the interrupt returns,
+      // and by then the next turn may hold the slot. A result that names only
+      // an interrupted turn's messages is that turn's, and ends nothing. Any
+      // other result, including one naming a uuid the SDK made itself or none
+      // at all, ends the active turn as before.
+      const answered = resultMessageIds(message)
+      if (answered?.some((id) => session.interruptedMessageIds.has(id))) {
+        for (const id of answered) session.interruptedMessageIds.delete(id)
+        if (!answered.some((id) => session.turnMessageIds.has(id))) return
+      }
       const failed = message.is_error === true || message.subtype !== "success"
       const context = failed ? {} : await claudeContextOccupancy(session.query)
       // The reply has already reached the person. A counter that does not add
@@ -773,6 +816,16 @@ function baseOptions(): ClaudeQueryOptions {
   }
 }
 
+const maximumInterruptedMessageIds = 64
+
+function resultMessageIds(message: ClaudeSdkMessage): string[] | undefined {
+  const ids = Array.isArray(message.user_message_uuids)
+    ? message.user_message_uuids.filter((id): id is string => typeof id === "string")
+    : []
+  if (typeof message.user_message_uuid === "string") ids.push(message.user_message_uuid)
+  return ids.length > 0 ? ids : undefined
+}
+
 function userMessage(
   threadId: string,
   turnId: ClaudeMessageId,
@@ -919,12 +972,10 @@ function toolOutput(result: unknown, fallback: unknown): string {
 }
 
 const defaultClaudeQueryFactory: ClaudeQueryFactory = (input, options) => {
-  const executable = resolveCommandPathSync("claude", process.env.PATH ?? "", process.platform)
-  if (executable === undefined) {
-    throw new Error("Claude Code is not installed: no claude executable was found on the tool PATH")
-  }
+  const resolved = resolveClaudeSdkExecutable(process.env.PATH ?? "", process.platform)
+  if ("problem" in resolved) throw new Error(resolved.problem)
   return query({
     prompt: input satisfies AsyncIterable<SDKUserMessage>,
-    options: { ...options, pathToClaudeCodeExecutable: executable } satisfies Options,
+    options: { ...options, pathToClaudeCodeExecutable: resolved.executable } satisfies Options,
   })
 }

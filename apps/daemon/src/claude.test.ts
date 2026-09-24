@@ -1241,3 +1241,74 @@ describe("reads Claude would approve before Domovoi sees them", () => {
     await adapter.close()
   })
 })
+
+describe("a result that arrives after its turn was interrupted", () => {
+  it("does not complete the turn sent after the interrupt", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "error_during_execution", session_id: threadId, is_error: true,
+      user_message_uuid: first, user_message_uuids: [first],
+    } as ClaudeSdkMessage)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([])
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: second, user_message_uuids: [second],
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: { threadId, turnId: second, turn: { id: second, status: "completed" } },
+    }))
+    await adapter.close()
+  })
+
+  // A result may name a uuid the SDK made itself (a compaction, a merged
+  // queue). Only a result naming an interrupted turn's messages is dropped.
+  it("completes the turn on a result naming a message the SDK made itself", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "11111111-1111-4111-8111-111111111111")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: "44444444-4444-4444-8444-444444444444",
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: { threadId, turnId, turn: { id: turnId, status: "completed" } },
+    }))
+    await adapter.close()
+  })
+})
+
+describe("the install check before a query", () => {
+  // The check runs before the synchronous factory, so a claude the SDK cannot
+  // drive is refused without starting a query at all.
+  it("refuses a session and a model list without calling the factory", async () => {
+    const { calls, factory } = factoryHarness()
+    const problem = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, async () => { throw new Error(problem) })
+
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(problem)
+    await expect(adapter.listModels()).rejects.toThrow(problem)
+    expect(calls).toHaveLength(0)
+    await adapter.close()
+  })
+})

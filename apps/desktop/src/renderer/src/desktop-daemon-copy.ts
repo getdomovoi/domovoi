@@ -33,6 +33,9 @@ const refusalTitles: Record<DaemonRefusalReason, string> = {
   "owner-incompatible": "The local daemon and this app need an update",
   "owner-unverified": "The local daemon could not be verified",
   "profile-invalid": "The local daemon profile is invalid",
+  "port-in-use": "The local daemon's port is in use",
+  "state-locked": "Another process holds this profile's state",
+  "identity-mismatch": "The stored workspace belongs to another machine identity",
 }
 
 export function daemonRefusalCopy(refusal: { reason: DaemonRefusalReason; message: string }): DesktopDaemonCopy {

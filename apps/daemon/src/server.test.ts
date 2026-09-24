@@ -6,7 +6,7 @@ import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import WebSocket from "ws"
@@ -121,6 +121,15 @@ describe("helloProtocolCompatibility", () => {
     })
   })
 })
+
+// A person's allow takes a snapshot checkpoint before the decision is saved
+// (J34), so a gate in a worktree the fixture never made needs one that can.
+function checkpointingWorkspace(): WorkspaceService {
+  return {
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
+    snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+  }
+}
 
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
@@ -952,6 +961,7 @@ describe("DomovoiDaemon", () => {
       createSessionWorkspace: vi.fn(),
       removeSessionWorkspace: vi.fn(),
       checkpoint: vi.fn(),
+      snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
       restore: vi.fn(),
       evidence: vi.fn(async () => ({
         baseCommit: "a".repeat(40),
@@ -6926,6 +6936,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -6973,7 +6984,7 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({
             kind: "receipt",
             decision: "always-project",
-            checkpoint: "ckpt_7f21",
+            checkpoint: "c".repeat(40),
             client: "desktop",
           }),
         ]),
@@ -7108,6 +7119,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -8604,6 +8616,10 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     const sessionId = (created.result as { activeSessionId: string }).activeSessionId
+    // The session names the branch its worktree is on from the start.
+    expect(created).toMatchObject({ result: { sessions: expect.arrayContaining([
+      expect.objectContaining({ id: sessionId, branch: `domovoi/${sessionId}` }),
+    ]) } })
     const sent = await rpc("session.send", {
       sessionId,
       prompt: "Start the migration",
@@ -8931,6 +8947,7 @@ describe("DomovoiDaemon", () => {
         restoredCommit: "b".repeat(40),
         recoveryCommit: "c".repeat(40),
       })),
+      snapshot: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
       id: `machine-${"8".repeat(32)}`,
@@ -9213,6 +9230,8 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "allow-once")
+    // The allow took a snapshot first (J34), which is not a branch checkpoint.
+    expect(workspaceService.snapshot).toHaveBeenCalledOnce()
 
     const activeCheckpoint = await rpc("checkpoint.create", {
       sessionId,
@@ -11258,7 +11277,7 @@ describe("DomovoiDaemon", () => {
       save: vi.fn(),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
     running.push(daemon)
     const address = await daemon.start()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
@@ -11542,6 +11561,7 @@ describe("DomovoiDaemon", () => {
     const workspaceService = {
       inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
       archiveSessionWorkspace: vi.fn(async () => {}),
+      sessionBranchFacts: vi.fn(async () => ({ branch: "domovoi/session-billing", unmergedFiles: 7 })),
       checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
       restore: vi.fn(),
     } satisfies WorkspaceService
@@ -11617,8 +11637,10 @@ describe("DomovoiDaemon", () => {
 
     const archived = await rpc("session.archive", { sessionId: session.id, client: "desktop" })
     expect(archived).toMatchObject({ result: { sessions: expect.arrayContaining([
-      expect.objectContaining({ id: session.id, state: "archived", archiveCheckpoint: "d".repeat(40) }),
+      // The archived notice: the kept branch and what the source never received.
+      expect.objectContaining({ id: session.id, state: "archived", archiveCheckpoint: "d".repeat(40), branch: "domovoi/session-billing", unmergedFiles: 7 }),
     ]) } })
+    expect(workspaceService.sessionBranchFacts).toHaveBeenCalledWith(sessionWorkspacePath, store.snapshot.project!.path, expect.any(AbortSignal))
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
     expect(agent.stopThread).toHaveBeenCalledWith("thread-billing")
     expect(agent.resolveApproval).toHaveBeenCalledWith(11, "deny")
@@ -13124,6 +13146,51 @@ describe("DomovoiDaemon session transfer requests", () => {
 
     expect(answer).toMatchObject({ result: { outcome: "refused", reason: "session-turn-active" } })
     expect(dialed).toBe(0)
+    socket.close()
+  })
+
+  // A running turn keeps its session's artifact watch on the fast poll; an
+  // idle session may back off. The daemon tells each watcher which it is.
+  it("tells a session's artifact watcher when a turn starts and when it ends", async () => {
+    const { snapshot, streaming } = transferSnapshot()
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const busy = new Map<string, boolean[]>()
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { codex: fakeCodexAgent(listeners) },
+      authToken: testAuthToken("correct-horse-battery-staple"),
+      errorSink: vi.fn(),
+      workspaceService: stubWorkspaceService(),
+      artifactWatcherFactory: (options) => ({
+        start: async () => {},
+        stop: () => {},
+        setBusy: (next: boolean) => { busy.set(options.root, [...busy.get(options.root) ?? [], next]) },
+      }),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const root = resolve(streaming.workspacePath!)
+    expect(busy.get(root)?.at(-1)).toBe(false)
+
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolveOpen, reject) => {
+      socket.once("open", resolveOpen)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const { rpc } = observingClient(socket)
+    await rpc("session.send", { sessionId: streaming.id, prompt: "go", client: "desktop" })
+    await waitForDaemon(() => expect(busy.get(root)?.at(-1)).toBe(true))
+
+    for (const listener of listeners) {
+      listener({
+        type: "turn-completed",
+        params: { threadId: "thread-streaming", turnId: "turn-streaming", turn: { id: "turn-streaming", status: "completed" } },
+      })
+    }
+    await waitForDaemon(() => expect(busy.get(root)?.at(-1)).toBe(false))
     socket.close()
   })
 

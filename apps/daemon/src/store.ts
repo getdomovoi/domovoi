@@ -432,6 +432,21 @@ function openWorkspaceDatabase(path: string): DatabaseSync {
   return database
 }
 
+// State a newer daemon wrote is left exactly as it is. Reading it would mean
+// guessing at fields this daemon does not know, and moving it aside would
+// replace a person's sessions with the seed. The daemon does not start.
+export class NewerWorkspaceStateError extends Error {
+  constructor(
+    readonly path: string,
+    readonly storedProtocolVersion: string,
+    readonly daemonProtocolVersion: string,
+  ) {
+    const minor = storedProtocolVersion.split(".").slice(0, 2).join(".")
+    super(`Domovoi state at ${path} was written by a newer daemon (protocol ${storedProtocolVersion}), and this daemon speaks protocol ${daemonProtocolVersion}. It was left as it is and this daemon did not start. Run the newer Domovoi again, or update this one to protocol ${minor} or later.`)
+    this.name = "NewerWorkspaceStateError"
+  }
+}
+
 function quarantineStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-")
 }
@@ -467,12 +482,8 @@ function newerStoredProtocol(value: unknown): string | undefined {
     : undefined
 }
 
-function refuseNewerStoredState(path: string, stored: string): Error {
-  const [major, minor] = stored.split(".")
-  return new Error(
-    `Stored state at ${path} was written by Domovoi protocol ${stored}, which is newer than this build's protocol ${protocolVersion}. ` +
-    `This build left it unchanged. Run a Domovoi build that speaks protocol ${major}.${minor} or later to open it.`,
-  )
+function refuseNewerStoredState(path: string, stored: string): NewerWorkspaceStateError {
+  return new NewerWorkspaceStateError(path, stored, protocolVersion)
 }
 
 function quotedColumn(name: string): string {
@@ -543,6 +554,21 @@ function versionFromCopy(path: string): string | undefined {
   }
 }
 
+// SQLite ends a transaction itself on some errors, such as a full database; a
+// ROLLBACK then fails with "no transaction is active" and would replace the
+// error that ended it. isTransaction is absent before Node 22.16, so that one
+// error is tolerated there.
+function rollBackIfOpen(database: DatabaseSync): void {
+  const open = (database as { isTransaction?: boolean }).isTransaction
+  if (open === false) return
+  try {
+    database.exec("ROLLBACK")
+  } catch (error) {
+    if (open === undefined && error instanceof Error && error.message.includes("no transaction is active")) return
+    throw error
+  }
+}
+
 function openQuarantined<T>(quarantinedPath: string, read: (source: DatabaseSync) => T): T | undefined {
   let source: DatabaseSync | undefined
   try {
@@ -588,7 +614,7 @@ function salvagePairedDevices(database: DatabaseSync, quarantinedPath: string): 
     database.exec("COMMIT")
     return invalid.length === 0
   } catch {
-    database.exec("ROLLBACK")
+    rollBackIfOpen(database)
     return false
   }
 }
@@ -1081,7 +1107,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       this.transferOwnership.record(ownership)
       this.#database.exec("COMMIT")
     } catch (error) {
-      this.#database.exec("ROLLBACK")
+      rollBackIfOpen(this.#database)
       throw error
     }
     this.#restrictFilePermissions()
@@ -1278,7 +1304,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       this.#database.exec("COMMIT")
       return results
     } catch (error) {
-      this.#database.exec("ROLLBACK")
+      rollBackIfOpen(this.#database)
       throw error
     }
   }
