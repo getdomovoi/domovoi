@@ -1,7 +1,7 @@
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { expect, it } from "vitest"
 
-import { serviceHandoffRefusal } from "./service-handoff"
+import { demoWorkspace, type WorkspaceSnapshot } from "./index.js"
+import { serviceHandoffRefusal } from "./service-handoff.js"
 
 function snapshot(): WorkspaceSnapshot {
   const next = structuredClone(demoWorkspace)

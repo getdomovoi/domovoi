@@ -15,6 +15,7 @@ import type * as Daemon from "@getdomovoi/daemon"
 export const daemonModuleExports = [
   "acquireLocalDaemon",
   "verifyLocalFleetClientRoute",
+  "readLocalServiceHandoffRefusal",
   "installDaemonService",
   "readDaemonServiceStatus",
   "removeDaemonService",

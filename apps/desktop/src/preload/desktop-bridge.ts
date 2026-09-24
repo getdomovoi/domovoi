@@ -84,17 +84,33 @@ function serviceText(value: unknown): value is string {
 
 // The main process answers with plain data; the renderer reads only the
 // fields it draws, and refuses a shape it does not know.
+const profileRecoveries = ["recorded", "not-needed", "operator-confirmation-required", "proof-unavailable"] as const
+
 function serviceOutcome(value: unknown): DaemonServiceOutcome {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid service outcome")
   const result = value as Record<string, unknown>
-  if (result.ok === true && (result.kind === "file" || result.kind === "task") && serviceText(result.target)) {
-    return { ok: true, kind: result.kind, target: result.target }
+  const kind = result.kind === "file" || result.kind === "task" ? result.kind : undefined
+  if (result.ok === true && kind && serviceText(result.target) && typeof result.daemonRunning === "boolean") {
+    const recovery = profileRecoveries.find((candidate) => candidate === result.profileRecovery)
+    if (result.profileRecovery !== undefined && !recovery) throw new Error("Desktop returned an invalid service outcome")
+    return {
+      ok: true, kind, target: result.target, daemonRunning: result.daemonRunning,
+      ...(recovery ? { profileRecovery: recovery } : {}),
+      ...(recovery && serviceText(result.profileRecoveryDetail) ? { profileRecoveryDetail: result.profileRecoveryDetail } : {}),
+    }
   }
   if (result.ok === false && result.reason === "runtime-missing" && (result.part === "node" || result.part === "daemon") && serviceText(result.path) && serviceText(result.message)) {
     return { ok: false, reason: "runtime-missing", part: result.part, path: result.path, message: result.message }
   }
-  if (result.ok === false && (result.reason === "busy" || result.reason === "failed") && serviceText(result.message)) {
-    return { ok: false, reason: result.reason, message: result.message, restarted: result.restarted === true }
+  if (result.ok === false && result.reason === "installed-not-attached" && kind && serviceText(result.target) && serviceText(result.message)) {
+    return { ok: false, reason: "installed-not-attached", kind, target: result.target, message: result.message }
+  }
+  if (result.ok === false && (result.reason === "busy" || result.reason === "refused" || result.reason === "check-failed") && serviceText(result.message)) {
+    return { ok: false, reason: result.reason, message: result.message }
+  }
+  if (result.ok === false && result.reason === "failed" && serviceText(result.message)
+    && (result.daemon === "untouched" || result.daemon === "restarted" || result.daemon === "stopped")) {
+    return { ok: false, reason: "failed", message: result.message, daemon: result.daemon }
   }
   throw new Error("Desktop returned an invalid service outcome")
 }

@@ -18,7 +18,7 @@ async function skipFirstRun(user: ReturnType<typeof userEvent.setup>) {
 }
 const settle = () => act(async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve() })
 
-function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string }>): DesktopWindowBridge {
+function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string; daemonRunning: boolean }>): DesktopWindowBridge {
   return {
     platform: "darwin",
     getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
@@ -35,14 +35,14 @@ function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string 
     minimize: () => {},
     maximize: () => {},
     close: () => {},
-    daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true, kind: "file", target: "/p" }) },
+    daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true, kind: "file", target: "/p", daemonRunning: true }) },
   }
 }
 
 // J24: the shell refuses the handoff by name from its own snapshot, and once
 // the installer answers, tells the desktop so it resolves its daemon again.
 it("refuses while a turn runs, then installs and reports the change", async () => {
-  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true }))
   const onLocalDaemonChanged = vi.fn()
   const running = workspaceSnapshot()
   render(<WorkspaceShell clientKind="desktop" windowBridge={bridge(install)} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app" }} onLocalDaemonChanged={onLocalDaemonChanged} />)
@@ -61,7 +61,7 @@ it("refuses while a turn runs, then installs and reports the change", async () =
 })
 
 it("installs when idle and tells the desktop the daemon changed", async () => {
-  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true }))
   const onLocalDaemonChanged = vi.fn()
   const section = () => screen.getByRole("region", { name: "Daemon on this machine" })
   const user = userEvent.setup()
@@ -79,4 +79,37 @@ it("installs when idle and tells the desktop the daemon changed", async () => {
   expect(install).toHaveBeenCalledOnce()
   expect(onLocalDaemonChanged).toHaveBeenCalledOnce()
   expect(await within(section()).findByText("Installed. Quitting this app now leaves the daemon and its sessions running.")).toBeTruthy()
+})
+
+// The installed-service fact the daemon section waits for comes from the
+// desktop's own status read, so a daemon outside the app is drawn as the
+// service, with Remove live, only when the service manager says it is there.
+it("draws a daemon outside the app as the service once the desktop reports the service installed", async () => {
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }))
+  const windowBridge = bridge(install)
+  windowBridge.daemonService!.status = vi.fn(async () => ({ installed: true, running: true, detail: "pid 48213" }))
+  const idle = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to a daemon outside this app", detail: "", owner: "outside" }} />)
+  await act(async () => { completeHandshake(harness.socket(0), idle) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Running")).toBeTruthy()
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+})
+
+it("keeps a daemon outside the app unnamed when the service status cannot be read", async () => {
+  const windowBridge = bridge(vi.fn())
+  windowBridge.daemonService!.status = vi.fn(async () => ({ unavailable: "launchctl could not be run" }))
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to a daemon outside this app", detail: "", owner: "outside" }} />)
+  await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
 })

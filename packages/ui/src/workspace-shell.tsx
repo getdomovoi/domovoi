@@ -19,8 +19,9 @@ import type {
   SystemEmergencyStopResult,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { selectableTurnSkills, serviceHandoffRefusal, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
+import { StateRecoveryNotice } from "./state-recovery-notice"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -125,7 +126,6 @@ import {
 } from "./workspace-selectors"
 import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
 import { AppBar, useUsageToday } from "./app-bar"
-import { serviceHandoffRefusal } from "./service-handoff"
 import { Thread, archiveSessionDescription } from "./thread"
 
 export { ArchiveSessionAction, CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
@@ -207,6 +207,19 @@ export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointB
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
+  // J24: whether the login service is installed, from the desktop's own
+  // status read. A daemon outside the app is drawn as the service only when
+  // this says so; an unreadable or unverified status leaves it unnamed.
+  const [serviceInstalled, setServiceInstalled] = useState<boolean | undefined>(undefined)
+  const readServiceStatus = useCallback(() => {
+    const service = windowBridge?.daemonService
+    if (!service) return
+    void service.status().then(
+      (status) => setServiceInstalled("installed" in status && status.installed !== null ? status.installed : undefined),
+      () => setServiceInstalled(undefined),
+    )
+  }, [windowBridge])
+  useEffect(() => { readServiceStatus() }, [readServiceStatus])
   // The queue outlives the thread view and is not limited to the session on
   // screen. Thread is keyed by session, so a switch unmounts it; and a message
   // queued in A must leave at A's next turn boundary whether or not anyone is
@@ -256,6 +269,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     closeTerminal,
     connected,
     clientAccess: workspaceAccess,
+    stateRecovery,
     createCheckpoint,
     createAnnotation,
     createSession,
@@ -454,6 +468,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The web reloads the page for a surface whose chunk failed to load; the
   // desktop leaves it unset and loads the chunk again.
   const reloadForNewCode = platform?.code?.reloadForNewCode
+  const [dismissedStateRecovery, setDismissedStateRecovery] = useState<string | null>(null)
+  const visibleStateRecovery = stateRecovery && stateRecovery.occurredAt !== dismissedStateRecovery
+    ? stateRecovery
+    : null
   const [projectSwitchConfirmation, setProjectSwitchConfirmation] = useState<ProjectSwitchConfirmation | null>(null)
   const [projectSwitchPending, setProjectSwitchPending] = useState(false)
   const [projectSwitchError, setProjectSwitchError] = useState("")
@@ -1285,9 +1303,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             {...(localDaemon && !attached ? { localDaemon: {
               ...localDaemon,
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
+              ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
-                install: async () => { const outcome = await windowBridge.daemonService!.install(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
-                remove: async () => { const outcome = await windowBridge.daemonService!.remove(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                install: async () => { const outcome = await windowBridge.daemonService!.install(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                remove: async () => { const outcome = await windowBridge.daemonService!.remove(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
                 refusal: serviceHandoffRefusal(snapshot),
               } } : {}),
             } } : {})}
@@ -1437,15 +1456,26 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <ThreadSkeleton reading={readingLabel} />
           </main>
         )}
-        {workspaceError ? (
-          <Alert
-            variant="destructive"
-            className="absolute bottom-3 left-3 z-50 w-auto max-w-sm shadow-[var(--shadow-md)]"
-          >
-            <CircleStopIcon />
-            <AlertTitle>Workspace action failed</AlertTitle>
-            <AlertDescription>{workspaceError}</AlertDescription>
-          </Alert>
+        {workspaceError || visibleStateRecovery ? (
+          <div className="absolute bottom-3 left-3 z-50 flex max-w-sm flex-col gap-2">
+            {visibleStateRecovery ? (
+              <StateRecoveryNotice
+                recovery={visibleStateRecovery}
+                onDismiss={() => setDismissedStateRecovery(visibleStateRecovery.occurredAt)}
+                className="w-auto shadow-[var(--shadow-md)]"
+              />
+            ) : null}
+            {workspaceError ? (
+              <Alert
+                variant="destructive"
+                className="w-auto shadow-[var(--shadow-md)]"
+              >
+                <CircleStopIcon />
+                <AlertTitle>Workspace action failed</AlertTitle>
+                <AlertDescription>{workspaceError}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
         ) : null}
         {snapshot && !watching ? <LauncherDialog
           mode={launcherMode}

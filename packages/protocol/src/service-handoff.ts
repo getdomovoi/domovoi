@@ -1,9 +1,11 @@
-import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { WorkspaceSnapshot } from "./schema.js"
 
 // J24, ruled 2026-09-23: the switch to the login service refuses while a turn
 // runs or a gate waits, and the refusal names which. Read from the snapshot
 // the client already holds; nothing is asked of the daemon and nothing is
-// interrupted.
+// interrupted. The desktop main process applies the same check to a snapshot
+// it reads itself before it stops anything, so the renderer is not the only
+// gate.
 export function serviceHandoffRefusal(snapshot: Pick<WorkspaceSnapshot, "sessions" | "approvals">): string | undefined {
   const title = (sessionId: string) => snapshot.sessions.find((session) => session.id === sessionId)?.title ?? sessionId
   const running = snapshot.sessions.filter((session) => session.state === "active" && session.activeTurnId).map((session) => session.title)

@@ -211,7 +211,7 @@ it("draws the daemon section for a daemon inside this app, with Install locked a
   expect(within(section).getByText("Off")).toBeTruthy()
   expect(section.textContent).toContain("Quitting Domovoi stops the daemon and every session on it.")
   expect(section.textContent).toContain("WHAT TURNING IT ON WRITES")
-  expect(section.textContent).toContain("~/Library/LaunchAgents/sh.domovoi.daemon.plist")
+  expect(section.textContent).toContain("~/Library/LaunchAgents/sh.domovoi.domovoid.plist")
   expect(section.textContent).toContain("A LaunchAgent, for your user only.")
   expect(section.textContent).toContain("~/.domovoi/service.json")
   const install = within(section).getByRole("button", { name: "Install" })
@@ -222,7 +222,7 @@ it("draws the daemon section for a daemon inside this app, with Install locked a
 })
 
 it("draws the installed service as running, with what it wrote", () => {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "service", platform: "linux" }} />)
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "linux" }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Running")).toBeTruthy()
   expect(section.textContent).toContain("Quitting this app leaves the daemon and its sessions running.")
@@ -239,7 +239,7 @@ it("draws the installed service as running, with what it wrote", () => {
 // the installer's own answer, and Remove is live once installed.
 it("installs the login service when idle, and refuses by name while work is in flight", async () => {
   const user = userEvent.setup()
-  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", daemonRunning: true }))
   const daemon = { title: "Running Domovoi inside this app", detail: "", owner: "app" as const, platform: "darwin" as const }
   const { rerender } = render(<SettingsShell {...shellProps()} localDaemon={{ ...daemon, service: { install, remove: vi.fn(), refusal: "1 turn is running (Migrate billing webhooks) and 1 gate is waiting (Port the CLI auth flow)." } }} />)
   const section = () => screen.getByRole("region", { name: "Daemon on this machine" })
@@ -267,10 +267,128 @@ it("says what the installer refused, and that nothing changed", async () => {
 
 it("removes the installed service and says the daemon is back inside this app", async () => {
   const user = userEvent.setup()
-  const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist" }))
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "service", platform: "darwin", service: { install: vi.fn(), remove } }} />)
+  const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const, daemonRunning: true }))
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", service: { install: vi.fn(), remove } }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
   expect(remove).toHaveBeenCalledOnce()
   expect(await within(section).findByText("Removed. Quitting Domovoi now stops the daemon and every session on it.")).toBeTruthy()
+})
+
+// Review round 1 of #576: Remove waits for the same work Install waits for,
+// and each outcome the main process can report is drawn as what is still
+// true. The lines were approved by fetzy on 2026-09-23.
+function daemonSection(owner: "app" | "outside", service: { install?: () => Promise<unknown>; remove?: () => Promise<unknown>; refusal?: string }) {
+  render(<SettingsShell {...shellProps()} localDaemon={{
+    title: owner === "outside" ? "Connected to the installed Domovoi service" : "Running Domovoi inside this app", detail: "", owner, ...(owner === "outside" ? { serviceInstalled: true } : {}), platform: "darwin",
+    service: { install: (service.install ?? vi.fn()) as never, remove: (service.remove ?? vi.fn()) as never, ...(service.refusal ? { refusal: service.refusal } : {}) },
+  }} />)
+  return screen.getByRole("region", { name: "Daemon on this machine" })
+}
+
+it("locks Remove while a turn runs or a gate waits, and names the work", () => {
+  const section = daemonSection("outside", { refusal: "1 turn is running (Migrate billing webhooks)." })
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+  expect(section.textContent).toContain("The switch waits: 1 turn is running (Migrate billing webhooks). Nothing is interrupted.")
+})
+
+it("draws the main process's own refusal, and a check that could not be read", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn()
+    .mockResolvedValueOnce({ ok: false, reason: "refused", message: "1 gate is waiting (Port the CLI auth flow)." })
+    .mockResolvedValueOnce({ ok: false, reason: "check-failed", message: "connect ECONNREFUSED 127.0.0.1:47831" })
+  const section = daemonSection("outside", { remove })
+  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
+  await user.click(button)
+  expect(await within(section).findByText("The switch waits: 1 gate is waiting (Port the CLI auth flow). Nothing is interrupted.")).toBeTruthy()
+  await user.click(button)
+  expect(await within(section).findByText("Could not check for running turns or waiting gates, so the switch waits. Nothing is interrupted.")).toBeTruthy()
+  expect(section.textContent).toContain("connect ECONNREFUSED 127.0.0.1:47831")
+  expect(section.textContent).not.toContain("Could not remove the service")
+})
+
+it("says the service is installed when this window could not reach it", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn(async () => ({ ok: false, reason: "installed-not-attached", kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", message: "The daemon did not answer" }))
+  const section = daemonSection("app", { install })
+  await user.click(within(section).getByRole("button", { name: "Install" }))
+  expect(await within(section).findByText("Installed, but this window could not reach the daemon")).toBeTruthy()
+  expect(section.textContent).toContain("The daemon did not answer")
+  expect(section.textContent).toContain("The LaunchAgent is installed and the daemon inside this app is stopped. Whether the service started is not known from here.")
+  expect(section.textContent).toContain("To check, run this in a terminal.")
+  expect(within(section).getByText("domovoid service status")).toBeTruthy()
+  expect(section.textContent).not.toContain("Nothing was installed.")
+  expect(section.textContent).not.toContain("Could not install the service")
+})
+
+it("says the daemon is not running when a failed install could not start it again", async () => {
+  const user = userEvent.setup()
+  const install = vi.fn()
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootstrap exited 5", daemon: "stopped" })
+    .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl is not available", daemon: "untouched" })
+  const section = daemonSection("app", { install })
+  await user.click(within(section).getByRole("button", { name: "Install" }))
+  expect(await within(section).findByText("Nothing was installed. The daemon inside this app stopped and did not start again, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
+  await user.click(within(section).getByRole("button", { name: "Install" }))
+  expect(await within(section).findByText("Nothing was installed.")).toBeTruthy()
+})
+
+it("says the daemon is not running when a removal could not start it again", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed", daemonRunning: false }))
+  const section = daemonSection("outside", { remove })
+  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  expect(await within(section).findByText("Removed. The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
+  expect(section.textContent).not.toContain("Removed. Quitting Domovoi now stops the daemon")
+})
+
+it("says what the person must do when the removal leaves the profile owner unresolved", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn()
+    .mockResolvedValueOnce({ ok: true, kind: "file", target: "/p", profileRecovery: "operator-confirmation-required", daemonRunning: true })
+    .mockResolvedValueOnce({ ok: true, kind: "file", target: "/p", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record at ~/.domovoi/service.json could not be read", daemonRunning: true })
+  const section = daemonSection("outside", { remove })
+  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
+  await user.click(button)
+  expect(await within(section).findByText("Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal.")).toBeTruthy()
+  expect(within(section).getByText("domovoid profile recover --confirm-no-supervisor")).toBeTruthy()
+  await user.click(button)
+  expect(await within(section).findByText("Removed. The service record at ~/.domovoi/service.json could not be read. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run this in a terminal.")).toBeTruthy()
+  expect(within(section).getByText("domovoid profile recover --confirm-no-supervisor")).toBeTruthy()
+})
+
+// The names come from the installer (packages/protocol login-service), not
+// from the design's sample values.
+it("names the Linux unit the installer writes and no lingering it does not turn on", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Running Domovoi inside this app", detail: "This app started the local daemon and stops it when the app quits.", owner: "app", platform: "linux" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain("~/.config/systemd/user/domovoid.service")
+  expect(section.textContent).not.toContain("Lingering")
+  expect(section.textContent).not.toContain("loginctl")
+})
+
+// Native Windows runs the logon task unsupervised; only the WSL task has the
+// crash supervisor, so nothing restarts a crashed daemon before the next sign-in.
+it("names the Windows logon task the installer registers and says nothing restarts it", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, platform: "win32" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain('Task Scheduler task "Domovoi daemon"')
+  expect(section.textContent).toContain("Nothing restarts it until you next sign in.")
+  expect(section.textContent).not.toContain("restarts it up to")
+})
+
+// A daemon this app did not start may be the service or a domovoid run by
+// hand. Without a separate installed-service fact, Settings does not guess.
+it("does not call a daemon this app did not start the installed service", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", platform: "darwin" }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(section.textContent).toContain("A daemon this app did not start. Quitting this app leaves it running.")
+  expect(section.textContent).not.toContain("WHAT IT WROTE")
+  expect(section.textContent).not.toContain("WHAT TURNING IT ON WRITES")
+  expect(section.textContent).not.toContain("Running")
+  expect(section.textContent).toContain("This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal.")
+  expect(within(section).getByText("domovoid service status")).toBeTruthy()
+  expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
+  expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
 })

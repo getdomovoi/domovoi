@@ -1,8 +1,9 @@
 import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
-import { access, cp, realpath, stat } from "node:fs/promises"
+import { access, cp, realpath, rm, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
+import { publishFileDurably } from "@getdomovoi/credential-store"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
@@ -119,7 +120,7 @@ const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
 // daemon from the runtime it ships in resources, the files the login service
 // runs; the archive carries none of it.
 const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath })
-const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, removeDaemonService } = daemonModule.module
+const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService } = daemonModule.module
 if (launchSmoke) console.info(`DOMOVOI_DESKTOP_DAEMON_MODULE ${daemonModule.from}`)
 const daemonSeam = developmentLoopModule
   ? developmentLoopModule.resolveDesktopDaemonSeam({
@@ -154,12 +155,22 @@ const desktopDaemonService = new DesktopDaemonService({
     version: app.getVersion(),
     platform: process.platform,
     exists: async (path) => { try { await access(path); return true } catch { return false } },
-    copy: (from, to) => cp(from, to, { recursive: true, force: true, verbatimSymlinks: true }),
+    copy: (from, to) => cp(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true }),
+    remove: (path) => rm(path, { recursive: true, force: true }),
+    rename: (from, to) => publishFileDurably(from, to),
   }),
   install: (options) => installDaemonService(options),
   status: () => readDaemonServiceStatus(),
   remove: () => removeDaemonService(),
+  // The same check the renderer draws, applied to the daemon's own workspace.
+  refusal: async () => {
+    const endpoint = desktopDaemon.current()
+    if (!endpoint || endpoint.kind === "refused") throw new Error("This app is not connected to a daemon")
+    return readLocalServiceHandoffRefusal({ endpoint, timeoutMs: 5_000 })
+  },
   daemon: {
+    beginHandoff: () => desktopDaemon.beginHandoff(),
+    endHandoff: () => desktopDaemon.endHandoff(),
     stopOwned: () => desktopDaemon.stopOwned(),
     attachOnly: () => desktopDaemon.attachOnly(),
     restart: () => desktopDaemon.restart(),

@@ -1,7 +1,8 @@
 # Contributing to Domovoi
 
 Domovoi is an early open-core project. This repository contains the Apache-2.0-licensed daemon,
-protocol, desktop and web clients, shared UI, and local transports. Contributions to those parts
+protocol, desktop, web and phone clients, the `domovoi` terminal client, the credential store,
+shared UI, and local transports. Contributions to those parts
 are welcome.
 
 ## Before starting
