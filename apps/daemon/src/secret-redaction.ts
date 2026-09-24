@@ -38,6 +38,24 @@ const secretFlag = new RegExp(
   String.raw`((?:(?<![A-Za-z0-9_.-])--(?!(?:[A-Za-z0-9]*[_.-])*?(?:no|skip|without)[_.-])${namePrefix}|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
+// Ruled 2026-09-24: after a prefixed sensitive name, the value shows only
+// when the word right before the name counts or switches and the value is a
+// plain number or true/false, as in total_token=5 or has_secret=false. Every
+// other value stays hidden: DB_PASSWORD=123456 and limit_token=5 among them.
+const countingWords = ["total", "has", "max", "min", "count", "is", "enable"] as const
+const countingName = new RegExp(String.raw`(?:^|[_.-])(?:${countingWords.join("|")})[_.-]${sensitiveName}$`, "iu")
+const plainValue = /^(?:\d+(?:\.\d+)?|true|false)$/iu
+
+// The name is the last identifier run in the matched prefix, without the
+// dashes of a flag or the -D of a Java property. A -D property can also be
+// matched as a plain assignment, so -D is dropped whichever pattern found it.
+function showsPlainValue(prefix: string, secret: string): boolean {
+  const run = prefix.match(/[A-Za-z0-9_.-]+/gu)?.at(-1) ?? ""
+  const name = run.startsWith("-D") ? run.slice(2) : run.replace(/^-+/u, "")
+  const value = secret.replace(/^["']/u, "").replace(/["']$/u, "")
+  return countingName.test(name) && plainValue.test(value)
+}
+
 const quotedCmdAssignment = new RegExp(
   String.raw`(\bset\s+)(["'])(${namePrefix}${sensitiveName}\s*=)[^\r\n]*?\2`,
   "giu",
@@ -151,35 +169,25 @@ function redact(value: unknown, maximumLength: number): RedactedText {
     /(\b(?:proxy-)?authorization\b["']?\s*[:=]\s*["']?)[^\s"',;\r\n]+/giu,
     `$1${replacement}`,
   )
-  output = replace(output, assignment, (...args) => {
+  const valueReplacer = (...args: string[]) => {
     const prefix = args[1] ?? ""
     const secret = args[2] ?? ""
+    if (showsPlainValue(prefix, secret)) return args[0]!
     const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
     return `${prefix}${quote}${replacement}${quote}`
+  }
+  output = replace(output, assignment, valueReplacer)
+  output = replace(output, structuredAssignment, valueReplacer)
+  output = replace(output, quotedCmdAssignment, (...args) => {
+    const matched = args[0]!
+    const quote = args[2] ?? "\""
+    const name = args[3] ?? ""
+    const value = matched.slice((args[1] ?? "").length + quote.length + name.length, -quote.length)
+    if (showsPlainValue(name.replace(/\s*=$/u, ""), value)) return matched
+    return `${args[1] ?? ""}${quote}${name}${replacement}${quote}`
   })
-  output = replace(output, structuredAssignment, (...args) => {
-    const prefix = args[1] ?? ""
-    const secret = args[2] ?? ""
-    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
-    return `${prefix}${quote}${replacement}${quote}`
-  })
-  output = replace(
-    output,
-    quotedCmdAssignment,
-    (...args) => `${args[1] ?? ""}${args[2] ?? "\""}${args[3] ?? ""}${replacement}${args[2] ?? "\""}`,
-  )
-  output = replace(output, secretFlag, (...args) => {
-    const prefix = args[1] ?? ""
-    const secret = args[2] ?? ""
-    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
-    return `${prefix}${quote}${replacement}${quote}`
-  })
-  output = replace(output, javaSystemProperty, (...args) => {
-    const prefix = args[1] ?? ""
-    const secret = args[2] ?? ""
-    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
-    return `${prefix}${quote}${replacement}${quote}`
-  })
+  output = replace(output, secretFlag, valueReplacer)
+  output = replace(output, javaSystemProperty, valueReplacer)
   output = replace(
     output,
     /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b/gu,

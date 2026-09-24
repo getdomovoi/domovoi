@@ -12,4 +12,8 @@ flags and `-Dprefix.password=` properties, including npm's `//registry.npmjs.org
 `npm_config__authToken=`. `SECRET_KEY`, `DJANGO_SECRET_KEY` and `STRIPE_SECRET_KEY` are caught too.
 A suffix still does not count, so `TOKEN_BUDGET=4096`, `TOKENIZERS_PARALLELISM=false` and
 `SECRET_KEY_BASE` are left alone, and a negated flag such as `psql --no-password mydb`,
-`mysql --skip-password mydb` or `tool --db-no-password mydb` is not taken as a secret.
+`mysql --skip-password mydb` or `tool --db-no-password mydb` is not taken as a secret. After a
+prefixed name, a plain number or `true`/`false` stays visible when the word right before the
+sensitive name is `total`, `has`, `max`, `min`, `count`, `is` or `enable`, so `total_token=5` and
+`has_secret=false` read as written. Every other value stays hidden, including
+`DB_PASSWORD=123456` and `limit_token=5`.

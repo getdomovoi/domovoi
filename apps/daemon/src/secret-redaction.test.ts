@@ -151,6 +151,7 @@ describe("durable secret redaction", () => {
     ["repeated property names", "-Da"],
     ["flags glued to words", "a--"],
     ["properties glued to words", "a-D"],
+    ["counting-word name segments", "total_"],
   ])("scans a 50,000 character run of %s within 200 ms", (_shape, unit) => {
     const text = unit.repeat(Math.ceil(50_000 / unit.length)).slice(0, 50_000)
     let started = performance.now()
@@ -161,6 +162,67 @@ describe("durable secret redaction", () => {
     const redactor = new TerminalOutputRedactor()
     expect(`${redactor.push(text)}${redactor.flush()}`).toBe(text)
     expect(performance.now() - started).toBeLessThan(200)
+  })
+
+  // Ruled 2026-09-24 (option B): after a prefixed sensitive name, the value
+  // shows only when the word before the name counts or switches and the value
+  // is a plain number or true/false. Every other value stays hidden.
+  // The prefix is joined with each form's own separator; the sensitive name
+  // keeps its spelling (api_key, access_token).
+  const plainValueForms = (prefix: string, suffix: string, value: string) => {
+    const name = `${prefix}_${suffix}`
+    return [
+      `${name}=${value}`,
+      `export ${name}="${value}"`,
+      `$env:${name}='${value}'`,
+      `set "${name}=${value}"`,
+      `{"${name}": ${value}}`,
+      `{"${name}": "${value}"}`,
+      `tool --${prefix.replaceAll("_", "-")}-${suffix} ${value}`,
+      `tool --${prefix.replaceAll("_", "-")}-${suffix}=${value}`,
+      `java -D${prefix.replaceAll("_", ".")}.${suffix}=${value} -jar app.jar`,
+    ]
+  }
+  const countingWords = ["total", "has", "max", "min", "count", "is", "enable"]
+  const sensitiveSuffixes = ["token", "secret", "password", "api_key", "secret_key", "access_token"]
+
+  it.each([
+    ["total_token=5"],
+    ["has_secret=false"],
+  ])("shows %s", (text) => {
+    expect(redactDurableCommand(text)).toEqual({ value: text, redacted: false, truncated: false })
+    expect(redactDurableOutput(text).value).toBe(text)
+  })
+
+  it.each([
+    ["DB_PASSWORD=123456", "123456"],
+    ["limit_token=5", "5"],
+  ])("still hides the value in %s", (text, value) => {
+    expect(redactDurableCommand(text)).toMatchObject({ redacted: true })
+    expect(redactDurableOutput(text).value).not.toContain(`=${value}`)
+  })
+
+  it("shows a plain number or true/false after each counting word, in every assignment form and case", () => {
+    const hidden: string[] = []
+    for (const word of countingWords) for (const suffix of sensitiveSuffixes) for (const value of ["5", "0", "4096", "1.5", "true", "false", "TRUE"]) {
+      for (const [prefix, name] of [[word, suffix], [`DB_${word}`.toUpperCase(), suffix.toUpperCase()]] as const) for (const text of plainValueForms(prefix, name, value)) {
+        if (redactDurableCommand(text).value !== text || redactDurableOutput(text).value !== text) hidden.push(text)
+      }
+    }
+    expect(hidden).toEqual([])
+  })
+
+  it("hides the value for the same forms when the word is not on the list or the value is not plain", () => {
+    const shown: string[] = []
+    const cases: [string, string, string][] = []
+    for (const suffix of sensitiveSuffixes) {
+      for (const word of ["limit", "rate", "db", "per", "use", "num", "maximum", "totals"]) for (const value of ["5", "true"]) cases.push([word, suffix, value])
+      for (const word of countingWords) for (const value of ["hunter2", "5abc", "yes", "0x1f", "-"]) cases.push([word, suffix, value])
+    }
+    for (const [prefix, suffix, value] of cases) for (const text of plainValueForms(prefix, suffix, value)) {
+      if (!redactDurableCommand(text).redacted) shown.push(text)
+    }
+    expect(shown).toEqual([])
   })
 
   it("is idempotent and keeps replacement markers stable", () => {
