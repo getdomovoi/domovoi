@@ -105,4 +105,3 @@ describe("artifact watch events", () => {
     watcher.stop()
   })
 })
-
