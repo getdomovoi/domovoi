@@ -16,15 +16,20 @@ export function JumpPill({
   state,
   unseen,
   above,
+  watching = false,
   onPress,
 }: {
   state: ThreadFollow
   unseen: number
+  // A watching device cannot answer the decision below, so the pill names who can.
+  watching?: boolean
   // What the composer reported covering, so the pill sits just over it.
   above: number
   onPress: () => void
 }) {
-  const text = threadFollowPillText(state, unseen)
+  const text = watching && state === "gate"
+    ? "Waiting on a full-access device"
+    : threadFollowPillText(state, unseen)
   if (!text) return null
   const gate = state === "gate"
   return (

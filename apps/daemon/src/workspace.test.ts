@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { createServer } from "node:http"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -7,7 +8,12 @@ import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { GitWorkspaceService, utf8GitPaths, WorkspaceEvidenceUnstableError } from "./workspace.js"
+import {
+  GitWorkspaceService,
+  RepositoryFilterRefusedError,
+  utf8GitPaths,
+  WorkspaceEvidenceUnstableError,
+} from "./workspace.js"
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
@@ -664,6 +670,302 @@ describe("GitWorkspaceService", () => {
     })
     await expect(service.checkpoint(repositoryPath, "interrupted", controller.signal))
       .rejects.toThrow("checkpoint timed out")
+
+    expect(await observe()).toEqual(before)
+  })
+
+  it("never runs hooks the session worktree can edit during checkpoint, restore or revert", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-hooks-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "README.md"), "before\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await execute("git", ["-C", repositoryPath, "config", "core.hooksPath", ".githooks"])
+
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-hooks")
+    const markerPath = join(scratch, "hook-ran").replaceAll("\\", "/")
+    await mkdir(join(workspace.path, ".githooks"))
+    for (const hook of [
+      "pre-commit",
+      "prepare-commit-msg",
+      "commit-msg",
+      "post-commit",
+      "post-checkout",
+      "post-index-change",
+      "reference-transaction",
+    ]) {
+      await writeFile(
+        join(workspace.path, ".githooks", hook),
+        `#!/bin/sh\necho ${hook} >> "${markerPath}"\n`,
+        { mode: 0o755 },
+      )
+    }
+    await execute("git", [
+      "-C", workspace.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "--allow-empty", "-m", "control",
+    ])
+    await expect(readFile(markerPath, "utf8")).resolves.toContain("pre-commit")
+    await rm(markerPath)
+
+    await writeFile(join(workspace.path, "README.md"), "after\n")
+    const checkpoint = await service.checkpoint(workspace.path, "before-agent-turn")
+    await writeFile(join(workspace.path, "README.md"), "later\n")
+    await service.restore(workspace.path, checkpoint.commit)
+    await writeFile(join(workspace.path, "README.md"), "edited again\n")
+    await service.revertFile(workspace.path, "README.md")
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  it("checkpoints past a failing commit hook and a signing setup it cannot use", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-signing-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await writeFile(join(repositoryPath, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 })
+    await execute("git", ["-C", repositoryPath, "config", "commit.gpgsign", "true"])
+    await execute("git", ["-C", repositoryPath, "config", "gpg.program", join(scratch, "missing-signer")])
+    await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
+
+    const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees"))
+      .checkpoint(repositoryPath, "signed repository")
+
+    expect(checkpoint.changedFiles).toEqual(["tracked.txt"])
+    expect((await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim()).toBe(checkpoint.commit)
+    expect((await execute("git", ["-C", repositoryPath, "cat-file", "commit", "HEAD"])).stdout).not.toContain("gpgsig")
+  })
+
+  it("refuses checkpoint, restore, revert, archive and transfer while the repository's own config sets a filter, and never runs it", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-repository-filter-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "victim.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const service = new GitWorkspaceService(join(scratch, "worktrees"))
+    const workspace = await service.createSessionWorkspace(repositoryPath, "session-filter")
+    const checkpoint = await service.checkpoint(workspace.path, "before the filter")
+    const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.clean", "sh ./payload.sh"])
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.smudge", "sh ./payload.sh"])
+    await writeFile(join(workspace.path, "payload.sh"), `echo ran >> "${markerPath}"\ncat\n`)
+    await writeFile(join(workspace.path, ".gitattributes"), "victim.txt filter=agent\n")
+    await writeFile(join(workspace.path, "victim.txt"), "changed\n")
+    await execute("git", ["-C", workspace.path, "add", "victim.txt"])
+    await expect(readFile(markerPath, "utf8")).resolves.toContain("ran")
+    await rm(markerPath)
+    await execute("git", ["-C", workspace.path, "reset", "-q"])
+    await rm(markerPath, { force: true })
+
+    const refused = expect.objectContaining({
+      name: "RepositoryFilterRefusedError",
+      message: expect.stringContaining("filter.agent.clean in local Git config"),
+    })
+    await expect(service.checkpoint(workspace.path, "after the filter")).rejects.toEqual(refused)
+    await expect(service.restore(workspace.path, checkpoint.commit)).rejects.toEqual(refused)
+    await expect(service.revertFile(workspace.path, "victim.txt")).rejects.toEqual(refused)
+    await expect(service.bundleSession(workspace.path, join(scratch, "session.bundle"))).rejects.toEqual(refused)
+    await expect(service.archiveSessionWorkspace(workspace.path)).rejects.toBeInstanceOf(RepositoryFilterRefusedError)
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+    await expect(readFile(join(workspace.path, "victim.txt"), "utf8")).resolves.toBe("changed\n")
+  })
+
+  it("reads evidence with a repository-set filter treated as absent, so its command never runs", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-evidence-filter-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "victim.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.clean", "sh ./payload.sh"])
+    await execute("git", ["-C", repositoryPath, "config", "filter.agent.required", "true"])
+    await writeFile(join(repositoryPath, "payload.sh"), `echo ran >> "${markerPath}"\ncat\n`)
+    await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=agent\n")
+    await writeFile(join(repositoryPath, "victim.txt"), "changed\n")
+    await execute("git", ["-C", repositoryPath, "diff", "HEAD", "--stat"])
+    await expect(readFile(markerPath, "utf8")).resolves.toContain("ran")
+    await rm(markerPath)
+
+    const evidence = await new GitWorkspaceService(join(scratch, "worktrees")).evidence(repositoryPath)
+
+    expect(evidence.files.map((file) => file.path)).toEqual(expect.arrayContaining(["victim.txt"]))
+    expect(evidence.diff).toContain("+changed")
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  it("ignores Git config the daemon's own environment carries", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-env-filter-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "victim.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
+    await writeFile(join(repositoryPath, "payload.sh"), `echo ran >> "${markerPath}"\ncat\n`)
+    await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=inherited\n")
+    await writeFile(join(repositoryPath, "victim.txt"), "changed\n")
+    const inherited = {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "filter.inherited.clean",
+      GIT_CONFIG_VALUE_0: "sh ./payload.sh",
+    }
+    const previous = Object.fromEntries(Object.keys(inherited).map((name) => [name, process.env[name]]))
+    Object.assign(process.env, inherited)
+    try {
+      const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees")).checkpoint(repositoryPath, "inherited env")
+      expect(checkpoint.changedFiles).toEqual(expect.arrayContaining(["victim.txt"]))
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  it("keeps running a filter the person set in their global Git config", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-global-filter-"))
+    scratchDirectories.push(scratch)
+    const home = join(scratch, "home")
+    await mkdir(home)
+    await writeFile(join(home, ".gitconfig"), "[filter \"upper\"]\n\tclean = tr a-z A-Z\n\tsmudge = cat\n")
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      const repositoryPath = join(scratch, "project")
+      await execute("git", ["init", "--initial-branch=main", repositoryPath])
+      await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+      await writeFile(join(repositoryPath, ".gitattributes"), "*.txt filter=upper\n")
+      await writeFile(join(repositoryPath, "note.txt"), "base\n")
+      await execute("git", ["-C", repositoryPath, "add", "."])
+      await execute("git", [
+        "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+        "commit", "-m", "initial",
+      ])
+      await writeFile(join(repositoryPath, "note.txt"), "changed\n")
+
+      const checkpoint = await new GitWorkspaceService(join(scratch, "worktrees")).checkpoint(repositoryPath, "global filter")
+
+      expect((await execute("git", ["-C", repositoryPath, "show", `${checkpoint.commit}:note.txt`])).stdout).toBe("CHANGED\n")
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  })
+
+  it.each([
+    ["GIT_CONFIG", "points the scan at a harmless file while the repository's own config still applies"],
+    ["GIT_CONFIG_GLOBAL", "names a worktree file as the person's global config"],
+  ])("does not let an inherited %s decide which config counts: it %s", async (variable) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-config-variable-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "victim.txt"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const markerPath = join(scratch, "filter-ran").replaceAll("\\", "/")
+    await writeFile(join(repositoryPath, "payload.sh"), `echo ran >> "${markerPath}"\ncat\n`)
+    await writeFile(join(repositoryPath, ".gitattributes"), "victim.txt filter=planted\n")
+    const harmless = join(scratch, "harmless.gitconfig")
+    await writeFile(harmless, "[user]\n\tname = Nobody\n")
+    const plantedGlobal = join(repositoryPath, "planted.gitconfig")
+    await writeFile(plantedGlobal, "[filter \"planted\"]\n\tclean = sh ./payload.sh\n")
+    if (variable === "GIT_CONFIG") await execute("git", ["-C", repositoryPath, "config", "filter.planted.clean", "sh ./payload.sh"])
+    await writeFile(join(repositoryPath, "victim.txt"), "changed\n")
+    const previous = process.env[variable]
+    process.env[variable] = variable === "GIT_CONFIG" ? harmless : plantedGlobal
+    try {
+      const service = new GitWorkspaceService(join(scratch, "worktrees"))
+      if (variable === "GIT_CONFIG") {
+        await expect(service.checkpoint(repositoryPath, "inherited config")).rejects.toThrow("filter.planted.clean in local Git config")
+      } else {
+        await service.checkpoint(repositoryPath, "inherited config")
+      }
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  it.each([
+    ["the commit itself fails", "commit"],
+    ["the deadline expires after staging", "deadline"],
+  ] as const)("puts the person's own staging back when %s", async (_name, failure) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-checkpoint-staging-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await writeFile(join(repositoryPath, "staged.txt"), "base\n")
+    await writeFile(join(repositoryPath, "tracked.txt"), "base\n")
+    await writeFile(join(repositoryPath, "remove.txt"), "remove me\n")
+    await execute("git", ["-C", repositoryPath, "add", "."])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    await writeFile(join(repositoryPath, "staged.txt"), "staged by the person\n")
+    await execute("git", ["-C", repositoryPath, "add", "staged.txt"])
+    await writeFile(join(repositoryPath, "staged.txt"), "staged, then edited again\n")
+    await writeFile(join(repositoryPath, "tracked.txt"), "changed\n")
+    await rm(join(repositoryPath, "remove.txt"))
+    await writeFile(join(repositoryPath, "fresh.txt"), "fresh\n")
+    const observe = async () => ({
+      head: (await execute("git", ["-C", repositoryPath, "rev-parse", "HEAD"])).stdout.trim(),
+      index: (await execute("git", ["-C", repositoryPath, "ls-files", "--stage"])).stdout,
+      staged: (await execute("git", ["-C", repositoryPath, "diff", "--cached", "--name-only"])).stdout,
+      status: (await execute("git", ["-C", repositoryPath, "status", "--porcelain"])).stdout,
+    })
+    const before = await observe()
+    expect(before.staged).toBe("staged.txt\n")
+
+    const branchLock = join(repositoryPath, ".git", "refs", "heads", "main.lock")
+    const controller = new AbortController()
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      afterCheckpointStaging: failure === "commit"
+        ? () => writeFile(branchLock, "")
+        : () => controller.abort(new Error("checkpoint timed out")),
+    })
+    await expect(service.checkpoint(repositoryPath, "blocked", controller.signal)).rejects.toThrow()
+    await rm(branchLock, { force: true })
 
     expect(await observe()).toEqual(before)
   })
@@ -1541,6 +1843,51 @@ describe("GitWorkspaceService session refs", () => {
     return { scratch, service, workspace, checkpoint, remotePath }
   }
 
+  it("pushes without the repository's own ssh command", async () => {
+    const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-")
+    const repositoryPath = join(scratch, "project")
+    const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
+    await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
+    await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", "ssh://git@example.invalid/remote.git"])
+    await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
+    await service.checkpoint(workspace.path, "with the script")
+
+    await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  it("pushes without the repository's own credential helpers, keeping the person's", async () => {
+    const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-credential-")
+    const repositoryPath = join(scratch, "project")
+    const markerPath = join(scratch, "helper-ran").replaceAll("\\", "/")
+    await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\n`)
+    await service.checkpoint(workspace.path, "with the script")
+    const server = createServer((_request, response) => {
+      response.writeHead(401, { "www-authenticate": "Basic realm=\"test\"" })
+      response.end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    try {
+      const { port } = server.address() as { port: number }
+      await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", `http://127.0.0.1:${port}/remote.git`])
+      await execute("git", ["-C", repositoryPath, "config", "credential.helper", "!sh ./evil.sh"])
+      await execute("git", ["-C", repositoryPath, "config", `credential.http://127.0.0.1:${port}.helper`, "!sh ./evil.sh"])
+      const previousPrompt = process.env.GIT_TERMINAL_PROMPT
+      process.env.GIT_TERMINAL_PROMPT = "0"
+      try {
+        await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
+      } finally {
+        if (previousPrompt === undefined) delete process.env.GIT_TERMINAL_PROMPT
+        else process.env.GIT_TERMINAL_PROMPT = previousPrompt
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
   it("pushes the session checkpoint to the remote the caller named", async () => {
     const { service, workspace, checkpoint, remotePath } = await sessionWithRemote("domovoi-ref-")
 
@@ -1727,6 +2074,38 @@ describe("GitWorkspaceService session head", () => {
 })
 
 describe("GitWorkspaceService incremental restore", () => {
+  it("scans the held session worktree's own config before applying a bundle to it", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-apply-filter-"))
+    scratchDirectories.push(scratch)
+    const repositoryPath = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", repositoryPath])
+    await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
+    await writeFile(join(repositoryPath, "README.md"), "base\n")
+    await execute("git", ["-C", repositoryPath, "add", "README.md"])
+    await execute("git", [
+      "-C", repositoryPath, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+      "commit", "-m", "initial",
+    ])
+    const targetRepositoryPath = join(scratch, "target-project")
+    await execute("git", ["clone", "--quiet", repositoryPath, targetRepositoryPath])
+    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
+    await writeFile(join(workspace.path, "README.md"), "first\n")
+    const first = await source.checkpoint(workspace.path, "first")
+    const full = await source.bundleSession(workspace.path, join(scratch, "full.bundle"))
+    const target = new GitWorkspaceService(join(scratch, "target-worktrees"))
+    const restored = await target.restoreSessionFromBundle(full.path, "session-1", { repositoryPath: targetRepositoryPath })
+    await execute("git", ["-C", targetRepositoryPath, "config", "extensions.worktreeConfig", "true"])
+    await execute("git", ["-C", restored.path, "config", "--worktree", "filter.held.smudge", "sh ./payload.sh"])
+
+    await writeFile(join(workspace.path, "README.md"), "second\n")
+    await source.checkpoint(workspace.path, "second")
+    const incremental = await source.bundleSession(workspace.path, join(scratch, "incremental.bundle"), first.commit)
+
+    await expect(target.restoreSessionFromBundle(incremental.path, "session-1", { repositoryPath: targetRepositoryPath }))
+      .rejects.toThrow("filter.held.smudge in worktree Git config")
+  })
+
   it("applies a bundle onto a session it already holds", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-apply-"))
     scratchDirectories.push(scratch)
