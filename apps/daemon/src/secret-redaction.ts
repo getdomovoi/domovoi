@@ -103,13 +103,13 @@ export class DurableOutputRedactor {
     return emitted
   }
 
+  peek(): string {
+    return this.#droppingLongRecord ? "" : redactDurableOutput(this.#pending).value
+  }
+
   flush(): string {
-    if (this.#droppingLongRecord) {
-      this.#droppingLongRecord = false
-      this.#pending = ""
-      return ""
-    }
-    const output = redactDurableOutput(this.#pending).value
+    const output = this.peek()
+    this.#droppingLongRecord = false
     this.#pending = ""
     return output
   }
