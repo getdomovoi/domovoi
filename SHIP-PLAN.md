@@ -28,10 +28,16 @@ below; their ticked bullets keep their text and citations under the phase they s
   branch; `release:invariants` runs it on every push. Ticks that predate the rule are listed in
   `scripts/tick-citations-allowlist.json`, which only ever shrinks.
 - A citation must resolve on a fresh clone of `main`. This repository merges by squash as well
-  as by merge commit, and a squash replaces every in-PR sha, so a tick never cites a commit from
-  the pull request that lands it: tick in a follow-up, citing the squash sha. A sha handed
-  between agents names the ref it is reachable from, because a sha reachable only from a
-  feature branch passes the checker on that checkout and fails everywhere else.
+  as by merge commit, and the two take different rules:
+  - A pull request that lands as a squash replaces every in-PR sha, so a tick never cites a
+    commit from that pull request. Tick in a follow-up, citing the squash sha. Squash is the
+    usual path (`docs/working-rules.md`, "Read back 2026-09-22" under rule 9), and a pull
+    request whose merge method is not yet known is treated as a squash.
+  - A pull request that lands as a merge commit keeps its branch shas reachable from `main`, so
+    a tick may cite them, in that pull request or later.
+
+  A sha handed between agents names the ref it is reachable from, because a sha reachable only
+  from a feature branch passes the checker on that checkout and fails everywhere else.
 - A tick written by whoever did the work wants a second reader by default. On 2026-09-14 a peer
   read of the Phase 1 ticks found four errors, every one optimistic.
 - `[ ]` not complete. An untrue `[ ]` is the sharper error: it sends an agent to start work that
@@ -65,8 +71,8 @@ needs:
 | | Ships when | Excludes |
 |---|---|---|
 | **M1 · usable local product** | daemon installs as a service; desktop, web and phone reach it over loopback and the tailnet with no hosted service in the path; a phone answers a gate | relay, billing, teams, tablet |
-| **M2 · hosted relay** | the relay carries machines that have no tailnet, metered and invite-only | billing, teams |
-| **M3 · launch** | paid, metered, signed, audited | teams, tablet |
+| **M2 · hosted relay** | the relay carries machines that have no tailnet, metered and invite-only; signed builds and self-update (`S1.4`, Phase 4) | billing, teams |
+| **M3 · launch** | paid, metered, audited | teams, tablet |
 | **M4 · teams** | seats, org machines, org policy | — |
 
 The MVP is M1: loopback and the tailnet only. A user with Tailscale uses Domovoi
@@ -178,7 +184,8 @@ Parallel with Phase 0. Touches nothing the gates decide.
       registered by `service/install.ts`, with `windows-task.ts` for its status and removal.
       `docs/service-lifecycle-assessment.md` keeps the box open. WSL selection is wired
       into `service install`; its CLI proof and guest-loop restart/removal passed
-      native run 35275707927, attempt 2, at bf584079. This supersedes the failed
+      [native run 35275707927](https://github.com/getdomovoi/domovoi/actions/runs/35275707927),
+      attempt 2, on the #480 branch, which landed as 234d8fed. This supersedes the failed
       task-managed restart assertion, not erasing it. Actual logon acceptance
       remains open. The two policies were decided 2026-09-17 and are not open:
       **Linux enables linger.** A daemon that dies at logout is not a daemon; the
@@ -207,22 +214,29 @@ Parallel with Phase 0. Touches nothing the gates decide.
       builds ship *with* it, not after. On `main` as of 2026-09-15: the design with the
       maintainer's four decisions (#411, 9539ba01), the protocol contract (#421, 2b21f855),
       discovery and verification (#422, 800de19e), staging and the bundled installer (#425,
-      ef914793). All three code slices had zero callers when they merged: no `update.*`
-      handler dispatches them and no scheduler runs them, so as of this line the feature is
-      built and unreachable. The handlers are the next slice.
+      ef914793). All three code slices had zero callers when they merged. #428 (4ddf93f5,
+      2026-09-16) dispatches `update.status`, `update.check` and `update.activate`, to a
+      loopback local-owner connection only (`docs/daemon-update-dispatch.md`). Nothing
+      schedules them.
       Two records so they are not rediscovered. Deviation: the verifier in
       `apps/daemon/src/update-verification.ts` is a hand-rolled TUF client where the design
       requires a conforming library; recorded in `docs/daemon-auto-update-design.md`, to be
       removed or explicitly accepted before activation ships. Ownership: reproducible builds
       are named here and in `S4.6`; `S4.6` owns the two-clean-build comparison and its release
       record, and this item consumes it as an activation precondition. Not fixed here.
-      **Decided 2026-09-17: not for M1.** The chain is built with zero callers, no RPC
-      dispatches it and there is no release to fetch. A signing ceremony is operational
+      **Decided 2026-09-17: not for M1.** Nothing schedules the chain and there is no release
+      to fetch. A signing ceremony is operational
       work, key custody, a published root digest, a documented recovery path, and none of it
       brings the app closer to being used. M1 ships the unsigned DMG `package:desktop:mac`
       already produces and says plainly that updates are manual. TUF and the deviation above
       become load-bearing when there is a public release to protect, which is after the
       maintainer has used the thing. The M1 definition of done below is corrected to match.
+      **The one published DMG is hidden, 2026-09-22.** `desktop-v0.0.1`, an unsigned
+      Apple-silicon DMG built from 3e396ce1 and published as a GitHub pre-release on
+      2026-09-18, carried a re-signed copy of the SDK vendor's agent binary. It was turned
+      back into a draft on 2026-09-22 (audit E12). #516 (35a0cc6d) leaves that binary out of
+      the app and runs the person's own `claude`. The DMG is not rebuilt or republished until
+      the maintainer says so.
 - [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart. Landed as #374 (c8eb1a93).
 - [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, skill push, logs.
@@ -390,16 +404,17 @@ Every ledger entry is now merged.
     provider CLIs first, so this is not alpha scope.
 - [x] Token and cost telemetry normalized for Anthropic, per session and provider
       (76a9cb2 · session totals 2508149 · cached-token fold 3d92b6f)
-  - [ ] OpenCode undercounts: `tokens.cache.read` lands in `cachedInputTokens`
-        and never reaches `inputTokens` or `totalTokens` — the fold is
-        Anthropic-key-only by design (`opencode.ts:506`)
-  - [ ] `acp.ts:295-296` assigns `totalTokens` and `contextTokens` the same
-        `update.used`
-  - [ ] Usage is stamped with `session.runtime.model` at write time, so an arrival
-        after a same-provider switch gets the new model (`server.ts:6903`,
-        switch at `5835`)
-  - [ ] Per-turn attribution needs the durable turn link, which does not exist
-        (WORK-SPLIT `CX2`)
+  - [x] An adapter that reports cache reads separately undercounted: `tokens.cache.read`
+        landed in `cachedInputTokens` and never reached `inputTokens`. `usage.ts` now folds `cache.read` and `cache.write` into
+        `inputTokens` (4359bcf9)
+  - [x] The ACP adapter gave `totalTokens` and `contextTokens` the same `update.used`. It now
+        records `tokens: "unavailable"` rather than guessing a total (4359bcf9)
+  - [x] Usage was stamped with `session.runtime.model` at write time, so an arrival after a
+        same-provider switch got the new model. The model is captured at dispatch (4359bcf9)
+  - [x] Per-turn attribution needed the durable turn link. Turn records with an ordinal and
+        the history-to-turn link landed (e7364720, 84d90d50)
+  - The same four are recorded under "From the work split: daemon items" below. These
+    children stayed open for eight days after that work landed; closed 2026-09-22.
 - [x] Session token totals and provider-reported cost in the client, with a per-runtime breakdown
   and an explicit count of turns the provider reported no cost for
 - [x] Usage totals across sessions over a time window, such as a today total in the app bar
@@ -447,7 +462,7 @@ Every ledger entry is now merged.
     approving anything silently. A rule going inactive has to be legible to the person who granted
     it, so that a returning approval prompt reads as a deliberate revocation rather than a bug.
 - [x] Enforce hard gates that Build auto cannot bypass
-  - `f137506` gates secret reads through Git, and `apps/daemon/src/permission-policy.ts` checks
+  - deec0d80 gates secret reads through Git, and `apps/daemon/src/permission-policy.ts` checks
     hard-gate patterns and skill installs before any Build-auto allowance.
   - The general claim is now tested rather than sampled. `apps/daemon/src/permission-policy.test.ts`
     asserts that a hard gate found anywhere in a resolved script graph is refused, across direct
@@ -594,11 +609,13 @@ the mockup on purpose, the note under it says so.
     exceed the budget is refused with those sections and their remedies named rather than quietly
     trimmed. `apps/daemon/src/server-prompt-budget.test.ts` drives a real daemon over a socket and
     asserts both the reported budget and that refusal.
-- [x] Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,
-  280px inspector, and the fixed chrome heights recorded in `DESIGN.md`
-  - Sizes live as tokens in `packages/ui/src/styles.css` with a test comparing them against the
-    table in `DESIGN.md`, so drift fails in both directions. Claude Design settled the desktop
-    chrome as a 38px titlebar and a permanent 62px rail, with no horizontal 62px header.
+- [x] Align the shell to the v2 geometry: 46px titlebar, 268px sessions drawer, 760px thread
+  lane, no rail and no inspector (33c937f3)
+  - Sizes live as tokens in `packages/ui/src/styles.css`, pinned by
+    `packages/ui/src/shell-geometry.test.ts`. The first version of this tick was the v1
+    shell, a 38px titlebar, 62px rail, 240px sidebar and 280px inspector; 33c937f3 moved to the
+    v2 drawer and rewrote the test to pin the new numbers. That rewrite dropped its comparison
+    with `DESIGN.md`, so the table there can drift without failing it.
 - [x] Vendor the Claude Design system contract so it lives in the repository
   - `design/design_system_domovoi/` holds the tokens and now `readme.md`, the system's own
     contract: content rules, the colour and type contract, the fixed chrome values, motion,
@@ -964,7 +981,8 @@ Every ledger entry is now merged.
     receives within the owning process share one permanent lease outside disposable journals; see
     `docs/transfer-receive-leases.md`. Native Windows `pnpm test` passed in
     [run 34171599299](https://github.com/getdomovoi/domovoi/actions/runs/34171599299/job/101892809299)
-    at `c37da78`, including both process-lifecycle cases without a platform skip.
+    on the #335 branch, which landed as 232ffe82, including both process-lifecycle cases
+    without a platform skip.
 - [x] Transfer dialog in the client with preflight, method, and what travels, calling
   `session.transfer`
   - `packages/ui/src/transfer-session-dialog.tsx` is wired into the workspace shell and
@@ -1051,7 +1069,7 @@ payload plaintext to the relay, and a bearer or channel key alone must not be en
 Ticked here under rule 7: Codex did the work, this file is Claude Code's, so the citation
 carries Codex's sha rather than a second agent's edit.
 - [x] Normalize adapter token reporting. One of the two was already fixed when this line was
-      written: `claude.ts` by 33b2737 on 2026-09-07. OpenCode's `tokens.cache.read` and
+      written: `claude.ts` by 3d92b6f0 (#330) on 2026-09-07. The other adapter's `tokens.cache.read` and
       `.write` now fold into `inputTokens` in `usage.ts` (4359bcf9).
 - [x] `acp.ts:296` gives `totalTokens` and `contextTokens` the same `update.used` value.
       Fixed by deleting the total rather than guessing one; the record says
@@ -1251,16 +1269,20 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       mode change before the first turn resumed a conversation that never existed, a failed
       reopen destroyed the thread, and a session once in Ask could never write again
       (5a14da7c, #455); the phone rendered markdown raw (2e30deb5, #456, not yet seen on the
-      device); pairing refusals hid the socket's own reason (ccc9dd1d, #457). Three open:
-      `project.open` and
+      device); pairing refusals hid the socket's own reason (ccc9dd1d, #457). Three were
+      left open: `project.open` and
       `session.send` answer "Internal daemon error" for every cause, a policy decision on what
-      detail leaves the daemon; `session.tsx` keyboard avoidance lacks
-      `keyboardVerticalOffset` and the thread does not autoscroll; a daemon built from `main`
+      detail leaves the daemon; `session.tsx` keyboard avoidance lacked
+      `keyboardVerticalOffset` and the thread did not autoscroll, fixed since by d7139a4b
+      (#462, 2026-09-17, cited under `S3.3`); a daemon built from `main`
       quarantined a live profile's stored snapshot on first start and reset the workspace,
-      with nothing telling the user. Phone credential revoked at the end of the run.
+      with nothing telling the user. Two of them remain open. Phone credential revoked at the
+      end of the run.
 - [x] **S3.1 [CC]** Desktop: the 2026-09-15 audit's v2 gap list is closed on `main`, and
       that is the whole of this claim; v2 is not landed. As of 2026-09-18 what is and is not
-      landed is measured, not described: see `S3.10` and `docs/design-conformance/desktop-v2.json`. Each gap went in as its own slice,
+      landed is measured, not described: see `S3.10` and `docs/design-conformance/desktop-v2.json`.
+      #517 (23ae1342, 2026-09-22) has since landed v2 client parity; `S3.10` carries the
+      counts measured after it. Each gap went in as its own slice,
       built to the v2 arrangement and sitting in the v1 chrome: Checkpoints tab (e535558c,
       #427), usage chip in the composer (1f50a698, #429), plan edit strip with the queued-edit
       notice (2cda8329, #432), model popover with discovery and rediscover (91589000, #433),
@@ -1278,7 +1300,11 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       drawer sources named in those PRs. Earlier: #386 to #401 (41e675ab) landed v2's
       corrections to the v1 layout. The work-split items under "From the work split: client
       items" below are the rest of the detail.
-- [ ] **S3.10 [CC]** Desktop chrome pass: **unstarted as of 2026-09-18.** The v2 conversion
+- [ ] **S3.10 [CC]** Desktop chrome pass. **Measured 2026-09-22, after #517 (23ae1342)
+      landed v2 client parity:** `node scripts/design-conformance.mjs` reports desktop 61
+      built, 18 partial, 0 missing, 4 blocked; phone 20 built, 5 blocked; web 6 built, 5
+      blocked; tablet 7 built, 1 blocked. The rest of this entry is the 2026-09-18 state it
+      replaced, kept as history. **Unstarted as of 2026-09-18.** The v2 conversion
       is not landed on any surface, and this plan read as though it were, because the designs
       were converted into itemised change lists and only the items were built; the chrome was
       settled in a design conversation and never appeared in a prompt. The maintainer's first
@@ -1287,7 +1313,9 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       and the palette; a Think chip with no drawing in the design; the titlebar as a text bar
       rather than v2's icon row (drawer toggle with a needs-you badge, New session, the
       centred palette pill carrying the title, machine chip opening Fleet, stop, settings,
-      theme). Auto is inside the mode menu in both the design and the code.
+      theme). Auto is inside the mode menu in both the design and the code. Ruled 2026-09-22:
+      the Think chip stays until reasoning effort returns as a group in the v2 model menu
+      (see "Audit fix rulings, 2026-09-22").
       **The gate**: `docs/design-conformance/desktop-v2.json`, checked by `pnpm design:conformance`
       and `release:invariants` (`docs/design-conformance/README.md` says what it holds and what it
       does not). Seeded 2026-09-18 from the whole vendored file: 23 elements built, 42
@@ -1399,7 +1427,9 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       notification. Phone v2 frames 20 to 23 (the "without opening the app" section) are
       drawn, not built, and cannot be built in M1; see `S3.3`. Option (a) is what M1 ships,
       and its copy is the open item: the phone is a pull surface until Phase 2.
-- [ ] **S3.5 [CC]** Tablet: nothing exists yet.
+- [ ] **S3.5 [CC]** Tablet. A tablet shell landed in #517 (6542cb30, 2026-09-22); the tablet
+      inventory reads 7 built, 1 blocked on 2026-09-22. `jest-expo` proves it, a device has
+      not. It was "nothing exists yet" until then.
 - [ ] **S3.6 [CC]** Cloud and Team surfaces; the cross-cutting states.
 - [ ] **S3.7 [CC]** Accessibility: focus order, screen-reader labels, and the StatusDot rule
       — colour is never the sole carrier — enforced everywhere.
@@ -1451,9 +1481,10 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
   - `apps/mobile/src/fleet-load.ts` (#244) bumps a generation per load so a stale response cannot
     replace a newer list.
 - [ ] Give the phone's Fleet tab the facts the mockup shows
-  - Building the tab against the mockup found four gaps: the protocol has no paused fact for a
-    fleet machine, no wake RPC, and no per-machine session or tool counts, and the phone has no
-    pairing flow of its own; it takes a daemon address and pairing token in Settings.
+  - Building the tab against the mockup found four gaps. Three are in the protocol and remain:
+    no paused fact for a fleet machine, no wake RPC, and no per-machine session or tool counts.
+    The fourth, that the phone had no pairing flow of its own, closed when pairing by camera
+    landed (3c2ae09c, #451; fe7968f9, #442); see `S3.3`.
 
 ### From the work split: client items
 
@@ -1491,11 +1522,15 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       `fork: true`, and the reasoning sits above `historyRows` in the design file itself so the
       drawing carries its own why. Re-vendored, `part2-logic` 133,178 to 133,451 bytes. Nothing
       to raise with Codex: `session.fork` taking a checkpoint id is right as it stands.
-  - The export `README.md` is vendored at `design/design_handoff_domovoi_v2/designs/README.md`
-    (18dc495 for the parts, this commit for the README). Its byte table is gone rather than
+  - Current state, 2026-09-22: since e841e66c (#488, 2026-09-18) Desktop V2 is vendored whole
+    as `design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html`, and the two
+    exported parts and the export `README.md` are gone from `design/`. What follows is the
+    record of the two-part period. The export `README.md` was vendored at
+    `design/design_handoff_domovoi_v2/designs/README.md` (02459d66 vendored both parts, 17cf141b
+    revised part 2, 31d28b7a vendored the README). Its byte table is gone rather than
     corrected: a restated byte count goes stale on every re-export, which is the same shape as
     an undated `[x]` or prose restating a token. What replaces it is checkable after any
-    re-export, and was checked here rather than taken on the README's word — part 1 ends
+    re-export, and was checked here rather than taken on the README's word: part 1 ends
     `</x-dc>` with zero trailing bytes, part 2 opens `\n<script` and ends `</html>\n`, and the
     seam is adjacent bytes with no separator. The correction list is closed.
 
@@ -1507,10 +1542,11 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
 - Landed as its own pull request (#388) before the dot swap in #397, as planned.
 
 #### Revert the Handoffs label, add the transfers filter
-- [x] `6f2f875` renamed `handoffs` to Transfers. `handoffs` holds **provider** handoffs —
-      `server.ts:461` selects rows starting `Handed off `, written at `server.ts:5812`.
-      Label reverted to Handoffs (f3252e50).
-- [x] Add the `transfers` filter now that `560eca5` records machine transfers (f3252e50).
+- [x] The #397 branch renamed `handoffs` to Transfers and then reverted it, so `main` never
+      carried the rename. `handoffs` holds **provider** handoffs: `server.ts:461` selected rows
+      starting `Handed off `, written at `server.ts:5812` (both line numbers from 2026-09-10).
+      Label is Handoffs (f3252e50).
+- [x] Add the `transfers` filter now that 72dca0ad records machine transfers (f3252e50).
 - [x] Eight filters, drawn five leading:
       Everything, Turns, Approvals, Checkpoints, Transfers, then Handoffs, Tools,
       Annotations, Tests (f3252e50).
@@ -1530,7 +1566,9 @@ pull request, and corrected here rather than left as a task nobody would start.
 - [x] Vendor them as data under `design/`, digested, using
       `pnpm design:revision --accept-new=<path>` per file. Nine `.dc.html` files plus the two
       exported Desktop V2 parts, fourteen entries in `design/REVISIONS.json`.
-      (`42cd0af` · Desktop V2 as its two parts `02459d6`)
+      (`42cd0af` · Desktop V2 as its two parts `02459d6`) Since e841e66c (#488) Desktop V2 is one
+      file again and the parts are gone; `design/REVISIONS.json` records twelve files under
+      `design/design_handoff_domovoi_v2/` on 2026-09-22.
 - [x] Then a grep of `design/` answers presence **and** absence *within the recorded
       revision* — which is the only absence it can ever answer. It says nothing about the
       live project, and it cannot prove the export was complete. State that scope wherever
@@ -1559,10 +1597,10 @@ building them:
     `needs|Needs|group`, which missed `attention`, `approvalLead`, `waitingCount` and
     `ApprovalLeadCard` because the concept is there under other words. `graft` found them in one
     call. Use it for "is this concept here"; a keyword search only answers "is this string here".
-  - Found while correcting that: `groupSessions` and `sessionsNeedingYou`
-    (`packages/ui/src/session-groups.ts:24,72`) have no callers outside their own test. The
-    desktop already models the three groups the phone design draws, and nothing renders them.
-    Belongs to `CC7` rather than Phone v2.
+  - Found while correcting that, and half wrong when written: `sessionsNeedingYou`
+    (`packages/ui/src/session-groups.ts`) has no caller outside its own test. `groupSessions`
+    does: `packages/ui/src/sessions-drawer.tsx` has called it since 5bd957a3 (2026-09-08), two
+    days before this note. Do not delete it. Belongs to `CC7` rather than Phone v2.
 - [x] **Web v2** — diffed 2026-09-10 (34282f89). Two of six steps built, one partial, three with
       nothing: picking a machine, carrying on without the terminal, and Design review. 6-8 days.
       The machine picker stays in `S3.2` and is **marked blocked on Phase 2** rather than moved:
@@ -1599,7 +1637,7 @@ A whole-phase figure of 45-60 days is the honest shape. Two milestone questions 
 `S3.5` Tablet leaves M3, and whether M2 is phone-gates-only rather than phone-parity.**
 
 #### The three that genuinely have no code
-- [ ] **Tablet v2** — nothing in the repo.
+- [ ] **Tablet v2**: nothing in the repo until #517 (6542cb30); see `S3.5`.
 - [ ] **Cloud** — nothing named cloud; one Desktop mention, as a transport.
 - [ ] **Team** — nothing; closest is fleet admission and pairing.
 - `WorkspaceSurface` is `"workspace" | "providers" | "skills" | "fleet" | "audit"`. Any new
@@ -1618,7 +1656,7 @@ Three of this item's premises were wrong, checked before widening anything. fetz
 2026-09-10: no new role below `machine`, the sites move onto existing variants, and the phone's
 floor is **higher** than the desktop's rather than lower.
 
-- [x] **Nineteen sites, not eight** (eedb10cd for nine, this commit for ten more). Four in `screens/session.tsx` (56, 86, 90, 139), two in
+- [x] **Nineteen sites, not eight** (eedb10cd, #387). Four in `screens/session.tsx` (56, 86, 90, 139), two in
       `screens/artifact.tsx` (32, 42), one each in `components/tab-bar.tsx` (56) and
       `components/ui/badge.tsx` (48) — and `screens/fleet.tsx:48` at `text-[8.5px]`, which the
       inventory missed and which is the smallest of them.
@@ -1661,7 +1699,10 @@ floor is **higher** than the desktop's rather than lower.
 
 ---
 
-## Phase 4 — distribution and signing — M1 onward
+## Phase 4: distribution and signing, M2 onward
+
+M1 ships unsigned and updated by hand; signing is an M2 precondition (decided 2026-09-17 under
+`S1.4`).
 
 - [ ] **S4.1 [H]** Certificates, from S0.7.
 - [ ] **S4.2 [CC]** macOS notarization and stapling; Windows signing; Linux packages.
@@ -1674,8 +1715,9 @@ floor is **higher** than the desktop's rather than lower.
       the reproducible build: two clean builds from one commit, byte-compared before
       publication, with the comparison in the release record (`S1.4`'s design names the
       shape). `S1.4` consumes it. SBOM and `SHA256SUMS` exist in `scripts/release-artifacts.mjs`
-      (b2e58881); the comparison does not, and no artefact has been published to attach any of
-      it to.
+      (b2e58881); the comparison does not. No release carrying an SBOM or a digest record has
+      been published. The one published artefact, the `desktop-v0.0.1` DMG (2026-09-18, a
+      `.sha256` file beside it and no SBOM), was hidden as a draft on 2026-09-22; see `S1.4`.
 
 ### From the roadmap: package and release the open core (Goal 4)
 
@@ -1683,8 +1725,9 @@ Priority: `P2`. Every install channel must wrap the same immutable release.
 
 #### Release engineering and semantic versioning
 
-Release tooling exists; no package is published from this repository yet. Finish this section
-before any public package or application publish.
+Release tooling exists; no npm package is published from this repository yet. One desktop
+build was published as a GitHub pre-release on 2026-09-18 and hidden as a draft on 2026-09-22
+(see `S1.4`). Finish this section before any public package or application publish.
 
 - [x] Add Changesets and require release metadata for every publishable change before any public
   publish
@@ -1708,7 +1751,9 @@ before any public package or application publish.
   GitHub Releases from the same immutable commit
   - Repository mechanisms are implemented, not yet proven by a hosted publication.
     `release.yml` opens version PRs, packs once, verifies downloaded archives, and publishes the
-    protocol before the daemon. Alpha uses its own npm channel. A single canonical `v<version>`
+    protocol before the daemon. Ruled 2026-09-22: the first release publishes `@getdomovoi/cli`
+    and `@getdomovoi/credential-store` too; the workflow does not yet (see "Audit fix rulings,
+    2026-09-22"). Alpha uses its own npm channel. A single canonical `v<version>`
     GitHub release matches the bootstrap URL and stays a draft until all asset hashes are checked.
     Local tests cover real Changesets versioning, artifact binding and API refusal/order behavior;
     account admission, provenance and the first public install still need a hosted release.
@@ -1721,11 +1766,14 @@ before any public package or application publish.
     for the commit at all, the gate polls every 30 seconds for up to 45 minutes and then fails, so
     an absent or unfinished verdict is a refusal rather than a publish.
     `scripts/release-gate.test.mjs` covers each of those outcomes.
-  - Nothing else gates the release: `main` carries no branch protection and no ruleset, so there
-    is no required status check anywhere and this workflow is the whole gate.
-  - `wsl.yml` is path filtered and scheduled rather than run on every commit, so it is not part
-    of that gate. Making a path-filtered workflow a per-commit requirement would leave it
-    pending on every commit outside its paths.
+  - `main` is protected: five required checks, `strict: true` and `enforce_admins: true`. The
+    live settings and how to read them back are in `docs/working-rules.md`, "Read back
+    2026-09-22" under rule 9. That gates what reaches `main`; the release workflow's `gate` job
+    is what stands between a `main` commit and the registry.
+  - `wsl.yml`'s `native` job is one of the five required checks, but the workflow is path
+    filtered and scheduled, so a pull request outside its paths never reports `native` and
+    cannot merge until the check is unticked for that merge and ticked again. The release
+    `gate` job does not wait on `wsl.yml`.
   - `RELEASE_PUBLISHING=version-only` permits version PRs without publication; `enabled` permits
     publication too. Missing or unknown values permit neither. Initial public alpha admission
     requires an explicit manual request and a temporary protected-environment token because npm
@@ -1750,8 +1798,11 @@ before any public package or application publish.
   - Linux is built and verified. The AppImage and the deb keep node-pty and the keyring binding
     outside the asar, the packaged application loads both from the archive on the main thread and
     in a worker thread, starts the production daemon, and renders its window.
-  - macOS and Windows are configured and unbuilt. Neither target has run on its own platform, so
-    the dmg, the zip, and the NSIS installer are unproven.
+  - macOS: an unsigned Apple-silicon DMG built from 3e396ce1 was published as the
+    `desktop-v0.0.1` pre-release on 2026-09-18 and hidden as a draft on 2026-09-22, because it
+    carried the SDK vendor's agent binary (see `S1.4`). #516 (35a0cc6d) removed that binary from
+    the package. The macOS zip is unverified. Windows is configured and unbuilt, so the NSIS
+    installer is unproven.
   - Nothing is signed, so this item stays open until the line below closes.
 - [ ] Add macOS signing/notarization and Windows code signing
   - The shared packaging policy enables mandatory Developer ID signing and notarization on
@@ -1942,13 +1993,50 @@ dependent work starts.
   session. This resolves open question 1 in the signed design handoff, whose `UNREACHABLE` and
   unselectable treatment of offline machines already showed this path.
 
+## Audit fix rulings, 2026-09-22
+
+The maintainer took every recommended pick on the decision sheet for fixing the 2026-09-22
+audit, and ruled on the publish set (10) the same day. The labels in brackets are that audit's finding ids; the report is kept outside this
+repository. Each ruling stands until the maintainer changes it.
+
+1. Fix branches (`fix/audit-0922-*`) are pushed, opened as pull requests and merged after a
+   peer read and green CI, with no per-pull-request ask. The `native` untick procedure in
+   `docs/working-rules.md` applies when its path filter skips a pull request. This program
+   only.
+2. The `desktop-v0.0.1` pre-release is hidden as a draft [E12]. It is not rebuilt or
+   republished until E12's fix has landed and the maintainer says so. #516 (35a0cc6d) is that
+   fix; the word to republish has not been given. See `S1.4`.
+3. Code a repository brings, meaning hooks, tool servers, plugins and `env`, runs only after a
+   one-time trust of that repository. Until that gate ships, the daemon does not load it.
+   Instruction files (`CLAUDE.md`, `AGENTS.md`) still load [A7, J45]. Unresolved decision 3,
+   about commands Build auto runs, is not settled by this.
+4. An agent's read outside its worktree goes through an approval [A9].
+5. Reasoning effort comes back as a group in the v2 model menu [J33]. `ThinkChip` and
+   `ReasoningCatalog` stay until then.
+6. Checkpoints are taken automatically before each approved write, and the palette gains
+   "Take a checkpoint" [J34].
+7. Archive keeps today's behaviour: the worktree is removed, the branch and the checkpoint are
+   kept. The design copy changes to match [I69].
+8. Asking Tailscale for this machine's own certificate is allowed; no tailnet setting is
+   touched [J25].
+9. Dependabot security updates go on [E15].
+10. The first release publishes all four public packages: `@getdomovoi/protocol`,
+    `@getdomovoi/daemon`, `@getdomovoi/cli` and `@getdomovoi/credential-store` [I62]. The
+    release tooling still names two (`publishablePackages` in `scripts/release-artifacts.mjs`,
+    `release.yml`); changing it is owed work.
+
+Not decided yet: an off-machine dev-server preview [J32], launching `ssh` [J41], checkpoint
+refs in an adopted repository [J43], direct API keys before the alpha [J18, D18], and one
+pricing source [I58].
+
 ## M1 definition of done
 
 Carried from the roadmap's first public alpha definition, restated for M1. M1 is ready only
 when all of these are proven:
 
-- Phase 1 is complete: the roadmap's Goal 0 and Goal 1 blocks below it are ticked, except
-  direct API adapters that duplicate a capable subscription CLI.
+- Phase 1 is complete except `S1.4`, which is M2's (decided 2026-09-17): the roadmap's Goal 0
+  and Goal 1 blocks below it are ticked, except direct API adapters that duplicate a capable
+  subscription CLI.
 - `S3.0` answered yes: a paired phone attaches to a desktop session over the tailnet route
   and answers a gate on real hardware.
 - The packaged desktop build can install, start, and remove its supervised local daemon.
@@ -1965,20 +2053,22 @@ when all of these are proven:
 
 ```
 Phase 1 daemon as a service  →  S3.0 tailnet check  →  S3.3 phone pairing and gate  →  M1
-                                                        S1.4 update  →  Phase 4 signing  ↗
-Phase 2 relay (own gates)  →  Phase 5 accounts and billing  →  M3 paid launch
+Phase 2 relay (own gates)  +  S1.4 update  →  Phase 4 signing  →  M2 hosted relay
+Phase 5 accounts and billing  →  M3 paid launch
 ```
 
-Phase 4 runs alongside Phase 1. S0.7 and S6.1 are calendar, not engineering, and started in
-Phase 0.
+Phase 4 runs alongside Phase 1. S0.7 and S6.1 are calendar, not engineering, and were meant to
+start in Phase 0. As of 2026-09-22 neither has an artefact in this repository: see the dated
+state under `S0.7` and `S6.1`.
 
-## Where each agent is, 2026-09-14
+## Where the work is, 2026-09-22
 
-**Codex**: `S1.4` to completion (protocol layer first), then `S1.1`'s open acceptance, then
-the protocol half of `skill push` for `S1.6`. The relay adapter waits.
-
-**Claude Code**: `S3.0`, the check before the build, on real hardware. Then `S3.3` in the
-order it states. `S3.4` goes to the maintainer as two options.
+The 2026-09-14 assignments here are superseded: `S3.0` answered yes on 2026-09-16, and `S1.4`
+left M1 on 2026-09-17. On 2026-09-22 the work in flight is the audit fix program, one pull
+request per lane on `fix/audit-0922-*` branches, under the rulings above. The M1 items still
+open, read from this file on 2026-09-22: `S1.1`'s logon acceptance and the two 2026-09-17
+policies, `S1.6`'s `skill push`, `S3.2`'s web app over the tailnet, `S3.4`'s pull-surface copy,
+and `S3.10`'s remaining conformance entries.
 
 **Neither** adds a carrier by adding a branch. The transport list is the only place a new
 route goes.

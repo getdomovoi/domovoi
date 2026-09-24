@@ -199,6 +199,17 @@ describe("durable secret redaction", () => {
     expect(stream.flush()).toBe("password=[REDACTED]")
   })
 
+  it("peeks the sanitized remainder without consuming it", () => {
+    const stream = new DurableOutputRedactor()
+    expect(stream.push("password=peek-secret")).toBe("")
+    expect(stream.peek()).toBe("password=[REDACTED]")
+    expect(stream.peek()).toBe("password=[REDACTED]")
+    expect(stream.flush()).toBe("password=[REDACTED]")
+    expect(stream.peek()).toBe("")
+    stream.push(`token=${"s".repeat(maximumStreamingOutputBufferLength + 1)}`)
+    expect(stream.peek()).toBe("")
+  })
+
   it("bounds pathological no-newline records without leaking later fragments", () => {
     const stream = new DurableOutputRedactor()
     const emitted = stream.push(`token=${"s".repeat(maximumStreamingOutputBufferLength + 1)}`)

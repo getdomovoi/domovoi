@@ -8,6 +8,7 @@ import {
   type OpenDirectoryDialog,
 } from "./desktop-platform.js"
 import type { RendererIpcEvent } from "./renderer-security.js"
+import { isWindowDecoration, type WindowDecoration } from "./window-decoration.js"
 
 type DesktopRendererSender = {
   send(channel: "domovoi:deep-link" | "domovoi:notification-activate", sessionId: string): void
@@ -66,6 +67,10 @@ export type DesktopIpcDependencies = {
     get(): DesktopDeepLinkSink | undefined
     set(sink: DesktopDeepLinkSink | undefined): void
   }
+  windowDecoration: {
+    get(): WindowDecoration
+    set(decoration: WindowDecoration): boolean
+  }
   launchSmoke: {
     enabled: boolean
     preloadReady(): void
@@ -99,6 +104,17 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
   ipcMain.handle("domovoi:rpc-endpoint-reconnect", (event) => {
     daemonRequest(event)
     return deps.reconnectRpcEndpoint()
+  })
+  // The second one persists a setting, so both sit behind the same guard as
+  // every other channel rather than a hand-written copy of it.
+  ipcMain.handle("domovoi:window-decoration-get", (event) => {
+    daemonRequest(event)
+    return deps.windowDecoration.get()
+  })
+  ipcMain.handle("domovoi:window-decoration-set", (event, decoration) => {
+    daemonRequest(event)
+    if (!isWindowDecoration(decoration)) throw new Error("Window decoration is invalid")
+    return deps.windowDecoration.set(decoration)
   })
   ipcMain.handle("domovoi:fleet-route", (event, machineId, budgetMs) => {
     daemonRequest(event)
