@@ -365,6 +365,11 @@ describe("values the terminal drops, split at every point", () => {
     { shape: "escaped-quote-json", text: `{"x-token": "${escaped}", "safe": "visible"}\n`, value: escaped, rule: "hide", kept: ["\"safe\": \"visible\"}"] },
     { shape: "escaped-quote-json-tight", text: `{"x-token":"${escaped}","safe":"visible"}\n`, value: escaped, rule: "hide", kept: ["\"safe\":\"visible\"}"] },
     { shape: "escaped-single-quote", text: `x.secret='${escapedSingle}' -s\n`, value: escapedSingle, rule: "hide", kept: [" -s"] },
+    { shape: "escaped-flag-space", text: `run --x-token "zqxj\\"mkqz" -s\n`, value: "zqxj\\\"mkqz", rule: "hide", kept: [" -s"] },
+    { shape: "escaped-flag-equals-single", text: `run --x-token='zqxj\\'mkqz' -s\n`, value: "zqxj\\'mkqz", rule: "hide", kept: [" -s"] },
+    { shape: "escaped-one-dash-flag", text: `tool -db-password "zqxj\\\\\\"mkqz" -s\n`, value: "zqxj\\\\\\\"mkqz", rule: "hide", kept: [" -s"] },
+    { shape: "escaped-property", text: `java -Dx.password="zqxj\\"mkqz" -jar app.jar\n`, value: "zqxj\\\"mkqz", rule: "hide", kept: [" -jar app.jar"] },
+    { shape: "escaped-flag-long", text: `run --x-token "${escaped}" -s\n`, value: escaped, rule: "hide", kept: [" -s"] },
     { shape: "escaped-backslash", text: `token="${long}\\\\" -s mkqz\n`, value: `${long}\\\\`, rule: "main", kept: [" -s mkqz"] },
     ...[250, 252, 253, 254, 255, 256, 258].flatMap((length): Case[] => [
       { shape: `long-key-${length}-json-spaced`, text: `{"${keyOf(length)}": "zqx jwvk", "safe": "visible"}\n`, value: "zqx jwvk", rule: "hide", kept: ["\"safe\": \"visible\"}"], longName: true },

@@ -11,6 +11,27 @@ import {
   TerminalOutputRedactor,
 } from "./secret-redaction.js"
 
+// Flag and property values with escapes inside their quotes: an escaped quote
+// of either kind, an escaped backslash before an escaped quote, an escaped
+// backslash alone, and an escaped backslash right before the closing quote,
+// which still closes the value. Each must be hidden whole and what follows it
+// kept.
+const escapedFlagValues = ["\"", "'"].flatMap((quote) => {
+  const other = quote === "\"" ? "'" : "\""
+  const values = [
+    `zqxj\\${quote}mkqz`,
+    `zqxj\\${other}mkqz`,
+    `zqxj\\\\\\${quote}mkqz`,
+    "zqxj\\\\mkqz",
+    "zqxjmkqz\\\\",
+  ]
+  const flags = ["--token ", "--token=", "--x-token ", "--db_password=", "-db-password ", "/token:", "-Dpassword=", "-Dx.password="]
+  return flags.flatMap((flag) => values.map((value) => ({
+    text: `run ${flag}${quote}${value}${quote} -s`,
+    expected: `run ${flag}${quote}[REDACTED]${quote} -s`,
+  })))
+})
+
 const secrets = [
   "bearer-secret-123",
   "url-password-456",
@@ -292,6 +313,11 @@ describe("durable secret redaction", () => {
     expect(result.value).not.toMatch(/left|right-secret/)
   })
 
+  it.each(escapedFlagValues)("hides a flag value with escapes whole: $text", ({ text, expected }) => {
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(redactDurableCommand(text).value).toBe(expected)
+  })
+
   it("does not retain a JWT fragment crossing the durable bound", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJib3VuZGFyeSJ9.signatureSecret"
     const result = redactDurableText(`${"a".repeat(maximumDurableTextLength - 8)}${jwt}`)
@@ -383,6 +409,21 @@ describe("prefixed names across the terminal's reads", () => {
     const redactor = new TerminalOutputRedactor()
     return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
   }
+
+  // The same flag values, and long ones that outgrow the carry, split at every
+  // point across two reads.
+  const longEscapedFlagValues = ["\"", "'"].flatMap((quote) => ["--token ", "--token=", "--x-token "].map((flag) => ({
+    text: `run ${flag}${quote}${"zqxjwvkm".repeat(34)}\\${quote}mkqz${quote} -s`,
+    expected: `run ${flag}${quote}[REDACTED]${quote} -s`,
+  })))
+  it.each([...escapedFlagValues, ...longEscapedFlagValues])("hides a flag value with escapes split at every point: $text", ({ text, expected }) => {
+    const wrong: string[] = []
+    for (let at = 1; at < text.length; at += 1) {
+      const shown = run([text.slice(0, at), text.slice(at)])
+      if (shown !== expected) wrong.push(`${at}: ${shown.slice(-60)}`)
+    }
+    expect(wrong).toEqual([])
+  })
 
   it("hides a prefixed flag's value that runs past the carry", () => {
     const value = "a".repeat(247)

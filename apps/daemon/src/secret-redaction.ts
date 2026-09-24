@@ -35,8 +35,10 @@ const secretFlag = new RegExp(
   // without (--no-password, --no-auth-token, --db-skip-client-secret), the
   // prefixed branch does not match. The check walks the name once, from the
   // one start the lookbehind allows. One dash starts a flag as two do
-  // (-token, -db-password), as Go and Java tools write them.
-  String.raw`((?:(?<![A-Za-z0-9_.-])--?(?!(?:[A-Za-z0-9]*[_.-])*?(?:no|skip|without)[_.-])${namePrefix}|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  // (-token, -db-password), as Go and Java tools write them. A quoted value
+  // honours backslash escapes, as an assignment's does, so an escaped quote
+  // does not end it.
+  String.raw`((?:(?<![A-Za-z0-9_.-])--?(?!(?:[A-Za-z0-9]*[_.-])*?(?:no|skip|without)[_.-])${namePrefix}|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
 // Ruled 2026-09-24: after a prefixed sensitive name, the value shows only
@@ -84,7 +86,7 @@ const quotedCmdAssignment = new RegExp(
   "giu",
 )
 const javaSystemProperty = new RegExp(
-  String.raw`((?:(?<![A-Za-z0-9_.-])-D${namePrefix}|-D)${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  String.raw`((?:(?<![A-Za-z0-9_.-])-D${namePrefix}|-D)${sensitiveName}\s*=)(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
 
