@@ -158,6 +158,22 @@ test("fails closed in CI without a resolvable base commit", () => {
   assert.match(malformed.stderr, /full base commit SHA/)
 })
 
+// A base that is not an ancestor of the checkout says nothing about what this
+// branch changed, so a rewritten record could hide behind it.
+test("refuses a base commit that is not an ancestor of the checkout", (context) => {
+  const { directory, base } = repositoryWithRecord('{"protocolVersion":"0.7.0","schemas":{"a":"sha256:a"}}\n')
+  context.after(() => rmSync(directory, { recursive: true, force: true }))
+  git(directory, "checkout", "-q", "-b", "side")
+  writeFileSync(join(directory, wireReleasesPath, "0.7.0.json"), '{"protocolVersion":"0.7.0","schemas":{"a":"sha256:b"}}\n')
+  git(directory, "commit", "-q", "-am", "rewrite on a side branch")
+  const side = git(directory, "rev-parse", "HEAD")
+  git(directory, "checkout", "-q", base)
+
+  assert.equal(releasedRecordRefusal(directory, base), undefined)
+  writeFileSync(join(directory, wireReleasesPath, "0.7.0.json"), '{"protocolVersion":"0.7.0","schemas":{"a":"sha256:b"}}\n')
+  assert.match(releasedRecordRefusal(directory, side) ?? "", /is not an ancestor of HEAD/)
+})
+
 test("verifies a release record against its release commit", () => {
   const record = { protocolVersion: "0.7.0", releaseCommit: "a".repeat(40), schemas: { x: "sha256:1" } }
   const wire = { protocolVersion: "0.7.0", schemas: { x: "sha256:1" } }

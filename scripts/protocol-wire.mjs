@@ -173,8 +173,13 @@ function git(repository, args) {
 // A release record is written once, from its release commit. Every record that
 // existed at `base` must still exist here, byte for byte: a rewritten record
 // would let a changed wire clear the check it is measured against. A record
-// new since `base` is a new release.
+// new since `base` is a new release. The base must be an ancestor of HEAD.
 export function releasedRecordRefusal(repository, base) {
+  try {
+    git(repository, ["merge-base", "--is-ancestor", base, "HEAD"])
+  } catch {
+    return `The base commit ${base} is not an ancestor of HEAD, so it cannot show which release records this checkout changed.`
+  }
   const listed = git(repository, ["ls-tree", "-r", "--name-only", base, "--", wireReleasesPath])
     .split("\n").filter((path) => /\.json$/.test(path))
   const problems = []
