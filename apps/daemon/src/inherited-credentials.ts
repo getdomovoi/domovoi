@@ -123,6 +123,17 @@ function keptFor(environment: NodeJS.ProcessEnv, homeDirectory: string): KeptCre
   return pending
 }
 
+// Overrides carry settings, never credentials. A bearer or a credential file
+// named in them would configure whatever profile they select with it, so an
+// override that sets one is refused before anything starts.
+const credentialSettings = ["DOMOVOI_AUTH_TOKEN", "DOMOVOI_CREDENTIAL_PATH", "DOMOVOI_RELAY_CREDENTIAL_FILE"] as const
+
+export function refuseCredentialOverrides(overrides: Readonly<Record<string, string>> | undefined): void {
+  for (const name of credentialSettings) {
+    if (overrides !== undefined && Object.hasOwn(overrides, name)) throw new Error(`environmentOverrides cannot set ${name}`)
+  }
+}
+
 // The environment to read settings from, with the overrides applied. When the
 // environment is process.env itself, it gets back the bearer and path kept for
 // the profile the acquisition ends up with, after the overrides: an override
@@ -134,13 +145,14 @@ export function withInheritedCredentials(
   overrides: Readonly<Record<string, string>> = {},
 ): NodeJS.ProcessEnv {
   captureInheritedCredentials(homeDirectory)
+  refuseCredentialOverrides(overrides)
   const filled: NodeJS.ProcessEnv = { ...environment, ...overrides }
   if (environment !== process.env) return filled
   const entry = keptFor(filled, homeDirectory)
   if (!entry) return filled
   for (const name of inheritedNames) {
     const value = entry.values[name]
-    if (value !== undefined && overrides[name] === undefined) filled[name] = value
+    if (value !== undefined) filled[name] = value
   }
   return filled
 }

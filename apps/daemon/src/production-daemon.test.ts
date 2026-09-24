@@ -340,6 +340,39 @@ describe("createProductionDaemon", () => {
     })
   })
 
+  // Overrides carry settings, never credentials: an override that names a
+  // bearer or a credential file is refused before anything starts, whichever
+  // profile it names and whatever acquired before it.
+  it.each([
+    ["DOMOVOI_AUTH_TOKEN"],
+    ["DOMOVOI_CREDENTIAL_PATH"],
+    ["DOMOVOI_RELAY_CREDENTIAL_FILE"],
+  ])("refuses an override that sets %s, before and after the kept bearer's own profile used it", async (name) => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const otherProfile = join(await temporaryHome(), "profile-b")
+      const value = name === "DOMOVOI_AUTH_TOKEN" ? authToken : join(otherProfile, "credential")
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const acquireWith = (overrides?: Record<string, string>) => createProductionDaemonWithDependencies({
+        homeDirectory: home, environment: process.env, ...(overrides ? { environmentOverrides: overrides } : {}),
+      }, {
+        ...productionDaemonDependencies,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon,
+      })
+      const overrides = { DOMOVOI_PROFILE_DIR: otherProfile, [name]: value }
+
+      await expect(acquireWith(overrides)).rejects.toThrow(`environmentOverrides cannot set ${name}`)
+      expect(createDaemon).not.toHaveBeenCalled()
+      const own = await acquireWith()
+      expect(own.authToken).toBe(authToken)
+      await own.stop()
+      await expect(acquireWith(overrides)).rejects.toThrow(`environmentOverrides cannot set ${name}`)
+      expect(createDaemon).toHaveBeenCalledTimes(1)
+      expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+    })
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))

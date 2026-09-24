@@ -18,7 +18,7 @@ import {
 } from "./production-daemon.js"
 import { serviceRegistrationBlocksProfile } from "./service/configuration.js"
 import { configuredProfileDirectory, profileLocation, type ProfileLocation } from "./profile-directory.js"
-import { captureInheritedCredentials, withInheritedCredentials } from "./inherited-credentials.js"
+import { captureInheritedCredentials, refuseCredentialOverrides, withInheritedCredentials } from "./inherited-credentials.js"
 
 export type LocalDaemonRefusalReason =
   | "owner-busy" | "owner-unreachable" | "owner-incompatible" | "owner-unverified" | "profile-invalid"
@@ -157,6 +157,7 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
   // bearer leaves process.env and is pinned to the profile it was handed for,
   // whatever this acquisition ends as.
   captureInheritedCredentials(options.homeDirectory)
+  refuseCredentialOverrides(options.environmentOverrides)
   const deadline = OperationDeadline.start(options.timeoutMs)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
   const settings = withInheritedCredentials(options.environment ?? process.env, homeDirectory, options.environmentOverrides)

@@ -27,13 +27,15 @@ import { skillTrustPath } from "./skill-signing.js"
 import { profileDirectory, profileLocation } from "./profile-directory.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 import { wslHostFacts } from "./wsl-host.js"
-import { captureInheritedCredentials, withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
+import { captureInheritedCredentials, refuseCredentialOverrides, withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
 
 export type ProductionDaemonOptions = {
   environment?: DaemonEnvironment
   // Settings added on top of the environment for this daemon only. A caller
   // that passes process.env with overrides, rather than a copy of it, keeps the
-  // inherited bearer across acquisitions: a copy is read as given.
+  // inherited bearer across acquisitions: a copy is read as given. Overrides
+  // may not set DOMOVOI_AUTH_TOKEN, DOMOVOI_CREDENTIAL_PATH or
+  // DOMOVOI_RELAY_CREDENTIAL_FILE; the acquisition throws if they do.
   environmentOverrides?: Readonly<Record<string, string>>
   homeDirectory?: string
   machineLabel?: string
@@ -115,6 +117,7 @@ export async function createProductionDaemonWithDependencies(
 ): Promise<ProductionDaemonHandle> {
   // First, before anything can throw: the inherited bearer leaves process.env.
   captureInheritedCredentials(options.homeDirectory)
+  refuseCredentialOverrides(options.environmentOverrides)
   const deadline = ownership?.deadline ?? OperationDeadline.start(30_000)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
   const settings = withInheritedCredentials(options.environment ?? process.env, homeDirectory, options.environmentOverrides)

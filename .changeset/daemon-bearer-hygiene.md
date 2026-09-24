@@ -13,7 +13,9 @@ pinned to the profile directory that named them (its device and inode), and only
 process environment for that same profile gets them back. Every acquisition takes them out first,
 including one that refuses. `AcquireLocalDaemonOptions` and `ProductionDaemonOptions` take
 `environmentOverrides`, settings added on top of the environment, which the desktop uses in
-development instead of a copy of its environment.
+development instead of a copy of its environment. Overrides may not set `DOMOVOI_AUTH_TOKEN`,
+`DOMOVOI_CREDENTIAL_PATH` or `DOMOVOI_RELAY_CREDENTIAL_FILE`; an acquisition given such an override
+throws before anything starts.
 
 A connection authenticated with the daemon bearer chose its own audit identity in `system.hello`,
 including a paired phone's `device-...` id, so its approvals were recorded under that phone. Such a
