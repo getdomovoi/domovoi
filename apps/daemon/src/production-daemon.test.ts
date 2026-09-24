@@ -373,6 +373,34 @@ describe("createProductionDaemon", () => {
     })
   })
 
+  // The relay credential file is a credential too: taken out of the process
+  // environment and pinned to the profile it was handed for, like the bearer.
+  it("pins an inherited relay credential file to its own profile", async () => {
+    const previous = process.env.DOMOVOI_RELAY_CREDENTIAL_FILE
+    const home = await temporaryHome()
+    const relayFile = join(home, "relay-credential")
+    process.env.DOMOVOI_RELAY_CREDENTIAL_FILE = relayFile
+    try {
+      const parseEnvironment = vi.fn(productionDaemonDependencies.parseEnvironment)
+      const acquireIn = (directory: string) => createProductionDaemonWithDependencies({ homeDirectory: directory, environment: process.env }, {
+        ...productionDaemonDependencies,
+        parseEnvironment,
+        createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+        createDaemon: vi.fn((options: DaemonServerOptions) => fakeRuntime(options)),
+      }).then((handle) => { running.push(handle) }, () => undefined)
+
+      await acquireIn(home)
+      expect(process.env.DOMOVOI_RELAY_CREDENTIAL_FILE).toBeUndefined()
+      expect(parseEnvironment.mock.calls.at(-1)?.[0].DOMOVOI_RELAY_CREDENTIAL_FILE).toBe(relayFile)
+
+      await acquireIn(await temporaryHome())
+      expect(parseEnvironment.mock.calls.at(-1)?.[0].DOMOVOI_RELAY_CREDENTIAL_FILE).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.DOMOVOI_RELAY_CREDENTIAL_FILE
+      else process.env.DOMOVOI_RELAY_CREDENTIAL_FILE = previous
+    }
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))

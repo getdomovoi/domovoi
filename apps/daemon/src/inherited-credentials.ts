@@ -21,7 +21,7 @@ import { configuredProfileDirectory, profileDirectory, profileLocation } from ".
 // Another profile loads its own credential, and an environment the caller
 // built itself is read as given.
 
-const inheritedNames = ["DOMOVOI_AUTH_TOKEN", "DOMOVOI_CREDENTIAL_PATH"] as const
+const inheritedNames = ["DOMOVOI_AUTH_TOKEN", "DOMOVOI_CREDENTIAL_PATH", "DOMOVOI_RELAY_CREDENTIAL_FILE"] as const
 
 type ProfileIdentity =
   | { kind: "inode"; dev: bigint; ino: bigint }
@@ -83,7 +83,10 @@ function sameIdentity(left: ProfileIdentity, right: ProfileIdentity): boolean {
 // leaves them for a child or a later acquisition to inherit. They are pinned to
 // the profile process.env names, the one they were handed for; an unusable
 // home directory or profile setting keeps nothing.
-export function captureInheritedCredentials(homeDirectory: unknown): void {
+// The home directory is passed as a function, called only after the scrub, so
+// an entry point hands over its options unread: a getter that throws cannot
+// run before the values are out of process.env.
+export function captureInheritedCredentials(homeDirectory: () => unknown): void {
   const values: KeptCredentials["values"] = {}
   for (const name of inheritedNames) {
     const value = process.env[name]
@@ -93,7 +96,8 @@ export function captureInheritedCredentials(homeDirectory: unknown): void {
   if (Object.keys(values).length === 0) return
   let home: string
   try {
-    home = resolve(typeof homeDirectory === "string" ? homeDirectory : homedir())
+    const given = homeDirectory()
+    home = resolve(typeof given === "string" ? given : homedir())
   } catch {
     return
   }
@@ -144,7 +148,7 @@ export function withInheritedCredentials(
   homeDirectory: string,
   overrides: Readonly<Record<string, string>> = {},
 ): NodeJS.ProcessEnv {
-  captureInheritedCredentials(homeDirectory)
+  captureInheritedCredentials(() => homeDirectory)
   refuseCredentialOverrides(overrides)
   const filled: NodeJS.ProcessEnv = { ...environment, ...overrides }
   if (environment !== process.env) return filled

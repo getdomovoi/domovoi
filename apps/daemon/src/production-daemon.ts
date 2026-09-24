@@ -116,7 +116,7 @@ export async function createProductionDaemonWithDependencies(
   ownership?: { lease: ProfileLease; deadline: OperationDeadline },
 ): Promise<ProductionDaemonHandle> {
   // First, before anything can throw: the inherited bearer leaves process.env.
-  captureInheritedCredentials(options.homeDirectory)
+  captureInheritedCredentials(() => options.homeDirectory)
   refuseCredentialOverrides(options.environmentOverrides)
   const deadline = ownership?.deadline ?? OperationDeadline.start(30_000)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())

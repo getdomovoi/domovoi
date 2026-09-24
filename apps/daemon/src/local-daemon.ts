@@ -191,7 +191,7 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
   // First, before the deadline or any other argument is checked: the inherited
   // bearer leaves process.env and is pinned to the profile it was handed for,
   // whatever this acquisition ends as.
-  captureInheritedCredentials(options.homeDirectory)
+  captureInheritedCredentials(() => options.homeDirectory)
   refuseCredentialOverrides(options.environmentOverrides)
   const deadline = OperationDeadline.start(options.timeoutMs)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
