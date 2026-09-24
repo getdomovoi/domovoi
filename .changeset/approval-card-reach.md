@@ -90,3 +90,10 @@ it holds that sentence wording (" in the session worktree", ", outside the sessi
 ", through a link at "), and the reading renders back to the same line; any other line seals the
 card, so a file name that holds the wording cannot be read as other paths. A sealed card keeps a
 provider's own reach line and hides any other Affects line, whatever its format.
+
+A saved card's execution record is not trusted at load or at Allow. The execution is resolved again
+from the card's saved directory, command, and, for a file or read tool, the file its file line
+names, through the same resolution a new card uses and under the same 2 second deadline. If the
+fresh result differs from the saved record in digest, state, or reason, or any path or operand on
+the card reaches a credential store, the card becomes a hard gate and its record is hidden. A saved
+card whose directory or file line is hidden cannot be resolved again, so it is sealed.
