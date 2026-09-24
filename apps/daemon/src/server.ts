@@ -2696,10 +2696,13 @@ export class DomovoiDaemon {
       close: () => {},
     }
     this.#authenticatedClients.add(internalSocket)
+    // The replayed send acts under the credential that queued it: a paired
+    // device when the queue recorded its device id, the daemon bearer otherwise.
     this.#authenticatedActors.set(internalSocket, {
       kind: "client",
       client: queued.origin.client,
       ...(queued.origin.clientId ? { clientId: queued.origin.clientId } : {}),
+      credential: queued.credentialDeviceId ? "device" : "daemon",
     })
     this.#connectionIds.set(internalSocket, queued.origin.connectionId)
     await this.#handle(internalSocket, JSON.stringify({
