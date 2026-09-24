@@ -121,3 +121,34 @@ test("counts only the startup graph and reports lazy chunks separately", async (
     },
   })
 })
+
+// A lazy chunk is paid for only when its surface opens, so each one is held to
+// the ceiling on its own. Splitting a surface out of startup must not be
+// charged against every other lazy chunk.
+test("holds each lazy chunk to the ceiling on its own rather than their sum", async (t) => {
+  const root = await buildFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, "apps", "web", "dist", "assets", "settings.js"), "s".repeat(40))
+  await writeFile(join(root, "apps", "desktop", "out", "renderer", "assets", "renderer-settings.js"), "s".repeat(30))
+
+  const measurements = await collectArtifactMeasurements(root)
+
+  assert.equal(measurements.web.lazyJavascriptBytes, 50)
+  assert.equal(measurements.desktop.rendererLazyJavascriptBytes, 30)
+})
+
+// A surface split across several lazy chunks is paid for as one when it opens,
+// so the ceiling holds the chunk and everything it imports that startup did not
+// already load.
+test("measures a lazy chunk together with the lazy chunks it imports, not startup ones", async (t) => {
+  const root = await buildFixture()
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const assets = join(root, "apps", "web", "dist", "assets")
+  const entry = 'import{a}from"./settings-part.js";import"./react.js";'
+  await writeFile(join(assets, "settings.js"), entry.padEnd(60, "s"))
+  await writeFile(join(assets, "settings-part.js"), "p".repeat(40))
+
+  const measurements = await collectArtifactMeasurements(root)
+
+  assert.equal(measurements.web.lazyJavascriptBytes, 100)
+})
