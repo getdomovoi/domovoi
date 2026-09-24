@@ -5,7 +5,12 @@ import type { Readable } from "node:stream"
 import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep } from "./agents.js"
-import { codexRepositoryConfigFile, codexRepositoryConfigRefusal } from "./codex-repository-config.js"
+import {
+  codexMainCheckoutConfigFile,
+  codexMainCheckoutConfigRefusal,
+  codexRepositoryConfigFile,
+  codexRepositoryConfigRefusal,
+} from "./codex-repository-config.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
@@ -663,10 +668,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
 // A trusted project's own Codex configuration can start programs and change
 // permissions. Until a trust gate ships, a session is refused before Codex is
-// asked anything about a worktree that holds it.
+// asked anything about a worktree that holds it, or whose main checkout holds
+// hook configuration Codex takes from there.
 function refuseRepositoryConfig(cwd: string): void {
   const file = codexRepositoryConfigFile(cwd)
   if (file !== undefined) throw new Error(codexRepositoryConfigRefusal(file))
+  const main = codexMainCheckoutConfigFile(cwd)
+  if (main !== undefined) throw new Error(codexMainCheckoutConfigRefusal(main.file, main.mainCheckout))
 }
 
 function resolvedDeveloperInstructions(result: unknown): string | undefined {

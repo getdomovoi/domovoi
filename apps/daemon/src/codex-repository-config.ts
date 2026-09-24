@@ -1,6 +1,6 @@
-import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs"
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 // Codex loads a project `.codex` folder once the person trusts the project:
 // config.toml (MCP servers, hooks, permissions), hooks.json and rules/*.rules.
@@ -39,6 +39,61 @@ export function codexRepositoryConfigRefusal(file: string): string {
   return `Codex would load ${file} from this worktree, and that file can start programs or change agent permissions. `
     + "Domovoi does not load repository-brought configuration until a trust gate ships. "
     + `Remove ${file} from this worktree or use another provider here.`
+}
+
+// In a linked worktree Codex takes hook declarations from the main checkout:
+// for each directory from the session's directory up to the worktree root it
+// reads hooks.json and the [hooks] table of config.toml from the matching
+// .codex folder in the main checkout. The main checkout is the parent of the
+// common git directory, found through the worktree's .git file. Read from the
+// config loader (root_checkout_hooks_folder_for_dir) and git trust resolver
+// source at rust-v0.156.1. Rules come from the worktree only.
+const mainCheckoutFiles = ["config.toml", "hooks.json"] as const
+
+export function codexMainCheckoutConfigFile(
+  cwd: string,
+  codexHome: string = process.env.CODEX_HOME || join(homedir(), ".codex"),
+): { file: string; mainCheckout: string } | undefined {
+  const start = resolve(cwd)
+  const root = projectRoot(start)
+  const mainCheckout = mainCheckoutOf(root)
+  if (mainCheckout === undefined) return undefined
+  const home = realPath(codexHome)
+  for (const directory of directoriesFrom(root, start)) {
+    const folder = join(mainCheckout, relative(root, directory), ".codex")
+    if (!isDirectory(folder) || realPath(folder) === home) continue
+    for (const name of mainCheckoutFiles) {
+      if (exists(join(folder, name))) return { file: shown(mainCheckout, join(folder, name)), mainCheckout }
+    }
+  }
+  return undefined
+}
+
+export function codexMainCheckoutConfigRefusal(file: string, mainCheckout: string): string {
+  return `Codex would load ${file} from this repository's main checkout at ${mainCheckout}, `
+    + "and that file can start programs or change agent permissions. "
+    + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+    + `Remove ${file} from the main checkout or use another provider here.`
+}
+
+function mainCheckoutOf(root: string): string | undefined {
+  const marker = join(root, ".git")
+  if (!statSync(marker, { throwIfNoEntry: false })?.isFile()) return undefined
+  const target = readText(marker)?.trim().match(/^gitdir:\s*(.+)$/)?.[1]?.trim()
+  if (!target) return undefined
+  const gitDirectory = resolve(root, target)
+  const worktrees = dirname(gitDirectory)
+  if (basename(worktrees) !== "worktrees") return undefined
+  const mainCheckout = dirname(dirname(worktrees))
+  return isDirectory(mainCheckout) && realPath(mainCheckout) !== realPath(root) ? mainCheckout : undefined
+}
+
+function readText(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8")
+  } catch {
+    return undefined
+  }
 }
 
 function projectRoot(cwd: string): string {

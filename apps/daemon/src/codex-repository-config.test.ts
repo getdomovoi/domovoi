@@ -105,3 +105,78 @@ describe("Codex repository configuration", () => {
     expect(sentMethods(transport)).toEqual(["initialize", "initialized", "config/read", "thread/start"])
   })
 })
+
+function git(cwd: string, ...args: string[]): void {
+  execFileSync("git", ["-c", "user.name=Domovoi Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd, stdio: "ignore" })
+}
+
+function write(root: string, files: Record<string, string>): void {
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true })
+    writeFileSync(join(root, path), text)
+  }
+}
+
+// A session worktree is a linked git worktree. Codex resolves the main
+// checkout from the worktree's .git file (gitdir, then the common directory)
+// and takes hook declarations from the main checkout's matching .codex folder.
+function linkedWorktree(committed: Record<string, string>, mainOnly: Record<string, string>): { main: string, worktree: string } {
+  const main = repository(committed)
+  git(main, "add", "-A")
+  git(main, "commit", "-q", "--allow-empty", "-m", "initial")
+  write(main, mainOnly)
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "domovoi-codex-worktree-")))
+  directories.push(parent)
+  const worktree = join(parent, "session")
+  git(main, "worktree", "add", "-q", "-b", "domovoi/session", worktree)
+  return { main, worktree }
+}
+
+function mainCheckoutRefusal(file: string, main: string): string {
+  return `Codex would load ${file} from this repository's main checkout at ${main}, and that file can start programs or change agent permissions. `
+    + "Domovoi does not load repository-brought configuration until a trust gate ships. "
+    + `Remove ${file} from the main checkout or use another provider here.`
+}
+
+describe("Codex configuration in the repository's main checkout", () => {
+  it.each([
+    [".codex/hooks.json", "{}"],
+    [".codex/config.toml", '[hooks]\n[[hooks.PreToolUse]]\nmatcher = "*"\n'],
+  ])("refuses a clean session worktree when the main checkout holds %s, before Codex is asked anything", async (file, text) => {
+    const { main, worktree } = linkedWorktree({ "README.md": "" }, { [file]: text })
+    const { adapter, transport } = await connected()
+
+    await expect(adapter.startThread({ cwd: worktree, runtime })).rejects.toThrow(mainCheckoutRefusal(file, main))
+    await expect(adapter.resumeThread({ threadId: "thread-1", cwd: worktree, runtime })).rejects.toThrow(mainCheckoutRefusal(file, main))
+    await expect(adapter.startTurn({ threadId: "thread-1", cwd: worktree, prompt: "hello", runtime }))
+      .rejects.toThrow(mainCheckoutRefusal(file, main))
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized"])
+  })
+
+  it("names the main checkout's .codex folder matching a directory between the session's directory and the worktree root", async () => {
+    const { main, worktree } = linkedWorktree(
+      { "packages/app/src/.keep": "" },
+      { "packages/app/.codex/hooks.json": "{}" },
+    )
+    const { adapter } = await connected()
+
+    await expect(adapter.startThread({ cwd: join(worktree, "packages/app/src"), runtime }))
+      .rejects.toThrow(mainCheckoutRefusal("packages/app/.codex/hooks.json", main))
+  })
+
+  it("starts a session when the main checkout holds nothing Codex loads from it", async () => {
+    const { worktree } = linkedWorktree({ "README.md": "" }, { ".codex/mcp.json": "{}", ".codex/rules/default.rules": "" })
+    const { adapter, transport } = await connected()
+
+    await adapter.startThread({ cwd: worktree, runtime }).catch(() => undefined)
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized", "config/read", "thread/start"])
+  })
+
+  it("keeps the worktree refusal when the worktree itself holds the file", async () => {
+    const { worktree } = linkedWorktree({ ".codex/config.toml": "model = \"probe\"\n" }, {})
+    const { adapter, transport } = await connected()
+
+    await expect(adapter.startThread({ cwd: worktree, runtime })).rejects.toThrow(refusal(".codex/config.toml"))
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized"])
+  })
+})
