@@ -1,12 +1,14 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
 import {
   claudeInstallProblem,
   claudeMinimumVersion,
+  installedClaudeVersion,
   resolveClaudeSdkExecutable,
 } from "./claude-install.js"
 
@@ -64,9 +66,52 @@ describe("claudeInstallProblem", () => {
     }
   })
 
+  // A probe with no PATH runs the bare name, and Windows starts claude.exe for
+  // it. Only a resolved script (.cmd, .bat, .ps1, or a path with no extension)
+  // is a shim.
+  it("does not call a bare claude a shim on Windows", () => {
+    expect(claudeInstallProblem({ command: "claude", version: "2.1.280", platform: "win32" })).toBeUndefined()
+    expect(claudeInstallProblem({ command: "C:\\npm\\claude", version: "2.1.280", platform: "win32" })).toMatch(/script shim/)
+  })
+
   it("names a Windows shim the SDK cannot start", () => {
     expect(claudeInstallProblem({ command: "C:\\npm\\claude.cmd", version: "2.1.280", platform: "win32" }))
       .toMatch(/C:\\npm\\claude\.cmd .*native claude\.exe/)
     expect(claudeInstallProblem({ command: "C:\\Claude\\claude.exe", version: "2.1.280", platform: "win32" })).toBeUndefined()
+  })
+})
+
+describe("the minimum Claude Code version", () => {
+  // The floor is the Claude Code the installed SDK was built against. A bump of
+  // the SDK must move it too, so the constant is checked against the SDK's own
+  // package.json rather than against itself.
+  it("is the claudeCodeVersion the installed SDK names", async () => {
+    const require = createRequire(import.meta.url)
+    let directory = dirname(require.resolve("@anthropic-ai/claude-agent-sdk"))
+    while (!(await readFile(join(directory, "package.json"), "utf8").then(() => true, () => false))) directory = dirname(directory)
+    const sdk = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as { name: string; claudeCodeVersion?: string }
+
+    expect(sdk.name).toBe("@anthropic-ai/claude-agent-sdk")
+    expect(claudeMinimumVersion).toBe(sdk.claudeCodeVersion)
+  })
+})
+
+describe("reading the installed claude's version", () => {
+  // The check runs on the daemon's event loop. A claude slow to answer
+  // --version must not stop every client, terminal and approval meanwhile.
+  it.runIf(process.platform !== "win32")("does not block the event loop while claude answers --version", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-claude-slow-"))
+    directories.push(directory)
+    const executable = join(directory, "claude")
+    await writeFile(executable, "#!/bin/sh\nsleep 1\necho '2.1.300 (Claude Code)'\n")
+    await chmod(executable, 0o755)
+
+    // A timer due now fires late by however long the loop was held.
+    const started = Date.now()
+    const timerDelay = new Promise<number>((resolve) => setTimeout(() => resolve(Date.now() - started), 0))
+    const version = Promise.resolve().then(() => installedClaudeVersion(executable))
+
+    expect(await timerDelay).toBeLessThan(500)
+    await expect(version).resolves.toBe("2.1.300")
   })
 })

@@ -18,7 +18,7 @@ import type {
   AgentWorkingPlanStep,
 } from "./agents.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
-import { claudeInstallProblem, installedClaudeVersion, resolveClaudeSdkExecutable } from "./claude-install.js"
+import { checkClaudeInstall, resolveClaudeSdkExecutable } from "./claude-install.js"
 import { normalizeProviderUsage } from "./usage.js"
 
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const
@@ -150,6 +150,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly capabilities = { vision: true } as const
   readonly #factory: ClaudeQueryFactory
   readonly #id: () => ClaudeMessageId
+  readonly #preflight: (() => Promise<void>) | undefined
   #sessions = new Map<string, Session>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
@@ -158,15 +159,25 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   constructor(
     factory: ClaudeQueryFactory = defaultClaudeQueryFactory,
     id: () => ClaudeMessageId = randomUUID,
+    // The install check runs here, asynchronously, before the synchronous
+    // factory. An injected factory brings no executable to check.
+    preflight: (() => Promise<void>) | undefined = factory === defaultClaudeQueryFactory
+      ? () => checkClaudeInstall(process.env.PATH ?? "", process.platform)
+      : undefined,
   ) {
     this.#factory = factory
     this.#id = id
+    this.#preflight = preflight
   }
 
   async connect(): Promise<void> {}
 
   async listModels(signal?: AbortSignal): Promise<ProviderModel[]> {
     signal?.throwIfAborted()
+    if (this.#preflight) {
+      await this.#preflight()
+      signal?.throwIfAborted()
+    }
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const runtime = this.#factory(input, {
@@ -326,6 +337,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     runtime: Runtime,
     resume: boolean,
   ): Promise<void> {
+    if (this.#preflight) await this.#preflight()
     const input = new PushStream<ClaudeUserMessage>()
     const stderr = new ClaudeStderrTail()
     const permission = claudePermissionFor(runtime)
@@ -830,12 +842,6 @@ function toolOutput(result: unknown, fallback: unknown): string {
 const defaultClaudeQueryFactory: ClaudeQueryFactory = (input, options) => {
   const resolved = resolveClaudeSdkExecutable(process.env.PATH ?? "", process.platform)
   if ("problem" in resolved) throw new Error(resolved.problem)
-  const problem = claudeInstallProblem({
-    command: resolved.executable,
-    version: installedClaudeVersion(resolved.executable),
-    platform: process.platform,
-  })
-  if (problem !== undefined) throw new Error(problem)
   return query({
     prompt: input satisfies AsyncIterable<SDKUserMessage>,
     options: { ...options, pathToClaudeCodeExecutable: resolved.executable } satisfies Options,

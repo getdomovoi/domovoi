@@ -1,12 +1,15 @@
-import { execFileSync } from "node:child_process"
-import { statSync } from "node:fs"
-import { basename } from "node:path"
+import { execFile } from "node:child_process"
+import { stat } from "node:fs/promises"
+import { basename, extname } from "node:path"
+import { promisify } from "node:util"
 
 import { resolveCommandPathSync } from "./tool-path.js"
 
 // The Claude Agent SDK passes the flags of the Claude Code it was built
 // against, which its package.json names as `claudeCodeVersion` (2.1.263 for
-// SDK 0.3.263). An older claude can reject them, so that is the floor.
+// SDK 0.3.263). An older claude can reject them, so that is the floor. A test
+// compares this with the installed SDK's package.json, so an SDK bump that
+// leaves it behind fails.
 export const claudeMinimumVersion = "2.1.263"
 
 const notInstalled = "Claude Code is not installed: no claude executable was found on the tool PATH"
@@ -32,14 +35,22 @@ export function resolveClaudeSdkExecutable(
   return executable === undefined ? { problem: notInstalled } : { executable }
 }
 
+// Only a resolved script is a shim: a .cmd, .bat or .ps1, or a path with no
+// extension (the npm sh shim). A bare name, as a probe with no PATH runs it, is
+// started by Windows as claude.exe.
+function windowsShim(command: string): boolean {
+  const normal = command.replaceAll("\\", "/")
+  const extension = extname(basename(normal)).toLowerCase()
+  if ([".cmd", ".bat", ".ps1"].includes(extension)) return true
+  return extension === "" && normal.includes("/")
+}
+
 export function claudeInstallProblem(input: {
   command: string
   version: string | undefined
   platform: NodeJS.Platform
 }): string | undefined {
-  if (input.platform === "win32" && basename(input.command.replaceAll("\\", "/")).toLowerCase() !== "claude.exe") {
-    return shimProblem(input.command)
-  }
+  if (input.platform === "win32" && windowsShim(input.command)) return shimProblem(input.command)
   if (input.version !== undefined && compareVersions(input.version, claudeMinimumVersion) < 0) {
     return `Update Claude Code to ${claudeMinimumVersion} or newer. The claude on this machine is ${input.version}.`
   }
@@ -51,25 +62,42 @@ export function parseClaudeVersion(output: string): string | undefined {
 }
 
 // The version of an executable the SDK is about to start, read once per path
-// and modification time, so an update is seen without a daemon restart.
-const versions = new Map<string, string | undefined>()
+// and modification time, so an update is seen without a daemon restart. It is
+// read without blocking the event loop: a claude slow to answer must not stop
+// every client, terminal and approval meanwhile.
+const versions = new Map<string, Promise<string | undefined>>()
+const execFileAsync = promisify(execFile)
 
-export function installedClaudeVersion(executable: string): string | undefined {
+export async function installedClaudeVersion(executable: string): Promise<string | undefined> {
   let key: string
   try {
-    key = `${executable}\0${statSync(executable).mtimeMs}`
+    key = `${executable}\0${(await stat(executable)).mtimeMs}`
   } catch {
     return undefined
   }
-  if (versions.has(key)) return versions.get(key)
-  let version: string | undefined
-  try {
-    version = parseClaudeVersion(execFileSync(executable, ["--version"], { encoding: "utf8", timeout: 5_000 }))
-  } catch {
-    version = undefined
+  let version = versions.get(key)
+  if (version === undefined) {
+    version = execFileAsync(executable, ["--version"], { encoding: "utf8", timeout: 5_000 }).then(
+      ({ stdout }) => parseClaudeVersion(stdout),
+      () => undefined,
+    )
+    versions.set(key, version)
   }
-  versions.set(key, version)
   return version
+}
+
+// Everything the SDK needs from this machine before a query starts: the
+// executable it can start, at a version it can drive. Run before the query
+// factory, which is synchronous.
+export async function checkClaudeInstall(path: string, platform: NodeJS.Platform): Promise<void> {
+  const resolved = resolveClaudeSdkExecutable(path, platform)
+  if ("problem" in resolved) throw new Error(resolved.problem)
+  const problem = claudeInstallProblem({
+    command: resolved.executable,
+    version: await installedClaudeVersion(resolved.executable),
+    platform,
+  })
+  if (problem !== undefined) throw new Error(problem)
 }
 
 function compareVersions(left: string, right: string): number {
