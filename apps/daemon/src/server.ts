@@ -1276,6 +1276,9 @@ type ActiveTerminal = {
   // A released ownership waits through a grace window for the next connection
   // to re-claim it, then the terminal is reaped rather than stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  // The connections that opened or claimed this terminal. Its output, owner
+  // changes and close go to these and nowhere else.
+  audience: Set<RpcOutboundSocket>
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -2199,9 +2202,29 @@ export class DomovoiDaemon {
   }
 
   #broadcastNotification(method: string, params: unknown): void {
+    this.#notifyClients(this.#rpcClients, method, params)
+  }
+
+  // Terminals are not on the pairing card: a phone or tablet credential, and a
+  // watching-only one, is never an audience for one.
+  #mayWatchTerminals(socket: RpcOutboundSocket): boolean {
+    const binding = this.#deviceCredentials.get(socket)?.verified?.binding
+    if (binding?.kind !== "client") return true
+    return binding.client !== "phone" && binding.client !== "tablet" && binding.clientAccess !== "watching"
+  }
+
+  #notifyTerminalAudience(terminal: ActiveTerminal, method: string, params: unknown): void {
+    this.#notifyClients(
+      [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket)),
+      method,
+      params,
+    )
+  }
+
+  #notifyClients(clients: Iterable<RpcOutboundSocket>, method: string, params: unknown): void {
     const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
-    for (const client of this.#rpcClients) {
+    for (const client of clients) {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
@@ -4759,11 +4782,13 @@ export class DomovoiDaemon {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
             }
-            this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+            existing.audience.add(socket)
+            this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
             }))
           }
+          existing.audience.add(socket)
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -4793,7 +4818,7 @@ export class DomovoiDaemon {
           () => output.resume(params.terminalId),
         )
         const output = new TerminalOutputBatcher((terminalId, data) => {
-          this.#broadcastNotification("terminal.output", { terminalId, data })
+          this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
           return outputBackpressure.observe()
         })
         const activeTerminal: ActiveTerminal = {
@@ -4808,6 +4833,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
+          audience: new Set([socket]),
           reapTimer: undefined,
           output,
           outputBackpressure,
@@ -4866,7 +4892,7 @@ export class DomovoiDaemon {
           active.outputBackpressure.dispose()
           active.disposeData()
           active.disposeExit()
-          this.#broadcastNotification("terminal.closed", {
+          this.#notifyTerminalAudience(active, "terminal.closed", {
             terminalId: params.terminalId,
             exitCode,
             ...(signal === undefined ? {} : { signal }),
@@ -4900,6 +4926,7 @@ export class DomovoiDaemon {
         }
         terminal.owner = { client: params.client, clientId: params.clientId }
         terminal.ownerSocket = socket
+        terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -4908,7 +4935,7 @@ export class DomovoiDaemon {
           terminalId: params.terminalId,
           owner: terminal.owner,
         })
-        this.#broadcastNotification("terminal.ownership", ownership)
+        this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: ownership })
         return
       }
@@ -9731,12 +9758,13 @@ export class DomovoiDaemon {
     terminal.output.flush(terminalId)
     terminal.outputBackpressure.dispose()
     terminal.process.kill()
-    this.#broadcastNotification("terminal.closed", { terminalId })
+    this.#notifyTerminalAudience(terminal, "terminal.closed", { terminalId })
     return true
   }
 
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
+      terminal.audience.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
