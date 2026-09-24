@@ -5,6 +5,7 @@ import type { Readable } from "node:stream"
 import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
+import { credentialStores } from "./credential-stores.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
 
@@ -36,34 +37,7 @@ export type CodexPolicy = {
 // allow-list exists (it needs a survey of the toolchains commands load), both
 // Domovoi profiles keep today's read access and refuse these credential
 // stores. Every other read outside the worktree still runs without a card.
-export const codexSecretLocations = [
-  "~/.ssh",
-  "~/.aws",
-  "~/.domovoi",
-  "~/.config/gh",
-  "~/.kube",
-  "~/.docker",
-  "~/.netrc",
-  "~/.gnupg",
-  "~/.azure",
-  "~/.config/gcloud",
-  "~/.git-credentials",
-  "~/.config/git/credentials",
-  "~/.npmrc",
-  "~/.pypirc",
-  "~/.password-store",
-  "~/.terraform.d",
-  "~/.vault-token",
-  "~/.pgpass",
-  "~/.my.cnf",
-  "~/.cargo/credentials.toml",
-  "~/.gem/credentials",
-  "~/.config/op",
-  "~/.local/share/keyrings",
-  "~/Library/Keychains",
-  "~/.codex/auth.json",
-  "~/.claude/.credentials.json",
-] as const
+export const codexSecretLocations: readonly string[] = credentialStores.map(({ location }) => location)
 
 // Secret files inside the worktree are refused too (owner ruling, 2026-09-22),
 // in every mode. A test or build that loads one of them inside the sandbox

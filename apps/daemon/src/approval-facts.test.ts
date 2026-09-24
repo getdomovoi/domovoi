@@ -110,6 +110,57 @@ describe("approvalFacts", () => {
     expect(facts.affects).not.toContain("notes.txt")
   })
 
+  // Credential names outside the ASCII word set, private keys with a suffix,
+  // and the credential stores Codex refuses are hidden and hard-gated like any
+  // other secret name, whether the path names them or a link leads to them.
+  const credentialNames = ["clé.pem", "id_rsa_work", ".git-credentials", ".pgpass"]
+
+  it.each(credentialNames)("hides and hard-gates a path that names %s", (name) => {
+    const facts = approvalFacts({ workspace, cwd: join("/", "elsewhere", "project"), path: name, scope: undefined })
+    expect({ affects: facts.affects, sensitive: facts.sensitive })
+      .toEqual({ affects: "The file [REDACTED], outside the session worktree.", sensitive: true })
+  })
+
+  it.each(credentialNames)("hides and hard-gates a link with an ordinary name that leads to %s", async (name) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-facts-")))
+    directories.push(root)
+    const tree = join(root, "worktree")
+    await mkdir(tree)
+    await mkdir(join(root, "outside"))
+    await writeFile(join(root, "outside", name), "")
+    await symlink(join(root, "outside", name), join(tree, "plain"))
+    const path = join(tree, "plain")
+    const facts = approvalFacts({ workspace: tree, path, scope: undefined, resolved: await resolveApprovalPath(tree, path) })
+    expect({ affects: facts.affects, sensitive: facts.sensitive }).toEqual({
+      affects: "The file [REDACTED], outside the session worktree, through a link at [REDACTED].",
+      sensitive: true,
+    })
+  })
+
+  it("shows a link with an ordinary name that leads to an ordinary file", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-facts-")))
+    directories.push(root)
+    const tree = join(root, "worktree")
+    await mkdir(tree)
+    await mkdir(join(root, "outside"))
+    await writeFile(join(root, "outside", "notes.txt"), "")
+    await symlink(join(root, "outside", "notes.txt"), join(tree, "plain"))
+    const path = join(tree, "plain")
+    const facts = approvalFacts({ workspace: tree, path, scope: undefined, resolved: await resolveApprovalPath(tree, path) })
+    expect({ affects: facts.affects, sensitive: facts.sensitive }).toEqual({
+      affects: `The file ${join(root, "outside", "notes.txt")}, outside the session worktree, through a link at plain.`,
+      sensitive: false,
+    })
+  })
+
+  // A store's location can hold ordinary files too: projects keep a .docker
+  // directory, and session worktrees live under ~/.domovoi.
+  it("does not mark an ordinary file under a credential store's directory name", () => {
+    expect(approvalFacts({ workspace, path: ".docker/Dockerfile", scope: undefined }).sensitive).toBe(false)
+    const home = join("/", "home", "u", ".domovoi", "worktrees", "session-1")
+    expect(approvalFacts({ workspace: home, path: "src/index.ts", scope: undefined }).sensitive).toBe(false)
+  })
+
   // A write can name directories that do not exist yet. Where it lands is
   // decided by the nearest ancestor that does exist, which may be a link out.
   it("follows a link out of the worktree even when the rest of the path does not exist yet", async () => {

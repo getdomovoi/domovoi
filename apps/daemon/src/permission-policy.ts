@@ -6,6 +6,8 @@ import type {
   Runtime,
 } from "@getdomovoi/protocol"
 
+import { credentialStoreNames } from "./credential-stores.js"
+
 export type PermissionDecision = {
   action: "allow" | "review"
   risk: ApprovalRisk
@@ -23,32 +25,48 @@ export function permissionPolicyRefusalFor(runtime: Runtime): PolicyRefusalFacts
   }
 }
 
-const secretPathStart = String.raw`(?:^|[\s:=/\\'"])`
-const secretPathEnd = String.raw`(?![\w.-])`
-const secretFileNames = [
-  String.raw`[\w.-]*\.env(?:rc|\.[\w.-]+)?`,
-  String.raw`\.ssh`,
-  String.raw`\.aws[/\\]credentials`,
-  String.raw`\.kube[/\\]config`,
-  String.raw`\.docker[/\\]config\.json`,
-  String.raw`gh[/\\]hosts\.yml`,
-  String.raw`daemon\.token`,
-  String.raw`credentials\.json`,
-  String.raw`\.netrc`,
-  String.raw`\.npmrc`,
-  String.raw`\.pypirc`,
-  String.raw`[\w.-]+\.(?:pem|key|p12|pfx)`,
-] as const
-const secretFilePattern = new RegExp(
-  `${secretPathStart}(?:${secretFileNames.join("|")})${secretPathEnd}`,
-  "i",
+const pathSeparator = String.raw`[/\\]`
+const credentialStorePatterns = credentialStoreNames.map(
+  (parts) => parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join(pathSeparator),
 )
-const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i
+
+// The same names read two ways. On a command line a name is a run of letters,
+// digits, underscores, dots and hyphens in any script. In a path it is a whole
+// component, whatever characters it holds.
+function secretNamePattern(nameCharacter: string, start: string, end: string, privateKey: boolean): RegExp {
+  const names = [
+    String.raw`${nameCharacter}*\.env(?:rc|\.${nameCharacter}+)?`,
+    String.raw`${nameCharacter}+\.(?:pem|key|p12|pfx)`,
+    String.raw`gh[/\\]hosts\.yml`,
+    String.raw`daemon\.token`,
+    String.raw`credentials\.json`,
+    ...(privateKey ? [String.raw`id_(?:rsa|dsa|ecdsa|ed25519)${nameCharacter}*`] : []),
+    ...credentialStorePatterns,
+  ]
+  return new RegExp(`${start}(?:${names.join("|")})${end}`, "iu")
+}
+
+const commandNameCharacter = String.raw`[\p{L}\p{M}\p{N}_.-]`
+const secretFilePattern = secretNamePattern(
+  commandNameCharacter,
+  String.raw`(?:^|[\s:=/\\'"])`,
+  `(?!${commandNameCharacter})`,
+  false,
+)
+const secretPathPattern = secretNamePattern(String.raw`[^/\\]`, String.raw`(?:^|[/\\])`, String.raw`(?=[/\\]|$)`, true)
+// A private key keeps its name with any suffix: id_rsa, id_rsa.pub, id_rsa_work.
+const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)/i
 
 // Whether text names a credential file or private key: the same patterns that
 // put a command in the credentials hard-gate group.
-export function namesSecretFile(text: string): boolean {
+function namesSecretFile(text: string): boolean {
   return secretFilePattern.test(text) || privateKeyFileName.test(text)
+}
+
+// Whether a path names a credential file or private key in any of its
+// components, or the way a command line would.
+export function namesSecretPath(path: string): boolean {
+  return secretPathPattern.test(path) || namesSecretFile(path)
 }
 
 const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: readonly RegExp[] }> = {

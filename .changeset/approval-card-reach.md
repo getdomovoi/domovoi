@@ -18,3 +18,6 @@ card is redacted like the command, and a secret in it makes the gate a hard gate
 characters show as escapes, and a long path is shortened in the middle. Inside or outside the
 worktree is decided on the real path, so a link out of the worktree names where it leads. A path that names a credential file (such as `.env`, `.npmrc`, `id_rsa` or a `.pem`), directly or
 through a link, is shown as "[REDACTED]" with its location kept, and makes the gate a hard gate.
+Names in any script count, private keys keep their name with a suffix (`id_rsa_work`), and the
+credential stores the Codex sandbox refuses (such as `.git-credentials` and `.pgpass`) come from one
+list shared by the sandbox, the card, and the command hard gate.

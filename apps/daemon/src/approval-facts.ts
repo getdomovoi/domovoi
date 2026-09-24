@@ -1,7 +1,7 @@
 import { lstat, readlink } from "node:fs/promises"
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 
-import { namesSecretFile } from "./permission-policy.js"
+import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
 // What an approval card says the request can reach. These facts sit next to
@@ -144,9 +144,9 @@ export function approvalFacts(input: {
   if (input.path === undefined) return { affects: scope.command, network: scope.network, redacted: false, sensitive: false }
   // A credential file is a hard gate whether the agent named it or a link
   // with an ordinary name leads to it.
-  const sensitive = namesSecretFile(input.path)
-    || namesSecretFile(resolve(input.workspace, input.cwd ?? ".", input.path))
-    || (input.resolved !== undefined && namesSecretFile(input.resolved.target))
+  const sensitive = namesSecretPath(input.path)
+    || namesSecretPath(resolve(input.workspace, input.cwd ?? ".", input.path))
+    || (input.resolved !== undefined && namesSecretPath(input.resolved.target))
   const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
   return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }
