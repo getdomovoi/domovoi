@@ -13,9 +13,9 @@ assert.equal(typeof bootstrap.install, "function")
 // Published entry points cannot bypass production assembly. The internal path
 // remains as a package-artifact compatibility surface, not a construction API.
 assert.deepEqual(Object.keys(publicApi).sort(), [
-  "DaemonServiceRuntimeMissingError",
+  "DaemonServiceRuntimeMissingError", "DaemonServiceUpdateError",
   "acquireLocalDaemon", "adoptRelayProfileSuccessor", "createProductionDaemon", "installDaemonService", "prepareRelayProfileSuccessor",
-  "readDaemonServiceStatus", "removeDaemonService", "verifyLocalFleetClientRoute", "verifyRelayProfileSuccessor",
+  "readDaemonServiceStatus", "removeDaemonService", "updateDaemonService", "verifyLocalFleetClientRoute", "verifyRelayProfileSuccessor",
 ])
 assert.equal("DomovoiDaemon" in internal, false)
 
