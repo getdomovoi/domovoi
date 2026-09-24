@@ -48,6 +48,8 @@ describe("importReferences code boundaries", () => {
     ["inline HTML samp tags with emphasis inside", "Output <samp>*@sample.md*</samp>."],
     ["uppercase code tags with attributes", "See <CODE class=\"x\">@sample.md</CODE>."],
     ["code tags around a tag whose attribute quotes a closing code tag", "<code><span title=\"</code>\">@sample.md</span></code>"],
+    ["a code tag opened inside emphasis and closed after it", "*<code>example* @sample.md</code>"],
+    ["a code tag whose inner closing tag belongs to a different element", "<code></kbd>@sample.md</code>"],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
@@ -62,6 +64,8 @@ describe("importReferences code boundaries", () => {
     ["an import between other inline tags", "A <b>@real.md</b> rule", ["real.md"]],
     ["an import in a tag whose attribute quotes an opening code tag", "<span title=\"<code>\">@real.md</span>", ["real.md"]],
     ["an import after an HTML comment that mentions a code tag", "A <!-- <code> --> @real.md", ["real.md"]],
+    ["an import after a closing tag that ends an outer code tag", "<code><kbd>x</code> @real.md", ["real.md"]],
+    ["an import after a code tag closed inside emphasis", "*<code>x</code>* @real.md", ["real.md"]],
     ["only the import after a fence inside a list item", "- ~~~\n  @sample.md\n  ~~~\n\n@real.md", ["real.md"]],
   ])("keeps %s", (_label, text, expected) => {
     expect(importReferences(text)).toEqual(expected)

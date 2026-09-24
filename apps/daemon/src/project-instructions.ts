@@ -73,26 +73,54 @@ async function collectClaudeFile(
 // and its closing tag is skipped too, within the same paragraph. The parser
 // gives one node per tag and one per comment, so only a node's leading tag
 // name counts: a tag written inside an attribute value or a comment does not.
+// A tag can open inside emphasis and close after it, so each paragraph's
+// inline nodes are read as one sequence in document order, with a stack of
+// open code tags; a closing tag pops back to its own name and is otherwise
+// ignored.
 type MarkdownNode = { type: string; value?: unknown; children?: MarkdownNode[] }
 
 const codeTag = /^<(\/?)(code|pre|kbd|samp)(?=[\s>/])/i
+const inlineContainers = new Set(["paragraph", "heading", "tableCell"])
 
 export function importReferences(text: string): string[] {
   const references: string[] = []
-  const visit = (node: MarkdownNode): void => {
-    if (node.type === "text" && typeof node.value === "string") {
-      for (const match of node.value.matchAll(/(?:^|\s)@([^\s]+)/g)) references.push(match[1]!)
+  const collect = (value: string) => {
+    for (const match of value.matchAll(/(?:^|\s)@([^\s]+)/g)) references.push(match[1]!)
+  }
+  const leaves = (node: MarkdownNode, sequence: MarkdownNode[]): void => {
+    if (node.children === undefined) {
+      sequence.push(node)
       return
     }
-    let insideCode = 0
-    for (const child of node.children ?? []) {
-      if (child.type === "html" && typeof child.value === "string") {
-        const tag = codeTag.exec(child.value)
-        if (tag) insideCode = tag[1] === "/" ? Math.max(0, insideCode - 1) : insideCode + 1
-        continue
+    for (const child of node.children) leaves(child, sequence)
+  }
+  const visit = (node: MarkdownNode): void => {
+    if (inlineContainers.has(node.type)) {
+      const sequence: MarkdownNode[] = []
+      for (const child of node.children ?? []) leaves(child, sequence)
+      const open: string[] = []
+      for (const leaf of sequence) {
+        if (leaf.type === "html" && typeof leaf.value === "string") {
+          const tag = codeTag.exec(leaf.value)
+          if (!tag) continue
+          const name = tag[2]!.toLowerCase()
+          if (tag[1] !== "/") {
+            open.push(name)
+            continue
+          }
+          const index = open.lastIndexOf(name)
+          if (index !== -1) open.length = index
+          continue
+        }
+        if (open.length === 0 && leaf.type === "text" && typeof leaf.value === "string") collect(leaf.value)
       }
-      if (insideCode === 0) visit(child)
+      return
     }
+    if (node.type === "text" && typeof node.value === "string") {
+      collect(node.value)
+      return
+    }
+    for (const child of node.children ?? []) visit(child)
   }
   visit(fromMarkdown(text))
   return references
