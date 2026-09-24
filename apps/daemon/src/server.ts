@@ -84,6 +84,7 @@ import {
   type TerminalOwner,
   type ToolFileEntry,
   type SkillInstallRefusal,
+  type StateRecovery,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
@@ -430,6 +431,17 @@ function sessionReadOnlyMessage(
     return "This session has conflicting owners and is read-only"
   }
   return undefined
+}
+
+// A paired device learns that stored state was moved aside and what survived,
+// not where the kept file lives on this machine or why it failed to read.
+function stateRecoveryFlag(recovery: StateRecovery): StateRecovery {
+  return {
+    kind: recovery.kind,
+    occurredAt: recovery.occurredAt,
+    pairedDevicesKept: recovery.pairedDevicesKept,
+    workspaceKept: recovery.workspaceKept,
+  }
 }
 
 function sessionIsReadOnly(
@@ -1237,6 +1249,7 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
@@ -1484,6 +1497,14 @@ export class DomovoiDaemon {
           ?? options.statePath === undefined,
       },
     )
+    this.#stateRecovery = this.#store.recovery
+    if (this.#stateRecovery) {
+      const { kind, quarantinedPath, reason } = this.#stateRecovery
+      this.#reportError(
+        "Domovoi moved unreadable stored state aside",
+        new Error(`The stored ${kind === "database" ? "state database" : "workspace snapshot"} was kept at ${quarantinedPath}. ${reason}`),
+      )
+    }
     this.#snapshot = this.#store.load()
     this.#loadQueuedSessionSends(true)
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
@@ -8038,6 +8059,9 @@ export class DomovoiDaemon {
                   clientAccess: helloCredential?.binding.kind === "client"
                     ? helloCredential.binding.clientAccess
                     : "full",
+                  ...(this.#stateRecovery
+                    ? { stateRecovery: helloCredential ? stateRecoveryFlag(this.#stateRecovery) : this.#stateRecovery }
+                    : {}),
                 }
               : {}),
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
