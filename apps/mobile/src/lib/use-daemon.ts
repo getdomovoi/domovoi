@@ -3,7 +3,6 @@ import { AppState } from "react-native"
 import {
   applyWorkspaceDelta,
   daemonAuthenticationErrorCode,
-  workspaceSnapshotSchema,
   type ClientAccess,
   type FleetEntry,
   type WorkspaceDelta,
@@ -12,7 +11,7 @@ import {
 
 import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { openRelayPinStore } from "./credentials"
-import { DaemonConnection, DaemonError, DaemonNotSentError, type DaemonStatus } from "./daemon"
+import { DaemonConnection, DaemonError, DaemonNotSentError, type DaemonCall, type DaemonStatus } from "./daemon"
 import type { HandheldClient } from "./protocol-facts"
 import { reconcileRelayPin } from "./relay-pin"
 import { retryDelayMs } from "./reconnect"
@@ -183,7 +182,7 @@ export function useDaemon(
     }
   }, [client, token, url])
 
-  const call = useCallback((method: string, params: unknown) => {
+  const call = useCallback<DaemonCall>((method, params) => {
     const daemon = connection.current
     if (!daemon) return Promise.reject(new DaemonNotSentError("The daemon connection is not open"))
     return daemon.call(method, params)
@@ -195,7 +194,7 @@ export function useDaemon(
   const refresh = useCallback(async () => {
     const daemon = connection.current
     if (!daemon?.isOpen()) throw new Error("The daemon connection is not open")
-    setSnapshot(workspaceSnapshotSchema.parse(await daemon.call("workspace.get", {})))
+    setSnapshot(await daemon.call("workspace.get", {}))
   }, [])
 
   // Nothing here overrides a refusal the daemon will repeat: a wrong token is

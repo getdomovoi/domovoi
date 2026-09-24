@@ -94,9 +94,11 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import {
+  boundedQueuedSendReason,
   SqliteWorkspaceStore,
   type QueuedSessionSendTransition,
   type StoredQueuedSessionSend,
+  type UnreadableQueuedSessionSend,
   type WorkspaceStore,
 } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
@@ -1317,6 +1319,7 @@ export class DomovoiDaemon {
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
+  #pendingSnapshotPersist: Promise<void> | undefined
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -2472,7 +2475,15 @@ export class DomovoiDaemon {
   // belongs to the project being left and is not loaded.
   #loadQueuedSessionSends(afterRestart: boolean): void {
     this.#queuedSessionSends.clear()
-    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+    const unreadable = (row: UnreadableQueuedSessionSend) => this.#reportError(
+      row.quarantined
+        ? "Domovoi moved an unreadable queued message aside"
+        : "Domovoi skipped an unreadable queued message it could not move aside",
+      new Error(row.quarantined
+        ? `Queued message ${row.queueId} for ${row.sessionId} was moved to queued_session_send_quarantine. ${row.reason}`
+        : `Queued message ${row.queueId} for ${row.sessionId} stays in queued_session_sends; the next load tries again. ${row.reason}`),
+    )
+    for (const loaded of this.#store.loadQueuedSessionSends?.(unreadable) ?? []) {
       if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
       const queued = afterRestart && loaded.state === "releasing"
         ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
@@ -2567,10 +2578,13 @@ export class DomovoiDaemon {
   ): boolean {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.id !== queueId || !from.includes(queued.state)) return false
+    // One bound for memory and disk, so the snapshot never carries a reason
+    // the stored row does not.
+    const bounded = boundedQueuedSendReason(reason)
     if (this.#store.transitionQueuedSessionSend
-      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, reason)) return false
+      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, bounded)) return false
     const updated = { ...queued, state }
-    if (reason) updated.reason = reason
+    if (bounded) updated.reason = bounded
     else delete updated.reason
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()
@@ -7218,7 +7232,7 @@ export class DomovoiDaemon {
           await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
           if (this.#snapshot.project) await this.#persistSnapshot()
-          const restored = this.#store.loadProject?.(projectId)
+          const restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
@@ -9958,8 +9972,13 @@ export class DomovoiDaemon {
     )
   }
 
+  // Each write carries the whole live snapshot as it stands when the write
+  // starts, so every change that arrives while a write is still waiting to
+  // start is carried by that write. Sharing it keeps the backlog to one
+  // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
-    await this.#serializeSnapshotPersistence(async () => {
+    const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
+      this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()
       try {
         if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
@@ -9971,6 +9990,7 @@ export class DomovoiDaemon {
       this.#persistenceSucceeded()
       this.#clearCommittedSessionCreations()
     })
+    await pending
   }
 
   #persistenceFailed(error: unknown): void {

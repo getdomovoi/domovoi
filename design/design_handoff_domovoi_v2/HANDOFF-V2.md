@@ -251,3 +251,14 @@ No-results and not-searched are shown as different answers.
   has had its own copy pass.
 - Hosted revocation is deliberately absent, per the plan's advice not to ship a control
   that says "revoke" while only deleting a hosted record.
+
+## Future features
+
+Discussed, not scheduled, not drawn.
+
+- **Vim mode in the expanded prompt editor.** A setting, off by default, for desktop and
+  web with a physical keyboard, not on phone. Scope: normal, insert and visual modes,
+  common motions, text objects, yank and put, undo, and `.` to repeat. No ex commands
+  beyond `:q`, no macros, no `.vimrc`. Send stays on `mod+Enter`, never `:w`. Open: what Esc
+  does in the editor today, whether the setting is per device or per account, and whether
+  to build it or embed an existing vim layer.
