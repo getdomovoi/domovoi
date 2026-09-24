@@ -19,20 +19,23 @@ export type { IssuedPairingCode, PairingAddressReport } from "./pairing-address.
 
 type Kind = "phone" | "tablet" | "browser"
 
-const kinds: Record<Kind, { label: string; client: ClientKind; Icon: typeof SmartphoneIcon; how: string }> = {
-  phone: { label: "Phone", client: "phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
-  tablet: { label: "Tablet", client: "tablet", Icon: TabletIcon, how: "Scan it with the Domovoi app, or paste the code." },
-  browser: { label: "Web browser", client: "web", Icon: GlobeIcon, how: "Open the address in the browser and type the code." },
+const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Icon: typeof SmartphoneIcon; how: string }> = {
+  phone: { label: "Phone", noun: "a phone", client: "phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
+  tablet: { label: "Tablet", noun: "a tablet", client: "tablet", Icon: TabletIcon, how: "Scan it with the Domovoi app, or paste the code." },
+  browser: { label: "Web browser", noun: "a browser", client: "web", Icon: GlobeIcon, how: "Open the address in the browser and type the code." },
 }
 
 type Problem = { title: string; mono: string; still: string; next: string }
 
-function problemFor(report: PairingAddressReport): Problem | undefined {
+// The daemon's problem text is shared with `domovoid pair`, which ends it with
+// "then run this again"; the card has its own next step, so the tail goes.
+function problemFor(report: PairingAddressReport, kind: Kind): Problem | undefined {
+  const noun = kinds[kind].noun
   if ("problem" in report) {
-    return { title: "No code: a phone would not trust this daemon", mono: report.problem, still: "Sessions and this window are unaffected.", next: "Give the daemon a certificate for its tailnet name, then show a code." }
+    return { title: `No code: ${noun} would not trust this daemon`, mono: report.problem.replace(/,? then run this again\.$/u, "."), still: "Sessions and this window are unaffected.", next: "Give the daemon a certificate for its tailnet name, then show a code." }
   }
   if (report.loopback) {
-    return { title: "No code: a phone cannot reach this daemon", mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code." }
+    return { title: `No code: ${noun} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code." }
   }
   return undefined
 }
@@ -107,7 +110,7 @@ export function PairingCard({
   }
 
   const address = issued ? pairingAddressOf(issued) : undefined
-  const problem = address ? problemFor(address) : undefined
+  const problem = address ? problemFor(address, kind) : undefined
   const expired = issued !== null && left === 0
   const codeShown = issued !== null && !expired && !problem && address !== undefined && !("problem" in address)
   const grants = phoneAndTabletPromise.map((line) => ({ text: line.text, tone: line.tone === "granted" ? "bg-success" : "bg-info" }))

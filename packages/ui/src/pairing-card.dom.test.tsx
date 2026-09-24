@@ -91,3 +91,17 @@ it("draws no QR when a phone could not reach or trust the daemon, and says which
   expect(await screen.findByText("No code: a phone would not trust this daemon")).toBeTruthy()
   expect(screen.getByText("This daemon serves no certificate, so a device has no address it can verify.")).toBeTruthy()
 })
+
+it("names the chosen kind and drops the command-line tail when no code can be shown", async () => {
+  const { onIssueCode, user } = card()
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(await screen.findByText("No code: a browser cannot reach this daemon")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Tablet" }))
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { problem: "This daemon serves no certificate, so a device has no address it can verify. Give it a DNS name with a certificate, then run this again." } }))
+  await user.click(screen.getByRole("button", { name: /Show (a pairing code|another)/ }))
+  expect(await screen.findByText("No code: a tablet would not trust this daemon")).toBeTruthy()
+  expect(screen.getByText("This daemon serves no certificate, so a device has no address it can verify. Give it a DNS name with a certificate.")).toBeTruthy()
+  expect(screen.queryByText(/run this again/)).toBeNull()
+})
