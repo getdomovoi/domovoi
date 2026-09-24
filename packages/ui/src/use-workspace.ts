@@ -518,6 +518,15 @@ export function useWorkspace(
     return client.getSkillInventory(options)
   }, [])
 
+  const searchSessions = useCallback(async (
+    params: RpcParams<"session.search">,
+    options?: DomovoiRequestOptions,
+  ): Promise<RpcResult<"session.search">> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.searchSessions(params, options)
+  }, [])
+
   const listProviderSecrets = useCallback(async () => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -852,6 +861,7 @@ export function useWorkspace(
     forgetMachine,
     forkSession,
     getSkillInventory,
+    searchSessions,
     listSkills,
     loadSessionHistory,
     loadSessionEvidence,

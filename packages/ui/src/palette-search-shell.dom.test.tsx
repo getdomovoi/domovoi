@@ -54,6 +54,8 @@ it("searches an admitted machine from the palette and switches to a picked sessi
   await user.keyboard("{Control>}k{/Control}")
   await user.type(screen.getByRole("combobox"), "billing")
   await screen.findByText("SESSIONS ON OTHER MACHINES")
+  await waitFor(() => expect(sentRequests(home, "session.search")[0]?.params).toMatchObject({ query: "billing" }))
+  await act(async () => { respond(home, "session.search", { query: "billing", truncated: false, matches: [] }) })
   await waitFor(() => expect(sentRequests(home, "fleet.clientRoute")).toHaveLength(2))
   await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
   await settle()

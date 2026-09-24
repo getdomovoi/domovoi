@@ -307,6 +307,9 @@ export function restoreCommandPaletteFocus(target: { focus(): void } | null): vo
 // sessions whose title or summary match, and says what each one answered.
 // Not answering is shown as not searched, never as no results.
 export type MachineSearch = {
+  // The window's own machine. Searched like the others and counted by its
+  // answer; its summary matches join the SESSIONS group.
+  here: { id: string; label: string }
   machines: readonly { id: string; label: string; transport: string }[]
   search: (machineId: string, query: string, signal: AbortSignal) => Promise<SessionSearchResult>
   open: (machineId: string, sessionId: string) => void
@@ -320,6 +323,10 @@ type MachineAnswer =
   | { state: "left" }
 
 const machineSearchDebounceMs = 250
+
+function listOfNames(names: readonly string[]): string {
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+}
 
 function answerLabel(answer: MachineAnswer): string {
   switch (answer.state) {
@@ -345,8 +352,9 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
     const controller = new AbortController()
     const timer = setTimeout(() => {
       setAskedFor(trimmed)
-      setAnswers(Object.fromEntries(machineSearch.machines.map((machine) => [machine.id, { state: "asking" as const }])))
-      for (const machine of machineSearch.machines) {
+      const everyMachine = [machineSearch.here, ...machineSearch.machines]
+      setAnswers(Object.fromEntries(everyMachine.map((machine) => [machine.id, { state: "asking" as const }])))
+      for (const machine of everyMachine) {
         machineSearch.search(machine.id, trimmed, controller.signal).then(
           (result) => {
             if (controller.signal.aborted) return
@@ -409,11 +417,19 @@ export function CommandPalette({
   const rows = targets ?? ranked
   const remote = useMachineSearch(machineSearch, query, open && !choosing)
   const remoteMachines = machineSearch?.machines ?? []
-  const answered = 1 + remoteMachines.filter((machine) => ["hits", "none"].includes(remote.answers[machine.id]?.state ?? "")).length
-  const asking = remoteMachines.some((machine) => remote.answers[machine.id]?.state === "asking")
-  const silent = remoteMachines.filter((machine) => remote.answers[machine.id]?.state === "silent")
-  const leftOut = remoteMachines.some((machine) => remote.answers[machine.id]?.state === "left")
-  const total = 1 + remoteMachines.length
+  const searched = machineSearch ? [machineSearch.here, ...remoteMachines] : []
+  const answered = searched.filter((machine) => ["hits", "none"].includes(remote.answers[machine.id]?.state ?? "")).length
+  const asking = searched.some((machine) => remote.answers[machine.id]?.state === "asking")
+  const silent = searched.filter((machine) => remote.answers[machine.id]?.state === "silent")
+  const leftOut = searched.some((machine) => remote.answers[machine.id]?.state === "left")
+  const total = searched.length
+  const hereAnswer = machineSearch ? remote.answers[machineSearch.here.id] : undefined
+  const inSummary = new Set(hereAnswer?.state === "hits"
+    ? hereAnswer.matches.filter((match) => match.matchedIn === "summary").map((match) => `session-${match.session.id}`)
+    : [])
+  const summaryRows = remote.active && !choosing
+    ? commands.filter((command) => inSummary.has(command.id) && !rows.includes(command))
+    : []
   const remoteScope = asking
     ? `${answered} of ${total} answered, asking each machine directly`
     : leftOut
@@ -426,7 +442,7 @@ export function CommandPalette({
   const groups = choosing
     ? [{ label: "MACHINES", items: rows }]
     : [
-        { label: "SESSIONS", items: rows.filter((command) => command.kind === "SESSION") },
+        { label: "SESSIONS", items: [...rows.filter((command) => command.kind === "SESSION"), ...summaryRows] },
         { label: "COMMANDS", items: rows.filter((command) => command.kind !== "SESSION") },
       ]
   const reset = () => { setQuery(""); setChoosingId(null); setHighlighted("") }
@@ -531,7 +547,10 @@ export function CommandPalette({
                         />
                       ) : Icon ? <Icon /> : null}
                       <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-                        <span className="truncate">{command.label}</span>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <span className="truncate">{command.label}</span>
+                          {inSummary.has(command.id) ? <span className="shrink-0 rounded-full bg-muted px-1.5 font-machine text-mono-xs text-muted-foreground">in summary</span> : null}
+                        </span>
                         {command.meta ? (
                           <span className="truncate font-machine text-mono-xs text-muted-foreground">{command.meta}</span>
                         ) : null}
@@ -554,7 +573,7 @@ export function CommandPalette({
               <p className="m-0 px-2 pb-1 font-machine text-mono-xs text-faint">{remoteScope}</p>
               {silent.length ? (
                 <div className="mx-2 mb-2 flex flex-col gap-2 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">
-                  <span>{silent.map((machine) => machine.label).join(", ")} did not answer, so its sessions were not searched. This is not the same as having no results, and Domovoi will not round it down to one.</span>
+                  <span>{listOfNames(silent.map((machine) => machine.label))}{silent.length === 1 ? " did not answer, so its sessions were not searched." : " did not answer, so their sessions were not searched."} This is not the same as having no results, and Domovoi will not round it down to one.</span>
                   <Button type="button" variant="outline" size="xs" className="self-start" onClick={remote.leaveOutSilent}>Search only what answered</Button>
                 </div>
               ) : null}

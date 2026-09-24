@@ -1828,7 +1828,7 @@
     {
       "id": "palette.other-machines",
       "since": "2026-09-23",
-      "note": "Grouped per machine (the design's layout A). The home machine's own rows stay the title-ranked SESSIONS group; its summaries are not searched yet. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
+      "note": "Grouped per machine (the design's layout A). The window's own machine is searched too and counted by its answer; its summary matches join the SESSIONS group, marked in summary. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
     }
   ],
   "annotations": [
