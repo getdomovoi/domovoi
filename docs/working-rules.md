@@ -394,7 +394,8 @@ only on that branch and in an agent's notes, which is the failure this entry is 
 held somewhere the repository cannot read. Checked against `main` at 35a0cc6d before moving; the
 changes from the original are the project name as `REVISIONS.json` records it, where the
 design-system id appears, the precedent shas (the original cited branch shas), the `--check` and
-bare-flag details read from `scripts/design-revision.mjs`, and the note on step 1.
+bare-flag details read from `scripts/design-revision.mjs`, and the note on step 1. Step 5, the
+conformance and design-rule re-derivation, was added on 2026-09-23; the original stopped at four.
 
 **The source of record** is Claude Design project `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named
 "Relay multi-device platform". `design/REVISIONS.json` records it as `source`. Recorded
@@ -405,7 +406,7 @@ projects and this one is an ordinary project (`PROJECT_TYPE_PROJECT`); reach it 
 and the `_ds/` copy bound into a session is a third artefact. Those three are the drift this entry
 opens with.
 
-**The four steps**, in order, all in one commit:
+**The five steps**, in order, all in one commit:
 
 1. Correct the file in `a3b4404e` (`finalize_plan`, then `write_files`). Edit a fresh fetch of the
    live file, never the vendored copy under `design/`: on 2026-09-13 a write built from the
@@ -414,6 +415,18 @@ opens with.
 3. Copy it into `design/`. This is a re-vendor, never an edit of the vendored copy.
 4. `pnpm design:revision` (`node scripts/design-revision.mjs`), then
    `node scripts/design-revision.mjs --check`, which prints `design/ matches the recorded revision`.
+5. Re-derive what reads the changed file, then run the checks `pnpm release:invariants` runs on it.
+   A v2 design mapped in `docs/design-conformance/v2-manifest.json` has an inventory under
+   `docs/design-conformance/` that records its sha256, so step 4 alone leaves
+   `pnpm design:conformance` red. Re-derive that inventory as `docs/design-conformance/README.md`
+   says: classify each new string into an element's `copy`, `sample` or `annotations`, drop claims
+   the design no longer draws, then record the new sha256 and today's `derivedOn`. Run
+   `pnpm design:conformance` until it exits 0. A change to
+   `design/design_system_domovoi/_adherence.oxlintrc.json`, `tokens/typography.css` or
+   `readme.md` there also needs `pnpm design:rule`, then `node scripts/design-rule.mjs --check`.
+   Checked on 2026-09-23 on a scratch copy: adding one string to the Team v2 design and running
+   step 4 left `design:conformance` failing on the digest and the unclaimed string; recording both
+   in `team-v2.json` made it exit 0.
 
 `--accept-new=<path>` is for additions only, one flag per new file; a bare `--accept-new` is an
 error. A content change needs no flag, only the regenerate. Precedents on `main`: 17cf141b
