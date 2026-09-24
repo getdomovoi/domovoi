@@ -1,4 +1,5 @@
 import { realpathSync, statSync } from "node:fs"
+import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
 import { configuredProfileDirectory, profileDirectory, profileLocation } from "./profile-directory.js"
@@ -77,9 +78,12 @@ function sameIdentity(left: ProfileIdentity, right: ProfileIdentity): boolean {
   return left.kind === "path" && right.kind === "path" && left.path === right.path
 }
 
-function takeInheritedCredentials(homeDirectory: string): void {
-  // The values leave process.env before any filesystem lookup, so a lookup
-  // that fails cannot leave them for a child to inherit.
+// The first statement of every acquisition, before its arguments are checked:
+// the values leave process.env before anything else can throw, so no failure
+// leaves them for a child or a later acquisition to inherit. They are pinned to
+// the profile process.env names, the one they were handed for; an unusable
+// home directory or profile setting keeps nothing.
+export function captureInheritedCredentials(homeDirectory: unknown): void {
   const values: KeptCredentials["values"] = {}
   for (const name of inheritedNames) {
     const value = process.env[name]
@@ -87,7 +91,13 @@ function takeInheritedCredentials(homeDirectory: string): void {
     delete process.env[name]
   }
   if (Object.keys(values).length === 0) return
-  const identity = profileIdentity(process.env.DOMOVOI_PROFILE_DIR, homeDirectory)
+  let home: string
+  try {
+    home = resolve(typeof homeDirectory === "string" ? homeDirectory : homedir())
+  } catch {
+    return
+  }
+  const identity = profileIdentity(process.env.DOMOVOI_PROFILE_DIR, home)
   if (identity === undefined) return
   const existing = kept.find((entry) => sameIdentity(entry.identity, identity))
   if (existing) existing.values = values
@@ -113,18 +123,24 @@ function keptFor(environment: NodeJS.ProcessEnv, homeDirectory: string): KeptCre
   return pending
 }
 
-// The environment to read settings from. process.env itself gets back the
-// bearer and path kept for the profile it names; any other environment is
+// The environment to read settings from, with the overrides applied. When the
+// environment is process.env itself, it gets back the bearer and path kept for
+// the profile the acquisition ends up with, after the overrides: an override
+// naming another profile gets nothing of this one's. Any other environment is
 // returned as given.
-export function withInheritedCredentials(environment: NodeJS.ProcessEnv, homeDirectory: string): NodeJS.ProcessEnv {
-  takeInheritedCredentials(homeDirectory)
-  const filled: NodeJS.ProcessEnv = { ...environment }
+export function withInheritedCredentials(
+  environment: NodeJS.ProcessEnv,
+  homeDirectory: string,
+  overrides: Readonly<Record<string, string>> = {},
+): NodeJS.ProcessEnv {
+  captureInheritedCredentials(homeDirectory)
+  const filled: NodeJS.ProcessEnv = { ...environment, ...overrides }
   if (environment !== process.env) return filled
   const entry = keptFor(filled, homeDirectory)
   if (!entry) return filled
   for (const name of inheritedNames) {
     const value = entry.values[name]
-    if (value !== undefined) filled[name] = value
+    if (value !== undefined && overrides[name] === undefined) filled[name] = value
   }
   return filled
 }

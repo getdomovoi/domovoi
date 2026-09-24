@@ -215,3 +215,18 @@ it("takes the inherited bearer out of the environment even when it refuses befor
     }
   }
 })
+
+// Capture is the first thing an acquisition does, so even an acquisition that
+// fails on its own arguments leaves no bearer for a child or a later profile.
+it("takes the inherited bearer out of the environment even when its arguments are invalid", async () => {
+  const bearer = "b".repeat(43)
+  const previous = process.env.DOMOVOI_AUTH_TOKEN
+  process.env.DOMOVOI_AUTH_TOKEN = bearer
+  try {
+    await acquireLocalDaemon({ environment: process.env, timeoutMs: Number.NaN, mode: "attach-only", homeDirectory: await home() }).catch(() => undefined)
+    expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+  } finally {
+    if (previous === undefined) delete process.env.DOMOVOI_AUTH_TOKEN
+    else process.env.DOMOVOI_AUTH_TOKEN = previous
+  }
+})

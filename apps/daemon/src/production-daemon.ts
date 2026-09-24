@@ -27,7 +27,7 @@ import { skillTrustPath } from "./skill-signing.js"
 import { profileDirectory, profileLocation } from "./profile-directory.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 import { wslHostFacts } from "./wsl-host.js"
-import { withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
+import { captureInheritedCredentials, withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
 
 export type ProductionDaemonOptions = {
   environment?: DaemonEnvironment
@@ -113,11 +113,11 @@ export async function createProductionDaemonWithDependencies(
   dependencies: ProductionDaemonDependencies,
   ownership?: { lease: ProfileLease; deadline: OperationDeadline },
 ): Promise<ProductionDaemonHandle> {
+  // First, before anything can throw: the inherited bearer leaves process.env.
+  captureInheritedCredentials(options.homeDirectory)
   const deadline = ownership?.deadline ?? OperationDeadline.start(30_000)
-  // The desktop passes process.env or a copy of it; either way the bearer
-  // leaves process.env here and is read from the kept copy.
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
-  const settings = { ...withInheritedCredentials(options.environment ?? process.env, homeDirectory), ...options.environmentOverrides }
+  const settings = withInheritedCredentials(options.environment ?? process.env, homeDirectory, options.environmentOverrides)
   const environment = withoutInheritedCredentials({ ...(options.environment ?? process.env), ...options.environmentOverrides })
   const machineLabel = options.machineLabel ?? hostname()
   let profile = profileLocation(homeDirectory)

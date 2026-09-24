@@ -18,7 +18,7 @@ import {
 } from "./production-daemon.js"
 import { serviceRegistrationBlocksProfile } from "./service/configuration.js"
 import { configuredProfileDirectory, profileLocation, type ProfileLocation } from "./profile-directory.js"
-import { withInheritedCredentials } from "./inherited-credentials.js"
+import { captureInheritedCredentials, withInheritedCredentials } from "./inherited-credentials.js"
 
 export type LocalDaemonRefusalReason =
   | "owner-busy" | "owner-unreachable" | "owner-incompatible" | "owner-unverified" | "profile-invalid"
@@ -153,11 +153,13 @@ async function attach(
 }
 
 export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Promise<LocalDaemonHandle> {
+  // First, before the deadline or any other argument is checked: the inherited
+  // bearer leaves process.env and is pinned to the profile it was handed for,
+  // whatever this acquisition ends as.
+  captureInheritedCredentials(options.homeDirectory)
   const deadline = OperationDeadline.start(options.timeoutMs)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
-  // Before any path can refuse: the inherited bearer leaves process.env and is
-  // pinned to the profile it was handed for, whatever this acquisition ends as.
-  const settings = { ...withInheritedCredentials(options.environment ?? process.env, homeDirectory), ...options.environmentOverrides }
+  const settings = withInheritedCredentials(options.environment ?? process.env, homeDirectory, options.environmentOverrides)
   let lease: ProfileLease | undefined
   let runtime: ProductionDaemonHandle | undefined
   try {

@@ -301,6 +301,45 @@ describe("createProductionDaemon", () => {
     })
   })
 
+  // An override that names another profile makes this acquisition that
+  // profile's. The kept bearer is matched against the profile the acquisition
+  // ends up with, so it never moves to the overridden one, in either order.
+  const acquireFor = (home: string, overrides?: Record<string, string>) => createProductionDaemonWithDependencies({
+    homeDirectory: home, environment: process.env, ...(overrides ? { environmentOverrides: overrides } : {}),
+  }, {
+    ...productionDaemonDependencies,
+    createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+    createDaemon: vi.fn((options: DaemonServerOptions) => fakeRuntime(options)),
+  })
+
+  it("does not move the kept bearer to a profile an override names, after the bearer's own profile used it", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const own = await acquireFor(home)
+      expect(own.authToken).toBe(authToken)
+      await own.stop()
+
+      const other = await acquireFor(home, { DOMOVOI_PROFILE_DIR: join(await temporaryHome(), "profile-b") })
+      running.push(other)
+      expect(other.authToken).not.toBe(authToken)
+      expect(other.credential).not.toEqual({ source: "environment" })
+    })
+  })
+
+  it("does not move the kept bearer to a profile an override names, before the bearer's own profile used it", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const other = await acquireFor(home, { DOMOVOI_PROFILE_DIR: join(await temporaryHome(), "profile-b") })
+      expect(other.authToken).not.toBe(authToken)
+      expect(other.credential).not.toEqual({ source: "environment" })
+      await other.stop()
+
+      const own = await acquireFor(home)
+      running.push(own)
+      expect(own.authToken).toBe(authToken)
+    })
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
