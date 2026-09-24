@@ -1481,7 +1481,12 @@ export class GitWorkspaceService implements WorkspaceService {
         if (head !== undefined) await gitWithIndex(worktreePath, temporaryIndex, ["read-tree", head], signal)
       }
       await gitWithIndex(worktreePath, temporaryIndex, ["add", "--all"], signal)
-      const names = await gitWithIndex(worktreePath, temporaryIndex, ["diff", "--cached", "--no-renames", "--name-only", "-z"], signal)
+      await this.#afterCheckpointStaging?.()
+      // Against the HEAD captured above, not whatever HEAD is now: the agent may
+      // commit meanwhile, and the snapshot's parent is the captured one.
+      const names = await gitWithIndex(worktreePath, temporaryIndex, head === undefined
+        ? ["ls-files", "-z"]
+        : ["diff", "--cached", "--no-renames", "--name-only", "-z", head, "--"], signal)
       const changedFiles = names.split("\0").filter(Boolean)
       let commit = head
       if (commit === undefined || changedFiles.length > 0) {

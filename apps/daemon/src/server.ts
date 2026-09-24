@@ -319,8 +319,8 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
-function approvedRunKey(sessionId: string, itemId: string): string {
-  return `${sessionId}\u0000${itemId}`
+function approvedRunKey(sessionId: string, turnId: string, itemId: string): string {
+  return `${sessionId}\u0000${turnId}\u0000${itemId}`
 }
 
 type CommandOutputRemainder = { key: string, itemId: string, remainder: string }
@@ -1358,11 +1358,20 @@ export class DomovoiDaemon {
   #artifactAccessTtlSeconds = 60
   #terminalService: TerminalService
   #terminals = new Map<string, ActiveTerminal>()
-  // Commands a person allowed, by session and provider item, waiting for that
-  // item to complete so the receipt can say how long the command ran. Held in
-  // memory: a daemon that restarts before the item completes leaves the
-  // receipt without a run time, as ruled.
-  #approvedRuns = new Map<string, { receiptId: string, sessionId: string, decidedAtMs: number }>()
+
+  #dropApprovedRunsOutside(sessionId: string, turnId: string): void {
+    for (const [key, run] of this.#approvedRuns) {
+      if (run.sessionId === sessionId && run.turnId !== turnId) this.#approvedRuns.delete(key)
+    }
+  }
+  // Commands a person allowed, by session, turn and provider item, waiting for
+  // that item to complete so the receipt can say how long the command ran. Held
+  // in memory: a daemon that restarts before the item completes leaves the
+  // receipt without a run time, as ruled. Keyed by turn, since a later turn can
+  // reuse an item id, and a turn can end without a turn-completed event (a
+  // pause, a disconnect): a session's entries for any other turn are dropped
+  // whenever one of its turns records or completes an item.
+  #approvedRuns = new Map<string, { receiptId: string, sessionId: string, turnId: string, decidedAtMs: number }>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status">
   #usageLedger: DaemonUsageLedger
@@ -6894,10 +6903,13 @@ export class DomovoiDaemon {
             return
           }
         }
-        if (allows && approval.itemId) {
-          this.#approvedRuns.set(approvedRunKey(approval.sessionId, approval.itemId), {
+        const runTurnId = session?.activeTurnId
+        if (allows && approval.itemId && runTurnId) {
+          this.#dropApprovedRunsOutside(approval.sessionId, runTurnId)
+          this.#approvedRuns.set(approvedRunKey(approval.sessionId, runTurnId, approval.itemId), {
             receiptId,
             sessionId: approval.sessionId,
+            turnId: runTurnId,
             decidedAtMs: Date.parse(decidedAt),
           })
         }
@@ -8615,9 +8627,12 @@ export class DomovoiDaemon {
         ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
       })
       const completedItemId = event.phase === "completed" && typeof itemRecord?.id === "string" ? itemRecord.id : undefined
-      const approvedRun = completedItemId === undefined ? undefined : this.#approvedRuns.get(approvedRunKey(session.id, completedItemId))
-      if (completedItemId !== undefined && approvedRun) {
-        this.#approvedRuns.delete(approvedRunKey(session.id, completedItemId))
+      const runTurnId = session.activeTurnId
+      if (runTurnId) this.#dropApprovedRunsOutside(session.id, runTurnId)
+      const runKey = completedItemId === undefined || !runTurnId ? undefined : approvedRunKey(session.id, runTurnId, completedItemId)
+      const approvedRun = runKey === undefined ? undefined : this.#approvedRuns.get(runKey)
+      if (runKey !== undefined && approvedRun) {
+        this.#approvedRuns.delete(runKey)
         const receipt = this.#snapshot.thread.find((threadItem) => threadItem.id === approvedRun.receiptId)
         if (receipt?.kind === "receipt") {
           receipt.ranForMs = Math.max(0, Date.now() - approvedRun.decidedAtMs)

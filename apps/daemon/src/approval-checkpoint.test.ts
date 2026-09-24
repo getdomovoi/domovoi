@@ -44,7 +44,7 @@ async function start(options: { worktree?: boolean, checkpoint?: () => Promise<{
   const provider = {
     connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
     startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}), stopThread: vi.fn(async () => {}),
-    startTurn: vi.fn(async () => "turn-billing"), steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+    startTurn: vi.fn<() => Promise<string>>().mockResolvedValueOnce("turn-billing").mockResolvedValue("turn-billing-2"), steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
     resolveApproval: vi.fn(),
     onEvent: vi.fn((listener: (event: AgentEvent) => void) => { emit = listener; return () => {} }),
     close: vi.fn(async () => {}),
@@ -143,6 +143,20 @@ describe("a checkpoint before an approved write", () => {
     emit({ type: "turn-completed", params: { threadId: "thread-billing", turn: { id: "turn-billing", status: "interrupted" } } })
     await waitForDaemon(async () => expect((await snapshot()).sessions.find(({ id }) => id === "session-billing")).not.toHaveProperty("activeTurnId"))
     emit({ type: "item", phase: "completed", params: { threadId: "thread-billing", item: { id: "call_migrate", type: "commandExecution", status: "completed" } } })
+    await rpc("workspace.get", {})
+    expect((await snapshot()).thread.find((item) => item.kind === "receipt")).not.toHaveProperty("ranForMs")
+  })
+
+  it("never gives a run time to an old receipt when a later turn reuses the command's item id", async () => {
+    // Review round 1 (P2): a pause ends the turn without a turn-completed event.
+    const { rpc, snapshot, emit, approvalId } = await start()
+    expect((await rpc("approval.resolve", allow(approvalId))).error).toBeUndefined()
+    expect((await rpc("session.pause", { sessionId: "session-billing", client: "phone" })).error).toBeUndefined()
+    await waitForDaemon(async () => expect((await snapshot()).sessions.find(({ id }) => id === "session-billing")).not.toHaveProperty("activeTurnId"))
+    const sent = await rpc("session.send", { sessionId: "session-billing", prompt: "go on", client: "phone" })
+    expect(sent.error?.message).toBeUndefined()
+    await waitForDaemon(async () => expect((await snapshot()).sessions.find(({ id }) => id === "session-billing")?.activeTurnId).toBeDefined())
+    emit({ type: "item", phase: "completed", params: { threadId: "thread-billing", turnId: "turn-billing-2", item: { id: "call_migrate", type: "commandExecution", status: "completed" } } })
     await rpc("workspace.get", {})
     expect((await snapshot()).thread.find((item) => item.kind === "receipt")).not.toHaveProperty("ranForMs")
   })

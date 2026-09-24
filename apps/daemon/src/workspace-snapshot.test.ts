@@ -139,4 +139,45 @@ describe("GitWorkspaceService.snapshot", () => {
 
     expect(await observe(path)).toEqual(before)
   })
+
+  it("records what was staged against the HEAD it started from, when the agent commits meanwhile", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-snapshot-race-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", path])
+    await writeFile(join(path, "tracked.txt"), "base\n")
+    await execute("git", ["-C", path, "add", "."])
+    await execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
+    const started = (await gitOut(path, "rev-parse", "HEAD")).trim()
+    await writeFile(join(path, "tracked.txt"), "agent edit\n")
+    const service = new GitWorkspaceService(join(scratch, "worktrees"), {
+      // The agent commits its edit after the snapshot staged it.
+      afterCheckpointStaging: async () => {
+        await execute("git", ["-C", path, "-c", "user.name=Agent", "-c", "user.email=agent@example.invalid", "commit", "-am", "agent"])
+      },
+    })
+
+    const snapshot = await service.snapshot(path, "before approved command")
+
+    expect(snapshot.commit).not.toBe(started)
+    expect((await gitOut(path, "rev-parse", `${snapshot.commit}^`)).trim()).toBe(started)
+    expect(await gitOut(path, "show", `${snapshot.commit}:tracked.txt`)).toBe("agent edit\n")
+    expect(snapshot.changedFiles).toEqual(["tracked.txt"])
+  })
+
+  it("records a repository with no commit yet as a root commit", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-snapshot-unborn-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "project")
+    await execute("git", ["init", "--initial-branch=main", path])
+    await writeFile(join(path, "first.txt"), "first\n")
+    await writeFile(join(path, " "), "whitespace name\n")
+
+    const snapshot = await new GitWorkspaceService(join(scratch, "worktrees")).snapshot(path, "before approved command")
+
+    expect([...snapshot.changedFiles].sort()).toEqual([" ", "first.txt"])
+    expect((await gitOut(path, "rev-list", "--parents", "-n", "1", snapshot.commit)).trim()).toBe(snapshot.commit)
+    await expect(gitOut(path, "rev-parse", "--verify", "-q", "HEAD")).rejects.toThrow()
+    expect(await gitOut(path, "status", "--porcelain")).toBe("?? \" \"\n?? first.txt\n")
+  })
 })
