@@ -9,14 +9,21 @@ import type { Runtime } from "@getdomovoi/protocol"
 
 import { CodexAppServerAdapter, type CodexTransport, type JsonRpcMessage } from "./codex.js"
 
+type Reply = (method: string) => Pick<JsonRpcMessage, "result" | "error">
+
 class RecordingTransport implements CodexTransport {
   readonly sent: JsonRpcMessage[] = []
   #listener: ((message: JsonRpcMessage) => void) | undefined
+  readonly #reply: Reply
+
+  constructor(reply: Reply = () => ({ result: {} })) {
+    this.#reply = reply
+  }
 
   send(message: JsonRpcMessage): void {
     this.sent.push(message)
-    const id = message.id
-    if (id !== undefined) queueMicrotask(() => this.#listener?.({ id, result: {} }))
+    const { id, method } = message
+    if (id !== undefined) queueMicrotask(() => this.#listener?.({ id, ...this.#reply(method ?? "") }))
   }
 
   onMessage(listener: (message: JsonRpcMessage) => void): () => void {
@@ -49,8 +56,8 @@ function repository(files: Record<string, string>): string {
   return root
 }
 
-async function connected(): Promise<{ adapter: CodexAppServerAdapter, transport: RecordingTransport }> {
-  const transport = new RecordingTransport()
+async function connected(reply?: Reply): Promise<{ adapter: CodexAppServerAdapter, transport: RecordingTransport }> {
+  const transport = new RecordingTransport(reply)
   const adapter = new CodexAppServerAdapter(() => transport)
   await adapter.connect()
   return { adapter, transport }
@@ -87,6 +94,29 @@ describe("Codex repository configuration", () => {
     await expect(adapter.resumeThread({ threadId: "thread-1", cwd, runtime })).rejects.toThrow(refusal(".codex/config.toml"))
     await expect(adapter.startTurn({ threadId: "thread-1", cwd, prompt: "hello", runtime })).rejects.toThrow(refusal(".codex/config.toml"))
     expect(sentMethods(transport)).toEqual(["initialize", "initialized"])
+  })
+
+  it("refuses thread/start when the file appears while Codex answers config/read", async () => {
+    const cwd = repository({ "README.md": "" })
+    const { adapter, transport } = await connected((method) => {
+      if (method === "config/read") write(cwd, { ".codex/config.toml": '[mcp_servers.probe]\ncommand = "/usr/bin/true"\n' })
+      return { result: {} }
+    })
+
+    await expect(adapter.startThread({ cwd, runtime })).rejects.toThrow(refusal(".codex/config.toml"))
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized", "config/read"])
+  })
+
+  it("refuses a retried turn/start when the file appears while Codex answers the first attempt", async () => {
+    const cwd = repository({ "README.md": "" })
+    const { adapter, transport } = await connected((method) => {
+      if (method !== "turn/start") return { result: {} }
+      write(cwd, { ".codex/hooks.json": "{}" })
+      return { error: { message: "turn/start.additionalContext requires experimentalApi capability" } }
+    })
+
+    await expect(adapter.startTurn({ threadId: "thread-1", cwd, prompt: "hello", runtime })).rejects.toThrow(refusal(".codex/hooks.json"))
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized", "turn/start"])
   })
 
   it("names a .codex folder between the session's directory and the project root", async () => {
@@ -162,6 +192,17 @@ describe("Codex configuration in the repository's main checkout", () => {
 
     await expect(adapter.startThread({ cwd: join(worktree, "packages/app/src"), runtime }))
       .rejects.toThrow(mainCheckoutRefusal("packages/app/.codex/hooks.json", main))
+  })
+
+  it("refuses thread/start when the main checkout gains hook configuration while Codex answers config/read", async () => {
+    const { main, worktree } = linkedWorktree({ "README.md": "" }, {})
+    const { adapter, transport } = await connected((method) => {
+      if (method === "config/read") write(main, { ".codex/hooks.json": "{}" })
+      return { result: {} }
+    })
+
+    await expect(adapter.startThread({ cwd: worktree, runtime })).rejects.toThrow(mainCheckoutRefusal(".codex/hooks.json", main))
+    expect(sentMethods(transport)).toEqual(["initialize", "initialized", "config/read"])
   })
 
   it("starts a session when the main checkout holds nothing Codex loads from it", async () => {

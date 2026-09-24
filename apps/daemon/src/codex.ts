@@ -313,6 +313,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     // developer_instructions rather than adding to them, so Domovoi reads the
     // value Codex resolved for this worktree and sends both.
     const own = resolvedDeveloperInstructions(await this.#request("config/read", { cwd }))
+    refuseRepositoryConfig(cwd)
     const result = await this.#request("thread/start", {
       cwd,
       model: runtime.model,
@@ -423,7 +424,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
     prompt: string
     runtime: Runtime
   }): Promise<string> {
-    refuseRepositoryConfig(cwd)
     const policy = codexPolicyFor(runtime)
     const params = {
       threadId,
@@ -450,6 +450,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     for (;;) {
       const withCollaboration = this.#collaborationModeAvailable
       const withContext = this.#additionalContextAvailable
+      refuseRepositoryConfig(cwd)
       try {
         result = await this.#request("turn/start", {
           ...params,
@@ -669,7 +670,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
 // A trusted project's own Codex configuration can start programs and change
 // permissions. Until a trust gate ships, a session is refused before Codex is
 // asked anything about a worktree that holds it, or whose main checkout holds
-// hook configuration Codex takes from there.
+// hook configuration Codex takes from there. Callers check again after every
+// await, so each thread/start, thread/resume and turn/start goes out in the
+// same tick as a check that passed.
 function refuseRepositoryConfig(cwd: string): void {
   const file = codexRepositoryConfigFile(cwd)
   if (file !== undefined) throw new Error(codexRepositoryConfigRefusal(file))
