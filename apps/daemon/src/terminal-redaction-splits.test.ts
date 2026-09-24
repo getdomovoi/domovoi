@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest"
 
 import { TerminalOutputRedactor } from "./secret-redaction.js"
 
-// Every way a line can reach the redactor: whole, split once at every point,
-// and split twice at every pair of points, with and without an idle beat
-// between the parts. A secret must never appear in what is shown, and a line
-// with no secret must come out exactly as it went in. A new split that leaks
-// is caught here, not in review.
+// Every way a line can reach the redactor across idle beats: whole, split once
+// at every point with a beat between the parts, and split twice at every pair
+// of points with a beat at each. A secret must never appear in what is shown,
+// and a line with no secret must come out exactly as it went in. Ruled
+// 2026-09-23 (B): the fix is for values typed after an idle beat released
+// their name, so splits with no beat between them read as main reads them.
 
 type Step = string | "idle"
 
@@ -19,7 +20,6 @@ function run(steps: readonly Step[]): string {
 function splits(line: string): Step[][] {
   const ways: Step[][] = [[line], [line, "idle"]]
   for (let first = 1; first < line.length; first += 1) {
-    ways.push([line.slice(0, first), line.slice(first)])
     ways.push([line.slice(0, first), "idle", line.slice(first)])
     for (let second = first + 1; second < line.length; second += 1) {
       ways.push([line.slice(0, first), "idle", line.slice(first, second), "idle", line.slice(second)])
@@ -40,7 +40,6 @@ const secrets: readonly { line: string, value: string }[] = [
   { line: "java -Dpassword=zqxj7wvkmq -jar app.jar\r\n", value: "zqxj7wvkmq" },
   { line: "{\"client_secret\": \"zqxj wvkm\"}\r\n", value: "zqxj wvkm" },
   { line: "$env:GITHUB_TOKEN=\"zqxj7wvkmq\"\r\n", value: "zqxj7wvkmq" },
-  { line: "echo ghp_zqxj7wvkmqzqxj done\r\n", value: "ghp_zqxj7wvkmqzqxj" },
 ]
 
 function fragments(value: string): string[] {
@@ -109,6 +108,9 @@ const openCases: readonly { name: string, steps: readonly Step[] }[] = [
   { name: "an ANSI sequence between the name and its separator", steps: ["export API_KEY\x1b[0m=zqxjwvkm\r\n"] },
   { name: "a carriage return and cursor move before the value", steps: ["export API_KEY=", "idle", "\r\x1b[8Czqxjwvkm\r\n"] },
   { name: "a bare token longer than a line keeps", steps: ["echo ghp_", "zqxj", "a".repeat(8_300), "wvkm done\r\n"] },
+  // A bare token has no name, so what an idle beat releases of it is not
+  // context for the rest.
+  { name: "a bare token split by an idle beat", steps: ["echo g", "idle", "hp_zqxj7wvkmqzqxj done\r\n"] },
 ]
 
 describe("terminal redaction cases still open, pre-existing on main", () => {

@@ -186,13 +186,16 @@ describe("durable secret redaction", () => {
   })
 })
 
+// Cases from review of #575. Ruled 2026-09-23 (B): durable redaction is main's
+// code, so these hold because main's code handles them. The one round-4 case
+// main does not handle (an escaped double quote inside a flag value) was
+// dropped with the improvements that handled it.
 describe("shell quoting in flag and property values", () => {
   // Review round 4: a backslash is literal inside shell single quotes, so it
   // cannot escape the closing quote; a JSON value ends where JSON says.
   it.each([
     "curl --token 'abc zqxjwvkm\\' -s",
     "java -Dpassword='abc zqxjwvkm\\' -jar app.jar",
-    "curl --token \"abc \\\"zqxjwvkm\" -s",
   ])("hides the whole quoted value of %j", (line) => {
     for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactStreamText(line)]) {
       expect(redacted).not.toContain("zqxjwvkm")
@@ -256,6 +259,27 @@ describe("shell quoting in flag and property values", () => {
     expect(shown).toContain(" visible output\r\n")
     expect(shown).not.toContain("zqxjwvkm")
     expect(shown).not.toContain("qqqq")
+  })
+
+  it("hides the value of an assignment that sits where a flag's value would, split by an idle beat", () => {
+    // Review round 7 (P1): the flag's value is the name "token=", which main's
+    // code needs to read the value after it.
+    const terminal = new TerminalOutputRedactor()
+    const shown = [terminal.push("--token "), terminal.release(), terminal.push("token= zqxjwvkm\n"), terminal.flush()].join("")
+    expect(shown).not.toContain("zqxjwvkm")
+    const line = "--token token= zqxjwvkm\n"
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactDurableText(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+    }
+    const stream = new DurableOutputRedactor()
+    expect(`${stream.push(line)}${stream.flush()}`).not.toContain("zqxjwvkm")
+  })
+
+  it("hides a Bearer credential on the line after its header, in one read", () => {
+    // Review round 7 (P1): main's code reads Bearer and its credential across
+    // the line break, so the line stage must leave "Bearer" for it.
+    const terminal = new TerminalOutputRedactor()
+    expect(`${terminal.push("Authorization: Bearer\nzqxjwvkm\n")}${terminal.flush()}`).not.toContain("zqxjwvkm")
   })
 })
 

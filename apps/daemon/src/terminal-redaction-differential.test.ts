@@ -39,6 +39,61 @@ const formatting = ["\x1b[0m", "\x1b[1m", "\x1b[32m", "\x1b[2K"]
 // or that some tools treat as one (U+0085, NEL), though a terminal does not.
 const separators = ["\u2028", "\u2029", "\u0085"]
 
+// Forms composed the way main's baseline reads them. Every place a baseline
+// pattern allows whitespace (\s, which includes a line break) between a name,
+// its separator and its value may hold a line break: around "=" and ":" in
+// assignments, JSON and headers, between a flag and its value, before the "="
+// of a -D property, between "set" and its name or quote, and between
+// Bearer or Basic and the credential. A value may itself begin with another
+// name and separator, or a separator alone, nested up to twice.
+const lineBreaks = ["\n", "\r\n", "\r"]
+
+function generateComposed(next: () => number, word: (length: number) => string): Case {
+  const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
+  const chance = (probability: number) => next() < probability
+  const classes = new Set<string>()
+  const gap = (fallback: string): string => {
+    if (chance(0.3)) { classes.add("cross-line"); return pick(lineBreaks) }
+    return chance(0.5) ? fallback : fallback === "" ? " " : fallback
+  }
+  const innerPrefix = (): string => {
+    const name = pick(names)
+    classes.add("nested")
+    return pick([
+      `${name}=`, `${name}=${gap("")}`, `--${name}${gap(" ")}`, `--${name}=`, `-D${name}=`, `${name}:${gap(" ")}`,
+      `"${name}":`, `Bearer${gap(" ")}`, "=", ":", `/${name}:`,
+    ])
+  }
+  const secret = word(6 + Math.floor(next() * 6))
+  let value = secret
+  for (let depth = 0; depth < 2 && chance(0.45); depth += 1) value = `${innerPrefix()}${value}`
+  const name = pick(names)
+  const form = pick(["flag-space", "flag-equals", "flag-colon", "assignment", "set", "json", "property", "cmd-set", "bearer", "basic", "header", "prompt"])
+  let text: string
+  let kept: string[] = []
+  switch (form) {
+    case "flag-space": text = `curl --${name}${gap(" ") || " "}${value} -s`; kept = [" -s"]; break
+    case "flag-equals": text = `curl --${name}${gap("")}=${gap("")}${value} -s`; kept = [" -s"]; break
+    case "flag-colon": text = `tool /${name}:${value} -s`; kept = [" -s"]; break
+    case "assignment": text = `${name}${gap("")}=${gap("")}${value}`; break
+    case "set": text = `set${gap(" ") || " "}${name}=${value}`; break
+    case "json": text = `{"${name}"${gap("")}:${gap("")}"${value.replace(/"/g, "")}","safe":"visible"}`; kept = [`"safe":"visible"}`]; break
+    case "property": text = `java -D${name}${gap("")}=${value} -jar app.jar`; kept = [" -jar app.jar"]; break
+    case "cmd-set": text = `set${gap(" ") || " "}"${name}${gap("")}=${value.replace(/"/g, "")}"`; break
+    case "bearer": text = `Authorization:${gap(" ")}Bearer${gap(" ") || " "}${value}`; break
+    case "basic": text = `Proxy-Authorization=${gap("")}Basic${gap(" ") || " "}${value}`; break
+    case "header": text = `Authorization:${gap(" ")}${value}`; break
+    default: text = `${name}:${gap(" ")}${value}`; break
+  }
+  const ending = pick(["\r\n", "\n", ""])
+  return {
+    shape: [`composed-${form}`, ...[...classes].sort()].join("+"),
+    text: `${text}${ending}`,
+    value: secret,
+    kept,
+  }
+}
+
 function generate(next: () => number): Case {
   const pick = <T,>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!
   const chance = (probability: number) => next() < probability
@@ -55,6 +110,7 @@ function generate(next: () => number): Case {
     return word(6 + Math.floor(next() * 8))
   }
   const ending = pick(["\r\n", "\n", "\r\n", ""])
+  if (chance(0.3)) return generateComposed(next, word)
   if (chance(0.25)) {
     const plain = pick([
       "passwords are hashed", "Enter password below", "token count 5", "me@host:~$ ls -la",

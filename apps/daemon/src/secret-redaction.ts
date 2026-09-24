@@ -1,95 +1,62 @@
-import * as baseline from "./secret-redaction-baseline.js"
-import {
-  appendDurableOutput,
-  maximumDurableCommandLength,
-  maximumDurableOutputLength,
-  maximumDurableTextLength,
-  maximumStreamingOutputBufferLength,
-  terminalRedactionCarryCharacters,
-  type RedactedText,
-} from "./secret-redaction-baseline.js"
-
-export {
-  appendDurableOutput,
-  maximumDurableCommandLength,
-  maximumDurableOutputLength,
-  maximumDurableTextLength,
-  maximumStreamingOutputBufferLength,
-  terminalRedactionCarryCharacters,
-  type RedactedText,
-}
-
-// Redaction runs in two stages. The first, in this file, adds the forms main
-// misses: shell quoting, values that arrive after their name, quotes that never
-// close. The second is main's own code, in secret-redaction-baseline.ts: a
-// byte-identical copy of this file at 8bda137f that nothing edits (a test holds
-// its bytes to that commit). It reads what the first stage let through, last,
-// so the result is never less redacted than main's own reading of that text.
-// New pattern work belongs in the first stage.
-
 const replacement = "[REDACTED]"
 
+export const maximumDurableCommandLength = 8_192
+export const maximumDurableOutputLength = 65_536
+export const maximumDurableTextLength = 65_536
+export const maximumStreamingOutputBufferLength = 8_192
+
+export type RedactedText = {
+  value: string
+  redacted: boolean
+  truncated: boolean
+}
+
 const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret|client[_-]?secret|credentials?|cookie|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|github[_-]?token|openai[_-]?api[_-]?key|azure[_-]?client[_-]?secret)`
-// A backslash escapes the next character, whatever it is short of a line end:
-// `.` would not match U+2028 or U+2029, and the quote would seem to end there.
-const escaped = String.raw`\\[^\r\n]`
-const quotedValue = String.raw`(?:"(?:${escaped}|[^"\\\r\n])*"|'(?:${escaped}|[^'\\\r\n])*')`
-// A quoted shell word: a backslash escapes inside double quotes, and is a
-// literal character inside single quotes, which nothing can escape.
-const shellQuotedValue = String.raw`(?:"(?:${escaped}|[^"\\\r\n])*"|'[^'\r\n]*')`
-// A shell quote that never closes on its line (a double quote's closing quote
-// may be escaped): the value runs to the end of the line.
-const unclosedShellQuotedValue = String.raw`(?:"(?:${escaped}|[^"\\\r\n])*\\?(?=[\r\n]|$)|'[^'\r\n]*(?=[\r\n]|$))`
-const assignmentPrefix = String.raw`(?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*`
-const structuredPrefix = String.raw`["']?\b${sensitiveName}\b["']?\s*:\s*`
-const flagPrefix = String.raw`(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)`
-// Space after the "=" is allowed: main's terminal redactor, holding the name
-// back from "-D", reads "-Dpassword= 'x'" as an assignment whose value is 'x'.
-const javaPrefix = String.raw`-D${sensitiveName}\s*=\s*`
-// A value is one word: unquoted characters and closed quotes, up to a
-// delimiter (`"…"rest` is one shell value), so nothing of it is left behind. A
-// quote that does not close in the word is not taken as part of it: it may be
-// the end of a quoted value this name sits inside, and main's code, reading
-// last, needs that quote to see where that value ends. A value that starts
-// with a quote which never closes runs to the end of the line.
-// Formatting a terminal writes between a name and its value.
-const formatting = String.raw`(?:\x1b\[[0-9;]*[A-Za-z])*`
-const shellValue = String.raw`${formatting}${unclosedShellQuotedValue}|(?:[^\s;&|\r\n"']|${shellQuotedValue})+`
-// Every name and its value in one pass, left to right, so a name inside a
-// value already matched (a quoted value that holds "token=…") is part of that
-// value, not a second assignment that could run past its closing quote.
-const secretValue = new RegExp(
-  [
-    String.raw`(${flagPrefix})(${shellValue})`,
-    String.raw`(${javaPrefix})(${shellValue})`,
-    String.raw`(${assignmentPrefix})((?:[^\s;&|\r\n"']|${quotedValue})+|["'][^\s;&|\r\n]*)`,
-    String.raw`(${structuredPrefix})((?:[^\s,;&|}\r\n"']|${quotedValue})+|["'][^\s,;&|}\r\n]*)`,
-  ].join("|"),
+const quotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
+const assignment = new RegExp(
+  String.raw`((?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
+  "giu",
+)
+const structuredAssignment = new RegExp(
+  String.raw`(["']?\b${sensitiveName}\b["']?\s*:\s*)(${quotedValue}|[^\s,;&|}\r\n]+)`,
+  "giu",
+)
+const secretFlag = new RegExp(
+  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  "giu",
+)
+const quotedCmdAssignment = new RegExp(
+  String.raw`(\bset\s+)(["'])(${sensitiveName}\s*=)[^\r\n]*?\2`,
+  "giu",
+)
+const javaSystemProperty = new RegExp(
+  String.raw`(-D${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 
 export function redactDurableText(value: unknown): RedactedText {
-  return thenBaseline(redactAddedForms(value, maximumDurableTextLength), baseline.redactDurableText)
+  return redact(value, maximumDurableTextLength)
 }
 
 export function redactDurableCommand(value: unknown): RedactedText {
-  return thenBaseline(redactAddedForms(value, maximumDurableCommandLength), baseline.redactDurableCommand)
+  return redact(value, maximumDurableCommandLength)
 }
 
 // A terminal read is shown, not stored, so it is redacted without the length
 // bound the durable records carry: truncating what a terminal printed would
 // lose output rather than protect anything.
 export function redactStreamText(value: string): string {
-  return baseline.redactStreamText(redactAddedForms(value, Number.MAX_SAFE_INTEGER).value)
+  return redact(value, Number.MAX_SAFE_INTEGER).value
 }
 
 export function redactDurableOutput(value: unknown): RedactedText {
-  return thenBaseline(redactAddedForms(value, maximumDurableOutputLength), baseline.redactDurableOutput)
+  return redact(value, maximumDurableOutputLength)
 }
 
-function thenBaseline(first: RedactedText, second: (value: unknown) => RedactedText): RedactedText {
-  const last = second(first.value)
-  return { value: last.value, redacted: first.redacted || last.redacted, truncated: first.truncated || last.truncated }
+export function appendDurableOutput(current: string | undefined, addition: string): string {
+  const combined = `${current ?? ""}${addition}`
+  if (combined.length <= maximumDurableOutputLength) return combined
+  return `…${combined.slice(-(maximumDurableOutputLength - 1))}`
 }
 
 export class DurableOutputRedactor {
@@ -142,8 +109,7 @@ export class DurableOutputRedactor {
   }
 }
 
-// The first stage's pattern pass, bounded the way main bounds its own.
-function redactAddedForms(value: unknown, maximumLength: number): RedactedText {
+function redact(value: unknown, maximumLength: number): RedactedText {
   const bounded = boundedText(value, maximumLength)
   let changed = false
   const replace = (input: string, pattern: RegExp, replacer: string | ((...args: string[]) => string)) =>
@@ -172,10 +138,32 @@ function redactAddedForms(value: unknown, maximumLength: number): RedactedText {
     /(\b(?:proxy-)?authorization\b["']?\s*[:=]\s*["']?)[^\s"',;\r\n]+/giu,
     `$1${replacement}`,
   )
-  output = replace(output, secretValue, (...args) => {
-    const pair = [1, 3, 5, 7].find((group) => args[group] !== undefined) ?? 1
-    const prefix = args[pair] ?? ""
-    const secret = args[pair + 1] ?? ""
+  output = replace(output, assignment, (...args) => {
+    const prefix = args[1] ?? ""
+    const secret = args[2] ?? ""
+    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
+    return `${prefix}${quote}${replacement}${quote}`
+  })
+  output = replace(output, structuredAssignment, (...args) => {
+    const prefix = args[1] ?? ""
+    const secret = args[2] ?? ""
+    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
+    return `${prefix}${quote}${replacement}${quote}`
+  })
+  output = replace(
+    output,
+    quotedCmdAssignment,
+    (...args) => `${args[1] ?? ""}${args[2] ?? "\""}${args[3] ?? ""}${replacement}${args[2] ?? "\""}`,
+  )
+  output = replace(output, secretFlag, (...args) => {
+    const prefix = args[1] ?? ""
+    const secret = args[2] ?? ""
+    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
+    return `${prefix}${quote}${replacement}${quote}`
+  })
+  output = replace(output, javaSystemProperty, (...args) => {
+    const prefix = args[1] ?? ""
+    const secret = args[2] ?? ""
     const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
     return `${prefix}${quote}${replacement}${quote}`
   })
@@ -224,226 +212,345 @@ function boundedText(value: unknown, maximumLength: number): { value: string; tr
     return { value: "[Unprintable text]", truncated: false }
   }
 }
+
 // A terminal is not command output: it has no reliable newlines, its lines can
-// be enormous, and what it shows has to keep up with typing. Each read is
-// redacted in the context of the whole of its current line, and what is shown
-// is how the redacted line has grown since last time. A value always follows
-// its name on the same line, so however the line was split across reads or
-// idle beats, the name is in view when the value arrives, and nothing that
-// could still turn out to be a value has to be held back to be caught.
-// Line boundaries are carriage returns and newlines.
+// be enormous, and what it shows has to keep up with typing. Redaction still
+// has to see across reads, so the whole of what has been carried plus the new
+// read is redacted together, and a tail is held back only while it could still
+// be the beginning of a secret. Ordinary output is never delayed, and nothing
+// is ever replaced wholesale.
+export const terminalRedactionCarryCharacters = 256
 
-// How much of one line is kept as context. A longer line keeps only its tail,
-// unless it ends inside a value, which is then dropped up to where it ends.
-const maximumTerminalLineContextCharacters = 8_192
+// The start of an assignment this redactor would act on, left dangling at the
+// end of a read: a sensitive name, or one followed by its separator and a value
+// that may still be growing.
+const danglingSecret = new RegExp(
+  String.raw`(?:${sensitiveName}\b["']?\s*[:=]?\s*|(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)?|-D${sensitiveName}\s*=?)[^\s;&|\r\n]*$`,
+  "i",
+)
 
-const lineBoundary = /[\r\n]/
+// A sensitive name can itself be split, so a word still being typed at the end
+// of a read is held until the next one resolves it.
+const danglingWord = /[A-Za-z][A-Za-z0-9_-]*$/
 
 // Where a value ends, once the redactor has decided it is inside one.
 const valueDelimiter = /[\s;&|\r\n]/
 
-const shellValuePrefix = `(?:${assignmentPrefix}|${flagPrefix}|${javaPrefix})`
-const valuePrefix = `(?:${shellValuePrefix}|${structuredPrefix})`
+// Main's terminal redactor, unchanged but for the dropping getter the wrapper
+// below reads. The exported redactor wraps it.
+class HeldTailRedactor {
+  #carry = ""
+  // Set once an assignment's value has outgrown what can be carried. From then
+  // on the value's bytes are dropped rather than held, until its delimiter, so
+  // a token of any length is redacted without anything being buffered for it.
+  #droppingValue = false
 
-// Every place a value could start, shell or structured, to find the last one.
-const valueStarts = new RegExp(String.raw`(${shellValuePrefix})|(${structuredPrefix})`, "giu")
-
-// A quoted value whose closing quote has not arrived yet: everything after the
-// opening quote is value until it does.
-const unclosedQuotedValue = new RegExp(String.raw`(${valuePrefix})(?:(")(?:${escaped}|[^"\\\r\n])*\\?|(')[^'\r\n]*)$`, "iu")
-
-// The line ends with a name and its separator whose value has not started.
-const pendingValue = new RegExp(String.raw`${valuePrefix}$`, "iu")
-
-// Where a value is, once the redactor has decided it is inside one. A shell
-// value is a shell word: a backslash escapes inside double quotes and is
-// literal inside single quotes, and a closing quote does not end the word,
-// only an unquoted delimiter does. A structured (JSON) value is read the same
-// way, except that a comma or closing brace also ends it. A carriage return or
-// a newline ends both.
-type ValueScan = { context: "shell" | "structured", quote: string | undefined, escaped: boolean }
-
-const structuredValueDelimiter = /[\s,;&|}]/u
-
-// Where the value being scanned ends in this text, or undefined if it goes on.
-function endOfValue(text: string, scan: ValueScan): number | undefined {
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index]!
-    if (character === "\n" || character === "\r") return index
-    if (scan.quote !== undefined) {
-      if (scan.escaped) {
-        scan.escaped = false
-      } else if (character === "\\" && scan.quote === '"') {
-        scan.escaped = true
-      } else if (character === scan.quote) {
-        scan.quote = undefined
-      }
-      continue
-    }
-    if ((scan.context === "structured" ? structuredValueDelimiter : valueDelimiter).test(character)) return index
-    if (character === '"' || character === "'") scan.quote = character
+  // Whether the rest of a value is being dropped rather than shown.
+  get dropping(): boolean {
+    return this.#droppingValue
   }
-  return undefined
-}
 
-// The value the line ends inside, if any. Values are read left to right, each
-// from its name to its end, so a name inside an earlier value (a quoted value
-// holding "token=…") is part of that value and never starts one of its own.
-function valueOpenAtEnd(line: string): ValueScan | undefined {
-  const starts = new RegExp(valueStarts.source, valueStarts.flags)
-  for (let start = starts.exec(line); start; start = starts.exec(line)) {
-    const from = start.index + start[0].length
-    if (from === line.length) return undefined
-    const scan: ValueScan = { context: start[1] === undefined ? "structured" : "shell", quote: undefined, escaped: false }
-    const end = endOfValue(line.slice(from), scan)
-    if (end === undefined) return scan
-    starts.lastIndex = from + end
-  }
-  return undefined
-}
-
-// The start of a bare token (sk-, ghp_, a JWT) still being printed. Held until
-// the next read, so its first characters are not shown before the pattern that
-// recognises it is complete. Not released on an idle beat: a token is not a
-// prompt anyone waits on.
-const tokenFragment = /\b(?:(?:sk|ghp|gho|github_pat|xox[baprs])(?:[-_][A-Za-z0-9_-]*)?|eyJ[A-Za-z0-9_.-]*)$/u
-
-// A quoted value and the rest of its word (`"…"rest` is one shell value). The
-// word goes on to the next delimiter, which for a structured (JSON) value also
-// includes a comma or closing brace, so `"password":"…","safe":…` keeps the
-// field after it.
-const quotedValueWithWord = new RegExp(String.raw`(${shellValuePrefix})(${shellQuotedValue})([^\s;&|\r\n]+)`, "giu")
-const structuredQuotedValueWithWord = new RegExp(String.raw`(${structuredPrefix})(${quotedValue})([^\s,;&|}\r\n]+)`, "giu")
-
-function redactTerminalLine(line: string): string {
-  const unclosed = line.replace(unclosedQuotedValue, (_match, prefix: string, double: string | undefined, single: string | undefined) => `${prefix}${double ?? single}${replacement}`)
-  const wholeWord = (_match: string, prefix: string, quoted: string) => `${prefix}${quoted[0]}${replacement}${quoted[0]}`
-  const words = unclosed.replace(quotedValueWithWord, wholeWord).replace(structuredQuotedValueWithWord, wholeWord)
-  return redactAddedForms(words, Number.MAX_SAFE_INTEGER).value
-}
-
-function commonPrefixLength(left: string, right: string): number {
-  const length = Math.min(left.length, right.length)
-  let index = 0
-  while (index < length && left.charCodeAt(index) === right.charCodeAt(index)) index += 1
-  return index
-}
-
-class LineContextRedactor {
-  // The raw text of the current line so far, and the redacted form of it that
-  // has been shown.
-  #line = ""
-  #shown = ""
-  // Set when a line outgrew its context while inside a value: the value's
-  // remaining bytes are dropped until it ends. A quoted value ends at its
-  // unescaped closing quote; either kind ends at a line boundary.
-  #dropping: ValueScan | undefined
-
+  // Everything held back plus the new read is redacted as one string, so an
+  // assignment split across two reads is seen whole.
   push(chunk: string): string {
     let input = chunk
-    if (this.#dropping) {
-      const end = endOfValue(input, this.#dropping)
-      if (end === undefined) return ""
-      input = input.slice(end)
-      this.#dropping = undefined
+    if (this.#droppingValue) {
+      const delimiter = valueDelimiter.exec(input)
+      if (!delimiter) return ""
+      input = input.slice(delimiter.index)
+      this.#droppingValue = false
     }
-    let output = ""
-    while (input.length > 0) {
-      const boundary = lineBoundary.exec(input)
-      if (boundary) {
-        this.#line += input.slice(0, boundary.index + 1)
-        input = input.slice(boundary.index + 1)
-        output += this.#show(redactTerminalLine(this.#line))
-        this.#line = ""
-        this.#shown = ""
-        continue
-      }
-      this.#line += input
-      input = ""
-      const held = tokenFragment.exec(this.#line)
-      const ready = held && held[0].length <= terminalRedactionCarryCharacters
-        ? this.#line.slice(0, held.index)
-        : this.#line
-      output += this.#show(redactTerminalLine(ready))
-      if (this.#line.length > maximumTerminalLineContextCharacters) this.#trimLine()
+
+    const combined = `${this.#carry}${input}`
+    const holdFrom = this.#suspiciousTailStart(combined)
+    const held = combined.length - holdFrom
+    if (held > terminalRedactionCarryCharacters) {
+      // The tail is an assignment whose value has already run past the carry.
+      // Redact what there is, which turns the value seen so far into the
+      // replacement, and drop the rest of it as it arrives.
+      this.#carry = ""
+      this.#droppingValue = true
+      return redactStreamText(combined)
     }
-    return output
+
+    this.#carry = combined.slice(holdFrom)
+    return redactStreamText(combined.slice(0, holdFrom))
   }
 
-  // An idle beat. Everything but a bare token still being printed has already
-  // been shown, so there is nothing more to release.
-  release(): string {
-    return ""
-  }
-
-  // The end of the stream: show what is held, redacted, and forget the line.
   flush(): string {
-    const output = this.#line === "" ? "" : this.#show(redactTerminalLine(this.#line))
-    this.#line = ""
-    this.#shown = ""
-    this.#dropping = undefined
-    return output
+    this.#droppingValue = false
+    if (this.#carry === "") return ""
+    const remainder = this.#carry
+    this.#carry = ""
+    return redactStreamText(remainder)
   }
 
-  // Shows how the redacted line grew. If redaction changed text already shown
-  // (a bare token recognised late), the rest of the redacted line is shown
-  // after it: the view may repeat a little, but nothing unredacted appears.
-  #show(redacted: string): string {
-    const shared = commonPrefixLength(redacted, this.#shown)
-    const added = redacted.slice(shared)
-    this.#shown = redacted
-    return added
+  // Only a tail that could still become a secret is worth withholding, so a
+  // terminal that is simply busy is never held up. A dangling word is checked
+  // within the carry bound; a dangling assignment is checked in full, since the
+  // point is to notice one that has outgrown the bound.
+  #suspiciousTailStart(combined: string): number {
+    const assignment = danglingSecret.exec(combined)
+    if (assignment) return assignment.index
+    const window = combined.slice(-terminalRedactionCarryCharacters)
+    const word = danglingWord.exec(window)
+    if (!word) return combined.length
+    return combined.length - window.length + word.index
   }
-
-  #trimLine(): void {
-    const open = valueOpenAtEnd(this.#line)
-    if (open) {
-      // The line ends inside a value: drop the rest of it as it arrives.
-      this.#dropping = open
-      this.#line = ""
-      this.#shown = ""
-      return
-    }
-    // A name and separator whose value has not started stay as context, so a
-    // value after a long run of spaces is still seen as one.
-    const pending = pendingValue.exec(this.#line)
-    if (pending) {
-      const kept = pending[0].length > terminalRedactionCarryCharacters
-        ? pending[0].replace(/\s+$/u, (space) => space.slice(-1))
-        : pending[0]
-      this.#line = kept
-      this.#shown = redactTerminalLine(kept)
-      return
-    }
-    this.#line = this.#line.slice(-terminalRedactionCarryCharacters)
-    this.#shown = redactTerminalLine(this.#line)
-  }
-
 }
 
-// The terminal's redactor is the line-context stage followed by main's own
-// terminal redactor. The line-context stage reads each line whole, so a value
-// that arrives after its name, across a read or an idle beat, is still
-// redacted. Main's then reads what the first let through, in the same reads,
-// holding back a tail that might become a secret and releasing it on an idle
-// beat so a prompt shows.
+// A name and its separator at the end of a line's text, and any part of the
+// value already there.
+const valueAtEnd = new RegExp(
+  String.raw`(?:(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)|-D${sensitiveName}\s*=\s*|${sensitiveName}\b["']?\s*[:=]\s*)([^\s;&|]*)$`,
+  "iu",
+)
+
+// What ends a value this redactor hides on its own: whitespace, a shell
+// operator, a JSON comma or brace, or a quote. It hides only what main shows,
+// so it reads a value narrowly: an unquoted word, or a quote it saw open, up
+// to its closing quote.
+const valueEnd = /[\s;&|,}"']/u
+
+type ValueRead = { started: boolean, marked: boolean, quote: string | undefined, escaped: boolean }
+
+function valueEndingText(text: string): ValueRead | undefined {
+  const value = valueAtEnd.exec(text)
+  if (!value) return undefined
+  const partial = value[1] ?? ""
+  const read: ValueRead = { started: partial.length > 0, marked: partial.includes(replacement), quote: undefined, escaped: false }
+  // Main's replacement for a quoted value: the value ended with it.
+  if (partial === `"${replacement}"` || partial === `'${replacement}'`) return undefined
+  for (let index = 0; index < partial.length; index += 1) {
+    const character = partial[index]!
+    if (read.quote !== undefined) {
+      if (read.escaped) read.escaped = false
+      else if (character === "\\" && read.quote === '"') read.escaped = true
+      else if (character === read.quote) return undefined
+    } else if (index === 0 && !read.marked && (character === '"' || character === "'")) {
+      read.quote = character
+    } else if (valueEnd.test(character)) {
+      return undefined
+    }
+  }
+  return read
+}
+
+// Where a value typed on this line stands at its end, if one is still open.
+// Values are read left to right, each from its name to its end, so a name
+// inside an earlier value never starts one of its own.
+const namesAndSeparators = new RegExp(
+  String.raw`(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)|-D${sensitiveName}\s*=\s*|${sensitiveName}\b["']?\s*[:=]\s*`,
+  "giu",
+)
+
+function valueOpenInTypedLine(line: string): (ValueRead & { from: number }) | undefined {
+  const starts = new RegExp(namesAndSeparators.source, namesAndSeparators.flags)
+  for (let start = starts.exec(line); start; start = starts.exec(line)) {
+    const from = start.index + start[0].length
+    const read = { started: false, marked: false, quote: undefined as string | undefined, escaped: false, from }
+    let index = from
+    for (; index < line.length; index += 1) {
+      const character = line[index]!
+      if (read.quote !== undefined) {
+        if (read.escaped) read.escaped = false
+        else if (character === "\\" && read.quote === '"') read.escaped = true
+        else if (character === read.quote) break
+        continue
+      }
+      if (!read.started && (character === '"' || character === "'")) {
+        read.started = true
+        read.quote = character
+        continue
+      }
+      if (valueEnd.test(character)) break
+      read.started = true
+    }
+    if (index >= line.length) return read
+    starts.lastIndex = Math.max(index, from)
+  }
+  return undefined
+}
+
+// The end of a line with more text: from its last line boundary, runs of
+// spaces kept as one, and no more than the carry bound.
+function keptLineEnd(line: string, text: string): string {
+  const joined = `${line}${text}`
+  const start = Math.max(joined.lastIndexOf("\n"), joined.lastIndexOf("\r")) + 1
+  return collapseSpaces(joined.slice(start)).slice(-terminalRedactionCarryCharacters)
+}
+
+function collapseSpaces(text: string): string {
+  return text.replace(/[ \t]{2,}/gu, " ")
+}
+
+// The index in text at which its collapsed form reaches the given length.
+function collapsedIndex(text: string, length: number): number {
+  let collapsed = 0
+  for (let index = 0; index < text.length; index += 1) {
+    if (collapsed >= length) return index
+    const space = text[index] === " " || text[index] === "\t"
+    const previousSpace = index > 0 && (text[index - 1] === " " || text[index - 1] === "\t")
+    if (!(space && previousSpace)) collapsed += 1
+  }
+  return text.length
+}
+
+// The terminal's redactor is main's, with one change. On an idle beat, what
+// main held back is shown, so a prompt with no newline appears, as before.
+// From then until the line ends, the line as shown is context: a name and
+// separator in it, however the name was split around the beat, make what
+// follows that name's value, and the value is shown as the replacement. It
+// only ever hides text main would show, so nothing main hides is shown.
 export class TerminalOutputRedactor {
-  readonly #line = new LineContextRedactor()
-  readonly #baseline = new baseline.TerminalOutputRedactor()
+  readonly #held = new HeldTailRedactor()
+  // The end of the current line as shown, kept whether or not a beat has
+  // released anything, so a name shown before the beat is still in view.
+  #line = ""
+  // The end of the current line as it was typed. On a beat main has shown all
+  // of it, so it says exactly where a value released there stands, which what
+  // main shows cannot: main writes `"[REDACTED]"` for a quote that is still
+  // open as well as for one that closed.
+  #raw = ""
+  #context = false
+  #value: ValueRead | undefined
 
   push(chunk: string): string {
-    return this.#baseline.push(this.#line.push(chunk))
+    this.#raw = keptLineEnd(this.#raw, chunk)
+    // Main drops the rest of an oversized value, closing quote and all, up to
+    // its delimiter: a value being read here ends where main's drop does.
+    const wasDropping = this.#held.dropping
+    const shown = this.#held.push(chunk)
+    if (wasDropping) this.#value = undefined
+    const output = this.#read(shown)
+    if (this.#held.dropping) this.#value = undefined
+    return output
   }
 
-  // An idle beat: main releases what it holds, so a prompt shows. The
-  // line-context stage keeps the line it belongs to as context.
   release(): string {
-    const released = this.#line.release()
-    return `${released ? this.#baseline.push(released) : ""}${this.#baseline.flush()}`
+    const flushed = this.#held.flush()
+    // Main has now shown the whole line, so the typed line says where a
+    // value stands, better than what main showed for it.
+    const typed = valueOpenInTypedLine(this.#raw)
+    if (!typed) {
+      const released = this.#read(flushed)
+      this.#context = true
+      if (this.#value === undefined) this.#value = valueEndingText(this.#line)
+      return released
+    }
+    // What main releases of a value still open is part of that value. When
+    // main replaced none of it, it is the typed text itself, so where the
+    // value starts in it is known.
+    let released: string
+    let hidden = false
+    if (!flushed.includes(replacement)) {
+      const releaseStart = this.#raw.length - collapseSpaces(flushed).length
+      const keep = collapsedIndex(flushed, Math.max(0, typed.from - releaseStart))
+      released = this.#read(flushed.slice(0, keep))
+      if (keep < flushed.length) {
+        released += replacement
+        this.#see(replacement)
+        hidden = true
+      }
+    } else {
+      released = this.#read(flushed)
+    }
+    this.#context = true
+    const { from: _from, ...read } = typed
+    // A value's hidden characters go out as a replacement unless one was
+    // just shown for it, so what is shown on either side is never joined.
+    this.#value = { ...read, marked: hidden || released.endsWith(replacement) }
+    return released
   }
 
   flush(): string {
-    const remainder = this.#line.flush()
-    return `${remainder ? this.#baseline.push(remainder) : ""}${this.#baseline.flush()}`
+    const output = this.#read(this.#held.flush())
+    this.#line = ""
+    this.#raw = ""
+    this.#context = false
+    this.#value = undefined
+    return output
+  }
+
+  #read(text: string): string {
+    let output = ""
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index]!
+      if (character === "\n" || character === "\r") {
+        this.#line = ""
+        this.#context = false
+        this.#value = undefined
+        output += character
+        continue
+      }
+      const value = this.#context ? this.#value : undefined
+      if (value && !value.started && (character === '"' || character === "'")
+        && text.startsWith(`${character}${replacement}${character}`, index)) {
+        // Main replaced a quoted value here, and the value ends with it.
+        const shown = `${character}${replacement}${character}`
+        index += shown.length - 1
+        this.#value = undefined
+        output += shown
+        this.#see(shown)
+        continue
+      }
+      if (value?.quote !== undefined && text.startsWith(replacement, index)) {
+        // Main replaced part of the quoted value, perhaps with its closing
+        // quote: from here the value is read as an unquoted word.
+        index += replacement.length - 1
+        value.quote = undefined
+        value.escaped = false
+        if (!value.marked) {
+          output += replacement
+          this.#see(replacement)
+          value.marked = true
+        }
+        continue
+      }
+      if (value && this.#hides(value, character)) {
+        if (!value.marked) {
+          output += replacement
+          value.marked = true
+        }
+        // The context line holds the value as its replacement, so a name
+        // before it is not read again as waiting for a value.
+        if (!this.#line.endsWith(replacement)) this.#see(replacement)
+        continue
+      }
+      output += character
+      this.#see(character)
+      if (this.#context && this.#value === undefined) this.#value = valueEndingText(this.#line)
+    }
+    return output
+  }
+
+  // Whether this character belongs to the value being read, which ends the
+  // value when it does not.
+  #hides(value: ValueRead, character: string): boolean {
+    if (value.quote !== undefined) {
+      if (value.escaped) value.escaped = false
+      else if (character === "\\" && value.quote === '"') value.escaped = true
+      else if (character === value.quote) this.#value = undefined
+      return true
+    }
+    if (!value.started) {
+      if (character === " " || character === "\t") return false
+      value.started = true
+      if (character === '"' || character === "'") {
+        value.quote = character
+        return true
+      }
+    }
+    if (valueEnd.test(character)) {
+      this.#value = undefined
+      return false
+    }
+    return true
+  }
+
+  // A run of spaces is kept as one: the patterns read any amount the same.
+  #see(text: string): void {
+    if ((text === " " || text === "\t") && /[ \t]$/u.test(this.#line)) return
+    this.#line = `${this.#line}${text}`.slice(-terminalRedactionCarryCharacters)
   }
 }
