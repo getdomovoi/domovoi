@@ -514,18 +514,10 @@
         "Each daemon keeps its own list. Pair a new one from Settings."
       ],
       "evidence": [
-        "Paired devices",
+        "Devices paired with",
         "Copy once",
         "Each daemon keeps its own list"
-      ],
-      "presence": [
-        "Paired devices",
-        "Copy once"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "rows, rename, rotate and one-time copy exist on Machines; the per-machine heading and the per-daemon note are not drawn"
-      }
+      ]
     },
     {
       "id": "settings.providers",
