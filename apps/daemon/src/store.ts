@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto"
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, renameSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
+import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { Worker } from "node:worker_threads"
 
 import {
@@ -439,6 +440,41 @@ function newerStoredProtocolVersion(database: DatabaseSync): string | undefined 
   return protocolCompatibility(protocolVersion, version.data) === "machine-behind" ? version.data : undefined
 }
 
+// Read without touching the state or its sidecars. A writable open sets the
+// journal mode and creates tables, and its close checkpoints the write-ahead
+// log into the main file and deletes it; even a read-only reader of a
+// write-ahead log writes its index. So a state with no pending log is read
+// as an immutable file, and one with a pending log is read from a private
+// copy of the three files. State that cannot be read this way is left to the
+// writable path, as before.
+function newerStoredProtocolVersionAt(path: string): string | undefined {
+  if (path === ":memory:" || !existsSync(path)) return undefined
+  const log = `${path}-wal`
+  const pendingLog = existsSync(log) && statSync(log).size > 0
+  let copyDirectory: string | undefined
+  let database: DatabaseSync | undefined
+  try {
+    if (pendingLog) {
+      copyDirectory = mkdtempSync(join(tmpdir(), "domovoi-state-read-"))
+      const copy = join(copyDirectory, "state.sqlite")
+      for (const suffix of ["", "-wal", "-shm"]) {
+        if (existsSync(`${path}${suffix}`)) copyFileSync(`${path}${suffix}`, `${copy}${suffix}`)
+      }
+      database = new DatabaseSync(copy, { readOnly: true })
+    } else {
+      const location = pathToFileURL(path)
+      location.searchParams.set("immutable", "1")
+      database = new DatabaseSync(location, { readOnly: true })
+    }
+    return newerStoredProtocolVersion(database)
+  } catch {
+    return undefined
+  } finally {
+    database?.close()
+    if (copyDirectory) rmSync(copyDirectory, { recursive: true, force: true })
+  }
+}
+
 function quarantineStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, "-")
 }
@@ -647,6 +683,8 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     this.path = path
     const manageDirectoryPermissions = options.manageDirectoryPermissions === true
     if (path !== ":memory:") prepareStatePath(path, manageDirectoryPermissions)
+    const newer = newerStoredProtocolVersionAt(path)
+    if (newer !== undefined) throw new NewerWorkspaceStateError(path, newer, protocolVersion)
     let recovery: WorkspaceStoreRecovery | undefined
     let database: DatabaseSync
     try {
@@ -663,11 +701,6 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       }
       prepareStatePath(path, manageDirectoryPermissions)
       database = openWorkspaceDatabase(path)
-    }
-    const newer = newerStoredProtocolVersion(database)
-    if (newer !== undefined) {
-      database.close()
-      throw new NewerWorkspaceStateError(path, newer, protocolVersion)
     }
     this.#database = database
     this.#writerFactory = options.writerFactory

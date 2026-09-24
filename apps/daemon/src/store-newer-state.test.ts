@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile } from "node:fs/promises"
+import { copyFile, mkdtemp, readdir, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -73,6 +73,26 @@ describe("state written by a newer daemon", () => {
     const bytes = await readFile(databasePath)
     expect(() => new DomovoiDaemon({ port: 0, statePath: databasePath })).toThrow(store.NewerWorkspaceStateError)
     await unchanged(scratch, databasePath, written, bytes)
+  })
+
+  it("leaves the write-ahead log and its index as they are", async () => {
+    // A newer daemon that has not checkpointed yet: its latest state is in the
+    // -wal file. Copied while its connection is open, as a crash leaves it.
+    const { scratch, databasePath } = await newerState()
+    const writer = new DatabaseSync(databasePath)
+    writer.exec("PRAGMA wal_autocheckpoint = 0")
+    const newer = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
+    newer.protocolVersion = ahead(protocolVersion)
+    ;(newer.sessions as Array<{ title: string }>)[0]!.title = "Only in the write-ahead log"
+    writer.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(newer))
+    const copyPath = join(scratch, "copy.sqlite")
+    for (const suffix of ["", "-wal", "-shm"]) await copyFile(`${databasePath}${suffix}`, `${copyPath}${suffix}`)
+    writer.close()
+    const before = await Promise.all(["", "-wal", "-shm"].map((suffix) => readFile(`${copyPath}${suffix}`)))
+    expect(before[1]!.length).toBeGreaterThan(0)
+    expect(() => new store.SqliteWorkspaceStore(copyPath, demoWorkspace)).toThrow(store.NewerWorkspaceStateError)
+    const after = await Promise.all(["", "-wal", "-shm"].map((suffix) => readFile(`${copyPath}${suffix}`)))
+    for (const [index, suffix] of ["", "-wal", "-shm"].entries()) expect(after[index]!.equals(before[index]!), `state.sqlite${suffix}`).toBe(true)
   })
 
   it("still opens state from this version and a patch ahead of it", async () => {

@@ -17,6 +17,7 @@ import {
   type ProductionDaemonHandle, type ProductionDaemonOptions,
 } from "./production-daemon.js"
 import { serviceRegistrationBlocksProfile } from "./service/configuration.js"
+import { NewerWorkspaceStateError } from "./store.js"
 import { configuredProfileDirectory, profileLocation, type ProfileLocation } from "./profile-directory.js"
 
 export type LocalDaemonRefusalReason =
@@ -44,8 +45,8 @@ const refusalMessages = {
 class LocalDiscoveryError extends Error {
   constructor(readonly reason: LocalDaemonRefusalReason) { super(refusalMessages[reason]); this.name = "LocalDiscoveryError" }
 }
-function refused(reason: LocalDaemonRefusalReason): Extract<LocalDaemonHandle, { kind: "refused" }> {
-  return { kind: "refused", reason, message: refusalMessages[reason] }
+function refused(reason: LocalDaemonRefusalReason, message = refusalMessages[reason]): Extract<LocalDaemonHandle, { kind: "refused" }> {
+  return { kind: "refused", reason, message }
 }
 
 // A step that bounds itself reports its own expiry and carries the deadline as
@@ -183,6 +184,9 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     return { kind: "owned", endpoint: { url: endpoint.url, token: runtime.authToken }, stop: runtime.stop }
   } catch (error) {
     if (runtime) void runtime.stop().catch(() => {})
+    // State a newer daemon wrote says what wrote it and what to do; the
+    // desktop shows that, not the generic profile message.
+    if (error instanceof NewerWorkspaceStateError) return refused("profile-invalid", error.message)
     return refused(error instanceof LocalDiscoveryError ? error.reason
       : expiredDeadline(error) ? "owner-unreachable" : "profile-invalid")
   } finally {
