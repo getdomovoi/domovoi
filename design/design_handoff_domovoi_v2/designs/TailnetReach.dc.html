@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/fonts.css">
+<link rel="stylesheet" href="_ds/domovoi-design-system-881e2b70-d39a-49b0-bc47-ef5084e64cc7/tokens/colors.css">
+</helmet>
+<div style="display: flex; flex-direction: column; gap: 12px; font-family: 'Instrument Sans', system-ui, sans-serif; color: var(--foreground);">
+
+  <div style="display: flex; align-items: flex-start; gap: 14px;">
+    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+      <span style="font-size: 12.5px; font-weight: 500; color: var(--foreground);">{{ title }}</span>
+      <span style="font-size: 11.5px; color: var(--muted-foreground); line-height: 1.55; text-wrap: pretty;">{{ line }}</span>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ mono }}</span>
+    </div>
+    <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding-top: 1px;">
+      <div style="display: flex; align-items: center; gap: 7px;">
+        <span style="{{ statusDot }}"></span>
+        <span style="font-size: 11.5px; color: var(--strong);">{{ statusLabel }}</span>
+      </div>
+      <div onClick="{{ toggle }}" role="switch" aria-checked="{{ ariaOn }}" aria-disabled="{{ ariaLocked }}" aria-label="{{ title }}" style="{{ trackStyle }}">
+        <span style="{{ knobStyle }}"></span>
+      </div>
+    </div>
+  </div>
+
+  <sc-if value="{{ isNone }}" hint-placeholder-val="{{ false }}">
+    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+      <div onClick="{{ checkAgain }}" style="padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">Check again</div>
+      <span style="font-size: 11px; color: var(--muted-foreground); line-height: 1.5;">Bring Tailscale up yourself, then check again.</span>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ showTouches }}" hint-placeholder-val="{{ true }}">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px;">
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); background: var(--background);">
+        <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">TURNING IT ON CHANGES</span>
+        <sc-for list="{{ changes }}" as="c" hint-placeholder-count="3">
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <span style="font-size: 11.5px; color: var(--strong); line-height: 1.5;">{{ c.label }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); word-break: break-all;">{{ c.mono }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; border: 1px dashed var(--border); border-radius: calc(var(--radius) - 3px);">
+        <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">DOMOVOI NEVER TOUCHES</span>
+        <sc-for list="{{ never }}" as="n" hint-placeholder-count="3">
+          <span style="font-size: 11.5px; color: var(--strong); line-height: 1.5;">{{ n.text }}</span>
+        </sc-for>
+      </div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 3px;">
+      <span style="font-size: 11px; color: var(--muted-foreground); line-height: 1.5;">Every certificate is recorded in public logs, so this machine's tailnet name becomes public.</span>
+      <span style="font-size: 11px; color: var(--muted-foreground); line-height: 1.5;">Turning it off deletes those files and restarts the service on 127.0.0.1 only.</span>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ showSteps }}" hint-placeholder-val="{{ false }}">
+    <div style="display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); background: var(--background); overflow: hidden;">
+      <sc-for list="{{ steps }}" as="s" hint-placeholder-count="4">
+        <div style="{{ s.rowStyle }}">
+          <span style="{{ s.dot }}"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;">
+            <span style="{{ s.labelStyle }}">{{ s.label }}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); word-break: break-all;">{{ s.mono }}</span>
+            <sc-if value="{{ s.busy }}" hint-placeholder-val="{{ false }}">
+              <span style="position: relative; width: 60px; height: 3px; margin-top: 3px; border-radius: 3px; background: var(--muted); overflow: hidden; display: block;"><span style="position: absolute; inset: 0; width: 30%; border-radius: 3px; background: var(--primary); animation: dvSweep 1.5s linear infinite; display: block;"></span></span>
+            </sc-if>
+          </div>
+          <span style="{{ s.stateStyle }}">{{ s.state }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ hasAlert }}" hint-placeholder-val="{{ false }}">
+    <div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 13px; border: 1px solid var(--danger-border); border-radius: calc(var(--radius) - 3px); background: var(--danger-bg);">
+      <span style="font-size: 12.5px; font-weight: 500; color: var(--danger-fg);">{{ alert.title }}</span>
+      <span style="font-size: 11.5px; line-height: 1.55; color: var(--danger-fg); text-wrap: pretty;">{{ alert.body }}</span>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim); word-break: break-all;">{{ alert.mono }}</span>
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 3px;">
+        <div onClick="{{ alert.act }}" style="padding: 6px 12px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--danger-border); color: var(--danger-fg); font-size: 11.5px; font-weight: 500; cursor: pointer;">{{ alert.action }}</div>
+        <span style="font-size: 11px; color: var(--danger-fg); line-height: 1.5;">{{ alert.after }}</span>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ showFacts }}" hint-placeholder-val="{{ false }}">
+    <div style="display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); background: var(--background); overflow: hidden;">
+      <sc-for list="{{ facts }}" as="f" hint-placeholder-count="4">
+        <div style="{{ f.rowStyle }}">
+          <span style="font-size: 11.5px; color: var(--muted-foreground); width: 104px; flex: 0 0 104px;">{{ f.label }}</span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); word-break: break-all;">{{ f.value }}</span>
+            <sc-if value="{{ f.hasNote }}" hint-placeholder-val="{{ false }}">
+              <span style="{{ f.noteStyle }}">{{ f.note }}</span>
+            </sc-if>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:720,&quot;height&quot;:460},&quot;state&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;off&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;off&quot;,&quot;turning&quot;,&quot;on&quot;,&quot;certoff&quot;,&quot;renewfail&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;step&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:1,&quot;tsType&quot;:&quot;number&quot;},&quot;variant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;settings&quot;,&quot;options&quot;:[&quot;settings&quot;,&quot;onboarding&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;mac&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;windows&quot;,&quot;linux&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;inApp&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;},&quot;host&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;mac-mini-m4.tail4c2e.ts.net&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onState&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(state: string, step: number) =&gt; void&quot;}}">
+// "Reach this machine from my tailnet". Domovoi reads the tailnet status and changes nothing
+// until the switch is turned on. On: one certificate for this machine's own name, stored in the
+// Domovoi profile, then one restart. Never a tailnet setting, access rule or DNS entry.
+// Controlled when onState is passed, so the host can tell the pairing card what state it is in.
+const RESTART = {
+  mac: "launchctl kickstart -k gui/501/sh.domovoi.daemon",
+  linux: "systemctl --user restart domovoid",
+  windows: "Start-ScheduledTask -TaskPath \\Domovoi\\ -TaskName domovoid"
+};
+const EXPIRES = "20 Dec 2026";
+const EXPIRES_SOON = "8 Oct 2026";
+
+class Component extends DCLogic {
+  state = { s: null, step: null };
+
+  componentDidUpdate(prev) {
+    if (prev.state !== this.props.state && !this.props.onState) this.setState({ s: null, step: null });
+  }
+  componentWillUnmount() { clearTimeout(this._t); }
+
+  cur() { return this.props.onState ? (this.props.state ?? "off") : (this.state.s ?? this.props.state ?? "off"); }
+  curStep() { return this.props.onState ? (this.props.step ?? 1) : (this.state.step ?? this.props.step ?? 1); }
+  set(s, step) {
+    if (this.props.onState) this.props.onState(s, step);
+    else this.setState({ s: s, step: step });
+  }
+
+  run(dir) {
+    clearTimeout(this._t);
+    const total = dir === "on" ? 4 : 2;
+    const mid = dir === "on" ? "turning" : "turningoff";
+    const tick = n => {
+      if (n >= total) { this.set(dir === "on" ? "on" : "off", 0); return; }
+      this.set(mid, n);
+      this._t = setTimeout(() => tick(n + 1), 750);
+    };
+    tick(0);
+  }
+
+  dot(c, size) {
+    return "width: " + size + "px; height: " + size + "px; flex: 0 0 " + size + "px; border-radius: 50%; background: var(--" + c + ");";
+  }
+
+  renderVals() {
+    const p = this.props;
+    const s = this.cur();
+    const step = this.curStep();
+    const host = p.host ?? "mac-mini-m4.tail4c2e.ts.net";
+    const tailnetName = host.split(".").slice(1).join(".");
+    const plat = p.platform ?? "mac";
+    const restart = p.inApp ? "the daemon inside this app restarts" : (RESTART[plat] || RESTART.mac);
+    const store = "~/.domovoi/tls/" + host + ".crt, .key";
+
+    const status = {
+      none: ["faint", "No tailnet"], off: ["faint", "Off"], turning: ["primary", "Turning on"],
+      turningoff: ["primary", "Turning off"], on: ["success", "On"],
+      certoff: ["destructive", "Stopped"], renewfail: ["destructive", "Renewal failed"]
+    }[s] || ["faint", "Off"];
+
+    const lines = {
+      none: "No tailnet interface found on this machine. Domovoi does not set one up for you.",
+      off: "Off. Only this computer can reach the daemon.",
+      turning: "Turning on. Each action is listed as it runs.",
+      turningoff: "Turning off. Each action is listed as it runs.",
+      on: "Devices on your tailnet can reach the daemon. Each one still has to pair.",
+      certoff: "Stopped before storing or restarting anything.",
+      renewfail: "Still on. The certificate did not renew and expires on " + EXPIRES_SOON + "."
+    };
+    const monos = {
+      none: "tailscale status · no tailnet interface",
+      off: host + " · read from Tailscale, not changed",
+      turning: host, turningoff: host, on: host, certoff: host, renewfail: host
+    };
+
+    const isOn = s === "on" || s === "renewfail" || s === "turning";
+    const locked = s === "none" || s === "turning" || s === "turningoff";
+    const toggle = locked ? undefined : () => (s === "on" || s === "renewfail") ? this.run("off") : this.run("on");
+
+    const onSteps = [
+      { label: "Read the tailnet status", mono: "tailscale status --json · reads only" },
+      { label: "Ask Tailscale for a certificate for this machine's own name", mono: "tailscale cert " + host },
+      { label: "Store the certificate and key in the Domovoi profile", mono: store },
+      { label: "Restart the service so it answers on the tailnet", mono: restart }
+    ];
+    const offSteps = [
+      { label: "Delete the certificate and key from the Domovoi profile", mono: store },
+      { label: "Restart the service on this computer only", mono: restart }
+    ];
+    const list = s === "turningoff" ? offSteps : onSteps;
+    const stepState = i => {
+      if (s === "certoff") return i === 0 ? "done" : i === 1 ? "failed" : "not run";
+      if (i < step) return "done";
+      if (i === step) return "running";
+      return "waiting";
+    };
+    const steps = list.map((x, i) => {
+      const k = stepState(i);
+      const c = k === "done" ? "success" : k === "failed" ? "destructive" : k === "running" ? "primary" : "faint";
+      return {
+        label: x.label, mono: x.mono, state: k, busy: k === "running",
+        dot: this.dot(c, 7) + " margin-top: 5px;",
+        labelStyle: "font-size: 11.5px; line-height: 1.5; color: " + (k === "waiting" || k === "not run" ? "var(--muted-foreground)" : "var(--foreground)") + ";",
+        stateStyle: "flex: 0 0 auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--" + (k === "failed" ? "destructive" : k === "done" ? "success" : "faint") + ");",
+        rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;" + (i ? " border-top: 1px solid var(--border);" : "")
+      };
+    });
+
+    const alert = s === "certoff" ? {
+      title: "HTTPS certificates are off for " + tailnetName,
+      body: "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console. Domovoi never falls back to plain HTTP or a self-signed certificate.",
+      mono: "tailscale cert " + host + " · refused, HTTPS certificates disabled",
+      action: "Try again", act: () => this.run("on"),
+      after: "The switch stays off. Nothing was stored and nothing restarted."
+    } : s === "renewfail" ? {
+      title: "The certificate did not renew",
+      body: "Until " + EXPIRES_SOON + " paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.",
+      mono: "tailscale cert " + host + " · 22 Sep 04:12 · tailscaled did not answer",
+      action: "Renew now", act: () => this.run("on"),
+      after: "Domovoi also tries again on its own."
+    } : null;
+
+    const fact = (label, value, note, bad) => ({ label, value, note: note || "", hasNote: !!note,
+      noteStyle: "font-size: 11.5px; line-height: 1.5; color: " + (bad ? "var(--destructive)" : "var(--muted-foreground)") + ";" });
+    const facts = [
+      fact("Tailnet name", host),
+      s === "renewfail" ? fact("Certificate", "expires " + EXPIRES_SOON, "Renewal failed. Retrying on its own.", true) : fact("Certificate", "expires " + EXPIRES, "Renews on its own."),
+      fact("Stored in", store),
+      fact("Answers on", "127.0.0.1 · " + host)
+    ].map((f, i) => Object.assign(f, { rowStyle: "display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px;" + (i ? " border-top: 1px solid var(--border);" : "") }));
+
+    return {
+      title: "Reach this machine from my tailnet",
+      line: lines[s] || lines.off, mono: monos[s] || host,
+      statusDot: this.dot(status[0], 7), statusLabel: status[1],
+      toggle: toggle, ariaOn: isOn ? "true" : "false", ariaLocked: locked ? "true" : "false",
+      trackStyle: "position: relative; display: block; width: 34px; height: 20px; flex: 0 0 34px; border-radius: 999px; transition: background .14s var(--ease-out, ease); background: " +
+        (isOn ? "var(--primary)" : "var(--muted)") + "; cursor: " + (locked ? "default" : "pointer") + ";" + (s === "none" ? " opacity: .45;" : ""),
+      knobStyle: "position: absolute; top: 3px; left: " + (isOn ? "17px" : "3px") + "; width: 14px; height: 14px; border-radius: 50%; background: var(--card); transition: left .14s var(--ease-out, ease); display: block;",
+      isNone: s === "none",
+      checkAgain: () => this.set("none", 0),
+      showTouches: s === "off",
+      changes: [
+        { label: "Asks Tailscale for a certificate for this machine's own name", mono: "tailscale cert " + host },
+        { label: "Stores the certificate and key in the Domovoi profile", mono: store },
+        { label: "Restarts the service once so it answers on the tailnet", mono: restart }
+      ],
+      never: [
+        { text: "Tailnet settings, access rules or DNS entries" },
+        { text: "Whether Tailscale is up, or who is signed in to it" },
+        { text: "Any other machine on the tailnet" }
+      ],
+      showSteps: s === "turning" || s === "turningoff" || s === "certoff",
+      steps: steps,
+      hasAlert: !!alert, alert: alert || {},
+      showFacts: s === "on" || s === "renewfail",
+      facts: facts
+    };
+  }
+}
+</script>
+</body>
+</html>

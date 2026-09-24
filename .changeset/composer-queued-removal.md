@@ -2,4 +2,4 @@
 "@getdomovoi/ui": patch
 ---
 
-Report a removed queued turn through a new onRemoveQueued callback. Removing one previously cleared the composer banner while the turn stayed queued wherever the parent had put it.
+Removing a queued turn from the composer now removes it from the queue the parent holds, through `onQueuedChange`, rather than only clearing the composer banner while the turn stayed queued.

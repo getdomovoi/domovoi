@@ -68,8 +68,16 @@
       </div>
     </sc-for>
     <span style="flex: 1;"></span>
-    <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ stepNote }}</span>
+    <span style="font-size: 11.5px; color: var(--muted-foreground); max-width: 620px; text-wrap: pretty;">{{ stepNote }}</span>
   </div>
+  <sc-if value="{{ hasSub }}" hint-placeholder-val="{{ true }}">
+    <div style="width: 1480px; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: -8px;">
+      <span style="font-size: 11px; color: var(--faint); padding-right: 4px;">{{ subLabel }}</span>
+      <sc-for list="{{ subChips }}" as="c" hint-placeholder-count="2">
+        <div onClick="{{ c.go }}" style="{{ c.style }}">{{ c.label }}</div>
+      </sc-for>
+    </div>
+  </sc-if>
 
   <div style="width: 1480px; height: 940px; flex: 0 0 auto; display: flex; flex-direction: column; background: var(--chrome); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; box-shadow: 0 50px 150px var(--shadow-xl);">
 
@@ -102,7 +110,8 @@
         </div>
       </div>
       <div style="flex: 1; display: flex; align-items: center; gap: 9px; padding: 6px 12px; border-radius: 999px; background: var(--accent);">
-        <span style="display: inline-flex; flex: 0 0 auto; color: var(--success);">{{ iLock }}</span>
+        <sc-if value="{{ lockOk }}" hint-placeholder-val="{{ true }}"><span style="display: inline-flex; flex: 0 0 auto; color: var(--success);">{{ iLock }}</span></sc-if>
+        <sc-if value="{{ isCertWarn }}" hint-placeholder-val="{{ false }}"><span style="display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; color: var(--destructive);">{{ iLockOpen }}<span style="font-size: 11.5px;">Not secure</span></span></sc-if>
         <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ url }}</span>
       </div>
       <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">no extension, no install</span>
@@ -110,6 +119,7 @@
 
     <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--background);">
 
+      <sc-if value="{{ showAppHeader }}" hint-placeholder-val="{{ true }}">
       <div style="flex: 0 0 auto; height: 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border);">
         <span style="{{ markStyle }}" role="img" aria-label="Domovoi"></span>
         <span style="font-size: 13px; font-weight: 600; letter-spacing: -.01em;">Domovoi</span>
@@ -128,8 +138,103 @@
         <sc-if value="{{ isLightTheme }}" hint-placeholder-val="{{ false }}">{{ iSun }}</sc-if>
         </div>
       </div>
+      </sc-if>
 
-      <sc-if value="{{ isAttach }}" hint-placeholder-val="{{ true }}">
+      <sc-if value="{{ isConnectPage }}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px;">
+          <div style="width: 100%; max-width: 600px; margin: auto 0; display: flex; flex-direction: column; gap: 18px; padding: 40px 0;">
+            <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;">
+              <div style="display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;">
+                <span style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">{{ connectTitle }}</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 500; color: var(--foreground);">mac-mini-m4</span>
+              </div>
+              <div style="font-size: 13px; line-height: 1.6; color: var(--muted-foreground); text-wrap: pretty;">{{ connectSub }}</div>
+            </div>
+
+            <sc-if value="{{ isReopen }}" hint-placeholder-val="{{ false }}">
+              <div style="flex: 0 0 auto; border: 1px solid var(--info-border); border-radius: var(--radius); background: var(--info-bg); padding: 12px 14px; display: flex; flex-direction: column; gap: 5px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--info);"></span>
+                  <span style="font-size: 13px; font-weight: 500; color: var(--info-fg);">This tab has no credential</span>
+                  <span style="flex: 1;"></span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--info-dim);">sessionStorage · cleared when the last tab closed</span>
+                </div>
+                <div style="padding-left: 17px; font-size: 12.5px; line-height: 1.55; color: var(--info-fg); text-wrap: pretty;">Domovoi keeps a browser credential for one tab session, so a reopened tab pairs again. Nothing on mac-mini-m4 stopped.</div>
+              </div>
+            </sc-if>
+
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; align-items: baseline; gap: 10px;">
+                <span style="font-size: 12.5px; font-weight: 500;">Web code</span>
+                <span style="flex: 1;"></span>
+                <span style="font-size: 11px; color: var(--faint);">Works once, for 180 seconds</span>
+              </div>
+              <input value="{{ codeValue }}" onChange="{{ onCode }}" readOnly="{{ codeReadOnly }}" placeholder="DVOI-XXXX-XXXX" aria-label="Web code" style="{{ fieldStyle }}" />
+              <sc-if value="{{ fromQr }}" hint-placeholder-val="{{ false }}">
+                <div style="display: flex; align-items: center; gap: 9px; flex-wrap: wrap;">
+                  <span style="display: inline-flex; color: var(--muted-foreground);">{{ iQr }}</span>
+                  <span style="font-size: 11.5px; color: var(--strong);">Filled from the QR on mac-mini-m4. Removed from the address bar when this page loaded.</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ showPairRow }}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 2px;">
+                  <div onClick="{{ pair }}" style="{{ pairBtnStyle }}">Pair this browser</div>
+                  <span style="font-size: 11.5px; color: var(--muted-foreground);">{{ pairHint }}</span>
+                  <span style="flex: 1;"></span>
+                  <span onClick="{{ goLimits }}" style="font-size: 11.5px; color: var(--primary); cursor: pointer;">What a browser tab can and cannot do</span>
+                </div>
+              </sc-if>
+            </div>
+
+            <sc-if value="{{ hasOutcome }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ oc.cardStyle }}">
+                <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px 0;">
+                  <span style="{{ oc.dot }}"></span>
+                  <span style="{{ oc.titleStyle }}">{{ oc.title }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="{{ oc.pillStyle }}">{{ oc.pill }}</span>
+                </div>
+                <div style="{{ oc.monoStyle }}">{{ oc.mono }}</div>
+                <div style="{{ oc.bodyStyle }}">{{ oc.body }}</div>
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 14px 13px 31px;">
+                  <sc-for list="{{ oc.actions }}" as="a" hint-placeholder-count="1">
+                    <div onClick="{{ a.act }}" style="{{ a.style }}">{{ a.label }}</div>
+                  </sc-for>
+                  <span style="flex: 1;"></span>
+                  <span onClick="{{ goLimits }}" style="font-size: 11.5px; color: var(--primary); cursor: pointer;">What a browser tab can and cannot do</span>
+                </div>
+              </div>
+            </sc-if>
+
+            <div style="flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;">
+              <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">HOW THIS TAB IS TRUSTED</div>
+              <sc-for list="{{ tailFacts }}" as="a" hint-placeholder-count="5">
+                <div style="display: flex; align-items: flex-start; gap: 10px; padding: 9px 14px;">
+                  <span style="{{ a.dot }}"></span>
+                  <span style="font-size: 12px; color: var(--strong); line-height: 1.55;">{{ a.text }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isCertWarn }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0 24px; background: var(--sidebar);">
+          <div style="width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 14px;">
+            <span style="display: inline-flex; color: var(--destructive);">{{ iShield }}</span>
+            <div style="font-size: 20px; font-weight: 600; letter-spacing: -.015em;">This connection is not private</div>
+            <div style="font-size: 13px; line-height: 1.6; color: var(--muted-foreground);">The site's certificate is for a different name than the one in the address bar.</div>
+            <div style="padding: 10px 12px; border-radius: calc(var(--radius) - 3px); background: var(--code); border: 1px solid var(--border); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--strong); line-height: 1.7;">NET::ERR_CERT_COMMON_NAME_INVALID<br>address mac-mini-m4 · certificate mac-mini-m4.tail4c2e.ts.net</div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;">Back to safety</div>
+              <div style="padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer;">Advanced</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isAttach }}" hint-placeholder-val="{{ false }}">
         <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 0 24px;">
           <div style="width: 100%; max-width: 720px; margin: auto 0; display: flex; flex-direction: column; gap: 20px; padding: 44px 0;">
             <div style="flex: 0 0 auto; display: flex; flex-direction: column; gap: 9px;">
@@ -168,9 +273,10 @@
         <div style="flex: 1; min-height: 0; display: flex;">
           <div style="width: 244px; flex: 0 0 244px; border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; overflow: hidden;">
             <div style="padding: 11px 10px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px;">
-              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">hetzner-cx42</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong);">{{ mname }}</span>
               <span style="flex: 1;"></span>
-              <span onClick="{{ goAttach }}" style="font-size: 11px; color: var(--primary); cursor: pointer;">Switch</span>
+              <sc-if value="{{ showSwitch }}" hint-placeholder-val="{{ true }}"><span onClick="{{ goAttach }}" style="font-size: 11px; color: var(--primary); cursor: pointer;">Switch</span></sc-if>
+              <sc-if value="{{ isTailnet }}" hint-placeholder-val="{{ false }}"><span style="font-size: 11px; color: var(--faint);">this machine only</span></sc-if>
             </div>
             <div style="flex: 1; min-height: 0; overflow-y: auto; padding: 9px 8px; display: flex; flex-direction: column; gap: 2px;">
               <sc-for list="{{ sessions }}" as="s" hint-placeholder-count="4">
@@ -183,6 +289,14 @@
                 </div>
               </sc-for>
             </div>
+            <sc-if value="{{ isTailnet }}" hint-placeholder-val="{{ false }}">
+              <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px; border-top: 1px solid var(--border);">
+                <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--success);"></span>
+                <span style="font-size: 11.5px; color: var(--strong);">Paired for this tab</span>
+                <span style="flex: 1;"></span>
+                <span style="font-size: 11px; color: var(--faint);">ends when it closes</span>
+              </div>
+            </sc-if>
           </div>
 
           <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
@@ -201,7 +315,7 @@
             <div style="flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; padding: 30px 24px 0;">
               <div style="width: 100%; max-width: 720px; margin-top: auto; display: flex; flex-direction: column; gap: 20px; padding-bottom: 8px;">
                 <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; color: var(--faint);">
-                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">acme-api · main · wt-billing-idem · on hetzner-cx42</span>
+                  <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ crumb }}</span>
                   <span style="flex: 1; height: 1px; background: var(--border);"></span>
                   <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ clock }}</span>
                 </div>
@@ -254,7 +368,7 @@
                 <div style="font-size: 13.5px; color: var(--faint);">Steer it, or queue the next message</div>
                 <div style="display: flex; align-items: center; gap: 7px;">
                   <div style="{{ webModelChipStyle }}">
-                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ webModelLabel }}</span>
+                    <span role="img" aria-label="claude-code" style="display: block; width: 12px; height: 12px; flex: 0 0 12px; background: currentColor; -webkit-mask: url(assets/harness/claude-code.svg) center / contain no-repeat; mask: url(assets/harness/claude-code.svg) center / contain no-repeat;"></span><span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ webModelLabel }}</span>
                   </div>
                   <div style="{{ webModeChipStyle }}">
                     <span style="{{ webModeDot }}"></span>
@@ -419,13 +533,37 @@
       </sc-if>
     </div>
   </div>
+
+  <sc-if value="{{ showEntryCompare }}" hint-placeholder-val="{{ false }}">
+    <div style="width: 1480px; flex: 0 0 auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;">
+      <sc-for list="{{ entryCompare }}" as="e" hint-placeholder-count="3">
+        <div style="{{ e.cardStyle }}">
+          <div style="padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ e.head }}</div>
+          <sc-for list="{{ e.rows }}" as="r" hint-placeholder-count="3">
+            <div style="display: flex; align-items: flex-start; gap: 9px; padding: 9px 14px;">
+              <span style="{{ r.dot }}"></span>
+              <span style="font-size: 12px; color: var(--strong); line-height: 1.55; text-wrap: pretty;">{{ r.text }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isCertWarn }}" hint-placeholder-val="{{ false }}">
+    <div style="width: 1480px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 13px 15px; display: flex; flex-direction: column; gap: 6px;">
+      <span style="font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">WHERE DOMOVOI EXPLAINS IT</span>
+      <span style="font-size: 12.5px; color: var(--strong);">A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.</span>
+      <span style="font-size: 11.5px; color: var(--muted-foreground);">The browser stops before any Domovoi page loads, so the line sits beside the web code in desktop Settings, Phone and tablet.</span>
+    </div>
+  </sc-if>
 </div>
 
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1540,&quot;height&quot;:1080},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;\&quot;dark\&quot; | \&quot;light\&quot;&quot;,&quot;section&quot;:&quot;Appearance&quot;},&quot;connection&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;subscription&quot;,&quot;options&quot;:[&quot;subscription&quot;,&quot;api&quot;,&quot;unreported&quot;],&quot;tsType&quot;:&quot;\&quot;subscription\&quot; | \&quot;api\&quot; | \&quot;unreported\&quot;&quot;,&quot;section&quot;:&quot;Behaviour&quot;}}">
 class Component extends DCLogic {
   state = {
-    screen: "attach", theme: null,
+    screen: "connect", theme: null, outcome: "accepted", entry: "A", code: "DVOI-4K7Q-91XZ",
     variant: "B", chosen: null, webHover: null, webDraft: null, webSent: false, webQueued: false,
     webComments: [
       { row: 2, quote: "retried after 15m", body: "Fifteen minutes is too long. Stripe retries at 1, 5 and 30 minutes, so a stuck claim blocks the second retry.", who: "you · this browser · 14:12" },
@@ -477,9 +615,54 @@ class Component extends DCLogic {
     const sc = st.screen;
     const theme = st.theme ?? this.props.theme ?? "dark";
     const degraded = sc === "degraded";
-    const thread = sc === "thread" || degraded;
+    const thread = sc === "thread" || degraded || sc === "tailnet";
+    const CODE = "DVOI-4K7Q-91XZ", OTHER = "DVOI-7T3N-C28K", HOST = "mac-mini-m4.tail4c2e.ts.net";
+    const tail = ["connect", "outcome", "tailnet", "reopen"].indexOf(sc) >= 0;
+    const oc = st.outcome;
+    const cert = sc === "outcome" && oc === "cert";
+    const connectPage = sc === "connect" || sc === "reopen" || (sc === "outcome" && !cert);
+    const fromQr = sc === "connect" && st.entry === "B";
+    const code = sc === "outcome" ? (oc === "other" ? OTHER : CODE) : fromQr ? CODE : st.code;
+    const codeOk = /^DVOI-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code);
+    const clear = () => this.setState({ screen: "connect", entry: "A", code: "" });
+    const TONE = {
+      ok: ["var(--ok-border)", "var(--ok-bg)", "var(--ok-fg)", "var(--ok-dim)", "var(--success)"],
+      danger: ["var(--danger-border)", "var(--danger-bg)", "var(--danger-fg)", "var(--danger-dim)", "var(--destructive)"],
+      plain: ["var(--border)", "var(--card)", "var(--foreground)", "var(--muted-foreground)", "var(--faint)"]
+    };
+    const OUT = {
+      accepted: { t: "ok", pill: "accepted", title: "This browser is paired with mac-mini-m4", mono: "tailnet · credential 7c3e…a90 · this tab only",
+        body: "Close the tab and the credential goes with it. You pair again with a new code.", actions: [["Open sessions", true, this.go("tailnet")]] },
+      expired: { t: "plain", pill: "expired", title: "That code expired", mono: CODE + " · 180s · works once",
+        body: "Show another on mac-mini-m4, under Settings, Phone and tablet.", actions: [["Type a new code", true, clear]] },
+      other: { t: "danger", pill: "refused", title: "That code is from hetzner-cx42, not mac-mini-m4", mono: "pair.refused · wrong_machine · issued by hetzner-cx42",
+        body: "Each machine pairs its own browsers. Use a code from mac-mini-m4, or open hetzner-cx42 at its own address.", actions: [["Type a code from mac-mini-m4", true, clear], ["Open hetzner-cx42 instead", false, null]] },
+      noanswer: { t: "plain", pill: "unconfirmed", title: "mac-mini-m4 did not answer, so pairing is unconfirmed", mono: "pair · no reply in 10s · " + HOST,
+        body: "The daemon may have stopped or left the tailnet. If desktop lists this browser under Phone and tablet, it paired.", actions: [["Try again", false, null]] },
+      version: { t: "danger", pill: "refused", title: "This page is older than the daemon on mac-mini-m4", mono: "pair.refused · protocol_mismatch · page 4, daemon 5",
+        body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing.", actions: [["Reload this page", true, clear]] }
+    };
+    const out = sc === "outcome" ? OUT[oc] : null;
+    const T = out ? TONE[out.t] : TONE.plain;
+    const SUB = sc === "connect" ? [
+      ["A", "A · typed code", "A: the person reads the code on mac-mini-m4 and types it here. Only a person carries it between screens."],
+      ["B", "B · QR link", "B: a phone camera opens this page with the code filled in. The page strips it from the address and still waits for a tap."]
+    ] : sc === "outcome" ? [
+      ["accepted", "Accepted", "Accepted: the credential is held for this tab session only, and the receipt says so."],
+      ["expired", "Expired code", "A code works once, for 180 seconds. Expired is neutral, not an error: show another."],
+      ["other", "Different machine", "The daemon refuses a code another machine issued, and names both machines."],
+      ["cert", "Certificate problem", "The browser stops before any Domovoi page loads, so the explanation lives beside the code on desktop."],
+      ["noanswer", "Daemon not answering", "No reply is not a refusal. Pairing stays unconfirmed until desktop lists this browser."],
+      ["version", "Version mismatch", "The daemon was updated under an open tab. The refusal names the page as the side to update."]
+    ] : [];
+    const subCur = sc === "connect" ? st.entry : oc;
+    const subDef = SUB.find(d => d[0] === subCur);
 
     const stepDefs = [
+      { id: "connect", num: "0", label: "Connect this browser", note: "The page comes from the machine's own daemon at its tailnet name. A one-time web code pairs this tab. No Domovoi server sits in the path." },
+      { id: "outcome", num: "0b", label: "Pairing outcomes", note: "Each refusal names its cause and the side that fixes it." },
+      { id: "tailnet", num: "0c", label: "Attached over tailnet", note: "The route chip names the route and the machine. There is no Cloud chip, because nothing hosted is in the path." },
+      { id: "reopen", num: "0d", label: "Reopened tab", note: "The credential lived in the closed tab, so a new one pairs again. The session on the machine never stopped." },
       { id: "attach", num: "1", label: "Attach to a machine", note: "A tab holds no daemon, so the first question is whose machine this is and how it is reached." },
       { id: "thread", num: "2", label: "Watching a session", note: "The same thread as the desktop, over Cloud. The route chip says so at all times, not just when it breaks." },
       { id: "degraded", num: "3", label: "Cloud slow", note: "The view lags, the agent does not. The banner separates the two, because they feel identical otherwise." },
@@ -501,24 +684,107 @@ class Component extends DCLogic {
       steps: stepDefs.map(s => ({
         num: s.num, label: s.label,
         numColor: sc === s.id ? "var(--primary-foreground)" : "var(--faint)",
-        go: this.go(s.id),
+        go: () => this.setState({ screen: s.id, code: s.id === "reopen" ? "" : s.id === "connect" ? CODE : this.state.code }),
         style: "display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer; border: 1px solid " +
           (sc === s.id ? "var(--primary)" : "var(--border)") + "; background: " + (sc === s.id ? "var(--primary)" : "transparent") +
           "; color: " + (sc === s.id ? "var(--primary-foreground)" : "var(--muted-foreground)") + ";"
       })),
-      stepNote: (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+      stepNote: subDef ? subDef[2] : (stepDefs.find(s => s.id === sc) || stepDefs[0]).note,
+      hasSub: SUB.length > 0,
+      subLabel: sc === "connect" ? "Iterate" : "State",
+      subChips: SUB.map(d => ({
+        label: d[1],
+        go: () => this.setState(sc === "connect" ? { entry: d[0] } : { outcome: d[0] }),
+        style: "padding: 4px 10px; border-radius: 999px; font-size: 11px; cursor: pointer; border: 1px solid " +
+          (d[0] === subCur ? "var(--strong)" : "var(--border)") + "; color: " + (d[0] === subCur ? "var(--foreground)" : "var(--muted-foreground)") +
+          "; background: " + (d[0] === subCur ? "var(--accent)" : "transparent") + ";"
+      })),
 
-      tabTitle: sc === "attach" ? "Domovoi · pick a machine" : "Domovoi · migrate billing webhooks",
-      url: sc === "attach" ? "app.domovoi.sh" : "app.domovoi.sh/m/hetzner-cx42/s/s1",
-      appLabel: sc === "review" ? "Design review" : sc === "attach" ? "Browser client" : sc === "limits" ? "What a tab can do" : sc === "tier" ? "Capability" : "Migrate billing webhooks to the new idempotency table",
+      showAppHeader: !cert,
+      isCertWarn: cert,
+      lockOk: !cert,
+      iLockOpen: this.icon("LockOpen", 13),
+      iShield: this.icon("ShieldAlert", 24),
+      iQr: this.icon("QrCode", 16),
+      isConnectPage: connectPage,
+      isReopen: sc === "reopen",
+      isTailnet: sc === "tailnet",
+      showSwitch: !tail,
+      mname: tail ? "mac-mini-m4" : "hetzner-cx42",
+      crumb: "acme-api · main · wt-billing-idem · on " + (tail ? "mac-mini-m4" : "hetzner-cx42"),
+      connectTitle: sc === "reopen" ? "Pair this browser again with" : "Connect this browser to",
+      connectSub: fromQr ? "Opened from the QR on mac-mini-m4. Check the machine name above, then pair."
+        : "Type the web code shown on mac-mini-m4, in Settings under Phone and tablet.",
+      fromQr: fromQr,
+      codeValue: code,
+      codeReadOnly: sc === "outcome" || fromQr,
+      onCode: (e) => { if (sc === "outcome" || fromQr) return; this.setState({ code: e.target.value.toUpperCase().slice(0, 14) }); },
+      fieldStyle: "width: 100%; height: 44px; padding: 0 13px; border-radius: calc(var(--radius) - 2px); outline: none; font-family: 'JetBrains Mono', monospace; font-size: 17px; letter-spacing: .08em; color: var(--foreground); background: var(--background); border: 1px solid " +
+        (out ? T[0] : codeOk ? "var(--strong)" : "var(--border)") + ";",
+      showPairRow: !out,
+      pair: codeOk ? () => this.setState({ screen: "outcome", outcome: code === CODE ? "accepted" : code === OTHER ? "other" : "expired" }) : undefined,
+      pairBtnStyle: "padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500;" +
+        (codeOk ? " cursor: pointer;" : " opacity: .42; cursor: default;"),
+      pairHint: codeOk ? "Pairs this tab only" : "Locked until all 12 characters are in",
+      goLimits: this.go("limits"),
+      hasOutcome: !!out,
+      oc: out ? {
+        title: out.title, mono: out.mono, body: out.body, pill: out.pill,
+        cardStyle: "flex: 0 0 auto; border: 1px solid " + T[0] + "; border-radius: var(--radius); background: " + T[1] + "; overflow: hidden;",
+        dot: this.dot(T[4], 7),
+        titleStyle: "font-size: 13px; font-weight: 500; color: " + T[2] + ";",
+        pillStyle: "font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; color: " + T[3] + "; background: " +
+          (out.t === "plain" ? "var(--muted)" : "color-mix(in oklab, " + T[4] + " 16%, transparent)") + ";",
+        monoStyle: "padding: 5px 14px 0 31px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: " + T[3] + ";",
+        bodyStyle: "padding: 7px 14px 0 31px; font-size: 12.5px; line-height: 1.55; color: " + T[2] + "; text-wrap: pretty;",
+        actions: out.actions.map(a => ({
+          label: a[0], act: a[2] || undefined,
+          style: a[1]
+            ? "padding: 8px 15px; border-radius: calc(var(--radius) - 2px); background: var(--primary); color: var(--primary-foreground); font-size: 12.5px; font-weight: 500; cursor: pointer;"
+            : "padding: 8px 15px; border-radius: calc(var(--radius) - 2px); border: 1px solid " + T[0] + "; color: " + T[2] + "; font-size: 12px; cursor: pointer;"
+        }))
+      } : { actions: [] },
+      tailFacts: [
+        { text: "This page came from the daemon on mac-mini-m4, at its tailnet name. No Domovoi server is in the path.", k: "info" },
+        { text: "The certificate is the one your phone already trusts, issued by Tailscale for this name.", k: "success" },
+        { text: "The credential lives in this tab only. Close the tab and you pair again.", k: "info" },
+        { text: "Previews open in a sandboxed frame that cannot reach this page.", k: "success" },
+        { text: "This page and the daemon must speak the same protocol version. After a daemon update, reload.", k: "info" }
+      ].map(a => ({ text: a.text, dot: this.dot("var(--" + a.k + ")", 6) + " margin-top: 6px;" })),
+      showEntryCompare: sc === "connect",
+      entryCompare: [
+        { head: "A · TYPED CODE", on: st.entry === "A", rows: [
+          ["success", "A person reads the code on one screen and types it on another. No software carries it."],
+          ["success", "The code never sits in a URL, so no history, sync or link preview holds it."],
+          ["info", "Typing twelve characters is slower, and a typo reads as expired."]
+        ] },
+        { head: "B · QR LINK", on: st.entry === "B", rows: [
+          ["success", "Faster on a phone, and no typos."],
+          ["warning", "The code rides in a URL. Camera previews, history and sync can hold it for up to 180 seconds."],
+          ["info", "If it ships: code after the #, stripped on load, and pairing still waits for a tap."]
+        ] },
+        { head: "WHICH IS SAFER", on: false, rows: [
+          ["success", "A. Both codes work once for 180 seconds, but B hands the code to software you do not control."],
+          ["info", "B is worth it only if the owner accepts that window. The machine name check stays in both."]
+        ] }
+      ].map(e => ({
+        head: e.head,
+        cardStyle: "border: 1px solid " + (e.on ? "var(--strong)" : "var(--border)") + "; border-radius: var(--radius); background: var(--card); overflow: hidden;",
+        rows: e.rows.map(r => ({ text: r[1], dot: this.dot("var(--" + (r[0] === "warning" ? "destructive" : r[0]) + ")", 6) + " margin-top: 6px;" }))
+      })),
 
-      showRouteChip: sc !== "attach",
-      routeText: degraded ? "cloud · 3.4s" : "cloud relay",
-      routeMeta: degraded ? "queued 3" : "hetzner-cx42",
-      routeDot: this.dot(degraded ? "var(--warning)" : "var(--info)", 6),
+      tabTitle: sc === "attach" ? "Domovoi · pick a machine" : cert ? "Certificate warning" : connectPage ? "Domovoi · mac-mini-m4" : "Domovoi · migrate billing webhooks",
+      url: sc === "attach" ? "app.domovoi.sh" : cert ? "https://mac-mini-m4" : fromQr ? HOST + "/pair" : (sc === "connect" || sc === "outcome") ? HOST
+        : tail ? HOST + "/s/s1" : "app.domovoi.sh/m/hetzner-cx42/s/s1",
+      appLabel: connectPage ? "Connect this browser" : sc === "review" ? "Design review" : sc === "attach" ? "Browser client" : sc === "limits" ? "What a tab can do" : sc === "tier" ? "Capability" : "Migrate billing webhooks to the new idempotency table",
+
+      showRouteChip: sc !== "attach" && !connectPage && !cert,
+      routeText: tail ? "tailnet" : degraded ? "cloud · 3.4s" : "cloud relay",
+      routeMeta: tail ? "mac-mini-m4" : degraded ? "queued 3" : "hetzner-cx42",
+      routeDot: this.dot(tail ? "var(--success)" : degraded ? "var(--warning)" : "var(--info)", 6),
       routeChipStyle: "display: flex; align-items: center; gap: 8px; padding: 5px 10px 4px 9px; border-radius: 999px; cursor: pointer; border: 1px solid " +
         (degraded ? "var(--warn-border)" : "var(--border)") + ";" + (degraded ? " background: var(--warn-bg);" : ""),
-      goRelay: this.go("degraded"),
+      goRelay: tail ? undefined : this.go("degraded"),
 
       isReview: sc === "review",
       // Derived from the harness name rather than authored twice; the full id belongs in the
@@ -526,7 +792,7 @@ class Component extends DCLogic {
       webModelLabel: (() => {
         const agent = "claude-code";
         const owned = agent.split("-");
-        return agent + " · " + "claude-sonnet-4.6".split("-").filter(t => owned.indexOf(t) === -1).join(" ");
+        return "claude-sonnet-4.6".split("-").filter(t => owned.indexOf(t) === -1).join(" ");
       })(),
       // Subscription pays a flat fee, so the chip carries the window, not a price that would
       // read as zero. One ring, two windows, tighter one shown, and unreported draws nothing.

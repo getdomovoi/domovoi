@@ -1,13 +1,12 @@
 import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
-import type { PairingAddress, PairingAddressProblem } from "./pairing-address.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
 
 export type PairCommandDependencies = {
+  // The daemon answers with the code and the address a scanned code tells a
+  // device to dial, or why there is none; this command draws, it never guesses.
   issue: (targetClient?: ClientKind) => Promise<DeviceIssueCodeResult>
-  // The address a scanned code tells a device to dial, or why there is none.
-  pairingAddress: () => PairingAddress | PairingAddressProblem
   renderCode: (payload: string) => string
   stdout: (text: string) => void
   stderr: (text: string) => void
@@ -44,7 +43,7 @@ export async function runPairCommand(
       dependencies.stdout("\n")
     }
 
-    const address = dependencies.pairingAddress()
+    const address = issued.pairingAddress
     if ("problem" in address) {
       // A symbol carrying an address the device cannot verify fails at TLS
       // with nothing to read, so say what is missing instead of drawing one.

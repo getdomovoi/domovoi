@@ -69,6 +69,7 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
+  type SessionSearchMatch,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -82,6 +83,7 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
   type StateRecovery,
@@ -94,9 +96,11 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import {
+  boundedQueuedSendReason,
   SqliteWorkspaceStore,
   type QueuedSessionSendTransition,
   type StoredQueuedSessionSend,
+  type UnreadableQueuedSessionSend,
   type WorkspaceStore,
 } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
@@ -233,6 +237,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer } from "./terminal-replay.js"
+import { pairingAddressFor } from "./pairing-address.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -408,6 +413,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "skill.reviewRevision",
   "skill.installPreview",
   "session.history",
+  "session.search",
   "session.evidence",
   "audit.query",
   "fleet.heartbeat",
@@ -1274,6 +1280,9 @@ type ActiveTerminal = {
   // A released ownership waits through a grace window for the next connection
   // to re-claim it, then the terminal is reaped rather than stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
+  // The connections that opened or claimed this terminal. Its output, owner
+  // changes and close go to these and nowhere else.
+  audience: Set<RpcOutboundSocket>
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -1301,6 +1310,7 @@ export class DomovoiDaemon {
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
+  #pendingSnapshotPersist: Promise<void> | undefined
   #auditLog: AuditLog | undefined
   #pendingAudits = new WeakMap<RpcOutboundSocket, Map<string, AuditAppendInput>>()
   #commandOutputRedactors = new Map<string, { itemId: string; redactor: DurableOutputRedactor }>()
@@ -1622,6 +1632,19 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // The address a code issued here tells a device to dial: the name on the
+  // certificate this daemon serves, never the address it binds, or the one
+  // problem that leaves a device nothing to dial. One source for every surface
+  // that draws a code.
+  #pairingAddress(): PairingAddress {
+    const port = this.address?.port ?? this.requestedPort
+    const tls = this.#tls
+    return pairingAddressFor(
+      { host: this.host, port, ...(tls ? { tls: { certPath: "the certificate this daemon serves" } } : {}) },
+      () => tls!.cert.toString("utf8"),
     )
   }
 
@@ -2206,9 +2229,29 @@ export class DomovoiDaemon {
   }
 
   #broadcastNotification(method: string, params: unknown): void {
+    this.#notifyClients(this.#rpcClients, method, params)
+  }
+
+  // Terminals are not on the pairing card: a phone or tablet credential, and a
+  // watching-only one, is never an audience for one.
+  #mayWatchTerminals(socket: RpcOutboundSocket): boolean {
+    const binding = this.#deviceCredentials.get(socket)?.verified?.binding
+    if (binding?.kind !== "client") return true
+    return binding.client !== "phone" && binding.client !== "tablet" && binding.clientAccess !== "watching"
+  }
+
+  #notifyTerminalAudience(terminal: ActiveTerminal, method: string, params: unknown): void {
+    this.#notifyClients(
+      [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket)),
+      method,
+      params,
+    )
+  }
+
+  #notifyClients(clients: Iterable<RpcOutboundSocket>, method: string, params: unknown): void {
     const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
-    for (const client of this.#rpcClients) {
+    for (const client of clients) {
       if (
         client.readyState === WebSocket.OPEN
         && this.#authenticatedClients.has(client)
@@ -2466,7 +2509,15 @@ export class DomovoiDaemon {
   // belongs to the project being left and is not loaded.
   #loadQueuedSessionSends(afterRestart: boolean): void {
     this.#queuedSessionSends.clear()
-    for (const loaded of this.#store.loadQueuedSessionSends?.() ?? []) {
+    const unreadable = (row: UnreadableQueuedSessionSend) => this.#reportError(
+      row.quarantined
+        ? "Domovoi moved an unreadable queued message aside"
+        : "Domovoi skipped an unreadable queued message it could not move aside",
+      new Error(row.quarantined
+        ? `Queued message ${row.queueId} for ${row.sessionId} was moved to queued_session_send_quarantine. ${row.reason}`
+        : `Queued message ${row.queueId} for ${row.sessionId} stays in queued_session_sends; the next load tries again. ${row.reason}`),
+    )
+    for (const loaded of this.#store.loadQueuedSessionSends?.(unreadable) ?? []) {
       if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
       const queued = afterRestart && loaded.state === "releasing"
         ? { ...loaded, state: "unconfirmed" as const, reason: "Delivery was in progress when the daemon restarted." }
@@ -2561,10 +2612,13 @@ export class DomovoiDaemon {
   ): boolean {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.id !== queueId || !from.includes(queued.state)) return false
+    // One bound for memory and disk, so the snapshot never carries a reason
+    // the stored row does not.
+    const bounded = boundedQueuedSendReason(reason)
     if (this.#store.transitionQueuedSessionSend
-      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, reason)) return false
+      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, bounded)) return false
     const updated = { ...queued, state }
-    if (reason) updated.reason = reason
+    if (bounded) updated.reason = bounded
     else delete updated.reason
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()
@@ -4755,11 +4809,13 @@ export class DomovoiDaemon {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
             }
-            this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+            existing.audience.add(socket)
+            this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
             }))
           }
+          existing.audience.add(socket)
           this.#send(socket, {
             jsonrpc: "2.0",
             id: request.id,
@@ -4789,7 +4845,7 @@ export class DomovoiDaemon {
           () => output.resume(params.terminalId),
         )
         const output = new TerminalOutputBatcher((terminalId, data) => {
-          this.#broadcastNotification("terminal.output", { terminalId, data })
+          this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
           return outputBackpressure.observe()
         })
         const activeTerminal: ActiveTerminal = {
@@ -4804,6 +4860,7 @@ export class DomovoiDaemon {
           redactorFlush: undefined,
           owner: { client: params.client, clientId: params.clientId },
           ownerSocket: socket,
+          audience: new Set([socket]),
           reapTimer: undefined,
           output,
           outputBackpressure,
@@ -4862,7 +4919,7 @@ export class DomovoiDaemon {
           active.outputBackpressure.dispose()
           active.disposeData()
           active.disposeExit()
-          this.#broadcastNotification("terminal.closed", {
+          this.#notifyTerminalAudience(active, "terminal.closed", {
             terminalId: params.terminalId,
             exitCode,
             ...(signal === undefined ? {} : { signal }),
@@ -4896,6 +4953,7 @@ export class DomovoiDaemon {
         }
         terminal.owner = { client: params.client, clientId: params.clientId }
         terminal.ownerSocket = socket
+        terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -4904,7 +4962,7 @@ export class DomovoiDaemon {
           terminalId: params.terminalId,
           owner: terminal.owner,
         })
-        this.#broadcastNotification("terminal.ownership", ownership)
+        this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: ownership })
         return
       }
@@ -5817,9 +5875,10 @@ export class DomovoiDaemon {
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(
-            this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
-          ),
+          result: rpcMethods[method].result.parse({
+            ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
+            pairingAddress: this.#pairingAddress(),
+          }),
         })
         return
       }
@@ -6181,6 +6240,32 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(page),
+        })
+        return
+      }
+
+      if (method === "session.search") {
+        const params = paramsResult.data as RpcParams<"session.search">
+        const needle = params.query.toLowerCase()
+        const matches: SessionSearchMatch[] = []
+        let truncated = false
+        for (const session of this.#snapshot.sessions) {
+          const matchedIn = session.title.toLowerCase().includes(needle)
+            ? "title"
+            : this.#sessionSummaryText(session.id)?.toLowerCase().includes(needle)
+              ? "summary"
+              : undefined
+          if (!matchedIn) continue
+          if (matches.length >= params.limit) {
+            truncated = true
+            break
+          }
+          matches.push({ session, matchedIn })
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
         })
         return
       }
@@ -7206,7 +7291,7 @@ export class DomovoiDaemon {
           await this.#suspendProjectSessions()
           this.#commandOutputRedactors.clear()
           if (this.#snapshot.project) await this.#persistSnapshot()
-          const restored = this.#store.loadProject?.(projectId)
+          const restored = this.#store.loadProject?.(projectId, this.#snapshot.machine)
           this.#snapshot.project = {
             id: projectId,
             machineId: this.#snapshot.machine.id,
@@ -9711,6 +9796,15 @@ export class DomovoiDaemon {
     }
   }
 
+  // A session's summary for search: the newest assistant message the daemon
+  // still holds for it in the snapshot window. Older history is not searched.
+  #sessionSummaryText(sessionId: string): string | undefined {
+    const newest = this.#snapshot.thread.findLast(
+      (item) => item.sessionId === sessionId && item.kind === "assistant",
+    )
+    return newest?.kind === "assistant" ? newest.body : undefined
+  }
+
   #closeTerminal(terminalId: string): boolean {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
@@ -9727,12 +9821,13 @@ export class DomovoiDaemon {
     terminal.output.flush(terminalId)
     terminal.outputBackpressure.dispose()
     terminal.process.kill()
-    this.#broadcastNotification("terminal.closed", { terminalId })
+    this.#notifyTerminalAudience(terminal, "terminal.closed", { terminalId })
     return true
   }
 
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
+      terminal.audience.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
@@ -9943,9 +10038,14 @@ export class DomovoiDaemon {
     )
   }
 
+  // Each write carries the whole live snapshot as it stands when the write
+  // starts, so every change that arrives while a write is still waiting to
+  // start is carried by that write. Sharing it keeps the backlog to one
+  // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
     this.#syncArtifactWatchActivity()
-    await this.#serializeSnapshotPersistence(async () => {
+    const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
+      this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()
       try {
         if (this.#store.saveAsync) await this.#store.saveAsync(this.#snapshot)
@@ -9957,6 +10057,7 @@ export class DomovoiDaemon {
       this.#persistenceSucceeded()
       this.#clearCommittedSessionCreations()
     })
+    await pending
   }
 
   #persistenceFailed(error: unknown): void {
