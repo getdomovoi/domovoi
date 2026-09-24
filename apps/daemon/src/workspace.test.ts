@@ -139,14 +139,13 @@ describe("GitWorkspaceService", () => {
     })
 
     it("counts a submodule update even when the repository ignores submodules in diffs", async () => {
-      const { scratch, repositoryPath, service } = await repository("domovoi-unmerged-submodule-")
-      const library = join(scratch, "library")
-      await execute("git", ["init", "--initial-branch=main", library])
-      await execute("git", ["-C", library, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "one"])
-      await execute("git", ["-C", repositoryPath, "-c", "protocol.file.allow=always", "submodule", "add", library, "library"])
+      const { repositoryPath, service } = await repository("domovoi-unmerged-submodule-")
+      // A gitlink is only a commit id in the tree. Neither `worktree add` nor
+      // the tree diff reads the submodule's objects, so none are made.
+      const recorded = "1".repeat(40)
+      const updated = "2".repeat(40)
+      await execute("git", ["-C", repositoryPath, "update-index", "--add", "--cacheinfo", `160000,${recorded},library`])
       await execute("git", ["-C", repositoryPath, "commit", "-m", "add library"])
-      await execute("git", ["-C", library, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "two"])
-      const updated = (await execute("git", ["-C", library, "rev-parse", "HEAD"])).stdout.trim()
       const workspace = await service.createSessionWorkspace(repositoryPath, "session-submodule")
       await execute("git", ["-C", workspace.path, "update-index", "--cacheinfo", `160000,${updated},library`])
       await execute("git", ["-C", workspace.path, "commit", "-m", "bump library"])
