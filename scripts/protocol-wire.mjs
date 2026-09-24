@@ -66,8 +66,8 @@ function isSchema(value) {
 // A bound a custom check captures in a closure is invisible here. With
 // `requireSemantics`, a custom check that declares no `wire` semantics is
 // refused rather than recorded as if it were understood (fail closed). The
-// wire record does not require it yet: whether to fail closed, and annotate
-// every custom check, or to state the gap, is pending an owner decision.
+// wire record leaves it off: an unannotated closure bound is a stated limit in
+// docs/protocol-version-negotiation.md.
 export function checksOf(schema, { requireSemantics = false } = {}) {
   const found = []
   const seen = new Set()
