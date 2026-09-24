@@ -94,9 +94,11 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import {
+  boundedQueuedSendReason,
   SqliteWorkspaceStore,
   type QueuedSessionSendTransition,
   type StoredQueuedSessionSend,
+  type UnreadableQueuedSessionSend,
   type WorkspaceStore,
 } from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
@@ -2456,9 +2458,13 @@ export class DomovoiDaemon {
   // belongs to the project being left and is not loaded.
   #loadQueuedSessionSends(afterRestart: boolean): void {
     this.#queuedSessionSends.clear()
-    const unreadable = (row: { sessionId: string; queueId: string; reason: string }) => this.#reportError(
-      "Domovoi moved an unreadable queued message aside",
-      new Error(`Queued message ${row.queueId} for ${row.sessionId} was moved to queued_session_send_quarantine. ${row.reason}`),
+    const unreadable = (row: UnreadableQueuedSessionSend) => this.#reportError(
+      row.quarantined
+        ? "Domovoi moved an unreadable queued message aside"
+        : "Domovoi skipped an unreadable queued message it could not move aside",
+      new Error(row.quarantined
+        ? `Queued message ${row.queueId} for ${row.sessionId} was moved to queued_session_send_quarantine. ${row.reason}`
+        : `Queued message ${row.queueId} for ${row.sessionId} stays in queued_session_sends; the next load tries again. ${row.reason}`),
     )
     for (const loaded of this.#store.loadQueuedSessionSends?.(unreadable) ?? []) {
       if (!afterRestart && !this.#snapshot.sessions.some((session) => session.id === loaded.sessionId)) continue
@@ -2555,10 +2561,13 @@ export class DomovoiDaemon {
   ): boolean {
     const queued = this.#queuedSessionSends.get(sessionId)
     if (!queued || queued.id !== queueId || !from.includes(queued.state)) return false
+    // One bound for memory and disk, so the snapshot never carries a reason
+    // the stored row does not.
+    const bounded = boundedQueuedSendReason(reason)
     if (this.#store.transitionQueuedSessionSend
-      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, reason)) return false
+      && !this.#store.transitionQueuedSessionSend(sessionId, queueId, from, state, bounded)) return false
     const updated = { ...queued, state }
-    if (reason) updated.reason = reason
+    if (bounded) updated.reason = bounded
     else delete updated.reason
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()

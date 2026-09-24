@@ -109,4 +109,58 @@ describe("queued sends that cannot be read", () => {
       expect(loaded.find((send) => send.id === "queue-readable")?.reason).toBeUndefined()
     } finally { await store.close() }
   })
+
+  it("skips an unreadable send it cannot move aside while the database is locked, and says so", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = 'null' WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    const holder = new DatabaseSync(path)
+    try {
+      holder.exec("BEGIN IMMEDIATE")
+      const unreadable = vi.fn()
+      expect(store.loadQueuedSessionSends(unreadable).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(unreadable).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged", quarantined: false }))
+      holder.exec("ROLLBACK")
+      const retried = vi.fn()
+      expect(store.loadQueuedSessionSends(retried).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(retried).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged", quarantined: true }))
+    } finally {
+      holder.close()
+      await store.close()
+    }
+  }, 20_000)
+
+  it("keeps the bytes of an unreadable send before a new send replaces it", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = 'unreadable bytes' WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      store.replaceQueuedSessionSend(queued("session-audit", "queue-replacement"))
+      expect(store.loadQueuedSessionSends().map((send) => send.id).sort()).toEqual(["queue-readable", "queue-replacement"])
+    } finally { await store.close() }
+    const database = new DatabaseSync(path)
+    try {
+      expect(database.prepare("SELECT queue_id, payload FROM queued_session_send_quarantine").all())
+        .toEqual([{ queue_id: "queue-damaged", payload: "unreadable bytes" }])
+    } finally { database.close() }
+  })
+
+  it("moves a send with no session id aside once", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET session_id = NULL WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      const first = vi.fn()
+      expect(store.loadQueuedSessionSends(first).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(first).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged" }))
+      const second = vi.fn()
+      expect(store.loadQueuedSessionSends(second).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(second).not.toHaveBeenCalled()
+    } finally { await store.close() }
+    const database = new DatabaseSync(path)
+    try {
+      expect(database.prepare("SELECT queue_id FROM queued_session_send_quarantine").all()).toEqual([{ queue_id: "queue-damaged" }])
+      expect(database.prepare("SELECT queue_id FROM queued_session_sends WHERE queue_id = 'queue-damaged'").all()).toEqual([])
+    } finally { database.close() }
+  })
 })
