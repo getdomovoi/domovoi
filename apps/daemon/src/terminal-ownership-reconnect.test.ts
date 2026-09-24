@@ -18,10 +18,14 @@ afterEach(async () => {
 type Reply = { result?: Record<string, unknown>; error?: { code: number; message: string } }
 
 async function terminalDaemon(graceMs: number) {
+  const dataListeners: Array<(data: string) => void> = []
   const terminal = {
     process: "bash",
     write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
-    onData: vi.fn(() => ({ dispose: vi.fn() })),
+    onData: vi.fn((listener: (data: string) => void) => {
+      dataListeners.push(listener)
+      return { dispose: vi.fn() }
+    }),
     onExit: vi.fn(() => ({ dispose: vi.fn() })),
   } satisfies TerminalProcess
   const snapshot = structuredClone(demoWorkspace)
@@ -41,9 +45,11 @@ async function terminalDaemon(graceMs: number) {
     sockets.push(socket)
     await once(socket, "open")
     const responses = new Map<number, (message: Reply) => void>()
+    const notifications: Array<{ method: string; params: Record<string, unknown> }> = []
     socket.on("message", (data) => {
-      const message = JSON.parse(data.toString()) as Reply & { id?: number }
+      const message = JSON.parse(data.toString()) as Reply & { id?: number; method?: string; params?: Record<string, unknown> }
       if (message.id !== undefined) responses.get(message.id)?.(message)
+      else if (message.method?.startsWith("terminal.")) notifications.push({ method: message.method, params: message.params ?? {} })
     })
     let nextId = 0
     const rpc = (method: string, params: Record<string, unknown>) => new Promise<Reply>((resolve) => {
@@ -54,7 +60,7 @@ async function terminalDaemon(graceMs: number) {
     expect((await rpc("system.hello", {
       client: "desktop", clientVersion: "0.0.1", protocolVersion, clientId, authToken: daemon.authToken,
     })).error).toBeUndefined()
-    return { socket, rpc }
+    return { socket, rpc, notifications }
   }
   const create = (rpc: (method: string, params: Record<string, unknown>) => Promise<Reply>, clientId: string) =>
     rpc("terminal.create", {
@@ -62,8 +68,12 @@ async function terminalDaemon(graceMs: number) {
     })
   const input = (rpc: (method: string, params: Record<string, unknown>) => Promise<Reply>, data: string, clientId: string) =>
     rpc("terminal.input", { terminalId: "terminal-reconnect", data, client: "desktop", clientId })
-  return { terminal, connect, create, input }
+  const emit = (data: string) => { for (const listener of dataListeners) listener(data) }
+  return { terminal, connect, create, input, emit }
 }
+
+const outputTo = (notifications: Array<{ method: string; params: Record<string, unknown> }>) =>
+  notifications.filter(({ method }) => method === "terminal.output").map(({ params }) => params.data).join("")
 
 const pastGrace = (graceMs: number) => new Promise((resolve) => setTimeout(resolve, graceMs * 3))
 
@@ -112,5 +122,46 @@ describe("terminal ownership across a reconnect", () => {
     await once(owner.socket, "close")
     await pastGrace(graceMs)
     expect(terminal.kill).toHaveBeenCalled()
+  })
+
+  it("sends output to a connection that took the terminal back at hello", async () => {
+    const graceMs = 60
+    const { connect, create, emit } = await terminalDaemon(graceMs)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    const other = await connect("desktop-other")
+    first.socket.close()
+    await once(first.socket, "close")
+
+    const second = await connect("desktop-owner")
+    emit("after the reconnect\n")
+    await vi.waitFor(() => expect(outputTo(second.notifications)).toContain("after the reconnect"), { timeout: 2_000 })
+    expect(second.notifications.some(({ method }) => method === "terminal.ownership")).toBe(true)
+    expect(other.notifications).toEqual([])
+  })
+
+  it("sends output to the connection a closing owner hands the terminal to", async () => {
+    const graceMs = 60
+    const { connect, create, emit } = await terminalDaemon(graceMs)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    const second = await connect("desktop-owner")
+    first.socket.close()
+    await once(first.socket, "close")
+
+    emit("after the handoff\n")
+    await vi.waitFor(() => expect(outputTo(second.notifications)).toContain("after the handoff"), { timeout: 2_000 })
+  })
+
+  it("sends output to a connection of the owner that types before reopening its pane", async () => {
+    const graceMs = 60
+    const { connect, create, input, emit } = await terminalDaemon(graceMs)
+    const first = await connect("desktop-owner")
+    expect((await create(first.rpc, "desktop-owner")).error).toBeUndefined()
+    const second = await connect("desktop-owner")
+    expect((await input(second.rpc, "ls\r", "desktop-owner")).error).toBeUndefined()
+
+    emit("typed from the second connection\n")
+    await vi.waitFor(() => expect(outputTo(second.notifications)).toContain("typed from the second connection"), { timeout: 2_000 })
   })
 })

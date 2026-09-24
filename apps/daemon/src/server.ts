@@ -9871,7 +9871,9 @@ export class DomovoiDaemon {
     if (terminal.ownerSocket === socket) return true
     const key = this.#terminalClientKey(socket)
     if (key === undefined || terminal.ownerKey !== key) return false
+    // Wherever ownership moves, the new owner also hears the terminal.
     terminal.ownerSocket = socket
+    terminal.audience.add(socket)
     if (terminal.reapTimer !== undefined) {
       clearTimeout(terminal.reapTimer)
       terminal.reapTimer = undefined
@@ -9885,7 +9887,7 @@ export class DomovoiDaemon {
     for (const [terminalId, terminal] of this.#terminals) {
       if (terminal.ownerSocket !== undefined || terminal.ownerKey !== key) continue
       this.#ownsTerminal(terminal, socket)
-      this.#broadcastNotification("terminal.ownership", rpcMethods["terminal.claim"].result.parse({
+      this.#notifyTerminalAudience(terminal, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
         terminalId,
         owner: terminal.owner,
       }))
@@ -9902,6 +9904,7 @@ export class DomovoiDaemon {
       if (terminal.ownerSocket !== socket) continue
       if (sameClient) {
         terminal.ownerSocket = sameClient
+        terminal.audience.add(sameClient)
         continue
       }
       terminal.ownerSocket = undefined
