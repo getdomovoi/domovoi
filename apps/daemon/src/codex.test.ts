@@ -14,7 +14,13 @@ vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
 import {
   CodexAppServerAdapter,
   StdioCodexTransport,
+  codexAppServerArguments,
+  codexDeveloperInstructions,
   codexPolicyFor,
+  codexSandboxNotice,
+  codexSecretLocations,
+  codexWorktreeSecretNotice,
+  codexWorktreeSecretPatterns,
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
@@ -104,15 +110,68 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto: boolean): Runt
 
 describe("codexPolicyFor", () => {
   it.each([
-    [runtime("ask", false), "on-request", "readOnly"],
-    [runtime("plan", false), "never", "readOnly"],
-    [runtime("build", false), "on-request", "workspaceWrite"],
-    [runtime("build", true), "never", "workspaceWrite"],
-  ] as const)("maps Domovoi runtime to Codex enforcement", (input, approvalPolicy, sandboxType) => {
-    expect(codexPolicyFor(input, "/worktree")).toMatchObject({
-      approvalPolicy,
-      sandboxPolicy: { type: sandboxType },
-    })
+    [runtime("ask", false), "on-request", "domovoi-read"],
+    [runtime("plan", false), "never", "domovoi-read"],
+    [runtime("build", false), "on-request", "domovoi-build"],
+    [runtime("build", true), "never", "domovoi-build"],
+  ] as const)("maps Domovoi runtime to Codex enforcement", (input, approvalPolicy, permissions) => {
+    const policy = codexPolicyFor(input)
+    expect(policy).toEqual({ approvalPolicy, permissions })
+  })
+})
+
+describe("codexAppServerArguments", () => {
+  const settings = new Map<string, string>()
+  const argumentsList = codexAppServerArguments()
+  for (let index = 0; index < argumentsList.length; index += 1) {
+    if (argumentsList[index] !== "-c") continue
+    const setting = argumentsList[index + 1]!
+    const separator = setting.indexOf("=")
+    settings.set(setting.slice(0, separator), setting.slice(separator + 1))
+  }
+
+  it("serves stdio and defines the two profiles Domovoi selects per turn", () => {
+    expect(argumentsList.slice(0, 3)).toEqual(["app-server", "--listen", "stdio://"])
+    expect(settings.get("permissions.domovoi-read.extends")).toBe('":read-only"')
+    expect(settings.get("permissions.domovoi-build.extends")).toBe('":workspace"')
+    expect(settings.get("permissions.domovoi-read.network.enabled")).toBe("false")
+    expect(settings.get("permissions.domovoi-build.network.enabled")).toBe("false")
+  })
+
+  it("denies secret files inside the worktree in both profiles", () => {
+    for (const profile of ["domovoi-read", "domovoi-build"]) {
+      const filesystem = settings.get(`permissions.${profile}.filesystem`)!
+      for (const pattern of ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/.npmrc", "**/.netrc", "**/.pypirc"]) {
+        expect(filesystem).toContain(`${JSON.stringify(pattern)}="deny"`)
+      }
+      expect(filesystem).toContain('":workspace_roots"={')
+    }
+    expect(codexWorktreeSecretPatterns).toContain("**/.env")
+  })
+
+  it.each([
+    "~/.ssh", "~/.aws", "~/.domovoi", "~/.config/gh", "~/.kube", "~/.docker", "~/.netrc", "~/.gnupg",
+  ])("denies reads of %s in both profiles", (location) => {
+    for (const profile of ["domovoi-read", "domovoi-build"]) {
+      expect(settings.get(`permissions.${profile}.filesystem`)).toContain(`${JSON.stringify(location)}="deny"`)
+    }
+    expect(codexSecretLocations).toContain(location)
+  })
+})
+
+describe("codexSandboxNotice", () => {
+  it("names committed files Codex can still read through Git", () => {
+    expect(codexSandboxNotice([".env.example", "certs/dev.pem"]).detail).toBe(
+      `${codexWorktreeSecretNotice.detail} Codex can still read these through Git: .env.example and certs/dev.pem.`,
+    )
+    expect(codexSandboxNotice([".env"]).detail).toBe(`${codexWorktreeSecretNotice.detail} Codex can still read these through Git: .env.`)
+    expect(codexSandboxNotice([])).toEqual(codexWorktreeSecretNotice)
+  })
+
+  it("says so when the repository history could not be checked", () => {
+    expect(codexSandboxNotice(undefined).detail).toBe(
+      `${codexWorktreeSecretNotice.detail} Domovoi could not finish checking the repository history.`,
+    )
   })
 })
 
@@ -736,7 +795,9 @@ describe("CodexAppServerAdapter", () => {
     await connecting
 
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
-    transport.receive({ id: 2, result: { thread: { id: 7 } } })
+    transport.receive({ id: 2, result: { config: {}, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    transport.receive({ id: 3, result: { thread: { id: 7 } } })
     await expect(starting).rejects.toThrow("Codex did not return a thread id")
 
     const turning = adapter.startTurn({
@@ -745,7 +806,7 @@ describe("CodexAppServerAdapter", () => {
       prompt: "Run the tests",
       runtime: runtime("build", false),
     })
-    transport.receive({ id: 3, result: { turn: { id: ["turn-1"] } } })
+    transport.receive({ id: 4, result: { turn: { id: ["turn-1"] } } })
     await expect(turning).rejects.toThrow("Codex did not return a turn id")
 
     const resuming = adapter.resumeThread({
@@ -753,11 +814,11 @@ describe("CodexAppServerAdapter", () => {
       cwd: "/worktree",
       runtime: runtime("build", false),
     })
-    transport.receive({ id: 4, result: null })
+    transport.receive({ id: 5, result: null })
     await expect(resuming).rejects.toThrow("Codex did not resume the requested thread")
 
     const steering = adapter.steerTurn("thread-1", "turn-1", "Focus on the failing test")
-    transport.receive({ id: 5, result: "turn-1" })
+    transport.receive({ id: 6, result: "turn-1" })
     await expect(steering).rejects.toThrow("Codex steered a different turn")
     await adapter.close()
   })
@@ -771,13 +832,82 @@ describe("CodexAppServerAdapter", () => {
     await connecting
 
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("plan", false) })
-    expect(transport.sent[2]).toMatchObject({
-      id: 2,
+    transport.receive({ id: 2, result: { config: {}, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[3]).toMatchObject({
+      id: 3,
       method: "thread/start",
       params: { sandbox: "read-only" },
     })
-    transport.receive({ id: 2, result: { thread: { id: "thread-plan" } } })
+    transport.receive({ id: 3, result: { thread: { id: "thread-plan" } } })
     await expect(starting).resolves.toBe("thread-plan")
+    await adapter.close()
+  })
+
+  it.each([
+    ["the person's own instructions", "Always answer in French.", "Always answer in French.\n\n"],
+    ["no instructions of their own", null, ""],
+  ] as const)("adds Domovoi's text to %s, read from Codex's resolved config for the worktree", async (_label, own, prefix) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
+    expect(transport.sent[2]).toEqual({ id: 2, method: "config/read", params: { cwd: "/worktree" } })
+    transport.receive({ id: 2, result: { config: { developer_instructions: own }, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[3]).toMatchObject({
+      id: 3,
+      method: "thread/start",
+      params: { developerInstructions: `${prefix}${codexDeveloperInstructions}` },
+    })
+    transport.receive({ id: 3, result: { thread: { id: "thread-own" } } })
+    await expect(starting).resolves.toBe("thread-own")
+    await adapter.close()
+  })
+
+  it("does not start a Codex thread without the person's own instructions when they cannot be read", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
+    transport.receive({ id: 2, error: { code: -32600, message: "config read failed" } })
+    await expect(starting).rejects.toThrow("config read failed")
+    expect(transport.sent.map((message) => message.method)).not.toContain("thread/start")
+    await adapter.close()
+  })
+
+  it.each([
+    ["ask", false],
+    ["plan", false],
+    ["build", false],
+    ["build", true],
+  ] as const)("tells a new %s Codex thread which worktree files its sandbox refuses", async (mode, auto) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime(mode, auto) })
+    transport.receive({ id: 2, result: { config: {}, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    const instructions = (transport.sent[3]?.params as { developerInstructions?: unknown } | undefined)
+      ?.developerInstructions
+    expect(typeof instructions).toBe("string")
+    for (const file of [".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".npmrc", ".netrc", ".pypirc"]) {
+      expect(instructions).toContain(file)
+    }
+    expect(instructions).toContain("Operation not permitted")
+    expect(instructions).toMatch(/say so in your reply/)
+    transport.receive({ id: 3, result: { thread: { id: "thread-notice" } } })
+    await expect(starting).resolves.toBe("thread-notice")
     await adapter.close()
   })
 
@@ -801,8 +931,11 @@ describe("CodexAppServerAdapter", () => {
     expect(transport.sent[1]).toEqual({ method: "initialized", params: {} })
 
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
-    expect(transport.sent[2]).toMatchObject({
-      id: 2,
+    expect(transport.sent[2]).toEqual({ id: 2, method: "config/read", params: { cwd: "/worktree" } })
+    transport.receive({ id: 2, result: { config: {}, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[3]).toMatchObject({
+      id: 3,
       method: "thread/start",
       params: {
         cwd: "/worktree",
@@ -811,16 +944,16 @@ describe("CodexAppServerAdapter", () => {
         serviceName: "domovoi",
       },
     })
-    transport.receive({ id: 2, result: { thread: { id: "thread-1" } } })
+    transport.receive({ id: 3, result: { thread: { id: "thread-1" } } })
     await expect(starting).resolves.toBe("thread-1")
 
     const stopping = adapter.stopThread("thread-old")
-    expect(transport.sent[3]).toMatchObject({
-      id: 3,
+    expect(transport.sent[4]).toMatchObject({
+      id: 4,
       method: "thread/archive",
       params: { threadId: "thread-old" },
     })
-    transport.receive({ id: 3, result: {} })
+    transport.receive({ id: 4, result: {} })
     await expect(stopping).resolves.toBeUndefined()
 
     const turning = adapter.startTurn({
@@ -829,8 +962,8 @@ describe("CodexAppServerAdapter", () => {
       prompt: "Run the tests",
       runtime: runtime("build", false),
     })
-    expect(transport.sent[4]).toMatchObject({
-      id: 4,
+    expect(transport.sent[5]).toMatchObject({
+      id: 5,
       method: "turn/start",
       params: {
         threadId: "thread-1",
@@ -844,15 +977,16 @@ describe("CodexAppServerAdapter", () => {
           },
         },
         approvalPolicy: "on-request",
-        sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/worktree"] },
+        permissions: "domovoi-build",
       },
     })
-    transport.receive({ id: 4, result: { turn: { id: "turn-1" } } })
+    expect(transport.sent[5]?.params).not.toHaveProperty("sandboxPolicy")
+    transport.receive({ id: 5, result: { turn: { id: "turn-1" } } })
     await expect(turning).resolves.toBe("turn-1")
 
     const steering = adapter.steerTurn("thread-1", "turn-1", "Focus on the failing test")
-    expect(transport.sent[5]).toMatchObject({
-      id: 5,
+    expect(transport.sent[6]).toMatchObject({
+      id: 6,
       method: "turn/steer",
       params: {
         threadId: "thread-1",
@@ -860,16 +994,16 @@ describe("CodexAppServerAdapter", () => {
         input: [{ type: "text", text: "Focus on the failing test" }],
       },
     })
-    transport.receive({ id: 5, result: { turnId: "turn-1" } })
+    transport.receive({ id: 6, result: { turnId: "turn-1" } })
     await expect(steering).resolves.toBeUndefined()
 
     const interrupting = adapter.interruptTurn("thread-1", "turn-1")
-    expect(transport.sent[6]).toMatchObject({
-      id: 6,
+    expect(transport.sent[7]).toMatchObject({
+      id: 7,
       method: "turn/interrupt",
       params: { threadId: "thread-1", turnId: "turn-1" },
     })
-    transport.receive({ id: 6, result: {} })
+    transport.receive({ id: 7, result: {} })
     await expect(interrupting).resolves.toBeUndefined()
 
     transport.receive({
@@ -962,8 +1096,87 @@ describe("CodexAppServerAdapter", () => {
       },
     })
     expect(transport.sent[3]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[3]?.params).toMatchObject({
+      additionalContext: { "domovoi-sandbox": { kind: "application", value: codexDeveloperInstructions } },
+    })
     transport.receive({ id: 3, result: { turn: { id: "turn-plan-fallback" } } })
     await expect(turning).resolves.toBe("turn-plan-fallback")
+    await adapter.close()
+  })
+
+  it("keeps the sandbox context when collaboration mode is unavailable, and drops only what Codex rejects", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({ threadId: "thread-old", cwd: "/worktree", prompt: "Go on", runtime: runtime("build", false) })
+    transport.receive({ id: 2, error: { message: "turn/start.collaborationMode requires experimentalApi capability" } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[3]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[3]?.params).toHaveProperty("additionalContext")
+    transport.receive({ id: 3, error: { message: "turn/start.additionalContext requires experimentalApi capability" } })
+    await vi.waitFor(() => expect(transport.sent[4]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[4]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[4]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 4, result: { turn: { id: "turn-old" } } })
+    await expect(turning).resolves.toBe("turn-old")
+
+    const next = adapter.startTurn({ threadId: "thread-old", cwd: "/worktree", prompt: "Again", runtime: runtime("build", false) })
+    expect(transport.sent[5]).toMatchObject({ id: 5, method: "turn/start" })
+    expect(transport.sent[5]?.params).not.toHaveProperty("collaborationMode")
+    expect(transport.sent[5]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 5, result: { turn: { id: "turn-next" } } })
+    await expect(next).resolves.toBe("turn-next")
+    await adapter.close()
+  })
+
+  it.each([
+    ["ask", false],
+    ["plan", false],
+    ["build", false],
+    ["build", true],
+  ] as const)("tells every %s Codex turn which worktree files its sandbox refuses, so resumed threads learn it too", async (mode, auto) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({ threadId: "thread-old", cwd: "/worktree", prompt: "Go on", runtime: runtime(mode, auto) })
+    expect(transport.sent[2]).toMatchObject({
+      id: 2,
+      method: "turn/start",
+      params: {
+        additionalContext: { "domovoi-sandbox": { kind: "application", value: codexDeveloperInstructions } },
+      },
+    })
+    transport.receive({ id: 2, result: { turn: { id: "turn-old" } } })
+    await expect(turning).resolves.toBe("turn-old")
+    await adapter.close()
+  })
+
+  it("drops the sandbox context and keeps collaboration mode when Codex does not accept additionalContext", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const turning = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "Go", runtime: runtime("build", false) })
+    transport.receive({ id: 2, error: { message: "turn/start.additionalContext requires experimentalApi capability" } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[3]).toMatchObject({ id: 3, method: "turn/start", params: { collaborationMode: { mode: "default" } } })
+    expect(transport.sent[3]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 3, result: { turn: { id: "turn-1" } } })
+    await expect(turning).resolves.toBe("turn-1")
+
+    const next = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "Again", runtime: runtime("build", false) })
+    expect(transport.sent[4]).toMatchObject({ id: 4, method: "turn/start", params: { collaborationMode: { mode: "default" } } })
+    expect(transport.sent[4]?.params).not.toHaveProperty("additionalContext")
+    transport.receive({ id: 4, result: { turn: { id: "turn-2" } } })
+    await expect(next).resolves.toBe("turn-2")
     await adapter.close()
   })
 

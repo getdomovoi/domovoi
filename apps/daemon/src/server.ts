@@ -150,7 +150,9 @@ import {
 } from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
+  codexSandboxNotice,
 } from "./codex.js"
+import { committedCodexSecretPaths } from "./codex-git-secrets.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
@@ -833,6 +835,20 @@ export function isTestCommandTitle(title: string): boolean {
       + "|(?:go|cargo|dotnet|swift|mix)\\s+test(?:\\s|$)"
       + "|(?:\\./)?gradle(?:w)?\\s+test(?:\\s|$)|mvn(?:\\s+\\S+)*\\s+test(?:\\s|$))",
   ).test(command)
+}
+
+function codexSandboxNoticeFor(
+  sessionId: string,
+  runtime: Runtime,
+  createdAt: string,
+  committed: readonly string[] | undefined,
+): WorkspaceSnapshot["thread"] {
+  if (runtime.provider !== "codex") return []
+  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexSandboxNotice(committed), createdAt }]
+}
+
+function committedSecretsFor(runtime: Runtime, worktree: string): Promise<string[] | undefined> {
+  return runtime.provider === "codex" ? committedCodexSecretPaths(worktree) : Promise.resolve(undefined)
 }
 
 function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { kind: "system" }>): boolean {
@@ -7065,6 +7081,9 @@ export class DomovoiDaemon {
             }
             throw error
           }
+          const committed = previousRuntime.provider !== runtime.provider
+            ? await committedSecretsFor(runtime, currentSession.workspacePath)
+            : undefined
           const createdAt = new Date().toISOString()
           currentSession.runtime = runtime
           currentSession.providerThreadId = nextThreadId
@@ -7102,6 +7121,9 @@ export class DomovoiDaemon {
               : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
+          if (previousRuntime.provider !== runtime.provider) {
+            this.#snapshot.thread.push(...codexSandboxNoticeFor(currentSession.id, runtime, createdAt, committed))
+          }
         } else {
           currentSession.runtime = runtime
           delete currentSession.providerFailure
@@ -7410,6 +7432,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         this.#snapshot.sessions.push({
           ...creationDraft,
@@ -7438,6 +7461,7 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
+        this.#snapshot.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         changed = true
       }
 
@@ -7601,6 +7625,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         const candidate = structuredClone(this.#snapshot)
         candidate.sessions.push({
@@ -7628,6 +7653,7 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
+        candidate.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         try {
           // Other sessions keep streaming while the fork is written, so only
           // the fork's own slice is merged into the live snapshot, before and
