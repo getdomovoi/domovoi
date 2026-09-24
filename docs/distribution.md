@@ -21,6 +21,11 @@ compilation or the external toolchain.
 | macOS | signed and notarized desktop app | GitHub release artifacts |
 | Linux | AppImage or native bundle plus daemon package | GitHub release artifacts |
 
+None of these channels carries a release yet. One desktop build was published: `desktop-v0.0.1`, an
+unsigned Apple-silicon DMG, as a GitHub pre-release on 2026-09-18. It carried a copy of the SDK
+vendor's agent binary and was turned back into a draft on 2026-09-22. The desktop package has left
+that binary out since #516. See [licensing](licensing.md#current-exceptions).
+
 Desktop packaging and native signing use a separate, manual workflow. It has no publication
 permission and uses protected platform environments, not the npm environment. See
 [Desktop signing and notarization](desktop-signing.md) for the exact Apple and Windows credential
@@ -401,8 +406,9 @@ commit, so requiring it per commit would block every release whose commit does n
 paths. A release can therefore ship WSL code proven only by the last scheduled or path-matched
 `wsl-native` run.
 
-`main` has no branch protection, no ruleset, and no required status check, so nothing outside this
-workflow stands between a commit and the registry. The gate job is the only thing that does.
+`main` is protected with five required checks, `strict: true` and `enforce_admins: true`; the
+settings as last read back are in [working rules](working-rules.md), rule 9. That protection decides
+what reaches `main`. Between a `main` commit and the registry, the gate job is the only check.
 
 ### Publish order
 

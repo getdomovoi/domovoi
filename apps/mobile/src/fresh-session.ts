@@ -4,7 +4,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import { clientKind } from "./lib/protocol-facts"
+import type { HandheldClient } from "./lib/protocol-facts"
 
 export const noOpenProjectReason = "Open a project on the machine before starting a session."
 
@@ -25,6 +25,7 @@ export async function startFreshSession(
   snapshot: WorkspaceSnapshot,
   prompt: string,
   call: RpcCall,
+  client: HandheldClient,
 ): Promise<string> {
   const readiness = freshSessionReadiness(snapshot)
   if (!readiness.canStart) throw new Error(readiness.reason)
@@ -32,7 +33,7 @@ export async function startFreshSession(
   if (!provider) throw new Error("No ready session provider is available on this machine.")
   const discovery = runtimeDiscoverResultSchema.parse(await call("runtime.discover", {
     provider: provider.id,
-    client: clientKind,
+    client,
   }))
   if (discovery.status === "unavailable") throw new Error(discovery.message)
   const trimmed = prompt.trim()
@@ -40,10 +41,10 @@ export async function startFreshSession(
   const created = workspaceSnapshotSchema.parse(await call("session.create", {
     title: firstLine.slice(0, 120),
     runtime: discovery.defaultRuntime,
-    client: clientKind,
+    client,
   }))
   const sessionId = created.activeSessionId
   if (!sessionId) throw new Error("The daemon created the session but did not say which")
-  await call("session.send", { sessionId, prompt: trimmed, client: clientKind })
+  await call("session.send", { sessionId, prompt: trimmed, client })
   return sessionId
 }

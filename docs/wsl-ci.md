@@ -6,9 +6,11 @@ its open shim, related fleet/transport contracts, dependency inputs and the job
 itself. The exact path list lives in `.github/workflows/wsl.yml`. It also runs at
 09:23 UTC nightly on the default branch and can be dispatched manually.
 
-Do not configure this path-filtered workflow as an unconditional required check.
-GitHub can leave a filtered-out workflow pending. Normal pull requests must not
-wait for a WSL job that was intentionally not scheduled. A scheduled WSL job,
+`native` is a required check on `main` (since 2026-09-11), although the
+workflow is path filtered, so a pull request outside these paths never reports
+it and cannot merge. Do not widen the paths or make the job always report to get
+around that: untick `native` for that merge and put it back after, as recorded
+in [working rules](working-rules.md), rule 9. A scheduled WSL job,
 however, must fail when its proofs cannot run, never report a green skip.
 
 ## Provisioning and failure contract

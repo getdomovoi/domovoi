@@ -78,9 +78,7 @@ it("offers fork on a checkpoint row and not on a tool row", async () => {
       onForkCheckpoint={vi.fn()}
     />,
   )
-  await new Promise((resolve) => setTimeout(resolve, 0))
-
-  expect(screen.getAllByRole("button", { name: "Fork from here" })).toHaveLength(1)
+  expect(await screen.findAllByRole("button", { name: "Fork from here" })).toHaveLength(1)
 })
 
 // Fork and restore are two decisions about the same row, not one control with
@@ -108,9 +106,7 @@ it("offers fork on a checkpoint row when the shell supplies no restore", async (
       onForkCheckpoint={vi.fn()}
     />,
   )
-  await new Promise((resolve) => setTimeout(resolve, 0))
-
-  expect(screen.getAllByRole("button", { name: "Fork from here" })).toHaveLength(1)
+  expect(await screen.findAllByRole("button", { name: "Fork from here" })).toHaveLength(1)
   expect(screen.queryByRole("button", { name: "Restore worktree" })).toBeNull()
 })
 
@@ -139,8 +135,9 @@ it("offers neither decision on a checkpoint with no commit", async () => {
       onForkCheckpoint={vi.fn()}
     />,
   )
-  await new Promise((resolve) => setTimeout(resolve, 0))
-
+  // The row has to be drawn first, or the absence checks below pass on a
+  // panel that has not loaded yet.
+  expect(await screen.findByText("Checkpoint: before migration")).toBeTruthy()
   expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull()
   expect(screen.queryByRole("button", { name: "Restore worktree" })).toBeNull()
 })

@@ -84,6 +84,7 @@ import {
   type TerminalOwner,
   type ToolFileEntry,
   type SkillInstallRefusal,
+  type StateRecovery,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
@@ -92,7 +93,12 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
+import {
+  SqliteWorkspaceStore,
+  type QueuedSessionSendTransition,
+  type StoredQueuedSessionSend,
+  type WorkspaceStore,
+} from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
@@ -155,6 +161,7 @@ import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachm
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
+  RepositoryConfigRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -312,6 +319,48 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+type CommandOutputRemainder = { key: string, itemId: string, remainder: string }
+
+function appendCommandOutputRemainders(
+  snapshot: WorkspaceSnapshot,
+  remainders: readonly CommandOutputRemainder[],
+): void {
+  for (const { itemId, remainder } of remainders) {
+    if (!remainder) continue
+    const item = snapshot.thread.find((candidate) => candidate.id === itemId)
+    if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
+  }
+}
+
+function withoutApprovals(
+  snapshot: WorkspaceSnapshot,
+  predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
+  updatedAt: string,
+): {
+  removed: WorkspaceSnapshot["approvals"]
+  blockedIds: ReadonlySet<string>
+  approvals: WorkspaceSnapshot["approvals"]
+  workingPlans: WorkspaceSnapshot["workingPlans"]
+} | undefined {
+  const removed = snapshot.approvals.filter(predicate)
+  if (removed.length === 0) return undefined
+  const removedIds = new Set(removed.map((approval) => approval.id))
+  const blockedIds = new Set(snapshot.workingPlans.flatMap((plan) =>
+    plan.steps.flatMap((step) => (
+      step.blocker && removedIds.has(step.blocker.approvalId)
+        ? [step.blocker.approvalId]
+        : []
+    )),
+  ))
+  const cleared = clearWorkingPlanApprovalBlockers(snapshot.workingPlans, removedIds, updatedAt)
+  return {
+    removed,
+    blockedIds,
+    approvals: snapshot.approvals.filter((approval) => !removedIds.has(approval.id)),
+    workingPlans: cleared.plans,
+  }
+}
+
 function skillInstallAuditDetail(values: Record<string, unknown>): string {
   const source = values.source && typeof values.source === "object"
     ? (values.source as Record<string, unknown>).path
@@ -429,6 +478,17 @@ function sessionReadOnlyMessage(
     return "This session has conflicting owners and is read-only"
   }
   return undefined
+}
+
+// A paired device learns that stored state was moved aside and what survived,
+// not where the kept file lives on this machine or why it failed to read.
+function stateRecoveryFlag(recovery: StateRecovery): StateRecovery {
+  return {
+    kind: recovery.kind,
+    occurredAt: recovery.occurredAt,
+    pairedDevicesKept: recovery.pairedDevicesKept,
+    workspaceKept: recovery.workspaceKept,
+  }
 }
 
 function sessionIsReadOnly(
@@ -1236,6 +1296,7 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
@@ -1483,6 +1544,14 @@ export class DomovoiDaemon {
           ?? options.statePath === undefined,
       },
     )
+    this.#stateRecovery = this.#store.recovery
+    if (this.#stateRecovery) {
+      const { kind, quarantinedPath, reason } = this.#stateRecovery
+      this.#reportError(
+        "Domovoi moved unreadable stored state aside",
+        new Error(`The stored ${kind === "database" ? "state database" : "workspace snapshot"} was kept at ${quarantinedPath}. ${reason}`),
+      )
+    }
     this.#snapshot = this.#store.load()
     this.#loadQueuedSessionSends(true)
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
@@ -2409,15 +2478,22 @@ export class DomovoiDaemon {
   }
 
   #syncQueuedSendMetadata(): void {
-    const durable = [...this.#queuedSessionSends.values()].map((queued) => this.#queuedSendMetadata(queued))
+    this.#snapshot.queuedSends = this.#queuedSendsFor(this.#snapshot, this.#queuedSessionSends.values())
+  }
+
+  #queuedSendsFor(
+    snapshot: WorkspaceSnapshot,
+    queuedSends: Iterable<StoredQueuedSessionSend>,
+  ): QueuedSessionSend[] {
+    const durable = [...queuedSends].map((queued) => this.#queuedSendMetadata(queued))
     const durableSessions = new Set(durable.map((queued) => queued.sessionId))
-    const sessions = new Set(this.#snapshot.sessions.map((session) => session.id))
-    const delivered = (this.#snapshot.queuedSends ?? []).filter(
+    const sessions = new Set(snapshot.sessions.map((session) => session.id))
+    const delivered = (snapshot.queuedSends ?? []).filter(
       (queued) => queued.state === "delivered"
         && !durableSessions.has(queued.sessionId)
         && sessions.has(queued.sessionId),
     )
-    this.#snapshot.queuedSends = [...durable, ...delivered]
+    return [...durable, ...delivered]
       .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
   }
 
@@ -2483,6 +2559,18 @@ export class DomovoiDaemon {
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()
     return true
+  }
+
+  #commitQueuedSendTransitions(transitions: readonly QueuedSessionSendTransition[]): boolean[] {
+    if (transitions.length === 0) return []
+    if (this.#store.transitionQueuedSessionSends) return this.#store.transitionQueuedSessionSends(transitions)
+    return transitions.map((transition) => this.#store.transitionQueuedSessionSend?.(
+      transition.sessionId,
+      transition.queueId,
+      transition.from,
+      transition.to,
+      transition.reason,
+    ) ?? true)
   }
 
   #holdQueuedSessionSend(sessionId: string, reason: string): boolean {
@@ -6577,42 +6665,54 @@ export class DomovoiDaemon {
           )
           return
         }
-        if (approval.providerRequestId !== undefined && session) {
-          this.#agents.require(session.runtime.provider)
-            .resolveApproval(
-              approval.providerRequestId,
-              params.decision === "always-project" ? "allow-once" : params.decision,
-            )
+        const project = this.#snapshot.project
+        if (params.decision === "always-project" && !project) {
+          this.#error(socket, request.id, internalError, "Approval has no open project")
+          return
         }
-        if (params.decision === "always-project") {
-          const project = this.#snapshot.project
-          if (!project) {
-            this.#error(socket, request.id, internalError, "Approval has no open project")
-            return
-          }
-          const ruleId = `rule-${approval.id}-${Date.now()}`
-          this.#snapshot.approvalRules.push({
-            id: ruleId,
-            projectId: project.id,
-            operation: approval.operation,
-            command: approval.command,
-            status: "active",
-            execution: resolvedApprovalExecution!,
-            createdBy: actor.client,
-            createdByConnectionId: connectionId,
-            createdAt: new Date().toISOString(),
-            useCount: 0,
-          })
-          for (const inactiveRuleId of approval.reapproval?.inactiveRuleIds ?? []) {
-            const inactive = this.#snapshot.approvalRules.find(
-              (rule) => rule.id === inactiveRuleId && rule.status === "inactive",
-            )
-            if (inactive?.status === "inactive" && inactive.inactiveReason !== "revoked") inactive.replacedByRuleId = ruleId
-          }
-        }
+        // The decision is saved before the agent hears it. A decision the
+        // agent acts on but the daemon never stored would leave the person
+        // told the gate is still waiting while the command runs, and a
+        // standing rule they were told failed would reach disk later.
         const decidedAt = new Date().toISOString()
-        this.#snapshot.thread.push({
-          id: `receipt-${approval.id}-${Date.now()}`,
+        const receiptId = `receipt-${approval.id}-${Date.now()}`
+        const undecided = {
+          approval: structuredClone(approval),
+          sessionState: session?.state,
+          plans: structuredClone(this.#snapshot.workingPlans.filter((plan) => plan.steps.some(
+            (step) => step.blocker?.approvalId === approval.id,
+          ))),
+          replacedBy: new Map<string, string | undefined>(),
+        }
+        const candidate = structuredClone(this.#snapshot)
+        const newRule = params.decision === "always-project"
+          ? {
+              id: `rule-${approval.id}-${Date.now()}`,
+              projectId: project!.id,
+              operation: approval.operation,
+              command: approval.command,
+              status: "active" as const,
+              execution: resolvedApprovalExecution!,
+              createdBy: actor.client,
+              createdByConnectionId: connectionId,
+              createdAt: decidedAt,
+              useCount: 0,
+            }
+          : undefined
+        const replacedRuleIds = new Set(newRule ? approval.reapproval?.inactiveRuleIds ?? [] : [])
+        const withRule = (rules: WorkspaceSnapshot["approvalRules"]): WorkspaceSnapshot["approvalRules"] => {
+          if (!newRule) return rules
+          return [
+            ...rules.filter((rule) => rule.id !== newRule.id).map((rule) => (
+              replacedRuleIds.has(rule.id) && rule.status === "inactive" && rule.inactiveReason !== "revoked"
+                ? { ...rule, replacedByRuleId: newRule.id }
+                : rule
+            )),
+            newRule,
+          ]
+        }
+        candidate.thread.push({
+          id: receiptId,
           sessionId: approval.sessionId,
           kind: "receipt",
           decision: params.decision,
@@ -6626,16 +6726,136 @@ export class DomovoiDaemon {
             : {}),
           createdAt: decidedAt,
         })
-        this.#removeApprovals(
-          (candidate) => candidate.id === params.approvalId,
+        const blockedPlan = candidate.workingPlans.some((plan) => plan.steps.some(
+          (step) => step.blocker?.approvalId === approval.id,
+        ))
+        candidate.approvals = candidate.approvals.filter((candidateApproval) => candidateApproval.id !== approval.id)
+        candidate.workingPlans = clearWorkingPlanApprovalBlockers(
+          candidate.workingPlans,
+          new Set([approval.id]),
           decidedAt,
-        )
-        if (session) {
-          session.state = params.decision === "deny" || params.decision === "deny-explain"
+        ).plans
+        const decidedSession = candidate.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+        if (decidedSession) {
+          decidedSession.state = params.decision === "deny" || params.decision === "deny-explain"
             ? "idle"
             : "active"
         }
+        const decided = (latest: WorkspaceSnapshot, slice: WorkspaceSnapshot) => workspaceSnapshotSchema.parse({
+          ...mergeSessionSnapshotSlice(latest, slice, approval.sessionId),
+          approvalRules: withRule(latest.approvalRules),
+        })
+        const stillPending = () => this.#snapshot.approvals.some((pending) => pending.id === approval.id)
+        let outcome = "cancelled" as "committed" | "cancelled" | "cancelled-after-write"
+        try {
+          await this.#serializeSnapshotPersistence(async () => {
+            if (!stillPending()) return
+            undecided.replacedBy = new Map(this.#snapshot.approvalRules.map((rule) => [
+              rule.id,
+              "replacedByRuleId" in rule ? rule.replacedByRuleId : undefined,
+            ]))
+            const persisted = decided(this.#snapshot, candidate)
+            if (this.#store.saveAsync) await this.#store.saveAsync(persisted)
+            else this.#store.save(persisted)
+            if (!stillPending()) {
+              outcome = "cancelled-after-write"
+              return
+            }
+            this.#snapshot = decided(this.#snapshot, persisted)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            outcome = "committed"
+          })
+        } catch (error) {
+          this.#persistenceFailed(error)
+          this.#reportError("Domovoi could not save an approval decision", error)
+          this.#error(
+            socket,
+            request.id,
+            daemonPersistenceUnavailableErrorCode,
+            "Domovoi could not save this decision, so the agent was not told",
+          )
+          return
+        }
+        if (outcome !== "cancelled") this.#persistenceSucceeded()
+        if (outcome !== "committed") {
+          if (outcome === "cancelled-after-write") {
+            try {
+              await this.#persistSnapshot()
+            } catch (error) {
+              this.#reportError("Domovoi could not save state after a cancelled approval decision", error)
+            }
+          }
+          this.#error(socket, request.id, invalidParams, "Approval does not exist")
+          return
+        }
+        this.#activeAssistantItems.clear()
+        if (approval.providerRequestId !== undefined && session) {
+          try {
+            this.#agents.require(session.runtime.provider)
+              .resolveApproval(
+                approval.providerRequestId,
+                params.decision === "always-project" ? "allow-once" : params.decision,
+              )
+          } catch (error) {
+            this.#reportError("Domovoi could not pass an approval decision to the agent", error)
+            const undo = (snapshot: WorkspaceSnapshot) => {
+              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId)
+              if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
+                snapshot.approvals.push(structuredClone(undecided.approval))
+              }
+              if (newRule) {
+                snapshot.approvalRules = snapshot.approvalRules
+                  .filter((rule) => rule.id !== newRule.id)
+                  .map((rule) => {
+                    if (!("replacedByRuleId" in rule) || rule.replacedByRuleId !== newRule.id) return rule
+                    const { replacedByRuleId: _replaced, ...restored } = rule
+                    const previous = undecided.replacedBy.get(rule.id)
+                    return previous === undefined ? restored : { ...restored, replacedByRuleId: previous }
+                  })
+              }
+              snapshot.workingPlans = snapshot.workingPlans.map((plan) =>
+                structuredClone(undecided.plans.find((original) => original.sessionId === plan.sessionId)) ?? plan)
+              const undecidedSession = snapshot.sessions.find((candidateSession) => candidateSession.id === approval.sessionId)
+              if (undecidedSession && undecided.sessionState !== undefined) undecidedSession.state = undecided.sessionState
+            }
+            const rolledBack = structuredClone(this.#snapshot)
+            undo(rolledBack)
+            workspaceSnapshotSchema.parse(rolledBack)
+            undo(this.#snapshot)
+            this.#sessionHistory.invalidate(approval.sessionId)
+            try {
+              await this.#persistSnapshot()
+            } catch (rollbackError) {
+              this.#reportError("Domovoi could not save the undone approval decision", rollbackError)
+              this.#error(
+                socket,
+                request.id,
+                daemonPersistenceUnavailableErrorCode,
+                "Domovoi could not save this decision, so the agent was not told",
+              )
+              return
+            }
+            this.#error(
+              socket,
+              request.id,
+              internalError,
+              "Domovoi could not reach the agent, so this decision was not applied. The approval is still waiting.",
+            )
+            return
+          }
+        }
+        if (blockedPlan) {
+          this.#appendAudit({
+            actor: { kind: "daemon", component: "working-plan" },
+            action: "plan.approval-blocker-cleared",
+            outcome: "succeeded",
+            sessionId: approval.sessionId,
+            ...(project ? { projectId: project.id } : {}),
+            target: approval.id,
+          })
+        }
         changed = true
+        alreadyPersisted = true
       }
 
       if (method === "session.setRuntime") {
@@ -7905,6 +8125,9 @@ export class DomovoiDaemon {
                   clientAccess: helloCredential?.binding.kind === "client"
                     ? helloCredential.binding.clientAccess
                     : "full",
+                  ...(this.#stateRecovery
+                    ? { stateRecovery: helloCredential ? stateRecoveryFlag(this.#stateRecovery) : this.#stateRecovery }
+                    : {}),
                 }
               : {}),
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
@@ -7931,6 +8154,10 @@ export class DomovoiDaemon {
           this.#reportError(`RPC ${method} timed out`, error)
         }
         this.#error(socket, request.id, error.code, error.message)
+        return
+      }
+      if (error instanceof RepositoryConfigRefusedError) {
+        this.#error(socket, request.id, invalidParams, error.message)
         return
       }
       this.#reportError(`RPC ${method} failed`, error)
@@ -8577,61 +8804,99 @@ export class DomovoiDaemon {
     }
     if (!hadConnection) return
 
+    // A frozen transfer source or an unfinished archive keeps its provider
+    // thread, but its lifecycle is not the provider's to change: marking it
+    // failed leaves transfer or archive metadata on a state that cannot hold
+    // it, and the invalid snapshot then refuses every save and every RPC.
+    // Its turn and approvals belonged to the exited process, so they go.
+    const affected = this.#snapshot.sessions.filter((session) =>
+      session.runtime.provider === provider
+      && session.providerThreadId !== undefined)
+    if (affected.length === 0) return
+    const failing = affected.filter((session) => !sessionIsReadOnly(session))
+
     const createdAt = new Date().toISOString()
     const providerName = provider === "codex" ? "Codex" : provider
-    let changed = false
-    const affectedSessionIds = new Set<string>()
-    for (const session of this.#snapshot.sessions) {
-      if (session.runtime.provider !== provider || !session.providerThreadId) continue
-      affectedSessionIds.add(session.id)
-      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
-      session.state = "failed"
-      session.providerFailure = classifyProviderFailure(new Error(reason))
-      this.#flushCommandOutputStreams(session.id)
-      delete session.activeTurnId
-      session.updatedAt = createdAt
-      this.#snapshot.thread.push({
-        id: `system-${randomUUID()}`,
-        sessionId: session.id,
-        kind: "system",
-        body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
-        detail: redactDurableText(reason).value,
-        createdAt,
-      })
-      changed = true
+    const affectedSessionIds = new Set(affected.map((session) => session.id))
+    const failingSessionIds = new Set(failing.map((session) => session.id))
+    const notices = failing.map((session) => ({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system" as const,
+      body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
+      detail: redactDurableText(reason).value,
+      createdAt,
+    }))
+    const remainders = affected.flatMap((session) => this.#peekCommandOutputStreams(session.id))
+    const holdReason = "The provider disconnected before the queued send could release."
+    const holds = failing.flatMap((session) => {
+      const queued = this.#queuedSessionSends.get(session.id)
+      return queued && (queued.state === "waiting" || queued.state === "releasing")
+        ? [{ ...queued, state: "held" as const, reason: holdReason }]
+        : []
+    })
+    const heldByAffected = (approval: WorkspaceSnapshot["approvals"][number]) =>
+      affectedSessionIds.has(approval.sessionId)
+    const markDisconnected = (snapshot: WorkspaceSnapshot) => {
+      appendCommandOutputRemainders(snapshot, remainders)
+      for (const session of snapshot.sessions) {
+        if (!affectedSessionIds.has(session.id)) continue
+        if (!failingSessionIds.has(session.id)) {
+          if (session.activeTurnId === undefined) continue
+          delete session.activeTurnId
+          session.updatedAt = createdAt
+          continue
+        }
+        session.state = "failed"
+        session.providerFailure = classifyProviderFailure(new Error(reason))
+        delete session.activeTurnId
+        session.updatedAt = createdAt
+      }
+      snapshot.thread.push(...structuredClone(notices))
     }
-    if (affectedSessionIds.size > 0) {
-      this.#removeApprovals(
-        (approval) => affectedSessionIds.has(approval.sessionId),
-        createdAt,
-      )
+    const validateCandidate = (held: readonly StoredQueuedSessionSend[]) => {
+      const candidate = structuredClone(this.#snapshot)
+      markDisconnected(candidate)
+      const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
+      if (candidateApprovals) {
+        candidate.approvals = candidateApprovals.approvals
+        candidate.workingPlans = candidateApprovals.workingPlans
+      }
+      if (held.length > 0) {
+        const candidateQueue = new Map(this.#queuedSessionSends)
+        for (const queued of held) candidateQueue.set(queued.sessionId, queued)
+        candidate.queuedSends = this.#queuedSendsFor(candidate, candidateQueue.values())
+      }
+      workspaceSnapshotSchema.parse(candidate)
     }
-    if (changed) await this.#flushAgentState()
+    validateCandidate(holds)
+    const committed = this.#commitQueuedSendTransitions(holds.map((held) => ({
+      sessionId: held.sessionId,
+      queueId: held.id,
+      from: ["waiting", "releasing"],
+      to: "held",
+      reason: holdReason,
+    })))
+    const held = holds.filter((_, index) => committed[index] === true)
+    if (held.length !== holds.length) validateCandidate(held)
+
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    for (const queued of held) this.#queuedSessionSends.set(queued.sessionId, queued)
+    if (held.length > 0) this.#syncQueuedSendMetadata()
+    markDisconnected(this.#snapshot)
+    this.#removeApprovals(heldByAffected, createdAt)
+    await this.#flushAgentState()
   }
 
   #removeApprovals(
     predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
     updatedAt: string,
   ): WorkspaceSnapshot["approvals"] {
-    const removed = this.#snapshot.approvals.filter(predicate)
-    if (removed.length === 0) return []
-    const removedIds = new Set(removed.map((approval) => approval.id))
-    const blockedIds = new Set(this.#snapshot.workingPlans.flatMap((plan) =>
-      plan.steps.flatMap((step) => (
-        step.blocker && removedIds.has(step.blocker.approvalId)
-          ? [step.blocker.approvalId]
-          : []
-      )),
-    ))
-    this.#snapshot.approvals = this.#snapshot.approvals.filter(
-      (approval) => !removedIds.has(approval.id),
-    )
-    const cleared = clearWorkingPlanApprovalBlockers(
-      this.#snapshot.workingPlans,
-      removedIds,
-      updatedAt,
-    )
-    this.#snapshot.workingPlans = cleared.plans
+    const next = withoutApprovals(this.#snapshot, predicate, updatedAt)
+    if (!next) return []
+    const { removed, blockedIds } = next
+    this.#snapshot.approvals = next.approvals
+    this.#snapshot.workingPlans = next.workingPlans
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
       this.#appendAudit({
@@ -8651,15 +8916,16 @@ export class DomovoiDaemon {
   }
 
   #flushCommandOutputStreams(sessionId: string): void {
+    const remainders = this.#peekCommandOutputStreams(sessionId)
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    appendCommandOutputRemainders(this.#snapshot, remainders)
+  }
+
+  #peekCommandOutputStreams(sessionId: string): CommandOutputRemainder[] {
     const prefix = `${sessionId}\u0000`
-    for (const [key, stream] of this.#commandOutputRedactors) {
-      if (!key.startsWith(prefix)) continue
-      const remainder = stream.redactor.flush()
-      this.#commandOutputRedactors.delete(key)
-      if (!remainder) continue
-      const item = this.#snapshot.thread.find((candidate) => candidate.id === stream.itemId)
-      if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
-    }
+    return [...this.#commandOutputRedactors]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, stream]) => ({ key, itemId: stream.itemId, remainder: stream.redactor.peek() }))
   }
 
   #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
