@@ -50,7 +50,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_TAILNET_HOST` | Explicit tailnet host or address for a non-loopback TLS listener |
 | `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
-| `DOMOVOI_WEB_APP_URL` | Web app a pairing code can be opened in. An absolute `http` or `https` URL without credentials or a fragment, at most 2048 characters. When set, `device.issueCode` returns it as `webAppUrl` beside `pairingAddress`, so a pairing card can offer a browser link; when unset, the result has no `webAppUrl`. The service configuration file keeps it as `webAppUrl`. |
+| `DOMOVOI_WEB_APP_URL` | Web app a pairing code can be opened in. An absolute `http` or `https` URL without whitespace, control characters, credentials or a fragment, at most 2048 characters. When set, `device.issueCode` returns it as `webAppUrl` beside `pairingAddress`, so a pairing card can offer a browser link; when unset, the result has no `webAppUrl`. The service configuration file keeps it as `webAppUrl`. |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 | `DOMOVOI_TOOL_PATH` | Directories searched first for agent CLIs, in the platform's PATH form; then the login shell's PATH, then the launcher's (`src/tool-path.ts`) |
 | `DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY` | Off-machine signer's Ed25519 public key for relay provisioning; see [relay key provisioning](../../docs/relay-key-provisioning.md) |

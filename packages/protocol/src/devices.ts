@@ -214,10 +214,20 @@ export const deviceIssueCodeParamsSchema = z.object({
 // The web app a pairing code can be opened in, as the daemon's owner set it.
 // An absolute http(s) address with no credentials and no fragment, so a card
 // can build a link from it without carrying a secret or losing its own part.
+// Whitespace and control characters are refused in the raw text: the URL parser
+// would strip or encode them, so the address that parses is not the one set.
 export const maximumWebAppUrlLength = 2_048
 
+function hasWhitespaceOrControl(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || /\s/u.test(character)) return true
+  }
+  return false
+}
+
 export const webAppUrlSchema = z.string().check(utf16MaxLength(maximumWebAppUrlLength)).refine((value) => {
-  if (value.includes("#")) return false
+  if (hasWhitespaceOrControl(value) || value.includes("#")) return false
   let url: URL
   try {
     url = new URL(value)
@@ -225,7 +235,7 @@ export const webAppUrlSchema = z.string().check(utf16MaxLength(maximumWebAppUrlL
     return false
   }
   return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password
-}, "Expected an absolute http or https URL without credentials or a fragment")
+}, "Expected an absolute http or https URL without whitespace, control characters, credentials or a fragment")
 
 // The code comes with the address a device dials to spend it, or the problem
 // that leaves it nothing to dial, so the desktop card, the web connect page

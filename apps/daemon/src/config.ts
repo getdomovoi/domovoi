@@ -127,7 +127,7 @@ function parseWebAppUrl(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
   // The value is not echoed: a mistyped URL can carry credentials.
   if (!webAppUrlSchema.safeParse(value).success) {
-    throw new DaemonConfigurationError(`DOMOVOI_WEB_APP_URL must be an absolute http or https URL without credentials or a fragment, at most ${maximumWebAppUrlLength} characters`)
+    throw new DaemonConfigurationError(`DOMOVOI_WEB_APP_URL must be an absolute http or https URL without whitespace, control characters, credentials or a fragment, at most ${maximumWebAppUrlLength} characters`)
   }
   return value
 }

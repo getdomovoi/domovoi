@@ -185,6 +185,19 @@ describe("devicePairParamsSchema", () => {
     }
   })
 
+  // The URL parser strips or encodes these on its own, so the address that
+  // parses is not the text that was configured. The raw text is refused first.
+  it("refuses raw whitespace and control characters in the web app address", () => {
+    for (const webAppUrl of [
+      " https://app.domovoi.dev/", "https://app.domovoi.dev/ ", "https://app.domovoi.dev/con nect",
+      "https://app.domovoi.dev/\tconnect", "https://app.domovoi.dev/connect\r\n", "https://app.domovoi.dev/\nconnect",
+      "https://app.domovoi.dev/\u0000", "https://app.domovoi.dev/\u007f", "https://app.domovoi.dev/\u0085",
+      "https://app.domovoi.dev/\u00a0", "https://app.domovoi.dev/\u2028",
+    ]) {
+      expect(webAppUrlSchema.safeParse(webAppUrl).success, JSON.stringify(webAppUrl)).toBe(false)
+    }
+  })
+
   it("reports client access from the authenticated device", () => {
     const current = {
       kind: "client",
