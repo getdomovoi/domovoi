@@ -96,7 +96,9 @@ export class ArtifactWatcher {
   #known = new Map<string, string>()
   #subscription: ArtifactWatchSubscription | undefined
   #timer: ReturnType<typeof setTimeout> | undefined
-  #tail: Promise<void> = Promise.resolve()
+  #scanning: Promise<void> | undefined
+  #waiting: Promise<void> | undefined
+  #failure: string | undefined
   #running = false
   #generation = 0
 
@@ -140,28 +142,59 @@ export class ArtifactWatcher {
     }
   }
 
+  // At most one walk runs and at most one waits behind it. A poll tick or an
+  // event while a walk is in flight joins the waiting one, so a scan slower
+  // than the poll interval cannot build a queue.
   rescan(): Promise<void> {
     if (!this.#running) return Promise.resolve()
-    const task = this.#tail.then(async () => {
-      if (!this.#running) return
-      const scan = await this.#scan()
-      if (!this.#running) return
-      if (scan.truncated) {
-        this.#onError(new Error("Artifact watcher scan exceeded its entry limit"))
-        return
-      }
-      const next = new Map(scan.files.map((file) => [file.path, file.fingerprint]))
-      for (const file of scan.files) {
-        if (this.#known.get(file.path) === file.fingerprint) continue
-        const { fingerprint, readContent, ...rest } = file
-        void fingerprint
-        const content = readContent === undefined ? undefined : await readContent()
-        this.#onChange({ ...rest, ...(content === undefined ? {} : { content }) })
-      }
-      this.#known = next
+    if (this.#waiting) return this.#waiting
+    const current = this.#scanning
+    if (current === undefined) return this.#startScan()
+    const waiting = current.catch(() => undefined).then(() => {
+      if (this.#waiting === waiting) this.#waiting = undefined
+      return this.#startScan()
     })
-    this.#tail = task.catch((error: unknown) => this.#onError(error))
+    this.#waiting = waiting
+    return waiting
+  }
+
+  #startScan(): Promise<void> {
+    if (!this.#running) return Promise.resolve()
+    const task = this.#scanOnce()
+    this.#scanning = task
+    const settle = () => { if (this.#scanning === task) this.#scanning = undefined }
+    task.then(settle, (error: unknown) => {
+      settle()
+      this.#fail(error instanceof Error ? error.message : String(error), error)
+    })
     return task
+  }
+
+  async #scanOnce(): Promise<void> {
+    const scan = await this.#scan()
+    if (!this.#running) return
+    if (scan.truncated) {
+      this.#fail("truncated", new Error("Artifact watcher scan exceeded its entry limit"))
+      return
+    }
+    const next = new Map(scan.files.map((file) => [file.path, file.fingerprint]))
+    for (const file of scan.files) {
+      if (this.#known.get(file.path) === file.fingerprint) continue
+      const { fingerprint, readContent, ...rest } = file
+      void fingerprint
+      const content = readContent === undefined ? undefined : await readContent()
+      this.#onChange({ ...rest, ...(content === undefined ? {} : { content }) })
+    }
+    this.#known = next
+    this.#failure = undefined
+  }
+
+  // A failure that repeats on every poll is reported once, and again only
+  // after a scan has succeeded in between.
+  #fail(key: string, error: unknown): void {
+    if (this.#failure === key) return
+    this.#failure = key
+    this.#onError(error)
   }
 
   stop(): void {
@@ -173,6 +206,7 @@ export class ArtifactWatcher {
     this.#subscription?.close()
     this.#subscription = undefined
     this.#known.clear()
+    this.#failure = undefined
   }
 
   #schedule(): void {
