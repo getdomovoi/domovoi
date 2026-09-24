@@ -21,11 +21,19 @@ type FreshSessionCall = {
   (method: "session.send", params: RpcParams<"session.send">): Promise<unknown>
 }
 
+// A provider the daemon reports a problem for cannot start a session, whatever
+// its status says; the desktop labels it "Cannot start".
+function startableProvider(snapshot: WorkspaceSnapshot) {
+  return snapshot.machine.providers.find((candidate) =>
+    candidate.sessionCapable && candidate.status === "ready" && candidate.problem === undefined)
+}
+
 export function freshSessionReadiness(snapshot: WorkspaceSnapshot): FreshSessionReadiness {
   if (!snapshot.project) return { canStart: false, reason: noOpenProjectReason }
-  const provider = snapshot.machine.providers.find((candidate) => candidate.sessionCapable && candidate.status === "ready")
-  if (!provider) return { canStart: false, reason: "No ready session provider is available on this machine." }
-  return { canStart: true, reason: undefined }
+  if (startableProvider(snapshot)) return { canStart: true, reason: undefined }
+  const blocked = snapshot.machine.providers.find((candidate) =>
+    candidate.sessionCapable && candidate.status === "ready" && candidate.problem !== undefined)
+  return { canStart: false, reason: blocked?.problem ?? "No ready session provider is available on this machine." }
 }
 
 export async function startFreshSession(
@@ -36,7 +44,7 @@ export async function startFreshSession(
 ): Promise<string> {
   const readiness = freshSessionReadiness(snapshot)
   if (!readiness.canStart) throw new Error(readiness.reason)
-  const provider = snapshot.machine.providers.find((candidate) => candidate.sessionCapable && candidate.status === "ready")
+  const provider = startableProvider(snapshot)
   if (!provider) throw new Error("No ready session provider is available on this machine.")
   const discovery = runtimeDiscoverResultSchema.parse(await call("runtime.discover", {
     provider: provider.id,

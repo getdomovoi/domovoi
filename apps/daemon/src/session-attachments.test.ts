@@ -25,6 +25,7 @@ async function fixture(
   vision: boolean | "unknown" = true,
   client: "phone" | "tablet" = "phone",
   statePath = ":memory:",
+  adapterImageInput?: boolean,
 ) {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions[0]!
@@ -44,7 +45,12 @@ async function fixture(
   const listeners = new Set<(event: AgentEvent) => void>()
   const agent: AgentAdapter = {
     ...(vision === "unknown" ? {} : { capabilities: { vision } }),
-    connect: vi.fn(async () => {}), listModels: async () => [],
+    connect: vi.fn(async () => {}),
+    listModels: async () => [{
+      provider: session.runtime.provider, id: session.runtime.model, displayName: session.runtime.model, description: "",
+      supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: true,
+      ...(adapterImageInput === undefined ? {} : { imageInput: adapterImageInput }),
+    }],
     startThread: async () => "thread-images", resumeThread: vi.fn(async () => {}),
     stopThread: async () => {}, interruptTurn: async () => {},
     startTurn, steerTurn, resolveApproval: () => {}, onEvent: (listener) => {
@@ -153,13 +159,46 @@ describe("session attachments over a paired socket", () => {
   it.each([false, "unknown"] as const)("refuses the entire image send without vision capability: %s", async (vision) => {
     const f = await fixture(vision)
     const before = f.store.load().thread
-    expect(await f.send([image])).toMatchObject({ error: { code: -32602, data: {
-      kind: "session-attachment-refused", reason: "image-input-unsupported",
-    } } })
+    // Phone v2 frame 14b: the message names the model and the count. The data
+    // keeps exactly the shape an older client's strict parser accepts; the
+    // client knows the session's model and what it sent.
+    const refused = await f.send([image, image])
+    expect(refused).toMatchObject({ error: { code: -32602, message: "2 images cannot go to sonnet-4.6. Remove them or pick another model." } })
+    expect((refused.error as { data: unknown }).data).toEqual({ kind: "session-attachment-refused", reason: "image-input-unsupported" })
     expect(f.startTurn).not.toHaveBeenCalled()
     expect(f.agent.resumeThread).not.toHaveBeenCalled()
     expect(f.store.load().thread).toEqual(before)
     expect(await f.send()).not.toHaveProperty("error")
+  })
+
+  it.each([[true, false], [false, true]] as const)("reports image input from the rule the send uses, whatever the adapter listed: vision %s, listed %s", async (vision, listed) => {
+    const f = await fixture(vision, "phone", ":memory:", listed)
+    const models = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })
+    expect(models.result).toEqual([expect.objectContaining({ id: "sonnet-4.6", imageInput: vision })])
+    const sent = await f.send([image])
+    expect(sent.error === undefined).toBe(vision)
+  })
+
+  it("reports image input from the adapter's capability now, not when the list was cached", async () => {
+    // Review round 2: the model list is cached for a minute; the send reads
+    // the capability at send time, and so must the list.
+    const f = await fixture(true)
+    const first = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })
+    expect(first.result).toEqual([expect.objectContaining({ imageInput: true })])
+    ;(f.agent.capabilities as { vision: boolean }).vision = false
+    const second = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })
+    expect(second.result).toEqual([expect.objectContaining({ imageInput: false })])
+    const discovered = await f.rpc("runtime.discover", { provider: "claude-code", client: "phone" })
+    if ((discovered.result as { status?: string } | undefined)?.status === "ready") {
+      expect(discovered.result).toMatchObject({ models: [expect.objectContaining({ imageInput: false })] })
+    }
+    expect(await f.send([image])).toMatchObject({ error: { data: { reason: "image-input-unsupported" } } })
+  })
+
+  it.each([true, false, "unknown"] as const)("reports per model whether images are delivered, from the adapter's capability: %s", async (vision) => {
+    const f = await fixture(vision)
+    const models = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })
+    expect(models.result).toEqual([expect.objectContaining({ id: "sonnet-4.6", imageInput: vision === true })])
   })
 
   it("carries two maximum-size uploads on an authenticated socket", async () => {
