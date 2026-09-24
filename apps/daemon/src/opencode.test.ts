@@ -757,4 +757,37 @@ describe("an interrupted turn's end that arrives late", () => {
     })))
     await adapter.close()
   })
+
+  // The error can end the interrupted turn while it still holds the slot. The
+  // idle that follows still belongs to it and must not end the next turn.
+  it("ignores the idle that follows an error which ended the interrupted turn itself", async () => {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    stream.emit({ type: "message.updated", properties: { info: { id: first, sessionID: threadId, role: "user" } } })
+    await adapter.interruptTurn(threadId, first)
+
+    stream.emit({ type: "session.error", properties: { sessionID: threadId, error: { name: "MessageAbortedError", data: { message: "aborted" } } } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: first, turn: expect.objectContaining({ status: "failed" }) }),
+    })))
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(1)
+
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "session.idle", properties: { sessionID: threadId } })
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({
+      type: "turn-completed",
+      params: expect.objectContaining({ turnId: second, turn: expect.objectContaining({ status: "completed" }) }),
+    })))
+    expect(events.filter((event) => event.type === "turn-completed")).toHaveLength(2)
+    await adapter.close()
+  })
 })

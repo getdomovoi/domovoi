@@ -555,7 +555,11 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     }
     if (event.type === "session.error") {
       const error = asRecord(properties.error)
+      const interrupted = session.interruptedTurnId
       this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
+      // The error can end the interrupted turn itself. Its idle is still to
+      // come, so the record stays until that idle.
+      if (interrupted !== undefined) session.interruptedTurnId = interrupted
       return
     }
     if (event.type === "session.idle") this.#complete(session, "completed")
