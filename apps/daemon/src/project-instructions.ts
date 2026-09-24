@@ -1,6 +1,8 @@
 import { lstat, readFile, realpath, stat } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
+import { fromMarkdown } from "mdast-util-from-markdown"
+
 // Providers run with repository configuration switched off until a trust gate
 // exists, and that switch also stops them reading the repository's instruction
 // files. The daemon reads those files itself: text only, from inside the
@@ -63,82 +65,23 @@ async function collectClaudeFile(
   }
 }
 
-// An import in code is not an import. Code follows Markdown's own rules: a
-// fence opened by three or more backticks or tildes (indented up to three
-// spaces) runs to a closing fence of the same character at least as long, or
-// to the end; a line indented four spaces or a tab is code unless it continues
-// a paragraph; a code span opened by a run of backticks closes at the next run
-// of the same length, across lines within a paragraph, and a run with no
-// closer is plain text.
+// An import in code is not an import. The file is parsed as CommonMark, and
+// imports are read from text only, never from a code block, a code span or
+// raw HTML, so containers, escapes, paragraph boundaries and tab stops follow
+// Markdown's own rules.
+type MarkdownNode = { type: string; value?: unknown; children?: MarkdownNode[] }
+
 export function importReferences(text: string): string[] {
-  const prose: string[] = []
-  let fence: { character: string; length: number } | undefined
-  let inParagraph = false
-  for (const line of text.replace(/\r\n?/g, "\n").split("\n")) {
-    if (fence) {
-      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
-      if (close && close[1]![0] === fence.character && close[1]!.length >= fence.length) fence = undefined
-      prose.push("")
-      continue
+  const references: string[] = []
+  const visit = (node: MarkdownNode): void => {
+    if (node.type === "text" && typeof node.value === "string") {
+      for (const match of node.value.matchAll(/(?:^|\s)@([^\s]+)/g)) references.push(match[1]!)
+      return
     }
-    const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
-    if (open && !(open[1]![0] === "`" && open[2]!.includes("`"))) {
-      fence = { character: open[1]![0]!, length: open[1]!.length }
-      prose.push("")
-      inParagraph = false
-      continue
-    }
-    const blank = line.trim() === ""
-    if (!blank && !inParagraph && /^(?: {4}|\t)/.test(line)) {
-      prose.push("")
-      continue
-    }
-    prose.push(line)
-    inParagraph = !blank
+    for (const child of node.children ?? []) visit(child)
   }
-  return prose.join("\n").split(/\n[ \t]*\n/).flatMap((paragraph) =>
-    [...withoutCodeSpans(paragraph).matchAll(/(?:^|\s)@([^\s]+)/g)].map((match) => match[1]!))
-}
-
-function withoutCodeSpans(paragraph: string): string {
-  let result = ""
-  let index = 0
-  while (index < paragraph.length) {
-    if (paragraph[index] !== "`") {
-      result += paragraph[index]
-      index += 1
-      continue
-    }
-    const run = backtickRun(paragraph, index)
-    let search = index + run
-    let closing = -1
-    while (search < paragraph.length) {
-      if (paragraph[search] !== "`") {
-        search += 1
-        continue
-      }
-      const candidate = backtickRun(paragraph, search)
-      if (candidate === run) {
-        closing = search
-        break
-      }
-      search += candidate
-    }
-    if (closing === -1) {
-      result += paragraph.slice(index, index + run)
-      index += run
-      continue
-    }
-    result += " "
-    index = closing + run
-  }
-  return result
-}
-
-function backtickRun(text: string, start: number): number {
-  let end = start
-  while (text[end] === "`") end += 1
-  return end - start
+  visit(fromMarkdown(text))
+  return references
 }
 
 async function worktreeFile(root: string, candidate: string): Promise<InstructionFile | undefined> {

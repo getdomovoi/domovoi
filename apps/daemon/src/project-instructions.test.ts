@@ -39,6 +39,9 @@ describe("importReferences code boundaries", () => {
     ["a fence left open to the end", "```\n@open/fence.md\nmore"],
     ["an indented code block", "Intro.\n\n    @indented/block.md\n"],
     ["a tab-indented code block", "\t@tab/block.md"],
+    ["a code span after an escaped backtick", "\\` text ` @sample.md `"],
+    ["an indented code block right after a heading", "# Heading\n    @sample.md"],
+    ["a tab-indented code block right after a heading", "# Heading\n\t@sample.md"],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
@@ -48,6 +51,7 @@ describe("importReferences code boundaries", () => {
     ["a lone backtick", "A ` stray tick and @stray/tick.md", ["stray/tick.md"]],
     ["an indented line that continues a paragraph", "Intro line\n    @continued.md", ["continued.md"]],
     ["a fence closed by a shorter run, which does not close it", "````\n```\n@still/inside.md\n````\n@outside.md", ["outside.md"]],
+    ["only the import after a fence inside a list item", "- ~~~\n  @sample.md\n  ~~~\n\n@real.md", ["real.md"]],
   ])("keeps %s", (_label, text, expected) => {
     expect(importReferences(text)).toEqual(expected)
   })
