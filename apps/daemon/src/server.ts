@@ -84,6 +84,7 @@ import {
   type TerminalOwner,
   type ToolFileEntry,
   type SkillInstallRefusal,
+  type StateRecovery,
   type TurnSkillSelectionRefusal,
   type WorkspaceSnapshot,
   type WorkspaceDelta,
@@ -92,7 +93,12 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { SqliteWorkspaceStore, type StoredQueuedSessionSend, type WorkspaceStore } from "./store.js"
+import {
+  SqliteWorkspaceStore,
+  type QueuedSessionSendTransition,
+  type StoredQueuedSessionSend,
+  type WorkspaceStore,
+} from "./store.js"
 import { FleetSnapshotOverflowError } from "./fleet-registry.js"
 import { fleetClientSnapshot } from "./fleet-client-snapshot.js"
 import { createMachineDialer } from "./machine-dial.js"
@@ -313,6 +319,48 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+type CommandOutputRemainder = { key: string, itemId: string, remainder: string }
+
+function appendCommandOutputRemainders(
+  snapshot: WorkspaceSnapshot,
+  remainders: readonly CommandOutputRemainder[],
+): void {
+  for (const { itemId, remainder } of remainders) {
+    if (!remainder) continue
+    const item = snapshot.thread.find((candidate) => candidate.id === itemId)
+    if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
+  }
+}
+
+function withoutApprovals(
+  snapshot: WorkspaceSnapshot,
+  predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
+  updatedAt: string,
+): {
+  removed: WorkspaceSnapshot["approvals"]
+  blockedIds: ReadonlySet<string>
+  approvals: WorkspaceSnapshot["approvals"]
+  workingPlans: WorkspaceSnapshot["workingPlans"]
+} | undefined {
+  const removed = snapshot.approvals.filter(predicate)
+  if (removed.length === 0) return undefined
+  const removedIds = new Set(removed.map((approval) => approval.id))
+  const blockedIds = new Set(snapshot.workingPlans.flatMap((plan) =>
+    plan.steps.flatMap((step) => (
+      step.blocker && removedIds.has(step.blocker.approvalId)
+        ? [step.blocker.approvalId]
+        : []
+    )),
+  ))
+  const cleared = clearWorkingPlanApprovalBlockers(snapshot.workingPlans, removedIds, updatedAt)
+  return {
+    removed,
+    blockedIds,
+    approvals: snapshot.approvals.filter((approval) => !removedIds.has(approval.id)),
+    workingPlans: cleared.plans,
+  }
+}
+
 function skillInstallAuditDetail(values: Record<string, unknown>): string {
   const source = values.source && typeof values.source === "object"
     ? (values.source as Record<string, unknown>).path
@@ -430,6 +478,17 @@ function sessionReadOnlyMessage(
     return "This session has conflicting owners and is read-only"
   }
   return undefined
+}
+
+// A paired device learns that stored state was moved aside and what survived,
+// not where the kept file lives on this machine or why it failed to read.
+function stateRecoveryFlag(recovery: StateRecovery): StateRecovery {
+  return {
+    kind: recovery.kind,
+    occurredAt: recovery.occurredAt,
+    pairedDevicesKept: recovery.pairedDevicesKept,
+    workspaceKept: recovery.workspaceKept,
+  }
 }
 
 function sessionIsReadOnly(
@@ -1237,6 +1296,7 @@ export class DomovoiDaemon {
   #snapshot: WorkspaceSnapshot
   #localMachine: WorkspaceSnapshot["machine"]
   #store: WorkspaceStore
+  #stateRecovery: StateRecovery | undefined
   #queuedSessionSends = new Map<string, StoredQueuedSessionSend>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
@@ -1484,6 +1544,14 @@ export class DomovoiDaemon {
           ?? options.statePath === undefined,
       },
     )
+    this.#stateRecovery = this.#store.recovery
+    if (this.#stateRecovery) {
+      const { kind, quarantinedPath, reason } = this.#stateRecovery
+      this.#reportError(
+        "Domovoi moved unreadable stored state aside",
+        new Error(`The stored ${kind === "database" ? "state database" : "workspace snapshot"} was kept at ${quarantinedPath}. ${reason}`),
+      )
+    }
     this.#snapshot = this.#store.load()
     this.#loadQueuedSessionSends(true)
     if (options.machineIdentity && this.#snapshot.machine.id !== options.machineIdentity.id) {
@@ -2410,15 +2478,22 @@ export class DomovoiDaemon {
   }
 
   #syncQueuedSendMetadata(): void {
-    const durable = [...this.#queuedSessionSends.values()].map((queued) => this.#queuedSendMetadata(queued))
+    this.#snapshot.queuedSends = this.#queuedSendsFor(this.#snapshot, this.#queuedSessionSends.values())
+  }
+
+  #queuedSendsFor(
+    snapshot: WorkspaceSnapshot,
+    queuedSends: Iterable<StoredQueuedSessionSend>,
+  ): QueuedSessionSend[] {
+    const durable = [...queuedSends].map((queued) => this.#queuedSendMetadata(queued))
     const durableSessions = new Set(durable.map((queued) => queued.sessionId))
-    const sessions = new Set(this.#snapshot.sessions.map((session) => session.id))
-    const delivered = (this.#snapshot.queuedSends ?? []).filter(
+    const sessions = new Set(snapshot.sessions.map((session) => session.id))
+    const delivered = (snapshot.queuedSends ?? []).filter(
       (queued) => queued.state === "delivered"
         && !durableSessions.has(queued.sessionId)
         && sessions.has(queued.sessionId),
     )
-    this.#snapshot.queuedSends = [...durable, ...delivered]
+    return [...durable, ...delivered]
       .sort((left, right) => left.sessionId.localeCompare(right.sessionId))
   }
 
@@ -2484,6 +2559,18 @@ export class DomovoiDaemon {
     this.#queuedSessionSends.set(sessionId, updated)
     this.#syncQueuedSendMetadata()
     return true
+  }
+
+  #commitQueuedSendTransitions(transitions: readonly QueuedSessionSendTransition[]): boolean[] {
+    if (transitions.length === 0) return []
+    if (this.#store.transitionQueuedSessionSends) return this.#store.transitionQueuedSessionSends(transitions)
+    return transitions.map((transition) => this.#store.transitionQueuedSessionSend?.(
+      transition.sessionId,
+      transition.queueId,
+      transition.from,
+      transition.to,
+      transition.reason,
+    ) ?? true)
   }
 
   #holdQueuedSessionSend(sessionId: string, reason: string): boolean {
@@ -8038,6 +8125,9 @@ export class DomovoiDaemon {
                   clientAccess: helloCredential?.binding.kind === "client"
                     ? helloCredential.binding.clientAccess
                     : "full",
+                  ...(this.#stateRecovery
+                    ? { stateRecovery: helloCredential ? stateRecoveryFlag(this.#stateRecovery) : this.#stateRecovery }
+                    : {}),
                 }
               : {}),
             ...(helloConnectionId ? { connectionId: helloConnectionId } : {}),
@@ -8714,61 +8804,99 @@ export class DomovoiDaemon {
     }
     if (!hadConnection) return
 
+    // A frozen transfer source or an unfinished archive keeps its provider
+    // thread, but its lifecycle is not the provider's to change: marking it
+    // failed leaves transfer or archive metadata on a state that cannot hold
+    // it, and the invalid snapshot then refuses every save and every RPC.
+    // Its turn and approvals belonged to the exited process, so they go.
+    const affected = this.#snapshot.sessions.filter((session) =>
+      session.runtime.provider === provider
+      && session.providerThreadId !== undefined)
+    if (affected.length === 0) return
+    const failing = affected.filter((session) => !sessionIsReadOnly(session))
+
     const createdAt = new Date().toISOString()
     const providerName = provider === "codex" ? "Codex" : provider
-    let changed = false
-    const affectedSessionIds = new Set<string>()
-    for (const session of this.#snapshot.sessions) {
-      if (session.runtime.provider !== provider || !session.providerThreadId) continue
-      affectedSessionIds.add(session.id)
-      this.#holdQueuedSessionSend(session.id, "The provider disconnected before the queued send could release.")
-      session.state = "failed"
-      session.providerFailure = classifyProviderFailure(new Error(reason))
-      this.#flushCommandOutputStreams(session.id)
-      delete session.activeTurnId
-      session.updatedAt = createdAt
-      this.#snapshot.thread.push({
-        id: `system-${randomUUID()}`,
-        sessionId: session.id,
-        kind: "system",
-        body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
-        detail: redactDurableText(reason).value,
-        createdAt,
-      })
-      changed = true
+    const affectedSessionIds = new Set(affected.map((session) => session.id))
+    const failingSessionIds = new Set(failing.map((session) => session.id))
+    const notices = failing.map((session) => ({
+      id: `system-${randomUUID()}`,
+      sessionId: session.id,
+      kind: "system" as const,
+      body: `${providerName} disconnected. The next message will reconnect and resume this session.`,
+      detail: redactDurableText(reason).value,
+      createdAt,
+    }))
+    const remainders = affected.flatMap((session) => this.#peekCommandOutputStreams(session.id))
+    const holdReason = "The provider disconnected before the queued send could release."
+    const holds = failing.flatMap((session) => {
+      const queued = this.#queuedSessionSends.get(session.id)
+      return queued && (queued.state === "waiting" || queued.state === "releasing")
+        ? [{ ...queued, state: "held" as const, reason: holdReason }]
+        : []
+    })
+    const heldByAffected = (approval: WorkspaceSnapshot["approvals"][number]) =>
+      affectedSessionIds.has(approval.sessionId)
+    const markDisconnected = (snapshot: WorkspaceSnapshot) => {
+      appendCommandOutputRemainders(snapshot, remainders)
+      for (const session of snapshot.sessions) {
+        if (!affectedSessionIds.has(session.id)) continue
+        if (!failingSessionIds.has(session.id)) {
+          if (session.activeTurnId === undefined) continue
+          delete session.activeTurnId
+          session.updatedAt = createdAt
+          continue
+        }
+        session.state = "failed"
+        session.providerFailure = classifyProviderFailure(new Error(reason))
+        delete session.activeTurnId
+        session.updatedAt = createdAt
+      }
+      snapshot.thread.push(...structuredClone(notices))
     }
-    if (affectedSessionIds.size > 0) {
-      this.#removeApprovals(
-        (approval) => affectedSessionIds.has(approval.sessionId),
-        createdAt,
-      )
+    const validateCandidate = (held: readonly StoredQueuedSessionSend[]) => {
+      const candidate = structuredClone(this.#snapshot)
+      markDisconnected(candidate)
+      const candidateApprovals = withoutApprovals(candidate, heldByAffected, createdAt)
+      if (candidateApprovals) {
+        candidate.approvals = candidateApprovals.approvals
+        candidate.workingPlans = candidateApprovals.workingPlans
+      }
+      if (held.length > 0) {
+        const candidateQueue = new Map(this.#queuedSessionSends)
+        for (const queued of held) candidateQueue.set(queued.sessionId, queued)
+        candidate.queuedSends = this.#queuedSendsFor(candidate, candidateQueue.values())
+      }
+      workspaceSnapshotSchema.parse(candidate)
     }
-    if (changed) await this.#flushAgentState()
+    validateCandidate(holds)
+    const committed = this.#commitQueuedSendTransitions(holds.map((held) => ({
+      sessionId: held.sessionId,
+      queueId: held.id,
+      from: ["waiting", "releasing"],
+      to: "held",
+      reason: holdReason,
+    })))
+    const held = holds.filter((_, index) => committed[index] === true)
+    if (held.length !== holds.length) validateCandidate(held)
+
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    for (const queued of held) this.#queuedSessionSends.set(queued.sessionId, queued)
+    if (held.length > 0) this.#syncQueuedSendMetadata()
+    markDisconnected(this.#snapshot)
+    this.#removeApprovals(heldByAffected, createdAt)
+    await this.#flushAgentState()
   }
 
   #removeApprovals(
     predicate: (approval: WorkspaceSnapshot["approvals"][number]) => boolean,
     updatedAt: string,
   ): WorkspaceSnapshot["approvals"] {
-    const removed = this.#snapshot.approvals.filter(predicate)
-    if (removed.length === 0) return []
-    const removedIds = new Set(removed.map((approval) => approval.id))
-    const blockedIds = new Set(this.#snapshot.workingPlans.flatMap((plan) =>
-      plan.steps.flatMap((step) => (
-        step.blocker && removedIds.has(step.blocker.approvalId)
-          ? [step.blocker.approvalId]
-          : []
-      )),
-    ))
-    this.#snapshot.approvals = this.#snapshot.approvals.filter(
-      (approval) => !removedIds.has(approval.id),
-    )
-    const cleared = clearWorkingPlanApprovalBlockers(
-      this.#snapshot.workingPlans,
-      removedIds,
-      updatedAt,
-    )
-    this.#snapshot.workingPlans = cleared.plans
+    const next = withoutApprovals(this.#snapshot, predicate, updatedAt)
+    if (!next) return []
+    const { removed, blockedIds } = next
+    this.#snapshot.approvals = next.approvals
+    this.#snapshot.workingPlans = next.workingPlans
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
       this.#appendAudit({
@@ -8788,15 +8916,16 @@ export class DomovoiDaemon {
   }
 
   #flushCommandOutputStreams(sessionId: string): void {
+    const remainders = this.#peekCommandOutputStreams(sessionId)
+    for (const { key } of remainders) this.#commandOutputRedactors.delete(key)
+    appendCommandOutputRemainders(this.#snapshot, remainders)
+  }
+
+  #peekCommandOutputStreams(sessionId: string): CommandOutputRemainder[] {
     const prefix = `${sessionId}\u0000`
-    for (const [key, stream] of this.#commandOutputRedactors) {
-      if (!key.startsWith(prefix)) continue
-      const remainder = stream.redactor.flush()
-      this.#commandOutputRedactors.delete(key)
-      if (!remainder) continue
-      const item = this.#snapshot.thread.find((candidate) => candidate.id === stream.itemId)
-      if (item?.kind === "tool") item.output = appendDurableOutput(item.output, remainder)
-    }
+    return [...this.#commandOutputRedactors]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, stream]) => ({ key, itemId: stream.itemId, remainder: stream.redactor.peek() }))
   }
 
   #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
