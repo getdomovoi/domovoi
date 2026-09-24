@@ -1,6 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { HistoryPanel } from "./workspace-shell"
+
 afterEach(cleanup)
 
 const checkpoint = (over: Record<string, unknown>) => ({
@@ -14,10 +16,10 @@ const checkpoint = (over: Record<string, unknown>) => ({
   ...over,
 })
 
+// The shell is imported with the file, not inside a test: on a Windows runner
+// the first import of workspace-shell measured 1.3 to 3.0 s, which a test paid
+// out of its own 5 s budget.
 async function panel(items: ReturnType<typeof checkpoint>[]) {
-  const importStarted = performance.now()
-  const { HistoryPanel } = await import("./workspace-shell")
-  console.info(`SHELLIMPORT ${JSON.stringify({ test: expect.getState().currentTestName, ms: Math.round(performance.now() - importStarted) })}`)
   render(
     <HistoryPanel
       sessionId="session-billing"
