@@ -142,6 +142,26 @@ test("refuses a release record changed or removed since the base commit", (conte
   assert.match(releasedRecordRefusal(directory, base) ?? "", /0\.7\.0\.json was removed since/)
 })
 
+// A checkout may convert line endings, as Git for Windows does with
+// core.autocrlf. The record is compared as git would store it, so a CRLF copy
+// of an unchanged record passes and a changed one still fails.
+test("reads a release record through the checkout's line ending conversion", (context) => {
+  const record = '{\n  "protocolVersion": "0.7.0",\n  "schemas": {\n    "a": "sha256:a"\n  }\n}\n'
+  const { directory, base } = repositoryWithRecord(record)
+  context.after(() => rmSync(directory, { recursive: true, force: true }))
+  const file = join(directory, wireReleasesPath, "0.7.0.json")
+  git(directory, "config", "core.autocrlf", "true")
+  rmSync(file)
+  git(directory, "checkout", "--", `${wireReleasesPath}/0.7.0.json`)
+  assert.equal(readFileSync(file, "utf8"), record.replaceAll("\n", "\r\n"))
+  assert.equal(releasedRecordRefusal(directory, base), undefined)
+
+  writeFileSync(file, record.replace("sha256:a", "sha256:b").replaceAll("\n", "\r\n"))
+  assert.match(releasedRecordRefusal(directory, base) ?? "", /0\.7\.0\.json changed since/)
+  writeFileSync(file, record.replace("sha256:a", "sha256:b"))
+  assert.match(releasedRecordRefusal(directory, base) ?? "", /0\.7\.0\.json changed since/)
+})
+
 // In CI the base is required: without it a rewritten record would be trusted.
 test("fails closed in CI without a resolvable base commit", () => {
   const run = (...args) => spawnSync(process.execPath, [join(root, "scripts/protocol-wire.mjs"), "check", ...args], {
