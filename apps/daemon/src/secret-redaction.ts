@@ -249,6 +249,10 @@ const valueDelimiter = /[ \t\f\v;&|\n]/
 const invisible = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_]|\[[0-?]*[ -/]*$|\][^\x07\x1b]*$|$)|[\x00-\x08\x0b-\x1f\x7f]/gu
 
 // The line as it reads, and for each character the index it came from.
+// A carriage return reads as a line break: it ends a value or a quote already
+// under way, so what the redraw writes over it is not taken for that value,
+// while a name and separator with no value yet (whose patterns allow a line
+// break before the value) still take the value the redraw writes after them.
 function readable(raw: string): { text: string, origins: number[] } {
   let text = ""
   const origins: number[] = []
@@ -256,6 +260,10 @@ function readable(raw: string): { text: string, origins: number[] } {
   for (const match of raw.matchAll(invisible)) {
     for (let index = from; index < match.index; index += 1) origins.push(index)
     text += raw.slice(from, match.index)
+    if (match[0] === "\r") {
+      origins.push(match.index)
+      text += "\n"
+    }
     from = match.index + match[0].length
   }
   for (let index = from; index < raw.length; index += 1) origins.push(index)
