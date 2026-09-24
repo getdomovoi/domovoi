@@ -11,7 +11,9 @@ adaptive
 TypeScript monorepo with pnpm workspaces and strict TypeScript. React is shared by the Electron
 desktop app and hosted browser/PWA client. UI uses Tailwind CSS v4, shadcn/ui, and Radix
 primitives. The execution daemon runs on Node.js and communicates through WebSocket JSON-RPC.
-Electron owns desktop integration; native mobile shells are a later delivery surface.
+Electron owns desktop integration. The phone and tablet app in `apps/mobile` is a separate Expo and
+React Native shell, in the repository since 2026-09-04; it shares the protocol package, not the
+React UI.
 
 ## Users
 
@@ -88,7 +90,7 @@ does not use the phrase "control plane."
 1. Execution stays with the machine that owns the code.
 2. The daemon owns truth; every client sees the same ordered state.
 3. Consequential actions are explicit, scoped, checkpointed, and attributed.
-4. Review artifacts are first-class, full-fidelity objects—not chat attachments.
+4. Review artifacts are first-class, full-fidelity objects, not chat attachments.
 5. Cross-device adaptation collapses information without hiding safety facts.
 
 ## Accessibility & Inclusion

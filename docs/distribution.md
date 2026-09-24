@@ -21,6 +21,11 @@ compilation or the external toolchain.
 | macOS | signed and notarized desktop app | GitHub release artifacts |
 | Linux | AppImage or native bundle plus daemon package | GitHub release artifacts |
 
+None of these channels carries a release yet. One desktop build was published: `desktop-v0.0.1`, an
+unsigned Apple-silicon DMG, as a GitHub pre-release on 2026-09-18. It carried a copy of the SDK
+vendor's agent binary and was turned back into a draft on 2026-09-22. The desktop package has left
+that binary out since #516. See [licensing](licensing.md#current-exceptions).
+
 Desktop packaging and native signing use a separate, manual workflow. It has no publication
 permission and uses protected platform environments, not the npm environment. See
 [Desktop signing and notarization](desktop-signing.md) for the exact Apple and Windows credential
@@ -305,11 +310,24 @@ bootstrap installer's download URL.
 ## Versioning and release metadata
 
 Every package in this workspace carries the same version and is released as one compatibility
-unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `packages/ui`, `apps/web`,
-`apps/desktop`, and `apps/mobile` ship together, so a version that moves for one moves for all.
+unit. `packages/protocol`, `apps/daemon` and its `domovoid` CLI, `apps/cli` and its `domovoi`
+CLI, `packages/credential-store`, `packages/ui`, `apps/web`, `apps/desktop`, and `apps/mobile`
+ship together, so a version that moves for one moves for all.
 Changesets enforces that at version time through the `@getdomovoi/*` fixed
 group in `.changeset/config.json`, and `pnpm release:invariants` fails the build if a manifest
 drifts out of lockstep or the built protocol export advertises another release.
+
+Four of those manifests are not private: `@getdomovoi/protocol`, `@getdomovoi/daemon`,
+`@getdomovoi/cli` (since 2026-09-11) and `@getdomovoi/credential-store` (since 2026-09-13).
+Ruled 2026-09-22: the first release publishes all four. `@getdomovoi/cli` depends on
+`@getdomovoi/protocol` and `@getdomovoi/credential-store` through `workspace:*`, so both publish
+before it, the same reason the protocol publishes before the daemon.
+
+The release tooling does not do this yet. `release.yml`, `publishablePackages` in
+`scripts/release-artifacts.mjs` and the publish-order check in `scripts/publish-order.mjs` name
+protocol and daemon only, and parts of this document describe that two-package publish. Until the
+tooling names all four, the publish plan Changesets builds and the set the tooling accepts
+disagree, so do not run a first publish before that change lands.
 
 `@getdomovoi/protocol` exports `buildVersion`, compiled directly from its package manifest.
 Daemon machine facts, every daemon and client greeting, and provider initialization use that
@@ -388,8 +406,9 @@ commit, so requiring it per commit would block every release whose commit does n
 paths. A release can therefore ship WSL code proven only by the last scheduled or path-matched
 `wsl-native` run.
 
-`main` has no branch protection, no ruleset, and no required status check, so nothing outside this
-workflow stands between a commit and the registry. The gate job is the only thing that does.
+`main` is protected with five required checks, `strict: true` and `enforce_admins: true`; the
+settings as last read back are in [working rules](working-rules.md), rule 9. That protection decides
+what reaches `main`. Between a `main` commit and the registry, the gate job is the only check.
 
 ### Publish order
 
@@ -419,8 +438,9 @@ or assets are never overwritten. Alpha releases are prereleases, not GitHub's la
 Ordinary publishing has no stored npm token. The `publish` job requests
 `id-token: write`, and pnpm exchanges the GitHub OIDC token for a short-lived npm credential
 scoped to this repository and workflow. npm records the workflow run as the publisher and
-generates a provenance attestation; both packages also declare `publishConfig.provenance`, so a
-publish that cannot produce an attestation fails instead of shipping unattested. The job runs in
+generates a provenance attestation. Protocol, daemon and credential-store declare
+`publishConfig.provenance`, so a publish of those that cannot produce an attestation fails
+instead of shipping unattested; `@getdomovoi/cli` does not declare it yet. The job runs in
 the `npm` GitHub environment so that the trusted publisher on npm can be bound to that
 environment name and so a maintainer can require a reviewer before the job starts.
 

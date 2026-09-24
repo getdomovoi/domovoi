@@ -406,3 +406,19 @@ it('Pause everything holds the queue so a paused session is not resumed by it', 
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
   expect(screen.getByText(/Held because work was stopped/)).toBeTruthy()
 })
+
+// The hold is local and makes the screen look paused. If the daemon refused the
+// pause, running turns go on, so the refusal has to be said out loud.
+it('Pause everything says so when the daemon refuses it, and keeps the hold', async () => {
+  const value = running()
+  const socket = await open(value)
+  queue('still held after a refused pause')
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Stop everything' }))
+  await user.click(screen.getByRole('menuitem', { name: /Pause everything/ }))
+  await act(async () => fail(socket, 'system.pauseAll', { code: -32603, message: 'pause state was not saved' }))
+  await settle()
+  expect(screen.getByRole('alert').textContent).toContain('Pause everything failed: pause state was not saved')
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(/Held because work was stopped/)).toBeTruthy()
+})
