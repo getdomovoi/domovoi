@@ -1,4 +1,4 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process"
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 
@@ -160,6 +160,22 @@ describe("StdioCodexTransport", () => {
     const message = (error.mock.calls[0]?.[0] as Error).message
     expect(message).toBe("Codex app-server exited with code 1: token=[REDACTED]\nNot logged in")
     expect(classifyProviderFailure(new Error(message)).kind).toBe("authentication-expired")
+  })
+
+  it.runIf(process.platform !== "win32")("keeps the sign-in reason when a real child ends on a partial stdout line", async () => {
+    for (let run = 0; run < 20; run += 1) {
+      const transport = new StdioCodexTransport(() => spawn(
+        "sh",
+        ["-c", "printf 'Error: boom'; echo 'Not logged in' >&2; exit 1"],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      ))
+      const failure = new Promise<Error>((resolve) => transport.onError(resolve))
+      const message = (await failure).message
+
+      expect(message, `run ${run}`).toBe("Codex app-server exited with code 1: Not logged in")
+      expect(classifyProviderFailure(new Error(message)).kind).toBe("authentication-expired")
+      await transport.close()
+    }
   })
 
   it("reads stderr that arrives after the exit and before the streams close", async () => {

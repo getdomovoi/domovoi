@@ -87,12 +87,19 @@ export class StdioCodexTransport implements CodexTransport {
     this.#child = childFactory()
     this.#shutdownGraceMs = shutdownGraceMs
     const stderrTail = captureStderrTail(this.#child.stderr)
+    // Registered before readline's own listener, so it is set by the time
+    // readline flushes a last line that had no newline. A process that dies
+    // mid-line leaves that fragment, and the reason it died, usually a sign-in
+    // failure on stderr, is what the process-end report below carries.
+    let stdoutEnded = false
+    this.#child.stdout.once("end", () => { stdoutEnded = true })
     const lines = createInterface({ input: this.#child.stdout })
     lines.on("line", (line) => {
       try {
         const message = requireJsonRpcMessage(JSON.parse(line))
         for (const listener of this.#messageListeners) listener(message)
       } catch {
+        if (stdoutEnded) return
         this.#emitError(new Error("Codex app-server emitted invalid JSONL"))
       }
     })
