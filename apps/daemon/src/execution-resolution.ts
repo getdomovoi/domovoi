@@ -101,12 +101,17 @@ export async function pathStaysInside(root: string, cwd: string, path: string): 
   return followed !== undefined && inside(followed.workspace, followed.target)
 }
 
-// A target that does not exist yet has no other name. Any other failure to
-// read it throws, which leaves the request unresolved.
-async function hasOtherLinks(target: string): Promise<boolean> {
+// Whether an existing target is something no file record can stand for: a
+// regular file with another link, which shares its bytes with a name the record
+// does not hold, or anything that is not a regular file (a directory, FIFO,
+// socket or device), which keeps the path, and so the digest, of the file it
+// replaced. Only lstat reads it: opening a FIFO with no writer would block. A
+// target that does not exist yet is a new file. Any other failure to read it
+// throws, which leaves the request unresolved.
+async function cannotStandForTarget(target: string): Promise<boolean> {
   try {
     const stats = await lstat(target)
-    return stats.isFile() && stats.nlink > 1
+    return !stats.isFile() || stats.nlink > 1
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === "ENOENT" || code === "ENOTDIR") return false
@@ -470,8 +475,9 @@ async function resolveExecutionOrThrow(input: ExecutionInput): Promise<Execution
     // The worktree root itself names no file, so no file-scoped rule fits it.
     if (path === "" || path === ".") return unresolved("unsupported-syntax")
     // A file with another link shares its bytes with a name the record does
-    // not hold, possibly outside the worktree, so no record can stand for it.
-    if (await hasOtherLinks(followed.target)) return unresolved("unsupported-syntax")
+    // not hold, possibly outside the worktree, and a directory or FIFO at the
+    // path is not the file the record names, so no record can stand for them.
+    if (await cannotStandForTarget(followed.target)) return unresolved("unsupported-syntax")
     return fingerprint({
       version: 1,
       coverage: "tool-and-file",

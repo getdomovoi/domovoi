@@ -47,4 +47,7 @@ or emergency stop, or expired.
 A file-tool target that is a file with more than one hard link stays unresolved: its other names
 share its bytes and may lie outside the worktree, so no standing rule applies to it and its card
 offers no Always. A target replaced by such a link while its card waits is refused when the card
-is answered, with the file-target text above. A file that does not exist yet is unaffected.
+is answered, with the file-target text above. A file that does not exist yet is unaffected. An
+existing target that is not a regular file (a directory, FIFO, socket or device) stays unresolved
+the same way, read with lstat only, so a FIFO is never opened; a regular file replaced by one while
+its card waits is refused when the card is answered.

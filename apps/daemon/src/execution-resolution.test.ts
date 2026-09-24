@@ -245,6 +245,40 @@ describe("resolveExecution", () => {
     }
   })
 
+  // A directory at the path keeps the path, so a record would keep its digest,
+  // while the edit no longer reaches the file the card named.
+  it("leaves an existing file target that is a directory unresolved", async () => {
+    const root = await project()
+    await mkdir(join(root, "src", "settings.json"), { recursive: true })
+
+    for (const command of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+      await expect(resolveExecution({
+        workspaceRoot: root,
+        cwd: root,
+        command,
+        filePath: join(root, "src", "settings.json"),
+      })).resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+    }
+  })
+
+  // Windows has no named pipe in the file tree, so there is nothing to make.
+  it.skipIf(process.platform === "win32")("leaves an existing file target that is a FIFO unresolved, without opening it", async () => {
+    const root = await project()
+    await mkdir(join(root, "src"))
+    // Opening a FIFO with no writer blocks, so a resolver that read it would
+    // time this test out rather than answer.
+    execFileSync("mkfifo", [join(root, "src", "settings.json")])
+
+    for (const command of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+      await expect(resolveExecution({
+        workspaceRoot: root,
+        cwd: root,
+        command,
+        filePath: join(root, "src", "settings.json"),
+      })).resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+    }
+  })
+
   it("still resolves an existing file target that has a single link", async () => {
     const root = await project()
     await mkdir(join(root, "src"))
