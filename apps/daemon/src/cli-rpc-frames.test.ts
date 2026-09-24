@@ -51,8 +51,12 @@ it("does not repeat a refusal whose message is not text", async () => {
 // is refused the way a malformed reply is, not thrown as the schema's error.
 it("refuses a result that is not its method's shape, in the refusal's own words", () => {
   const schema = rpcMethods["device.issueCode"].result
-  expect(readDaemonResult("device.issueCode", schema, { code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" }))
-    .toEqual({ code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" })
+  const issued = {
+    code: "hearth-quiet-ember-42",
+    expiresAt: "2026-08-31T12:03:00.000Z",
+    pairingAddress: { url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", label: "djs-macbook-pro-1", loopback: false },
+  }
+  expect(readDaemonResult("device.issueCode", schema, issued)).toEqual(issued)
   let refusal: unknown
   try { readDaemonResult("device.issueCode", schema, { code: 42 }) } catch (error) { refusal = error }
   expect(refusal).toBeInstanceOf(Error)
