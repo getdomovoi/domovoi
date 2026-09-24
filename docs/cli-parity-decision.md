@@ -14,8 +14,10 @@ records. It carries `pair`, `status`, `doctor`, `logs` and `skill install <path>
 
 No human command has moved off `domovoid`. Its help (`apps/daemon/src/index.ts`) still lists
 `pair`, `fleet-keychain`, `open`, `wsl list`, `secret`, `service install|status|remove`,
-`skill keygen|sign|trust` and `profile recover`. `domovoid pair` issues the credential that
-`domovoi pair` stores, so today the two surfaces overlap by design at that one step.
+`skill keygen|sign|trust` and `profile recover`. The two surfaces do not yet meet at pairing:
+`domovoid pair --client cli --label <device label>` prints a one-time pairing code, while
+`domovoi pair` accepts only a client credential and refuses a code. No `domovoid` command prints
+a client credential today; that gap is open.
 
 Not decided yet: whether the separate package replaces the one-package target below, and which
 `domovoid` commands still move to `domovoi`. Until that is recorded, the rest of this document is

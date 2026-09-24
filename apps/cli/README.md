@@ -18,10 +18,13 @@ domovoi logs   [--limit <n>] [--action <name>] [--outcome <o>] [--session <id>] 
 domovoi skill install <path> [--scope user|project] [--yes]
 ```
 
-- `pair` stores a client credential for one daemon. On the machine that runs the daemon, run
-  `domovoid pair --client cli`; it prints one client credential. Paste that line, or the credential
-  alone, into `domovoi pair`. The credential is read from stdin so it does not land in shell
-  history or the process table.
+- `pair` stores a client credential for one daemon. It reads the credential from stdin, so it
+  does not land in shell history or the process table, and it accepts either the credential alone
+  or a line of the form `Client credential: <credential>`. It does not accept a pairing code.
+  Known gap: no `domovoid` command prints a client credential today. `domovoid pair --client cli
+  --label <device label>` requires `--label` and prints a one-time pairing code, which
+  `domovoi pair` refuses. Until the CLI can redeem a code, a client credential comes from a
+  `device.pair` request made with the daemon's own credential.
 - `status` reports the paired daemon's state.
 - `doctor` checks the daemon, the stored credential and the protocol version, then reports, for
   each fleet machine, the route this daemon would choose and why the others lost. It exits 1 on
