@@ -1,4 +1,5 @@
 import { X509Certificate } from "node:crypto"
+import { isIPv4 } from "node:net"
 
 import { isLoopbackHost } from "./transport-config.js"
 
@@ -29,23 +30,25 @@ function bounded(problem: string): string {
 export function certificateHostNames(certificate: string): string[] {
   let parsed: X509Certificate
   try { parsed = new X509Certificate(certificate) } catch { return [] }
-  const names = (parsed.subjectAltName ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.startsWith("DNS:"))
-    .map((entry) => entry.slice("DNS:".length))
+  const entries = (parsed.subjectAltName ?? "").split(",").map((entry) => entry.trim())
+  const names = entries.filter((entry) => entry.startsWith("DNS:")).map((entry) => entry.slice("DNS:".length))
+  const addresses = new Set(entries.filter((entry) => entry.startsWith("IP Address:")).map((entry) => entry.slice("IP Address:".length)))
   // A wildcard certificate names no single host a code could carry, and an
   // entry that is no host name (such as "example.com/path") would give a URL
-  // whose host the certificate does not name.
-  return names.filter((name) => name.length > 0 && !name.startsWith("*") && isHostName(name))
+  // whose host the certificate does not name. TLS checks an IP address only
+  // against IP entries, so an IP literal written as a DNS entry counts only
+  // when an IP entry names it too.
+  return names.filter((name) => name.length > 0 && !name.startsWith("*") && isHostName(name)
+    && (!isIPv4(name) || addresses.has(name)))
 }
 
 const hostLabel = /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$/u
 
 // A DNS host name the URL keeps as it is: labels of letters, digits and inner
-// hyphens, 253 characters at most.
+// hyphens, 253 characters at most, with one final dot allowed.
 function isHostName(name: string): boolean {
-  if (name.length > 253 || !name.split(".").every((label) => hostLabel.test(label))) return false
+  const labels = name.endsWith(".") ? name.slice(0, -1) : name
+  if (labels.length > 253 || !labels.split(".").every((label) => hostLabel.test(label))) return false
   try {
     return new URL(`wss://${name}:1/`).hostname === name.toLowerCase()
   } catch {

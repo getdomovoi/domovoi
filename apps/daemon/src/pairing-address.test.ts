@@ -100,6 +100,45 @@ IQDy+9eYtDf5gswEGBeoMP3hB2Acx/L3wrs3tYSQcoFCHwIhAPM7LpWFRTWVGFI2
 +7T+oXkxdOHWF42i5+Ym6w5KbU5q
 -----END CERTIFICATE-----
 `
+// Generated with openssl for round 2 review of b7867afa: an IP literal as a
+// DNS entry alone, the same with a matching IP entry, and a name with one
+// final dot.
+const ipAsName = `-----BEGIN CERTIFICATE-----
+MIIBijCCAS+gAwIBAgIUDLJY93IGe+dn3Iv1BM8dNnBZkOswCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjI1MDFaFw0zNjA5MjEwNjI1MDFa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQcHkih
+zOVxF9WxXY2Tig7/CIvcTx46lcs/U1TOr6QF4La8Jeoyt/PT+tL3StMqsdrMvhya
+mFoxddIIXWB0KkIzo2kwZzAdBgNVHQ4EFgQUto1l4lYMz+KuHIA2Paf10SvQUaAw
+HwYDVR0jBBgwFoAUto1l4lYMz+KuHIA2Paf10SvQUaAwDwYDVR0TAQH/BAUwAwEB
+/zAUBgNVHREEDTALggkxOTIuMC4yLjEwCgYIKoZIzj0EAwIDSQAwRgIhAMg8Qw5h
+aLEB0GxQBrG7oSNWTbXcLu8qgecJhS3p03/zAiEA5I5TeV4phMjI/9s4MEZZkcaD
+ezH6QUD6hbBtrH9Xpkg=
+-----END CERTIFICATE-----
+`
+const ipAsNameAndAddress = `-----BEGIN CERTIFICATE-----
+MIIBjjCCATWgAwIBAgIUBXDIBgAjVX8ItFMVbI9YCNx+yEQwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjI1MDFaFw0zNjA5MjEwNjI1MDFa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATa/xn7
+BcAvivjfa5vDa5VpH3R/GwWCyvd3DKC9w+beU4F8S/P7ZjusWVSquL9dMjF5NntU
+tuHmyfKkE6pvrdsYo28wbTAdBgNVHQ4EFgQUsKP9z1asAKzG4y4vEO/d68DTvTAw
+HwYDVR0jBBgwFoAUsKP9z1asAKzG4y4vEO/d68DTvTAwDwYDVR0TAQH/BAUwAwEB
+/zAaBgNVHREEEzARggkxOTIuMC4yLjGHBMAAAgEwCgYIKoZIzj0EAwIDRwAwRAIg
+YizZGg19bYdbHLrq66V5RImWZoNKBAri5CmIfmrOtE8CICogp5v94QMoQt4ptBw9
+cP/Rfe8wTTpBMp48963BzrY5
+-----END CERTIFICATE-----
+`
+const finalDot = `-----BEGIN CERTIFICATE-----
+MIIBjTCCATKgAwIBAgIUEbxni67UFmUUbsjpp1adjkWz+ncwCgYIKoZIzj0EAwIw
+DzENMAsGA1UEAwwEdGVzdDAeFw0yNjA5MjQwNjI1MDFaFw0zNjA5MjEwNjI1MDFa
+MA8xDTALBgNVBAMMBHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARxmVUo
+2wBgEK2yjLvrhOKtLpSBlSXFqsF44gIgeEPznttfgYE4n0ITKccx8ZJ3WjrREtgt
+0If1fX3HX7qkTxSSo2wwajAdBgNVHQ4EFgQUqcY01PFVE6B5BmH5Nj8M58DSA38w
+HwYDVR0jBBgwFoAUqcY01PFVE6B5BmH5Nj8M58DSA38wDwYDVR0TAQH/BAUwAwEB
+/zAXBgNVHREEEDAOggxleGFtcGxlLmNvbS4wCgYIKoZIzj0EAwIDSQAwRgIhAIA5
+CedgDrDitKL535ml7sXgAgkV3LCOgeBF3DX00eS/AiEAxVvv733pOkG3URljXIvU
+3y5v3c2Lp5NiNwzm3N4Izuw=
+-----END CERTIFICATE-----
+`
 const longHost = `${"a".repeat(63)}.${"b".repeat(63)}.ccccccc.net`
 
 describe("the address a pairing code tells a device to dial", () => {
@@ -194,6 +233,37 @@ describe("the address a pairing code tells a device to dial", () => {
   // answer only this machine.
   it.each(["127.0.0.2", "127.255.255.254", "::ffff:127.0.0.1", "localhost"])("says a TLS listener on %s answers only this machine", (host) => {
     expect(pairingAddressFor({ host, port: 47831, tls: { certPath: "/c" } }, () => oneName)).toMatchObject({ loopback: true })
+  })
+
+  // Round 2 review of b7867afa (P2): TLS checks an IP address only against
+  // the certificate's IP entries, so an IP literal written as a DNS entry is
+  // dialable only when an IP entry names it too.
+  it("does not carry an IP literal the certificate names only as a DNS entry", () => {
+    expect(certificateHostNames(ipAsName)).toEqual([])
+    expect(pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => ipAsName))
+      .toEqual({ problem: expect.stringContaining("names no host") })
+  })
+
+  it("carries an IP literal the certificate also names as an IP entry", () => {
+    expect(pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => ipAsNameAndAddress)).toEqual({
+      url: "wss://192.0.2.1:47831/rpc",
+      label: "192.0.2.1",
+      loopback: false,
+    })
+  })
+
+  // Round 2 review of b7867afa (P2): one final dot passes TLS, so it is a
+  // name a device can dial.
+  it("carries a name that ends in one final dot", () => {
+    const result = pairingAddressFor({ host: "100.80.185.103", port: 47831, tls: { certPath: "/c" } }, () => finalDot)
+    expect(result).toEqual({ url: "wss://example.com.:47831/rpc", label: "example.com.", loopback: false })
+    expect(pairingAddressSchema.safeParse(result).success).toBe(true)
+  })
+
+  // Round 2 review of b7867afa (P2): an IPv4-mapped address outside
+  // 127.0.0.0/8 is not loopback, whatever its hex digits begin with.
+  it("says a TLS listener on ::ffff:7.240.0.1 is reachable from elsewhere", () => {
+    expect(pairingAddressFor({ host: "::ffff:7.240.0.1", port: 47831, tls: { certPath: "/c" } }, () => oneName)).toMatchObject({ loopback: false })
   })
 
   // Without a certificate the wire takes ws:// only on 127.0.0.1, ::1 and
