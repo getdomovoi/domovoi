@@ -155,3 +155,27 @@ export function isMissingRepository(error: unknown): boolean {
   if (/detected dubious ownership/i.test(text)) return false
   return /not a git repository|unknown revision or path not in the working tree|bad revision 'HEAD'|cannot change to '/i.test(text)
 }
+
+// Fixed answers for the two inspection failures a person fixes outside the
+// repository. Neither quotes anything from the machine, so a CLI may repeat them.
+export const gitMissingMessage = "Git was not found on this machine's PATH. Install Git, then restart Domovoi so it can find it."
+export const gitOwnershipRefusedMessage = "Git refused this folder because a different user owns it. Add it to Git's safe.directory list, then open it again."
+
+// The public answer for a failed repository inspection, or undefined when the
+// failure keeps the internal path (a permission error, for one).
+export function repositoryInspectionRefusal(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined
+  const { code, syscall, stderr } = error as { code?: unknown; syscall?: unknown; stderr?: unknown }
+  if (code === "ENOENT" && typeof syscall === "string" && syscall.startsWith("spawn")) return gitMissingMessage
+  if (/detected dubious ownership/i.test(`${typeof stderr === "string" ? stderr : ""}\n${error.message}`)) {
+    return gitOwnershipRefusedMessage
+  }
+  return isMissingRepository(error) ? notARepositoryMessage : undefined
+}
+
+// The fixed project.open answers a CLI may repeat as they are.
+export const repeatableOpenMessages: ReadonlySet<string> = new Set([
+  notARepositoryMessage,
+  gitMissingMessage,
+  gitOwnershipRefusedMessage,
+])

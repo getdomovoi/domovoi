@@ -197,8 +197,7 @@ import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
   internalRpcErrorMessage,
-  isMissingRepository,
-  notARepositoryMessage,
+  repositoryInspectionRefusal,
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
@@ -7166,11 +7165,12 @@ export class DomovoiDaemon {
           )
         } catch (error) {
           if (error instanceof OperationTimeoutError || signal?.aborted) throw error
-          if (!isMissingRepository(error)) throw error
+          const refusal = repositoryInspectionRefusal(error)
+          if (refusal === undefined) throw error
           // The git error quotes the machine's paths and output, which stay in
           // the daemon log; the caller gets the one thing it can act on.
           this.#reportError("RPC project.open failed", error)
-          throw new PublicRpcError(invalidParams, notARepositoryMessage)
+          throw new PublicRpcError(invalidParams, refusal)
         }
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         if (this.#snapshot.project?.path === repository.root) {

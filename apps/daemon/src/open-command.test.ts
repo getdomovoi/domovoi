@@ -40,6 +40,19 @@ describe("runOpenCommand", () => {
     expect(deps.stderr).toHaveBeenCalledWith(`${notARepositoryMessage}\n`)
   })
 
+  it.each([
+    "Git was not found on this machine's PATH. Install Git, then restart Domovoi so it can find it.",
+    "Git refused this folder because a different user owns it. Add it to Git's safe.directory list, then open it again.",
+  ])("repeats the daemon's fixed answer %j", async (message) => {
+    const deps = dependencies({
+      open: vi.fn<OpenCommandDependencies["open"]>(async () => {
+        throw new Error(message)
+      }),
+    })
+    expect(await runOpenCommand(["open", "/code/app"], deps)).toBe(1)
+    expect(deps.stderr).toHaveBeenCalledWith(`${message}\n`)
+  })
+
   it("still reports only the fact of any other daemon failure", async () => {
     const deps = dependencies({
       open: vi.fn<OpenCommandDependencies["open"]>(async () => {

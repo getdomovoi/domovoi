@@ -136,18 +136,29 @@ describe("failures a person can act on", () => {
   })
 
   it.each([
-    ["git missing from PATH", gitFailure({ message: "spawn git ENOENT", code: "ENOENT", errno: -2, syscall: "spawn git", path: "git" })],
-    ["a dubious ownership refusal", gitFailure({ code: 128, stderr: "fatal: detected dubious ownership in repository at '/mnt/c/code/app'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /mnt/c/code/app\n" })],
-    ["a permission error", gitFailure({ message: "EACCES: permission denied, scandir '/code/locked'", code: "EACCES" })],
-  ])("does not call %s a folder without a repository", async (_name, failure) => {
+    ["git missing from PATH", gitFailure({ message: "spawn git ENOENT", code: "ENOENT", errno: -2, syscall: "spawn git", path: "git" }),
+      "Git was not found on this machine's PATH. Install Git, then restart Domovoi so it can find it."],
+    ["a dubious ownership refusal", gitFailure({ code: 128, stderr: "fatal: detected dubious ownership in repository at '/mnt/c/code/app'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /mnt/c/code/app\n" }),
+      "Git refused this folder because a different user owns it. Add it to Git's safe.directory list, then open it again."],
+  ])("names %s with its own fixed message", async (_name, failure, message) => {
     const daemon = new DomovoiDaemon({
       port: 0, statePath: ":memory:", workspaceService: workspaceService(async () => { throw failure }), errorSink: vi.fn(), agents: {},
     })
     daemons.push(daemon)
     const { port } = await daemon.start()
     const rpc = await connect(daemon, port)
-    const refused = await rpc("project.open", { path: "/code/app", client: "desktop" })
-    expect(refused.error?.message).not.toBe("That folder is not a Git repository with at least one commit")
+    expect((await rpc("project.open", { path: "/code/app", client: "desktop" })).error).toEqual({ code: -32602, message })
+  })
+
+  it("keeps a permission error internal", async () => {
+    const failure = gitFailure({ message: "EACCES: permission denied, scandir '/code/locked'", code: "EACCES" })
+    const daemon = new DomovoiDaemon({
+      port: 0, statePath: ":memory:", workspaceService: workspaceService(async () => { throw failure }), errorSink: vi.fn(), agents: {},
+    })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const rpc = await connect(daemon, port)
+    expect((await rpc("project.open", { path: "/code/locked", client: "desktop" })).error).toEqual({ code: -32603, message: "Internal daemon error" })
   })
 
   it("keeps a running turn free of a provider failure when steering it fails", async () => {
