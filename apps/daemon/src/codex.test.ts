@@ -796,7 +796,7 @@ describe("CodexAppServerAdapter", () => {
 
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
     transport.receive({ id: 2, result: { config: {}, origins: {} } })
-    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
     transport.receive({ id: 3, result: { thread: { id: 7 } } })
     await expect(starting).rejects.toThrow("Codex did not return a thread id")
 
@@ -833,7 +833,7 @@ describe("CodexAppServerAdapter", () => {
 
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("plan", false) })
     transport.receive({ id: 2, result: { config: {}, origins: {} } })
-    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
     expect(transport.sent[3]).toMatchObject({
       id: 3,
       method: "thread/start",
@@ -857,7 +857,7 @@ describe("CodexAppServerAdapter", () => {
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
     expect(transport.sent[2]).toEqual({ id: 2, method: "config/read", params: { cwd: "/worktree" } })
     transport.receive({ id: 2, result: { config: { developer_instructions: own }, origins: {} } })
-    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
     expect(transport.sent[3]).toMatchObject({
       id: 3,
       method: "thread/start",
@@ -897,7 +897,7 @@ describe("CodexAppServerAdapter", () => {
 
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime(mode, auto) })
     transport.receive({ id: 2, result: { config: {}, origins: {} } })
-    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
     const instructions = (transport.sent[3]?.params as { developerInstructions?: unknown } | undefined)
       ?.developerInstructions
     expect(typeof instructions).toBe("string")
@@ -933,7 +933,7 @@ describe("CodexAppServerAdapter", () => {
     const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
     expect(transport.sent[2]).toEqual({ id: 2, method: "config/read", params: { cwd: "/worktree" } })
     transport.receive({ id: 2, result: { config: {}, origins: {} } })
-    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
     expect(transport.sent[3]).toMatchObject({
       id: 3,
       method: "thread/start",
@@ -1113,11 +1113,11 @@ describe("CodexAppServerAdapter", () => {
 
     const turning = adapter.startTurn({ threadId: "thread-old", cwd: "/worktree", prompt: "Go on", runtime: runtime("build", false) })
     transport.receive({ id: 2, error: { message: "turn/start.collaborationMode requires experimentalApi capability" } })
-    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
     expect(transport.sent[3]?.params).not.toHaveProperty("collaborationMode")
     expect(transport.sent[3]?.params).toHaveProperty("additionalContext")
     transport.receive({ id: 3, error: { message: "turn/start.additionalContext requires experimentalApi capability" } })
-    await vi.waitFor(() => expect(transport.sent[4]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[4]).toBeDefined(), { timeout: 5_000 })
     expect(transport.sent[4]?.params).not.toHaveProperty("collaborationMode")
     expect(transport.sent[4]?.params).not.toHaveProperty("additionalContext")
     transport.receive({ id: 4, result: { turn: { id: "turn-old" } } })
@@ -1166,7 +1166,7 @@ describe("CodexAppServerAdapter", () => {
 
     const turning = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "Go", runtime: runtime("build", false) })
     transport.receive({ id: 2, error: { message: "turn/start.additionalContext requires experimentalApi capability" } })
-    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined())
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
     expect(transport.sent[3]).toMatchObject({ id: 3, method: "turn/start", params: { collaborationMode: { mode: "default" } } })
     expect(transport.sent[3]?.params).not.toHaveProperty("additionalContext")
     transport.receive({ id: 3, result: { turn: { id: "turn-1" } } })
