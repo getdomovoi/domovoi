@@ -178,6 +178,40 @@ describe("StdioCodexTransport", () => {
     }
   })
 
+  it("keeps the exit reason over malformed output an inherited pipe delivers after the exit", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    child.stderr.write("Not logged in\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("exit", 1, null)
+    child.stdout.write("not json from a grandchild\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("close", 1, null)
+
+    expect(error).toHaveBeenCalledTimes(1)
+    expect((error.mock.calls[0]?.[0] as Error).message).toBe("Codex app-server exited with code 1: Not logged in")
+  })
+
+  it.runIf(process.platform !== "win32")("keeps the sign-in reason when a background process writes a malformed line after the exit", async () => {
+    for (let run = 0; run < 5; run += 1) {
+      const transport = new StdioCodexTransport(() => spawn(
+        "sh",
+        ["-c", "(sleep 0.1; echo 'not json') & echo 'Not logged in' >&2; exit 1"],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      ))
+      const failure = new Promise<Error>((resolve) => transport.onError(resolve))
+      const message = (await failure).message
+
+      expect(message, `run ${run}`).toBe("Codex app-server exited with code 1: Not logged in")
+      await transport.close()
+    }
+  })
+
   it("reads stderr that arrives after the exit and before the streams close", async () => {
     const child = new FakeChild()
     const transport = new StdioCodexTransport(
