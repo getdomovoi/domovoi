@@ -646,6 +646,23 @@ async function gitDirectory(
   return result.stdout.trim()
 }
 
+// Git's output as it is, for NUL-delimited records whose first or last name
+// may begin or end with whitespace.
+async function rawGit(
+  repositoryPath: string,
+  arguments_: string[],
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted()
+  const result = await trackRestoreCommand(() => execute("git", gitArguments(repositoryPath, arguments_), {
+    env: gitEnvironment(),
+    encoding: "utf8",
+    maxBuffer: maximumGitOutputBytes,
+    signal,
+  }))
+  return result.stdout
+}
+
 async function boundedGit(
   repositoryPath: string,
   arguments_: string[],
@@ -1411,7 +1428,7 @@ export class GitWorkspaceService implements WorkspaceService {
     try {
       await git(worktreePath, ["add", "--all"], signal)
       await this.#afterCheckpointStaging?.()
-      const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+      const names = await rawGit(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
       changedFiles = names.split("\0").filter(Boolean)
       if (changedFiles.length > 0) {
         await git(worktreePath, [

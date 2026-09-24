@@ -84,6 +84,41 @@ describe("GitWorkspaceService", () => {
     )
   })
 
+  describe("a file whose name is only whitespace", () => {
+    // git() trims its output, which strips such a name from a NUL-delimited
+    // list when it is the first or last entry.
+    async function sessionWithWhitespaceFile(prefix: string) {
+      const scratch = await mkdtemp(join(tmpdir(), prefix))
+      scratchDirectories.push(scratch)
+      const repositoryPath = join(scratch, "project")
+      await execute("git", ["init", "--initial-branch=main", repositoryPath])
+      for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"], ["user.name", "Test User"], ["user.email", "test@example.invalid"]] as const) {
+        await execute("git", ["-C", repositoryPath, "config", key, value])
+      }
+      await writeFile(join(repositoryPath, "README.md"), "source\n")
+      await execute("git", ["-C", repositoryPath, "add", "README.md"])
+      await execute("git", ["-C", repositoryPath, "commit", "-m", "initial"])
+      const service = new GitWorkspaceService(join(scratch, "worktrees"))
+      const workspace = await service.createSessionWorkspace(repositoryPath, `session-${prefix.replace(/\W/g, "")}`)
+      await writeFile(join(workspace.path, " "), "space\n")
+      return { service, workspace }
+    }
+
+    it("is checkpointed when it is the only change", async () => {
+      const { service, workspace } = await sessionWithWhitespaceFile("domovoi-checkpoint-space-")
+      const checkpoint = await service.checkpoint(workspace.path, "space")
+      expect(checkpoint.changedFiles).toEqual([" "])
+      const listed = (await execute("git", ["-C", workspace.path, "show", "--name-only", "-z", "--format=", checkpoint.commit])).stdout
+      expect(listed.split("\0").filter(Boolean)).toEqual([" "])
+    })
+
+    it("is named in the session's evidence", async () => {
+      const { service, workspace } = await sessionWithWhitespaceFile("domovoi-evidence-space-")
+      const evidence = await service.evidence(workspace.path)
+      expect(evidence.files.map(({ path }) => path)).toContain(" ")
+    })
+  })
+
   it("creates an isolated session worktree and checkpoint", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-workspace-"))
     scratchDirectories.push(scratch)
