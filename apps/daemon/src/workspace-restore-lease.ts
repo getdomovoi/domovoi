@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import type { PromiseWithChild } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { closeSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { z } from "zod"
 import { claimExclusiveFileLease, type FileLease } from "./file-lease.js"
@@ -44,6 +45,7 @@ export class RestoreOperationLease {
   readonly #ownerPath: string
   readonly #owner: RestoreOwner
   readonly #commands = new Set<Promise<unknown>>()
+  #published: Promise<void> = Promise.resolve()
 
   constructor(root: string, sessionId: string, token: string) {
     const claimPath = join(root, ".restore-claims", sessionId)
@@ -75,7 +77,7 @@ export class RestoreOperationLease {
         // recorded settlement of every Git command.
         unlinkSync(claimPath)
       }
-      this.#publish()
+      this.#publishNow()
     } catch (error) {
       this.#file.release()
       throw error
@@ -108,7 +110,7 @@ export class RestoreOperationLease {
     if (this.#owner.descendantsUnknown) throw new Error("Git descendant liveness is unknown after an interrupted command")
     if (this.#owner.starting + this.#owner.children.length >= 32) throw new Error("Too many restore subprocesses")
     this.#owner.starting++
-    this.#publish()
+    await this.#publish()
     let pending: PromiseWithChild<T> | undefined
     let closed: Promise<void> | undefined
     let pid: number | undefined
@@ -124,7 +126,7 @@ export class RestoreOperationLease {
       pid = pending.child.pid
       this.#owner.starting--
       if (pid !== undefined) this.#owner.children.push(pidSchema.parse(pid))
-      this.#publish()
+      await this.#publish()
       outcome = { value: await pending }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") this.#owner.descendantsUnknown = true
@@ -136,7 +138,7 @@ export class RestoreOperationLease {
     if (!pending) this.#owner.starting--
     if (pid !== undefined) this.#owner.children = this.#owner.children.filter((child) => child !== pid)
     let recordFailure: { error: unknown } | undefined
-    try { this.#publish() } catch (error) { recordFailure = { error } }
+    try { await this.#publish() } catch (error) { recordFailure = { error } }
     if (recordFailure) {
       if ("error" in outcome) throw new AggregateError([outcome.error, recordFailure.error], "Restore command and exit recording failed", { cause: outcome.error })
       throw recordFailure.error
@@ -145,11 +147,34 @@ export class RestoreOperationLease {
     return outcome.value
   }
 
-  #publish(): void {
+  // The record is written to a new file and renamed over the old one, so a
+  // reader sees one whole record or the previous one. It is not flushed to
+  // disk: the lease guards against a crash of the daemon process, and a
+  // completed rename survives that. Only an OS crash or power loss can lose an
+  // unflushed record, and after one no Git child survives; recovery already
+  // refuses to reclaim a record that lists children or cannot be read. A
+  // flush cost up to 0.85 s per write on Windows runners, three writes per
+  // Git command.
+  #publishNow(): void {
     mkdirSync(dirname(this.#ownerPath), { recursive: true, mode: 0o700 })
     const temporary = `${this.#ownerPath}.${randomUUID()}.tmp`
-    writeFileSync(temporary, JSON.stringify(this.#owner), { flag: "wx", mode: 0o600, flush: true })
+    writeFileSync(temporary, JSON.stringify(this.#owner), { flag: "wx", mode: 0o600 })
     renameSync(temporary, this.#ownerPath)
+  }
+
+  // Writes are queued so that concurrent commands rename in order, and each
+  // write captures the owner state when it runs, so the last rename carries
+  // the latest state. Only the write is asynchronous; the rename stays
+  // synchronous, as the durability lint requires of a bare rename.
+  #publish(): Promise<void> {
+    const write = this.#published.catch(() => undefined).then(async () => {
+      await mkdir(dirname(this.#ownerPath), { recursive: true, mode: 0o700 })
+      const temporary = `${this.#ownerPath}.${randomUUID()}.tmp`
+      await writeFile(temporary, JSON.stringify(this.#owner), { flag: "wx", mode: 0o600 })
+      renameSync(temporary, this.#ownerPath)
+    })
+    this.#published = write
+    return write
   }
 }
 

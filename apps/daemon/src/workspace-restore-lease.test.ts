@@ -1,6 +1,6 @@
 import { execFile, type ChildProcess, type PromiseWithChild } from "node:child_process"
 import { EventEmitter } from "node:events"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { renameSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -14,10 +14,19 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
   return { ...actual, renameSync: vi.fn(actual.renameSync) }
 })
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+})
 
 const directories: string[] = []
 const execute = promisify(execFile)
-afterEach(async () => { vi.restoreAllMocks(); vi.mocked(renameSync).mockReset(); await removeScratchDirectories(directories) })
+afterEach(async () => {
+  vi.restoreAllMocks()
+  vi.mocked(renameSync).mockReset()
+  vi.mocked(writeFile).mockClear()
+  await removeScratchDirectories(directories)
+})
 
 async function abandonedClaim(overrides: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), "domovoi-restore-owner-"))
@@ -30,6 +39,14 @@ async function abandonedClaim(overrides: Record<string, unknown> = {}) {
   await writeFile(claimPath, token)
   await writeFile(ownerPath, JSON.stringify({ version: 2, token, ownerPid: 12345, descendantsUnknown: false, starting: 0, children: [], ...overrides }))
   return { root, token, claimPath, ownerPath }
+}
+
+// Record writes are asynchronous, so a command launches only after its
+// starting record lands. Wait for the record before driving a fake child.
+async function recorded(ownerPath: string, expected: Record<string, unknown>) {
+  await vi.waitFor(async () => {
+    expect(JSON.parse(await readFile(ownerPath, "utf8"))).toMatchObject(expected)
+  }, { timeout: 5_000 })
 }
 
 function noSuchProcess() { return Object.assign(new Error("No such process"), { code: "ESRCH" }) }
@@ -94,13 +111,14 @@ describe("restore owner reclamation", () => {
     const failure = new Error("aborted before child close")
     failure.name = errorName
     const pending = Object.assign(Promise.reject(failure), { child }) as PromiseWithChild<never>
+    // Launch runs after the starting record lands; mark the fixture's early rejection as observed.
+    void pending.catch(() => undefined)
     const result = lease.run(() => trackRestoreCommand(() => pending))
     let settled = false
     const observed = result.then(() => { settled = true }, () => { settled = true })
     try {
-      await new Promise<void>((resolve) => setImmediate(resolve))
+      await recorded(f.ownerPath, { starting: 0, children: [45678] })
       expect(settled).toBe(false)
-      expect(JSON.parse(await readFile(f.ownerPath, "utf8"))).toMatchObject({ starting: 0, children: [45678] })
       expect(() => new RestoreOperationLease(f.root, "session-test", randomUUID())).toThrow("operation lease")
       child.emit("close", null, signal)
       await expect(result).rejects.toBe(failure)
@@ -130,6 +148,9 @@ describe("restore owner reclamation", () => {
     })))
     const settled = Promise.allSettled(results)
     try {
+      await vi.waitFor(async () => {
+        expect((JSON.parse(await readFile(ownerPath, "utf8")) as { children: number[] }).children).toHaveLength(2)
+      }, { timeout: 5_000 })
       const record = JSON.parse(await readFile(ownerPath, "utf8")) as { children: number[] }
       expect(record.children).toEqual(children.map(({ child }) => child.pid))
       expect(record.children).toHaveLength(2)
@@ -152,6 +173,8 @@ describe("restore owner reclamation", () => {
     Object.defineProperty(sibling, "pid", { value: 56789 })
     const failure = new Error("First Git query failed")
     const failed = Object.assign(Promise.reject(failure), { child: failedChild }) as PromiseWithChild<never>
+    // Launch runs after the starting record lands; mark the fixture's early rejection as observed.
+    void failed.catch(() => undefined)
     let finishSibling!: () => void
     const pending = Object.assign(new Promise<void>((resolve) => { finishSibling = resolve }), { child: sibling }) as PromiseWithChild<void>
     const result = lease.run(() => Promise.all([
@@ -160,9 +183,10 @@ describe("restore owner reclamation", () => {
     ]))
     let settled = false
     const observed = result.then(() => { settled = true }, () => { settled = true })
-    failedChild.emit("close", 1, null)
     try {
-      await new Promise<void>((resolve) => setImmediate(resolve))
+      await recorded(join(root, ".restore-leases", "session-test.json"), { starting: 0, children: [45678, 56789] })
+      failedChild.emit("close", 1, null)
+      await recorded(join(root, ".restore-leases", "session-test.json"), { starting: 0, children: [56789] })
       expect(settled).toBe(false)
       expect(JSON.parse(await readFile(join(root, ".restore-leases", "session-test.json"), "utf8")))
         .toMatchObject({ starting: 0, children: [56789] })
@@ -189,12 +213,58 @@ describe("restore owner reclamation", () => {
     const primary = new Error("Git could not read the repository")
     const cleanup = Object.assign(new Error("Cannot record Git exit"), { code: "EIO" })
     const pending = Object.assign(Promise.reject(primary), { child }) as PromiseWithChild<never>
+    // Launch runs after the starting record lands; mark the fixture's early rejection as observed.
+    void pending.catch(() => undefined)
     const result = lease.run(() => trackRestoreCommand(() => pending))
     const observed = result.catch((error: unknown) => error)
+    await recorded(join(root, ".restore-leases", "session-test.json"), { starting: 0, children: [45678] })
     vi.mocked(renameSync).mockImplementationOnce(() => { throw cleanup })
     child.emit("close", 1, null)
     try {
       expect(await observed).toMatchObject({ name: "AggregateError", errors: [primary, cleanup], cause: primary })
     } finally { lease.release() }
+  })
+
+  it("replaces the record by rename and never flushes it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-restore-rename-"))
+    directories.push(root)
+    const ownerPath = join(root, ".restore-leases", "session-test.json")
+    const lease = new RestoreOperationLease(root, "session-test", randomUUID())
+    const child = new EventEmitter() as ChildProcess
+    Object.defineProperty(child, "pid", { value: 45678 })
+    const pending = Object.assign(new Promise<void>((resolve) => child.once("close", () => resolve())), { child }) as PromiseWithChild<void>
+    const result = lease.run(() => trackRestoreCommand(() => pending))
+    try {
+      await recorded(ownerPath, { starting: 0, children: [45678] })
+      child.emit("close", 0, null)
+      await result
+      expect(JSON.parse(await readFile(ownerPath, "utf8"))).toMatchObject({ starting: 0, children: [] })
+      const renames = vi.mocked(renameSync).mock.calls.map(([from, to]): [string, string] => [String(from), String(to)])
+      expect(renames).toHaveLength(4)
+      for (const [from, to] of renames) {
+        expect(to).toBe(ownerPath)
+        expect(from.startsWith(`${ownerPath}.`) && from.endsWith(".tmp")).toBe(true)
+      }
+      const writes = vi.mocked(writeFile).mock.calls.filter(([path]) => String(path).startsWith(`${ownerPath}.`))
+      expect(writes).toHaveLength(3)
+      for (const [, , options] of writes) {
+        expect(options).toMatchObject({ flag: "wx", mode: 0o600 })
+        expect(options).not.toHaveProperty("flush")
+      }
+      expect((await readdir(join(root, ".restore-leases"))).filter((name) => name.endsWith(".tmp"))).toEqual([])
+    } finally {
+      child.emit("close", 0, null)
+      await result.catch(() => undefined)
+      lease.release()
+    }
+  })
+
+  it("refuses to reclaim a claim whose record was torn mid-write", async () => {
+    const f = await abandonedClaim()
+    const whole = await readFile(f.ownerPath, "utf8")
+    await writeFile(f.ownerPath, whole.slice(0, Math.floor(whole.length / 2)))
+    vi.spyOn(process, "kill").mockImplementation(() => { throw noSuchProcess() })
+    expect(() => new RestoreOperationLease(f.root, "session-test", randomUUID())).toThrow("no readable recovery record")
+    await expect(readFile(f.claimPath, "utf8")).resolves.toBe(f.token)
   })
 })
