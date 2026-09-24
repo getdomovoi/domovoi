@@ -245,6 +245,8 @@ import {
   type RpcOutboundBackpressureOptions,
   type RpcOutboundSocket,
 } from "./rpc-outbound.js"
+import { notificationMessage } from "./notification-message.js"
+import type { NotificationMethod, NotificationParams } from "@getdomovoi/protocol"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
@@ -2234,7 +2236,7 @@ export class DomovoiDaemon {
     return record
   }
 
-  #broadcastNotification(method: string, params: unknown): void {
+  #broadcastNotification<M extends NotificationMethod>(method: M, params: NotificationParams<M>): void {
     this.#notifyClients(this.#rpcClients, method, params)
   }
 
@@ -2246,7 +2248,7 @@ export class DomovoiDaemon {
     return binding.client !== "phone" && binding.client !== "tablet" && binding.clientAccess !== "watching"
   }
 
-  #notifyTerminalAudience(terminal: ActiveTerminal, method: string, params: unknown): void {
+  #notifyTerminalAudience<M extends NotificationMethod>(terminal: ActiveTerminal, method: M, params: NotificationParams<M>): void {
     this.#notifyClients(
       [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket)),
       method,
@@ -2254,8 +2256,22 @@ export class DomovoiDaemon {
     )
   }
 
-  #notifyClients(clients: Iterable<RpcOutboundSocket>, method: string, params: unknown): void {
-    const message = JSON.stringify({ jsonrpc: "2.0", method, params })
+  #notificationMessage<M extends NotificationMethod>(method: M, params: NotificationParams<M>): string | undefined {
+    try {
+      return notificationMessage(method, params)
+    } catch (error) {
+      this.#reportError(`Domovoi did not send ${method}: its payload does not match the protocol schema`, error)
+      return undefined
+    }
+  }
+
+  #notifyClients<M extends NotificationMethod>(
+    clients: Iterable<RpcOutboundSocket>,
+    method: M,
+    params: NotificationParams<M>,
+  ): void {
+    const message = this.#notificationMessage(method, params)
+    if (message === undefined) return
 
     for (const client of clients) {
       if (
@@ -2270,11 +2286,7 @@ export class DomovoiDaemon {
           message,
           () => {
             this.#flushPendingWorkspaceDeltas()
-            return JSON.stringify({
-              jsonrpc: "2.0",
-              method: "workspace.changed",
-              params: workspaceSnapshotForClient(this.#snapshot),
-            })
+            return this.#notificationMessage("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
           },
         )
       }

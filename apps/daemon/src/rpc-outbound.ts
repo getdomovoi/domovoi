@@ -22,7 +22,7 @@ export type RpcOutboundSocket = {
 }
 
 type PendingResync = {
-  message: () => string
+  message: () => string | undefined
   timer: Timer
   pollsRemaining: number
 }
@@ -102,7 +102,7 @@ export class RpcOutboundBackpressure {
     socket: RpcOutboundSocket,
     method: string,
     message: string,
-    resyncMessage: () => string,
+    resyncMessage: () => string | undefined,
   ): boolean {
     if (terminalNotifications.has(method)) {
       if (socket.readyState !== openSocketState) return false
@@ -130,7 +130,7 @@ export class RpcOutboundBackpressure {
     for (const socket of [...this.#pendingResyncs.keys()]) this.forget(socket)
   }
 
-  #retainResync(socket: RpcOutboundSocket, message: () => string): void {
+  #retainResync(socket: RpcOutboundSocket, message: () => string | undefined): void {
     const existing = this.#pendingResyncs.get(socket)
     if (existing) {
       existing.message = message
@@ -156,7 +156,9 @@ export class RpcOutboundBackpressure {
     }
     if (this.#bufferedBytes(socket) <= this.#lowWaterBytes) {
       this.#pendingResyncs.delete(socket)
-      this.send(socket, pending.message())
+      const message = pending.message()
+      if (message === undefined) this.#closeSlowClient(socket)
+      else this.send(socket, message)
       return
     }
     if (pending.pollsRemaining <= 1) {
