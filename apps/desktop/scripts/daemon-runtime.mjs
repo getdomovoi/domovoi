@@ -199,7 +199,7 @@ export async function pruneDaemonRuntime(root, { platform, arch }) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name)
       if (entry.isDirectory()) await walk(path)
-      else if (neverLoaded.test(entry.name) && !/^licen[cs]e/i.test(entry.name)) await drop(path)
+      else if (neverLoaded.test(entry.name) && !/^(licen[cs]e|notice|copying)/i.test(entry.name)) await drop(path)
     }
   }
   await walk(root)

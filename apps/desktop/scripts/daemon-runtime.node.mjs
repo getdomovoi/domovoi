@@ -76,13 +76,14 @@ test("prunes the shipped daemon to what the runtime loads on the packaged platfo
       "node_modules/node-pty/third_party/conpty/conpty.dll", "node_modules/node-pty/scripts/prebuild.js",
       "node_modules/zod/index.cjs", "node_modules/zod/index.d.cts", "node_modules/zod/src/index.ts", "node_modules/zod/CHANGELOG.md",
       "node_modules/@x/y/dist/a.mjs", "node_modules/@x/y/dist/a.d.mts", "node_modules/@x/y/dist/a.mjs.map", "node_modules/@x/y/LICENSE.md",
+      "node_modules/@x/y/NOTICE.md", "node_modules/@x/y/COPYING.md",
       "node_modules/.bin/yaml",
     ]) await file(path)
     const removed = await pruneDaemonRuntime(root, { platform: "darwin", arch: "arm64" })
     const kept = (await readdir(root, { recursive: true })).map((p) => p.replaceAll("\\", "/")).filter((p) => /\.[a-z]+$|pty\.node|spawn-helper|LICENSE$/.test(p)).sort()
     assert.deepEqual(kept, [
       "dist/index.js", "dist/public.js",
-      "node_modules/@x/y/LICENSE.md", "node_modules/@x/y/dist/a.mjs",
+      "node_modules/@x/y/COPYING.md", "node_modules/@x/y/LICENSE.md", "node_modules/@x/y/NOTICE.md", "node_modules/@x/y/dist/a.mjs",
       "node_modules/node-pty/LICENSE", "node_modules/node-pty/lib/index.js", "node_modules/node-pty/package.json",
       "node_modules/node-pty/prebuilds/darwin-arm64/pty.node",
       "node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
