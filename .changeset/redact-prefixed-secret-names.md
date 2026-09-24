@@ -11,5 +11,5 @@ prefix in assignments, `export`, PowerShell `$env:`, `set "..."`, JSON-style key
 flags and `-Dprefix.password=` properties, including npm's `//registry.npmjs.org/:_authToken=` and
 `npm_config__authToken=`. `SECRET_KEY`, `DJANGO_SECRET_KEY` and `STRIPE_SECRET_KEY` are caught too.
 A suffix still does not count, so `TOKEN_BUDGET=4096`, `TOKENIZERS_PARALLELISM=false` and
-`SECRET_KEY_BASE` are left alone, and a negated flag such as `psql --no-password mydb` or
-`mysql --skip-password mydb` is not taken as a secret.
+`SECRET_KEY_BASE` are left alone, and a negated flag such as `psql --no-password mydb`,
+`mysql --skip-password mydb` or `tool --db-no-password mydb` is not taken as a secret.

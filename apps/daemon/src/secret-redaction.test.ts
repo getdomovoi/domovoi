@@ -8,6 +8,7 @@ import {
   redactDurableCommand,
   redactDurableOutput,
   redactDurableText,
+  TerminalOutputRedactor,
 } from "./secret-redaction.js"
 
 const secrets = [
@@ -122,9 +123,31 @@ describe("durable secret redaction", () => {
       "psql --no-password mydb",
       "mysql --skip-password mydb",
       "pg_dump --without-password mydb",
+      "tool --db-no-password mydb",
+      "tool --db_skip.password mydb",
     ]) {
       expect(redactDurableCommand(safe), safe).toEqual({ value: safe, redacted: false, truncated: false })
     }
+  })
+
+  it.each([
+    ["dashes", "-"],
+    ["underscores", "_"],
+    ["dots", "."],
+    ["mixed separators", "-_."],
+    ["repeated flag starts", "--a"],
+    ["repeated property starts", "-D"],
+    ["repeated property names", "-Da"],
+  ])("scans a 50,000 character run of %s within 200 ms", (_shape, unit) => {
+    const text = unit.repeat(Math.ceil(50_000 / unit.length)).slice(0, 50_000)
+    let started = performance.now()
+    expect(redactDurableOutput(text).value).toBe(text)
+    expect(performance.now() - started).toBeLessThan(200)
+
+    started = performance.now()
+    const redactor = new TerminalOutputRedactor()
+    expect(`${redactor.push(text)}${redactor.flush()}`).toBe(text)
+    expect(performance.now() - started).toBeLessThan(200)
   })
 
   it("is idempotent and keeps replacement markers stable", () => {
