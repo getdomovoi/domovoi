@@ -11,7 +11,9 @@ once it has read them, including when the desktop app passes its own environment
 in memory so a second start in the same process uses the same bearer and path. The kept values are
 pinned to the profile directory that named them (its device and inode), and only a later read of the
 process environment for that same profile gets them back. Every acquisition takes them out first,
-including one that refuses. `AcquireLocalDaemonOptions` and `ProductionDaemonOptions` take
+including one that refuses, before it reads any option. `DOMOVOI_RELAY_CREDENTIAL_FILE` is
+taken and pinned the same way. The desktop app takes all three, and its development daemon token,
+out of its environment as the first thing its main process does. `AcquireLocalDaemonOptions` and `ProductionDaemonOptions` take
 `environmentOverrides`, settings added on top of the environment, which the desktop uses in
 development instead of a copy of its environment. Overrides may not set `DOMOVOI_AUTH_TOKEN`,
 `DOMOVOI_CREDENTIAL_PATH` or `DOMOVOI_RELAY_CREDENTIAL_FILE`; an acquisition given such an override

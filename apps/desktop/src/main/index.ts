@@ -1,3 +1,6 @@
+// First: the inherited credentials leave process.env before any other module
+// of the app runs (see inherited-environment.ts).
+import { developmentEnvironment } from "./inherited-environment.js"
 import { homedir, hostname } from "node:os"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
@@ -102,22 +105,23 @@ function appendDomovoiMainLog(logPath: string, text: string): void {
   appendFileSync(logPath, text)
 }
 
+const developmentLoop = developmentEnvironment()
 const developmentLoopConfigured = !app.isPackaged && Boolean(
-  process.env.DOMOVOI_DEV_FIXTURE_URL
-    || process.env.DOMOVOI_DEV_DAEMON_URL
-    || process.env.DOMOVOI_DEV_DAEMON_TOKEN,
+  developmentLoop.DOMOVOI_DEV_FIXTURE_URL
+    || developmentLoop.DOMOVOI_DEV_DAEMON_URL
+    || developmentLoop.DOMOVOI_DEV_DAEMON_TOKEN,
 )
 const developmentLoopModule = developmentLoopConfigured
   ? await import("./dev-fixture-seam.js")
   : undefined
 const developmentLoopEndpoint = developmentLoopModule?.devLoopEndpoint({
   isPackaged: false,
-  environment: process.env,
+  environment: developmentLoop,
 })
 const daemonSeam = developmentLoopModule
   ? developmentLoopModule.resolveDesktopDaemonSeam({
       isPackaged: false,
-      environment: process.env,
+      environment: developmentLoop,
       acquire: acquireLocalDaemon,
     })
   : acquireLocalDaemon
