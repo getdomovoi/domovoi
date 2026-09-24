@@ -1488,7 +1488,7 @@ export class GitWorkspaceService implements WorkspaceService {
     try {
       await git(worktreePath, ["add", "--all"], signal)
       await this.#afterCheckpointStaging?.()
-      const names = await git(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
+      const names = await rawGit(worktreePath, ["diff", "--cached", "--name-only", "-z"], signal)
       changedFiles = names.split("\0").filter(Boolean)
       if (changedFiles.length > 0) {
         await git(worktreePath, [
