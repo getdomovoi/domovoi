@@ -13,7 +13,7 @@ import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { exitAfterStderr } from "./flushed-exit.js"
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
 import { OperationDeadline } from "./operation-deadline.js"
-import { callDaemon, type CliRpcTarget } from "./cli-rpc.js"
+import { callDaemon, readDaemonResult, type CliRpcTarget } from "./cli-rpc.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
@@ -24,7 +24,7 @@ import { listWslDistributions } from "./wsl-list.js"
 import { distributionPath } from "./wsl-path.js"
 import { discoverWslMachines } from "./wsl-discovery.js"
 import { runWslCommand } from "./wsl-command.js"
-import { type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { rpcMethods, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
@@ -38,10 +38,10 @@ async function requestPairingCode(
   token: string,
   targetClient?: ClientKind,
 ): Promise<DeviceIssueCodeResult> {
-  return await callDaemon({
+  return readDaemonResult("device.issueCode", rpcMethods["device.issueCode"].result, await callDaemon({
     target: config, token, method: "device.issueCode",
     params: targetClient === undefined ? {} : { targetClient },
-  }) as DeviceIssueCodeResult
+  }))
 }
 
 function isLoopbackListener(host: string): boolean {

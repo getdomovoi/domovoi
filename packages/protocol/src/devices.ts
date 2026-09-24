@@ -226,7 +226,7 @@ export const deviceIssueCodeResultSchema = z.object({
 export const deviceRedeemCodeParamsSchema = z.object({
   code: pairingCodeSchema,
   label: deviceLabelSchema,
-  protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  protocolVersion: protocolVersionSchema,
 }).strict()
 
 export const deviceListParamsSchema = z.object({}).strict()
