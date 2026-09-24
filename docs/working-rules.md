@@ -386,6 +386,69 @@ restatement, and neither ramp can drift from the other because they describe dif
 but the phone ramp living here rather than upstream is the same fork question as `D1`, arriving as
 an addition instead of a summary.
 
+#### Changing a signed file under `design/`
+
+Moved here on 2026-09-22 from `bab32d9` (2026-09-11), a commit on
+`chore/plans-and-v2-design-vendor` that never reached `main`. For eleven days the procedure lived
+only on that branch and in an agent's notes, which is the failure this entry is about: knowledge
+held somewhere the repository cannot read. Checked against `main` at 35a0cc6d before moving; the
+changes from the original are the project name as `REVISIONS.json` records it, where the
+design-system id appears, the precedent shas (the original cited branch shas), the `--check` and
+bare-flag details read from `scripts/design-revision.mjs`, and the note on step 1. Step 5, the
+conformance and design-rule re-derivation, was added on 2026-09-23; the original stopped at four.
+
+**The source of record** is Claude Design project `a3b4404e-4d0c-451e-8dd2-203116a76c06`, named
+"Relay multi-device platform". `design/REVISIONS.json` records it as `source`. Recorded
+2026-09-11: DesignSync `list_projects` does not show it, because that call lists design-system
+projects and this one is an ordinary project (`PROJECT_TYPE_PROJECT`); reach it with
+`get_project` or `list_files` and the id. The design system is a different project,
+`881e2b70-d39a-49b0-bc47-ef5084e64cc7` (the `_ds/` path the v2 designs load their tokens from),
+and the `_ds/` copy bound into a session is a third artefact. Those three are the drift this entry
+opens with.
+
+**The five steps**, in order, all in one commit:
+
+1. Correct the file in `a3b4404e` (`finalize_plan`, then `write_files`). Edit a fresh fetch of the
+   live file, never the vendored copy under `design/`: on 2026-09-13 a write built from the
+   vendored copy dropped a section the live file had, and only the read-back caught it.
+2. Read it back with `get_file` and confirm the change landed and nothing else moved.
+3. Copy it into `design/`. This is a re-vendor, never an edit of the vendored copy.
+4. `pnpm design:revision` (`node scripts/design-revision.mjs`), then
+   `node scripts/design-revision.mjs --check`, which prints `design/ matches the recorded revision`.
+5. Re-derive what reads the changed file, then run the checks `pnpm release:invariants` runs on it.
+   A v2 design mapped in `docs/design-conformance/v2-manifest.json` has an inventory under
+   `docs/design-conformance/` that records its sha256, so step 4 alone leaves
+   `pnpm design:conformance` red. Re-derive that inventory as `docs/design-conformance/README.md`
+   says: classify each new string into an element's `copy`, `sample` or `annotations`, drop claims
+   the design no longer draws, then record the new sha256 and today's `derivedOn`. Run
+   `pnpm design:conformance` until it exits 0. A change to
+   `design/design_system_domovoi/_adherence.oxlintrc.json`, `tokens/typography.css` or
+   `readme.md` there also needs `pnpm design:rule`, then `node scripts/design-rule.mjs --check`.
+   Checked on 2026-09-23 on a scratch copy: adding one string to the Team v2 design and running
+   step 4 left `design:conformance` failing on the digest and the unclaimed string; recording both
+   in `team-v2.json` made it exit 0.
+
+`--accept-new=<path>` is for additions only, one flag per new file; a bare `--accept-new` is an
+error. A content change needs no flag, only the regenerate. Precedents on `main`: 17cf141b
+(Desktop V2 re-vendored with checkpoint-only fork) and e436a5e5 (the phone-surface line corrected
+upstream, then re-vendored).
+
+This is the one place rule 5 does not apply. Regenerating a digest beside the change is normally
+how a checksum comes to verify itself. Here the content came from upstream rather than from this
+repository, so the digest records a provenance rather than blessing an edit. The distinction is
+the method, and it is why the gate's refusal reads as absolute when it is not.
+
+**The gap, named rather than closed.** `REVISIONS.json` records `source`, and nothing verifies that
+source is still reachable. If the project were renamed, moved or removed, every future re-vendor
+would be impossible and no gate would say so: the vendored files would keep matching their
+recorded digests, and `design/ matches the recorded revision` would go on passing while the thing
+it points at was gone.
+
+It is not closable from CI. Reaching the project needs a DesignSync token CI does not have, so a
+check would pass locally and skip in CI, a gate that is green for a reason unrelated to what it
+claims. Naming it here is the whole remedy available. Whoever finds `source` unreachable should
+edit this paragraph rather than file a bug against the checker.
+
 ### D6 · every `verify` run depends on a third-party CDN being up
 Found 2026-09-11 when `#363` failed `verify (macos-latest)` on a comment-only commit. The
 cause was not the commit and not a flaky test:
