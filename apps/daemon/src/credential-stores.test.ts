@@ -61,7 +61,7 @@ const secretFiles: readonly string[] = [
     ["server", "", "a+", "🔑", "clé"].map((stem) => `${stem}.${extension}`)
   )),
   "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa.pub", "id_ed25519_work",
-  ".env", ".envrc", ".env.production", "secrets.env",
+  ".env", ".envrc", ".env.local", ".env.production", "secrets.env", "prod.env", "app.envrc",
   "credentials.json", "daemon.token", "gh/hosts.yml",
 ]
 
@@ -212,6 +212,7 @@ describe("negative controls", () => {
     { path: ".docker/Dockerfile", affects: "The file .docker/Dockerfile in the session worktree." },
     { path: "pem", affects: "The file pem in the session worktree." },
     { path: "key.txt", affects: "The file key.txt in the session worktree." },
+    { path: "src/process.env.HOME.ts", affects: "The file src/process.env.HOME.ts in the session worktree." },
     {
       path: `${home}/.domovoi/worktrees/x/file.ts`,
       affects: `The file ${home}/.domovoi/worktrees/x/file.ts, outside the session worktree.`,
@@ -222,5 +223,10 @@ describe("negative controls", () => {
       expect({ command, decision: permissionDecisionFor({ runtime, command }) })
         .toEqual({ command, decision: { action: "review", risk: "normal" } })
     }
+  })
+
+  it("gives a command that reads an environment variable in code a normal gate", () => {
+    const command = `node -e "console.log(process.env.HOME)"`
+    expect(permissionDecisionFor({ runtime, command })).toEqual({ action: "review", risk: "normal" })
   })
 })

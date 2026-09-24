@@ -25,7 +25,8 @@ separator, drops repeated separators and "." components, and judges a path both 
 Codex sandbox refuses (such as `.git-credentials`, `.pgpass` and `~/.aws`) come from one list shared
 by the sandbox, the card, and the command hard gate. A secret file matches on a component name: any
 stem, including none, before `.pem`, `.key`, `.p12` or `.pfx`; `id_rsa`, `id_dsa`, `id_ecdsa` or
-`id_ed25519` with any suffix; the `.env` family; and a few named files. When the card path, any
+`id_ed25519` with any suffix; the `.env` family, a name that starts with `.env` or ends with `.env`
+or `.envrc`, so `process.env.HOME` in a command or a file name is not one; and a few named files. When the card path, any
 link followed on the way, any link target, or the file it ends at matches, the path is shown as
 "[REDACTED]" with its location kept, and the gate is a hard gate. A command is split into shell words, each also
 split on "=" and ":", and every word goes through the same classifier; a match makes the gate a hard

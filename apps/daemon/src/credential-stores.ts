@@ -57,11 +57,12 @@ const secretSequences: readonly (readonly string[])[] = [
 
 // One component that names a secret file: a key or certificate extension
 // after any stem, including none; a private key with any suffix; the .env
-// family; and the files named here.
+// family, a name that starts with .env or ends with .env or .envrc; and the
+// files named here.
 function isSecretFileName(name: string): boolean {
   return /\.(?:pem|key|p12|pfx)$/u.test(name)
     || /^id_(?:rsa|dsa|ecdsa|ed25519)/u.test(name)
-    || /\.env(?:rc|\..+)?$/u.test(name)
+    || /^\.env|\.env(?:rc)?$/u.test(name)
     || name === "daemon.token"
     || name === "credentials.json"
 }

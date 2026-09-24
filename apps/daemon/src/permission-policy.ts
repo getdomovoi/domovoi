@@ -36,7 +36,8 @@ const credentialStorePatterns = credentialStoreNames.map(
 const commandNameCharacter = String.raw`[\p{L}\p{M}\p{N}_.-]`
 const commandNameStart = String.raw`(?:^|[\s:=/\\'"])`
 const secretFilePattern = new RegExp(`${commandNameStart}(?:${[
-  String.raw`${commandNameCharacter}*\.env(?:rc|\.${commandNameCharacter}+)?`,
+  String.raw`\.env${commandNameCharacter}*`,
+  String.raw`${commandNameCharacter}*\.env(?:rc)?`,
   String.raw`${commandNameCharacter}+\.(?:pem|key|p12|pfx)`,
   String.raw`gh[/\\]hosts\.yml`,
   String.raw`daemon\.token`,
