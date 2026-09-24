@@ -1,4 +1,4 @@
-import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, pairingAddressSchema, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
@@ -43,7 +43,15 @@ export async function runPairCommand(
       dependencies.stdout("\n")
     }
 
-    const address = issued.pairingAddress
+    // A daemon older than this command answers with the code alone. Say so,
+    // rather than drawing a symbol with no address a device could dial.
+    const named = pairingAddressSchema.safeParse((issued as { pairingAddress?: unknown }).pairingAddress)
+    if (!named.success) {
+      dependencies.stdout(`Pairing code: ${issued.code}\n`)
+      dependencies.stderr("This daemon does not say which address a device should dial, so no symbol was drawn. Update the daemon to match this command, then run this again.\n")
+      return 1
+    }
+    const address = named.data
     if ("problem" in address) {
       // A symbol carrying an address the device cannot verify fails at TLS
       // with nothing to read, so say what is missing instead of drawing one.
