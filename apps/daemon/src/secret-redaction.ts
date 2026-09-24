@@ -16,6 +16,9 @@ const quotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
 // A quoted shell word: a backslash escapes inside double quotes, and is a
 // literal character inside single quotes, which nothing can escape.
 const shellQuotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'[^'\r\n]*')`
+// A shell quote that never closes on its line (a double quote's closing quote
+// may be escaped): the value runs to the end of the line.
+const unclosedShellQuotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*\\?(?=[\r\n]|$)|'[^'\r\n]*(?=[\r\n]|$))`
 const assignment = new RegExp(
   String.raw`((?:\$env:|\bset\s+)?["']?\b${sensitiveName}\b["']?\s*=\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
@@ -25,7 +28,7 @@ const structuredAssignment = new RegExp(
   "giu",
 )
 const secretFlag = new RegExp(
-  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))(${shellQuotedValue}|[^\s;&|\r\n]+)`,
+  String.raw`((?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:))(${shellQuotedValue}|${unclosedShellQuotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
 const quotedCmdAssignment = new RegExp(
@@ -33,7 +36,7 @@ const quotedCmdAssignment = new RegExp(
   "giu",
 )
 const javaSystemProperty = new RegExp(
-  String.raw`(-D${sensitiveName}\s*=)(${shellQuotedValue}|[^\s;&|\r\n]+)`,
+  String.raw`(-D${sensitiveName}\s*=)(${shellQuotedValue}|${unclosedShellQuotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
 
@@ -283,7 +286,9 @@ const pendingValue = new RegExp(String.raw`${valuePrefix}$`, "iu")
 // value is a shell word: a backslash escapes inside double quotes and is
 // literal inside single quotes, and a closing quote does not end the word,
 // only an unquoted delimiter does. A structured (JSON) value is read the same
-// way, except that a comma or closing brace also ends it. A newline ends both.
+// way, except that a comma or closing brace also ends it. A carriage return or
+// a newline ends both: here a carriage return is a redraw inside a line, and a
+// line dropped this far is already cleared, so what follows starts afresh.
 type ValueScan = { context: "shell" | "structured" | "token", quote: string | undefined, escaped: boolean }
 
 const structuredValueDelimiter = /[\s,;&|}]/u
@@ -296,7 +301,7 @@ function endOfValue(text: string, scan: ValueScan): number | undefined {
   }
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index]!
-    if (character === "\n") return index
+    if (character === "\n" || character === "\r") return index
     if (scan.quote !== undefined) {
       if (scan.escaped) {
         scan.escaped = false

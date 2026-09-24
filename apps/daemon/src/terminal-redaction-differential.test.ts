@@ -69,8 +69,11 @@ function generate(next: () => number): Case {
   if (quote === "'" && chance(0.3)) { features.push("single-quote-backslash"); value = `${value}\\` }
   const closed = !quote || chance(0.85)
   if (quote && !closed) features.push("unclosed")
+  // A double quote whose closing quote is escaped never closes.
+  const escapedClose = quote === '"' && closed && chance(0.08)
+  if (escapedClose) features.push("escaped-closing-quote")
   const after = quote && closed && chance(0.2) ? (features.push("after-quote"), word(8)) : ""
-  const quoted = `${quote}${value}${closed ? quote : ""}${after}`
+  const quoted = escapedClose ? `"${value}\\"` : `${quote}${value}${closed ? quote : ""}${after}`
   const secretText = quote ? value.replace(/\\"/g, "") + after : value + after
   const newlineBeforeValue = chance(0.08) ? (features.push("newline-before-value"), "\n") : ""
   const redraw = chance(0.06) ? (features.push("redraw"), "\r\x1b[4C") : ""
@@ -91,8 +94,16 @@ function generate(next: () => number): Case {
   }
   const hidden = form === "bare-token" ? `ghp_${value}` : form === "json-mixed" ? value.replace(/[\\"]/g, "") : form === "json" && !quote ? value : form === "env" && !quote ? value : form === "prompt" ? value : secretText
   // After a quote that never closes, the rest of the line is inside the shell
-  // word, so nothing after it counts as kept outside the secret.
-  return { shape: [form, ...[...new Set(features)].sort()].join("+"), text: `${text}${ending}`, value: hidden, kept: closed ? kept : [] }
+  // word, so nothing after it on that line counts as kept outside the secret.
+  // A line that follows, after a carriage return or a newline, always does.
+  const following = chance(0.15) ? (features.push("following-line"), pick(["\rvisible output\r\n", "\nvisible output\n", "\r\nvisible output\r\n"])) : ""
+  const sameLine = closed && !escapedClose ? kept : []
+  return {
+    shape: [form, ...[...new Set(features)].sort()].join("+"),
+    text: `${text}${following ? "" : ending}${following}`,
+    value: hidden,
+    kept: following ? [...sameLine, "visible output"] : sameLine,
+  }
 }
 
 function cut(text: string, next: () => number): Step[] {

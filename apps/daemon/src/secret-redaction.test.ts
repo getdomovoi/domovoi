@@ -196,4 +196,24 @@ describe("shell quoting in flag and property values", () => {
     const terminal = new TerminalOutputRedactor()
     expect(`${terminal.push(`${line}\r\n`)}${terminal.flush()}`).toBe("{\"password\":\"[REDACTED]\",\"safe\":\"visible\"}\r\n")
   })
+
+  it.each([
+    "curl --token \"abc zqxjwvkm\\\"",
+    "java -Dpassword=\"abc zqxjwvkm\\\"",
+  ])("hides a double-quoted value whose closing quote is escaped: %j", (line) => {
+    // Review round 5: the quote never closes, so the value runs to the line end.
+    for (const redacted of [redactDurableOutput(line).value, redactDurableCommand(line).value, redactStreamText(line)]) {
+      expect(redacted).not.toContain("zqxjwvkm")
+    }
+    const stream = new DurableOutputRedactor()
+    expect(`${stream.push(`${line}\n`)}${stream.flush()}`).not.toContain("zqxjwvkm")
+  })
+
+  it("keeps the line after an oversized unclosed quote ends at a carriage return", () => {
+    const terminal = new TerminalOutputRedactor()
+    const shown = [terminal.push("API_KEY=\""), terminal.push("q".repeat(9_000)), terminal.push("\rvisible output\r\n"), terminal.flush()].join("")
+    expect(shown).toContain("visible output\r\n")
+    expect(shown).not.toContain("qqqq")
+  })
 })
+
