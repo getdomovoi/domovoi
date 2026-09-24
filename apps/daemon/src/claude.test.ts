@@ -2,7 +2,7 @@ import { waitForDaemon } from "./test-wait-for.js"
 import { execFileSync } from "node:child_process"
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, resolve, sep } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -1043,6 +1043,27 @@ describe("changing the mode on a live session", () => {
     await expect(
       adapter.startTurn({ threadId, cwd: "/worktree", prompt: "retry", runtime: runtime("build") }),
     ).resolves.toBeTruthy()
+  })
+})
+
+describe("the file behind an approval request", () => {
+  it("sends the daemon the file name exactly as the provider will use it", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "22222222-2222-4222-8222-222222222222")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const ask = (input: Record<string, unknown>, id: string) => void calls[0]!.options.canUseTool!("Edit", input, {
+      signal: new AbortController().signal, toolUseID: id, requestId: id,
+    })
+
+    ask({ file_path: "/worktree/target.txt ", old_string: "a", new_string: "b" }, "spaced")
+    ask({ file_path: "link/../src/index.ts", old_string: "a", new_string: "b" }, "relative")
+
+    await waitForDaemon(() => expect(events.filter((event) => event.type === "approval-requested")).toHaveLength(2))
+    const paths = Object.fromEntries(events.flatMap((event) => event.type === "approval-requested" ? [[event.itemId, event.path]] : []))
+    expect(paths).toEqual({ spaced: "/worktree/target.txt ", relative: `/worktree${sep}link/../src/index.ts` })
+    await adapter.close()
   })
 })
 

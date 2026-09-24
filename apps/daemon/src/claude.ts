@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { isAbsolute, resolve } from "node:path"
+import { isAbsolute, resolve, sep } from "node:path"
 
 import {
   query,
@@ -486,9 +486,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return Promise.resolve({ behavior: "allow", updatedInput: input })
     }
     const requestId = ++this.#nextApprovalId
+    // The file exactly as the provider will use it: not trimmed, and a
+    // relative path is joined to cwd without collapsing "..", so the daemon
+    // fingerprints the same file that runs.
     const filePath = typeof input.file_path === "string"
-      ? input.file_path.trim()
-      : typeof input.notebook_path === "string" ? input.notebook_path.trim() : screened?.path?.trim()
+      ? input.file_path
+      : typeof input.notebook_path === "string" ? input.notebook_path : screened?.path
     this.#emit({
       type: "approval-requested",
       requestId,
@@ -497,7 +500,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       itemId: context.toolUseID,
       command,
       cwd: context.blockedPath ?? cwd,
-      ...(filePath ? { path: isAbsolute(filePath) ? filePath : resolve(cwd, filePath) } : {}),
+      ...(filePath ? { path: isAbsolute(filePath) ? filePath : `${cwd}${sep}${filePath}` } : {}),
       ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
       ...(reason ? { reason } : {}),
       ...(toolName !== "Bash" && !claudeFileTools.has(toolName) ? { tool: toolName } : {}),
