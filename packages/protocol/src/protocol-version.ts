@@ -2,13 +2,9 @@ import { z } from "zod"
 
 import { utf16MaxLength } from "./validation.js"
 
-// Wire compatibility is separate from the executable's buildVersion. 0.8 added
-// client access, policy refusals, and daemon-owned queued sends. 0.9 is the
-// minor the wire additions of 2026-09-23 ride on (ruled that day: every wire
-// change is a minor bump): read-only terminals, per-model image input, the
-// pairing address on issued codes, the archived branch and unmerged count,
-// and session search.
-export const protocolVersion = "0.9.0" as const
+// Wire compatibility is separate from the executable's buildVersion. 0.8 adds
+// client access, policy refusals, and daemon-owned queued sends.
+export const protocolVersion = "0.8.0" as const
 export const maximumProtocolVersionLength = 64
 
 // Absolute end: $ alone also matches before a final newline in JavaScript.
