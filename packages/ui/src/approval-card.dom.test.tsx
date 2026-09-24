@@ -32,7 +32,62 @@ it("sends the selected approval-card decision", async () => {
 
   await user.click(screen.getByRole("button", { name: "Allow once" }))
 
-  expect(onResolve).toHaveBeenCalledWith(approval.id, "allow-once", undefined)
+  expect(onResolve).toHaveBeenCalledWith(approval.id, "allow-once", undefined, 0)
+})
+
+// Round 4 on #545: the daemon rewrites a file card when the file it reaches
+// moves, and refuses an Allow that names the card as it was. The card shows
+// the file it now reaches and answers with the revision it shows.
+it.each(["desktop", "web"] as const)("shows the rewritten file target on the %s card and answers with its revision", async (surface) => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const raised = snapshot.approvals[0]!
+  raised.risk = "normal"
+  raised.command = "Edit"
+  raised.operation = "Edit a file"
+  raised.affects = "The file one/file in the session worktree."
+  const onResolve = vi.fn(async () => {})
+  const thread = (current: typeof snapshot) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      surface={surface}
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+      onArchiveSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(snapshot))
+  const affects = () => {
+    const terms = [...screen.getByRole("alert").querySelectorAll("dt")]
+    return terms.find((term) => term.textContent === "Affects")?.nextElementSibling?.textContent
+  }
+  expect(affects()).toBe("The file one/file in the session worktree.")
+
+  const rewritten = structuredClone(snapshot)
+  rewritten.approvals[0]!.affects = "The file two/file in the session worktree."
+  rewritten.approvals[0]!.revision = 1
+  rerender(thread(rewritten))
+  expect(affects()).toBe("The file two/file in the session worktree.")
+
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  await user.click(screen.getByRole("button", { name: surface === "web" ? "Always here" : "Always in this project" }))
+  await user.click(screen.getByRole("button", { name: "Deny" }))
+  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not that file")
+  await user.click(screen.getByRole("button", { name: "Deny with explanation" }))
+  expect(onResolve.mock.calls).toEqual([
+    [raised.id, "allow-once", undefined, 1],
+    [raised.id, "always-project", undefined, 1],
+    [raised.id, "deny-explain", "Not that file", 1],
+  ])
 })
 
 function renderThread(surface: "desktop" | "web" = "desktop", risk?: "normal" | "hard-gate") {

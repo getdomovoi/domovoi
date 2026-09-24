@@ -207,11 +207,13 @@ import {
   redactErrorDetail,
 } from "./rpc-errors.js"
 import {
+  isFileToolCommand,
   permissionDecisionFor,
   permissionHardGates,
   permissionPolicyRefusalFor,
 } from "./permission-policy.js"
 import { resolveExecution } from "./execution-resolution.js"
+import { fileTargetAffects } from "./file-target-affects.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
@@ -6745,6 +6747,20 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
+        const fileCard = isFileToolCommand(approval.command)
+        const changedCardMessage = fileCard
+          ? "The file target changed; review the updated approval before allowing it"
+          : "The resolved command changed; review the updated approval before allowing it"
+        // An Allow answers the card the person saw. One given to a card the
+        // daemon has since rewritten is refused, and the current card stands.
+        if (
+          params.decision !== "deny"
+          && params.decision !== "deny-explain"
+          && params.revision !== approval.revision
+        ) {
+          this.#error(socket, request.id, invalidParams, changedCardMessage)
+          return
+        }
         if (approval.risk === "hard-gate" && params.decision === "always-project") {
           this.#error(
             socket,
@@ -6781,27 +6797,38 @@ export class DomovoiDaemon {
               ? workspaceRoot
               : join(workspaceRoot, approvedRecord.cwd)
           const requestedFile = this.#fileApprovalTargets.get(approval.id)
+          const fileTarget = workspaceRoot === undefined || cwd === undefined || approvedRecord.kind !== "workspace-file-tool"
+            ? undefined
+            : requestedFile ?? (approvedRecord.scope === "file"
+              ? { cwd, filePath: join(workspaceRoot, approvedRecord.path) }
+              : undefined)
           const currentExecution = workspaceRoot === undefined || cwd === undefined
             ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
             : approvedRecord.kind === "workspace-file-tool"
               ? await resolveExecution({
                   workspaceRoot,
-                  cwd: requestedFile?.cwd ?? cwd,
+                  cwd: fileTarget?.cwd ?? cwd,
                   command: approvedRecord.tool,
-                  ...(requestedFile
-                    ? { filePath: requestedFile.filePath }
-                    : approvedRecord.scope === "file" ? { filePath: join(workspaceRoot, approvedRecord.path) } : {}),
+                  ...(fileTarget ? { filePath: fileTarget.filePath } : {}),
                 })
               : await resolveExecution({
                   workspaceRoot,
                   command: approval.command,
                   cwd,
                 })
+          // The card names the file as it is read now, so the line the person
+          // answers is the one the edit reaches.
+          const currentAffects = fileTarget && workspaceRoot !== undefined
+            ? await fileTargetAffects({ workspace: workspaceRoot, path: fileTarget.filePath, cwd: fileTarget.cwd })
+            : undefined
           if (
             currentExecution.state !== "resolved"
             || currentExecution.digest !== resolvedApprovalExecution.digest
+            || (currentAffects !== undefined && currentAffects.text !== approval.affects)
           ) {
             approval.execution = currentExecution
+            approval.revision += 1
+            if (currentAffects !== undefined) approval.affects = currentAffects.text
             const currentDecision = permissionDecisionFor({
               runtime: session?.runtime ?? {
                 provider: "claude-code",
@@ -6814,8 +6841,11 @@ export class DomovoiDaemon {
               reason: approval.operation,
               execution: currentExecution,
             })
-            // A card raised as a hard gate (a secret in its text, say) stays one.
-            approval.risk = approval.risk === "hard-gate" ? "hard-gate" : currentDecision.risk
+            // A card raised as a hard gate (a secret in its text, say) stays
+            // one, and a secret in the file it now names makes it one.
+            approval.risk = approval.risk === "hard-gate" || currentAffects?.redacted === true
+              ? "hard-gate"
+              : currentDecision.risk
             await this.#persistSnapshot()
             this.#broadcastSnapshot()
             this.#error(
@@ -8658,9 +8688,20 @@ export class DomovoiDaemon {
       const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")
       const directoryCopy = redactDurableText(event.cwd ?? session.workspacePath ?? project.path)
+      // A file tool's card names the file the edit reaches.
+      const fileTarget = event.path !== undefined
+        && event.tool === undefined
+        && event.command !== undefined
+        && isFileToolCommand(event.command)
+        ? { cwd: requestCwd, filePath: event.path }
+        : undefined
+      const affectsCopy = fileTarget
+        ? await fileTargetAffects({ workspace: session.workspacePath ?? project.path, path: fileTarget.filePath, cwd: fileTarget.cwd })
+        : { text: "Files and processes in the session worktree.", redacted: false }
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted
         || directoryCopy.redacted
+        || affectsCopy.redacted
         || (execution.state === "unresolved" && execution.reason === "sensitive-content")
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret
@@ -8740,20 +8781,21 @@ export class DomovoiDaemon {
           agent: `${session.runtime.provider} / ${session.runtime.model}`,
           mode: session.runtime.permissionMode,
           directory: directoryCopy.value,
-          affects: "Files and processes in the session worktree.",
+          affects: affectsCopy.text,
           network: "No agent network access granted.",
           estimatedDuration: "Unknown",
           checkpoint: session.baseCommit ?? "unavailable",
           providerRequestId: event.requestId,
           requestedAt: createdAt,
           execution,
+          revision: 0,
           ...(inactiveRuleIds.length === 0 ? {} : {
             reapproval: { reason: "legacy-text-only" as const, inactiveRuleIds },
           }),
         }
         this.#snapshot.approvals.push(approval)
-        if (execution.state === "resolved" && execution.record.kind === "workspace-file-tool" && event.path !== undefined) {
-          this.#fileApprovalTargets.set(approval.id, { cwd: requestCwd, filePath: event.path })
+        if (execution.state === "resolved" && execution.record.kind === "workspace-file-tool" && fileTarget) {
+          this.#fileApprovalTargets.set(approval.id, fileTarget)
         }
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,

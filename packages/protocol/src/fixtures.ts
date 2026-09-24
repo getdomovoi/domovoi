@@ -109,6 +109,7 @@ export const demoWorkspace: WorkspaceSnapshot = {
       estimatedDuration: "20–40 seconds",
       checkpoint: "ckpt_7f21",
       requestedAt: now,
+      revision: 0,
       execution: {
         state: "resolved",
         record: {

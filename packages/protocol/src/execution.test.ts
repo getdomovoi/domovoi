@@ -248,6 +248,7 @@ describe("standing approval execution state", () => {
       checkpoint: "abc123",
       requestedAt: "2026-09-03T18:30:00.000Z",
       execution: resolved,
+      revision: 0,
       reapproval: {
         reason: "legacy-text-only",
         inactiveRuleIds: ["rule-old"],

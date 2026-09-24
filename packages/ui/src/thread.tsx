@@ -704,10 +704,13 @@ export function Thread({
   transferFleet?: FleetEntry[] | undefined
   admittedMachines?: ReadonlySet<string> | undefined
   currentMachineId?: string | undefined
+  // The revision is the one the card showed, so the daemon can refuse an
+  // Allow given to a card it has since rewritten.
   onResolve: (
     approvalId: string,
     decision: ApprovalDecision,
-    explanation?: string,
+    explanation: string | undefined,
+    revision: number,
   ) => Promise<void>
   onSetRuntime: (runtime: Runtime) => Promise<void>
   onRestartProviderThread?: (() => Promise<void>) | undefined
@@ -1193,13 +1196,13 @@ export function Thread({
   }
 
   const resolveCurrentApproval = (
-    approvalId: string,
+    approval: ApprovalRequest,
     decision: ApprovalDecision,
     explanation?: string,
   ) => {
     if (watching) return
     setSendError("")
-    void onResolve(approvalId, decision, explanation).catch((cause: unknown) => {
+    void onResolve(approval.id, decision, explanation, approval.revision).catch((cause: unknown) => {
       setSendError(cause instanceof Error ? cause.message : "The approval could not be resolved")
     })
   }
@@ -1309,7 +1312,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} onResolve={(decision, explanation) => resolveCurrentApproval(approval.id, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (

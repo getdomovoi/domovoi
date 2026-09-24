@@ -37,7 +37,7 @@ async function draw(
     onOpenMachines: jest.fn<() => void>(),
     onChangeDraft: jest.fn<(draft: string) => void>(),
     onSend: jest.fn<(sessionId: string) => void>(),
-    onResolve: jest.fn<(approvalId: string, decision: "allow-once" | "always-project" | "deny") => void>(),
+    onResolve: jest.fn<(approvalId: string, decision: "allow-once" | "always-project" | "deny", revision: number) => void>(),
     onDenyExplain: jest.fn<(approvalId: string) => void>(),
     onPostReview: extra.onPostReview ?? jest.fn<(artifactId: string, body: string) => Promise<void>>(async () => {}),
     ...(extra.notice ? { notice: extra.notice } : {}),
@@ -81,7 +81,26 @@ describe("TabletShell", () => {
     expect(deny.props.className).toContain("h-12")
 
     await fireEvent.press(allow)
-    expect(props.onResolve).toHaveBeenCalledWith(approval.id, "allow-once")
+    expect(props.onResolve).toHaveBeenCalledWith(approval.id, "allow-once", 0)
+  })
+
+  // Round 4 on #545: the daemon rewrites a file card when the file it reaches
+  // moves, and refuses an Allow that names the card as it was.
+  it("shows the file a rewritten card reaches and answers with the revision it shows", async () => {
+    const { props, approval } = await draw("normal", "full", (snapshot) => {
+      const card = snapshot.approvals[0]!
+      card.command = "Edit"
+      card.affects = "The file two/file in the session worktree."
+      card.revision = 1
+    })
+
+    expect(screen.getByText("The file two/file in the session worktree.")).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Always here" }))
+    expect(props.onResolve.mock.calls).toEqual([
+      [approval.id, "allow-once", 1],
+      [approval.id, "always-project", 1],
+    ])
   })
 
   it("shows every approval fact the phone shows, with none behind a tap", async () => {
@@ -115,7 +134,7 @@ describe("TabletShell", () => {
     const always = screen.getByRole("button", { name: "Always here" })
     expect(always.props.className).toContain("h-12")
     await fireEvent.press(always)
-    expect(props.onResolve).toHaveBeenCalledWith(approval.id, "always-project")
+    expect(props.onResolve).toHaveBeenCalledWith(approval.id, "always-project", 0)
   })
 
   it("denies through the explanation step rather than a bare deny", async () => {

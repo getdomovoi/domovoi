@@ -1044,13 +1044,20 @@ describe("DomovoiDaemon", () => {
     await expect(rpc("approval.resolve", {
       approvalId,
       decision: "always-project",
+      revision: 0,
       client: "desktop",
     })).resolves.toMatchObject({
       error: { code: -32602, message: "Hard-gate approvals cannot create standing rules" },
     })
     expect(agent.resolveApproval).not.toHaveBeenCalled()
     expect((await rpc("workspace.get", {})).result.approvalRules).toEqual([])
-    await rpc("approval.resolve", { approvalId, decision: "allow-once", client: "desktop" })
+    // An Allow that names a revision this card never had answers nothing.
+    await expect(rpc("approval.resolve", { approvalId, decision: "allow-once", revision: 1, client: "desktop" }))
+      .resolves.toMatchObject({
+        error: { code: -32602, message: "The resolved command changed; review the updated approval before allowing it" },
+      })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+    await rpc("approval.resolve", { approvalId, decision: "allow-once", revision: 0, client: "desktop" })
     expect(agent.resolveApproval).toHaveBeenCalledWith(91, "allow-once")
 
     listener!({
@@ -2396,6 +2403,7 @@ describe("DomovoiDaemon", () => {
       providerRequestId: 91,
       requestedAt: new Date().toISOString(),
       execution: snapshot.approvals[0]!.execution,
+      revision: 0,
     }, {
       id: "approval-before-restart-2",
       sessionId: session.id,
@@ -2413,6 +2421,7 @@ describe("DomovoiDaemon", () => {
       providerRequestId: 92,
       requestedAt: new Date().toISOString(),
       execution: snapshot.approvals[0]!.execution,
+      revision: 0,
     }]
     snapshot.workingPlans = [{
       sessionId: session.id,
@@ -2680,6 +2689,7 @@ describe("DomovoiDaemon", () => {
       providerRequestId: 91,
       execution: demoWorkspace.approvals[0]!.execution,
       requestedAt: new Date().toISOString(),
+      revision: 0,
     }]
     const store = {
       load: vi.fn(() => structuredClone(snapshot)),
@@ -6949,6 +6959,7 @@ describe("DomovoiDaemon", () => {
       params: {
         approvalId: "approval-migrate",
         decision: "always-project",
+        revision: 0,
         client: "desktop",
       },
     }))
@@ -7032,7 +7043,7 @@ describe("DomovoiDaemon", () => {
       jsonrpc: "2.0",
       id: 2,
       method: "approval.resolve",
-      params: { approvalId: approval.id, decision: "always-project", client: "desktop" },
+      params: { approvalId: approval.id, decision: "always-project", revision: 0, client: "desktop" },
     }))
 
     await expect(response).resolves.toMatchObject({
@@ -7180,6 +7191,7 @@ describe("DomovoiDaemon", () => {
     const reapproved = await rpc("approval.resolve", {
       approvalId,
       decision: "always-project",
+      revision: 0,
       client: "desktop",
     })
     const rules = (reapproved.result as {
@@ -7255,6 +7267,7 @@ describe("DomovoiDaemon", () => {
       resolved = await first.request(3, "approval.resolve", {
         approvalId: snapshot.approvals[0]!.id,
         decision: "always-project",
+        revision: 0,
         client: "desktop",
       })
     } finally {
@@ -9214,6 +9227,7 @@ describe("DomovoiDaemon", () => {
     await rpc("approval.resolve", {
       approvalId,
       decision: "allow-once",
+      revision: 0,
       client: "desktop",
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "allow-once")
@@ -11356,6 +11370,7 @@ describe("DomovoiDaemon", () => {
     const rejectedRule = await rpc("approval.resolve", {
       approvalId,
       decision: "always-project",
+      revision: 0,
       client: "desktop",
     })
     expect(rejectedRule).toMatchObject({
@@ -11368,6 +11383,7 @@ describe("DomovoiDaemon", () => {
     const approved = await rpc("approval.resolve", {
       approvalId,
       decision: "allow-once",
+      revision: 0,
       client: "desktop",
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(12, "allow-once")
@@ -11558,9 +11574,9 @@ describe("DomovoiDaemon", () => {
     }).approvals
     for (const providerRequestId of [25, 26]) {
       const approvalId = cards.find((approval) => approval.providerRequestId === providerRequestId)!.id
-      await expect(rpc("approval.resolve", { approvalId, decision: "always-project", client: "desktop" }))
+      await expect(rpc("approval.resolve", { approvalId, decision: "always-project", revision: 0, client: "desktop" }))
         .resolves.toMatchObject({ error: { message: "Unresolved commands cannot create standing rules" } })
-      await expect(rpc("approval.resolve", { approvalId, decision: "allow-once", client: "desktop" }))
+      await expect(rpc("approval.resolve", { approvalId, decision: "allow-once", revision: 0, client: "desktop" }))
         .resolves.not.toHaveProperty("error")
       expect(agent.resolveApproval).toHaveBeenLastCalledWith(providerRequestId, "allow-once")
     }
@@ -11687,26 +11703,175 @@ describe("DomovoiDaemon", () => {
     await rename(join(workspacePath, "src", "config"), join(workspacePath, "src", "config-before"))
     await symlink(outside, join(workspacePath, "src", "config"), "junction")
 
-    await expect(rpc("approval.resolve", { approvalId: swapped.id, decision: "allow-once", client: "desktop" }))
+    await expect(rpc("approval.resolve", { approvalId: swapped.id, decision: "allow-once", revision: 0, client: "desktop" }))
       .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(41, expect.anything())
     expect((await cards()).find((card) => card.id === swapped.id)!.execution)
       .toEqual({ state: "unresolved", reason: "cwd-outside-project" })
-    await expect(rpc("approval.resolve", { approvalId: swapped.id, decision: "always-project", client: "desktop" }))
+    expect((await cards()).find((card) => card.id === swapped.id)).toMatchObject({
+      revision: 1,
+      affects: `The file ${join(await realpath(outside), "settings.json")}, outside the session worktree, through a link at src/config/settings.json.`,
+    })
+    await expect(rpc("approval.resolve", { approvalId: swapped.id, decision: "always-project", revision: 1, client: "desktop" }))
       .resolves.toMatchObject({ error: { message: "Unresolved commands cannot create standing rules" } })
-    await expect(rpc("approval.resolve", { approvalId: gated.id, decision: "allow-once", client: "desktop" }))
+    await expect(rpc("approval.resolve", { approvalId: gated.id, decision: "allow-once", revision: 0, client: "desktop" }))
       .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(43, expect.anything())
     expect((await cards()).find((card) => card.id === gated.id))
       .toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "cwd-outside-project" } })
 
-    await expect(rpc("approval.resolve", { approvalId: kept.id, decision: "always-project", client: "desktop" }))
+    await expect(rpc("approval.resolve", { approvalId: kept.id, decision: "always-project", revision: 0, client: "desktop" }))
       .resolves.not.toHaveProperty("error")
     expect(agent.resolveApproval).toHaveBeenCalledWith(42, "allow-once")
     const rules = ((await rpc("workspace.get", {})).result as {
       approvalRules: Array<{ execution: { digest: string } }>
     }).approvalRules
     expect(rules.map((rule) => rule.execution.digest)).toEqual([kept.execution.digest])
+    socket.close()
+  })
+
+  // The round 4 probe on #545: a target that moves inside the worktree
+  // must be shown before an Allow can reach it, and an Allow given to the card
+  // as it was is refused.
+  it("shows a moved file target on its card under a new revision, and refuses an Allow for the old one", async () => {
+    const workspacePath = await mkdtemp(join(tmpdir(), "domovoi-file-recard-"))
+    scratchDirectories.push(workspacePath)
+    await mkdir(join(workspacePath, "one"), { recursive: true })
+    await mkdir(join(workspacePath, "two"), { recursive: true })
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = {
+      provider: "claude-code",
+      model: "sonnet",
+      reasoning: "high",
+      permissionMode: "build",
+      auto: false,
+    }
+    session.state = "idle"
+    session.workspacePath = workspacePath
+    session.providerThreadId = "thread-file-recard"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    let listener: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      permissionCapabilities: { ask: "read-only", buildAuto: "pre-execution" },
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => [{
+        ...codexModels()[0]!,
+        provider: "claude-code",
+        id: "sonnet",
+      }]),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-file-recard"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((next: (event: AgentEvent) => void) => {
+        listener = next
+        return () => { listener = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const store = {
+      load: () => snapshot,
+      save: vi.fn(),
+      close: vi.fn(),
+    } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    type Card = {
+      id: string
+      providerRequestId?: number
+      affects: string
+      revision: number
+      execution: { state: string; digest?: string; record?: { path?: string } }
+    }
+    const broadcast: Card[][] = []
+    socket.on("message", (data: WebSocket.RawData) => {
+      const message = JSON.parse(data.toString()) as { method?: string; params?: { approvals?: Card[] } }
+      if (message.method === "workspace.changed" && message.params?.approvals) broadcast.push(message.params.approvals)
+    })
+    let id = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const cards = async () => ((await rpc("workspace.get", {})).result as { approvals: Card[] }).approvals
+    const changed = "The file target changed; review the updated approval before allowing it"
+
+    await rpc("session.send", { sessionId: session.id, prompt: "Edit the file", client: "desktop" })
+    listener!({
+      type: "approval-requested",
+      requestId: 61,
+      threadId: session.providerThreadId,
+      turnId: "turn-file-recard",
+      reason: "Edit a file",
+      command: "Edit",
+      path: join(workspacePath, "one", "file"),
+    })
+    await vi.waitFor(async () => expect(await cards()).toHaveLength(1), { timeout: 3_000 })
+    const [raised] = await cards()
+    expect(raised).toMatchObject({
+      affects: "The file one/file in the session worktree.",
+      revision: 0,
+      execution: { state: "resolved", record: { path: "one/file" } },
+    })
+
+    // While the card waits, "one" becomes a link to "two".
+    await rename(join(workspacePath, "one"), join(workspacePath, "one-before"))
+    await symlink(join(workspacePath, "two"), join(workspacePath, "one"), "junction")
+
+    await expect(rpc("approval.resolve", { approvalId: raised!.id, decision: "allow-once", revision: 0, client: "desktop" }))
+      .resolves.toMatchObject({ error: { message: changed } })
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(61, expect.anything())
+    const [recarded] = await cards()
+    expect(recarded).toMatchObject({
+      id: raised!.id,
+      affects: "The file two/file in the session worktree.",
+      revision: 1,
+      execution: { state: "resolved", record: { path: "two/file" } },
+    })
+    await vi.waitFor(() => expect(broadcast.at(-1)).toEqual([
+      expect.objectContaining({ id: raised!.id, affects: "The file two/file in the session worktree.", revision: 1 }),
+    ]), { timeout: 3_000 })
+
+    // The card as it was is gone: an Allow that names it is refused, and so is
+    // a standing rule made from it.
+    for (const decision of ["allow-once", "always-project"] as const) {
+      await expect(rpc("approval.resolve", { approvalId: raised!.id, decision, revision: 0, client: "desktop" }))
+        .resolves.toMatchObject({ error: { message: changed } })
+    }
+    expect(agent.resolveApproval).not.toHaveBeenCalledWith(61, expect.anything())
+    expect((await cards())[0]).toMatchObject({ revision: 1, affects: "The file two/file in the session worktree." })
+
+    await expect(rpc("approval.resolve", { approvalId: raised!.id, decision: "always-project", revision: 1, client: "desktop" }))
+      .resolves.not.toHaveProperty("error")
+    expect(agent.resolveApproval).toHaveBeenCalledWith(61, "allow-once")
+    const rules = ((await rpc("workspace.get", {})).result as {
+      approvalRules: Array<{ execution: { digest: string; record: { path?: string } } }>
+    }).approvalRules
+    expect(rules).toHaveLength(1)
+    expect(rules[0]!.execution).toMatchObject({ digest: recarded!.execution.digest, record: { path: "two/file" } })
     socket.close()
   })
 
@@ -11832,7 +11997,7 @@ describe("DomovoiDaemon", () => {
     // The standing rule does not reach the linked file; it gets a card instead.
     expect(agent.resolveApproval).not.toHaveBeenCalledWith(51, expect.anything())
     expect(card(51).execution).toEqual({ state: "unresolved", reason: "unsupported-syntax" })
-    await expect(rpc("approval.resolve", { approvalId: card(51).id, decision: "always-project", client: "desktop" }))
+    await expect(rpc("approval.resolve", { approvalId: card(51).id, decision: "always-project", revision: 0, client: "desktop" }))
       .resolves.toMatchObject({ error: { message: "Unresolved commands cannot create standing rules" } })
     for (const requestId of [52, 53, 54]) expect(card(requestId).execution.state).toBe("resolved")
 
@@ -11842,14 +12007,14 @@ describe("DomovoiDaemon", () => {
       await link(join(outside, "credentials.json"), join(workspacePath, "src", name))
     }
     for (const [requestId, decision] of [[52, "allow-once"], [53, "always-project"]] as const) {
-      await expect(rpc("approval.resolve", { approvalId: card(requestId).id, decision, client: "desktop" }))
+      await expect(rpc("approval.resolve", { approvalId: card(requestId).id, decision, revision: 0, client: "desktop" }))
         .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
       expect(agent.resolveApproval).not.toHaveBeenCalledWith(requestId, expect.anything())
       expect((await cards()).find((candidate) => candidate.id === card(requestId).id)!.execution)
         .toEqual({ state: "unresolved", reason: "unsupported-syntax" })
     }
 
-    await expect(rpc("approval.resolve", { approvalId: card(54).id, decision: "allow-once", client: "desktop" }))
+    await expect(rpc("approval.resolve", { approvalId: card(54).id, decision: "allow-once", revision: 0, client: "desktop" }))
       .resolves.not.toHaveProperty("error")
     expect(agent.resolveApproval).toHaveBeenCalledWith(54, "allow-once")
     const rules = ((await rpc("workspace.get", {})).result as { approvalRules: Array<{ id: string }> }).approvalRules

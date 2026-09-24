@@ -190,7 +190,7 @@ describe("Rules daemon support", () => {
     })
     expect(store.load().approvals).toEqual([])
     expect(agent.resolveApproval).not.toHaveBeenCalled()
-    expect((await rpc(socket, "approval.resolve", { approvalId: refusal!.id, decision: "allow-once", client: "cli" })).error)
+    expect((await rpc(socket, "approval.resolve", { approvalId: refusal!.id, decision: "allow-once", revision: 0, client: "cli" })).error)
       .toMatchObject({ code: -32602, message: "Approval does not exist" })
     expect((await rpc(socket, "session.history", {
       sessionId: snapshot.sessions[0]!.id,

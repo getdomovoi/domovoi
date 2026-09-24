@@ -43,6 +43,13 @@ const secretFilePattern = new RegExp(
   `${secretPathStart}(?:${secretFileNames.join("|")})${secretPathEnd}`,
   "i",
 )
+const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i
+
+// Whether a path names a credential file or private key: the same patterns
+// that put a command in the credentials hard-gate group.
+export function namesSecretPath(path: string): boolean {
+  return secretFilePattern.test(path) || privateKeyFileName.test(path)
+}
 
 const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: readonly RegExp[] }> = {
   "privileged-operations": { label: "privilege escalation and file permission changes", patterns: [
@@ -62,7 +69,7 @@ const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: 
   "database-migrations": { label: "database migrations", patterns: [/\b(?:migrate|migration)\b/i] },
   credentials: { label: "read credentials, private keys or environment secrets", patterns: [
     secretFilePattern,
-    /\bid_(?:rsa|dsa|ecdsa|ed25519)\b/i,
+    privateKeyFileName,
     /\b(?:printenv|keychain|security\s+find-(?:generic|internet)-password|pass\s+show)\b/i,
   ] },
   network: { label: "network calls through curl, wget, SSH or file transfer tools", patterns: [/\b(?:curl|wget|ssh|scp|sftp)\b/i] },
