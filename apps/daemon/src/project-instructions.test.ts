@@ -42,6 +42,11 @@ describe("importReferences code boundaries", () => {
     ["a code span after an escaped backtick", "\\` text ` @sample.md `"],
     ["an indented code block right after a heading", "# Heading\n    @sample.md"],
     ["a tab-indented code block right after a heading", "# Heading\n\t@sample.md"],
+    ["inline HTML code tags", "Example: <code>@sample.md</code>."],
+    ["inline HTML pre tags", "Run <pre>@sample.md</pre> here."],
+    ["inline HTML kbd tags", "Press <kbd>@sample.md</kbd>."],
+    ["inline HTML samp tags with emphasis inside", "Output <samp>*@sample.md*</samp>."],
+    ["uppercase code tags with attributes", "See <CODE class=\"x\">@sample.md</CODE>."],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
@@ -51,6 +56,9 @@ describe("importReferences code boundaries", () => {
     ["a lone backtick", "A ` stray tick and @stray/tick.md", ["stray/tick.md"]],
     ["an indented line that continues a paragraph", "Intro line\n    @continued.md", ["continued.md"]],
     ["a fence closed by a shorter run, which does not close it", "````\n```\n@still/inside.md\n````\n@outside.md", ["outside.md"]],
+    ["an import after a closed inline code tag", "Use <code>@sample.md</code> or @real.md", ["real.md"]],
+    ["an import in the next paragraph after an unclosed code tag", "Open <code>@sample.md\n\n@real.md", ["real.md"]],
+    ["an import between other inline tags", "A <b>@real.md</b> rule", ["real.md"]],
     ["only the import after a fence inside a list item", "- ~~~\n  @sample.md\n  ~~~\n\n@real.md", ["real.md"]],
   ])("keeps %s", (_label, text, expected) => {
     expect(importReferences(text)).toEqual(expected)

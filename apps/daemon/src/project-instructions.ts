@@ -68,8 +68,12 @@ async function collectClaudeFile(
 // An import in code is not an import. The file is parsed as CommonMark, and
 // imports are read from text only, never from a code block, a code span or
 // raw HTML, so containers, escapes, paragraph boundaries and tab stops follow
-// Markdown's own rules.
+// Markdown's own rules. Inline HTML tags arrive as separate nodes beside the
+// text they enclose, so text between an opening <code>, <pre>, <kbd> or <samp>
+// and its closing tag is skipped too, within the same paragraph.
 type MarkdownNode = { type: string; value?: unknown; children?: MarkdownNode[] }
+
+const codeTag = /<(\/?)(code|pre|kbd|samp)(?=[\s>/])[^>]*>/gi
 
 export function importReferences(text: string): string[] {
   const references: string[] = []
@@ -78,7 +82,16 @@ export function importReferences(text: string): string[] {
       for (const match of node.value.matchAll(/(?:^|\s)@([^\s]+)/g)) references.push(match[1]!)
       return
     }
-    for (const child of node.children ?? []) visit(child)
+    let insideCode = 0
+    for (const child of node.children ?? []) {
+      if (child.type === "html" && typeof child.value === "string") {
+        for (const tag of child.value.matchAll(codeTag)) {
+          insideCode = tag[1] === "/" ? Math.max(0, insideCode - 1) : insideCode + 1
+        }
+        continue
+      }
+      if (insideCode === 0) visit(child)
+    }
   }
   visit(fromMarkdown(text))
   return references
