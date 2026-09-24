@@ -89,7 +89,7 @@ import {
   deviceLabelSchema,
   pairedDeviceSchema,
 } from "./devices.js"
-import { fleetMachineDescriptorSchema, fleetSnapshotSchema } from "./fleet.js"
+import { fleetChangedNotificationSchema, fleetMachineDescriptorSchema, fleetSnapshotSchema } from "./fleet.js"
 import {
   fleetEnrollParamsSchema,
   fleetEnrollResultSchema,
@@ -1637,6 +1637,22 @@ export const rpcMethods = {
 } as const
 
 export type RpcMethod = keyof typeof rpcMethods
+
+// Every notification the daemon sends, with the schema of its params. The
+// daemon checks each payload against this map before it sends, and the wire
+// record fingerprints the same map.
+export const notificationMethods = {
+  "workspace.changed": workspaceSnapshotSchema,
+  "workspace.delta": workspaceDeltaSchema,
+  "terminal.output": terminalOutputNotificationSchema,
+  "terminal.closed": terminalClosedNotificationSchema,
+  "terminal.ownership": terminalOwnershipNotificationSchema,
+  "fleet.changed": fleetChangedNotificationSchema,
+  "system.emergencyStopped": systemEmergencyStoppedNotificationSchema,
+} as const
+
+export type NotificationMethod = keyof typeof notificationMethods
+export type NotificationParams<M extends NotificationMethod> = z.input<(typeof notificationMethods)[M]>
 
 export type RpcMethodAuthorization = "observe" | "control"
 
