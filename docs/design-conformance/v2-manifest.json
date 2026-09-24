@@ -127,8 +127,9 @@
     {
       "id": "PLATFORM-001",
       "surface": "Startup and security recovery",
-      "allowance": "Protocol mismatch, daemon refusal, credential recovery, camera permission failure",
-      "constraint": "Minimal presentation; no new product navigation or invented success claims"
+      "allowance": "Protocol mismatch, daemon refusal, credential recovery, camera permission failure, stored state moved aside at startup",
+      "constraint": "Minimal presentation; no new product navigation or invented success claims",
+      "note": "Stored state recovery notice (desktop and web) kept by owner ruling on 2026-09-22 until the next design session covers it"
     }
   ],
   "contracts": [

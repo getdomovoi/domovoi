@@ -1,4 +1,4 @@
-import type { ApprovalRule, ProviderRuntime } from "@getdomovoi/protocol"
+import { loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ProviderRuntime } from "@getdomovoi/protocol"
 import { TerminalIcon } from "lucide-react"
 import { useState } from "react"
 
@@ -24,10 +24,14 @@ type DesktopCapability = {
 export type LocalDaemonDescription = {
   title: string
   detail: string
-  // Who holds the daemon, when the client can tell: this app, the installed
-  // login service, or another Domovoi window. With the platform, Settings
-  // draws the daemon section (J24); without them, the older card.
-  owner?: "app" | "service" | "other-app" | undefined
+  // Who holds the daemon, when the client can tell: this app, another Domovoi
+  // window, or a daemon started outside any app (the login service or a
+  // domovoid run by hand). With the platform, Settings draws the daemon
+  // section (J24); without them, the older card.
+  owner?: "app" | "other-app" | "outside" | undefined
+  // Whether the login service is installed is its own fact. A daemon started
+  // outside the app is only drawn as the service when a source reports it.
+  serviceInstalled?: boolean | undefined
   platform?: "darwin" | "linux" | "win32" | undefined
   // Present on a desktop that ships a daemon runtime and can install the
   // login service. The refusal names the work in flight; while it is set the
@@ -39,15 +43,17 @@ export type LocalDaemonDescription = {
   } | undefined
 }
 
-// J24 (2026-09-23). What each platform's login service is, from the design.
-// The daemon writes these; this window only names them. Installing and
+// J24 (2026-09-23). What each platform's login service is. The names come from
+// the daemon's installer through login-service; this window only names them.
+// Native Windows runs the logon task without the crash supervisor, which only
+// the WSL task has (Phase 1 decided to supervise it like WSL). Installing and
 // removing from this window are not built: the app ships no daemon runtime a
 // service could point at (ND9), so both controls stay locked with the
 // command that does the job beside them.
 const loginServices = {
-  darwin: { kind: "LaunchAgent", manager: "launchd", definition: "~/Library/LaunchAgents/sh.domovoi.daemon.plist", removeLabel: "Unload and delete the LaunchAgent", crash: "launchd starts it again." },
-  linux: { kind: "systemd user unit", manager: "systemd", definition: "~/.config/systemd/user/domovoid.service", removeLabel: "Stop, disable and delete the user unit", crash: "systemd starts it again." },
-  win32: { kind: "logon task", manager: "Task Scheduler", definition: "Task Scheduler \\Domovoi\\domovoid", removeLabel: "Delete the logon task", crash: "A supervisor restarts it up to 5 times with backoff. Then it stops and says so." },
+  darwin: { kind: "LaunchAgent", manager: "launchd", definition: `~/${loginServiceHomePaths.darwin}`, removeLabel: "Unload and delete the LaunchAgent", crash: "launchd starts it again." },
+  linux: { kind: "systemd user unit", manager: "systemd", definition: `~/${loginServiceHomePaths.linux}`, removeLabel: "Stop, disable and delete the user unit", crash: "systemd starts it again." },
+  win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "Nothing restarts it until you next sign in." },
 } as const
 
 type ServicePhase =
@@ -102,23 +108,27 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
       setPhase({ kind: "failed", action, message: cause instanceof Error ? cause.message : "The desktop did not answer.", still: "Nothing changed." })
     }
   }
-  const on = daemon.owner === "service"
+  const on = daemon.owner === "outside" && daemon.serviceInstalled === true
+  const unknown = daemon.owner === "outside" && !on
   const state = on
     ? { label: "Running", tone: "bg-success", line: "Quitting this app leaves the daemon and its sessions running." }
-    : daemon.owner === "app"
-      ? { label: "Off", tone: "bg-faint", line: "Quitting Domovoi stops the daemon and every session on it." }
-      : { label: "Off", tone: "bg-faint", line: daemon.detail }
+    : unknown
+      ? { label: "Not started here", tone: "bg-faint", line: "A daemon this app did not start. Quitting this app leaves it running." }
+      : daemon.owner === "app"
+        ? { label: "Off", tone: "bg-faint", line: "Quitting Domovoi stops the daemon and every session on it." }
+        : { label: "Off", tone: "bg-faint", line: daemon.detail }
   const facts = [
     { label: "Service", value: service.definition, note: `A ${service.kind}, for your user only.`, item: on ? "written" : "will write" },
     { label: "Record", value: "~/.domovoi/service.json", note: "What Domovoi installed, so removing undoes exactly that.", item: on ? "written" : "will write" },
-    ...(daemon.platform === "linux" && !on ? [{ label: "Lingering", value: "loginctl enable-linger", note: "Keeps the daemon running after you log out.", item: "will turn on" }] : []),
     ...(on ? [{ label: "After a crash", value: "", note: service.crash, item: "" }] : []),
   ]
-  const command = on ? "domovoid service remove" : "domovoid service install"
+  const command = unknown ? "domovoid service status" : on ? "domovoid service remove" : "domovoid service install"
   const lockReason = busy
     ? (phase.kind === "installing" ? "Both wait until the install finishes." : "Both wait until the removal finishes.")
-    : on ? "Install is off: the service is already installed." : "Remove is off: nothing is installed."
-  const installLocked = !live || on || busy || Boolean(live.refusal)
+    : unknown
+      ? "Install and Remove are off: this app did not start that daemon."
+      : on ? "Install is off: the service is already installed." : "Remove is off: nothing is installed."
+  const installLocked = !live || on || unknown || busy || Boolean(live.refusal)
   const removeLocked = !live || !on || busy || Boolean(live.refusal)
   return (
     <section aria-labelledby="settings-daemon" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
@@ -181,7 +191,7 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
           <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{phase.action === "install" ? "domovoid service install" : "domovoid service remove"}</span>
         </div>
       ) : null}
-      <div className="flex flex-col gap-1.5">
+      {unknown ? null : <div className="flex flex-col gap-1.5">
         <span className="text-[10.5px] tracking-[0.13em] text-faint">{on ? "WHAT IT WROTE" : "WHAT TURNING IT ON WRITES"}</span>
         <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[11.5px]">
           {facts.map((fact) => (
@@ -195,18 +205,18 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
             </li>
           ))}
         </ul>
-      </div>
-      {!live ? (
-        <div className="flex flex-col gap-1.5 rounded-md border border-info-border bg-info-background px-3 py-2 text-[11.5px] text-info-foreground">
+      </div>}
+      {!live || unknown ? <div className="flex flex-col gap-1.5 rounded-md border border-info-border bg-info-background px-3 py-2 text-[11.5px] text-info-foreground">
+        {unknown ? <span>This app cannot tell whether that daemon is the installed service. To check by hand, run this in a terminal.</span> : <>
           <span>{on ? "Removing the service from this window is not built yet." : "Installing the service from this window is not built yet."}</span>
           <span>To finish by hand, run this in a terminal.</span>
-          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{command}</span>
-        </div>
-      ) : null}
+        </>}
+        <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{command}</span>
+      </div> : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" disabled={installLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("install")}>Install</Button>
         <Button size="sm" variant="outline" disabled={removeLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("remove")}>{service.removeLabel}</Button>
-        {live?.refusal && !on && !busy ? null : <span className="text-[11px] text-faint">{lockReason}</span>}
+        {live?.refusal && !on && !unknown && !busy ? null : <span className="text-[11px] text-faint">{lockReason}</span>}
       </div>
     </section>
   )

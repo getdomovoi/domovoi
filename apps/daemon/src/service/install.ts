@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix } from "node:path"
 import { userInfo } from "node:os"
+import { loginServiceAgentLabel, loginServiceHomePaths, loginServiceTaskName, loginServiceUnitFile } from "@getdomovoi/protocol"
 import { installedWslTask } from "./wsl-registration.js"
 import { runWslServiceCommand } from "./wsl-install.js"
 import { stopGuestSupervisor } from "./supervisor-command.js"
@@ -21,10 +22,9 @@ import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 
 const serviceName = "domovoid"
-const unitFile = `${serviceName}.service`
-const agentFile = "sh.domovoi.domovoid.plist"
-const agentLabel = "sh.domovoi.domovoid"
-const displayName = "Domovoi daemon"
+const unitFile = loginServiceUnitFile
+const agentLabel = loginServiceAgentLabel
+const displayName = loginServiceTaskName
 
 export type ServiceCommand = { command: string; args: string[] }
 
@@ -139,11 +139,11 @@ function assertUid(uid: number | undefined): number {
 }
 
 function unitPath(home: string | undefined): string {
-  return posix.join(assertHome(home), ".config", "systemd", "user", unitFile)
+  return posix.join(assertHome(home), loginServiceHomePaths.linux)
 }
 
 function agentPath(home: string | undefined): string {
-  return posix.join(assertHome(home), "Library", "LaunchAgents", agentFile)
+  return posix.join(assertHome(home), loginServiceHomePaths.darwin)
 }
 
 // A service is installed for the user who asked for it: a systemd user unit, a

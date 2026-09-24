@@ -1,4 +1,5 @@
 ---
+"@getdomovoi/protocol": patch
 "@getdomovoi/ui": patch
 "@getdomovoi/desktop": patch
 ---

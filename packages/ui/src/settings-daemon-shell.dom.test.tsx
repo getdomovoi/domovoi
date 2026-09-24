@@ -80,3 +80,36 @@ it("installs when idle and tells the desktop the daemon changed", async () => {
   expect(onLocalDaemonChanged).toHaveBeenCalledOnce()
   expect(await within(section()).findByText("Installed. Quitting this app now leaves the daemon and its sessions running.")).toBeTruthy()
 })
+
+// The installed-service fact the daemon section waits for comes from the
+// desktop's own status read, so a daemon outside the app is drawn as the
+// service, with Remove live, only when the service manager says it is there.
+it("draws a daemon outside the app as the service once the desktop reports the service installed", async () => {
+  const install = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }))
+  const windowBridge = bridge(install)
+  windowBridge.daemonService!.status = vi.fn(async () => ({ installed: true, running: true, detail: "pid 48213" }))
+  const idle = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to a daemon outside this app", detail: "", owner: "outside" }} />)
+  await act(async () => { completeHandshake(harness.socket(0), idle) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Running")).toBeTruthy()
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+})
+
+it("keeps a daemon outside the app unnamed when the service status cannot be read", async () => {
+  const windowBridge = bridge(vi.fn())
+  windowBridge.daemonService!.status = vi.fn(async () => ({ unavailable: "launchctl could not be run" }))
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to a daemon outside this app", detail: "", owner: "outside" }} />)
+  await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).getByText("Not started here")).toBeTruthy()
+  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+})
