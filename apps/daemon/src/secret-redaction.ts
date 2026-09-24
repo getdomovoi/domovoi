@@ -27,10 +27,12 @@ const structuredAssignment = new RegExp(
   "giu",
 )
 const secretFlag = new RegExp(
-  // A flag starts where a name cannot continue, so a run of dashes starts one
-  // match rather than one at every position. A negated flag such as
-  // --no-password or --db-skip-password takes no value.
-  String.raw`((?:(?<![A-Za-z0-9_.-])--${namePrefix}(?<![_.-](?:no|skip|without)[_.-])|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  // A prefixed flag starts where a name cannot continue, so a run of dashes
+  // starts one prefix walk rather than one at every position. A bare -- or /
+  // followed directly by the sensitive name matches anywhere, as before
+  // prefixes were added; it walks nothing, so it stays linear. A negated flag
+  // such as --no-password or --db-skip-password takes no value.
+  String.raw`((?:(?<![A-Za-z0-9_.-])--${namePrefix}(?<![_.-](?:no|skip|without)[_.-])|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 const quotedCmdAssignment = new RegExp(
@@ -38,7 +40,7 @@ const quotedCmdAssignment = new RegExp(
   "giu",
 )
 const javaSystemProperty = new RegExp(
-  String.raw`((?<![A-Za-z0-9_.-])-D${namePrefix}${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  String.raw`((?:(?<![A-Za-z0-9_.-])-D${namePrefix}|-D)${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 

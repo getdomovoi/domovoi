@@ -115,6 +115,13 @@ describe("durable secret redaction", () => {
     expect(redactDurableCommand(text)).toMatchObject({ redacted: true })
   })
 
+  it.each([
+    ["x--password fake-value-4f2a9c", "x--password [REDACTED]"],
+    ["x-Dpassword=fake-value-4f2a9c", "x-Dpassword=[REDACTED]"],
+  ])("still redacts a flag or property glued to a word, as %s", (text, expected) => {
+    expect(redactDurableCommand(text)).toMatchObject({ value: expected, redacted: true })
+  })
+
   it("leaves names that only start with a secret word alone", () => {
     for (const safe of [
       "TOKENIZERS_PARALLELISM=false",
@@ -138,6 +145,8 @@ describe("durable secret redaction", () => {
     ["repeated flag starts", "--a"],
     ["repeated property starts", "-D"],
     ["repeated property names", "-Da"],
+    ["flags glued to words", "a--"],
+    ["properties glued to words", "a-D"],
   ])("scans a 50,000 character run of %s within 200 ms", (_shape, unit) => {
     const text = unit.repeat(Math.ceil(50_000 / unit.length)).slice(0, 50_000)
     let started = performance.now()
