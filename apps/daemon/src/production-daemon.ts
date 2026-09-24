@@ -112,9 +112,9 @@ export async function createProductionDaemonWithDependencies(
   const deadline = ownership?.deadline ?? OperationDeadline.start(30_000)
   // The desktop passes process.env or a copy of it; either way the bearer
   // leaves process.env here and is read from the kept copy.
-  const settings = withInheritedCredentials(options.environment ?? process.env)
-  const environment = withoutInheritedCredentials(options.environment ?? process.env)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
+  const settings = withInheritedCredentials(options.environment ?? process.env, homeDirectory)
+  const environment = withoutInheritedCredentials(options.environment ?? process.env)
   const machineLabel = options.machineLabel ?? hostname()
   let profile = profileLocation(homeDirectory)
   let lease = ownership?.lease

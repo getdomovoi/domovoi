@@ -166,7 +166,7 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     const record = readLocalOwnerRecord(profile)
     if (!lease) {
       if (record?.state !== "ready") return refused("owner-unreachable")
-      return await attach(profile, record, withInheritedCredentials(options.environment ?? process.env).DOMOVOI_AUTH_TOKEN, deadline)
+      return await attach(profile, record, withInheritedCredentials(options.environment ?? process.env, homeDirectory).DOMOVOI_AUTH_TOKEN, deadline)
     }
     // Lease freedom alone is not a shutdown record. A crashed service keeps
     // its record, and an installed but restarting service keeps its config.

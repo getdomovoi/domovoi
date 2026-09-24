@@ -175,6 +175,58 @@ describe("createProductionDaemon", () => {
     })
   })
 
+  // The kept bearer belongs to the profile it was handed for. Another profile
+  // in the same process, or an environment the caller built itself, loads its
+  // own credential rather than borrowing that one.
+  it("does not hand the kept bearer to a second profile in the same process", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const first = await acquire(await temporaryHome(), process.env)
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+
+      const other = await acquire(await temporaryHome(), process.env)
+      running.push(other)
+      expect(other.authToken).not.toBe(authToken)
+      expect(other.credential).not.toEqual({ source: "environment" })
+    })
+  })
+
+  it("does not hand the kept bearer to a profile that names its own credential path", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const first = await acquire(home, process.env)
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+
+      const profileB = join(await temporaryHome(), "profile-b")
+      const ownPath = join(profileB, "daemon.token")
+      process.env.DOMOVOI_PROFILE_DIR = profileB
+      process.env.DOMOVOI_CREDENTIAL_PATH = ownPath
+      try {
+        const other = await acquire(home, process.env)
+        running.push(other)
+        expect(other.authToken).not.toBe(authToken)
+        expect(other.credential).not.toEqual({ source: "environment" })
+      } finally {
+        delete process.env.DOMOVOI_PROFILE_DIR
+      }
+    })
+  })
+
+  it("does not fill the kept bearer into an environment the caller built without it", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const first = await acquire(home, process.env)
+      expect(first.authToken).toBe(authToken)
+      await first.stop()
+
+      const explicit = await acquire(home, { ...process.env })
+      running.push(explicit)
+      expect(explicit.authToken).not.toBe(authToken)
+      expect(explicit.credential).not.toEqual({ source: "environment" })
+    })
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
