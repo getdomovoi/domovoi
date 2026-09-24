@@ -82,7 +82,7 @@ it("binds the confirmation to the commit it described", async () => {
   ]))
   await user.click(screen.getByRole("button", { name: "Restore src/handler.ts" }))
   expect(screen.getByText(/checkpoint ckpt_6b0e/)).toBeTruthy()
-  await user.click(screen.getByRole("button", { name: "Restore file" }))
+  await user.click(screen.getByRole("button", { name: "Restore this file" }))
   expect(onRevertFile).toHaveBeenCalledWith("src/handler.ts", commit)
 })
 

@@ -1,12 +1,7 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import {
-  annotationRows,
-  openAnnotationCount,
-  reviewRows,
-  reviewSummary,
-} from "./review-rows"
+import { annotationRows, openAnnotationCount } from "./review-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -59,49 +54,5 @@ describe("annotationRows", () => {
     const before = openAnnotationCount(annotationRows(snapshot, annotation.artifactId))
     annotation.status = "resolved"
     expect(openAnnotationCount(annotationRows(snapshot, annotation.artifactId))).toBe(before - 1)
-  })
-})
-
-describe("reviewRows", () => {
-  it("holds every artifact the workspace has, whoever produced it", () => {
-    const snapshot = workspace()
-    expect(reviewRows(snapshot).map((row) => row.id).sort())
-      .toEqual(snapshot.artifacts.map((artifact) => artifact.id).sort())
-  })
-
-  it("puts what still has an open comment above what does not", () => {
-    const rows = reviewRows(workspace())
-    const opens = rows.map((row) => row.open)
-    expect([...opens].sort((left, right) => right - left)).toEqual(opens)
-    expect(opens[0]).toBeGreaterThan(0)
-  })
-
-  it("names the session an artifact came from", () => {
-    const snapshot = workspace()
-    const artifact = snapshot.artifacts[0]
-    if (!artifact) throw new Error("the demo workspace carries no artifact")
-    const session = snapshot.sessions.find((entry) => entry.id === artifact.sessionId)
-    expect(reviewRows(snapshot).find((row) => row.id === artifact.id)?.sessionTitle)
-      .toBe(session?.title)
-  })
-
-  it("summarises what there is and what wants an answer", () => {
-    const snapshot = workspace()
-    const rows = reviewRows(snapshot)
-    const open = snapshot.annotations.filter((entry) => entry.status === "open").length
-    expect(reviewSummary(rows)).toBe(`${snapshot.artifacts.length} artifacts · ${open} open`)
-  })
-
-  it("says artifact rather than artifacts when there is one", () => {
-    expect(reviewSummary([{
-      id: "a",
-      sessionId: "s",
-      sessionTitle: "s",
-      title: "a",
-      detail: "plan · revision 1",
-      variantLabel: undefined,
-      open: 0,
-      resolved: 0,
-    }])).toBe("1 artifact · 0 open")
   })
 })

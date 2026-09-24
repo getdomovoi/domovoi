@@ -20,6 +20,10 @@ import { protocolVersionForClient, type HandheldClient } from "./protocol-facts"
 
 export type PairedCredential = { url: string; token: string; client: HandheldClient }
 
+// The id the machine gave this device. It is not a secret: the machine's audit
+// rows name a device by it, and the paired card shows it shortened.
+export type PairedDevice = PairedCredential & { deviceId: string }
+
 const otherKinds: Record<Exclude<ClientKind, HandheldClient>, string> = {
   desktop: "a desktop",
   web: "a web browser",
@@ -76,10 +80,10 @@ export function redeemPairingCode(
   payload: PairingPayload,
   label: string,
   open: (url: string) => WebSocket = (url) => new WebSocket(url),
-): Promise<PairedCredential> {
+): Promise<PairedDevice> {
   const named = deviceLabelSchema.safeParse(label.trim())
   if (!named.success) return Promise.reject(new PairingRefusedError("Give this phone a name the machine can show."))
-  return new Promise<PairedCredential>((resolve, reject) => {
+  return new Promise<PairedDevice>((resolve, reject) => {
     const socket = open(payload.url)
     const timer = setTimeout(
       () => settle(() => reject(new PairingRefusedError("The machine did not answer. Check it is awake and on this network, then scan a fresh code."))),
@@ -134,7 +138,7 @@ export function redeemPairingCode(
         )))
         return
       }
-      settle(() => resolve({ url: payload.url, token: parsed.data.token, client }))
+      settle(() => resolve({ url: payload.url, token: parsed.data.token, client, deviceId: parsed.data.device.id }))
     }
     // A socket that fails says "could not reach" for a name that will not
     // resolve, a route that is blocked and a certificate that was rejected

@@ -1,0 +1,210 @@
+import { mkdtemp } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
+
+import { demoWorkspace } from "@getdomovoi/protocol"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { DomovoiDaemon } from "./server.js"
+import { SqliteWorkspaceStore, type StoredQueuedSessionSend } from "./store.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+const scratchDirectories: string[] = []
+const daemons: DomovoiDaemon[] = []
+
+afterEach(async () => {
+  await Promise.all(daemons.splice(0).map((daemon) => daemon.stop()))
+  await removeScratchDirectories(scratchDirectories)
+})
+
+function queued(sessionId: string, id: string): StoredQueuedSessionSend {
+  return {
+    id,
+    sessionId,
+    state: "waiting",
+    createdAt: "2026-09-22T12:00:00.000Z",
+    origin: { client: "desktop", connectionId: "11111111-1111-4111-8111-111111111111" },
+    skillIds: [],
+    attachments: [],
+    prompt: `queued for ${sessionId}`,
+  }
+}
+
+async function seeded() {
+  const scratch = await mkdtemp(join(tmpdir(), "domovoi-queued-sends-"))
+  scratchDirectories.push(scratch)
+  const path = join(scratch, "state.sqlite")
+  const store = new SqliteWorkspaceStore(path, demoWorkspace)
+  store.replaceQueuedSessionSend(queued("session-billing", "queue-readable"))
+  store.replaceQueuedSessionSend(queued("session-audit", "queue-damaged"))
+  await store.close()
+  return path
+}
+
+function damage(path: string, statement: string, ...values: string[]) {
+  const database = new DatabaseSync(path)
+  try {
+    database.prepare(statement).run(...values)
+  } finally { database.close() }
+}
+
+describe("queued sends that cannot be read", () => {
+  it.each([
+    ["a truncated payload", "UPDATE queued_session_sends SET payload = substr(payload, 1, 20) WHERE queue_id = ?"],
+    ["a state this build does not know", "UPDATE queued_session_sends SET state = 'scheduled' WHERE queue_id = ?"],
+  ])("moves %s aside and loads the rest", async (_name, statement) => {
+    const path = await seeded()
+    damage(path, statement, "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      const unreadable = vi.fn()
+      expect(store.loadQueuedSessionSends(unreadable).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(unreadable).toHaveBeenCalledOnce()
+      expect(unreadable).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "session-audit",
+        queueId: "queue-damaged",
+        reason: expect.any(String),
+      }))
+      expect(store.auditLog.query({ action: "queued-send.quarantine" }).entries).toEqual([
+        expect.objectContaining({ outcome: "succeeded", target: "queue-damaged" }),
+      ])
+      expect(store.loadQueuedSessionSends().map((send) => send.id)).toEqual(["queue-readable"])
+    } finally { await store.close() }
+    const database = new DatabaseSync(path)
+    try {
+      expect(database.prepare("SELECT queue_id FROM queued_session_send_quarantine").all())
+        .toEqual([{ queue_id: "queue-damaged" }])
+    } finally { database.close() }
+  })
+
+  it("starts the daemon over a damaged queued send", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = 'null' WHERE queue_id = ?", "queue-damaged")
+    const errorSink = vi.fn()
+    const daemon = new DomovoiDaemon({ port: 0, statePath: path, errorSink, agents: {} })
+    daemons.push(daemon)
+    await daemon.start()
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "Domovoi moved an unreadable queued message aside",
+    }))
+  })
+
+  it("bounds a transition reason so the row can be read again", async () => {
+    const path = await seeded()
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      expect(store.transitionQueuedSessionSend(
+        "session-audit",
+        "queue-damaged",
+        ["waiting"],
+        "held",
+        `  ${"r".repeat(1_100)}  `,
+      )).toBe(true)
+      expect(store.transitionQueuedSessionSend("session-billing", "queue-readable", ["waiting"], "held", "   ")).toBe(true)
+      const unreadable = vi.fn()
+      const loaded = store.loadQueuedSessionSends(unreadable)
+      expect(unreadable).not.toHaveBeenCalled()
+      expect(loaded.find((send) => send.id === "queue-damaged")?.reason).toHaveLength(1_024)
+      expect(loaded.find((send) => send.id === "queue-readable")?.reason).toBeUndefined()
+    } finally { await store.close() }
+  })
+
+  it("skips an unreadable send it cannot move aside while the database is locked, and says so", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = 'null' WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    const holder = new DatabaseSync(path)
+    try {
+      holder.exec("BEGIN IMMEDIATE")
+      const unreadable = vi.fn()
+      expect(store.loadQueuedSessionSends(unreadable).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(unreadable).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged", quarantined: false }))
+      holder.exec("ROLLBACK")
+      const retried = vi.fn()
+      expect(store.loadQueuedSessionSends(retried).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(retried).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged", quarantined: true }))
+    } finally {
+      holder.close()
+      await store.close()
+    }
+  }, 20_000)
+
+  it("keeps the bytes of an unreadable send before a new send replaces it", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = 'unreadable bytes' WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      store.replaceQueuedSessionSend(queued("session-audit", "queue-replacement"))
+      expect(store.loadQueuedSessionSends().map((send) => send.id).sort()).toEqual(["queue-readable", "queue-replacement"])
+    } finally { await store.close() }
+    const database = new DatabaseSync(path)
+    try {
+      expect(database.prepare("SELECT queue_id, payload FROM queued_session_send_quarantine").all())
+        .toEqual([{ queue_id: "queue-damaged", payload: "unreadable bytes" }])
+    } finally { database.close() }
+  })
+
+  it("moves a send with no session id aside once", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET session_id = NULL WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      const first = vi.fn()
+      expect(store.loadQueuedSessionSends(first).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(first).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged" }))
+      const second = vi.fn()
+      expect(store.loadQueuedSessionSends(second).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(second).not.toHaveBeenCalled()
+    } finally { await store.close() }
+    const database = new DatabaseSync(path)
+    try {
+      expect(database.prepare("SELECT queue_id FROM queued_session_send_quarantine").all()).toEqual([{ queue_id: "queue-damaged" }])
+      expect(database.prepare("SELECT queue_id FROM queued_session_sends WHERE queue_id = 'queue-damaged'").all()).toEqual([])
+    } finally { database.close() }
+  })
+
+  it("moves an unreadable send aside even when the caller asks for no report", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = 'null' WHERE queue_id = ?", "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      expect(store.loadQueuedSessionSends().map((send) => send.id)).toEqual(["queue-readable"])
+      expect(store.auditLog.query({ action: "queued-send.quarantine" }).entries).toEqual([
+        expect.objectContaining({ outcome: "succeeded", target: "queue-damaged" }),
+      ])
+    } finally { await store.close() }
+    const database = new DatabaseSync(path)
+    try {
+      expect(database.prepare("SELECT queue_id FROM queued_session_send_quarantine").all()).toEqual([{ queue_id: "queue-damaged" }])
+    } finally { database.close() }
+  })
+
+  it("keeps loading when SQLite ends the quarantine transaction itself", async () => {
+    const path = await seeded()
+    damage(path, "UPDATE queued_session_sends SET payload = ? WHERE queue_id = ?", "x".repeat(200_000), "queue-damaged")
+    const store = new SqliteWorkspaceStore(path, demoWorkspace)
+    const prepare = DatabaseSync.prototype.prepare
+    const limited: DatabaseSync[] = []
+    // A full database makes SQLite roll the transaction back on its own; a page
+    // limit on the store's connection produces exactly that.
+    const spy = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (sql.includes("INSERT INTO queued_session_send_quarantine") && limited.length === 0) {
+        limited.push(this)
+        const pages = prepare.call(this, "PRAGMA page_count").get() as { page_count: number }
+        this.exec(`PRAGMA max_page_count = ${pages.page_count}`)
+      }
+      return prepare.call(this, sql)
+    })
+    try {
+      const unreadable = vi.fn()
+      expect(store.loadQueuedSessionSends(unreadable).map((send) => send.id)).toEqual(["queue-readable"])
+      expect(limited).toHaveLength(1)
+      expect(unreadable).toHaveBeenCalledWith(expect.objectContaining({ queueId: "queue-damaged", quarantined: false }))
+    } finally {
+      spy.mockRestore()
+      for (const database of limited) database.exec("PRAGMA max_page_count = 1073741823")
+      await store.close()
+    }
+  })
+})

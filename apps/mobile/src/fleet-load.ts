@@ -1,8 +1,8 @@
-import { fleetSnapshotSchema, type FleetEntry } from "@getdomovoi/protocol"
+import { fleetSnapshotSchema, type FleetEntry, type RpcParams } from "@getdomovoi/protocol"
 
 import { fleetProblem } from "./fleet-problem"
 
-export type FleetCall = (method: string, params: unknown) => Promise<unknown>
+export type FleetCall = (method: "fleet.list", params: RpcParams<"fleet.list">) => Promise<unknown>
 
 export type FleetSink = {
   setFleet: (fleet: FleetEntry[] | undefined) => void

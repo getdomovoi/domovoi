@@ -1,33 +1,33 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Desktop V2.dc.html",
-  "sha256": "c008cb5eea4f1f5ac965b20084fafc54137a4c40f1188dfc9feced91e3353208",
-  "derivedOn": "2026-09-20",
+  "sha256": "6972659927566825664a28f6b60749069aa55e75e70cd237267999e8f438e3c7",
+  "derivedOn": "2026-09-23",
   "sources": [
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts",
     "apps/desktop/src/**/*.{ts,tsx}"
   ],
-  "note": "Read from the vendored file at the digest above, the whole 302,172 bytes. Elements are grouped by the design's regions in template order: titlebar, drawer, fleet, audit, settings, thread notices, launcher, conversation, composer, dock, handoff, fullscreen preview, palette. `where` and `states` are for the human reading the design; the gate holds copy and evidence only. Sample data is the fictional session (acme-api, the Stripe webhook task, mac-mini-m4 and friends) and is claimed under `sample` with no element.",
+  "note": "Read from the vendored file at the digest above, the whole 607,055 bytes. Elements are grouped by the design's regions in template order: titlebar, drawer, fleet, audit, settings, thread notices, launcher, conversation, composer, dock, handoff, fullscreen preview, palette. `where` and `states` are for the human reading the design; the gate holds copy and evidence only. Sample data is the fictional session (acme-api, the Stripe webhook task, mac-mini-m4 and friends) and is claimed under `sample` with no element. Re-derived 2026-09-23 after the audit design prompts: I69 (archive), J10 (build line), J18 (API keys), J23 (pairing card, imported from PairingCard and inventoried in pairing-card-v2.json), J24 and J37 (login service), J25 (TailnetReach, tailnet-reach-v2.json), J27 (commits and pull request), J32 (running apps), J34 (checkpoint before a write), J39 (search every machine), J40 (RemoteBrowser, remote-browser-v2.json), J42 (images per model), J43 (adopted sessions), J45 (tool calls, see skills-v2.json). Much of the new copy lives in the design's data (menus, notices, launcher chips); the elements name it in `where`.",
   "sample": [
-    "3 machines \u00b7 1 unreachable",
+    "3 machines · 1 unreachable",
     "prisma migrate",
     "last 24 hours",
-    "writes a file on this machine \u00b7 1,204 rows match",
+    "writes a file on this machine · 1,204 rows match",
     "Lost the daemon on wsl-ubuntu-24, last heard 41s ago",
     "mac-mini-m4",
     "main",
     "Webhooks get delivered twice when Stripe retries. Fix it properly, tests included.",
-    "acme-api \u00b7 main \u00b7 wt-billing-idem",
+    "acme-api · main · wt-billing-idem",
     "Wrote a 4 step plan",
-    "14:03 \u00b7 revised 14:06",
-    "FAIL webhooks/replay.spec.ts \u203a retries the same event twice",
+    "14:03 · revised 14:06",
+    "FAIL webhooks/replay.spec.ts › retries the same event twice",
     "expected 2 handler invocations, received 1",
-    "\u2192 the assertion encodes the bug; rewritten in step 4",
+    "→ the assertion encodes the bug; rewritten in step 4",
     "Review all 7 changed files",
     "You asked for this command from the composer. It is still gated, because no rule covers prisma migrate on this machine yet.",
     "pnpm -w prisma migrate deploy",
     "Always for prisma migrate here",
-    "step 3 of 4 \u00b7 refused by the daemon",
+    "step 3 of 4 · refused by the daemon",
     "pnpm -w prisma migrate deploy --url $PROD_DATABASE_URL",
     "The agent read PROD_DATABASE_URL and aimed at production. A rule forbids it, so the daemon refused before the command ran. No approval or mode can permit this.",
     "Review the 7 changed files",
@@ -35,13 +35,31 @@
     "Your edit to step 4 is queued. It applies at the next turn boundary, not to the turn in flight.",
     "TXT",
     "pasted-text-1.txt",
-    "18.4 kB \u00b7 640 lines",
+    "18.4 kB · 640 lines",
     "revised once since 14:03",
     "webhook_replay",
     "One row per Stripe event id. The unique key is the claim, so a second delivery cannot insert.",
     "PRE-FLIGHT ON HETZNER-CX42",
-    "migr",
-    "acme-api \u00b7 wt-billing-idem"
+    "acme-api · wt-billing-idem",
+    "Migrate billing webhooks",
+    "wt-billing-idem",
+    "archived 14:09 · ckpt_9a0e at a41c07e · 7 files never merged",
+    "hetzner-cx42",
+    "last exit 0xC0000005 at 14:02:41 · 5 restarts in 3m 10s",
+    "adopted 14:12",
+    "14:12",
+    "Storybook for acme-web",
+    ":6006",
+    "Storybook for acme-web. The agent started it to check the deliveries table in three states.",
+    "Before I shorten the claim expiry",
+    "billing-webhook-idempotency",
+    "pnpm prisma migrate deploy",
+    "dana@acme.dev",
+    "acme-api · 7 files",
+    "origin/main",
+    "Make Stripe webhook delivery exactly-once",
+    "Stripe retries replayed every side effect. Each handler now claims the event id in its own transaction before doing the work, so a second delivery returns early.",
+    ".git/index.lock"
   ],
   "elements": [
     {
@@ -56,7 +74,7 @@
         "Domovoi"
       ],
       "evidence": [
-        "DomovoiMark"
+        "<DomovoiMark reduced className=\"size-5 shrink-0 text-primary\""
       ]
     },
     {
@@ -78,16 +96,16 @@
       "name": "New session button",
       "where": "titlebar, after the drawer toggle",
       "states": [
-        "tooltip New session \u00b7 \u2318N"
+        "tooltip New session · ⌘N"
       ],
       "evidence": [
-        "New session \u00b7 "
+        "New session · "
       ]
     },
     {
       "id": "titlebar.palette-pill",
       "name": "Command palette pill",
-      "where": "titlebar centre, 560px wide, shows the current title and \u2318K",
+      "where": "titlebar centre, 560px wide, shows the current title and ⌘K",
       "states": [
         "thread title",
         "surface name (Machines, Audit log, Settings, New session in <repo>)"
@@ -116,7 +134,7 @@
         "offline (danger border and background)"
       ],
       "evidence": [
-        "Connected to",
+        "Machines: ",
         "Disconnected from"
       ]
     },
@@ -132,8 +150,7 @@
         "STOP EVERYTHING, ON EVERY MACHINE"
       ],
       "evidence": [
-        "Stop everything",
-        "Emergency stop"
+        "Stop everything"
       ]
     },
     {
@@ -167,7 +184,7 @@
       "evidence": [
         "aria-label=\"Minimize\"",
         "aria-label=\"Maximize\"",
-        "aria-label=\"Close\""
+        "onClick={bridge.close}"
       ]
     },
     {
@@ -191,7 +208,7 @@
         "active"
       ],
       "evidence": [
-        "sessions-drawer"
+        "aria-label={`Actions for"
       ]
     },
     {
@@ -222,12 +239,60 @@
       }
     },
     {
+      "id": "drawer.row-menu-archived",
+      "name": "Row menu on an archived session",
+      "where": "on an archived row (I69): no Delete the worktree; Start a new session from this branch shown disabled and marked later, with the reason",
+      "copy": [
+        "Not built yet",
+        "Start a new session from this branch",
+        "later",
+        "Archived, so there is no worktree to delete. It cannot be forked, unarchived or sent to."
+      ],
+      "evidence": [
+        "Start a new session from this branch",
+        "Archived, so there is no worktree to delete"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for I69; archived rows have no menu that says why fork, unarchive and delete are absent"
+      }
+    },
+    {
+      "id": "drawer.archive-confirm",
+      "name": "Archive confirmation",
+      "where": "dialog from Archive session (I69): what is removed, what is kept (branch with unmerged files, final checkpoint, readable thread), cannot be undone, Archive and remove the worktree, Keep the session",
+      "copy": [
+        "Archive this session",
+        "Archive this session?",
+        "Domovoi takes a final checkpoint, stops the agent and its terminals, then removes the worktree directory. Nothing is merged.",
+        "The branch",
+        ", with the 7 files that were never merged",
+        "The final checkpoint, taken on that branch",
+        "The thread, readable here",
+        "This cannot be undone. An archived session cannot be forked, unarchived or sent to.",
+        "Archive and remove the worktree",
+        "Keep the session"
+      ],
+      "presence": [
+        "<AlertDialog open={archiveTarget !== null}"
+      ],
+      "evidence": [
+        "<AlertDialog open={archiveTarget !== null}",
+        "Archive and remove the worktree",
+        "Keep the session",
+        "then removes the worktree directory"
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for I69; a confirmation exists; it does not list what is removed and kept, and its actions are not the design's"
+      }
+    },
+    {
       "id": "drawer.footer",
       "name": "Drawer footer to Fleet",
-      "where": "foot of the drawer: N machines \u00b7 M unreachable, opens Fleet",
+      "where": "foot of the drawer: N machines · M unreachable, opens Fleet",
       "evidence": [
-        "machineAvailability",
-        "onOpenMachines"
+        "<button type=\"button\" className=\"font-machine text-[10.5px] text-muted-foreground\" disabled={!onOpenMachines}"
       ]
     },
     {
@@ -260,7 +325,7 @@
         "Move a session here"
       ],
       "presence": [
-        "fleet-view"
+        "Move a session here"
       ]
     },
     {
@@ -288,7 +353,7 @@
         "Every decision this machine recorded"
       ],
       "presence": [
-        "Audit log"
+        "Every decision this machine recorded"
       ]
     },
     {
@@ -297,9 +362,9 @@
       "where": "audit surface: Every actor, Clients, Daemon, Providers, Machines chips; a query field; a time window",
       "evidence": [
         "Every actor",
-        "Clients",
-        "Daemon",
-        "Providers"
+        "[\"client\", \"Clients\"]",
+        "[\"daemon\", \"Daemon\"]",
+        "[\"provider\", \"Providers\"]"
       ],
       "presence": [
         "Audit entries"
@@ -310,7 +375,7 @@
       "name": "Audit rows",
       "where": "audit surface: when, what, actor, detail, who, outcome",
       "evidence": [
-        "Audit outcome"
+        "AuditEntryRow"
       ]
     },
     {
@@ -346,36 +411,94 @@
         "This machine holds its own settings"
       ],
       "presence": [
-        "Settings sections"
+        "This machine holds its own settings"
       ]
+    },
+    {
+      "id": "settings.daemon",
+      "name": "Daemon on this machine",
+      "where": "settings, first section (J24, J37): Daemon on this machine, who owns sessions, Keep Domovoi running after I quit with Install and the by-hand command, the supervisor-gave-up state with Start it again",
+      "states": [
+        "inside the app",
+        "installed as a login service",
+        "install needs a command",
+        "supervisor gave up"
+      ],
+      "copy": [
+        "The daemon on this machine is not running. Its supervisor gave up after 5 restarts.",
+        "Start it again",
+        "Daemon on this machine",
+        "It owns every session here. This window and a paired phone are both its clients.",
+        "Keep Domovoi running after I quit",
+        "To finish by hand, run this in a terminal.",
+        "Install"
+      ],
+      "evidence": [
+        "Keep Domovoi running after I quit",
+        "It owns every session here."
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J24 and J37; Settings has no daemon section and the desktop cannot install or remove the login service"
+      }
+    },
+    {
+      "id": "settings.service-remove",
+      "name": "Remove the login service",
+      "where": "dialog from the daemon section (J24): what is removed and kept, the consequence, Remove the service",
+      "copy": [
+        "Remove the login service",
+        "Remove the login service?",
+        "Domovoi unloads the service and starts the daemon inside this app again. Then it deletes exactly these. If unloading fails, nothing else is touched.",
+        "REMOVED",
+        "KEPT",
+        "After this, quitting Domovoi stops the daemon and every session on it.",
+        "Remove the service"
+      ],
+      "evidence": [
+        "Remove the login service?"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J24; no client removes the login service"
+      }
+    },
+    {
+      "id": "settings.about-build",
+      "name": "About this build",
+      "where": "settings (J10): About this build, the unsigned and no-self-update state, update checks bound to the machine's update policy; About Domovoi from the menu",
+      "copy": [
+        "About this build",
+        "Checks run only while this machine's update policy allows them.",
+        "About Domovoi"
+      ],
+      "evidence": [
+        "About this build",
+        "Checks run only while this machine's update policy allows them."
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J10; Settings does not say the build is unsigned or how update checks run"
+      }
     },
     {
       "id": "settings.pairing",
       "name": "Phone and tablet pairing",
-      "where": "settings: QR grid, code, expiry, the explanation, A PAIRED DEVICE CAN grants",
+      "where": "settings: Phone and tablet, the explanation, the imported PairingCard (QR, code, expiry, reach, grants), then the line that sends device management to Machines",
       "copy": [
         "Phone and tablet",
         "Pair a device to watch sessions and answer gates while away from the desk.",
-        "Scan it in the Domovoi app, or type the code. The pairing exchanges keys directly with this daemon, over loopback on this machine or over your tailnet. A device that can reach neither cannot pair yet: Domovoi Cloud is the answer to that and it does not exist.",
-        "A PAIRED DEVICE CAN"
+        "Rename, rotate and unpair them on Machines, next to the daemon that issued them."
       ],
       "evidence": [
         "Phone and tablet",
-        "A PAIRED DEVICE CAN",
-        "over loopback on this machine or over your tailnet"
-      ],
-      "presence": [
-        "Pairing"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "pairing exists as a dialog; the settings section, its copy (corrected 2026-09-18 to name loopback and the tailnet and say Cloud does not exist) and the grants list are not drawn"
-      }
+        "Rename, rotate and unpair them on Machines"
+      ]
     },
     {
       "id": "settings.paired-devices",
       "name": "Paired device rows",
-      "where": "settings under pairing: name, meta, Rename or Save, Rotate, revoke; a rotated secret shown once",
+      "where": "Machines surface (moved from Settings in the 2026-09-23 design): Devices paired with <machine>, the per-daemon note, rows with name, meta, Rename or Save, Rotate, revoke; a rotated secret shown once",
       "states": [
         "renaming",
         "rotated: secret, Copy once, Done",
@@ -386,18 +509,14 @@
         "Rename",
         "Rotate",
         "Copy once",
-        "Done"
+        "Done",
+        "Devices paired with mac-mini-m4",
+        "Each daemon keeps its own list. Pair a new one from Settings."
       ],
       "evidence": [
-        "Paired devices",
-        "Rename",
-        "Rotate",
-        "Copy once"
-      ],
-      "presence": [
-        "Paired devices",
-        "Rename",
-        "Rotate"
+        "Devices paired with",
+        "Copy once",
+        "Each daemon keeps its own list"
       ]
     },
     {
@@ -412,8 +531,33 @@
         "Providers and tokens"
       ],
       "presence": [
-        "Provider readiness"
+        "Providers and tokens"
       ]
+    },
+    {
+      "id": "api-keys",
+      "name": "API keys",
+      "where": "settings API keys per machine with Store in keychain; the launcher chip's key mark and Keys in Settings; the refused-key line in the thread and the send lock in the composer (J18)",
+      "copy": [
+        "API keys",
+        "Per machine. Domovoi never shows, syncs or logs a key.",
+        "Store in keychain",
+        "API key",
+        "Keys in Settings",
+        "refused the key on",
+        "The turn stopped at that answer. What it wrote before stays in the worktree, and Domovoi does not retry.",
+        "Send is locked.",
+        "Replace the key"
+      ],
+      "evidence": [
+        "Store in keychain",
+        "Send is locked."
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no RPC stores an API key in a machine's keychain (provider.secret.list only lists), and J18 was drawn as an owner decision"
+      }
     },
     {
       "id": "settings.notifications",
@@ -421,14 +565,14 @@
       "where": "settings: five rows, the gate row always on",
       "copy": [
         "Notifications",
-        "A waiting gate always notifies. The rest is yours."
+        "This desktop only. A waiting gate always notifies, and the rest is yours."
       ],
       "evidence": [
         "A gate is waiting on you",
         "Every tool call"
       ],
       "presence": [
-        "Notifications"
+        "<NotificationSettings"
       ],
       "partial": {
         "since": "2026-09-18",
@@ -444,12 +588,19 @@
         "These live on their own screens."
       ],
       "evidence": [
-        "Machines and daemons",
-        "Permissions and rules"
+        "<span>Machines and daemons</span>",
+        "<span>Skills</span>",
+        "<span>Audit log</span>",
+        "<span>Permissions and rules</span>",
+        "<span>Checkpoints</span>"
       ],
       "presence": [
-        "Elsewhere"
-      ]
+        "id=\"settings-elsewhere\""
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "Machines and daemons, Skills and Audit log are links in Elsewhere; Permissions and rules is an inline settings section, not a link, and Checkpoints has no link"
+      }
     },
     {
       "id": "settings.appearance",
@@ -462,7 +613,7 @@
         "Follows your OS appearance"
       ],
       "presence": [
-        "Appearance"
+        "Follows your OS appearance"
       ]
     },
     {
@@ -484,14 +635,45 @@
     {
       "id": "thread.session-notice",
       "name": "Paused or archived notice",
-      "where": "top of the thread: text, meta, one action",
+      "where": "top of the thread: text, meta, one action; archived (I69) says the worktree was removed and names the branch and final checkpoint kept, with no Unarchive",
       "states": [
         "paused",
         "archived"
       ],
       "evidence": [
-        "session-recovery"
-      ]
+        "SessionReadOnlyNotice",
+        "The worktree was removed"
+      ],
+      "copy": [
+        "Archived and read-only. The worktree was removed. Branch",
+        "and its final checkpoint are kept."
+      ],
+      "presence": [
+        "SessionReadOnlyNotice"
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "the archived notice does not yet say the worktree was removed and which branch and checkpoint are kept (I69)"
+      }
+    },
+    {
+      "id": "conversation.subagent",
+      "name": "Subagent calls and threads",
+      "where": "under the prose: Called <subagent> rows; the subagent's own read-only thread with the note and Back to the parent thread",
+      "copy": [
+        "Called",
+        "Subagents take instructions from claude-code, not from you.",
+        "Back to the parent thread"
+      ],
+      "evidence": [
+        "Back to the parent thread",
+        "Subagents take instructions from"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "session history carries no subagent identity or subagent thread"
+      }
     },
     {
       "id": "launcher.prompt",
@@ -518,6 +700,45 @@
       }
     },
     {
+      "id": "launcher.remote",
+      "name": "Launch on another machine",
+      "where": "launcher when the machine is not this one (J40): the line naming the machine, then the imported RemoteBrowser listing its projects",
+      "copy": [
+        "in a fresh worktree. That machine's daemon lists its projects below."
+      ],
+      "evidence": [
+        "That machine's daemon lists its projects below."
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no RPC lists a machine's repositories or directories; project.open takes a path the client already knows"
+      }
+    },
+    {
+      "id": "launcher.model-menu",
+      "name": "Launcher model menu",
+      "where": "launcher chips: the model chip opens MODEL ON <machine> with groups per agent, image tags and lock reasons",
+      "copy": [
+        "MODEL ON MAC-MINI-M4"
+      ],
+      "evidence": [
+        "aria-label=\"Execution provider\"",
+        "aria-label=\"Model\"",
+        "MODEL ON",
+        "takes image input",
+        "Locked for this model"
+      ],
+      "presence": [
+        "aria-label=\"Execution provider\"",
+        "aria-label=\"Model\""
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "the launcher has provider and model dropdowns (launcher-dialog); the design's one MODEL ON <machine> menu grouped per agent, its image-input tags and its per-model lock reasons are not drawn"
+      }
+    },
+    {
       "id": "launcher.recent",
       "name": "Pick up where you left off",
       "where": "launcher below the prompt: recent sessions with title and meta",
@@ -530,14 +751,68 @@
       ]
     },
     {
+      "id": "launcher.adopt",
+      "name": "Sessions found on this machine",
+      "where": "launcher (J43): FOUND ON THIS MACHINE, read from each agent's own records, the records-read list, the adopt sheet with its limits and the open decision on checkpoint records",
+      "copy": [
+        "FOUND ON THIS MACHINE",
+        "Read from each agent's own records. Domovoi only reads them.",
+        "Records read",
+        "Sessions found on this machine",
+        "Domovoi reads each agent's own records on",
+        "and lists what it finds. It only reads them.",
+        "Adopting runs a session in place, in its real checkout. You see the limits before anything changes.",
+        "Close",
+        "NOT DECIDED",
+        "Whether Domovoi may write checkpoint records into your repository."
+      ],
+      "evidence": [
+        "Sessions found on this machine",
+        "Adopting runs a session in place"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no RPC lists or adopts sessions another agent started; adoption was decided 2026-09-18 (in place) but has no wire"
+      }
+    },
+    {
+      "id": "conversation.adopted",
+      "name": "An adopted session",
+      "where": "thread of an adopted session (J43): Adopted from <agent> at <time>, in place, no worktree, the first gated turn, WHERE THIS SESSION RUNS with Move into a worktree marked later",
+      "copy": [
+        "Adopted from",
+        "at",
+        ", in place in",
+        "with no worktree. Gates apply from the next turn. Nothing done before adoption can be reverted.",
+        "Ask for the next turn. It is the first one Domovoi gates.",
+        "In place",
+        "WHERE THIS SESSION RUNS",
+        "Turns write to your real checkout.",
+        "Move into a worktree",
+        "LATER",
+        "A separate step after adopting. Not offered yet.",
+        "Send"
+      ],
+      "evidence": [
+        "Nothing done before adoption can be reverted.",
+        "WHERE THIS SESSION RUNS"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "same as launcher.adopt"
+      }
+    },
+    {
       "id": "conversation.header",
       "name": "Thread header line",
-      "where": "top of the conversation: repo \u00b7 branch \u00b7 worktree, then the clock (started, running or stalled)",
+      "where": "top of the conversation: repo · branch · worktree, then the clock (started, running or stalled)",
       "evidence": [
         "thread-header"
       ],
       "presence": [
-        "thread"
+        "ThreadStartLine"
       ],
       "partial": {
         "since": "2026-09-18",
@@ -549,10 +824,10 @@
       "name": "User message",
       "where": "right-aligned card",
       "evidence": [
-        "thread.tsx"
+        "data-testid=\"user-turn\""
       ],
       "presence": [
-        "thread"
+        "item.kind === \"user\""
       ],
       "partial": {
         "since": "2026-09-18",
@@ -568,26 +843,23 @@
         "done"
       ],
       "evidence": [
-        "aria-label=\"Prose\""
+        "<MarkdownQuickView source={stripPlanTags(item.body)} />"
       ]
     },
     {
       "id": "conversation.plan-link",
       "name": "Wrote a plan row",
-      "where": "under the prose: icon, Wrote a N step plan, revised time, Read it \u2192",
+      "where": "under the prose: icon, Wrote a N step plan, revised time, Read it →",
       "copy": [
-        "Read it \u2192"
+        "Read it →"
       ],
       "evidence": [
         "Wrote a",
         "Read it"
       ],
-      "presence": [
-        "Read it"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "a plan link exists; the row's wording and the revised time are not the design's"
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no plan link row under the prose; the earlier presence string matched the credential prompt's Read it from, not this element"
       }
     },
     {
@@ -619,7 +891,7 @@
       "evidence": [
         "Review all ${count} changed files",
         "+${file.additions}",
-        "\u2212${file.deletions}"
+        "−${file.deletions}"
       ]
     },
     {
@@ -653,21 +925,38 @@
       }
     },
     {
+      "id": "conversation.approval-checkpoint-failed",
+      "name": "Checkpoint failed at the gate",
+      "where": "in the approval card (J34): Could not take a checkpoint, the held lock, nothing ran, decide again",
+      "copy": [
+        "Could not take a checkpoint:",
+        "is held by another git process. Nothing ran. Decide again."
+      ],
+      "evidence": [
+        "Could not take a checkpoint"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "the daemon takes no checkpoint before an approved write (checkpointReasonSchema has no such reason), so there is no failure to report; J34 was drawn as an owner decision"
+      }
+    },
+    {
       "id": "conversation.policy-refusal",
       "name": "Refused by policy card",
-      "where": "in the thread: Refused by policy, the command, why, THE RULE IT BROKE with its chain, What you can do instead, See what a rule can never cover \u2192",
+      "where": "in the thread: Refused by policy, the command, why, THE RULE IT BROKE with its chain, What you can do instead, See what a rule can never cover →",
       "copy": [
         "Refused by policy, there is nothing to approve",
         "THE RULE IT BROKE",
         "What you can do instead",
-        "See what a rule can never cover \u2192"
+        "See what a rule can never cover →"
       ],
       "evidence": [
         "THE RULE IT BROKE",
         "What you can do instead"
       ],
       "presence": [
-        "Policy refusal"
+        "aria-label=\"Policy refusal\""
       ],
       "partial": {
         "since": "2026-09-18",
@@ -688,11 +977,15 @@
       ],
       "evidence": [
         "Decision receipt",
-        "Move this session to another machine"
+        ">Move this session to another machine</Button>"
       ],
       "presence": [
         "Decision receipt"
-      ]
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "the receipt exists; its Move this session to another machine action is not on the receipt (the string matched the transfer dialog's title)"
+      }
     },
     {
       "id": "conversation.offline-actions",
@@ -705,12 +998,9 @@
         "Reconnect to",
         "Reviewing and moving this session both need the daemon"
       ],
-      "presence": [
-        "Reconnect to"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "reconnect exists; the explanation line is not drawn"
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "no Reconnect to <machine> action or explanation in the thread; the earlier presence string matched the audit log's error text, not this element"
       }
     },
     {
@@ -742,9 +1032,7 @@
         "Plan preview"
       ],
       "evidence": [
-        "plan-strip",
-        "Discard",
-        "Plan preview"
+        "<PlanStrip"
       ]
     },
     {
@@ -753,9 +1041,25 @@
       "where": "top of the composer: mark, name, meta, remove; a more count",
       "evidence": [
         "Image or file from this device",
-        "Attachments",
+        "setAttachments",
         "attachmentMeta"
       ]
+    },
+    {
+      "id": "composer.images-locked",
+      "name": "Images the model cannot take",
+      "where": "composer notice (J42): N images cannot go to <model>, Remove them, Change model; model rows tagged with image input",
+      "copy": [
+        "Change model"
+      ],
+      "evidence": [
+        "cannot go to"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "image input is one machine-wide flag on system.hello; nothing reports it per model"
+      }
     },
     {
       "id": "composer.slash",
@@ -790,9 +1094,9 @@
         "No sends, approvals, terminal or writes. Reads stream as normal."
       ],
       "blocked": {
-        "since": "2026-09-22",
-        "needs": "design",
-        "reason": "The drawn reason names a Free plan, and plans are Phase 5; M1 may not claim account behaviour. The composer says This device was paired to watch only. until the design draws a reason with a source on the wire."
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "the drawn reason names a Free plan and a reads-only route; nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
       }
     },
     {
@@ -830,7 +1134,7 @@
     {
       "id": "composer.model-chip",
       "name": "Model chip and menu",
-      "where": "composer action row: harness \u00b7 short name; menu with search, filters, rows with agent and note, the switch note, count and Ask the agents again",
+      "where": "composer action row: harness · short name; menu with search, filters, rows with agent and note, the switch note, count and Ask the agents again",
       "states": [
         "closed",
         "open",
@@ -853,7 +1157,7 @@
       "name": "Mode chip and menu with Auto",
       "where": "composer action row beside the model chip: Plan, Ask, Build with notes, then the Auto row",
       "states": [
-        "Build \u00b7 auto",
+        "Build · auto",
         "auto refused outside Build"
       ],
       "copy": [
@@ -900,11 +1204,10 @@
         "Ends this turn at its next tool boundary. The session, plan and worktree stay as they are."
       ],
       "evidence": [
-        "Stop the agent",
         "Ends this turn at its next tool boundary"
       ],
       "presence": [
-        "Stop the agent"
+        "Ends this turn at its next tool boundary"
       ]
     },
     {
@@ -948,14 +1251,12 @@
       "where": "dock header: seven 28px icon tabs (Plan preview, Preview, Changes, Terminal, History, Checkpoints, Rules); the label and its note are drawn in the hover tip, the count is not drawn; pin and close",
       "evidence": [
         "dockTabDefinitions",
-        "Plan preview",
-        "Preview",
-        "Changes",
-        "Terminal",
-        "History",
-        "Checkpoints",
-        "Rules",
-        "Close"
+        "label: \"Plan preview\"",
+        "label: \"Preview\"",
+        "label: \"Changes\"",
+        "label: \"Terminal\"",
+        "label: \"History\"",
+        "label: \"Rules\""
       ]
     },
     {
@@ -978,8 +1279,7 @@
         "Looks right, carry on"
       ],
       "presence": [
-        "Working plan",
-        "Comments on the plan"
+        "<WorkingPlanCard"
       ],
       "partial": {
         "since": "2026-09-18",
@@ -991,7 +1291,7 @@
       "name": "Preview tab",
       "where": "Preview tab: RENDERED THIS SESSION list, title, authorize, widths sm/md/lg, annotate, fullscreen, the rendered page, hint and notes",
       "states": [
-        "authorized \u00b7 time left",
+        "authorized · time left",
         "authorize to view",
         "annotate mode: Click an element"
       ],
@@ -1010,6 +1310,56 @@
       "partial": {
         "since": "2026-09-18",
         "reason": "preview with widths and comments exists; the session list header, the authorize label and the annotate label are not the design's"
+      }
+    },
+    {
+      "id": "dock.running-apps",
+      "name": "Running apps in the preview",
+      "where": "Preview tab (J32): RUNNING APPS with Stop sharing, a proposal from the agent (not a gate) to show a port, Add a running app by port from LISTENING ON LOOPBACK, the sandboxed frame with Reload, Open in browser, Fullscreen, comments on the app",
+      "states": [
+        "proposed",
+        "shown",
+        "opened in the browser",
+        "port picker"
+      ],
+      "copy": [
+        "RUNNING APPS",
+        "Stop sharing",
+        "proposed by claude-code",
+        "Add a running app",
+        "mac-mini-m4 · 127.0.0.1:",
+        "Port on mac-mini-m4",
+        "Open",
+        "Listening ports",
+        "Reload",
+        "Open in your browser",
+        "Open in browser",
+        "Fullscreen",
+        "sandboxed · own origin",
+        "Opened in your default browser on mac-mini-m4. There it has no sandbox, no grant and no comments.",
+        "Dismiss",
+        "anchored to the element, not the pixel",
+        "COMMENTS ON THIS APP",
+        "PORT ON MAC-MINI-M4",
+        "127.0.0.1:",
+        "Show this port",
+        "LISTENING ON LOOPBACK",
+        "reported by the daemon · 14:15:02",
+        "PROPOSED BY CLAUDE-CODE · 14:14",
+        "Show port 6006 in this preview",
+        "Show port 6006",
+        "Not now",
+        "The agent is not waiting on this.",
+        "Not a gate: nothing on mac-mini-m4 changes and the agent keeps working. It still needs your yes, because it opens the app on your screen."
+      ],
+      "evidence": [
+        "RUNNING APPS",
+        "LISTENING ON LOOPBACK"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no RPC lists listening ports or authorizes a running app into the preview sandbox; J32 was drawn as an owner decision"
       }
     },
     {
@@ -1101,10 +1451,8 @@
         "Fork from here"
       ],
       "evidence": [
-        "Everything",
-        "Turns",
-        "Approvals",
-        "Transfers",
+        "label: \"Turns\"",
+        "label: \"Transfers\"",
         "Fork from here"
       ]
     },
@@ -1129,6 +1477,27 @@
       }
     },
     {
+      "id": "dock.checkpoint-take",
+      "name": "Take a checkpoint from the tab",
+      "where": "Checkpoints tab head: Take a checkpoint opens a label field and Take checkpoint",
+      "copy": [
+        "Take a checkpoint",
+        "Take checkpoint"
+      ],
+      "presence": [
+        "Take a checkpoint",
+        "Take checkpoint"
+      ],
+      "evidence": [
+        "Take checkpoint",
+        "taken at the next tool boundary"
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "mid-turn deferred take (design: taken at the next tool boundary) needs daemon support"
+      }
+    },
+    {
       "id": "dock.rules",
       "name": "Rules tab",
       "where": "Rules tab: the scope note, rows with pattern, scope, used, Revoke; NEVER COVERED BY A RULE list",
@@ -1138,15 +1507,14 @@
         "NEVER COVERED BY A RULE"
       ],
       "evidence": [
-        "What you have already allowed",
-        "Revoke",
-        "NEVER COVERED BY A RULE"
+        "NEVER COVERED BY A RULE",
+        "<RulesPanel"
       ]
     },
     {
       "id": "dock.changes",
       "name": "Changes tab, evidence per file",
-      "where": "Changes tab: EVIDENCE PER FILE, per file badge, path, coverage, +n -n, runs, diff, revert ask (Revert this file / Keep it), reverted note, Revert file; foot Open the worktree in your editor",
+      "where": "Changes tab: EVIDENCE PER FILE, per file badge, path, coverage, +n -n, runs, diff, revert ask (Revert this file / Keep it), reverted note, Revert file; foot Open in editor",
       "states": [
         "file open",
         "diff shown",
@@ -1159,36 +1527,87 @@
         "Revert this file",
         "Keep it",
         "Revert file",
-        "Open the worktree in your editor"
+        "Open in editor"
       ],
       "evidence": [
         "EVIDENCE PER FILE",
         "Revert this file",
         "Keep it",
-        "Open the worktree in your editor"
+        "Open in editor",
+        {
+          "absent": "<AlertDialog",
+          "in": "packages/ui/src/session-evidence.tsx"
+        }
       ],
       "presence": [
-        "session-evidence",
+        "<SessionEvidencePanel",
+        "EVIDENCE PER FILE",
         "Revert this file"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "evidence per file and revert exist; the header, the keep/revert ask and the dock-local editor action are not the design's"
+        "since": "2026-09-23",
+        "reason": "copy and actions match; the design asks Revert this file / Keep it inline in the file row, the implementation asks in a dialog, and keeps the worktree diff and observed runs below the list instead of in each row"
+      }
+    },
+    {
+      "id": "dock.commits",
+      "name": "Commits before a pull request",
+      "where": "Changes tab (J27): COMMITS grouped from the plan, Split again, commit messages following the repository's convention and author, files moved between commits, empty commits skipped, the optional agent trailer, Commit without a pull request",
+      "copy": [
+        "Commit without a pull request",
+        "COMMITS",
+        "Split again",
+        "Commit message",
+        "No files left in this commit. It is skipped when you commit.",
+        "Move to another commit",
+        "MOVE TO",
+        "Step 3 ran",
+        "and changed no files, so it has no commit.",
+        "Messages follow the last 40 commits on main: a conventional prefix, lowercase, no trailing period. Authored as Dana",
+        ", from git config on mac-mini-m4.",
+        "Name the agent in a trailer",
+        "Adds",
+        "Assisted-by: claude-code / sonnet-4.6",
+        "to each message. The author stays you."
+      ],
+      "evidence": [
+        "Commit without a pull request",
+        "Name the agent in a trailer"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no daemon RPC groups a worktree's changes into commits or commits them (J27)"
       }
     },
     {
       "id": "dock.changes-pr",
       "name": "Open a pull request",
-      "where": "Changes tab foot: Open a pull request and the note that nothing is merged until you do",
+      "where": "Changes tab foot and its dialog (J27): Open a pull request; BRANCH from the session or publish as a new branch, Into, COMMIT, DESCRIPTION drafted from the plan, Open it as a draft, the gh-not-signed-in fallback, per-step progress, Back to the session",
       "copy": [
         "Open a pull request",
-        "nothing is merged until you do"
+        "BRANCH",
+        "From the session",
+        "Publish as a new branch",
+        "Into",
+        "COMMIT",
+        "DESCRIPTION",
+        "Drafted from the plan and the evidence. Edit it before you open.",
+        "Open it as a draft",
+        "Nobody is asked to review until you mark it ready on GitHub.",
+        "gh is not signed in on mac-mini-m4, so this stops after the push and hands you the compare link. Run gh auth login there to open pull requests from here.",
+        "Each step runs on mac-mini-m4. If one fails, the steps before it stay done and nothing retries without you.",
+        "Back to the session"
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "no daemon RPC or desktop adapter defines how a session worktree becomes a pull request"
-      }
+        "reason": "no daemon RPC commits, pushes or opens a pull request from a session worktree (J27)"
+      },
+      "evidence": [
+        "Open it as a draft",
+        "Publish as a new branch"
+      ]
     },
     {
       "id": "handoff.dialog",
@@ -1201,7 +1620,7 @@
         "The thread, the plan and the worktree are recreated on the target"
       ],
       "presence": [
-        "transfer-session-dialog"
+        "<TransferSessionDialog"
       ]
     },
     {
@@ -1234,7 +1653,7 @@
         "Retry the move"
       ],
       "presence": [
-        "session-recovery"
+        "sessionRecoveryOffer"
       ]
     },
     {
@@ -1249,12 +1668,11 @@
         "Keep the chosen side"
       ],
       "presence": [
-        "conflict"
+        "keep-target-session"
       ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "protocol",
-        "reason": "The daemon can refuse a diverged target, but it exposes no conflict-resolution RPC or Keep the chosen side action."
+      "partial": {
+        "since": "2026-09-22",
+        "reason": "reclassified from blocked: session.transferResolveConflict (since b5b1aa90, #226) resolves an ownership conflict by keeping the target side, and the transfer outcome offers it; keeping the source side has no RPC, so the design's pick of either side and its Keep the chosen side copy are not drawn"
       }
     },
     {
@@ -1262,7 +1680,6 @@
       "name": "Fullscreen preview",
       "where": "over the shell: title, the read-only path line, widths, Exit fullscreen with esc, the page, variants, comments with Post / Cancel",
       "copy": [
-        "design-studio \u00b7 .domovoi/previews \u00b7 read-only",
         "Exit fullscreen",
         "esc",
         "Post"
@@ -1276,15 +1693,26 @@
       "id": "palette",
       "name": "Command palette",
       "where": "over the shell: query, the scope line, SESSIONS and COMMANDS groups with meta",
-      "copy": [
-        "sessions, machines, commands, skills"
-      ],
+      "copy": [],
       "evidence": [
         "Search commands",
         "sessions, machines, commands, skills"
       ],
       "presence": [
         "Search commands"
+      ]
+    },
+    {
+      "id": "palette.other-machines",
+      "name": "Sessions on other machines",
+      "where": "palette (J39): SESSIONS ON OTHER MACHINES with the scope, grouped per machine or merged with machine chips, in summary tags, matches joining as each machine answers",
+      "copy": [
+        "SESSIONS ON OTHER MACHINES",
+        "in summary",
+        "Matches join this list as each machine answers."
+      ],
+      "evidence": [
+        "SESSIONS ON OTHER MACHINES"
       ]
     },
     {
@@ -1346,8 +1774,8 @@
         "MD"
       ],
       "evidence": [
-        "Prose",
-        "Markdown"
+        "aria-label=\"Prose\"",
+        "aria-label=\"Markdown\""
       ]
     },
     {
@@ -1359,7 +1787,7 @@
         "a turn is running"
       ],
       "copy": [
-        "\u2318\u23ce send \u00b7 esc close",
+        "⌘⏎ send · esc close",
         "Keep as draft"
       ],
       "evidence": [
@@ -1369,11 +1797,6 @@
     }
   ],
   "humanRead": [
-    {
-      "id": "settings.paired-devices",
-      "since": "2026-09-20",
-      "note": "Rename, rotate, one-time copy and dismiss are complete, but paired devices remain on Machines rather than in the signed Settings column. Verify the design-system navigation decision before moving the surface."
-    },
     {
       "id": "thread.session-notice",
       "since": "2026-09-18",
@@ -1388,6 +1811,31 @@
       "id": "composer.input",
       "since": "2026-09-19",
       "note": "The three placeholders and the queued note live in the design's data, so the gate cannot hold them as drawn copy. Read them against composerPlaceholder in packages/ui/src/composer-keys.ts."
+    },
+    {
+      "id": "settings.paired-devices",
+      "since": "2026-09-23",
+      "note": "The 2026-09-23 design draws paired devices on Machines, where the implementation already puts them; verify the arrangement against the Machines surface."
+    },
+    {
+      "id": "palette",
+      "since": "2026-09-23",
+      "note": "The scope line moved into the design's data (paletteScope): titles and summaries, every machine while searching other machines, otherwise sessions, machines, commands, skills."
+    },
+    {
+      "id": "settings.pairing",
+      "since": "2026-09-23",
+      "note": "Shown to desktop clients only: device.issueCode takes the daemon credential, which a web tab (a paired device) does not hold. The card's problem states that point at a tailnet setting draw no action while TailnetReach is blocked; the reach and certificate lines come from the pairingAddress the daemon sends with the code."
+    },
+    {
+      "id": "palette.other-machines",
+      "since": "2026-09-23",
+      "note": "Grouped per machine (the design's layout A). The window's own machine is searched too and counted by its answer; its summary matches join the SESSIONS group, marked in summary. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
     }
+  ],
+  "annotations": [
+    "LATER · PREVIEW STATE",
+    "PREVIEW STATE",
+    "TRY AN INPUT"
   ]
 }

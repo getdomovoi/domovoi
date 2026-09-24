@@ -1,15 +1,15 @@
 {
-  "extends": "expo/tsconfig.base",
+  "extends": ["../../tsconfig.base.json", "expo/tsconfig.base"],
   "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
     "jsx": "react-jsx",
     "jsxImportSource": "nativewind",
     "types": [
       "nativewind/types"
     ],
-    "moduleResolution": "bundler",
-    "verbatimModuleSyntax": false
+    // Expo's Metro resolver reads compilerOptions.paths, extends included. The
+    // base maps the workspace packages to their sources; the phone bundles the
+    // built protocol package, so it keeps no paths of its own.
+    "paths": {}
   },
   "include": [
     "src",
