@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { link, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Worker } from "node:worker_threads"
@@ -145,6 +145,22 @@ describe("projectInstructions", () => {
     await symlink(join(root, "outside.md"), join(worktree, "AGENTS.md"))
 
     await expect(projectInstructions(worktree, "opencode")).resolves.toBeUndefined()
+  })
+
+  // A hard link has no target to resolve: the path stays inside the worktree
+  // while the file is also the outside one. Windows needs no privilege for it.
+  it.each([
+    ["codex", "AGENTS.md"],
+    ["opencode", "AGENTS.md"],
+    ["claude", "CLAUDE.md"],
+  ] as const)("refuses %s an instruction file hard-linked to a file outside the worktree", async (reader, name) => {
+    const root = await scratch()
+    const worktree = join(root, "worktree")
+    await mkdir(worktree)
+    await writeFile(join(root, "outside.md"), "outside secret\n")
+    await link(join(root, "outside.md"), join(worktree, name))
+
+    await expect(projectInstructions(worktree, reader)).resolves.toBeUndefined()
   })
 
   it("reads nothing from a nested repository or from Git metadata", async () => {

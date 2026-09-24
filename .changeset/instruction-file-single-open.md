@@ -12,6 +12,11 @@ must be a regular file of at most 128 KiB, and is read up to that limit. Each di
 worktree root and the file must be a real directory, not a link, and the same one before and after
 the open; otherwise nothing is sent from that file.
 
+A hard link has no target to resolve, so a worktree name hard-linked to a file outside the worktree
+passed every path check and the outside file's contents were sent. The open file must now have
+exactly one name (a link count of 1); a file with more names, inside the worktree or not, sends
+nothing.
+
 Windows has no `O_NOFOLLOW`. There the check before the open refuses a link, and the device and
 inode comparison after the open refuses a link swapped in between. Node has no call that opens a file
 relative to an open directory, so a directory swapped for a link and back again between these checks

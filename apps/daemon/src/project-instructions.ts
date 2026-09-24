@@ -276,7 +276,9 @@ async function readWorktreeFile(directories: readonly string[], path: string): P
     if (!before) return undefined
     handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
     const opened = await handle.stat({ bigint: true })
-    if (!opened.isFile() || opened.size > BigInt(maximumInstructionFileBytes)) return undefined
+    // A hard link has no target for realpath to resolve, so a second name for
+    // an outside file passes every path check. The open file must have one name.
+    if (!opened.isFile() || opened.nlink > 1n || opened.size > BigInt(maximumInstructionFileBytes)) return undefined
     if (!sameFile(opened, before.at(-1))) return undefined
     const after = await pathIdentities(directories, path)
     if (!after || after.length !== before.length || !after.every((identity, index) => sameFile(identity, before[index]))) {
