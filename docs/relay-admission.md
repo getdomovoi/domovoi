@@ -114,9 +114,9 @@ not become a valid RPC merely because framing accepts it.
 | --- | --- |
 | Noise frame | 65,535 bytes, checked before decrypting |
 | Admission plaintext | 4,096 bytes including type byte, checked before JSON parsing |
-| Application message | 2 MiB of UTF-8, checked before allocation and before sending |
+| Application message | 6 MiB of UTF-8 (`maximumRelayMessageBytes`, equal to `maximumRpcMessageBytes`), checked before allocation and before sending |
 | Fragment payload | 65,510 bytes, accounting for nine header bytes and 16 tag bytes |
-| Carrier backlog | 4 MiB per channel including the next ciphertext; invalid counters refuse |
+| Carrier backlog | 8 MiB per channel (`maximumRelayBufferedBytes`, the message cap plus 2 MiB) including the next ciphertext; invalid counters refuse |
 | Admission deadline | 10 seconds from endpoint creation; later handshake progress cannot refresh it |
 | Reassembly deadline | 10 seconds from the first fragment; later fragments cannot refresh it |
 | Daemon channels | 32 total, including unfinished admission |
@@ -147,7 +147,7 @@ hello. Closing a channel releases its terminal ownership through the existing
 reap policy; shutdown closes all channels.
 
 Relay channels refuse `device.pair`, `device.claim`, `device.confirmClaim`,
-`device.issueCode`, and `artifact.authorize`. Pairing and recovery retain their
+`device.redeemCode`, `device.issueCode`, and `artifact.authorize`. Pairing and recovery retain their
 direct boundary. Signed artifact HTTP access is not silently redirected through
 an unimplemented relay path. Root-only methods retain the existing paired-device
 refusal even after successful admission. Other RPCs retain their existing

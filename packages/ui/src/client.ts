@@ -1171,7 +1171,11 @@ export class DomovoiClient extends EventTarget {
 
     const response = rpcResponseSchema.safeParse(input)
     if (!response.success) {
-      const id = (input as { id?: unknown }).id
+      // "null", a number and an array all parse as JSON; only an object can
+      // name the request it answers.
+      const id = typeof input === "object" && input !== null && !Array.isArray(input)
+        ? (input as { id?: unknown }).id
+        : undefined
       if (typeof id === "number") {
         const pending = this.#pending.get(id)
         if (pending) {
