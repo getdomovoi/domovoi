@@ -50,6 +50,10 @@ describe("importReferences code boundaries", () => {
     ["code tags around a tag whose attribute quotes a closing code tag", "<code><span title=\"</code>\">@sample.md</span></code>"],
     ["a code tag opened inside emphasis and closed after it", "*<code>example* @sample.md</code>"],
     ["a code tag whose inner closing tag belongs to a different element", "<code></kbd>@sample.md</code>"],
+    ["an escaped at sign", "See \\@sample.md here."],
+    ["an escaped at sign at the start of a line", "\\@sample.md"],
+    ["an at sign written as a character reference", "See &#64;sample.md here."],
+    ["an at sign written as a named character reference", "See &commat;sample.md here."],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
@@ -67,6 +71,10 @@ describe("importReferences code boundaries", () => {
     ["an import after a closing tag that ends an outer code tag", "<code><kbd>x</code> @real.md", ["real.md"]],
     ["an import after a code tag closed inside emphasis", "*<code>x</code>* @real.md", ["real.md"]],
     ["only the import after a fence inside a list item", "- ~~~\n  @sample.md\n  ~~~\n\n@real.md", ["real.md"]],
+    ["an import after an escaped backslash", "See \\\\@real.md here.", ["real.md"]],
+    ["an import after an escaped at sign on the same line", "\\@sample.md and @real.md", ["real.md"]],
+    ["an import on a continued blockquote line", "> Rules\n> @real.md", ["real.md"]],
+    ["an import on a continued list item line", "- Rules\n  @real.md", ["real.md"]],
   ])("keeps %s", (_label, text, expected) => {
     expect(importReferences(text)).toEqual(expected)
   })

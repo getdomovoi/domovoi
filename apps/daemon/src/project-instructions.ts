@@ -77,7 +77,20 @@ async function collectClaudeFile(
 // inline nodes are read as one sequence in document order, with a stack of
 // open code tags; a closing tag pops back to its own name and is otherwise
 // ignored.
-type MarkdownNode = { type: string; value?: unknown; children?: MarkdownNode[] }
+//
+// An import is read from the text as written, not as CommonMark decodes it,
+// the way Claude Code reads its lexer's text tokens: a backslash escape
+// (\@x.md) or a character reference (&#64;x.md) is not an at sign, and the
+// text after an escape starts a new run, so \\@x.md, an escaped backslash
+// then @x.md, is an import.
+type MarkdownNode = {
+  type: string
+  value?: unknown
+  children?: MarkdownNode[]
+  position?: { start: { offset?: number }; end: { offset?: number } }
+}
+
+const backslashEscape = /\\[!-/:-@[-`{-~]/
 
 const codeTag = /^<(\/?)(code|pre|kbd|samp)(?=[\s>/])/i
 const inlineContainers = new Set(["paragraph", "heading", "tableCell"])
@@ -86,6 +99,12 @@ export function importReferences(text: string): string[] {
   const references: string[] = []
   const collect = (value: string) => {
     for (const match of value.matchAll(/(?:^|\s)@([^\s]+)/g)) references.push(match[1]!)
+  }
+  const collectText = (node: MarkdownNode) => {
+    const start = node.position?.start.offset
+    const end = node.position?.end.offset
+    if (start === undefined || end === undefined) return
+    for (const run of text.slice(start, end).split(backslashEscape)) collect(run)
   }
   const leaves = (node: MarkdownNode, sequence: MarkdownNode[]): void => {
     if (node.children === undefined) {
@@ -112,12 +131,12 @@ export function importReferences(text: string): string[] {
           if (index !== -1) open.length = index
           continue
         }
-        if (open.length === 0 && leaf.type === "text" && typeof leaf.value === "string") collect(leaf.value)
+        if (open.length === 0 && leaf.type === "text") collectText(leaf)
       }
       return
     }
-    if (node.type === "text" && typeof node.value === "string") {
-      collect(node.value)
+    if (node.type === "text") {
+      collectText(node)
       return
     }
     for (const child of node.children ?? []) visit(child)
