@@ -1,10 +1,11 @@
 import type { Config } from "@kilocode/sdk"
 
 import { createAuthenticatedEmbeddedRuntime } from "./embedded-server.js"
-import { requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
+import { domovoiAgentPermission, requireOpenCodeClient, type OpenCodeFactory } from "./opencode.js"
 
 export const domovoiKiloConfig: Config = {
   autoupdate: false,
+  permission: domovoiAgentPermission,
   agent: {
     "domovoi-ask": {
       mode: "primary",

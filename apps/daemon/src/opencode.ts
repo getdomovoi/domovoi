@@ -79,6 +79,9 @@ type Session = {
   threadId: string
   cwd: string
   runtime: Runtime
+  // Changes each time the thread is loaded, so a reply that settles after an
+  // unload cannot leave anything behind for the next load.
+  generation: number
   activeTurnId?: string
   assistantMessageTurnIds: Map<string, string>
   toolPhases: Map<string, string>
@@ -90,9 +93,94 @@ type DirectoryStream = {
 }
 
 type PendingApproval = {
-  threadId: string
+  // The session that asked: the Domovoi thread itself, or a subagent session
+  // the thread's task tool started. The reply goes to that session.
+  providerSessionId: string
   cwd: string
   permissionId: string
+  // Set when a subagent asked: the thread and turn the subagent belongs to.
+  // Its approval ends with that turn.
+  subagentTurn?: SubagentTurn
+  generation?: number
+}
+
+type SubagentTurn = {
+  threadId: string
+  turnId: string
+  // Set by the registry: distinguishes this link from a later link of a
+  // reused session id.
+  link?: number
+}
+
+// Subagent sessions, by session id. A linked subagent belongs to the thread
+// and turn that started it, and keeps that turn after it ends so its late
+// events are recognised. A subagent first seen while its thread had no active
+// turn is never linked (owner ruling 2026-09-23) and stays ignored, as does
+// anything it starts. A deleted session's record is dropped, and a bounded
+// tombstone keeps it from being adopted again.
+export class SubagentRegistry {
+  readonly #linked = new Map<string, SubagentTurn>()
+  readonly #neverLinked = new Map<string, string>()
+  readonly #tombstones = new Map<string, string>()
+  readonly #tombstoneLimit: number
+  #nextLink = 0
+
+  constructor(tombstoneLimit = 1_024) {
+    this.#tombstoneLimit = tombstoneLimit
+  }
+
+  get size(): number {
+    return this.#linked.size + this.#neverLinked.size
+  }
+
+  get tombstones(): number {
+    return this.#tombstones.size
+  }
+
+  get(sessionId: string): SubagentTurn | undefined {
+    return this.#linked.get(sessionId)
+  }
+
+  neverLinkedThread(sessionId: string): string | undefined {
+    return this.#neverLinked.get(sessionId)
+  }
+
+  isKnown(sessionId: string): boolean {
+    return this.#linked.has(sessionId) || this.#neverLinked.has(sessionId) || this.#tombstones.has(sessionId)
+  }
+
+  link(sessionId: string, turn: SubagentTurn): void {
+    this.#linked.set(sessionId, { threadId: turn.threadId, turnId: turn.turnId, link: ++this.#nextLink })
+  }
+
+  neverLink(sessionId: string, threadId: string): void {
+    this.#neverLinked.set(sessionId, threadId)
+  }
+
+  // A deletion seen before the creation is remembered too, so the creation
+  // that follows adopts nothing.
+  delete(sessionId: string, fallbackThreadId = ""): void {
+    const threadId = this.#linked.get(sessionId)?.threadId
+      ?? this.#neverLinked.get(sessionId)
+      ?? (fallbackThreadId || this.#tombstones.get(sessionId))
+      ?? fallbackThreadId
+    this.#linked.delete(sessionId)
+    this.#neverLinked.delete(sessionId)
+    // Re-insert so a repeated deletion is the newest tombstone, not the oldest.
+    this.#tombstones.delete(sessionId)
+    this.#tombstones.set(sessionId, threadId)
+    while (this.#tombstones.size > this.#tombstoneLimit) {
+      const oldest = this.#tombstones.keys().next().value
+      if (oldest === undefined) break
+      this.#tombstones.delete(oldest)
+    }
+  }
+
+  forgetThread(threadId: string): void {
+    for (const [sessionId, owner] of this.#linked) if (owner.threadId === threadId) this.#linked.delete(sessionId)
+    for (const [sessionId, owner] of this.#neverLinked) if (owner === threadId) this.#neverLinked.delete(sessionId)
+    for (const [sessionId, owner] of this.#tombstones) if (owner === threadId) this.#tombstones.delete(sessionId)
+  }
 }
 
 type PendingSessionLoad = {
@@ -120,7 +208,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   #directories = new Map<string, DirectoryStream>()
   #listeners = new Set<(event: AgentEvent) => void>()
   #pendingApprovals = new Map<number, PendingApproval>()
+  #subagents = new SubagentRegistry()
+  // Refusals the provider did not accept, by request id. They are sent again
+  // when the card is answered or the thread's next turn starts or ends.
+  #failedRefusals = new Map<number, PendingApproval>()
   #nextApprovalId = 0
+  #nextGeneration = 0
 
   constructor(
     factory: OpenCodeFactory = defaultOpenCodeFactory,
@@ -260,6 +353,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     runtime: Runtime
   }): Promise<string> {
     const session = this.#requireSession(threadId)
+    this.#retryFailedRefusals(threadId)
     const turnId = this.#id()
     session.runtime = runtime
     session.activeTurnId = turnId
@@ -316,22 +410,45 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   }
 
   resolveApproval(requestId: number, decision: ApprovalDecision): void {
+    const failed = this.#failedRefusals.get(requestId)
+    if (failed) {
+      this.#failedRefusals.delete(requestId)
+      this.#respond(failed, "reject", requestId)
+      return
+    }
     const pending = this.#pendingApprovals.get(requestId)
     if (!pending) return
     this.#pendingApprovals.delete(requestId)
-    const response = decision === "allow-once" || decision === "always-project"
-      ? "once"
-      : "reject"
+    this.#respond(pending, decision === "allow-once" || decision === "always-project" ? "once" : "reject", requestId)
+  }
+
+  #respond(pending: PendingApproval, response: "once" | "reject", requestId: number): void {
     void this.#client().then(async (client) => {
       unwrap(await client.postSessionIdPermissionsPermissionId({
-        path: { id: pending.threadId, permissionID: pending.permissionId },
+        path: { id: pending.providerSessionId, permissionID: pending.permissionId },
         query: { directory: pending.cwd },
         body: { response },
         throwOnError: true,
       }), `${this.#identity.providerName} permission response`)
     }).catch((error: unknown) => {
       console.error(`Domovoi could not resolve a ${this.#identity.providerName} permission`, error)
+      // A subagent's refusal must not be lost, or the subagent waits on it.
+      const owner = pending.subagentTurn ? this.#sessions.get(pending.subagentTurn.threadId) : undefined
+      const stillLoaded = owner !== undefined && owner.generation === pending.generation
+      // A deleted subagent cannot take the refusal either, so nothing is kept for it.
+      const stillLinked = this.#subagents.get(pending.providerSessionId)?.link === pending.subagentTurn?.link
+      if (response === "reject" && pending.subagentTurn && stillLoaded && stillLinked && !this.#closed) {
+        this.#failedRefusals.set(requestId, pending)
+      }
     })
+  }
+
+  #retryFailedRefusals(threadId: string): void {
+    for (const [requestId, pending] of this.#failedRefusals) {
+      if (pending.subagentTurn?.threadId !== threadId) continue
+      this.#failedRefusals.delete(requestId)
+      this.#respond(pending, "reject", requestId)
+    }
   }
 
   onEvent(listener: (event: AgentEvent) => void): () => void {
@@ -344,7 +461,9 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const directory of this.#directories.values()) directory.controller.abort()
     this.#directories.clear()
     this.#sessions.clear()
+    this.#subagents = new SubagentRegistry()
     this.#pendingApprovals.clear()
+    this.#failedRefusals.clear()
     this.#runtime?.server.close()
     this.#runtime = undefined
     await this.#connection
@@ -380,6 +499,7 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       threadId,
       cwd,
       runtime,
+      generation: ++this.#nextGeneration,
       assistantMessageTurnIds: new Map(),
       toolPhases: new Map(),
     }
@@ -424,12 +544,44 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for (const session of this.#sessions.values()) {
       if (session.cwd !== cwd) continue
       this.#complete(session, "failed", reason)
+      this.#refusePendingFor(session.threadId)
+      this.#forgetSubagents(session.threadId)
       this.#sessions.delete(session.threadId)
     }
     this.#emit({ type: "provider-disconnected", reason })
   }
 
+  #forgetSubagents(threadId: string): void {
+    this.#subagents.forgetThread(threadId)
+    for (const [requestId, pending] of this.#failedRefusals) {
+      if (pending.subagentTurn?.threadId === threadId) this.#failedRefusals.delete(requestId)
+    }
+  }
+
+  // An unloaded thread's approvals cannot be answered any more: refuse what is
+  // still pending on the provider and forget it, so a later card answer sends
+  // nothing to a session that is gone.
+  #refusePendingFor(threadId: string): void {
+    for (const [requestId, pending] of this.#pendingApprovals) {
+      if (pending.providerSessionId !== threadId && pending.subagentTurn?.threadId !== threadId) continue
+      this.#pendingApprovals.delete(requestId)
+      this.#respond(pending, "reject", requestId)
+    }
+  }
+
+  // A deleted provider session cannot take an answer: drop what waits on it.
+  #forgetProviderSession(sessionId: string): void {
+    for (const [requestId, pending] of this.#pendingApprovals) {
+      if (pending.providerSessionId === sessionId) this.#pendingApprovals.delete(requestId)
+    }
+    for (const [requestId, pending] of this.#failedRefusals) {
+      if (pending.providerSessionId === sessionId) this.#failedRefusals.delete(requestId)
+    }
+  }
+
   #unloadSession(session: Session): void {
+    this.#refusePendingFor(session.threadId)
+    this.#forgetSubagents(session.threadId)
     this.#sessions.delete(session.threadId)
     const directory = this.#directories.get(session.cwd)
     if (!directory) return
@@ -467,17 +619,84 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     for await (const event of stream) this.#receive(cwd, event)
   }
 
+  // A subagent the task tool starts runs as its own session, with its own
+  // tools and approvals, in the same directory. Its session records its parent.
+  #adoptSubagent(cwd: string, properties: Record<string, unknown>): void {
+    const info = asRecord(properties.info)
+    if (typeof info?.id !== "string" || typeof info.parentID !== "string") return
+    if (this.#sessions.has(info.id) || this.#subagents.isKnown(info.id)) return
+    const parentSubagent = this.#subagents.get(info.parentID)
+    const parentNeverLinked = this.#subagents.neverLinkedThread(info.parentID)
+    const threadId = parentSubagent?.threadId ?? parentNeverLinked ?? info.parentID
+    const session = this.#sessions.get(threadId)
+    if (session?.cwd !== cwd) return
+    if (parentNeverLinked !== undefined) {
+      this.#subagents.neverLink(info.id, threadId)
+      return
+    }
+    // A subagent's own subagent belongs to the same turn, even one that ended.
+    if (parentSubagent) {
+      this.#subagents.link(info.id, parentSubagent)
+      return
+    }
+    if (!session.activeTurnId) {
+      this.#subagents.neverLink(info.id, threadId)
+      return
+    }
+    this.#subagents.link(info.id, { threadId, turnId: session.activeTurnId })
+  }
+
   #receive(cwd: string, event: OpenCodeEvent): void {
-    const properties = event.properties
-    const sessionId = eventSessionId(event)
+    // Kilo also streams events with no properties at all, such as `sync`.
+    const properties = asRecord(event.properties)
+    if (!properties) return
+    // Only session.created adopts an unknown session: a session.updated for an
+    // id nothing remembers (a deleted one whose tombstone aged out) is stale.
+    if (event.type === "session.created") this.#adoptSubagent(cwd, properties)
+    if (event.type === "session.deleted") {
+      const deleted = asRecord(properties.info)?.id
+      if (typeof deleted !== "string") return
+      const root = this.#sessions.get(deleted)
+      if (root && root.cwd === cwd) {
+        // The provider removed the thread itself; nothing can be sent to it.
+        this.#complete(root, "failed", `${this.#identity.providerName} deleted the session`)
+        this.#forgetProviderSession(deleted)
+        this.#unloadSession(root)
+        return
+      }
+      this.#forgetProviderSession(deleted)
+      const parent = asRecord(properties.info)?.parentID
+      this.#subagents.delete(deleted, typeof parent === "string" ? parent : "")
+      return
+    }
+    const sessionId = eventSessionId(properties)
     if (!sessionId) return
-    const session = this.#sessions.get(sessionId)
+    const subagentTurn = this.#subagents.get(sessionId)
+    const subagent = subagentTurn !== undefined
+    const session = this.#sessions.get(subagentTurn?.threadId ?? sessionId)
     if (!session || session.cwd !== cwd) return
+    // A subagent outlives nothing: once the turn that started it has ended,
+    // whatever it still sends is dropped rather than attached to a later turn,
+    // and an approval it asks for is refused at once, with no card.
+    if (subagentTurn && session.activeTurnId !== subagentTurn.turnId) {
+      if (event.type !== "permission.updated" && event.type !== "permission.asked") return
+      const request = permissionRequest(properties, this.#identity.providerName)
+      if (request) {
+        this.#respond(
+          { providerSessionId: sessionId, cwd, permissionId: request.permissionId, subagentTurn, generation: session.generation },
+          "reject",
+          ++this.#nextApprovalId,
+        )
+      }
+      return
+    }
 
     if (event.type === "message.updated") {
       const info = asRecord(properties.info)
       if (info?.role === "assistant" && typeof info.id === "string") {
-        const turnId = typeof info.parentID === "string" ? info.parentID : undefined
+        const turnId = subagentTurn
+          ? subagentTurn.turnId
+          : typeof info.parentID === "string" ? info.parentID : undefined
         if (!turnId) return
         session.assistantMessageTurnIds.set(info.id, turnId)
         const tokens = asRecord(info.tokens)
@@ -496,10 +715,10 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
           reasoningTokens: 0, totalTokens: 0, costSource: "unavailable" as const }
         try {
           const usage = normalizeProviderUsage(info) ?? unavailable
-          this.#emit({ type: "usage", threadId: sessionId, turnId, usage, source })
+          this.#emit({ type: "usage", threadId: session.threadId, turnId, usage, source })
         } catch {
           this.#emit({
-            type: "usage", threadId: sessionId, turnId,
+            type: "usage", threadId: session.threadId, turnId,
             usage: unavailable,
             source: { ...source, tokens: "unavailable", invalid: true },
           })
@@ -516,37 +735,36 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
         || !session.assistantMessageTurnIds.has(part.messageID)
       ) return
       const parentTurnId = session.assistantMessageTurnIds.get(part.messageID)!
-      if (part?.type === "text" && typeof properties.delta === "string") {
-        this.#emit({ type: "text-delta", threadId: sessionId, turnId: parentTurnId, delta: properties.delta })
+      if (!subagent && part?.type === "text" && typeof properties.delta === "string") {
+        this.#emit({ type: "text-delta", threadId: session.threadId, turnId: parentTurnId, delta: properties.delta })
       }
       if (part?.type === "tool") this.#receiveTool(session, parentTurnId, part)
       return
     }
-    if (event.type === "permission.updated") {
-      const permissionId = typeof properties.id === "string" ? properties.id : undefined
-      if (!permissionId) return
+    if (event.type === "permission.updated" || event.type === "permission.asked") {
+      const request = permissionRequest(properties, this.#identity.providerName)
+      if (!request) return
       const requestId = ++this.#nextApprovalId
-      const metadata = asRecord(properties.metadata)
-      const command = typeof metadata?.command === "string"
-        ? metadata.command
-        : typeof properties.title === "string"
-          ? properties.title
-          : typeof properties.type === "string"
-            ? properties.type
-            : `${this.#identity.providerName} tool`
-      this.#pendingApprovals.set(requestId, { threadId: sessionId, cwd, permissionId })
+      this.#pendingApprovals.set(requestId, {
+        providerSessionId: sessionId,
+        cwd,
+        permissionId: request.permissionId,
+        ...(subagentTurn ? { subagentTurn, generation: session.generation } : {}),
+      })
       this.#emit({
         type: "approval-requested",
         requestId,
-        threadId: sessionId,
+        threadId: session.threadId,
         turnId,
-        ...(typeof properties.callID === "string" ? { itemId: properties.callID } : {}),
-        command,
+        ...(request.itemId ? { itemId: request.itemId } : {}),
+        command: request.command,
         cwd,
-        ...(typeof properties.title === "string" ? { reason: properties.title } : {}),
+        ...(request.reason ? { reason: request.reason } : {}),
       })
       return
     }
+    // A subagent finishing or failing ends its task tool call, not the turn.
+    if (subagent) return
     if (event.type === "session.error") {
       const error = asRecord(properties.error)
       this.#complete(session, "failed", errorMessage(error, this.#identity.providerName))
@@ -624,6 +842,14 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     })
     delete session.activeTurnId
     session.toolPhases.clear()
+    // A subagent's request cannot outlive the turn that started it. Refuse it
+    // on the provider and forget it, so a later answer to its card does nothing.
+    for (const [requestId, pending] of this.#pendingApprovals) {
+      if (pending.subagentTurn?.threadId !== session.threadId || pending.subagentTurn.turnId !== turnId) continue
+      this.#pendingApprovals.delete(requestId)
+      this.#respond(pending, "reject", requestId)
+    }
+    this.#retryFailedRefusals(session.threadId)
   }
 
   #requireSession(threadId: string): Session {
@@ -645,11 +871,43 @@ function openCodeModel(id: string): { providerID: string; modelID: string } | un
   return { providerID: id.slice(0, separator), modelID: id.slice(separator + 1) }
 }
 
-function eventSessionId(event: OpenCodeEvent): string | undefined {
-  if (typeof event.properties.sessionID === "string") return event.properties.sessionID
-  const part = asRecord(event.properties.part)
+// `permission.updated` is the shape older servers send; `permission.asked`
+// (opencode 1.18, kilo 7.7) names the permission and its patterns instead of a
+// title and type, and nests the call id under `tool`.
+function permissionRequest(
+  properties: Record<string, unknown>,
+  providerName: string,
+): { permissionId: string; command: string; reason?: string; itemId?: string } | undefined {
+  if (typeof properties.id !== "string") return undefined
+  const metadata = asRecord(properties.metadata)
+  const kind = typeof properties.permission === "string"
+    ? properties.permission
+    : typeof properties.type === "string" ? properties.type : undefined
+  const patterns = Array.isArray(properties.patterns)
+    ? properties.patterns.filter((pattern): pattern is string => typeof pattern === "string")
+    : []
+  const title = typeof properties.title === "string" ? properties.title : undefined
+  const command = typeof metadata?.command === "string"
+    ? metadata.command
+    : title ?? (kind ? [kind, ...patterns].join(" ") : `${providerName} tool`)
+  const reason = title ?? (kind && patterns.length > 0 ? `${kind}: ${patterns.join(", ")}` : kind)
+  const tool = asRecord(properties.tool)
+  const itemId = typeof properties.callID === "string"
+    ? properties.callID
+    : typeof tool?.callID === "string" ? tool.callID : undefined
+  return {
+    permissionId: properties.id,
+    command,
+    ...(reason ? { reason } : {}),
+    ...(itemId ? { itemId } : {}),
+  }
+}
+
+function eventSessionId(properties: Record<string, unknown>): string | undefined {
+  if (typeof properties.sessionID === "string") return properties.sessionID
+  const part = asRecord(properties.part)
   if (typeof part?.sessionID === "string") return part.sessionID
-  const info = asRecord(event.properties.info)
+  const info = asRecord(properties.info)
   return typeof info?.sessionID === "string" ? info.sessionID : undefined
 }
 
@@ -787,8 +1045,20 @@ function ensureSuccess(result: OpenCodeResult<unknown>, action: string): void {
   if (result.error !== undefined) throw new Error(`${action} failed`)
 }
 
+// Every agent, including the built-in subagents the task tool starts, asks
+// before it edits, runs a command, fetches or leaves the project. A subagent
+// keeps only its parent's deny rules, so a per-agent "ask" does not reach it.
+export const domovoiAgentPermission = {
+  edit: "ask",
+  bash: "ask",
+  webfetch: "ask",
+  doom_loop: "ask",
+  external_directory: "ask",
+} as const
+
 export const domovoiOpenCodeConfig: Config = {
   autoupdate: false,
+  permission: domovoiAgentPermission,
   agent: {
     "domovoi-ask": {
       mode: "primary",
