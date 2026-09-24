@@ -1,5 +1,6 @@
 ---
 "@getdomovoi/daemon": patch
+"@getdomovoi/protocol": patch
 ---
 
 The daemon bearer no longer reaches child processes or borrows a device's name. A daemon started
@@ -12,4 +13,5 @@ in memory so a second start in the same process uses the same bearer and path.
 A connection authenticated with the daemon bearer chose its own audit identity in `system.hello`,
 including a paired phone's `device-...` id, so its approvals were recorded under that phone. Such a
 hello is now refused, and `terminal.create` and `terminal.claim` refuse a request that names a
-paired device's id the connection did not authenticate as.
+paired device's id the connection did not authenticate as. Client audit actors carry
+`credential: "daemon"` or `"device"`, stored with the audit entry.

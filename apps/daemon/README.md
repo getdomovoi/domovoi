@@ -65,7 +65,8 @@ reuses a high-entropy credential at `<profile>/daemon.token`. When it is set, th
 and then removes it and `DOMOVOI_CREDENTIAL_PATH` from its process environment, so providers, agent
 servers and terminals the daemon starts do not inherit the bearer; the values stay in memory for a
 later start in the same process. A connection that authenticates with the bearer cannot use a
-paired device's id as its client id, in `system.hello` or as a terminal owner. On POSIX, private state files are
+paired device's id as its client id, in `system.hello` or as a terminal owner, and audit entries
+record whether a client connected with the daemon bearer or a device credential. On POSIX, private state files are
 `0600` inside a `0700` state directory and permissive files are repaired on startup. On Windows,
 the default profile is `.domovoi` in the user directory and no additional ACL restriction is
 applied yet. Remote

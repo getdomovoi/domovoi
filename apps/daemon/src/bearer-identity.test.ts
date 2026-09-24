@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest"
 import { DomovoiDaemon } from "./server.js"
 
 // The daemon bearer can be read by any process of the owner's user. Whoever
-// holds it must not be able to act under a paired device's name.
+// holds it must not be able to act under a paired device's name, and the audit
+// log says which credential a client connected with.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -56,5 +57,25 @@ describe("daemon bearer identity", () => {
     const refused = await impostor("system.hello", hello("phone", deviceId, daemon.authToken))
 
     expect(refused).toMatchObject({ error: { message: expect.stringContaining("paired device") } })
+  })
+
+  it("records the daemon credential on actions a bearer connection takes, and the device credential on a paired one", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    daemons.push(daemon)
+    await daemon.start()
+    const owner = await connect(daemon)
+    expect(await owner("system.hello", hello("cli", "cli-owner", daemon.authToken))).not.toHaveProperty("error")
+    const minted = await owner("device.pair", { label: "iPhone", client: "cli", targetClient: "phone" })
+    const { token } = minted.result as { token: string }
+    const phone = await connect(daemon)
+    expect(await phone("system.hello", hello("phone", "ignored", token))).not.toHaveProperty("error")
+    await phone("session.stop", { sessionId: "no-such-session", client: "phone" })
+
+    const exported = await owner("audit.export", {})
+    const lines = (exported.result as { content: string }).content.trim().split("\n")
+    const actors = lines.map((line) => (JSON.parse(line) as { actor: Record<string, unknown> }).actor)
+
+    expect(actors).toContainEqual(expect.objectContaining({ kind: "client", client: "cli", credential: "daemon" }))
+    expect(actors).toContainEqual(expect.objectContaining({ kind: "client", client: "phone", credential: "device" }))
   })
 })

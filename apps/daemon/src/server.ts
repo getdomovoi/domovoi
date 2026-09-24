@@ -4357,6 +4357,7 @@ export class DomovoiDaemon {
           ...(credential
             ? { clientId: credential.device.id }
             : hello.clientId ? { clientId: hello.clientId } : {}),
+          credential: credential ? "device" : "daemon",
         })
       }
       this.#connectionIds.set(socket, randomUUID())
