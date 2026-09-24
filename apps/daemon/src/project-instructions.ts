@@ -71,15 +71,18 @@ async function collectClaudeFile(
 // Markdown's own rules. HTML arrives as separate nodes beside the text it
 // encloses, inline or as a block of its own, so text between an opening
 // <code>, <pre>, <kbd> or <samp> and its closing tag is skipped too. The whole
-// document is read as one sequence in order, with one stack of open code tags:
-// a tag can open inside emphasis and close after it, or open in an HTML block
-// and close in a later one, with paragraphs between. A closing tag pops back
-// to its own name and is otherwise ignored. A code tag that is never closed
-// hides every import after it, which errs toward loading less.
+// document is read as one sequence in order, with one stack of open code tags.
 //
-// Tags are read from each HTML node's own markup, skipping comments and quoted
-// attribute values, so a tag written inside an attribute value or a comment
-// does not count.
+// The stack fails closed. Any HTML node can open a code tag: its markup is read
+// for opening tags, skipping comments and quoted attribute values. Only a node
+// whose whole trimmed text is exactly one closing tag, such as </code>, closes
+// one, popping back to its own name. Nothing else closes: not a comment, a
+// processing instruction, CDATA, a declaration, a script or style body, nor a
+// node with attributes or any other text beside the closing tag. A node whose
+// markup ends inside an unfinished tag, quoted value, comment, processing
+// instruction, CDATA section or declaration hides everything after it. The
+// cost: an import after a code tag closed in any other way stays hidden, and
+// so does one after a <pre> block, whose closing tag shares its HTML block.
 //
 // An import is read from the text as written, not as CommonMark decodes it,
 // the way Claude Code reads its lexer's text tokens: a backslash escape
@@ -95,41 +98,53 @@ type MarkdownNode = {
 
 const backslashEscape = /\\[!-/:-@[-`{-~]/
 const codeTagNames = new Set(["code", "pre", "kbd", "samp"])
-const tagStart = /<(\/?)([A-Za-z][A-Za-z0-9-]*)/y
+const tagStart = /<([A-Za-z][A-Za-z0-9-]*)/y
+const closingCodeTag = /^<\/(code|pre|kbd|samp)\s*>$/i
+const unfinished = Symbol("unfinished markup")
 
-// The code tags an HTML node opens and closes, in order.
-function codeTags(html: string): Array<{ closing: boolean; name: string }> {
-  const tags: Array<{ closing: boolean; name: string }> = []
+// The code tags an HTML node's markup opens, and whether the markup ends
+// inside something unfinished.
+function openedCodeTags(html: string): { opened: string[]; unfinished: boolean } {
+  const opened: string[] = []
+  const skipTo = (from: number, terminator: string): number => {
+    const found = html.indexOf(terminator, from)
+    return found === -1 ? -1 : found + terminator.length
+  }
   let at = 0
   while (at < html.length) {
     const open = html.indexOf("<", at)
     if (open === -1) break
-    if (html.startsWith("<!--", open)) {
-      const close = html.indexOf("-->", open + 4)
-      if (close === -1) break
-      at = close + 3
-      continue
+    let next: number
+    if (html.startsWith("<!--", open)) next = skipTo(open + 4, "-->")
+    else if (html.startsWith("<![CDATA[", open)) next = skipTo(open + 9, "]]>")
+    else if (html.startsWith("<?", open)) next = skipTo(open + 2, "?>")
+    else if (html.startsWith("<!", open)) next = skipTo(open + 2, ">")
+    else if (html.startsWith("</", open)) next = skipTo(open + 2, ">")
+    else {
+      tagStart.lastIndex = open
+      const tag = tagStart.exec(html)
+      if (!tag) {
+        at = open + 1
+        continue
+      }
+      let end = tagStart.lastIndex
+      let quote: string | undefined
+      for (; end < html.length; end += 1) {
+        const character = html[end]
+        if (quote) {
+          if (character === quote) quote = undefined
+        } else if (character === "\"" || character === "'") quote = character
+        else if (character === ">") break
+      }
+      if (end >= html.length) return { opened, unfinished: true }
+      const name = tag[1]!.toLowerCase()
+      if (codeTagNames.has(name)) opened.push(name)
+      next = end + 1
     }
-    tagStart.lastIndex = open
-    const tag = tagStart.exec(html)
-    if (!tag) {
-      at = open + 1
-      continue
-    }
-    let end = tagStart.lastIndex
-    let quote: string | undefined
-    for (; end < html.length; end += 1) {
-      const character = html[end]
-      if (quote) {
-        if (character === quote) quote = undefined
-      } else if (character === "\"" || character === "'") quote = character
-      else if (character === ">") break
-    }
-    const name = tag[2]!.toLowerCase()
-    if (codeTagNames.has(name)) tags.push({ closing: tag[1] === "/", name })
-    at = end + 1
+    if (next === -1) return { opened, unfinished: true }
+    at = next
   }
-  return tags
+  return { opened, unfinished: false }
 }
 
 export function importReferences(text: string): string[] {
@@ -143,17 +158,18 @@ export function importReferences(text: string): string[] {
     if (start === undefined || end === undefined) return
     for (const run of text.slice(start, end).split(backslashEscape)) collect(run)
   }
-  const open: string[] = []
+  const open: Array<string | typeof unfinished> = []
   const visit = (node: MarkdownNode): void => {
     if (node.type === "html" && typeof node.value === "string") {
-      for (const tag of codeTags(node.value)) {
-        if (!tag.closing) {
-          open.push(tag.name)
-          continue
-        }
-        const index = open.lastIndexOf(tag.name)
-        if (index !== -1) open.length = index
+      const closing = closingCodeTag.exec(node.value.trim())
+      if (closing) {
+        const index = open.lastIndexOf(closing[1]!.toLowerCase())
+        if (index !== -1 && !open.includes(unfinished)) open.length = index
+        return
       }
+      const markup = openedCodeTags(node.value)
+      open.push(...markup.opened)
+      if (markup.unfinished) open.push(unfinished)
       return
     }
     if (node.type === "text") {

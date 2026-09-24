@@ -58,6 +58,13 @@ describe("importReferences code boundaries", () => {
     ["pre tags on their own lines around a list", "<pre>\n\n- @sample.md\n\n</pre>"],
     ["a code tag left open, which hides every later paragraph", "Open <code>@sample.md\n\n@later.md"],
     ["a code block tag left open at the top of the file", "<code>\n\nIntro\n\n@later.md"],
+    ["a code tag whose only closing tag sits inside a quoted attribute that spans blocks", "<code>\n\n<div title=\"first\n\n</code>\n\nlast\">\n\n@hidden.md"],
+    ["a code tag whose only closing tag sits inside a processing instruction", "<code>\n\n<?example </code> ?>\n\n@hidden.md"],
+    ["a code tag whose only closing tag sits inside CDATA", "<code>\n\n<![CDATA[ </code> ]]>\n\n@hidden.md"],
+    ["a code tag whose only closing tag sits inside a script body", "<code>\n\n<script>\n</code>\n</script>\n\n@hidden.md"],
+    ["a code tag closed only by an HTML block that holds more than the closing tag", "<code>\n\n</code>\nmore\n\n@hidden.md"],
+    ["a pre block, whose closing tag shares its HTML block", "<pre>\nexample\n</pre>\n\n@hidden.md"],
+    ["an HTML block that ends inside an unfinished tag", "<div title=\"never closed\n\n@hidden.md"],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
