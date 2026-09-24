@@ -7,20 +7,25 @@ import { WebSocket } from "ws"
 
 import { beforeDeadline, OperationDeadline, OperationDeadlineExceededError } from "./operation-deadline.js"
 import { verifyLocalOwnerProof } from "./local-owner-proof.js"
+import { StoredMachineIdentityMismatchError } from "./machine-identity.js"
 import {
-  readLocalOwnerCredential, readLocalOwnerRecord, readLocalOwnerSecret, readLocalProfileFile, type ReadyLocalOwner,
+  readLocalOwnerCredential, readLocalOwnerRecord, readLocalOwnerSecret, readLocalProfileFile, writeLocalOwnerRecord,
+  type ReadyLocalOwner,
 } from "./local-owner-record.js"
 import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "./profile-lease.js"
 import { retireRemovedLocalOwner } from "./local-owner-removal.js"
+import { redactErrorDetail } from "./rpc-errors.js"
 import {
   createProductionDaemonWithDependencies, productionDaemonDependencies,
   type ProductionDaemonHandle, type ProductionDaemonOptions,
 } from "./production-daemon.js"
 import { serviceRegistrationBlocksProfile } from "./service/configuration.js"
+import { NewerWorkspaceStateError } from "./store.js"
 import { configuredProfileDirectory, profileLocation, type ProfileLocation } from "./profile-directory.js"
 
 export type LocalDaemonRefusalReason =
   | "owner-busy" | "owner-unreachable" | "owner-incompatible" | "owner-unverified" | "profile-invalid"
+  | "port-in-use" | "state-locked" | "identity-mismatch"
 export type LocalDaemonEndpoint = { url: string; token: string }
 export type LocalDaemonHandle =
   | { kind: "owned"; endpoint: LocalDaemonEndpoint; stop(): Promise<void> }
@@ -39,13 +44,16 @@ const refusalMessages = {
   "owner-incompatible": "The local daemon uses an incompatible protocol. Update the daemon and Desktop, then reconnect.",
   "owner-unverified": "The local daemon could not prove its identity or accept this profile's credential. Check the running daemon and its profile; no fallback daemon was started.",
   "profile-invalid": "The local daemon profile is invalid or inaccessible. Check its owner record, private key and credential file before retrying.",
+  "port-in-use": "Another program is using the local daemon's port. Quit it, or set DOMOVOI_PORT to a free port, then retry. No fallback daemon was started.",
+  "state-locked": "Another process holds this profile's state database. Quit the other Domovoi process that uses this profile, then retry.",
+  "identity-mismatch": "The stored workspace belongs to a different machine identity than this profile's. Restore the matching machine identity and state together before retrying.",
 } satisfies Record<LocalDaemonRefusalReason, string>
 
 class LocalDiscoveryError extends Error {
   constructor(readonly reason: LocalDaemonRefusalReason) { super(refusalMessages[reason]); this.name = "LocalDiscoveryError" }
 }
-function refused(reason: LocalDaemonRefusalReason): Extract<LocalDaemonHandle, { kind: "refused" }> {
-  return { kind: "refused", reason, message: refusalMessages[reason] }
+function refused(reason: LocalDaemonRefusalReason, message = refusalMessages[reason]): Extract<LocalDaemonHandle, { kind: "refused" }> {
+  return { kind: "refused", reason, message }
 }
 
 // A step that bounds itself reports its own expiry and carries the deadline as
@@ -54,6 +62,43 @@ function refused(reason: LocalDaemonRefusalReason): Extract<LocalDaemonHandle, {
 // finish in time is not a damaged profile, and sending its owner to inspect a
 // private key outlives the stall that produced the advice. The depth bound
 // keeps a self-referencing cause from spinning here.
+function causes(error: unknown): unknown[] {
+  const found: unknown[] = []
+  let current: unknown = error
+  for (let depth = 0; current !== undefined && depth <= 8; depth += 1) {
+    found.push(current)
+    if (current instanceof AggregateError) found.push(...(current.errors as unknown[]))
+    current = current instanceof Error ? current.cause : undefined
+  }
+  return found
+}
+
+// State a newer daemon wrote says what wrote it and what to do; the desktop
+// shows that message, not the generic profile one, wherever in the chain the
+// store's refusal is.
+function startupRefusal(error: unknown): { reason: LocalDaemonRefusalReason, message?: string } {
+  if (error instanceof LocalDiscoveryError) return { reason: error.reason }
+  const chain = causes(error)
+  const newer = chain.find((cause) => cause instanceof NewerWorkspaceStateError)
+  if (newer) return { reason: "profile-invalid", message: newer.message }
+  return { reason: startupRefusalReason(error, chain) }
+}
+
+// Operational causes the owner can act on get their own reason; everything
+// else keeps the profile reason, and the cause itself goes to the error log.
+function startupRefusalReason(error: unknown, chain: unknown[]): LocalDaemonRefusalReason {
+  if (expiredDeadline(error)) return "owner-unreachable"
+  const code = (cause: unknown) => (cause as { code?: unknown } | null)?.code
+  if (chain.some((cause) => code(cause) === "EADDRINUSE")) return "port-in-use"
+  // SQLite's own result codes: SQLITE_BUSY (5) and SQLITE_LOCKED (6), as
+  // file-lease.ts matches them.
+  const sqliteCode = (cause: unknown) => (cause as { errcode?: unknown } | null)?.errcode
+  if (chain.some((cause) => sqliteCode(cause) === 5 || sqliteCode(cause) === 6
+    || code(cause) === "SQLITE_BUSY" || code(cause) === "SQLITE_LOCKED")) return "state-locked"
+  if (chain.some((cause) => cause instanceof StoredMachineIdentityMismatchError)) return "identity-mismatch"
+  return "profile-invalid"
+}
+
 function expiredDeadline(error: unknown, depth = 0): boolean {
   if (!(error instanceof Error) || depth > 8) return false
   if (error instanceof OperationDeadlineExceededError) return true
@@ -171,7 +216,14 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     // its record, and an installed but restarting service keeps its config.
     if (options.mode !== "start-or-attach"
       || serviceRegistrationBlocksProfile(homeDirectory, profile)) return refused("owner-unreachable")
-    if (record && record.state !== "none" && !retireRemovedLocalOwner(profile, lease, record, deadline)) return refused("owner-unreachable")
+    // Desktop quits on a shorter bound than a daemon stop can take, so its
+    // process can exit with the record still saying stopping. The lease this
+    // launch holds proves that owner is gone.
+    if (record?.state === "stopping" && record.owner === "desktop") {
+      writeLocalOwnerRecord(profile, { version: 1, state: "none" })
+    } else if (record && record.state !== "none" && !retireRemovedLocalOwner(profile, lease, record, deadline)) {
+      return refused("owner-unreachable")
+    }
     deadline.throwIfExpired()
     const ownedLease = lease
     lease = undefined
@@ -183,8 +235,15 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     return { kind: "owned", endpoint: { url: endpoint.url, token: runtime.authToken }, stop: runtime.stop }
   } catch (error) {
     if (runtime) void runtime.stop().catch(() => {})
-    return refused(error instanceof LocalDiscoveryError ? error.reason
-      : expiredDeadline(error) ? "owner-unreachable" : "profile-invalid")
+    if (!(error instanceof LocalDiscoveryError)) {
+      try {
+        options.errorSink?.({ context: "Domovoi could not start its local daemon", detail: redactErrorDetail(error) })
+      } catch {
+        // The refusal below still reaches the caller.
+      }
+    }
+    const refusal = startupRefusal(error)
+    return refused(refusal.reason, refusal.message)
   } finally {
     lease?.release()
     deadline.clear()

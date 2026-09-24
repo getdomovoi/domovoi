@@ -197,6 +197,34 @@ describe("SqliteAuditLog", () => {
     database.close()
   })
 
+  // SQLite hands a rolled-back sequence number out again. When the other
+  // class takes it, a row does exist at the remembered sequence, but it is not
+  // the row this class wrote, and a count trusted from it prunes one extra row
+  // on every later append.
+  it("recounts after a rollback even when the other class reuses the rolled-back sequence", () => {
+    const database = new DatabaseSync(":memory:")
+    const audit = new SqliteAuditLog(database, { maximumEntries: 3, maximumPreAuthEntries: 3 })
+    const activity = () => database.prepare(
+      "SELECT id FROM audit_log WHERE retention_class = 'activity' ORDER BY sequence",
+    ).all().map((row) => row.id)
+    const append = (id: string, retention: "activity" | "pre-auth" = "activity") => audit.append({
+      id, actor: { kind: "daemon", component: "workspace" }, action: "workspace.get", outcome: "succeeded",
+      ...(retention === "pre-auth" ? { retention } : {}),
+    })
+    append("a1")
+    append("a2")
+    database.exec("BEGIN")
+    append("a3")
+    database.exec("ROLLBACK")
+    append("p1", "pre-auth")
+    append("a4")
+    append("a5")
+    expect(activity()).toEqual(["a2", "a4", "a5"])
+    append("a6")
+    expect(activity()).toEqual(["a4", "a5", "a6"])
+    database.close()
+  })
+
   it("holds exactly the retention bound after every append past it", () => {
     const database = new DatabaseSync(":memory:")
     const audit = new SqliteAuditLog(database, { maximumEntries: 5 })

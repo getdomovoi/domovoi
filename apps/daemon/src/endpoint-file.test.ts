@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
+import { publishEndpointFile, publishesEndpointFor, removeEndpointFile } from "./endpoint-file.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const directories: string[] = []
@@ -183,5 +183,16 @@ describe("removeEndpointFile", () => {
 
     await removeEndpointFile(directory, { host: "127.0.0.1", port: 47831, token: "daemon-token" })
     expect(await readFile(path, "utf8")).toBe("not an endpoint this daemon wrote")
+  })
+})
+
+// The daemon decides whether to publish with publishesEndpointFor and then
+// calls publishEndpointFile, which throws for any other host. If the two
+// disagreed, a daemon bound to such a host would stop right after listening.
+describe("publishesEndpointFor", () => {
+  it.each(["127.0.0.1", "::1", "localhost", "127.0.0.2", "::ffff:127.0.0.1", "100.80.185.103"])("agrees with publishEndpointFile on %s", async (host) => {
+    const published = await publishEndpointFile({ home: await home(), host, port: 47831, token: "daemon-token" })
+      .then(() => true, () => false)
+    expect(publishesEndpointFor(host)).toBe(published)
   })
 })

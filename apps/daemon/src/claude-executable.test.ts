@@ -54,18 +54,30 @@ afterEach(async () => {
 
 describe("the Claude executable", () => {
   it("runs the person's own claude from PATH", async () => {
-    const executable = join(directory, "claude")
+    const executable = join(directory, process.platform === "win32" ? "claude.exe" : "claude")
     await writeFile(executable, "#!/bin/sh\n")
     await chmod(executable, 0o755)
     const adapter = new ClaudeAgentSdkAdapter()
 
     await adapter.listModels()
     await adapter.startThread({ cwd: directory, runtime })
+    await adapter.resumeThread({ threadId: "11111111-1111-4111-8111-111111111111", cwd: directory, runtime })
 
-    expect(sdk.query).toHaveBeenCalledTimes(2)
+    expect(sdk.query).toHaveBeenCalledTimes(3)
     for (const [call] of sdk.query.mock.calls) {
       expect(call.options.pathToClaudeCodeExecutable).toBe(executable)
     }
+    await adapter.close()
+  })
+
+  it("lists models when the OS cannot start claude to read its version", async () => {
+    const executable = join(directory, process.platform === "win32" ? "claude.exe" : "claude")
+    await writeFile(executable, "not a program\n")
+    await chmod(executable, 0o755)
+    const adapter = new ClaudeAgentSdkAdapter()
+
+    await expect(adapter.listModels()).resolves.toEqual([expect.objectContaining({ id: "sonnet" })])
+    expect(sdk.query.mock.calls[0]?.[0].options.pathToClaudeCodeExecutable).toBe(executable)
     await adapter.close()
   })
 
@@ -75,6 +87,21 @@ describe("the Claude executable", () => {
     await expect(adapter.listModels()).rejects.toThrow("Claude Code is not installed")
     await expect(adapter.startThread({ cwd: directory, runtime }))
       .rejects.toThrow("Claude Code is not installed")
+    await expect(adapter.resumeThread({ threadId: "11111111-1111-4111-8111-111111111111", cwd: directory, runtime }))
+      .rejects.toThrow("Claude Code is not installed")
+    expect(sdk.query).not.toHaveBeenCalled()
+  })
+
+  it.runIf(process.platform !== "win32")("refuses a claude older than the SDK needs, with the version to install", async () => {
+    const executable = join(directory, "claude")
+    await writeFile(executable, "#!/bin/sh\necho '2.1.100 (Claude Code)'\n")
+    await chmod(executable, 0o755)
+    const adapter = new ClaudeAgentSdkAdapter()
+
+    await expect(adapter.startThread({ cwd: directory, runtime }))
+      .rejects.toThrow("Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.")
+    await expect(adapter.resumeThread({ threadId: "11111111-1111-4111-8111-111111111111", cwd: directory, runtime }))
+      .rejects.toThrow("Update Claude Code to 2.1.263 or newer")
     expect(sdk.query).not.toHaveBeenCalled()
   })
 })

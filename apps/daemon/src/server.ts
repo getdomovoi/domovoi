@@ -69,7 +69,6 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
-  type SessionSearchMatch,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -83,6 +82,9 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type TerminalSummary,
+  terminalClosedRetentionMilliseconds,
+  maximumTerminalReplayCharacters,
   type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
@@ -163,11 +165,12 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
-import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
+import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
   RepositoryConfigRefusedError,
+  SubmoduleChangesRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -203,6 +206,7 @@ import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
   internalRpcErrorMessage,
+  repositoryInspectionRefusal,
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
@@ -215,7 +219,7 @@ import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
-import type { MachineIdentity } from "./machine-identity.js"
+import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
@@ -238,8 +242,9 @@ import { testEvidence } from "./test-evidence.js"
 import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
-import { TerminalReplayBuffer } from "./terminal-replay.js"
+import { TerminalReplayBuffer, type TerminalReplayRecord } from "./terminal-replay.js"
 import { pairingAddressFor } from "./pairing-address.js"
+import { searchSessions } from "./session-search.js"
 import {
   type RpcOutboundBackpressureOptions,
   type RpcOutboundSocket,
@@ -329,6 +334,10 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+function approvedRunKey(sessionId: string, turnId: string, itemId: string): string {
+  return `${sessionId}\u0000${turnId}\u0000${itemId}`
+}
+
 type CommandOutputRemainder = { key: string, itemId: string, remainder: string }
 
 function appendCommandOutputRemainders(
@@ -410,6 +419,7 @@ function isEncrypted(socket: IncomingMessage["socket"]): boolean {
 
 const unauditedRpcMethods = new Set<RpcMethod>([
   "workspace.get",
+  "terminal.list",
   "runtime.models",
   "runtime.discover",
   "skill.list",
@@ -912,6 +922,7 @@ export function sessionHistoryEntries(
         ...(item.clientId ? { clientId: item.clientId } : {}),
         ...(item.explanation ? { explanation: item.explanation } : {}),
         ...(item.decisionDurationMs === undefined ? {} : { decisionDurationMs: item.decisionDurationMs }),
+        ...(item.ranForMs === undefined ? {} : { ranForMs: item.ranForMs }),
       })
     } else if (item.kind === "policy-refusal") {
       entries.push({
@@ -1234,6 +1245,8 @@ export type DaemonServerOptions = {
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
   terminalReapGraceMs?: number
+  terminalClosedRetentionMs?: number
+  terminalClosedRetentionCharacters?: number
   terminalService?: TerminalService
   providerProbe?: ProviderProbe
   providerSecrets?: Pick<ProviderSecretManager, "status">
@@ -1281,6 +1294,23 @@ export type DaemonErrorEntry = {
 
 export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
 
+// All closed terminal records together: sixteen full records at the replay
+// budget, 1,048,576 characters, the same figure as the WebSocket high-water
+// mark in the terminal throughput budget.
+const closedTerminalRetentionCharacters = 16 * maximumTerminalReplayCharacters
+// The same sixteen as a count, so records that hold little or nothing cannot
+// pile up under the character budget.
+const maximumClosedTerminalRecords = closedTerminalRetentionCharacters / maximumTerminalReplayCharacters
+
+type ClosedTerminal = {
+  summary: Omit<TerminalSummary, "state" | "claimHeld" | "closedAt" | "exitCode" | "signal">
+  record: TerminalReplayRecord
+  closedAt: number
+  exitCode: number | undefined
+  signal: number | undefined
+  timer: ReturnType<typeof setTimeout>
+}
+
 type ActiveTerminal = {
   sessionId: string
   process: TerminalProcess
@@ -1299,9 +1329,14 @@ type ActiveTerminal = {
   // A released ownership waits through a grace window for the next connection
   // to re-claim it, then the terminal is reaped rather than stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
-  // The connections that opened or claimed this terminal. Its output, owner
-  // changes and close go to these and nowhere else.
+  // The connections that opened, claimed or watch this terminal. Its output,
+  // owner changes and close go to these and nowhere else.
   audience: Set<RpcOutboundSocket>
+  // The members that joined by terminal.watch. A phone, tablet or watching
+  // credential reads a terminal only this way, and terminal.watch types,
+  // resizes, closes and claims nothing.
+  watchers: Set<RpcOutboundSocket>
+  openedAt: number
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
   outputBackpressure: TerminalOutputBackpressure
@@ -1362,6 +1397,12 @@ export class DomovoiDaemon {
   #providerPromptBudgetCodeUnits: number
   #modelCacheTtlMs: number
   #terminalReapGraceMs: number
+  #terminalClosedRetentionMs: number
+  #terminalClosedRetentionCharacters: number
+  // Closed is a state, not an error: a closed terminal's record stays
+  // readable for the retention window, then is dropped. Held in memory only;
+  // a daemon restart forgets it.
+  #closedTerminals = new Map<string, ClosedTerminal>()
   #authToken: string
   #authenticatedClients = new WeakSet<RpcOutboundSocket>()
   #deviceCredentials = new WeakMap<RpcOutboundSocket, {
@@ -1382,6 +1423,20 @@ export class DomovoiDaemon {
   #artifactAccessTtlSeconds = 60
   #terminalService: TerminalService
   #terminals = new Map<string, ActiveTerminal>()
+
+  #dropApprovedRunsOutside(sessionId: string, turnId: string): void {
+    for (const [key, run] of this.#approvedRuns) {
+      if (run.sessionId === sessionId && run.turnId !== turnId) this.#approvedRuns.delete(key)
+    }
+  }
+  // Commands a person allowed, by session, turn and provider item, waiting for
+  // that item to complete so the receipt can say how long the command ran. Held
+  // in memory: a daemon that restarts before the item completes leaves the
+  // receipt without a run time, as ruled. Keyed by turn, since a later turn can
+  // reuse an item id, and a turn can end without a turn-completed event (a
+  // pause, a disconnect): a session's entries for any other turn are dropped
+  // whenever one of its turns records or completes an item.
+  #approvedRuns = new Map<string, { receiptId: string, sessionId: string, turnId: string, decidedAtMs: number }>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status">
   #usageLedger: DaemonUsageLedger
@@ -1589,7 +1644,7 @@ export class DomovoiDaemon {
       if (!options.store) void Promise.resolve(this.#store.close()).catch((error: unknown) => {
         this.#reportError("Closing mismatched workspace state failed", error)
       })
-      throw new Error("Stored workspace machine identity does not match this daemon; restore the matching identity and state before restarting")
+      throw new StoredMachineIdentityMismatchError()
     }
     if (options.machineIdentity) {
       // A saved machine row is not evidence of this executable's platform or
@@ -1631,6 +1686,8 @@ export class DomovoiDaemon {
     this.#authToken = authToken
     this.#authTimeoutMs = options.authTimeoutMs ?? 5_000
     this.#terminalReapGraceMs = options.terminalReapGraceMs ?? 30_000
+    this.#terminalClosedRetentionMs = options.terminalClosedRetentionMs ?? terminalClosedRetentionMilliseconds
+    this.#terminalClosedRetentionCharacters = options.terminalClosedRetentionCharacters ?? closedTerminalRetentionCharacters
     this.#terminalService = options.terminalService ?? new NodePtyTerminalService()
     this.#providerProbe = options.providerProbe
     this.#providerSecrets = options.providerSecrets ?? new ProviderSecretManager()
@@ -1861,6 +1918,13 @@ export class DomovoiDaemon {
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
     })
+    // The WebSocket server re-emits its HTTP server's errors. A listen failure
+    // such as a port in use is answered by start() below; without a listener
+    // here the re-emitted copy throws first and start() never settles.
+    this.#websocket.on("error", (error) => {
+      // Before listening, start() answers the listen failure itself.
+      if (this.#http?.listening) this.#reportError("Domovoi WebSocket server failed", error)
+    })
     this.#websocket.on("headers", (headers, request) => {
       const nonce = request.headers["x-domovoi-owner-nonce"]
       const peer = request.socket.remoteAddress
@@ -1966,13 +2030,18 @@ export class DomovoiDaemon {
       failures.push(error)
     }
     this.#closeAllTerminals()
+    this.#dropClosedTerminals()
     this.#rpcOutbound.dispose()
     for (const client of this.#rpcClients) client.close(1001, "daemon stopping")
 
     try {
       await new Promise<void>((resolve, reject) => {
         if (!this.#http) return resolve()
-        this.#http.close((error) => (error ? reject(error) : resolve()))
+        // A listener that never started (a port already in use, say) has
+        // nothing to close; failing here would keep the profile lease held.
+        this.#http.close((error) => (
+          error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()
+        ))
       })
     } catch (error) {
       failures.push(error)
@@ -2229,6 +2298,16 @@ export class DomovoiDaemon {
         : []),
     ))
     this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+    this.#syncArtifactWatchActivity()
+  }
+
+  // A session with a turn starting or running keeps its artifact watch on the
+  // fast poll; an idle one may back off (artifact-watcher.ts).
+  #syncArtifactWatchActivity(): void {
+    for (const [sessionId, active] of this.#artifactWatchers) {
+      const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+      active.watcher.setBusy?.(Boolean(session?.activeTurnId))
+    }
   }
 
   #updateUsageAccounting(update: () => void): void {
@@ -2268,7 +2347,9 @@ export class DomovoiDaemon {
   }
 
   // Terminals are not on the pairing card: a phone or tablet credential, and a
-  // watching-only one, is never an audience for one.
+  // watching-only one, is never an audience for one unless it asked to watch
+  // it. Anything else that adds such a connection to an audience does not
+  // make it a reader.
   #mayWatchTerminals(socket: RpcOutboundSocket): boolean {
     const binding = this.#deviceCredentials.get(socket)?.verified?.binding
     if (binding?.kind !== "client") return true
@@ -2277,10 +2358,100 @@ export class DomovoiDaemon {
 
   #notifyTerminalAudience<M extends NotificationMethod>(terminal: ActiveTerminal, method: M, params: NotificationParams<M>): void {
     this.#notifyClients(
-      [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket)),
+      [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket) || terminal.watchers.has(socket)),
       method,
       params,
     )
+  }
+
+  #terminalSummary(terminalId: string, terminal: ActiveTerminal): TerminalSummary {
+    return {
+      terminalId,
+      sessionId: terminal.sessionId,
+      cols: terminal.cols,
+      rows: terminal.rows,
+      shell: terminal.shell,
+      cwd: terminal.cwd,
+      owner: terminal.owner,
+      claimHeld: terminal.ownerSocket !== undefined,
+      openedAt: new Date(terminal.openedAt).toISOString(),
+      state: "live",
+    }
+  }
+
+  #closedTerminalSummary(closed: ClosedTerminal): TerminalSummary {
+    return {
+      ...closed.summary,
+      claimHeld: false,
+      state: "closed",
+      closedAt: new Date(closed.closedAt).toISOString(),
+      ...(closed.exitCode === undefined ? {} : { exitCode: closed.exitCode }),
+      ...(closed.signal === undefined ? {} : { signal: closed.signal }),
+    }
+  }
+
+  // The claimant as the receipt names a decider: what the connection said of
+  // itself, and the paired device the daemon verified on it, when there is one.
+  #terminalOwner(socket: RpcOutboundSocket, params: { client: TerminalOwner["client"], clientId: string }): TerminalOwner {
+    const device = this.#deviceCredentials.get(socket)?.verified.device
+    return {
+      client: params.client,
+      clientId: params.clientId,
+      ...(device ? { device: { id: device.id, label: device.label } } : {}),
+    }
+  }
+
+  // A connection joins at a boundary: output still waiting in the batch goes
+  // to the audience it was printed for before the newcomer is added, so what
+  // it reads next from the record and what reaches it live never overlap. A
+  // connection already watching gets the same boundary, since the record it
+  // is about to read holds that waiting output too.
+  #joinTerminalAudience(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket, watching = false): void {
+    terminal.output.flush(terminalId)
+    terminal.audience.add(socket)
+    if (watching) terminal.watchers.add(socket)
+  }
+
+  // Called once the terminal has left #terminals and its last output has been
+  // pushed to the replay, so the record is the whole of what was kept. Closed
+  // records share one budget, ruled 2026-09-23: the oldest go first until the
+  // new one fits, in characters and in count.
+  #retainClosedTerminal(terminalId: string, terminal: ActiveTerminal, end: { exitCode?: number | undefined, signal?: number | undefined }): void {
+    this.#dropClosedTerminal(terminalId)
+    const record = terminal.replay.record()
+    let retained = 0
+    for (const closed of this.#closedTerminals.values()) retained += closed.record.text.length
+    for (const [oldestId, oldest] of this.#closedTerminals) {
+      if (
+        retained + record.text.length <= this.#terminalClosedRetentionCharacters
+        && this.#closedTerminals.size < maximumClosedTerminalRecords
+      ) break
+      retained -= oldest.record.text.length
+      this.#dropClosedTerminal(oldestId)
+    }
+    if (retained + record.text.length > this.#terminalClosedRetentionCharacters) return
+    const { state: _state, claimHeld: _claimHeld, ...summary } = this.#terminalSummary(terminalId, terminal)
+    const timer = setTimeout(() => this.#dropClosedTerminal(terminalId), this.#terminalClosedRetentionMs)
+    timer.unref?.()
+    this.#closedTerminals.set(terminalId, {
+      summary,
+      record,
+      closedAt: Date.now(),
+      exitCode: end.exitCode,
+      signal: end.signal,
+      timer,
+    })
+  }
+
+  #dropClosedTerminal(terminalId: string): void {
+    const closed = this.#closedTerminals.get(terminalId)
+    if (!closed) return
+    clearTimeout(closed.timer)
+    this.#closedTerminals.delete(terminalId)
+  }
+
+  #dropClosedTerminals(): void {
+    for (const terminalId of [...this.#closedTerminals.keys()]) this.#dropClosedTerminal(terminalId)
   }
 
   #notificationMessage<M extends NotificationMethod>(method: M, params: NotificationParams<M>): NotificationFrame | undefined {
@@ -3993,7 +4164,20 @@ export class DomovoiDaemon {
     return agent
   }
 
+  // Whether a model takes image input is read from the adapter each time the
+  // list is read, by the rule the send uses, so a cached list never disagrees
+  // with the send. Whatever an adapter listed is overridden.
+  #withImageInput(provider: string, models: readonly ProviderModel[]): ProviderModel[] {
+    if (models.length === 0) return []
+    const imageInput = modelImageInput(this.#agents.require(provider).capabilities)
+    return models.map((model) => ({ ...model, imageInput }))
+  }
+
   async #listProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
+    return this.#withImageInput(provider, await this.#listCachedProviderModels(provider, deadline))
+  }
+
+  async #listCachedProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
     deadline?.throwIfExpired()
     const cached = this.#providerModels.get(provider)
     if (cached && Date.now() - cached.cachedAt < this.#modelCacheTtlMs) return cached.models
@@ -4839,19 +5023,19 @@ export class DomovoiDaemon {
             existing.cols = params.cols
             existing.rows = params.rows
           } else if (existing.ownerSocket === undefined) {
-            existing.owner = { client: params.client, clientId: params.clientId }
+            existing.owner = this.#terminalOwner(socket, params)
             existing.ownerSocket = socket
             if (existing.reapTimer !== undefined) {
               clearTimeout(existing.reapTimer)
               existing.reapTimer = undefined
             }
-            existing.audience.add(socket)
+            this.#joinTerminalAudience(params.terminalId, existing, socket)
             this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
             }))
           }
-          existing.audience.add(socket)
+          this.#joinTerminalAudience(params.terminalId, existing, socket)
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
@@ -4868,6 +5052,7 @@ export class DomovoiDaemon {
           })
           return
         }
+        this.#dropClosedTerminal(params.terminalId)
         const process = this.#terminalService.spawn({
           cwd: session.workspacePath,
           cols: params.cols,
@@ -4894,9 +5079,11 @@ export class DomovoiDaemon {
           replay: new TerminalReplayBuffer(),
           redactor: new TerminalOutputRedactor(),
           redactorFlush: undefined,
-          owner: { client: params.client, clientId: params.clientId },
+          owner: this.#terminalOwner(socket, params),
           ownerSocket: socket,
           audience: new Set([socket]),
+          watchers: new Set(),
+          openedAt: Date.now(),
           reapTimer: undefined,
           output,
           outputBackpressure,
@@ -4927,14 +5114,14 @@ export class DomovoiDaemon {
 
             // A prompt carries no newline, so what the redactor is still
             // holding is released on the same beat the output is batched on.
-            // Anything split across that beat is not caught, which is the
-            // price of a terminal that shows a prompt.
+            // It stays as context for the rest of its line, so a value typed
+            // after a released name is still redacted.
             if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
             active.redactorFlush = setTimeout(() => {
               const current = this.#terminals.get(params.terminalId)
               if (current !== active) return
               active.redactorFlush = undefined
-              emit(active.redactor.flush())
+              emit(active.redactor.release())
             }, terminalOutputBatchDelayMilliseconds)
             active.redactorFlush.unref?.()
           }
@@ -4955,6 +5142,7 @@ export class DomovoiDaemon {
           active.outputBackpressure.dispose()
           active.disposeData()
           active.disposeExit()
+          this.#retainClosedTerminal(params.terminalId, active, { exitCode, signal })
           this.#notifyTerminalAudience(active, "terminal.closed", {
             terminalId: params.terminalId,
             exitCode,
@@ -4987,7 +5175,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        terminal.owner = { client: params.client, clientId: params.clientId }
+        terminal.owner = this.#terminalOwner(socket, params)
         terminal.ownerSocket = socket
         terminal.audience.add(socket)
         if (terminal.reapTimer !== undefined) {
@@ -5000,6 +5188,61 @@ export class DomovoiDaemon {
         })
         this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: ownership })
+        return
+      }
+
+      // Reading a terminal. A watcher joins the audience and receives what the
+      // shell prints from here on; the reply carries what the daemon kept,
+      // redacted before it was kept. Nothing here reaches the process.
+      if (method === "terminal.list") {
+        const params = paramsResult.data as RpcParams<"terminal.list">
+        const terminals: TerminalSummary[] = []
+        for (const [terminalId, terminal] of this.#terminals) {
+          if (terminal.sessionId === params.sessionId) terminals.push(this.#terminalSummary(terminalId, terminal))
+        }
+        for (const closed of this.#closedTerminals.values()) {
+          if (closed.summary.sessionId === params.sessionId) terminals.push(this.#closedTerminalSummary(closed))
+        }
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ terminals }) })
+        return
+      }
+
+      if (method === "terminal.watch") {
+        const params = paramsResult.data as RpcParams<"terminal.watch">
+        const terminal = this.#terminals.get(params.terminalId)
+        const closed = this.#closedTerminals.get(params.terminalId)
+        if (!terminal && !closed) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        if (terminal) this.#joinTerminalAudience(params.terminalId, terminal, socket, true)
+        const record = terminal ? terminal.replay.record() : closed!.record
+        this.#sendResult(socket, method, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({
+            ...(terminal ? this.#terminalSummary(params.terminalId, terminal) : this.#closedTerminalSummary(closed!)),
+            buffer: record.text,
+            ...(record.startsAt === undefined ? {} : { bufferStartsAt: new Date(record.startsAt).toISOString() }),
+            earlierOutputDropped: record.dropped,
+            watchedAt: new Date().toISOString(),
+          }),
+        })
+        return
+      }
+
+      if (method === "terminal.unwatch") {
+        const params = paramsResult.data as RpcParams<"terminal.unwatch">
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal && !this.#closedTerminals.has(params.terminalId)) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        // The holder of the claim stays in the audience: its output is part
+        // of holding the shell, and only closing or releasing the claim ends it.
+        terminal?.watchers.delete(socket)
+        if (terminal && terminal.ownerSocket !== socket) terminal.audience.delete(socket)
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ accepted: true }) })
         return
       }
 
@@ -5119,7 +5362,7 @@ export class DomovoiDaemon {
         let models: ProviderModel[]
         try {
           models = this.#watchingOnly(socket) && !this.#connectedAgents.has(params.provider)
-            ? this.#providerModels.get(params.provider)?.models ?? []
+            ? this.#withImageInput(params.provider, this.#providerModels.get(params.provider)?.models ?? [])
             : await this.#listProviderModels(params.provider)
         } catch (error) {
           if (!(error instanceof AgentProviderUnavailableError)) throw error
@@ -6282,22 +6525,7 @@ export class DomovoiDaemon {
 
       if (method === "session.search") {
         const params = paramsResult.data as RpcParams<"session.search">
-        const needle = params.query.toLowerCase()
-        const matches: SessionSearchMatch[] = []
-        let truncated = false
-        for (const session of this.#snapshot.sessions) {
-          const matchedIn = session.title.toLowerCase().includes(needle)
-            ? "title"
-            : this.#sessionSummaryText(session.id)?.toLowerCase().includes(needle)
-              ? "summary"
-              : undefined
-          if (!matchedIn) continue
-          if (matches.length >= params.limit) {
-            truncated = true
-            break
-          }
-          matches.push({ session, matchedIn })
-        }
+        const { matches, truncated } = searchSessions(this.#snapshot, params.query, params.limit)
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -6809,6 +7037,40 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "Approval has no open project")
           return
         }
+        // J34, ruled 2026-09-23: a person's allow takes a checkpoint first,
+        // so the write it lets through can be undone. If the checkpoint
+        // cannot be taken, the command does not run and the gate stays. A
+        // session with no worktree has nothing to checkpoint. The agent is
+        // mid-turn, so the checkpoint is a snapshot that leaves HEAD, the
+        // index and the files alone (ruled B the same day).
+        const allows = params.decision === "allow-once" || params.decision === "always-project"
+        let approvedCheckpoint: { id: string, commit: string } | undefined
+        if (allows && session?.workspacePath) {
+          const worktree = session.workspacePath
+          try {
+            const taken = await this.#withAbortTimeout(
+              (signal) => {
+                if (!this.#workspaceService.snapshot) throw new Error("This workspace cannot take a checkpoint while the agent runs")
+                return this.#workspaceService.snapshot(worktree, "before approved command", signal)
+              },
+              this.#agentTimeoutMs,
+              "Approval checkpoint timed out",
+            )
+            approvedCheckpoint = { id: `checkpoint-${randomUUID()}`, commit: taken.commit }
+          } catch (error) {
+            this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
+            if (error instanceof SubmoduleChangesRefusedError) {
+              this.#error(socket, request.id, invalidParams, "Domovoi could not take a checkpoint: a submodule has local changes a checkpoint cannot hold, so the command did not run")
+              return
+            }
+            this.#error(socket, request.id, internalError, "Domovoi could not take a checkpoint, so the command did not run; decide again")
+            return
+          }
+          if (!this.#snapshot.approvals.some((pending) => pending.id === approval.id)) {
+            this.#error(socket, request.id, invalidParams, "Approval does not exist")
+            return
+          }
+        }
         // The decision is saved before the agent hears it. A decision the
         // agent acts on but the daemon never stored would leave the person
         // told the gate is still waiting while the command runs, and a
@@ -6850,13 +7112,23 @@ export class DomovoiDaemon {
             newRule,
           ]
         }
+        if (approvedCheckpoint) {
+          candidate.thread.push({
+            id: approvedCheckpoint.id,
+            sessionId: approval.sessionId,
+            kind: "checkpoint",
+            label: `${approvedCheckpoint.commit.slice(0, 8)} · before an approved command`,
+            commit: approvedCheckpoint.commit,
+            createdAt: decidedAt,
+          })
+        }
         candidate.thread.push({
           id: receiptId,
           sessionId: approval.sessionId,
           kind: "receipt",
           decision: params.decision,
           operation: approval.operation,
-          checkpoint: approval.checkpoint,
+          checkpoint: approvedCheckpoint?.commit ?? (allows ? "unavailable" : approval.checkpoint),
           client: actor.client,
           connectionId,
           decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, decidedAt),
@@ -6938,7 +7210,7 @@ export class DomovoiDaemon {
           } catch (error) {
             this.#reportError("Domovoi could not pass an approval decision to the agent", error)
             const undo = (snapshot: WorkspaceSnapshot) => {
-              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId)
+              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
               if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
                 snapshot.approvals.push(structuredClone(undecided.approval))
               }
@@ -6982,6 +7254,16 @@ export class DomovoiDaemon {
             )
             return
           }
+        }
+        const runTurnId = session?.activeTurnId
+        if (allows && approval.itemId && runTurnId) {
+          this.#dropApprovedRunsOutside(approval.sessionId, runTurnId)
+          this.#approvedRuns.set(approvedRunKey(approval.sessionId, runTurnId, approval.itemId), {
+            receiptId,
+            sessionId: approval.sessionId,
+            turnId: runTurnId,
+            decidedAtMs: Date.parse(decidedAt),
+          })
         }
         if (blockedPlan) {
           this.#appendAudit({
@@ -7281,11 +7563,22 @@ export class DomovoiDaemon {
           )
           return
         }
-        const repository = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.inspect(params.path, signal),
-          this.#agentTimeoutMs,
-          "Repository inspection timed out",
-        )
+        let repository: Awaited<ReturnType<WorkspaceService["inspect"]>>
+        try {
+          repository = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.inspect(params.path, signal),
+            this.#agentTimeoutMs,
+            "Repository inspection timed out",
+          )
+        } catch (error) {
+          if (error instanceof OperationTimeoutError || signal?.aborted) throw error
+          const refusal = repositoryInspectionRefusal(error)
+          if (refusal === undefined) throw error
+          // The git error quotes the machine's paths and output, which stay in
+          // the daemon log; the caller gets the one thing it can act on.
+          this.#reportError("RPC project.open failed", error)
+          throw new PublicRpcError(invalidParams, refusal)
+        }
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         if (this.#snapshot.project?.path === repository.root) {
           if (
@@ -7471,6 +7764,7 @@ export class DomovoiDaemon {
           workspacePath: workspace.path,
           providerThreadId,
           baseCommit: workspace.baseCommit,
+          branch: workspace.branch,
         })
         this.#loadedAgentThreads.add(providerThreadKey(runtime.provider, providerThreadId))
         this.#snapshot.activeSessionId = sessionId
@@ -7665,6 +7959,7 @@ export class DomovoiDaemon {
           workspacePath: workspace.path,
           providerThreadId,
           baseCommit: checkpoint.commit,
+          branch: workspace.branch,
         })
         candidate.thread.push({
           id: `checkpoint-${randomUUID()}`,
@@ -7817,7 +8112,7 @@ export class DomovoiDaemon {
         let preparedTurn
         try {
           const images = params.attachments?.filter((attachment): attachment is ImageUpload => !("kind" in attachment))
-          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities)
+          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities, session.runtime.model)
           const attachmentText = await prepareSessionAttachmentText(params.attachments, session.workspacePath)
           const userPrompt = attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt
           preparedTurn = await composeProviderPrompt({
@@ -7874,12 +8169,31 @@ export class DomovoiDaemon {
         }
         this.#emergencyBlockedThreads.delete(emergencyThread)
         this.#inFlightProviderThreads.set(emergencyThread, session.id)
+        // A provider that cannot connect, resume or start a turn is something
+        // the person can act on: record the classified failure on the session,
+        // where the sign-in, quota and model guidance is shown, and answer with
+        // its fixed message. Timeouts and cancellations keep their own paths.
+        // A failed steer leaves its turn running, so only the answer names the
+        // failure; the session is not marked as failed.
+        const providerRefusal = async (error: unknown, record = true): Promise<never> => {
+          if (error instanceof PublicRpcError || signal?.aborted) throw error
+          this.#reportError("RPC session.send failed", error)
+          const failure = classifyProviderFailure(error)
+          const failed = record ? this.#snapshot.sessions.find((candidate) => candidate.id === session.id) : undefined
+          if (failed) {
+            failed.providerFailure = failure
+            failed.updatedAt = new Date().toISOString()
+            await this.#persistSnapshot()
+            this.#broadcastSnapshot()
+          }
+          throw new PublicRpcError(invalidParams, failure.message)
+        }
         let agent: AgentAdapter
         try {
           agent = await this.#ensureAgentConnected(session.runtime.provider)
         } catch (error) {
           this.#inFlightProviderThreads.delete(emergencyThread)
-          throw error
+          return await providerRefusal(error)
         }
         if (signal?.aborted) {
           this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7902,7 +8216,7 @@ export class DomovoiDaemon {
             if (error instanceof OperationTimeoutError) {
               await this.#quarantineProviderThread(session.id, error.message)
             }
-            throw error
+            return await providerRefusal(error)
           }
           if (signal?.aborted) {
             this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7911,6 +8225,7 @@ export class DomovoiDaemon {
           this.#loadedAgentThreads.add(loadedThread)
         }
         let turnId = session.activeTurnId
+        const steering = turnId !== undefined
         let providerMessageId: string | undefined
         try {
           signal?.throwIfAborted()
@@ -7949,7 +8264,7 @@ export class DomovoiDaemon {
           if (error instanceof OperationTimeoutError) {
             await this.#quarantineProviderThread(session.id, error.message)
           }
-          throw error
+          return await providerRefusal(error, !steering)
         }
         if (signal?.aborted) {
           if (turnId) await this.#stopCancelledProviderTurn(session, turnId, providerThreadId)
@@ -8674,6 +8989,7 @@ export class DomovoiDaemon {
           estimatedDuration: "Unknown",
           checkpoint: session.baseCommit ?? "unavailable",
           providerRequestId: event.requestId,
+          ...(event.itemId && event.itemId.length <= 256 ? { itemId: event.itemId } : {}),
           requestedAt: createdAt,
           execution,
           ...(inactiveRuleIds.length === 0 ? {} : {
@@ -8721,6 +9037,19 @@ export class DomovoiDaemon {
         ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
         ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
       })
+      const completedItemId = event.phase === "completed" && typeof itemRecord?.id === "string" ? itemRecord.id : undefined
+      const runTurnId = session.activeTurnId
+      if (runTurnId) this.#dropApprovedRunsOutside(session.id, runTurnId)
+      const runKey = completedItemId === undefined || !runTurnId ? undefined : approvedRunKey(session.id, runTurnId, completedItemId)
+      const approvedRun = runKey === undefined ? undefined : this.#approvedRuns.get(runKey)
+      if (runKey !== undefined && approvedRun) {
+        this.#approvedRuns.delete(runKey)
+        const receipt = this.#snapshot.thread.find((threadItem) => threadItem.id === approvedRun.receiptId)
+        if (receipt?.kind === "receipt") {
+          receipt.ranForMs = Math.max(0, Date.now() - approvedRun.decidedAtMs)
+          this.#sessionHistory.invalidate(session.id)
+        }
+      }
       if (event.phase === "completed" && itemRecord?.type === "contextCompaction") {
         const id = providerContextCompactionRowId(
           String(itemRecord.id ?? randomUUID()),
@@ -8844,6 +9173,9 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "turn-completed") {
+      // A command whose completion never arrived by the end of its turn keeps
+      // a receipt without a run time, as ruled 2026-09-23.
+      for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
       const { failed, failure } = providerTurnCompletion(event.params)
       let receivedProviderPlan = false
       if (reportedTurnId) {
@@ -9784,6 +10116,23 @@ export class DomovoiDaemon {
       }
       const workspacePath = session.workspacePath
       await this.#awaitTerminalExits(terminalExits)
+      // The archived notice names the kept branch and what the source never
+      // received; both are read while the worktree still exists. A failure
+      // here does not stop the archive: the notice then says less.
+      const sourcePath = this.#snapshot.project?.path
+      if (this.#workspaceService.sessionBranchFacts && sourcePath) {
+        try {
+          const facts = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.sessionBranchFacts!(workspacePath, sourcePath, signal),
+            this.#agentTimeoutMs,
+            "Archive branch facts timed out",
+          )
+          session.branch = facts.branch
+          session.unmergedFiles = facts.unmergedFiles
+        } catch (error) {
+          this.#reportError("Domovoi could not read the archived session's branch", error)
+        }
+      }
       await this.#withAbortTimeout(
         (signal) => this.#workspaceService.archiveSessionWorkspace!(workspacePath, signal),
         this.#agentTimeoutMs,
@@ -9842,15 +10191,6 @@ export class DomovoiDaemon {
     }
   }
 
-  // A session's summary for search: the newest assistant message the daemon
-  // still holds for it in the snapshot window. Older history is not searched.
-  #sessionSummaryText(sessionId: string): string | undefined {
-    const newest = this.#snapshot.thread.findLast(
-      (item) => item.sessionId === sessionId && item.kind === "assistant",
-    )
-    return newest?.kind === "assistant" ? newest.body : undefined
-  }
-
   #closeTerminal(terminalId: string): boolean {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
@@ -9867,6 +10207,7 @@ export class DomovoiDaemon {
     terminal.output.flush(terminalId)
     terminal.outputBackpressure.dispose()
     terminal.process.kill()
+    this.#retainClosedTerminal(terminalId, terminal, {})
     this.#notifyTerminalAudience(terminal, "terminal.closed", { terminalId })
     return true
   }
@@ -9874,6 +10215,7 @@ export class DomovoiDaemon {
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
       terminal.audience.delete(socket)
+      terminal.watchers.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
@@ -9909,6 +10251,7 @@ export class DomovoiDaemon {
       })
       const entry = { root, watcher }
       this.#artifactWatchers.set(sessionId, entry)
+      watcher.setBusy?.(Boolean(this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)?.activeTurnId))
       void watcher.start().catch((error: unknown) => {
         if (this.#artifactWatchers.get(sessionId) !== entry) return
         watcher.stop()
@@ -10088,6 +10431,7 @@ export class DomovoiDaemon {
   // start is carried by that write. Sharing it keeps the backlog to one
   // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
+    this.#syncArtifactWatchActivity()
     const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
       this.#pendingSnapshotPersist = undefined
       this.#sessionHistory.invalidate()

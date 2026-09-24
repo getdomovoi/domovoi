@@ -16,7 +16,7 @@
   "memory": {
     "clientSnapshotThreadItems": 100,
     "sessionHistoryRetainedItems": 200,
-    "terminalReplayCharacters": 262144
+    "terminalReplayCharacters": 65536
   },
   "longThreads": {
     "historyPageItems": 100,
