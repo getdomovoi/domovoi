@@ -51,6 +51,14 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
+| `DOMOVOI_TOOL_PATH` | Directories searched first for agent CLIs, in the platform's PATH form; then the login shell's PATH, then the launcher's (`src/tool-path.ts`) |
+| `DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY` | Off-machine signer's Ed25519 public key for relay provisioning; see [relay key provisioning](../../docs/relay-key-provisioning.md) |
+| `DOMOVOI_RELAY_CREDENTIAL_FILE` | Absolute file for relay credentials instead of the OS keychain; see [relay key provisioning](../../docs/relay-key-provisioning.md) |
+| `DOMOVOI_WINDOWS_POWERSHELL` | Guest path to `powershell.exe` for `service install` inside WSL, instead of asking `wslpath` |
+
+`DOMOVOI_WSL_EXPECTED_MOUNT_ROOT`, `DOMOVOI_WSL_NATIVE_BUDGET_MS` and
+`DOMOVOI_WSL_NATIVE_TRANSPORT` are inputs to the native WSL CI proofs (`scripts/wsl-ci.mjs`), not
+daemon settings.
 
 Every daemon requires authentication. When `DOMOVOI_AUTH_TOKEN` is unset, `domovoid` creates and
 reuses a high-entropy credential at `<profile>/daemon.token`. When it is set, the daemon reads it
@@ -146,11 +154,11 @@ The local recovery CLI also bounds shutdown. If native work will not acknowledge
 it prints the shutdown failure, waits up to one second for a piped stderr to take it, and exits
 nonzero instead of leaving the terminal waiting.
 
-This does not change the installed native library's missing-value semantics. Its
-[1.3.0 synchronous getter](https://github.com/Brooooooklyn/keyring-node/blob/v1.3.0/src/entry.rs)
-converts native read errors into a missing result, so not every OS failure can
-be distinguished from an absent credential. The worker isolates blocking and exceptions; it
-does not claim to repair that upstream distinction.
+The native library is `@napi-rs/keyring` 2.0.0. A locked or inaccessible keychain throws from
+every read and write, and a delete returns false only when nothing was there. The daemon wraps
+each throw in `MachineCredentialUnavailableError` (`src/machine-credentials.ts`), so a keychain
+that does not answer is reported as unavailable, never as an absent credential. A null read is
+the only "no credential".
 
 Admission is limited to 128 machine entries, including the local machine and pending enrollment
 reservations. At capacity, re-pairing an existing row requires its `expectedMachineId`; an unnamed
@@ -410,8 +418,12 @@ journal path. It covers chunk reads and writes, final publication, and chunk-dir
 A competing receive gets the existing `chunk-out-of-order` refusal without waiting; a retry after
 the owner finishes can adopt its durable chunk or completed member. Other members can progress
 independently. This prevents cleanup racing a retry's open chunk handle within one daemon process,
-which Windows can reject with `EPERM`. It does not coordinate separate daemon processes sharing a
-journal directory.
+which Windows can reject with `EPERM`. Separate daemon processes sharing a journal directory are
+excluded by an exclusive OS-backed file lease at `<journal-root>/.receive-lease.sqlite`: another
+process cannot receive until every active receive in the owning process settles, and it gets the
+same immediate `chunk-out-of-order` refusal. See
+[transfer receive leases](../../docs/transfer-receive-leases.md) for what the lease does not
+cover.
 
 Production transfer RPCs share a per-transfer resource queue across sockets. A reconnected retry
 or abort waits for the original handler to finish; dropping its socket does not release that
@@ -578,11 +590,22 @@ inside the distribution. The runner that starts `git` inside a distribution asks
 wherever the distribution mounts it, not only under `/mnt`.
 
 What is verified where: unit tests drive every module above with a fake `wsl.exe`. Six tests run
-the real `wsl.exe` on the Windows CI job, which has no running WSL 2 distribution. Four prove that
-the listing answers or refuses within its deadline and that a distribution that does not exist is
-refused; the path round trip and the drive refusal need a running distribution and skip there.
-Discovery, open, authentication, repository ownership, Git, and restart against a running
-distribution are not verified by CI.
+the real `wsl.exe` on the ordinary Windows CI job, which has no running WSL 2 distribution. Four
+prove that the listing answers or refuses within its deadline and that a distribution that does
+not exist is refused; the path round trip and the drive refusal need a running distribution and
+skip there.
+
+A separate `wsl-native` workflow (`.github/workflows/wsl.yml`) provisions a real WSL 2 Ubuntu
+guest on Windows 2025 (`scripts/wsl-ci.mjs`, run by `.github/workflows/wsl.yml`). It requires two
+exact sets of named proofs, each passed once with none skipped: fifteen discovery, transport and
+repository boundary tests (`requiredWslProofs`: six discovery, four transport, five repository),
+then, in a separate run, two service proofs (`requiredWslServiceProofs`): installing and removing
+the guest supervisor through the daemon CLI, and propagating a guest failure, restarting it and
+removing only its WSL task.
+It runs on pull requests that touch its path list, nightly at 09:23 UTC, and by manual dispatch.
+It still does not cover two distribution identities, Windows 11 mirrored networking or VPNs, the
+host keychain, or multi-distribution port collisions. [Native WSL CI](../../docs/wsl-ci.md) has
+the full contract.
 
 A daemon inside a distribution reports the distribution and WSL version in its fleet facts, read
 from the `WSL_DISTRO_NAME` and `WSL_INTEROP` variables WSL sets and the kernel release string.
