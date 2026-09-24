@@ -2,6 +2,7 @@ import { execFile } from "node:child_process"
 
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 
+import { claudeInstallProblem } from "./claude-install.js"
 import { resolveCommandPath } from "./tool-path.js"
 
 export type ProviderDetection = Omit<ProviderRuntime, "sessionCapable">
@@ -106,9 +107,14 @@ export class CliProviderProbe implements ProviderProbe {
   }
 
   async #inspect(definition: ProviderDefinition, signal?: AbortSignal): Promise<ProviderDetection> {
-    let command = definition.commands[0]!
+    // The Claude Agent SDK starts only the native claude.exe on Windows, so
+    // readiness looks for it before the npm shims.
+    const commands = this.#platform === "win32" && definition.id === "claude-code"
+      ? ["claude.exe", ...definition.commands]
+      : definition.commands
+    let command = commands[0]!
     let versionResult: CommandResult | undefined
-    for (const name of definition.commands) {
+    for (const name of commands) {
       const candidate = this.#path === undefined ? name : await resolveCommandPath(name, this.#path, this.#platform)
       if (candidate === undefined) continue
       try {
@@ -142,11 +148,15 @@ export class CliProviderProbe implements ProviderProbe {
         status = "unknown"
       }
     }
+    const problem = definition.id === "claude-code"
+      ? claudeInstallProblem({ command, version, platform: this.#platform })
+      : undefined
     return {
       id: definition.id,
       command,
       status,
       ...(version ? { version } : {}),
+      ...(problem ? { problem } : {}),
     }
   }
 }
