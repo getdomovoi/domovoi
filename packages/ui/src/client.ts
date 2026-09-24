@@ -841,6 +841,12 @@ export class DomovoiClient extends EventTarget {
     return this.request("skill.list", {}, options)
   }
 
+  // Titles and summaries on this daemon (session.search, 2026-09-23). The
+  // palette asks each admitted machine for its own; nothing crosses machines.
+  searchSessions(params: RpcParams<"session.search">, options?: DomovoiRequestOptions): Promise<RpcResult<"session.search">> {
+    return this.request("session.search", params, options)
+  }
+
   getSkillInventory(options?: DomovoiRequestOptions): Promise<SkillInventory> {
     return this.request("skill.inventory", {}, options)
   }
@@ -929,6 +935,12 @@ export class DomovoiClient extends EventTarget {
       confirmation: "target-does-not-have-session",
       initiatedByClient: this.kind,
     }, options)
+  }
+
+  // The same code `domovoid pair --client` prints, for the kind named and no
+  // other. A watching client is refused before the request leaves.
+  issueDeviceCode(targetClient: ClientKind, options?: DomovoiRequestOptions): Promise<RpcResult<"device.issueCode">> {
+    return this.request("device.issueCode", { targetClient }, options)
   }
 
   listDevices(options?: DomovoiRequestOptions): Promise<DevicesResult> {

@@ -69,6 +69,7 @@ import {
   type RpcResult,
   type RpcMethod,
   type SessionHistoryPage,
+  type SessionSearchMatch,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
@@ -85,6 +86,7 @@ import {
   type TerminalSummary,
   terminalClosedRetentionMilliseconds,
   maximumTerminalReplayCharacters,
+  type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
   type StateRecovery,
@@ -151,7 +153,9 @@ import {
 } from "./session-transfer-target.js"
 import {
   CodexAppServerAdapter,
+  codexSandboxNotice,
 } from "./codex.js"
+import { committedCodexSecretPaths } from "./codex-git-secrets.js"
 import { ClaudeAgentSdkAdapter } from "./claude.js"
 import { OpenCodeSdkAdapter } from "./opencode.js"
 import { KiloSdkAdapter } from "./kilo.js"
@@ -238,6 +242,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer, type TerminalReplayRecord } from "./terminal-replay.js"
+import { pairingAddressFor } from "./pairing-address.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -414,6 +419,7 @@ const unauditedRpcMethods = new Set<RpcMethod>([
   "skill.reviewRevision",
   "skill.installPreview",
   "session.history",
+  "session.search",
   "session.evidence",
   "audit.query",
   "fleet.heartbeat",
@@ -833,6 +839,20 @@ export function isTestCommandTitle(title: string): boolean {
       + "|(?:go|cargo|dotnet|swift|mix)\\s+test(?:\\s|$)"
       + "|(?:\\./)?gradle(?:w)?\\s+test(?:\\s|$)|mvn(?:\\s+\\S+)*\\s+test(?:\\s|$))",
   ).test(command)
+}
+
+function codexSandboxNoticeFor(
+  sessionId: string,
+  runtime: Runtime,
+  createdAt: string,
+  committed: readonly string[] | undefined,
+): WorkspaceSnapshot["thread"] {
+  if (runtime.provider !== "codex") return []
+  return [{ id: `system-${randomUUID()}`, sessionId, kind: "system", ...codexSandboxNotice(committed), createdAt }]
+}
+
+function committedSecretsFor(runtime: Runtime, worktree: string): Promise<string[] | undefined> {
+  return runtime.provider === "codex" ? committedCodexSecretPaths(worktree) : Promise.resolve(undefined)
 }
 
 function isProviderHandoff(item: Extract<WorkspaceSnapshot["thread"][number], { kind: "system" }>): boolean {
@@ -1300,9 +1320,12 @@ type ActiveTerminal = {
   // to re-claim it, then the terminal is reaped rather than stranded forever.
   ownerSocket: RpcOutboundSocket | undefined
   // The connections that opened, claimed or watch this terminal. Its output,
-  // owner changes and close go to these and nowhere else. A phone or tablet
-  // credential can only join by terminal.watch, which types nothing.
+  // owner changes and close go to these and nowhere else.
   audience: Set<RpcOutboundSocket>
+  // The members that joined by terminal.watch. A phone, tablet or watching
+  // credential reads a terminal only this way, and terminal.watch types,
+  // resizes, closes and claims nothing.
+  watchers: Set<RpcOutboundSocket>
   openedAt: number
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
@@ -1661,6 +1684,19 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // The address a code issued here tells a device to dial: the name on the
+  // certificate this daemon serves, never the address it binds, or the one
+  // problem that leaves a device nothing to dial. One source for every surface
+  // that draws a code.
+  #pairingAddress(): PairingAddress {
+    const port = this.address?.port ?? this.requestedPort
+    const tls = this.#tls
+    return pairingAddressFor(
+      { host: this.host, port, ...(tls ? { tls: { certPath: "the certificate this daemon serves" } } : {}) },
+      () => tls!.cert.toString("utf8"),
     )
   }
 
@@ -2239,8 +2275,22 @@ export class DomovoiDaemon {
     this.#notifyClients(this.#rpcClients, method, params)
   }
 
+  // Terminals are not on the pairing card: a phone or tablet credential, and a
+  // watching-only one, is never an audience for one unless it asked to watch
+  // it. Anything else that adds such a connection to an audience does not
+  // make it a reader.
+  #mayWatchTerminals(socket: RpcOutboundSocket): boolean {
+    const binding = this.#deviceCredentials.get(socket)?.verified?.binding
+    if (binding?.kind !== "client") return true
+    return binding.client !== "phone" && binding.client !== "tablet" && binding.clientAccess !== "watching"
+  }
+
   #notifyTerminalAudience(terminal: ActiveTerminal, method: string, params: unknown): void {
-    this.#notifyClients(terminal.audience, method, params)
+    this.#notifyClients(
+      [...terminal.audience].filter((socket) => this.#mayWatchTerminals(socket) || terminal.watchers.has(socket)),
+      method,
+      params,
+    )
   }
 
   #terminalSummary(terminalId: string, terminal: ActiveTerminal): TerminalSummary {
@@ -2285,9 +2335,10 @@ export class DomovoiDaemon {
   // it reads next from the record and what reaches it live never overlap. A
   // connection already watching gets the same boundary, since the record it
   // is about to read holds that waiting output too.
-  #joinTerminalAudience(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): void {
+  #joinTerminalAudience(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket, watching = false): void {
     terminal.output.flush(terminalId)
     terminal.audience.add(socket)
+    if (watching) terminal.watchers.add(socket)
   }
 
   // Called once the terminal has left #terminals and its last output has been
@@ -4946,6 +4997,7 @@ export class DomovoiDaemon {
           owner: this.#terminalOwner(socket, params),
           ownerSocket: socket,
           audience: new Set([socket]),
+          watchers: new Set(),
           openedAt: Date.now(),
           reapTimer: undefined,
           output,
@@ -5078,7 +5130,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal) this.#joinTerminalAudience(params.terminalId, terminal, socket)
+        if (terminal) this.#joinTerminalAudience(params.terminalId, terminal, socket, true)
         const record = terminal ? terminal.replay.record() : closed!.record
         this.#send(socket, {
           jsonrpc: "2.0",
@@ -5103,6 +5155,7 @@ export class DomovoiDaemon {
         }
         // The holder of the claim stays in the audience: its output is part
         // of holding the shell, and only closing or releasing the claim ends it.
+        terminal?.watchers.delete(socket)
         if (terminal && terminal.ownerSocket !== socket) terminal.audience.delete(socket)
         this.#send(socket, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ accepted: true }) })
         return
@@ -6016,9 +6069,10 @@ export class DomovoiDaemon {
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(
-            this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
-          ),
+          result: rpcMethods[method].result.parse({
+            ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
+            pairingAddress: this.#pairingAddress(),
+          }),
         })
         return
       }
@@ -6380,6 +6434,32 @@ export class DomovoiDaemon {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse(page),
+        })
+        return
+      }
+
+      if (method === "session.search") {
+        const params = paramsResult.data as RpcParams<"session.search">
+        const needle = params.query.toLowerCase()
+        const matches: SessionSearchMatch[] = []
+        let truncated = false
+        for (const session of this.#snapshot.sessions) {
+          const matchedIn = session.title.toLowerCase().includes(needle)
+            ? "title"
+            : this.#sessionSummaryText(session.id)?.toLowerCase().includes(needle)
+              ? "summary"
+              : undefined
+          if (!matchedIn) continue
+          if (matches.length >= params.limit) {
+            truncated = true
+            break
+          }
+          matches.push({ session, matchedIn })
+        }
+        this.#send(socket, {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
         })
         return
       }
@@ -7189,6 +7269,9 @@ export class DomovoiDaemon {
             }
             throw error
           }
+          const committed = previousRuntime.provider !== runtime.provider
+            ? await committedSecretsFor(runtime, currentSession.workspacePath)
+            : undefined
           const createdAt = new Date().toISOString()
           currentSession.runtime = runtime
           currentSession.providerThreadId = nextThreadId
@@ -7226,6 +7309,9 @@ export class DomovoiDaemon {
               : `Thread, plan, worktree, diff, test results, and ${openAnnotationCount} open annotations carried over. Hidden reasoning and provider caches did not transfer.`,
             createdAt,
           })
+          if (previousRuntime.provider !== runtime.provider) {
+            this.#snapshot.thread.push(...codexSandboxNoticeFor(currentSession.id, runtime, createdAt, committed))
+          }
         } else {
           currentSession.runtime = runtime
           delete currentSession.providerFailure
@@ -7534,6 +7620,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         this.#snapshot.sessions.push({
           ...creationDraft,
@@ -7562,6 +7649,7 @@ export class DomovoiDaemon {
           detail: workspace.path,
           createdAt,
         })
+        this.#snapshot.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         changed = true
       }
 
@@ -7725,6 +7813,7 @@ export class DomovoiDaemon {
           }
           throw error
         }
+        const committed = await committedSecretsFor(runtime, workspace.path)
         const createdAt = new Date().toISOString()
         const candidate = structuredClone(this.#snapshot)
         candidate.sessions.push({
@@ -7752,6 +7841,7 @@ export class DomovoiDaemon {
           detail: `Checkpoint ${checkpoint.commit.slice(0, 8)} started ${runtime.provider} / ${runtime.model} for ${params.client}. The source session, provider thread, worktree, and active selection were preserved.`,
           createdAt,
         })
+        candidate.thread.push(...codexSandboxNoticeFor(sessionId, runtime, createdAt, committed))
         try {
           // Other sessions keep streaming while the fork is written, so only
           // the fork's own slice is merged into the live snapshot, before and
@@ -9910,6 +10000,15 @@ export class DomovoiDaemon {
     }
   }
 
+  // A session's summary for search: the newest assistant message the daemon
+  // still holds for it in the snapshot window. Older history is not searched.
+  #sessionSummaryText(sessionId: string): string | undefined {
+    const newest = this.#snapshot.thread.findLast(
+      (item) => item.sessionId === sessionId && item.kind === "assistant",
+    )
+    return newest?.kind === "assistant" ? newest.body : undefined
+  }
+
   #closeTerminal(terminalId: string): boolean {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
@@ -9934,6 +10033,7 @@ export class DomovoiDaemon {
   #releaseTerminalOwnership(socket: RpcOutboundSocket): void {
     for (const [terminalId, terminal] of this.#terminals) {
       terminal.audience.delete(socket)
+      terminal.watchers.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       terminal.ownerSocket = undefined
       if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)

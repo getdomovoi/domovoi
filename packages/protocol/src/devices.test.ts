@@ -6,6 +6,7 @@ import {
   deviceClaimParamsSchema,
   deviceCurrentResultSchema,
   deviceIssueCodeParamsSchema,
+  deviceIssueCodeResultSchema,
   deviceLabelMismatchSchema,
   devicePairParamsSchema,
   devicePairResultSchema,
@@ -144,6 +145,22 @@ describe("devicePairParamsSchema", () => {
       .toEqual({ targetClient: "phone" })
     expect(deviceIssueCodeParamsSchema.parse({ targetClient: "phone", clientAccess: "watching" }).clientAccess)
       .toBe("watching")
+  })
+
+  it("issues a code with the address a device dials, or the problem that leaves none", () => {
+    const issued = { code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" }
+    const tailnet = { url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", label: "djs-macbook-pro-1.raptor-pompano.ts.net", loopback: false }
+    expect(deviceIssueCodeResultSchema.parse({ ...issued, pairingAddress: tailnet })).toEqual({ ...issued, pairingAddress: tailnet })
+    const loopback = { url: "ws://127.0.0.1:47831/rpc", loopback: true }
+    expect(deviceIssueCodeResultSchema.parse({ ...issued, pairingAddress: loopback })).toEqual({ ...issued, pairingAddress: loopback })
+    const problem = { problem: "This daemon serves no certificate, so a device has no address it can verify." }
+    expect(deviceIssueCodeResultSchema.parse({ ...issued, pairingAddress: problem })).toEqual({ ...issued, pairingAddress: problem })
+    // An address a device cannot verify is refused at the schema, as the
+    // payload refuses it: plaintext is loopback only.
+    expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { url: "ws://100.80.185.103:47831/rpc", loopback: false } }).success).toBe(false)
+    expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { url: "wss://a.example.ts.net:47831/rpc" } }).success).toBe(false)
+    expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingAddress: { problem: "" } }).success).toBe(false)
+    expect(deviceIssueCodeResultSchema.safeParse(issued).success).toBe(false)
   })
 
   it("reports client access from the authenticated device", () => {
