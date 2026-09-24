@@ -83,10 +83,32 @@
         "Pair this browser",
         "HOW THIS TAB IS TRUSTED",
         "device.redeemCode"
+      ]
+    },
+    {
+      "id": "connect.page-origin",
+      "name": "Trust fact: the page came from the daemon",
+      "where": "HOW THIS TAB IS TRUSTED on the connect page: This page came from the daemon on <machine>, at its tailnet name. No Domovoi server is in the path.",
+      "evidence": [
+        "No Domovoi server is in the path"
       ],
-      "missing": {
+      "blocked": {
         "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J26; the web still asks for the daemon credential file instead of a one-time web code, although device.issueCode and device.redeemCode exist"
+        "needs": "platform",
+        "reason": "apps/web is a separate build and the daemon serves no page, so the address a tab shows is the one it dials, not where the page came from; the page says This tab talks only to the daemon at <host> until the daemon serves the web app"
+      }
+    },
+    {
+      "id": "connect.outcomes-distinct",
+      "name": "Expired and wrong-machine outcomes",
+      "where": "outcome card after Pair this browser: the design draws expired and wrong-machine refusals apart",
+      "evidence": [
+        "wrong_machine"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "the daemon answers every bad code with one uniform refusal on purpose (Pairing was refused), so a page cannot tell expired from spent from another machine's code; only protocol mismatch, device limit and no answer are distinct"
       }
     },
     {
@@ -130,11 +152,7 @@
       "evidence": [
         "Paired for this tab",
         "ends when it closes"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J26; the sessions column does not say the credential lasts for this tab"
-      }
+      ]
     },
     {
       "id": "degraded-banner",
@@ -270,6 +288,11 @@
       "id": "connect",
       "since": "2026-09-23",
       "note": "The connect title and sub-line, the pair hint, the outcome cards and the five trust facts live in the design's data (connectTitle, connectSub, pairHint, outcomes, tailFacts), so the gate cannot hold them as drawn copy. Read them against the connect page."
+    },
+    {
+      "id": "connect",
+      "since": "2026-09-23",
+      "note": "The code is the daemon's word code (ND1), so the placeholder and the lock hint follow that shape instead of DVOI-XXXX-XXXX and 12 characters. Before pairing a tab knows only the address it dials, so the title names the host, not the daemon's machine name. The QR fill reads ?code= from the address bar and removes it. The daemon credential stays reachable one link down for a machine with no desktop."
     }
   ],
   "annotations": [

@@ -16,6 +16,8 @@ export function ComposedSessionsDrawer({
   onOpenProviderSettings,
   machineAvailability,
   onOpenMachines,
+  scope,
+  credentialNote,
   className,
 }: {
   snapshot: WorkspaceSnapshot
@@ -27,6 +29,8 @@ export function ComposedSessionsDrawer({
   onOpenProviderSettings?: (() => void) | undefined
   machineAvailability?: string | undefined
   onOpenMachines?: (() => void) | undefined
+  scope?: { machine: string; note: string } | undefined
+  credentialNote?: { label: string; meta: string } | undefined
   className?: string
 }) {
   return (
@@ -42,7 +46,7 @@ export function ComposedSessionsDrawer({
         machineAvailability={machineAvailability}
         onOpenMachines={onOpenMachines}
         className="mt-2 max-h-[70vh]"
-      />
+       scope={scope} credentialNote={credentialNote} />
     </div>
   )
 }

@@ -1255,6 +1255,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onAction={watching ? undefined : sessionRowAction}
             machineAvailability={machineAvailability}
             onOpenMachines={() => setSurface("fleet")}
+            {...(clientKind === "web" && !attached ? {
+              scope: { machine: snapshot.machine.name, note: "this machine only" },
+              credentialNote: { label: "Paired for this tab", meta: "ends when it closes" },
+            } : {})}
           />
           <AlertDialog open={archiveTarget !== null} onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}>
             <AlertDialogContent>
