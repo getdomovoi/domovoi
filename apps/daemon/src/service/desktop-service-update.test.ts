@@ -854,6 +854,29 @@ describe("security review round 1", () => {
     const lastRegistration = vi.mocked(effects.capture).mock.calls.filter(([, args]) => script(args).includes("RegisterTaskDefinition")).at(-1)![1]
     expect(lastRegistration).toEqual(installedWslTask(previous.wsl!, registrationId, configurationPath).register.args)
   })
+
+  // F7: the old task was put back and reported ready, then removing the
+  // intent record failed, and the update said the service was not running.
+  it("F7: says the previous service is running when only removing the record fails after the restore", async () => {
+    const effects = fake("linux", "/home/dl", {}, wslConfiguration())
+    const capture = effects.capture
+    let registrations = 0
+    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
+      if (script(args).includes("RegisterTaskDefinition") && ++registrations === 1) return { code: 1, stdout: "", stderr: "Access is denied" }
+      return capture(command, args, deadline)
+    })
+    const remove = effects.remove
+    effects.remove = vi.fn(async (path: string, deadline) => {
+      if (path === intentPath) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" })
+      await remove(path, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
+      "Domovoi could not start the service on the new runtime: Access is denied. The previous service was put back and is running.",
+    )
+    expect(effects.owner).toMatchObject({ state: "ready" })
+    // Left for later cleanup, marked as settled with the previous service.
+    expect(JSON.parse(effects.files.get(intentPath)!)).toMatchObject({ completed: "previous" })
+  })
 })
 
 it("names each outcome the desktop can tell apart", () => {

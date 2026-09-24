@@ -235,7 +235,10 @@ export function prepareWslUpdate(
         await removeRegisteredTask(candidates, effects, deadline)
         await writeIn(deadline)(path, serializeServiceConfiguration(previous))
         await startIn(deadline)(old)
-        await removeIntentIn(deadline)()
+        // The previous service has reported ready, so the restore worked. A
+        // record that cannot be removed is left for later cleanup, marked as
+        // settled on the previous configuration; it does not undo the restore.
+        await settleIntentIn(deadline)("previous")
       },
     }
   }
