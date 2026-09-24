@@ -165,4 +165,11 @@ describe("SessionsScreen", () => {
     await draw()
     expect(screen.queryByText("No sessions running")).toBeNull()
   })
+
+  // There is no push without the relay, so a gate reaches a phone only over
+  // the connection the open app holds. The list says so where gates land.
+  it("says a gate reaches this phone only while Domovoi is open", async () => {
+    await draw()
+    expect(screen.getByText("Keep Domovoi open to answer gates. Nothing is pushed to this phone yet.")).toBeOnTheScreen()
+  })
 })
