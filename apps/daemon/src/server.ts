@@ -8562,8 +8562,9 @@ export class DomovoiDaemon {
       const facts = approvalFacts({
         ...(event.path === undefined ? {} : { path: event.path }),
         workspace: factsWorkspace,
+        cwd: event.cwd,
         scope: this.#agents.require(provider).approvalScope?.(session.runtime),
-        resolved: event.path === undefined ? undefined : await resolveApprovalPath(factsWorkspace, event.path),
+        resolved: event.path === undefined ? undefined : await resolveApprovalPath(factsWorkspace, event.path, event.cwd),
       })
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted

@@ -1,5 +1,5 @@
-import { realpath } from "node:fs/promises"
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { lstat, readlink } from "node:fs/promises"
+import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 
 import { namesSecretFile } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
@@ -52,28 +52,53 @@ function within(workspace: string, target: string): string | undefined {
 
 export type ResolvedApprovalPath = Readonly<{ target: string; workspace: string }>
 
-// Where the path really leads: the nearest part of it that exists, resolved,
-// with the parts that do not exist yet appended, and the worktree resolved the
-// same way. Undefined only when nothing up to the root resolves.
-export async function resolveApprovalPath(workspace: string, path: string): Promise<ResolvedApprovalPath | undefined> {
-  const target = resolve(workspace, path)
-  let existing = target
-  const missing: string[] = []
-  let real: string | undefined
-  for (;;) {
-    try {
-      real = join(await realpath(existing), ...missing)
-      break
-    } catch {
-      const parent = dirname(existing)
-      if (parent === existing) return undefined
-      missing.unshift(basename(existing))
-      existing = parent
-    }
+// The path as the request gave it, relative to the directory the request runs
+// in, before anything is collapsed: ".." is applied only after the links
+// before it are followed, as the filesystem does.
+function requestedPath(workspace: string, path: string, cwd: string | undefined): string {
+  if (isAbsolute(path)) return path
+  const base = cwd === undefined ? workspace : isAbsolute(cwd) ? cwd : `${workspace}${sep}${cwd}`
+  return `${base}${sep}${path}`
+}
+
+const separators = process.platform === "win32" ? /[\\/]+/u : /\/+/u
+// Linux's bound on links followed in one lookup (macOS stops at 32).
+const maximumLinksFollowed = 40
+
+// Walk the path one component at a time from its root. A link, including one
+// whose target does not exist yet, is replaced by its target before the rest
+// of the path is read; ".." then leaves the directory the link led to. A
+// component that does not exist is kept as written. Undefined when the links
+// loop past the bound.
+async function followPath(path: string): Promise<string | undefined> {
+  const root = parse(path).root
+  let current = root
+  const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
+  let links = 0
+  while (pending.length > 0) {
+    const part = pending.shift()!
+    if (part === ".") continue
+    if (part === "..") { current = dirname(current); continue }
+    const next = join(current, part)
+    let isLink = false
+    try { isLink = (await lstat(next)).isSymbolicLink() } catch { /* absent or unreadable: kept as written */ }
+    if (!isLink) { current = next; continue }
+    if (++links > maximumLinksFollowed) return undefined
+    const target = await readlink(next)
+    const targetRoot = parse(target).root
+    if (targetRoot !== "") current = targetRoot
+    pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
   }
-  let realWorkspace: string
-  try { realWorkspace = await realpath(workspace) } catch { realWorkspace = resolve(workspace) }
-  return { target: real, workspace: realWorkspace }
+  return current
+}
+
+// Where the path really leads, and where the worktree really is, each followed
+// the same way. Undefined when either loops, and then the lexical answer stands.
+export async function resolveApprovalPath(workspace: string, path: string, cwd?: string): Promise<ResolvedApprovalPath | undefined> {
+  const target = await followPath(requestedPath(workspace, path, cwd))
+  const realWorkspace = await followPath(resolve(workspace))
+  if (target === undefined || realWorkspace === undefined) return undefined
+  return { target, workspace: realWorkspace }
 }
 
 // A path that names a credential file is hidden whole on the card; the line
@@ -83,11 +108,12 @@ const hiddenPath = { text: "[REDACTED]", redacted: false }
 function affectedFile(input: {
   path: string
   workspace: string
+  cwd: string | undefined
   resolved: ResolvedApprovalPath | undefined
   hide: boolean
 }): { text: string; redacted: boolean } {
   const shown = (path: string) => input.hide ? hiddenPath : shownPath(path)
-  const target = resolve(input.workspace, input.path)
+  const target = resolve(input.workspace, input.cwd ?? ".", input.path)
   const lexical = within(resolve(input.workspace), target)
   const real = input.resolved ? within(input.resolved.workspace, input.resolved.target) : lexical
   if (real !== undefined) {
@@ -109,6 +135,8 @@ function affectedFile(input: {
 export function approvalFacts(input: {
   path?: string
   workspace: string
+  // The directory the request runs in; a relative path is read from here.
+  cwd?: string | undefined
   scope: ApprovalScope | undefined
   resolved?: ResolvedApprovalPath | undefined
 }): { affects: string; network: string; redacted: boolean; sensitive: boolean } {
@@ -117,8 +145,8 @@ export function approvalFacts(input: {
   // A credential file is a hard gate whether the agent named it or a link
   // with an ordinary name leads to it.
   const sensitive = namesSecretFile(input.path)
-    || namesSecretFile(resolve(input.workspace, input.path))
+    || namesSecretFile(resolve(input.workspace, input.cwd ?? ".", input.path))
     || (input.resolved !== undefined && namesSecretFile(input.resolved.target))
-  const file = affectedFile({ path: input.path, workspace: input.workspace, resolved: input.resolved, hide: sensitive })
+  const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
   return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }

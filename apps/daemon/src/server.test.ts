@@ -1072,7 +1072,8 @@ describe("DomovoiDaemon", () => {
     expect(JSON.stringify(pathApproval)).not.toContain(pathToken)
     expect(pathApproval?.affects).toContain("[REDACTED]")
 
-    // A credential file named only by the path is a hard gate too.
+    // A credential file named only by the path is a hard gate too. A relative
+    // path is read from the request's directory, here outside the worktree.
     listener!({
       type: "approval-requested",
       requestId: 93,
@@ -1080,12 +1081,12 @@ describe("DomovoiDaemon", () => {
       turnId: session.activeTurnId,
       command: "cat config",
       reason: "Read a file",
-      cwd: "/repo",
+      cwd: "/elsewhere/project",
       path: "config/.env.production",
     })
     const envApproval = (await rpc("workspace.get", {})).result.approvals
       .find((candidate) => candidate.providerRequestId === 93)
-    expect(envApproval).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
+    expect(envApproval).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED], outside the session worktree." })
 
     listener!({
       type: "command-output",

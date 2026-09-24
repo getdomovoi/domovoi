@@ -125,6 +125,111 @@ describe("approvalFacts", () => {
       .toBe(`The file ${join(outside, "new", "nested", "file.txt")}, outside the session worktree, through a link at link/new/nested/file.txt.`)
   })
 
+  // Every way a path can differ from where it really leads: ".." applied after
+  // a link, a link that does not resolve yet, a request made from a
+  // subdirectory, and a credential name that appears only at the real target.
+  // Each row is classified against the worktree after following links in order.
+  describe("follows the path the way the filesystem does", () => {
+    type Row = {
+      name: string
+      cwd?: string
+      path: string
+      affects: (layout: { root: string; tree: string; outside: string }) => string
+      sensitive: boolean
+    }
+    const rows: Row[] = [
+      {
+        name: "\"..\" after a link to an outside directory, reaching a private key",
+        path: "jump/../notes.txt",
+        affects: () => "The file [REDACTED], outside the session worktree, through a link at [REDACTED].",
+        sensitive: true,
+      },
+      {
+        name: "\"..\" with no link stays where it reads",
+        path: "sub/../a.ts",
+        affects: () => "The file a.ts in the session worktree.",
+        sensitive: false,
+      },
+      {
+        name: "a dangling link to an outside .env",
+        path: "dangling",
+        affects: () => "The file [REDACTED], outside the session worktree, through a link at [REDACTED].",
+        sensitive: true,
+      },
+      {
+        name: "a dangling link to a missing file inside the worktree",
+        path: "later",
+        affects: () => "The file later in the session worktree.",
+        sensitive: false,
+      },
+      {
+        name: "a relative path from a subdirectory, through a link there",
+        cwd: "sub",
+        path: "link-out/file.txt",
+        affects: ({ outside }) => `The file ${join(outside, "file.txt")}, outside the session worktree, through a link at sub/link-out/file.txt.`,
+        sensitive: false,
+      },
+      {
+        name: "a relative path from a subdirectory, to an ordinary file",
+        cwd: "sub",
+        path: "a.ts",
+        affects: () => "The file sub/a.ts in the session worktree.",
+        sensitive: false,
+      },
+      {
+        name: "an ordinary name whose real target inside the worktree is a .env",
+        path: "config.txt",
+        affects: () => "The file [REDACTED] in the session worktree.",
+        sensitive: true,
+      },
+      {
+        name: "an absolute path through a link, with a cwd that does not apply",
+        cwd: "sub",
+        path: "<tree>/jump/data.csv",
+        affects: ({ outside }) => `The file ${join(outside, "deep", "data.csv")}, outside the session worktree, through a link at jump/data.csv.`,
+        sensitive: false,
+      },
+    ]
+
+    it.each(rows)("$name", async (row) => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-table-")))
+      directories.push(root)
+      const tree = join(root, "worktree")
+      const outside = join(root, "outside")
+      await mkdir(join(tree, "sub"), { recursive: true })
+      await mkdir(join(outside, "deep"), { recursive: true })
+      // Decoys at the worktree root, so a path resolved against the wrong
+      // directory lands on an ordinary file inside the worktree.
+      await mkdir(join(tree, "link-out"))
+      await writeFile(join(tree, "notes.txt"), "")
+      await writeFile(join(outside, "id_rsa"), "")
+      await symlink(join(outside, "id_rsa"), join(outside, "notes.txt"))
+      await symlink(join(outside, "deep"), join(tree, "jump"))
+      await symlink(join(outside, ".env"), join(tree, "dangling"))
+      await symlink(join(tree, "not-yet.txt"), join(tree, "later"))
+      await symlink(outside, join(tree, "sub", "link-out"))
+      await writeFile(join(tree, ".env"), "")
+      await symlink(join(tree, ".env"), join(tree, "config.txt"))
+
+      const cwd = row.cwd === undefined ? undefined : join(tree, row.cwd)
+      const path = row.path.replace("<tree>", tree)
+      const resolved = await resolveApprovalPath(tree, path, cwd)
+      const facts = approvalFacts({ workspace: tree, ...(cwd === undefined ? {} : { cwd }), path, scope: undefined, resolved })
+      expect({ affects: facts.affects, sensitive: facts.sensitive })
+        .toEqual({ affects: row.affects({ root, tree, outside }), sensitive: row.sensitive })
+    })
+  })
+
+  it("gives no resolved path for links that loop, so the path reads as written", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-loop-")))
+    directories.push(root)
+    const tree = join(root, "worktree")
+    await mkdir(tree)
+    await symlink(join(tree, "b"), join(tree, "a"))
+    await symlink(join(tree, "a"), join(tree, "b"))
+    expect(await resolveApprovalPath(tree, "a/file.txt")).toBeUndefined()
+  })
+
   // Inside or outside is decided on the real path, so a link in the worktree
   // that leads out of it does not read as "in the session worktree".
   it("names where a link out of the worktree really leads", async () => {
