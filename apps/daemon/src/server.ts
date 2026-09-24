@@ -1371,6 +1371,9 @@ export class DomovoiDaemon {
   #inFlightProviderThreads = new Map<string, string>()
   #emergencyStopTail: Promise<unknown> = Promise.resolve()
   #emergencyStopInProgress = false
+  // Snapshot and delta broadcasts held while a stop runs. The stop's own
+  // notification goes out first, then one snapshot carries every change.
+  #snapshotBroadcastHeld = false
   #stopping = false
   #stopped = false
   #stopPromise: Promise<void> | undefined
@@ -2157,13 +2160,22 @@ export class DomovoiDaemon {
   }
 
   #broadcastSnapshot(): void {
-    this.#flushPendingWorkspaceDeltas()
+    if (this.#emergencyStopInProgress) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
+    this.#sendSnapshot()
+  }
+
+  #sendSnapshot(): void {
+    this.#snapshotBroadcastHeld = false
+    this.#flushPendingWorkspaceDeltas(true)
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
         ? [{ provider: session.runtime.provider, threadId: session.providerThreadId, turnId: session.activeTurnId }]
         : []),
     ))
-    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot), true)
   }
 
   #updateUsageAccounting(update: () => void): void {
@@ -2198,7 +2210,15 @@ export class DomovoiDaemon {
     return record
   }
 
-  #broadcastNotification(method: string, params: unknown): void {
+  #broadcastNotification(method: string, params: unknown, duringStop = false): void {
+    if (
+      (method === "workspace.changed" || method === "workspace.delta")
+      && this.#emergencyStopInProgress
+      && !duringStop
+    ) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
     const message = JSON.stringify({ jsonrpc: "2.0", method, params })
 
     for (const client of this.#rpcClients) {
@@ -8984,6 +9004,8 @@ export class DomovoiDaemon {
       return await this.#runEmergencyStop(client)
     } finally {
       this.#emergencyStopInProgress = false
+      // A stop that failed before its notification still releases what it held.
+      if (this.#snapshotBroadcastHeld) this.#sendSnapshot()
     }
   }
 
@@ -9196,7 +9218,7 @@ export class DomovoiDaemon {
     // A client holding a queued message releases it when a session goes idle.
     // The stop has to reach it first, or the idle snapshot restarts the work.
     this.#broadcastNotification("system.emergencyStopped", result)
-    this.#broadcastSnapshot()
+    this.#sendSnapshot()
     return result
   }
 
@@ -9946,8 +9968,12 @@ export class DomovoiDaemon {
     }, workspaceDeltaBatchDelayMilliseconds)
   }
 
-  #flushPendingWorkspaceDeltas(): void {
+  #flushPendingWorkspaceDeltas(duringStop = false): void {
     if (this.#pendingWorkspaceDeltas.length === 0) return
+    if (this.#emergencyStopInProgress && !duringStop) {
+      this.#snapshotBroadcastHeld = true
+      return
+    }
     const pending = this.#pendingWorkspaceDeltas
     this.#pendingWorkspaceDeltas = []
     const validated = validWorkspaceDeltaBatches(pending)
@@ -9956,10 +9982,11 @@ export class DomovoiDaemon {
       this.#broadcastNotification(
         "workspace.changed",
         structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+        duringStop,
       )
       return
     }
-    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch)
+    for (const batch of validated.batches) this.#broadcastNotification("workspace.delta", batch, duringStop)
   }
 
   async #flushAgentState(broadcast = true): Promise<void> {
