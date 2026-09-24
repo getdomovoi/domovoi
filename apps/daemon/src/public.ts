@@ -21,9 +21,11 @@ export {
 export {
   DaemonServiceRuntimeMissingError,
   installDaemonService,
+  readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
   type DaemonServiceDependencies,
+  type DaemonServiceRuntimeReport,
   type DaemonServiceInstallResult,
   type DaemonServiceOptions,
   type DaemonServiceRemovalResult,
