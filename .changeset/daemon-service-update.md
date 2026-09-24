@@ -11,4 +11,6 @@ A WSL guest service records its intent, retires its old task, saves the new gues
 the profile held, and registers and starts a task for it. A start counts only once the daemon
 reports ready. If any step fails, a timeout included, the previous service is put back under its
 own time budget and must report ready too; the error says which way that went, or that nothing
-was changed.
+was changed. The saved configuration is read under the service-operation lease, a restore waits
+for any write still pending, an unreadable owner record fails the update, and the WSL update
+record is read only as a private regular file that matches the saved registration.
