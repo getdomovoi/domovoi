@@ -36,3 +36,8 @@ sends it with every Codex turn as `additionalContext`, including the first turn 
 for instruction files (a regular file of at most 128 KiB that resolves inside the worktree). Text
 over Codex's 4,000-byte limit for one context value is sent as numbered entries so Codex does not
 shorten it. The person's own `~/.codex/AGENTS.md` still loads through Codex.
+
+Codex does not escape a context value, so an `AGENTS.md` could close the `INSTRUCTIONS` tag and its
+own entry and open a forged `domovoi-sandbox` entry. Domovoi sends the `<` of any `INSTRUCTIONS` or
+`domovoi-` tag in the file, opening or closing, in any case, as `&lt;`, and never splits a `&lt;`
+across two numbered entries. The rest of the file is sent as written.

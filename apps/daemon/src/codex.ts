@@ -152,6 +152,9 @@ function utf8Parts(text: string, limit: number): string[] {
       while (end > start && (bytes[end]! & 0xc0) === 0x80) end -= 1
       const newline = bytes.lastIndexOf(0x0a, end - 1)
       if (newline >= start + limit / 2) end = newline + 1
+      // An escaped tag (&lt;) stays whole in one entry.
+      const escape = bytes.lastIndexOf(0x26, end - 1)
+      if (escape > start && escape > end - 4 && bytes.toString("latin1", escape, escape + 4) === "&lt;") end = escape
     }
     parts.push(bytes.toString("utf8", start, end))
     start = end

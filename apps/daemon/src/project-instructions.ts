@@ -63,11 +63,20 @@ async function codexInstructions(root: string): Promise<string | undefined> {
     if (!file) return undefined
     const text = utf8Prefix(file.text, codexInstructionBudgetBytes)
     if (!text.trim()) return undefined
-    return `# AGENTS.md instructions for ${root}\n\n<INSTRUCTIONS>\n${text}\n</INSTRUCTIONS>`
+    return `# AGENTS.md instructions for ${root}\n\n<INSTRUCTIONS>\n${escapeWrapperTags(text)}\n</INSTRUCTIONS>`
   }
   return undefined
 }
 
+// Codex wraps each additionalContext entry in a tag named by its key, beside
+// Domovoi's own domovoi-sandbox entry, and does not escape the value. A file
+// could close INSTRUCTIONS and its entry and open a forged Domovoi entry, so
+// the < of any INSTRUCTIONS or domovoi- tag in it is sent as &lt;.
+const wrapperTag = /<(?=\s*\/?\s*(?:instructions|domovoi-))/gi
+
+function escapeWrapperTags(text: string): string {
+  return text.replace(wrapperTag, "&lt;")
+}
 
 async function isFile(path: string): Promise<boolean> {
   try {
