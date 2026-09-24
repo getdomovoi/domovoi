@@ -29,6 +29,22 @@ export const unrestrictedApprovalScope: ApprovalScope = {
   network: "Not restricted: this provider runs commands with this machine's network access.",
 }
 
+// Codex's reach in each of its sandboxes; codexApprovalScope picks one.
+export const codexSandboxReach = {
+  read: "Reads anything this user account can read except credential stores and secret files, and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
+  write: "Writes only in the session worktree and reads anything this user account can read except credential stores and secret files while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
+} as const
+
+// Every reach line a provider puts on a card. None names a path, so a sealed
+// card keeps one as it is; any other line that is not a file line is hidden
+// whole. A provider that adds a reach line adds it here, or its sealed cards
+// show the hidden form.
+const providerReachLines: ReadonlySet<string> = new Set([
+  unrestrictedApprovalScope.command,
+  codexSandboxReach.read,
+  codexSandboxReach.write,
+])
+
 // The card is persisted and sent to phones, and the path is the agent's text.
 // It is redacted like the command, shown with its control characters escaped so
 // it cannot add a line to the card, and shortened in the middle past this many
@@ -208,16 +224,25 @@ export function approvalFacts(input: {
 }): { affects: string; network: string; redacted: boolean; sensitive: boolean } {
   const scope = input.scope ?? unrestrictedApprovalScope
   if (input.path === undefined) return { affects: scope.command, network: scope.network, redacted: false, sensitive: false }
-  // A credential file is a hard gate whether the agent named it or any link
-  // on the way to the file, or the file it ends at, names one.
-  const sensitive = namesSecretPath(input.path)
+  const sensitive = fileNamesSecret({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved })
+  const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
+  return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
+}
+
+// A credential file is a hard gate whether the agent named it or any link on
+// the way to the file, or the file it ends at, names one.
+function fileNamesSecret(input: {
+  path: string
+  workspace: string
+  cwd: string | undefined
+  resolved: ResolvedApprovalPath | undefined
+}): boolean {
+  return namesSecretPath(input.path)
     || namesSecretPath(resolve(input.workspace, input.cwd ?? ".", input.path))
     || (input.resolved !== undefined
       && (namesSecretPath(input.resolved.target)
         || input.resolved.hops.some(namesSecretPath)
         || realPathNamesSecret(input.resolved.canonical, namesSecretPath)))
-  const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
-  return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }
 
 // The directory a request runs in as the agent wrote it, before anything is
@@ -295,6 +320,51 @@ function savedInWorktree(affects: string): boolean {
   return affects.includes(" in the session worktree") && !affects.includes("outside the session worktree")
 }
 
+// The paths a saved file line names, in the three forms affectedFile writes:
+// the file in the worktree, relative to it; a file outside it; and a file
+// outside it reached through a link in it. "hidden" when the line already
+// hides its path. Undefined when the line cannot be read back as paths: not
+// one of those forms, or a path shortened or with a character escaped, which
+// no longer names the file on disk. A Windows path whose separator is
+// followed by n, r, t or u reads as escaped too, and so is sealed.
+const shortenedOrEscaped = /…|\\(?:[nrt]|u[0-9a-f]{4})/u
+
+function savedFilePaths(affects: string): string[] | "hidden" | undefined {
+  const link = /^The file (.+), outside the session worktree, through a link at (.+)\.$/su.exec(affects)
+  const outside = /^The file (.+), outside the session worktree\.$/su.exec(affects)
+  const inside = /^The file (.+) in the session worktree\.$/su.exec(affects)
+  const paths = link ? [link[2]!, link[1]!] : outside ? [outside[1]!] : inside ? [inside[1]!] : undefined
+  if (paths === undefined) return undefined
+  if (paths.some((path) => path.includes("[REDACTED]"))) return "hidden"
+  return paths.some((path) => shortenedOrEscaped.test(path)) ? undefined : paths
+}
+
+// A file line read back from disk, judged as a new card's is: each path it
+// names is followed on disk now, under the request's deadline, and a link on
+// the way or the file it ends at that names a credential store hides the
+// line and makes the card a hard gate. A lookup that fails reads as a
+// credential path. A line that names a file it cannot read back as a path
+// throws, so the card is sealed. A line that names no file, such as a
+// provider's reach, is judged by its words.
+export async function savedApprovalAffects(
+  affects: string,
+  workspace: string,
+  deadline: OperationDeadline,
+): Promise<{ text: string; sensitive: boolean }> {
+  if (affects === hiddenAffectsLine) return { text: affects, sensitive: true }
+  const line = approvalAffects(affects)
+  if (line.sensitive || !affects.startsWith("The file ")) return line
+  const paths = savedFilePaths(affects)
+  if (paths === undefined) throw new Error("A saved file line does not name a file Domovoi can check")
+  const hidden = { text: hiddenFile(savedInWorktree(affects)), sensitive: true }
+  if (paths === "hidden") return hidden
+  for (const path of paths) {
+    const resolved = await resolveApprovalPath(workspace, path, undefined, deadline)
+    if (fileNamesSecret({ path, workspace, cwd: undefined, resolved })) return hidden
+  }
+  return line
+}
+
 export function hiddenFile(inside: boolean): string {
   return inside ? "The file [REDACTED] in the session worktree." : "The file [REDACTED], outside the session worktree."
 }
@@ -303,8 +373,12 @@ export function hiddenDirectory(inside: boolean): string {
   return inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree"
 }
 
-// A saved file line with its path hidden, when the path could not be judged;
-// a line that names no file, such as a provider's reach, stays.
+// A saved file line with its path hidden, when the path could not be judged.
+// A provider's reach line names no path and stays; any other line, whatever
+// its format, cannot be shown to be clean and is hidden whole.
+const hiddenAffectsLine = "[REDACTED]"
+
 export function hiddenAffects(affects: string): string {
-  return affects.startsWith("The file ") ? hiddenFile(savedInWorktree(affects)) : affects
+  if (affects.startsWith("The file ")) return hiddenFile(savedInWorktree(affects))
+  return providerReachLines.has(affects) ? affects : hiddenAffectsLine
 }

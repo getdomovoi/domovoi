@@ -304,4 +304,59 @@ describe("approval settlement", () => {
       context: "Domovoi sealed an approval that did not pass its path checks",
     }))
   })
+
+  // A saved card names its file only in its file line. That file is judged on
+  // disk at load and again at Allow.
+  function savedFileCard(directory: string, providerRequestId: number): Approval {
+    return {
+      ...savedCard(directory, providerRequestId),
+      operation: "Edit a file",
+      command: "Command details unavailable",
+      affects: "The file notes.txt in the session worktree.",
+    }
+  }
+
+  it("settles a saved card at the real path of its file when the daemon starts", async () => {
+    const { card, store } = await setup(async (root) => {
+      await mkdir(join(root, ".aws"))
+      await writeFile(join(root, ".aws", "credentials"), "")
+      await rm(join(root, "notes.txt"))
+      await symlink(join(root, ".aws", "credentials"), join(root, "notes.txt"))
+    }, undefined, { saved: (root) => [savedFileCard(root, 71)] })
+    expect(await card(71)).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
+    expect(store.load().approvals.find((approval) => approval.providerRequestId === 71))
+      .toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
+  })
+
+  it("refuses the Allow of a saved card whose file became a link into a store", async () => {
+    const { directory, socket, card, agent } = await setup(undefined, undefined, { saved: (root) => [savedFileCard(root, 72)] })
+    const loaded = await card(72)
+    expect(loaded).toMatchObject({ risk: "normal", affects: "The file notes.txt in the session worktree." })
+    await mkdir(join(directory, ".aws"))
+    await writeFile(join(directory, ".aws", "credentials"), "")
+    await rm(join(directory, "notes.txt"))
+    await symlink(join(directory, ".aws", "credentials"), join(directory, "notes.txt"))
+    await expect(rpc(socket, "approval.resolve", { approvalId: loaded!.id, decision: "allow-once", client: "cli" }))
+      .resolves.toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+    expect(await card(72)).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
+    expect(agent.resolveApproval).not.toHaveBeenCalled()
+  })
+
+  it("sends no path from a changed file line in another format", async () => {
+    const { directory, snapshot, emit, card, notices } = await setup(undefined, undefined, {
+      live: true,
+      saved: (root) => [savedCard(root, 73)],
+    })
+    expect(await card(73)).toMatchObject({ risk: "normal" })
+    const live = snapshot.approvals.find((approval) => approval.providerRequestId === 73)!
+    live.affects = `Reads ${join(directory, ".aws", "credentials")} when it runs.`
+    const sent = notices.length
+    emit({ requestId: 74, command: "ls" })
+    await waitForDaemon(async () => expect(await card(74)).toBeDefined())
+    expect(notices.length).toBeGreaterThan(sent)
+    expect(notices.slice(sent).join("\n")).not.toContain(".aws")
+    const sealed = await card(73)
+    expect(sealed).toMatchObject({ risk: "hard-gate" })
+    expect(sealed!.affects).not.toContain(".aws")
+  })
 })

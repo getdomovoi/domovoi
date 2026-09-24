@@ -3,7 +3,6 @@ import { dirname, join, resolve } from "node:path"
 import type { ExecutionResolution, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
-  approvalAffects,
   approvalDirectory,
   approvalFacts,
   approvalOperands,
@@ -15,6 +14,7 @@ import {
   requestDirectory,
   requestOperands,
   resolveApprovalPath,
+  savedApprovalAffects,
   scriptOperands,
   unrestrictedApprovalScope,
   type ApprovalScope,
@@ -193,8 +193,10 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
       resolved: await resolveApprovalPath(request.workspace, request.path, request.cwd, deadline),
     })
   } else if (saved !== undefined) {
+    // The saved line is all that is left of the request's file, so the file it
+    // names is judged on disk now, as a new card's is.
     const affects = redactDurableText(saved.affects)
-    const line = approvalAffects(affects.value)
+    const line = await savedApprovalAffects(affects.value, request.workspace, deadline)
     const network = redactDurableText(saved.network)
     facts = { affects: line.text, network: network.value, redacted: affects.redacted || network.redacted, sensitive: line.sensitive }
   } else {

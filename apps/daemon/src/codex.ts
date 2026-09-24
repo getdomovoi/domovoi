@@ -5,6 +5,7 @@ import type { Readable } from "node:stream"
 import { buildVersion, type ApprovalDecision, type ProviderModel, type ProviderUsageLimits, type Runtime } from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent, AgentWorkingPlanStep, ApprovalScope } from "./agents.js"
+import { codexSandboxReach } from "./approval-facts.js"
 import { credentialStores } from "./credential-stores.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
@@ -244,9 +245,7 @@ export class StdioCodexTransport implements CodexTransport {
 export function codexApprovalScope(runtime: Runtime): ApprovalScope {
   const profile = codexPolicyFor(runtime).permissions
   return {
-    command: profile === "domovoi-read"
-      ? "Reads anything this user account can read except credential stores and secret files, and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
-      : "Writes only in the session worktree and reads anything this user account can read except credential stores and secret files while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
+    command: profile === "domovoi-read" ? codexSandboxReach.read : codexSandboxReach.write,
     network: "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access.",
   }
 }
