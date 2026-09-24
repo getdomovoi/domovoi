@@ -12,7 +12,9 @@ running outside it means; a request about a file names the file and says whether
 session worktree.
 
 Codex's line follows the session's mode: in Ask and Plan the sandbox reads anything the user
-account can and writes nothing; in Build it writes only in the session worktree. A file path on the
+account can except credential stores and secret files, and writes nothing; in Build it writes only
+in the session worktree. A file path on the
 card is redacted like the command, and a secret in it makes the gate a hard gate. Its control
 characters show as escapes, and a long path is shortened in the middle. Inside or outside the
-worktree is decided on the real path, so a link out of the worktree names where it leads.
+worktree is decided on the real path, so a link out of the worktree names where it leads. A path that names a credential file (such as `.env`, `.npmrc`, `id_rsa` or a `.pem`), directly or
+through a link, is shown as "[REDACTED]" with its location kept, and makes the gate a hard gate.

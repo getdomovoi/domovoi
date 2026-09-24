@@ -34,7 +34,7 @@ function escaped(character: string): string {
   return `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`
 }
 
-function shown(path: string): { text: string; redacted: boolean } {
+function shownPath(path: string): { text: string; redacted: boolean } {
   const copy = redactDurableText(path)
   const text = copy.value.replace(unsafeCharacter, escaped)
   if (text.length <= maximumApprovalPathLength) return { text, redacted: copy.redacted }
@@ -76,7 +76,17 @@ export async function resolveApprovalPath(workspace: string, path: string): Prom
   return { target: real, workspace: realWorkspace }
 }
 
-function affectedFile(input: { path: string; workspace: string; resolved: ResolvedApprovalPath | undefined }): { text: string; redacted: boolean } {
+// A path that names a credential file is hidden whole on the card; the line
+// keeps only where the file is.
+const hiddenPath = { text: "[REDACTED]", redacted: false }
+
+function affectedFile(input: {
+  path: string
+  workspace: string
+  resolved: ResolvedApprovalPath | undefined
+  hide: boolean
+}): { text: string; redacted: boolean } {
+  const shown = (path: string) => input.hide ? hiddenPath : shownPath(path)
   const target = resolve(input.workspace, input.path)
   const lexical = within(resolve(input.workspace), target)
   const real = input.resolved ? within(input.resolved.workspace, input.resolved.target) : lexical
@@ -104,11 +114,11 @@ export function approvalFacts(input: {
 }): { affects: string; network: string; redacted: boolean; sensitive: boolean } {
   const scope = input.scope ?? unrestrictedApprovalScope
   if (input.path === undefined) return { affects: scope.command, network: scope.network, redacted: false, sensitive: false }
-  const file = affectedFile({ path: input.path, workspace: input.workspace, resolved: input.resolved })
   // A credential file is a hard gate whether the agent named it or a link
   // with an ordinary name leads to it.
   const sensitive = namesSecretFile(input.path)
     || namesSecretFile(resolve(input.workspace, input.path))
     || (input.resolved !== undefined && namesSecretFile(input.resolved.target))
+  const file = affectedFile({ path: input.path, workspace: input.workspace, resolved: input.resolved, hide: sensitive })
   return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }

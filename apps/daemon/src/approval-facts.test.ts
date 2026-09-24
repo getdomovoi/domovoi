@@ -40,8 +40,8 @@ describe("approvalFacts", () => {
   // Codex's sandbox reads the whole disk in every mode; only Build writes, and
   // only in the worktree. The card says which sandbox this mode runs in.
   it("states the Codex sandbox the session's mode runs in, word for word", () => {
-    const readOnly = "Reads anything this user account can read and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
-    const build = "Writes only in the session worktree and reads anything this user account can read while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
+    const readOnly = "Reads anything this user account can read except credential stores and secret files, and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
+    const build = "Writes only in the session worktree and reads anything this user account can read except credential stores and secret files while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
     const network = "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access."
     expect(codexApprovalScope(runtime("ask"))).toEqual({ command: readOnly, network })
     expect(codexApprovalScope(runtime("plan"))).toEqual({ command: readOnly, network })
@@ -82,6 +82,14 @@ describe("approvalFacts", () => {
     },
   )
 
+  // The whole path is hidden, and the line keeps where the file is.
+  it("hides a sensitive path whole and keeps its location", () => {
+    expect(approvalFacts({ workspace, path: "config/.env.production", scope: undefined }).affects)
+      .toBe("The file [REDACTED] in the session worktree.")
+    expect(approvalFacts({ workspace, path: "/home/u/.ssh/id_rsa", scope: undefined }).affects)
+      .toBe("The file [REDACTED], outside the session worktree.")
+  })
+
   it("does not mark an ordinary file as sensitive", () => {
     expect(approvalFacts({ workspace, path: "src/environment.ts", scope: undefined }).sensitive).toBe(false)
     expect(approvalFacts({ workspace, scope: undefined }).sensitive).toBe(false)
@@ -96,8 +104,10 @@ describe("approvalFacts", () => {
     await writeFile(join(root, "keys", "id_rsa"), "")
     await symlink(join(root, "keys", "id_rsa"), join(tree, "notes.txt"))
     const path = join(tree, "notes.txt")
-    expect(approvalFacts({ workspace: tree, path, scope: undefined, resolved: await resolveApprovalPath(tree, path) }).sensitive)
-      .toBe(true)
+    const facts = approvalFacts({ workspace: tree, path, scope: undefined, resolved: await resolveApprovalPath(tree, path) })
+    expect(facts.sensitive).toBe(true)
+    expect(facts.affects).toBe("The file [REDACTED], outside the session worktree, through a link at [REDACTED].")
+    expect(facts.affects).not.toContain("notes.txt")
   })
 
   // A write can name directories that do not exist yet. Where it lands is

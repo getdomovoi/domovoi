@@ -1085,7 +1085,7 @@ describe("DomovoiDaemon", () => {
     })
     const envApproval = (await rpc("workspace.get", {})).result.approvals
       .find((candidate) => candidate.providerRequestId === 93)
-    expect(envApproval).toMatchObject({ risk: "hard-gate" })
+    expect(envApproval).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED] in the session worktree." })
 
     listener!({
       type: "command-output",

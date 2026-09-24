@@ -271,8 +271,8 @@ export function codexApprovalScope(runtime: Runtime): ApprovalScope {
   const profile = codexPolicyFor(runtime).permissions
   return {
     command: profile === "domovoi-read"
-      ? "Reads anything this user account can read and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
-      : "Writes only in the session worktree and reads anything this user account can read while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
+      ? "Reads anything this user account can read except credential stores and secret files, and writes nothing while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can."
+      : "Writes only in the session worktree and reads anything this user account can read except credential stores and secret files while the command runs in the Codex sandbox. A request to run outside the sandbox can reach anything this user account can.",
     network: "None inside the Codex sandbox. A request to run outside the sandbox has this machine's network access.",
   }
 }
