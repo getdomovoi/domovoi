@@ -1,0 +1,75 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/Domovoi CLI Transcripts.dc.html",
+  "sha256": "13bec69b54f560d9c59a765b56f285a63b4dd3a33ccaf3c465de785865dfeaae",
+  "derivedOn": "2026-09-23",
+  "sources": [
+    "apps/cli/src/**/*.ts",
+    "packages/protocol/src/**/*.ts"
+  ],
+  "note": "J44: transcripts for starting, steering, watching and answering a session from the domovoi command, with an exit code table. The transcripts themselves, the exit codes and the new-strings list live in the design's data; the owner questions are annotations.",
+  "sample": [],
+  "annotations": [
+    "CLI · SESSION COMMANDS",
+    "Starting, steering, watching and answering a session",
+    "Transcripts for the four session commands. Each block is drawn at a fixed column width. The dashed line marks the last column, and each header reports the longest line so the test is visible. Amber appears only while a gate is waiting on a person.",
+    "4",
+    "5",
+    "New literal strings",
+    "Every string these transcripts introduce, grouped by the command that prints it. Angle brackets are values filled in at runtime.",
+    "6",
+    "Open questions for the owner",
+    "Desktop V2 labels its step 3 gate \"Hard gate\" yet offers \"Always for prisma migrate here\". Under the rule in this brief, a hard gate never offers it. I drew prisma migrate as an ordinary gate and used a delete outside the project as the hard gate. Which classification is right, and which surface changes?",
+    "Can a person choose Always here outside watch? The approve command has no way to say it. I left it interactive only rather than invent a flag.",
+    "A script calling approve on a hard gate is refused with 33, so a script can never be the person. Deny works from anywhere. Is a terminal attached to stdin enough proof of a person, or does a hard gate need a device credential with a decide scope as well?",
+    "When does send land: when the current tool call returns (drawn), or at the next turn boundary like a model change?",
+    "Does watch exit when the turn ends (drawn), or keep following later turns?",
+    "Reconnect attempts and backoff are not specified anywhere. I drew five attempts, doubling from 2s. The daemon side is also open: how long does it keep a result for a client that has not come back?",
+    "The receipt line \"checkpoint ckpt_7f24 taken before it ran\" depends on the per-approval checkpoint, which Desktop V2 marks as proposed. Drop the line until it ships?",
+    "Both layouts use · − … and B uses box drawing characters. What does the CLI print when the locale is not UTF-8, and is NO_COLOR honoured? Layout A survives both because every state is also a word.",
+    "The policy refusal says only an org owner can change the rule. Should it also name where, and does a solo account have an owner?",
+    "The exit code numbers are proposed. Which are frozen for 1.0, and is 130 right for Ctrl-C when the session keeps running?"
+  ],
+  "elements": [
+    {
+      "id": "cli.session-commands",
+      "name": "Session commands",
+      "where": "the four synopses heading the transcripts",
+      "copy": [
+        "domovoi session new \"<goal>\" [--provider --model --mode]",
+        "domovoi send <session> \"<message>\"",
+        "domovoi watch <session> [--no-prompt]",
+        "domovoi approve|deny <approval-id>"
+      ],
+      "evidence": [
+        "session new",
+        "--no-prompt",
+        "approve|deny"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J44; the CLI has pair, status, doctor, logs and skill install only"
+      }
+    },
+    {
+      "id": "cli.exit-codes",
+      "name": "Exit codes",
+      "where": "the table: CODE, NAME, WHEN, RETURNED BY",
+      "copy": [
+        "Exit codes",
+        "Stable across releases, so scripts can branch on them. Unconfirmed and failed never share a code. Nothing below 10 is about the session; 10 and up are what happened to it.",
+        "CODE",
+        "NAME",
+        "WHEN",
+        "RETURNED BY"
+      ],
+      "evidence": [
+        "Unconfirmed and failed never share a code"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J44; the numbers are marked proposed in the design's own open questions"
+      }
+    }
+  ],
+  "humanRead": []
+}
