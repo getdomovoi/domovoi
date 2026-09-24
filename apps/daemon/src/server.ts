@@ -241,11 +241,11 @@ import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-ou
 import { TerminalReplayBuffer } from "./terminal-replay.js"
 import { pairingAddressFor } from "./pairing-address.js"
 import {
-  RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
   type RpcOutboundSocket,
 } from "./rpc-outbound.js"
-import { notificationMessage } from "./notification-message.js"
+import { RpcWriter } from "./rpc-writer.js"
+import { notificationMessage, type NotificationFrame } from "./notification-message.js"
 import type { NotificationMethod, NotificationParams } from "@getdomovoi/protocol"
 import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact } from "./print-artifact.js"
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
@@ -1425,7 +1425,7 @@ export class DomovoiDaemon {
   #artifactWatcherFactory: SessionArtifactWatcherFactory
   #artifactWatchers = new Map<string, { root: string; watcher: ReturnType<SessionArtifactWatcherFactory> }>()
   #annotationVisualContext: AnnotationVisualContextStore
-  #rpcOutbound: RpcOutboundBackpressure
+  #rpcOutbound: RpcWriter
   #sessionHistory = new SessionHistoryIndex()
   #ownershipChecks = new Set<string>()
 
@@ -1519,7 +1519,7 @@ export class DomovoiDaemon {
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
     )
-    this.#rpcOutbound = new RpcOutboundBackpressure(options.rpcOutboundBackpressure)
+    this.#rpcOutbound = new RpcWriter(options.rpcOutboundBackpressure)
     const machinePlatform = platform()
     const machineArch = arch()
     const machineName = options.machineIdentity?.label ?? hostname()
@@ -2069,7 +2069,7 @@ export class DomovoiDaemon {
   }
 
   #sendWithoutAudit(socket: RpcOutboundSocket, payload: unknown): void {
-    this.#rpcOutbound.send(socket, JSON.stringify(payload))
+    this.#rpcOutbound.respond(socket, payload)
   }
 
   #appendAudit(input: AuditAppendInput): void {
@@ -2256,7 +2256,7 @@ export class DomovoiDaemon {
     )
   }
 
-  #notificationMessage<M extends NotificationMethod>(method: M, params: NotificationParams<M>): string | undefined {
+  #notificationMessage<M extends NotificationMethod>(method: M, params: NotificationParams<M>): NotificationFrame | undefined {
     try {
       return notificationMessage(method, params)
     } catch (error) {
@@ -2270,8 +2270,8 @@ export class DomovoiDaemon {
     method: M,
     params: NotificationParams<M>,
   ): void {
-    const message = this.#notificationMessage(method, params)
-    if (message === undefined) return
+    const frame = this.#notificationMessage(method, params)
+    if (frame === undefined) return
 
     for (const client of clients) {
       if (
@@ -2282,8 +2282,7 @@ export class DomovoiDaemon {
       ) {
         this.#rpcOutbound.notify(
           client,
-          method,
-          message,
+          frame,
           () => {
             this.#flushPendingWorkspaceDeltas()
             return this.#notificationMessage("workspace.changed", workspaceSnapshotForClient(this.#snapshot))

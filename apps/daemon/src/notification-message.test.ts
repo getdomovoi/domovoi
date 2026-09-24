@@ -5,12 +5,12 @@ import { notificationMessage } from "./notification-message.js"
 
 describe("notificationMessage", () => {
   it("sends a payload its protocol schema describes", () => {
-    expect(JSON.parse(notificationMessage("workspace.changed", demoWorkspace))).toEqual({
+    expect(JSON.parse(notificationMessage("workspace.changed", demoWorkspace).text)).toEqual({
       jsonrpc: "2.0",
       method: "workspace.changed",
       params: demoWorkspace,
     })
-    expect(JSON.parse(notificationMessage("terminal.output", { terminalId: "terminal-1", data: "ls\n" })).params)
+    expect(JSON.parse(notificationMessage("terminal.output", { terminalId: "terminal-1", data: "ls\n" }).text).params)
       .toEqual({ terminalId: "terminal-1", data: "ls\n" })
   })
 
@@ -25,6 +25,19 @@ describe("notificationMessage", () => {
     } as never)).toThrow(/machine\.extra/)
     expect(() => notificationMessage("terminal.output", { terminalId: "terminal-1", data: "ls\n", extra: 1 } as never))
       .toThrow(/terminal\.output .*extra/)
+  })
+
+  // Names every object inherits must not pass as declared fields.
+  it.each(["toString", "constructor", "__proto__"])("refuses an undeclared own field named %s, top level and nested", (name) => {
+    const withField = (value: object) => Object.defineProperty({ ...value }, name, {
+      value: "probe", enumerable: true, configurable: true, writable: true,
+    })
+    expect(() => notificationMessage("workspace.changed", withField(demoWorkspace) as never))
+      .toThrow(new RegExp(`workspace\\.changed .*${name}`))
+    expect(() => notificationMessage("workspace.changed", { ...demoWorkspace, machine: withField(demoWorkspace.machine) } as never))
+      .toThrow(new RegExp(`machine\\.${name}`))
+    expect(() => notificationMessage("terminal.output", withField({ terminalId: "terminal-1", data: "ls\n" }) as never))
+      .toThrow(new RegExp(`terminal\\.output .*${name}`))
   })
 
   it("refuses a payload its schema refuses", () => {

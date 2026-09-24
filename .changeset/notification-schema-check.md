@@ -7,4 +7,6 @@ The protocol package exports `notificationMethods`, the schema of the params of 
 the daemon sends, with the `NotificationMethod` and `NotificationParams` types. The daemon now sends
 a notification only if its payload parses against that schema and carries no field the schema does
 not describe. A refused notification is reported and not sent. A workspace resync that cannot be
-built closes the slow client, which reconnects, instead of sending an unchecked snapshot.
+built closes the slow client, which reconnects, instead of sending an unchecked snapshot. The
+daemon's RPC writer sends a response only if it has an id and no method, and a notification only
+as a frame built from `notificationMethods`.
