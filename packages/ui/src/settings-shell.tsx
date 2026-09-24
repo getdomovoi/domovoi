@@ -42,14 +42,15 @@ export type AboutBuild = {
 
 function AboutBuildSection({ about }: { about: AboutBuild }) {
   const [commit, setCommit] = useState<string | undefined>(undefined)
+  const { onUpdateStatus } = about
   useEffect(() => {
     let active = true
-    about.onUpdateStatus().then(
+    onUpdateStatus().then(
       (status) => { if (active) setCommit(status.currentSourceCommit?.slice(0, 7)) },
       () => { if (active) setCommit(undefined) },
     )
     return () => { active = false }
-  }, [about])
+  }, [onUpdateStatus])
   return (
     <section aria-labelledby="settings-about" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-wrap items-center gap-3">

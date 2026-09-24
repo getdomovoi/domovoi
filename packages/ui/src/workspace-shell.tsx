@@ -244,6 +244,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, updateStatus, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
+  const homeVersion = home.snapshot?.machine.version
+  const openReleasePage = windowBridge?.openReleasePage
+  const about = useMemo(() => attached || homeVersion === undefined ? undefined : {
+    version: homeVersion,
+    onUpdateStatus: updateStatus,
+    ...(openReleasePage ? { onOpenReleasePage: openReleasePage } : {}),
+  }, [attached, homeVersion, updateStatus, openReleasePage])
   const {
     activateSession,
     archiveSession,
@@ -1279,11 +1286,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             secrets={providerSecrets}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon } : {})}
-            about={{
-              version: snapshot.machine.version,
-              onUpdateStatus: updateStatus,
-              ...(windowBridge?.openReleasePage ? { onOpenReleasePage: windowBridge.openReleasePage } : {}),
-            }}
+            about={about}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
             onNotificationsChange={(next: NotificationPreferences) => {
