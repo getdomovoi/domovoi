@@ -1207,6 +1207,9 @@ export type DaemonErrorSink = (entry: DaemonErrorEntry) => void
 // budget, 1,048,576 characters, the same figure as the WebSocket high-water
 // mark in the terminal throughput budget.
 const closedTerminalRetentionCharacters = 16 * maximumTerminalReplayCharacters
+// The same sixteen as a count, so records that hold little or nothing cannot
+// pile up under the character budget.
+const maximumClosedTerminalRecords = closedTerminalRetentionCharacters / maximumTerminalReplayCharacters
 
 type ClosedTerminal = {
   summary: Omit<TerminalSummary, "state" | "claimHeld" | "closedAt" | "exitCode" | "signal">
@@ -2208,9 +2211,10 @@ export class DomovoiDaemon {
 
   // A connection joins at a boundary: output still waiting in the batch goes
   // to the audience it was printed for before the newcomer is added, so what
-  // it reads next from the record and what reaches it live never overlap.
+  // it reads next from the record and what reaches it live never overlap. A
+  // connection already watching gets the same boundary, since the record it
+  // is about to read holds that waiting output too.
   #joinTerminalAudience(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): void {
-    if (terminal.audience.has(socket)) return
     terminal.output.flush(terminalId)
     terminal.audience.add(socket)
   }
@@ -2218,14 +2222,17 @@ export class DomovoiDaemon {
   // Called once the terminal has left #terminals and its last output has been
   // pushed to the replay, so the record is the whole of what was kept. Closed
   // records share one budget, ruled 2026-09-23: the oldest go first until the
-  // new one fits.
+  // new one fits, in characters and in count.
   #retainClosedTerminal(terminalId: string, terminal: ActiveTerminal, end: { exitCode?: number | undefined, signal?: number | undefined }): void {
     this.#dropClosedTerminal(terminalId)
     const record = terminal.replay.record()
     let retained = 0
     for (const closed of this.#closedTerminals.values()) retained += closed.record.text.length
     for (const [oldestId, oldest] of this.#closedTerminals) {
-      if (retained + record.text.length <= this.#terminalClosedRetentionCharacters) break
+      if (
+        retained + record.text.length <= this.#terminalClosedRetentionCharacters
+        && this.#closedTerminals.size < maximumClosedTerminalRecords
+      ) break
       retained -= oldest.record.text.length
       this.#dropClosedTerminal(oldestId)
     }

@@ -266,7 +266,43 @@ describe("the boundary between a watch's record and its live output", () => {
   })
 })
 
+describe("a repeated watch", () => {
+  it("hands output still waiting in the batch to a watcher once, even when it was already watching", async () => {
+    const { session, print, owner, pair } = await start()
+    const create = { terminalId: "terminal-rewatch", sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "desktop-owner" }
+    expect(await owner.call("terminal.create", create)).not.toHaveProperty("error")
+    const phone = await pair("phone", "full")
+    expect(await phone.call("terminal.watch", { terminalId: "terminal-rewatch" })).not.toHaveProperty("error")
+    for (let round = 0; round < 5; round += 1) {
+      // Printed and still waiting in the output batch when the second watch arrives.
+      print(`pending-${round}\r\n`)
+      const watched = await phone.call("terminal.watch", { terminalId: "terminal-rewatch" })
+      const liveBeforeReply = outputs(phone).length
+      print(`after-${round}\r\n`)
+      await waitForDaemon(() => expect(outputs(phone).join("")).toContain(`after-${round}`))
+      const seen = `${(watched.result as { buffer: string }).buffer}${outputs(phone).slice(liveBeforeReply).join("")}`
+      expect(seen.split(`pending-${round}\r\n`).length - 1, `round ${round}`).toBe(1)
+      expect(seen.split(`after-${round}\r\n`).length - 1, `round ${round}`).toBe(1)
+    }
+  })
+})
+
 describe("closed records within one budget", () => {
+  it("keeps at most sixteen closed records, however little each holds, oldest going first", async () => {
+    const { session, exit, owner, pair } = await start()
+    const phone = await pair("phone", "full")
+    for (let index = 0; index < 20; index += 1) {
+      const create = { terminalId: `terminal-${index}`, sessionId: session.id, cols: 80, rows: 24, client: "desktop", clientId: "desktop-owner" }
+      expect(await owner.call("terminal.create", create)).not.toHaveProperty("error")
+      exit({ exitCode: 0 })
+      await waitForDaemon(() => expect(terminalMethods(owner).filter((method) => method === "terminal.closed")).toHaveLength(index + 1))
+    }
+    const listed = await phone.call("terminal.list", { sessionId: session.id })
+    const kept = (listed.result as { terminals: { terminalId: string }[] }).terminals.map(({ terminalId }) => terminalId)
+    expect(kept.sort()).toEqual(Array.from({ length: 16 }, (_, index) => `terminal-${index + 4}`).sort())
+    expect(await phone.call("terminal.watch", { terminalId: "terminal-3" })).toMatchObject({ error: { message: "Terminal does not exist" } })
+  })
+
   it("evicts the oldest closed records first until the new one fits", async () => {
     const { session, print, exit, owner, pair } = await start({ terminalClosedRetentionCharacters: 20 })
     const phone = await pair("phone", "full")
