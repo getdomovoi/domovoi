@@ -195,8 +195,10 @@ describe("WSL service installation", () => {
 
     // Review of ae039f1e (S1): a finished update whose record could not be
     // removed is not an interrupted one. Status clears it and reports as usual.
+    // Security review round 1 (F6): a finished update marks its leftover
+    // record as completed once the new service has reported ready.
     it("clears a finished update's leftover record from status", async () => {
-      const intent = JSON.stringify({ version: 1, previous: serializeServiceConfiguration({ ...configuration, wsl: { ...wsl, executable: "/usr/bin/node-old" } }), next: serializeServiceConfiguration(configuration) })
+      const intent = JSON.stringify({ version: 1, previous: serializeServiceConfiguration({ ...configuration, wsl: { ...wsl, executable: "/usr/bin/node-old" } }), next: serializeServiceConfiguration(configuration), completed: "next" })
       const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => parseServiceConfiguration(serializeServiceConfiguration(configuration)),
         read: vi.fn(async () => intent),
         exists: vi.fn(async (path: string) => path === intentPath),
@@ -205,6 +207,19 @@ describe("WSL service installation", () => {
       expect(await runServiceCommand(["service", "status"], deps)).toBe(0)
       expect(deps.stdout).toHaveBeenCalledWith("installed; guest daemon running\n")
       expect(deps.remove).toHaveBeenCalledWith(intentPath, expect.anything())
+    })
+
+    // Security review round 1 (F6): service.json already naming the record's
+    // next configuration does not finish an update; the new task may never
+    // have reported ready.
+    it("reports an unmarked record as interrupted even when service.json names its next configuration", async () => {
+      const intent = JSON.stringify({ version: 1, previous: serializeServiceConfiguration({ ...configuration, wsl: { ...wsl, executable: "/usr/bin/node-old" } }), next: serializeServiceConfiguration(configuration) })
+      const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => parseServiceConfiguration(serializeServiceConfiguration(configuration)),
+        read: vi.fn(async () => intent),
+        exists: vi.fn(async (path: string) => path === intentPath) }
+      expect(await runServiceCommand(["service", "status"], deps)).toBe(1)
+      expect(deps.stdout).toHaveBeenCalledExactlyOnceWith("not installed; a service update was interrupted before the new Windows task was registered. Run Update the service from the app, or domovoid service remove, to settle it.\n")
+      expect(deps.remove).not.toHaveBeenCalled()
     })
 
     it("refuses install, changing nothing", async () => {

@@ -650,10 +650,13 @@ describe("review round 2 probes", () => {
     })
     expect(await updateDaemonService({ runtime }, effects)).toMatchObject({ kind: "task" })
     expect(effects.files.has(intentPath)).toBe(true)
-    expect(effects.order.at(-1)).toBe("start task")
+    // Security review round 1 (F6): the leftover is marked as finished, with
+    // the new service running, once that service has reported ready.
+    expect(effects.order.slice(-2)).toEqual(["start task", `write ${intentPath}`])
+    expect(JSON.parse(effects.files.get(intentPath)!)).toMatchObject({ completed: "next" })
 
-    // The next update: the leftover names the configuration now saved, so it
-    // is a finished update's record, cleared rather than rolled back.
+    // The next update: the leftover is marked finished with the configuration
+    // now saved, so it is cleared rather than rolled back.
     // As the service reads it.
     const now = parseServiceConfiguration(effects.files.get(configurationPath)!)
     const next = fake("linux", "/home/dl", {}, now)
@@ -828,6 +831,28 @@ describe("security review round 1", () => {
       "Domovoi could not update the service: EACCES: permission denied, open 'local-owner.json'. Nothing was changed, and the service was left as it was.",
     )
     expect(effects.order).toEqual([])
+  })
+
+  // F6: service.json equal to the record's next configuration counted as a
+  // finished update, though the new task never reported ready (the swap was
+  // interrupted after saving it). The next failed update then put back the
+  // unready runtime and lost the one that ran before.
+  it("F6: keeps the recorded previous runtime as the restore target until the new task has reported ready", async () => {
+    const previous = wslConfiguration()
+    const unready = wslConfiguration("/opt/runtime-half/node", "/opt/runtime-half/index.js")
+    // As the service reads it.
+    const effects = fake("linux", "/home/dl", {}, parseServiceConfiguration(serializeServiceConfiguration(unready)))
+    effects.files.set(intentPath, JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(unready) }))
+    const capture = effects.capture
+    let registrations = 0
+    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
+      if (script(args).includes("RegisterTaskDefinition") && ++registrations === 1) return { code: 1, stdout: "", stderr: "Access is denied" }
+      return capture(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(restored)
+    expect(parseServiceConfiguration(effects.files.get(configurationPath)!).wsl).toEqual(previous.wsl)
+    const lastRegistration = vi.mocked(effects.capture).mock.calls.filter(([, args]) => script(args).includes("RegisterTaskDefinition")).at(-1)![1]
+    expect(lastRegistration).toEqual(installedWslTask(previous.wsl!, registrationId, configurationPath).register.args)
   })
 })
 

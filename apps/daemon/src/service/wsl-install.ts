@@ -59,11 +59,20 @@ export function wslUpdateIntentPath(configurationPath: string): string {
   return `${configurationPath}.update-intent.json`
 }
 
+// `completed` is written only once the update has ended with that side's
+// service reporting ready, and only when removing the record failed.
 const wslUpdateIntentSchema = z.object({
   version: z.literal(1),
   previous: z.string().min(1),
   next: z.string().min(1),
+  completed: z.enum(["previous", "next"]).optional(),
 }).strict()
+
+type WslUpdateIntent = { previous: ServiceConfiguration; next: ServiceConfiguration; completed?: "previous" | "next" }
+
+function wslUpdateIntentText(previous: ServiceConfiguration, next: ServiceConfiguration, completed?: "previous" | "next"): string {
+  return `${JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(next), ...(completed === undefined ? {} : { completed }) })}\n`
+}
 
 // Ruled 2026-09-23: a damaged record has one fixed cause, never a parser's
 // own words.
@@ -71,21 +80,29 @@ async function readWslUpdateIntent(
   intentPath: string,
   read: (path: string, deadline: OperationDeadline) => Promise<string>,
   deadline: OperationDeadline,
-): Promise<{ previous: ServiceConfiguration; next: ServiceConfiguration }> {
+): Promise<WslUpdateIntent> {
   const text = await withinServiceDeadline(deadline, () => read(intentPath, deadline))
   try {
     const parsed: unknown = JSON.parse(text)
     const intent = wslUpdateIntentSchema.parse(parsed)
-    return { previous: parseServiceConfiguration(intent.previous), next: parseServiceConfiguration(intent.next) }
+    return {
+      previous: parseServiceConfiguration(intent.previous),
+      next: parseServiceConfiguration(intent.next),
+      ...(intent.completed === undefined ? {} : { completed: intent.completed }),
+    }
   } catch (cause) {
     throw new Error("the record of an interrupted update is unreadable", { cause })
   }
 }
 
-// A record whose next configuration is the one saved now belongs to an update
-// that finished: only removing the record failed.
-function finishedUpdate(recorded: { next: ServiceConfiguration }, saved: ServiceConfiguration | undefined): boolean {
-  return saved !== undefined && serializeServiceConfiguration(recorded.next) === serializeServiceConfiguration(saved)
+// A record marked completed, whose completed side is the configuration saved
+// now, belongs to an update that ended with that service reporting ready:
+// only removing the record failed. An unmarked record is an interrupted
+// update even when service.json already names its next configuration, since
+// the swap saves that before the new task has reported ready.
+function finishedUpdate(recorded: WslUpdateIntent, saved: ServiceConfiguration | undefined): boolean {
+  return recorded.completed !== undefined && saved !== undefined
+    && serializeServiceConfiguration(recorded[recorded.completed]) === serializeServiceConfiguration(saved)
 }
 
 // Ruled 2026-09-23: inside an update, the old task's removal failing is named
@@ -159,7 +176,7 @@ export function prepareWslUpdate(
     const stoppedInstance = currentInstance(readOwner, profile)
     const instances = new OwnerInstances(readOwner, profile)
     await instances.note(readDeadline)
-    const intent = `${JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(updated) })}\n`
+    const intent = wslUpdateIntentText(previous, updated)
 
     const confirmedIn = (deadline: OperationDeadline) => async (command: ServiceCommand) => {
       const result = await withinServiceDeadline(deadline, () => effects.capture(command.command, command.args, deadline))
@@ -174,6 +191,18 @@ export function prepareWslUpdate(
     }
     const writeIn = (deadline: OperationDeadline) => (file: string, contents: string) => withinServiceDeadline(deadline, () => effects.write(file, contents, deadline))
     const removeIntentIn = (deadline: OperationDeadline) => () => withinServiceDeadline(deadline, () => effects.remove(intentPath, deadline))
+    // Ends the update once the given side's service has reported ready. A
+    // record that cannot be removed is marked with that side instead, so the
+    // next update or status clears it rather than rolling back. If neither
+    // works, the record stays unmarked and the next update restores from its
+    // previous configuration, a service that ran before.
+    const settleIntentIn = (deadline: OperationDeadline) => async (running: "previous" | "next") => {
+      try {
+        await removeIntentIn(deadline)()
+      } catch {
+        await writeIn(deadline)(intentPath, wslUpdateIntentText(previous, updated, running)).catch(() => undefined)
+      }
+    }
 
     return {
       swap: async (deadline) => {
@@ -198,10 +227,8 @@ export function prepareWslUpdate(
           await releaseWhenSettled(lease, inFlight)
         }
         await startIn(deadline)(next)
-        // The new service is running. A record that cannot be removed now
-        // names the configuration just saved as next, and the next update or
-        // status clears it; it does not undo a working update.
-        await removeIntentIn(deadline)().catch(() => undefined)
+        // The new service has reported ready; only now is the update done.
+        await settleIntentIn(deadline)("next")
         return { name: next.name, configurationPath: path }
       },
       restore: async (deadline) => {
