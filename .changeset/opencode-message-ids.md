@@ -13,3 +13,9 @@ Each id also sorts after the last one the daemon made, when the clock steps back
 runs out of counter values, and after the newest message the session already holds: on resume the
 adapter reads the greatest id in the session's whole history, a page at a time, and it follows
 every message id the server reports.
+
+When a session already holds a message at the last order the servers' 48-bit field can hold, no
+id can sort after it, so the next prompt is refused with "OpenCode session has used the last
+message id the server can order, so it cannot take another message" (or the Kilo name) instead
+of sending an id that wraps to zero and sorts first. One such session does not stop ids for the
+others.
