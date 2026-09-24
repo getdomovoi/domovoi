@@ -464,6 +464,51 @@ describe("SqliteWorkspaceStore", () => {
     expect(JSON.stringify(raw)).not.toMatch(/legacy-command-secret|legacy-output-secret/)
   })
 
+  // Approvals saved before the directory was classified keep a raw
+  // credential-store directory. It is hidden whole on load, keeps its
+  // location, makes the approval a hard gate, and the stored copy is repaired.
+  it("hides a credential-store directory in a saved approval and repairs the stored copy", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-legacy-directory-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const approval = legacy.approvals[0]!
+    const session = legacy.sessions.find((candidate) => candidate.id === approval.sessionId)!
+    session.workspacePath = "/worktrees/legacy-directory"
+    approval.risk = "normal"
+    approval.directory = "/home/u/.aws"
+    legacy.approvals.push({ ...structuredClone(approval), id: "approval-legacy-inside", directory: "/worktrees/legacy-directory/.ssh" })
+    legacy.approvals.push({ ...structuredClone(approval), id: "approval-legacy-ordinary", directory: "/worktrees/legacy-directory/src" })
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const visible = reopened.load()
+    expect(visible.approvals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: approval.id, directory: "[REDACTED], outside the session worktree", risk: "hard-gate" }),
+      expect.objectContaining({ id: "approval-legacy-inside", directory: "[REDACTED] in the session worktree", risk: "hard-gate" }),
+      expect.objectContaining({ id: "approval-legacy-ordinary", directory: "/worktrees/legacy-directory/src", risk: "normal" }),
+    ]))
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toMatch(/\/home\/u\/\.aws|legacy-directory\/\.ssh/)
+
+    // A later save of a snapshot that still carries the raw directory writes
+    // the hidden form.
+    reopened.save(legacy)
+    expect(readStored()).not.toMatch(/\/home\/u\/\.aws|legacy-directory\/\.ssh/)
+    expect(readStored()).toContain("[REDACTED], outside the session worktree")
+    reopened.close()
+  })
+
   it("keeps audit receipts across workspace-store reopen", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)

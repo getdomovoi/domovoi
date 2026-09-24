@@ -50,4 +50,5 @@ filesystem, so a link with an ordinary name, or a name the filesystem treats as 
 a credential store makes the gate a hard gate. The lookup runs asynchronously so a slow or automounted
 path cannot stall the daemon. The directory the request runs in is persisted and sent with the card,
 so a credential store there is shown as "[REDACTED]" with its location kept, and the gate is a hard
-gate.
+gate. An approval saved before this change is classified the same way, as written, when the state
+loads and whenever it is saved, so its stored copy is repaired.

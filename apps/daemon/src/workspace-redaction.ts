@@ -1,5 +1,6 @@
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
+import { approvalDirectory } from "./approval-facts.js"
 import {
   redactDurableCommand,
   redactDurableOutput,
@@ -22,19 +23,25 @@ export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSna
   sanitized.approvals = sanitized.approvals.map((approval) => {
     const command = redactDurableCommand(approval.command)
     const operation = redactDurableText(approval.operation)
-    const directory = redactDurableText(approval.directory)
+    // A directory saved before it was classified is hidden here too, judged
+    // as written; its location is read against the session worktree.
+    const directory = approvalDirectory({
+      directory: approval.directory,
+      workspace: sanitized.sessions.find((session) => session.id === approval.sessionId)?.workspacePath
+        ?? sanitized.project?.path,
+    })
     const affects = redactDurableText(approval.affects)
     const network = redactDurableText(approval.network)
     const unsafeExecution = executionContainsSecret(approval.execution)
     return {
       ...approval,
-      risk: command.redacted || operation.redacted || directory.redacted
+      risk: command.redacted || operation.redacted || directory.redacted || directory.sensitive
         || affects.redacted || network.redacted || unsafeExecution
         ? "hard-gate"
         : approval.risk,
       command: command.value,
       operation: operation.value,
-      directory: directory.value,
+      directory: directory.text,
       affects: affects.value,
       network: network.value,
       execution: unsafeExecution

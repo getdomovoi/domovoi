@@ -149,19 +149,19 @@ function affectedFile(input: {
 // sent like the file path, so a credential store there, or inside one, as
 // written or at its real path, is hidden whole and the line keeps only where
 // the directory is; the request is then a hard gate.
-export function approvalDirectory(input: { directory: string; workspace: string; canonical?: string | undefined }): {
+export function approvalDirectory(input: { directory: string; workspace: string | undefined; canonical?: string | undefined }): {
   text: string
   redacted: boolean
   sensitive: boolean
 } {
-  const workspace = resolve(input.workspace)
-  const directory = resolve(workspace, input.directory)
+  const workspace = input.workspace === undefined ? undefined : resolve(input.workspace)
+  const directory = workspace === undefined ? input.directory : resolve(workspace, input.directory)
   if (
     namesSecretPath(input.directory)
     || namesSecretPath(directory)
     || (input.canonical !== undefined && namesSecretPath(input.canonical))
   ) {
-    const inside = directory === workspace || within(workspace, directory) !== undefined
+    const inside = workspace !== undefined && (directory === workspace || within(workspace, directory) !== undefined)
     return { text: inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree", redacted: false, sensitive: true }
   }
   const copy = redactDurableText(input.directory)
