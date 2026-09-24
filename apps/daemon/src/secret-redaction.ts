@@ -11,11 +11,13 @@ export type RedactedText = {
   truncated: boolean
 }
 
-const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret|client[_-]?secret|credentials?|cookie|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|github[_-]?token|openai[_-]?api[_-]?key|azure[_-]?client[_-]?secret)`
+const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret[_-]?key|secret|client[_-]?secret|credentials?|cookie|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|github[_-]?token|openai[_-]?api[_-]?key|azure[_-]?client[_-]?secret)`
 const quotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
-// A sensitive name may carry an identifier prefix, as in NPM_TOKEN or
-// db.password. It may not carry a suffix: TOKEN_BUDGET names a number.
-const prefixedName = String.raw`(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9]+[_.-])*${sensitiveName}\b`
+// A sensitive name may carry an identifier prefix, as in NPM_TOKEN, db.password,
+// npm's :_authToken or npm_config__authToken (a segment may be only its
+// separator). It may not carry a suffix: TOKEN_BUDGET names a number.
+const namePrefix = String.raw`(?:[A-Za-z0-9]*[_.-])*`
+const prefixedName = String.raw`(?<![A-Za-z0-9_.-])${namePrefix}${sensitiveName}\b`
 const assignment = new RegExp(
   String.raw`((?:\$env:|\bset\s+)?["']?${prefixedName}["']?\s*=\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
@@ -25,15 +27,16 @@ const structuredAssignment = new RegExp(
   "giu",
 )
 const secretFlag = new RegExp(
-  String.raw`((?:--(?:[A-Za-z0-9]+[_.-])*|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  // A negated flag such as --no-password or --skip-password takes no value.
+  String.raw`((?:--(?!(?:no|skip|without)[_.-])${namePrefix}|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 const quotedCmdAssignment = new RegExp(
-  String.raw`(\bset\s+)(["'])((?:[A-Za-z0-9]+[_.-])*${sensitiveName}\s*=)[^\r\n]*?\2`,
+  String.raw`(\bset\s+)(["'])(${namePrefix}${sensitiveName}\s*=)[^\r\n]*?\2`,
   "giu",
 )
 const javaSystemProperty = new RegExp(
-  String.raw`(-D(?:[A-Za-z0-9]+[_.-])*${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  String.raw`(-D${namePrefix}${sensitiveName}\s*=)("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 

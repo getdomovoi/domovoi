@@ -79,6 +79,9 @@ describe("durable secret redaction", () => {
     "DATABASE_PASSWORD",
     "POSTGRES_PASSWORD",
     "CLOUDFLARE_API_TOKEN",
+    "DJANGO_SECRET_KEY",
+    "STRIPE_SECRET_KEY",
+    "SECRET_KEY",
   ])("redacts a value assigned to the prefixed name %s", (name) => {
     const value = "fake-value-4f2a9c"
     for (const text of [
@@ -103,8 +106,23 @@ describe("durable secret redaction", () => {
     }
   })
 
+  it.each([
+    "//registry.npmjs.org/:_authToken=fake-value-4f2a9c",
+    "npm_config__authToken=fake-value-4f2a9c",
+  ])("redacts an npm auth token written as %s", (text) => {
+    expect(redactDurableOutput(text).value).not.toContain("fake-value-4f2a9c")
+    expect(redactDurableCommand(text)).toMatchObject({ redacted: true })
+  })
+
   it("leaves names that only start with a secret word alone", () => {
-    for (const safe of ["TOKENIZERS_PARALLELISM=false", "MAX_TOKENS=100", "PASSWORDLESS=true pnpm test"]) {
+    for (const safe of [
+      "TOKENIZERS_PARALLELISM=false",
+      "MAX_TOKENS=100",
+      "PASSWORDLESS=true pnpm test",
+      "psql --no-password mydb",
+      "mysql --skip-password mydb",
+      "pg_dump --without-password mydb",
+    ]) {
       expect(redactDurableCommand(safe), safe).toEqual({ value: safe, redacted: false, truncated: false })
     }
   })
