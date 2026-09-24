@@ -518,7 +518,7 @@
         "Each daemon keeps its own list. Pair a new one from Settings."
       ],
       "evidence": [
-        "Paired devices",
+        "Devices paired with",
         "Copy once",
         "Each daemon keeps its own list"
       ]

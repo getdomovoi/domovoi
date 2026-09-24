@@ -1352,6 +1352,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onAuthorizeClient={(machineId, credential, signal) => accessSession.authorize(machineId, credential, signal)}
             onRemoveClientAccess={removeClientAccess}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
+            devicesMachineLabel={home.snapshot?.machine.name}
             currentSessionCount={activeSessionCount(snapshot)}
             providers={snapshot.machine.providers}
             onOpenSkills={() => setSurface("skills")}
