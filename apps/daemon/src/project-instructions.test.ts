@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Worker } from "node:worker_threads"
 
 import { afterEach, describe, expect, it } from "vitest"
 
@@ -246,5 +247,63 @@ describe("projectInstructions for Codex", () => {
 
     await writeFile(join(worktree, "AGENTS.md"), "b".repeat(128 * 1024 + 1))
     await expect(projectInstructions(worktree, "codex")).resolves.toBeUndefined()
+  })
+})
+
+// A writer inside the worktree swaps an instruction file between a regular
+// file and a link to a file outside it, as fast as it can, while the daemon
+// reads. The daemon opens the file once and reads only from that descriptor.
+const swapWriter = `
+const { workerData } = require("node:worker_threads")
+const { renameSync, symlinkSync, writeFileSync } = require("node:fs")
+const stop = new Int32Array(workerData.stop)
+const { outside, target, link, file } = workerData
+while (Atomics.load(stop, 0) === 0) {
+  try {
+    symlinkSync(outside, link)
+    renameSync(link, target)
+    writeFileSync(file, "inside rule\\n")
+    renameSync(file, target)
+  } catch {}
+}
+`
+
+describe("projectInstructions against a concurrent writer", () => {
+  it.each([
+    ["codex", "AGENTS.md"],
+    ["opencode", "AGENTS.md"],
+    ["claude", "CLAUDE.md"],
+  ] as const)("never gives %s the contents of a file outside the worktree", async (reader, name) => {
+    if (process.platform === "win32") return
+    const root = await realpath(await scratch())
+    const worktree = join(root, "worktree")
+    await mkdir(worktree)
+    await writeFile(join(root, "outside.md"), "OUTSIDE SECRET\n")
+    await writeFile(join(worktree, name), "inside rule\n")
+    const stop = new SharedArrayBuffer(4)
+    const writer = new Worker(swapWriter, {
+      eval: true,
+      workerData: {
+        stop,
+        outside: join(root, "outside.md"),
+        target: join(worktree, name),
+        link: join(worktree, ".swap-link"),
+        file: join(worktree, ".swap-file"),
+      },
+    })
+    let leaked = 0
+    let read = 0
+    try {
+      for (let attempt = 0; attempt < 500; attempt += 1) {
+        const text = await projectInstructions(worktree, reader)
+        if (text?.includes("OUTSIDE SECRET")) leaked += 1
+        if (text?.includes("inside rule")) read += 1
+      }
+    } finally {
+      Atomics.store(new Int32Array(stop), 0, 1)
+      await writer.terminate()
+    }
+    expect(leaked).toBe(0)
+    expect(read).toBeGreaterThan(0)
   })
 })
