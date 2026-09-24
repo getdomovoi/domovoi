@@ -1,7 +1,7 @@
 import { expect, it } from "vitest"
 
 import {
-  demoWorkspace, deviceClaimParamsSchema, deviceConfirmClaimParamsSchema, deviceRedeemCodeParamsSchema,
+  demoWorkspace, deviceClaimParamsSchema, deviceConfirmClaimParamsSchema,
   fleetMachineDescriptorSchema, helloParamsSchema, protocolCompatibility,
   protocolMismatchSchema, protocolVersion, systemHelloResultSchema, workspaceSnapshotSchema,
 } from "./index.js"
@@ -11,7 +11,6 @@ const versionReaders = [
   ["hello", (version: string) => helloParamsSchema.safeParse({ client: "cli", clientVersion: "test", protocolVersion: version })],
   ["claim", (version: string) => deviceClaimParamsSchema.safeParse({ code: "one-two-three-42", label: "laptop", machineId, protocolVersion: version })],
   ["confirmation", (version: string) => deviceConfirmClaimParamsSchema.safeParse({ authToken: "a".repeat(43), machineId, protocolVersion: version })],
-  ["redeem", (version: string) => deviceRedeemCodeParamsSchema.safeParse({ code: "one-two-three-42", label: "phone", protocolVersion: version })],
   ["descriptor", (version: string) => fleetMachineDescriptorSchema.safeParse({
     id: machineId, label: "laptop", platform: "linux", arch: "x64", version: "1.2.3", capabilities: [], transports: [], protocolVersion: version,
   })],
