@@ -17,8 +17,18 @@ export function connectionNotice(
   // though it were live is the failure worth naming: yesterday's approvals read
   // exactly like today's.
   showingData: boolean,
+  // A frame the app could not read. The connection may be fine and the screen
+  // still missing a change, so this speaks even while connected.
+  protocolProblem?: string,
 ): ConnectionNotice | undefined {
-  if (status === "open") return undefined
+  if (status === "open") {
+    if (!protocolProblem) return undefined
+    return {
+      tone: "warning",
+      headline: "This app is out of date with the daemon",
+      detail: `${protocolProblem}, so what is on screen may be missing a change. Update the app.`,
+    }
+  }
   if (fault && !fault.retriable) {
     return { tone: "destructive", headline: fault.headline, detail: fault.detail }
   }

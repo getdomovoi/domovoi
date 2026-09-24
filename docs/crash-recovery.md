@@ -41,6 +41,12 @@ These process records apply within one OS process namespace; sharing or copying
 the managed worktree root between execution environments is outside this recovery
 contract.
 
+Each record update is written to a new file and renamed over the previous record,
+so a reader sees one whole record. The update is not flushed to disk: a crash of
+the Domovoi process keeps the last completed rename, and after an OS crash or
+power loss no Git child survives, while a lost, torn, or child-listing record
+refuses reclamation as described below.
+
 Legacy claims without version 2 records, mismatched tokens, malformed records,
 and crashes inside launch or exit recording require inspection. The refusal names
 the claim and the missing evidence. Preserve the worktree and stop Domovoi, its

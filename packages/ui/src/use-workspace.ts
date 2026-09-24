@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
@@ -76,7 +76,6 @@ export const workspaceBudgets: DomovoiClientBudgets = {
   requestMs: 120_000,
 }
 export const pairingBudgetMs = 60_000
-export const machineDialBudgetMs = 45_000
 
 export type WorkspaceEndpointResolver = (deadline: Deadline) => Promise<DomovoiEndpoint>
 export type WorkspaceClientConnection = { state: "disabled" } | {
@@ -107,6 +106,7 @@ export function useWorkspace(
   }))
   const [connected, setConnected] = useState(false)
   const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
+  const [stateRecovery, setStateRecovery] = useState<StateRecovery | null>(null)
   const [endpointUrl, setEndpointUrl] = useState(url)
   const [reconnecting, setReconnecting] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
@@ -217,6 +217,7 @@ export function useWorkspace(
       const access = hello?.clientAccess ?? "full"
       client.setClientAccess(access)
       setClientAccess(access)
+      setStateRecovery(hello?.stateRecovery ?? null)
       if (hello) reconcilePin(hello)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
@@ -261,10 +262,12 @@ export function useWorkspace(
     client.addEventListener("reconnecting", onReconnecting)
     client.addEventListener("protocol-error", onProtocolError)
     client.addEventListener("authentication-required", onAuthenticationRequired)
+    // The client has already dispatched the hello as a "snapshot" event and
+    // replayed what arrived during admission after it. Applying the resolved
+    // hello again here would put the older state back over those changes.
     client.connect().then(
-      (next) => {
+      () => {
         if (!active) return
-        updateSnapshotFrom(client, next)
         setConnected(true)
       },
       () => {
@@ -821,11 +824,10 @@ export function useWorkspace(
     const client = clientRef.current
     if (!client) throw new Error("Daemon client is not ready")
     setConnected(false)
-    const next = await client.connect()
+    await client.connect()
     if (!isCurrentConnection(clientRef.current, client)) return
-    updateSnapshotFrom(client, next)
     setConnected(true)
-  }, [updateSnapshotFrom])
+  }, [])
 
   return {
     fleetClientRoute,
@@ -837,6 +839,7 @@ export function useWorkspace(
     closeTerminal,
     connected,
     clientAccess,
+    stateRecovery,
     createCheckpoint,
     createAnnotation,
     createTerminal,

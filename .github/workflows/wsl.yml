@@ -42,8 +42,11 @@ concurrency:
   cancel-in-progress: true
 
 # This is deliberately separate from ci.yml's Windows matrix leg. Unrelated
-# PRs do not provision WSL. Do not make a path-filtered workflow an unconditional
-# required check: GitHub leaves that check pending on PRs outside its paths.
+# PRs do not provision WSL. `native` is nevertheless a required check on main
+# (since 2026-09-11), so a PR outside these paths never reports it and cannot
+# merge. Do not widen the paths or make the job always report to get around
+# that. The procedure is to untick `native` for that merge and put it back
+# after; see docs/working-rules.md, rule 9.
 jobs:
   native:
     runs-on: windows-2025
