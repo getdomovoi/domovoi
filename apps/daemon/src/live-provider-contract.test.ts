@@ -30,7 +30,9 @@ const scratchDirectories: string[] = []
 const realHome = homedir()
 afterAll(async () => removeScratchDirectories(scratchDirectories))
 
-type Mock = { url: string; leaked: () => boolean; close: () => Promise<void> }
+// asked: whether the stand-in ever sent its tool call. A case where it did not
+// proves nothing about approval, so it fails rather than passes.
+type Mock = { url: string; leaked: () => boolean; asked: () => boolean; close: () => Promise<void> }
 type Step = { command: string }
 
 function onPath(binary: string): boolean {
@@ -69,7 +71,7 @@ async function modelStandIn(kind: "anthropic" | "chat" | "responses", step: Step
     })
   })
   const url = await listen(server)
-  return { url, leaked: () => leaked, close: () => new Promise((resolve) => server.close(() => resolve())) }
+  return { url, leaked: () => leaked, asked: () => asked, close: () => new Promise((resolve) => server.close(() => resolve())) }
 }
 
 function anthropicReply(url: string, json: Record<string, unknown>, response: import("node:http").ServerResponse, step: Step | undefined): void {
@@ -225,13 +227,65 @@ const scenarios: Scenario[] = [
   },
 ]
 
+// What every case must show. The stand-in must have sent its tool call,
+// otherwise the provider never reached it, offered other tools, or ran out of
+// time, and nothing was tested. The action must not have happened. In Build
+// the request must reach Domovoi first; Codex may keep it inside its sandbox
+// and Ask may be refused by the provider itself, so there the turn must at
+// least have ended or shown a card.
+function assertContractCase(input: {
+  providerId: Runtime["provider"]
+  permissionMode: Runtime["permissionMode"]
+  asked: boolean
+  happened: boolean
+  finished: boolean
+  seen: readonly string[]
+}): void {
+  expect(input.asked, "the stand-in never sent its tool call, so this case tested nothing").toBe(true)
+  expect(input.happened).toBe(false)
+  if (input.providerId !== "codex" && input.permissionMode === "build") expect(input.seen.length).toBeGreaterThan(0)
+  else expect(input.finished || input.seen.length > 0, "the turn neither ended nor showed a card").toBe(true)
+}
+
 const cases = providers.flatMap((provider) => modes.flatMap(([mode, permission]) => scenarios.map((scenario) => ({ provider, mode, permission, scenario }))))
 
+describe("live provider contract assertions", () => {
+  it("fails a case whose stand-in never sent its tool call", async () => {
+    const mock = await modelStandIn("chat", { command: "true" })
+    try {
+      for (const permissionMode of ["ask", "build"] as const) {
+        expect(() => assertContractCase({
+          providerId: "opencode", permissionMode, asked: mock.asked(), happened: false, finished: true, seen: ["card"],
+        })).toThrow("tested nothing")
+      }
+    } finally {
+      await mock.close()
+    }
+  })
+
+  it("fails an Ask case that neither ended nor showed a card", () => {
+    expect(() => assertContractCase({
+      providerId: "opencode", permissionMode: "ask", asked: true, happened: false, finished: false, seen: [],
+    })).toThrow("neither ended nor showed a card")
+  })
+
+  it("passes a contained case the stand-in did ask for", () => {
+    expect(() => assertContractCase({
+      providerId: "claude-code", permissionMode: "build", asked: true, happened: false, finished: true, seen: ["card"],
+    })).not.toThrow()
+  })
+})
+
 describe.skipIf(!live)("live provider approval contract", () => {
-  it.each(cases.map((entry) => [entry.provider.id, entry.mode, entry.scenario.name, entry] as const))(
+  it.for(cases.map((entry) => [entry.provider.id, entry.mode, entry.scenario.name, entry] as const))(
     "%s in %s: a turn that %s reaches Domovoi first and, denied, has no effect",
-    async (_provider, _mode, _scenario, { provider, permission, scenario }) => {
-      if (!onPath(provider.binary)) return
+    { timeout: 90_000 },
+    async ([, , , { provider, permission, scenario }], context) => {
+      // A provider that is not installed here is reported as skipped, not passed.
+      if (!onPath(provider.binary)) {
+        context.skip(`${provider.binary} is not on PATH`)
+        return
+      }
       const root = mkdtempSync(join(tmpdir(), "domovoi-live-contract-"))
       scratchDirectories.push(root)
       const home = join(root, "home")
@@ -278,12 +332,10 @@ describe.skipIf(!live)("live provider approval contract", () => {
       }
       const happened = scenario.happened(worktree, outside, mock)
       console.log(`${provider.id.padEnd(11)} ${runtime.permissionMode}${runtime.auto ? "+auto" : ""}`.padEnd(24), scenario.name.padEnd(28), (seen.join(",") || "nothing asked").padEnd(14), happened ? "HAPPENED" : "contained")
-      expect(happened).toBe(false)
-      // In Build the request must reach Domovoi first. Codex may instead keep
-      // it inside its sandbox, and Ask may be refused by the provider itself.
-      if (provider.id !== "codex" && runtime.permissionMode === "build") expect(seen.length).toBeGreaterThan(0)
+      assertContractCase({
+        providerId: provider.id, permissionMode: runtime.permissionMode, asked: mock.asked(), happened, finished, seen,
+      })
       expect(readFileSync(join(worktree, ".env"), "utf8")).toContain(plantedToken)
     },
-    90_000,
   )
 })
