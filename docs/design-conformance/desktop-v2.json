@@ -273,8 +273,18 @@
         "<AlertDialog open={archiveTarget !== null}",
         "Archive and remove the worktree",
         "Keep the session",
-        "then removes the worktree directory"
-      ]
+        "then removes the worktree directory",
+        "files that were never merged"
+      ],
+      "presence": [
+        "<AlertDialog open={archiveTarget !== null}",
+        "Archive and remove the worktree",
+        "Keep the session"
+      ],
+      "partial": {
+        "since": "2026-09-23",
+        "reason": "needs an unmerged-file count before archive"
+      }
     },
     {
       "id": "drawer.footer",

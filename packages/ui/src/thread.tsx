@@ -468,17 +468,12 @@ export const CheckpointThreadItem = memo(function CheckpointThreadItem({
 // I69, 2026-09-23: the confirmation says exactly what archive does. The
 // daemon takes a final checkpoint, stops the agent and its terminals and
 // removes the worktree directory; the branch, that checkpoint and the thread
-// stay. The branch name and the count of files never merged come from the
-// session summary (filled by the daemon); a part not reported is left out.
+// stay. The daemon counts unmerged files only while archiving, so before it
+// the kept branch reads "as it is" rather than implying a count (ruled
+// 2026-09-23).
 export const archiveSessionDescription = "Domovoi takes a final checkpoint, stops the agent and its terminals, then removes the worktree directory. Nothing is merged."
 
-function unmergedPhrase(count: number | undefined): string {
-  if (count === undefined) return "the files that were never merged"
-  if (count === 0) return "nothing left unmerged"
-  return `the ${count} ${count === 1 ? "file" : "files"} that ${count === 1 ? "was" : "were"} never merged`
-}
-
-export function ArchiveConfirmBody({ worktreePath, branch, unmergedFiles }: { worktreePath?: string | undefined; branch?: string | undefined; unmergedFiles?: number | undefined }) {
+export function ArchiveConfirmBody({ worktreePath, branch }: { worktreePath?: string | undefined; branch?: string | undefined }) {
   const eyebrow = "text-[10.5px] tracking-[0.13em] text-faint"
   return (
     <div className="flex flex-col gap-3 text-[12px] leading-[1.5]">
@@ -495,7 +490,7 @@ export function ArchiveConfirmBody({ worktreePath, branch, unmergedFiles }: { wo
       <div className="overflow-hidden rounded-lg border">
         <p className={`m-0 border-b px-3 py-2 ${eyebrow}`} id="archive-kept">KEPT</p>
         <ul aria-labelledby="archive-kept" className="m-0 list-none p-0">
-          <li className="px-3 py-2">{branch ? <>The branch <span className="font-machine">{branch}</span></> : "The session branch"}, with {unmergedPhrase(unmergedFiles)}</li>
+          <li className="px-3 py-2">{branch ? <>The branch <span className="font-machine">{branch}</span></> : "The session branch"}, as it is</li>
           <li className="border-t px-3 py-2">The final checkpoint, taken on that branch</li>
           <li className="border-t px-3 py-2">The thread, readable here</li>
         </ul>
@@ -510,13 +505,11 @@ export function ArchiveSessionAction({
   onArchive,
   worktreePath,
   branch,
-  unmergedFiles,
 }: {
   disabled: boolean
   onArchive: () => void
   worktreePath?: string | undefined
   branch?: string | undefined
-  unmergedFiles?: number | undefined
 }) {
   return (
     <AlertDialog>
@@ -533,7 +526,7 @@ export function ArchiveSessionAction({
             {archiveSessionDescription}
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <ArchiveConfirmBody worktreePath={worktreePath} branch={branch} unmergedFiles={unmergedFiles} />
+        <ArchiveConfirmBody worktreePath={worktreePath} branch={branch} />
         <AlertDialogFooter>
           <AlertDialogCancel>Keep the session</AlertDialogCancel>
           <AlertDialogAction variant="destructive" onClick={onArchive}>Archive and remove the worktree</AlertDialogAction>
