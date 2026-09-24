@@ -154,13 +154,16 @@ describe("GitWorkspaceService", () => {
       expect(await service.sessionBranchFacts(workspace.path, repositoryPath)).toEqual({ branch: workspace.branch, unmergedFiles: 1 })
     })
 
+    // A no-break space: whitespace to String.prototype.trim, and a name every
+    // system can create. Windows cannot create a name of plain spaces, since
+    // it drops trailing spaces from a name.
     it("counts a file whose name is only whitespace", async () => {
       const { repositoryPath, service } = await repository("domovoi-unmerged-whitespace-")
       const workspace = await service.createSessionWorkspace(repositoryPath, "session-whitespace")
-      await writeFile(join(workspace.path, " "), "space\n")
+      await writeFile(join(workspace.path, "\u00a0"), "space\n")
       // Committed with git directly: the checkpoint's own name list has the
       // same trimming, reported separately.
-      await execute("git", ["-C", workspace.path, "add", "--", " "])
+      await execute("git", ["-C", workspace.path, "add", "--", "\u00a0"])
       await execute("git", ["-C", workspace.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "work"])
       expect(await service.sessionBranchFacts(workspace.path, repositoryPath)).toEqual({ branch: workspace.branch, unmergedFiles: 1 })
     })
