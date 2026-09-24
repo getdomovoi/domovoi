@@ -13,13 +13,18 @@ export function isNotificationFrame(value: unknown): value is NotificationFrame 
 // The wire record fingerprints the notification schemas, so a notification
 // carries only what its schema describes. A non-strict schema strips a field it
 // does not know rather than refusing it; the stripped field is refused here.
+// The text is serialized once and read back, and the check runs on what was
+// read back: toJSON can make the text differ from the object passed in.
 export function notificationMessage<M extends NotificationMethod>(method: M, params: NotificationParams<M>): NotificationFrame {
-  const parsed: unknown = notificationMethods[method].parse(params)
-  const undeclared = undeclaredFields(params, parsed, "")
+  const text = JSON.stringify({ jsonrpc: "2.0", method, params })
+  const envelope: unknown = JSON.parse(text)
+  const sent = isRecord(envelope) ? envelope.params : undefined
+  const parsed: unknown = notificationMethods[method].parse(sent)
+  const undeclared = undeclaredFields(sent, parsed, "")
   if (undeclared.length > 0) {
     throw new Error(`${method} carries fields its protocol schema does not describe: ${undeclared.join(", ")}`)
   }
-  const frame = Object.freeze({ method, text: JSON.stringify({ jsonrpc: "2.0", method, params }) })
+  const frame = Object.freeze({ method, text })
   issuedFrames.add(frame)
   return frame
 }

@@ -40,6 +40,13 @@ describe("notificationMessage", () => {
       .toThrow(new RegExp(`terminal\\.output .*${name}`))
   })
 
+  // JSON.stringify calls toJSON, so the object checked is not always the text
+  // sent. The check reads the serialized payload back.
+  it("checks the payload JSON.stringify produces, not the object before it", () => {
+    const thread = Object.assign([], { toJSON: () => [{ undeclared: true }] })
+    expect(() => notificationMessage("workspace.changed", { ...demoWorkspace, thread } as never)).toThrow()
+  })
+
   it("refuses a payload its schema refuses", () => {
     expect(() => notificationMessage("terminal.output", { terminalId: "terminal-1", data: "" })).toThrow()
   })
