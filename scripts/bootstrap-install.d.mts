@@ -14,6 +14,8 @@ export type BootstrapInstallResult = {
   version: string
   path: string
   sha256: string
+  // The installed runtime package directory inside the release.
+  runtimePath: string
 }
 
 export function installBootstrapDaemon(options: BootstrapInstallOptions): Promise<BootstrapInstallResult>

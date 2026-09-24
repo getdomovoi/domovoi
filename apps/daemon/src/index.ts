@@ -13,7 +13,7 @@ import { runFleetKeychainCommand } from "./fleet-keychain-command.js"
 import { exitAfterStderr } from "./flushed-exit.js"
 import { MachineCredentialWorker } from "./machine-credential-worker.js"
 import { OperationDeadline } from "./operation-deadline.js"
-import { callDaemon, type CliRpcTarget } from "./cli-rpc.js"
+import { callDaemon, readDaemonResult, type CliRpcTarget } from "./cli-rpc.js"
 import { runOpenCommand } from "./open-command.js"
 import { publishEndpointFile, removeEndpointFile } from "./endpoint-file.js"
 import { installShutdownHandlers } from "./shutdown.js"
@@ -38,7 +38,7 @@ async function requestPairingCode(
   token: string,
   targetClient?: ClientKind,
 ): Promise<DeviceIssueCodeResult> {
-  return rpcMethods["device.issueCode"].result.parse(await callDaemon({
+  return readDaemonResult("device.issueCode", rpcMethods["device.issueCode"].result, await callDaemon({
     target: config, token, method: "device.issueCode",
     params: targetClient === undefined ? {} : { targetClient },
   }))

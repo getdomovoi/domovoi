@@ -1,4 +1,5 @@
 import { WebSocket } from "ws"
+import type { z } from "zod"
 
 import { buildVersion, protocolVersion, rpcResponseSchema } from "@getdomovoi/protocol"
 
@@ -195,4 +196,13 @@ export async function callDaemon(input: {
   } finally {
     deadline.clear()
   }
+}
+
+// A reply can be a well-formed response whose result is not the method's
+// shape. It is refused the way a malformed reply is, in the same words, rather
+// than surfacing the schema's own error.
+export function readDaemonResult<T>(method: string, schema: z.ZodType<T>, value: unknown): T {
+  const result = schema.safeParse(value)
+  if (!result.success) throw new Error(`The daemon refused ${method}`)
+  return result.data
 }
