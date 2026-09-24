@@ -87,7 +87,7 @@ type MarkdownNode = {
   type: string
   value?: unknown
   children?: MarkdownNode[]
-  position?: { start: { offset?: number }; end: { offset?: number } }
+  position?: { start: { offset?: number | undefined }; end: { offset?: number | undefined } } | undefined
 }
 
 const backslashEscape = /\\[!-/:-@[-`{-~]/
