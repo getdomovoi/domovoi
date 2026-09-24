@@ -294,8 +294,15 @@ async function writeUnit(path: string, contents: string, deadline: OperationDead
   try {
     // Never truncate the last complete configuration. Exclusive creation gives
     // this install a private inode, including when the old file was writable.
-    await withinServiceDeadline(deadline, () => writeFile(staging, contents, { flag: "wx", mode: 0o600, signal: deadline.signal }))
-    await withinServiceDeadline(deadline, () => rename(staging, path))
+    // The write and the rename are awaited to their end rather than raced
+    // against the deadline, so this settles only once the file is known to be
+    // published or not; a caller that ran out of time (withinServiceDeadline)
+    // can wait for it before restoring. The write honours the abort signal,
+    // and no rename starts after the deadline.
+    deadline.throwIfExpired()
+    await writeFile(staging, contents, { flag: "wx", mode: 0o600, signal: deadline.signal })
+    deadline.throwIfExpired()
+    await rename(staging, path)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw error
     try {
@@ -428,7 +435,11 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
             try {
               await writeIn(deadline)(plan.path, plan.contents)
             } catch (cause) {
-              // The unit is replaced by rename, so a failed write left the old one.
+              // The unit is replaced by rename, so a write that failed on its
+              // own left the old one. A write the deadline cut short may still
+              // rename the new unit into place: that is a failed swap, and the
+              // restore runs once the write has settled.
+              if (deadline.signal.aborted) throw cause
               throw new DaemonServiceUpdateError("nothing-changed", cause)
             }
             await runIn(deadline)(reload)

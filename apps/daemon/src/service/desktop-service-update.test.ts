@@ -753,6 +753,26 @@ describe("security review round 1", () => {
     expect(effects.capture).not.toHaveBeenCalled()
     expect(effects.serviceLease.release).toHaveBeenCalledOnce()
   })
+
+  // F2: a unit write that ran out of time can still publish the new unit
+  // afterwards. That is not "nothing changed": the swap failed, and the
+  // previous unit is put back once the write has settled.
+  it("F2: puts the previous unit back after a unit write that timed out and published late", async () => {
+    const effects = fake("linux", "/home/dl", { updateBudgetMs: 50 })
+    const write = effects.write
+    effects.write = vi.fn(async (path: string, contents: string, deadline) => {
+      if (contents.includes(runtime.nodePath)) {
+        effects.order.push("new unit write started")
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        effects.order.push("new unit write settled")
+      }
+      await write(path, contents, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(effects.files.get(unit)).toBe(`[Service]\nExecStart=${oldRuntime.nodePath}\n`)
+    expect(effects.order.indexOf("new unit write settled")).toBeLessThan(effects.order.lastIndexOf(`write ${unit}`))
+    expect(effects.order.slice(-2)).toEqual(["systemctl --user daemon-reload", "systemctl --user restart domovoid.service"])
+  })
 })
 
 it("names each outcome the desktop can tell apart", () => {
