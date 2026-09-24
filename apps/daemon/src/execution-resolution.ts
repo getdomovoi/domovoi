@@ -431,9 +431,13 @@ export function resolveCommandExecution(input: {
     : undefined)
 }
 
-// Whether resolveExecution reads the request's file path for this command:
-// a file tool is resolved only for a path in the worktree, and a read tool
-// is unresolved for a path outside it.
+// Every tool whose resolution resolveExecution reads from the request's file
+// path: a file tool is resolved only for a path in the worktree, and a read
+// tool is unresolved for a path outside it. Taken from the two sets
+// resolveExecution itself consults, so a tool added to either is here too.
+export const fileScopedTools: readonly string[] = Object.freeze([...fileTools, ...readTools])
+
+// Whether resolveExecution reads the request's file path for this command.
 export function resolutionReadsFilePath(command: string | undefined): boolean {
   const tool = command?.trim()
   return tool !== undefined && (fileTools.has(tool) || readTools.has(tool))

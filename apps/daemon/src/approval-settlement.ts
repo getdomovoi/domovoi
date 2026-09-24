@@ -164,17 +164,21 @@ type ResolutionRequest = { cwd: string; command?: string; filePath?: string; blo
 
 // What a card read back from disk gives resolveExecution: its saved directory
 // and command, and for a file or read tool the file its saved line names,
-// located against the worktree. A saved card that does not give these back,
-// such as one whose directory or file line is hidden, cannot be resolved
-// again, and throws, so it is sealed. A blocked path lived only in memory; a
-// card that had one resolves differently now, and so is a hard gate.
+// located against the worktree. A saved card that does not give these back
+// cannot be resolved again as its request was, and throws, so it is sealed:
+// one whose directory is hidden, and a file or read tool's card whose line is
+// not a file line it can read back as a path, whether hidden, unreadable, a
+// provider's reach, or an older daemon's wording. Resolving such a card
+// without its file would judge a request it never made. A blocked path lived
+// only in memory; a card that had one resolves differently now, and so is a
+// hard gate.
 function savedResolutionRequest(request: ApprovalRequest, saved: SavedCard): ResolutionRequest {
   if (savedDirectoryHidden(saved)) throw new Error("A saved card hides the directory its request ran in")
   const command = request.command === commandUnavailable ? undefined : request.command
   const resolution: ResolutionRequest = { cwd: request.cwd ?? request.workspace, ...(command === undefined ? {} : { command }) }
-  if (!resolutionReadsFilePath(command) || !saved.affects.startsWith("The file ")) return resolution
+  if (!resolutionReadsFilePath(command)) return resolution
   const path = savedRequestPath(redactDurableText(saved.affects).value)
-  if (path === undefined) throw new Error("A saved card's file line does not name the file its request named")
+  if (path === undefined) throw new Error("A saved file or read tool card does not name the file its request named")
   return { ...resolution, filePath: resolve(request.workspace, path) }
 }
 

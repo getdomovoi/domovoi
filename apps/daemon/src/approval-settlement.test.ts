@@ -4,7 +4,15 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { unrestrictedApprovalScope } from "./approval-facts.js"
-import { ApprovalLedger, savedSettlementInput, settleApproval, type Approval, type SettlementInput } from "./approval-settlement.js"
+import {
+  ApprovalLedger,
+  sameExecution,
+  savedSettlementInput,
+  settleApproval,
+  type Approval,
+  type SettlementInput,
+} from "./approval-settlement.js"
+import { fileScopedTools, resolveExecution } from "./execution-resolution.js"
 import { OperationDeadline } from "./operation-deadline.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
@@ -174,6 +182,77 @@ describe("settleApproval for a saved file line", () => {
       affects: "The file [REDACTED] in the session worktree.",
       execution: { state: "unresolved", reason: "sensitive-content" },
     })
+  })
+})
+
+// A file or read tool's execution is resolved from the file its request
+// named, and a saved card gives that file back only in a file line it can
+// read back as a path. A saved card of such a tool without one, whatever its
+// line says instead, cannot be resolved again as its request was, and is
+// sealed.
+describe("settleApproval for a saved file-scoped tool card", () => {
+  const unreadableLines: { name: string; affects: string }[] = [
+    { name: "a provider's reach line", affects: unrestrictedApprovalScope.command },
+    { name: "a line in an older format", affects: "Reads files in the session worktree." },
+    { name: "a hidden file line", affects: "The file [REDACTED] in the session worktree." },
+    { name: "a file line it cannot read back", affects: "The file notes…txt in the session worktree." },
+  ]
+
+  async function savedToolCard(workspace: string, command: string): Promise<Approval> {
+    await writeFile(join(workspace, "notes.txt"), "")
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, cwd: workspace, path: "notes.txt", command, reason: "Use a tool" },
+    }))
+    expect(approval, command).toMatchObject({ risk: "normal", affects: "The file notes.txt in the session worktree." })
+    return approval
+  }
+
+  function settleSaved(approval: Approval, workspace: string) {
+    return settleApproval(savedSettlementInput(approval, workspace, undefined, () => approval.risk))
+  }
+
+  for (const tool of fileScopedTools) {
+    for (const line of unreadableLines) {
+      it(`seals a saved ${tool} card with ${line.name}`, async () => {
+        const workspace = await worktree()
+        const approval = { ...await savedToolCard(workspace, tool), affects: line.affects }
+        const { approval: settled, sensitive } = await settleSaved(approval, workspace)
+        expect(sensitive).toBe(true)
+        expect(settled).toMatchObject({
+          risk: "hard-gate",
+          directory: "[REDACTED] in the session worktree",
+          execution: { state: "unresolved", reason: "sensitive-content" },
+        })
+        expect(settled.affects).not.toContain("notes")
+      })
+    }
+  }
+
+  it("keeps a saved read tool card whose file line reads back as a clean file", async () => {
+    const workspace = await worktree()
+    const approval = await savedToolCard(workspace, "Read")
+    const { approval: settled, sensitive } = await settleSaved(approval, workspace)
+    expect(sensitive).toBe(false)
+    expect(settled).toEqual(approval)
+  })
+
+  // The tools sealed here are the tools whose resolution reads the file path,
+  // each observed on its own side: resolveExecution gives a different answer
+  // for a path outside the worktree, and a saved card without a file line is
+  // sealed. A tool on one side and not the other fails.
+  it("seals exactly the tools whose resolution reads the file path", async () => {
+    const probes = [...fileScopedTools, "Bash", "WebFetch", "WebSearch", "Task", "TodoWrite", "ls", "cat"]
+    for (const tool of probes) {
+      const workspace = await worktree()
+      const outside = await worktree()
+      const bare = await resolveExecution({ workspaceRoot: workspace, cwd: workspace, command: tool })
+      const away = await resolveExecution({ workspaceRoot: workspace, cwd: workspace, command: tool, filePath: join(outside, "notes.txt") })
+      const readsPath = !sameExecution(bare, away)
+      expect(fileScopedTools.includes(tool), tool).toBe(readsPath)
+      const approval = { ...await savedToolCard(workspace, tool), affects: unrestrictedApprovalScope.command }
+      const { approval: settled } = await settleSaved(approval, workspace)
+      expect(settled.directory === "[REDACTED] in the session worktree", tool).toBe(readsPath)
+    }
   })
 })
 

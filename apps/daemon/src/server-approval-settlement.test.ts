@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import { demoWorkspace, executionRecordSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { settleApproval } from "./approval-settlement.js"
+import { unrestrictedApprovalScope } from "./approval-facts.js"
+import { savedSettlementInput, settleApproval } from "./approval-settlement.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { realPathLookupBudgetMs } from "./credential-stores.js"
-import { resolveCommandExecution, resolveExecution } from "./execution-resolution.js"
+import { fileScopedTools, resolveCommandExecution, resolveExecution } from "./execution-resolution.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
@@ -654,5 +655,90 @@ describe("a saved card whose record path moved into a store", () => {
       expect.soft(saved, label).toMatchObject({ risk: "hard-gate", execution: { state: "unresolved", reason: "sensitive-content" } })
       expect.soft(JSON.stringify(saved), label).not.toContain(".aws")
     }
+  })
+})
+
+// A file or read tool's saved card gives its file back only in a file line. A
+// card saved in an older format, with a reach line or any other line in its
+// place, cannot be resolved again as its request was: the file it named may
+// lead into a store since, and nothing on the card says which file to judge.
+// It is sealed at load and stays sealed in the store and when settled again.
+// A card whose file line reads back as a clean file is kept as it was.
+describe("a saved file-scoped tool card without a file line", () => {
+  // affects is the line the card is saved with in place of its file line;
+  // the control row keeps its own.
+  type Row = { id: number; tool: string; affects?: string; moves: boolean }
+  const olderLines = [unrestrictedApprovalScope.command, "Reads files in the session worktree."]
+  const cleanLine = (id: number) => `The file row-${id}/notes.txt in the session worktree.`
+  const rows: Row[] = [
+    ...fileScopedTools.flatMap((tool, index) => olderLines.map((affects, line) => ({
+      id: 200 + index * olderLines.length + line,
+      tool,
+      affects,
+      moves: true,
+    }))),
+    { id: 299, tool: "Read", moves: false },
+  ]
+  const sealed = rows.filter((row) => row.moves)
+  const control = rows.find((row) => !row.moves)!
+
+  it("seals each one after its file moved into a store, and keeps a clean Read card", async () => {
+    expect(sealed.map((row) => row.tool)).toContain("Read")
+    const cards: Approval[] = []
+    const { directory: root, card, store } = await setup(async (root) => {
+      for (const row of rows) {
+        const directory = join(root, `row-${row.id}`)
+        await mkdir(directory)
+        await writeFile(join(directory, "notes.txt"), "")
+        const { approval } = await settleApproval({
+          approval: {
+            id: `approval-tool-${row.id}`,
+            sessionId: demoWorkspace.sessions[0]!.id,
+            machine: "macbook-pro-m3",
+            agent: "claude-code / sonnet",
+            mode: "build",
+            estimatedDuration: "Unknown",
+            checkpoint: "unavailable",
+            providerRequestId: row.id,
+            requestedAt: "2026-09-24T00:00:00.000Z",
+          },
+          request: { workspace: root, cwd: directory, command: row.tool, path: "notes.txt", reason: "Use a tool" },
+          scope: undefined,
+          execution: "resolve",
+          risk: () => "normal",
+        })
+        expect(approval, row.tool).toMatchObject({ risk: "normal", affects: cleanLine(row.id) })
+        cards.push({ ...structuredClone(approval) as Approval, ...(row.affects === undefined ? {} : { affects: row.affects }) })
+        if (!row.moves) continue
+        const into = join(root, ".aws", `row-${row.id}`, "notes.txt")
+        await mkdir(dirname(into), { recursive: true })
+        await rename(join(directory, "notes.txt"), into)
+        await symlink(into, join(directory, "notes.txt"))
+      }
+    }, undefined, { saved: () => cards })
+
+    const persisted = store.load().approvals
+    const sealedCard = {
+      risk: "hard-gate",
+      directory: "[REDACTED] in the session worktree",
+      execution: { state: "unresolved", reason: "sensitive-content" },
+    }
+    for (const row of sealed) {
+      const label = `${row.tool}: ${row.affects} (row ${row.id})`
+      const loaded = await card(row.id)
+      expect.soft(loaded, label).toMatchObject(sealedCard)
+      expect.soft(JSON.stringify(loaded), label).not.toMatch(/\.aws|notes\.txt|row-/u)
+      const saved = persisted.find((approval) => approval.providerRequestId === row.id)
+      expect.soft(saved, label).toMatchObject(sealedCard)
+      expect.soft(JSON.stringify(saved), label).not.toMatch(/\.aws|notes\.txt|row-/u)
+      const again = await settleApproval(savedSettlementInput(saved!, root, undefined, () => "normal"))
+      expect.soft(again.approval, label).toMatchObject(sealedCard)
+    }
+
+    const kept = cards.find((approval) => approval.providerRequestId === control.id)!
+    const { risk, directory, affects, execution } = kept
+    expect(await card(control.id)).toMatchObject({ risk, directory, affects, execution })
+    expect(persisted.find((approval) => approval.providerRequestId === control.id))
+      .toMatchObject({ risk, directory, affects, execution })
   })
 })

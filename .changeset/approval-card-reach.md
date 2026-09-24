@@ -96,4 +96,8 @@ from the card's saved directory, command, and, for a file or read tool, the file
 names, through the same resolution a new card uses and under the same 2 second deadline. If the
 fresh result differs from the saved record in digest, state, or reason, or any path or operand on
 the card reaches a credential store, the card becomes a hard gate and its record is hidden. A saved
-card whose directory or file line is hidden cannot be resolved again, so it is sealed.
+card whose directory or file line is hidden cannot be resolved again, so it is sealed. So is a
+saved card for a file or read tool, such as Edit or Read, whose resolution reads a file path, when
+its Affects line is not a file
+line that reads back as a path, such as a provider's reach line or an older daemon's wording, since
+nothing on it says which file to judge.
