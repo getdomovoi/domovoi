@@ -26,6 +26,9 @@ import {
 // - a plain line main shows exactly is shown exactly, and so is a complete
 //   counting value;
 // - no redaction takes longer than a second.
+// A value counts as shown when any of its letters or digits occurs more often
+// in the output than in the text around it, so a one-digit value and a value
+// shown in part are both caught.
 // An idle beat makes the terminal emit everything it holds (server.ts calls
 // flush on an idle timer), which shows any value typed after its name on
 // main as well; that is the idle-release fix in #575. Across an idle beat, and
@@ -197,12 +200,29 @@ function cut(text: string, next: () => number): Step[] {
   return steps
 }
 
+// What a value shows is measured by counting: none of its letters or digits
+// may occur more often in the output than in the text around the value, once
+// the redactors' own markers are taken out. A value of any length is checked,
+// and a value shown in part counts as shown.
 function fragments(value: string): string[] {
-  if (/^(?:true|false)$/iu.test(value)) return [value]
-  const runs = value.match(new RegExp(`[${valueLetters}0-9]{3,}`, "gu")) ?? []
-  const all = new Set<string>()
-  for (const run of runs) for (let index = 0; index + 3 <= run.length; index += 1) all.add(run.slice(index, index + 3))
-  return [...all]
+  return [...new Set(value.match(/[A-Za-z0-9]/gu) ?? [])]
+}
+
+const markers = ["[REDACTED]", "[Long command output line omitted]", "…"]
+
+function occurrences(text: string, piece: string): number {
+  return text.split(piece).length - 1
+}
+
+function exposed(item: Case, output: string): string | undefined {
+  const value = item.value!
+  const at = item.text.indexOf(value)
+  if (at < 0) throw new Error(`the value of ${item.shape} is not in its text`)
+  const around = `${item.text.slice(0, at)}${item.text.slice(at + value.length)}`
+  const shown = markers.reduce((text, marker) => text.replaceAll(marker, "\u0000"), output)
+  const pieces = fragments(value)
+  if (pieces.length === 0) throw new Error(`the value of ${item.shape} has nothing to check`)
+  return pieces.find((piece) => occurrences(shown, piece) > occurrences(around, piece))
 }
 
 type Pair = {
@@ -252,10 +272,10 @@ const slowMilliseconds = 1_000
 
 type Failure = { pair: string, kind: string, detail: string }
 
-function failure(item: Case, steps: readonly Step[]): Failure | undefined {
+function failure(item: Case, steps: readonly Step[], under: readonly Pair[] = pairs): Failure | undefined {
   const idle = steps.includes("idle")
   const fail = (pair: Pair, kind: string, detail: string): Failure => ({ pair: pair.name, kind, detail })
-  for (const pair of pairs) {
+  for (const pair of under) {
     const started = performance.now()
     const main = pair.main(item, steps)
     const current = pair.current(item, steps)
@@ -273,11 +293,9 @@ function failure(item: Case, steps: readonly Step[]): Failure | undefined {
     }
     const lost = item.kept.find((part) => main.includes(part) && !current.includes(part))
     if (lost !== undefined) return fail(pair, "loses what main keeps", `${JSON.stringify(lost)}: ${JSON.stringify(current.slice(-160))}`)
-    const pieces = fragments(item.value!)
-    if (pieces.length === 0) continue
-    const shown = pieces.find((piece) => current.includes(piece))
+    const shown = exposed(item, current)
     if (shown === undefined) continue
-    if (!pieces.some((piece) => main.includes(piece))) return fail(pair, "shows a value main hides", JSON.stringify(shown))
+    if (exposed(item, main) === undefined) return fail(pair, "shows a value main hides", JSON.stringify(shown))
     if (item.rule === "hide" && absolute) return fail(pair, "shows a prefixed value", JSON.stringify(shown))
   }
   return undefined
@@ -331,4 +349,79 @@ describe("prefixed secret names against main", () => {
     if (process.env.PREFIXED_REDACTION_FUZZ_REPORT) writeFileSync(process.env.PREFIXED_REDACTION_FUZZ_REPORT, report.join("\n"))
     expect(report).toEqual([])
   }, 10_000 + cases * 3)
+})
+
+// Shapes that end the terminal's drop of a value longer than its carry, each
+// split at every point across two reads: a quoted value with an escaped quote
+// inside it, and a name that fills the carry before its quoted value starts.
+describe("values the terminal drops, split at every point", () => {
+  const long = valueLetters.repeat(34)
+  const escaped = `${long}\\"mkqz`
+  const escapedSingle = `${long}\\'mkqz`
+  const keyOf = (length: number) => `${"a".repeat(length - "-token".length)}-token`
+  const splitCases: Case[] = [
+    { shape: "escaped-quote-assignment", text: `token="${escaped}" -s\n`, value: escaped, rule: "main", kept: [" -s"] },
+    { shape: "escaped-quote-prefixed", text: `export X_TOKEN="${escaped}" -s\n`, value: escaped, rule: "hide", kept: [" -s"] },
+    { shape: "escaped-quote-json", text: `{"x-token": "${escaped}", "safe": "visible"}\n`, value: escaped, rule: "hide", kept: ["\"safe\": \"visible\"}"] },
+    { shape: "escaped-quote-json-tight", text: `{"x-token":"${escaped}","safe":"visible"}\n`, value: escaped, rule: "hide", kept: ["\"safe\":\"visible\"}"] },
+    { shape: "escaped-single-quote", text: `x.secret='${escapedSingle}' -s\n`, value: escapedSingle, rule: "hide", kept: [" -s"] },
+    { shape: "escaped-backslash", text: `token="${long}\\\\" -s mkqz\n`, value: `${long}\\\\`, rule: "main", kept: [" -s mkqz"] },
+    ...[250, 252, 253, 254, 255, 256, 258].flatMap((length): Case[] => [
+      { shape: `long-key-${length}-json-spaced`, text: `{"${keyOf(length)}": "zqx jwvk", "safe": "visible"}\n`, value: "zqx jwvk", rule: "hide", kept: ["\"safe\": \"visible\"}"], longName: true },
+      { shape: `long-key-${length}-json-tight`, text: `{"${keyOf(length)}":"zqxjwvkm","safe":"visible"}\n`, value: "zqxjwvkm", rule: "hide", kept: ["\"safe\":\"visible\"}"], longName: true },
+    ]),
+    { shape: "long-key-json-single", text: `{"${keyOf(254)}": 'zqx jwvk', "safe": "visible"}\n`, value: "zqx jwvk", rule: "hide", kept: ["\"safe\": \"visible\"}"], longName: true },
+    { shape: "long-key-assignment", text: `${keyOf(254)}="zqx jwvk" -s\n`, value: "zqx jwvk", rule: "hide", kept: [" -s"], longName: true },
+    { shape: "long-key-long-value", text: `{"${keyOf(254)}": "${long} mkqz", "safe": "visible"}\n`, value: `${long} mkqz`, rule: "hide", kept: ["\"safe\": \"visible\"}"], longName: true },
+  ]
+
+  it.each(splitCases)("$shape", (item) => {
+    const failed: string[] = []
+    for (let at = 1; at < item.text.length; at += 1) {
+      const steps = [item.text.slice(0, at), item.text.slice(at)]
+      const problem = failure(item, steps)
+      if (problem) failed.push(`${at} ${problem.pair}: ${problem.kind}: ${problem.detail}`)
+    }
+    expect(failed).toEqual([])
+  })
+})
+
+// The check of the check: a redactor that shows everything, or all but one
+// character of a value, must fail the same oracle.
+function standIn(show: (item: Case) => string): readonly Pair[] {
+  return pairs.map((pair) => ({ ...pair, current: (item: Case) => show(item) }))
+}
+const identity = standIn((item) => item.text)
+const firstCharacterShown = standIn((item) => item.text.replace(item.value!, `${item.value!.slice(0, 1)}[REDACTED]`))
+
+describe("the prefixed differential oracle", () => {
+  const probe = (text: string, value: string): Case => ({ shape: "probe", text, value, rule: "hide", kept: [] })
+  const probes = [
+    probe("DB_PASSWORD=7\n", "7"),
+    probe("DB_PASSWORD=42\n", "42"),
+    probe("export db.token='9'\n", "9"),
+    probe("{\"x-secret\": \"false\"}\n", "false"),
+    probe("tool --limit-token 3 -s\n", "3"),
+  ]
+
+  it.each(probes)("hides $text and fails a redactor that shows it whole or in part", (item) => {
+    expect(failure(item, [item.text])).toBeUndefined()
+    expect(failure(item, [item.text], identity)?.kind).toMatch(/^shows a (?:prefixed value|value main hides)$/u)
+    expect(failure(item, [item.text], firstCharacterShown)?.kind).toMatch(/^shows a (?:prefixed value|value main hides)$/u)
+  })
+
+  it("fails a redactor that shows everything on every generated case that must be hidden", () => {
+    const missed: string[] = []
+    let hidden = 0
+    for (let index = 0; index < 4_000; index += 1) {
+      const next = random(seed + index)
+      const item = generate(next)
+      if (item.rule !== "hide") continue
+      hidden += 1
+      const steps = cut(item.text, next)
+      if (!failure(item, steps, identity)) missed.push(`${item.shape}: ${JSON.stringify(item.text.slice(0, 80))}`)
+    }
+    expect(hidden).toBeGreaterThan(1_000)
+    expect(missed).toEqual([])
+  }, 10_000 + 4_000 * 3)
 })

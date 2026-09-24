@@ -19,4 +19,7 @@ sensitive name is `total`, `has`, `max`, `min`, `count`, `is` or `enable`, so `t
 `DB_PASSWORD=123456` and `limit_token=5`. One-dash flags such as `-db-password value`
 and `-token value` are read as flags too. The terminal holds a prefixed name whole across reads,
 with a `set "` or `$env:` before it, drops the rest of a value that outgrows what it carries up to
-the value's end, and does not show a counting value whose line began before an idle flush.
+the value's end, and does not show a counting value whose line began before an idle flush. A
+quoted value it drops ends only at an unescaped closing quote, even when a backslash and the quote
+arrive in different reads. When a name alone outgrows what it carries, the value that follows is
+still dropped whole, quoted or not, and the fields after it are kept.
