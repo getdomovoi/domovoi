@@ -31,6 +31,7 @@ describe("daemonConnectionCopy", () => {
   it("says Desktop is connected to the installed service when a daemon owns the profile", () => {
     const copy = daemonConnectionCopy({ kind: "attached", owner: "daemon" })
 
+    expect(copy.owner).toBe("outside")
     expect(copy.title).toBe("Connected to the installed Domovoi service")
     expect(copy.detail).toMatch(/keeps running/u)
     expectPlainPunctuation(copy)
