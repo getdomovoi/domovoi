@@ -76,3 +76,25 @@ it("uses the admitted client for inventory and withdraws access on revocation du
   expect(JSON.stringify(access.snapshot())).not.toContain("secret from remote")
   reader.close()
 })
+
+it("asks an admitted machine directly for a session search and shows nothing without authority", async () => {
+  await expect(access.search(machineId, "billing", new AbortController().signal)).rejects.toMatchObject({ reason: "client-credential-required" })
+  const pending = access.authorize(machineId, "a".repeat(43), new AbortController().signal)
+  await vi.advanceTimersByTimeAsync(0)
+  completeHandshake(sockets.socket(0))
+  await vi.advanceTimersByTimeAsync(0)
+  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
+  await pending
+  const searching = access.search(machineId, "billing", new AbortController().signal)
+  await vi.advanceTimersByTimeAsync(0)
+  const socket = sockets.socket(1)
+  completeHandshake(socket)
+  await vi.advanceTimersByTimeAsync(0)
+  respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(sentRequests(socket, "session.search")[0]?.params).toMatchObject({ query: "billing", limit: 20 })
+  respond(socket, "session.search", { query: "billing", truncated: false, matches: [{ session: demoWorkspace.sessions[0]!, matchedIn: "title" }] })
+  const result = await searching
+  expect(result.matches).toHaveLength(1)
+  expect(socket.readyState).not.toBe(1)
+})

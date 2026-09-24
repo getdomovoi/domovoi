@@ -4,6 +4,9 @@ import * as Clipboard from "expo-clipboard"
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
 import { TextInput, View } from "react-native"
 
+import { gateReach } from "../gate-reach"
+import { route } from "../launch-state"
+import type { HandheldClient } from "../lib/protocol-facts"
 import { redeemPairingCode, type PairedCredential } from "../lib/redeem-pairing-code"
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
@@ -48,14 +51,67 @@ function machineName(payload: PairingPayload): string {
   try { return new URL(payload.url).hostname } catch { return payload.url }
 }
 
+type Paired = { machine: string, route: string, deviceId: string | undefined }
+
+// The machine's id for this device, shortened the way the design draws it. The
+// token is never shown; this id is not a secret.
+function credentialReference(deviceId: string): string {
+  const id = deviceId.replace(/^device-/, "")
+  return id.length <= 8 ? id : `${id.slice(0, 4)}…${id.slice(-3)}`
+}
+
+// Nothing can wake a phone over a tailnet, so the limit is said the moment
+// pairing succeeds rather than when a gate is missed. On a tablet the card
+// stands alone in the middle of the screen, with its action inside it.
+function PairedCard({ paired, device, onDone }: {
+  paired: Paired
+  device: HandheldClient
+  onDone: () => void
+}) {
+  const tablet = device === "tablet"
+  const facts = paired.deviceId
+    ? `${paired.route} · credential ${credentialReference(paired.deviceId)}`
+    : paired.route
+  const card = (
+    <Card className={tablet ? "w-full max-w-[520px] gap-4" : "gap-3"}>
+      <View className="gap-[5px]">
+        <View className="flex-row items-center gap-2.5">
+          <View className="h-[7px] w-[7px] rounded-full bg-success" />
+          <Text variant="section" className="flex-1">{`Paired with ${paired.machine}`}</Text>
+        </View>
+        <Text variant="machine" className="pl-[17px] text-faint">{facts}</Text>
+      </View>
+      <View className="flex-row items-start gap-2.5 border-t border-border pt-3">
+        <View className="mt-[7px] h-1.5 w-1.5 rounded-full bg-info" />
+        <Text variant="meta" className="flex-1">{gateReach(device)}</Text>
+      </View>
+      {tablet ? (
+        <View className="flex-row">
+          <Button title="Open Sessions" variant="primary" onPress={onDone} />
+        </View>
+      ) : null}
+    </Card>
+  )
+  if (tablet) return <View className="flex-1 items-center justify-center px-6">{card}</View>
+  return (
+    <View className="flex-1 gap-[14px] px-3 pb-3">
+      {card}
+      <View className="flex-1" />
+      <Button title="Open Sessions" variant="primary" shape="wide" onPress={onDone} />
+    </View>
+  )
+}
+
 export function PairScanScreen({
   permission,
   requestPermission,
   Scanner = CameraScanner,
   onPaired,
+  onDone,
   onCancel,
   redeem = redeemPairingCode,
   deviceName = "",
+  device,
   mode = "scan",
   bottomInset = 0,
   readClipboard = Clipboard.getStringAsync,
@@ -64,14 +120,18 @@ export function PairScanScreen({
   requestPermission: () => Promise<PermissionResponse>
   Scanner?: PairScanner
   onPaired: (credential: PairedCredential) => void
+  // After the paired card, when the person opens Sessions.
+  onDone: () => void
   // Injected so a test can spend a code without a daemon.
-  redeem?: (payload: PairingPayload, label: string) => Promise<PairedCredential>
+  redeem?: (payload: PairingPayload, label: string) => Promise<PairedCredential & { deviceId?: string }>
   onCancel: () => void
   // What the floating tab bar covers, so Cancel and the paste field sit
   // above it and the keyboard can push the field into view.
   bottomInset?: number
   // What the machine's device list will call this phone.
   deviceName?: string
+  // Which device this is, so the paired card names it.
+  device: HandheldClient
   mode?: "scan" | "type"
   readClipboard?: () => Promise<string>
 }) {
@@ -81,6 +141,7 @@ export function PairScanScreen({
   const [name, setName] = useState(deviceName)
   const [pairing, setPairing] = useState(false)
   const [refusal, setRefusal] = useState("")
+  const [paired, setPaired] = useState<Paired>()
   // A redemption already in flight cannot be recalled, and the code is spent
   // either way. What must not happen is a late success pairing the phone after
   // the person cancelled or left, which would overwrite a pairing they made
@@ -93,6 +154,17 @@ export function PairScanScreen({
   const cameraRefused = permission !== null && !permission.granted && !permission.canAskAgain
   const cameraReady = permission?.granted === true
   const found = read?.ok ? read.payload : undefined
+
+  if (paired) {
+    return (
+      <View className="flex-1 bg-background">
+        <View className="px-4 pb-3 pt-2">
+          <Text variant="heading">Pair a machine</Text>
+        </View>
+        <PairedCard paired={paired} device={device} onDone={onDone} />
+      </View>
+    )
+  }
 
   return (
     <View className="flex-1 bg-background">
@@ -116,7 +188,7 @@ export function PairScanScreen({
               <Text
                 key={line.text}
                 variant="note"
-                className={line.tone === "unbuilt" ? "text-warning" : undefined}
+                className={line.tone === "unbuilt" ? "text-warning" : ""}
               >{line.text}</Text>
             ))}
             <Text variant="note">
@@ -147,7 +219,12 @@ export function PairScanScreen({
                 attempt.current += 1
                 const mine = attempt.current
                 redeem(found, name).then(
-                  (credential) => { if (attempt.current === mine) onPaired(credential) },
+                  (result) => {
+                    if (attempt.current !== mine) return
+                    const { deviceId, ...credential } = result
+                    setPaired({ machine: machineName(found), route: route(found.url).kind, deviceId })
+                    onPaired(credential)
+                  },
                   (cause: unknown) => {
                     if (attempt.current !== mine) return
                     setPairing(false)
