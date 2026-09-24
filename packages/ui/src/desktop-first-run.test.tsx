@@ -56,6 +56,16 @@ describe("desktop first-run provider diagnostics", () => {
     expect(providerFirstRunRecovery(provider, providerFailure)).toMatchObject({ kind, canComplete })
   })
 
+  it("says why a detected CLI cannot start sessions, in the daemon's words", () => {
+    const problem = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    expect(providerFirstRunRecovery({ ...ready, id: "claude-code", command: "claude", problem })).toMatchObject({
+      kind: "adapter-unavailable",
+      title: "Claude Code cannot start sessions",
+      description: problem,
+      canComplete: false,
+    })
+  })
+
   it("provides a bounded action for every non-ready state", () => {
     expect(providerFirstRunRecovery({ ...ready, status: "missing" })).toMatchObject({
       description: expect.stringContaining("provider's platform instructions"),

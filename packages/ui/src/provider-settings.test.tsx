@@ -137,6 +137,27 @@ describe("Settings shell and provider pane", () => {
     expect(markup).toContain(">External editor</h1>")
   })
 
+  it("shows why a detected provider cannot start sessions instead of the sign-in hint", () => {
+    const problem = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    const markup = renderToStaticMarkup(
+      <SettingsShell
+        providers={[{ ...providers[0]!, version: "2.1.100", problem }]}
+        secrets={[]}
+        approvalRules={[]}
+        notifications={defaultNotificationPreferences()}
+        onNotificationsChange={vi.fn()}
+        onOpenFleet={vi.fn()}
+        onOpenSkills={vi.fn()}
+        onOpenAudit={vi.fn()}
+        theme="dark"
+        onThemeChange={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain(problem)
+    expect(markup).toContain("Cannot start")
+  })
+
   it("uses the installed single-choice primitive for every allowlisted editor", () => {
     const markup = renderToStaticMarkup(
       <ExternalEditorSettings editor="cursor" onEditorChange={vi.fn()} />,
