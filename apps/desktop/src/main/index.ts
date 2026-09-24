@@ -12,6 +12,7 @@ import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import { DesktopDaemonService, stageDaemonRuntime } from "./daemon-service.js"
 import { loadDaemonModule } from "./daemon-module.js"
+import { withServiceMismatch } from "./service-mismatch.js"
 import { daemonErrorLogSink, recordDaemonRuntimeFailure, recordStartupFailure } from "./startup-failure.js"
 import {
   developmentDaemonEnvironment,
@@ -130,7 +131,7 @@ const daemonModule = await loadDaemonModule({ isPackaged: app.isPackaged, resour
   app.exit(1)
   return process.exit(1)
 })
-const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, readLocalServiceHandoffRefusal, removeDaemonService } = daemonModule.module
+const { acquireLocalDaemon, verifyLocalFleetClientRoute, installDaemonService, readDaemonServiceStatus, readDaemonServiceRuntimeVersion, readLocalServiceHandoffRefusal, removeDaemonService } = daemonModule.module
 if (launchSmoke) console.info(`DOMOVOI_DESKTOP_DAEMON_MODULE ${daemonModule.from}`)
 const daemonSeam = developmentLoopModule
   ? developmentLoopModule.resolveDesktopDaemonSeam({
@@ -138,7 +139,7 @@ const daemonSeam = developmentLoopModule
       environment: process.env,
       acquire: acquireLocalDaemon,
     })
-  : acquireLocalDaemon
+  : withServiceMismatch(acquireLocalDaemon, () => readDaemonServiceRuntimeVersion())
 
 // Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({

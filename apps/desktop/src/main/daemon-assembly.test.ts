@@ -53,6 +53,7 @@ describe("desktop daemon assembly", () => {
       "DaemonServiceRuntimeMissingError",
       "acquireLocalDaemon",
       "installDaemonService",
+      "readDaemonServiceRuntimeVersion",
       "readDaemonServiceStatus",
       "readLocalServiceHandoffRefusal",
       "removeDaemonService",

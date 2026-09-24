@@ -41,6 +41,14 @@ describe("where the in-app daemon is loaded from", () => {
       .rejects.toThrow(/is missing readLocalServiceHandoffRefusal\. The shipped daemon runtime does not match this app\./)
   })
 
+  // Ruled 2026-09-23 (#577, A): the service runtime version comes from the same runtime.
+  it("exposes the service runtime version reader from the runtime", async () => {
+    const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
+    const { readDaemonServiceRuntimeVersion: _omitted, ...without } = module
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => without))
+      .rejects.toThrow(/is missing readDaemonServiceRuntimeVersion\./)
+  })
+
   it("names the path when the runtime cannot be imported, as a load error", async () => {
     const failed = loadDaemonModule({ isPackaged: true, resourcesPath: "/r" }, async () => { throw new Error("Cannot find module") })
     await expect(failed).rejects.toBeInstanceOf(DaemonRuntimeLoadError)

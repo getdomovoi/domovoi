@@ -18,6 +18,7 @@ export const daemonModuleExports = [
   "readLocalServiceHandoffRefusal",
   "installDaemonService",
   "readDaemonServiceStatus",
+  "readDaemonServiceRuntimeVersion",
   "removeDaemonService",
   "DaemonServiceRuntimeMissingError",
 ] as const
