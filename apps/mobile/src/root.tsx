@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { useFonts } from "expo-font"
 
 import { App } from "./app"
+import { AppErrorBoundary } from "./components/app-error-boundary"
 import { Splash } from "./components/splash"
 import { drawWithFonts, fontWaitLimitMs } from "./theme/font-gate"
 import { fontSources } from "./theme/fonts"
@@ -24,6 +25,8 @@ export function Root() {
     if (error) console.warn(`fonts did not load, drawing with the platform face: ${error.message}`)
   }, [error])
 
-  const content = drawWithFonts({ loaded, failed: error !== null, waitedOut }) ? <App /> : <Splash />
+  const content = drawWithFonts({ loaded, failed: error !== null, waitedOut })
+    ? <AppErrorBoundary><App /></AppErrorBoundary>
+    : <Splash />
   return <ThemeProvider>{content}</ThemeProvider>
 }

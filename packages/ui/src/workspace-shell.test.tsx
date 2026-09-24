@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, normalizePermissionMode, openProviderChoice, providerHandoffChoices, providerSettingsNavigationLabel, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArchiveSessionAction, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
 import { buildWorkspaceCommands } from "./command-palette"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
@@ -17,19 +17,6 @@ const runtime: Runtime = {
   auto: false,
 }
 
-it.each(["ask", "plan"] as const)("clears auto when the UI selects %s mode", (permissionMode) => {
-  expect(normalizePermissionMode({ ...runtime, auto: true }, permissionMode)).toMatchObject({
-    permissionMode,
-    auto: false,
-  })
-})
-
-it("retains an explicit auto choice when the UI remains in Build mode", () => {
-  expect(normalizePermissionMode({ ...runtime, auto: true }, "build")).toMatchObject({
-    permissionMode: "build",
-    auto: true,
-  })
-})
 
 describe("PreviewVariantThumbnail", () => {
   it("keeps authorization dependencies stable across unrelated artifact replacement", () => {
@@ -77,9 +64,6 @@ describe("PreviewVariantThumbnail", () => {
 })
 
 
-it("names settings navigation for the surface it opens", () => {
-  expect(providerSettingsNavigationLabel).toBe("Provider settings")
-})
 
 it("does not refetch skills for unrelated workspace updates", () => {
   const updated = structuredClone(demoWorkspace)

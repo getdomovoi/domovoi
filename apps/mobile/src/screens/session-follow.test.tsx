@@ -108,6 +108,18 @@ describe("SessionScreen follow", () => {
     await scrollTo(1300)
     expect(screen.queryByText("Waiting on you")).toBeNull()
   })
+
+  it("says a watching phone's waiting decision waits on a full-access device", async () => {
+    const { snapshot, detail } = fixture()
+    const base = { ...props(detail, snapshot), access: "watching" as const }
+    const gated = { ...grown(detail, 1), approvalId: "approval-1" }
+    const view = await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...base} /></SafeAreaProvider>)
+    await measure()
+    await scrollTo(100)
+    view.rerender(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...base} detail={gated} /></SafeAreaProvider>)
+    expect(await screen.findByText("Waiting on a full-access device")).toBeOnTheScreen()
+    expect(screen.queryByText("Waiting on you")).toBeNull()
+  })
 })
 
 // The route can die with the thread open. The screen says what is drawn is

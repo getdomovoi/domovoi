@@ -4,7 +4,7 @@ import {
   protocolVersionMismatchErrorCode,
 } from "@getdomovoi/protocol"
 
-import { DaemonError } from "./daemon"
+import { DaemonError, DaemonProtocolError } from "./daemon"
 
 export type ConnectionFault = {
   // Transient faults are retried forever, because a phone loses its connection
@@ -27,6 +27,13 @@ const credential: ConnectionFault = {
 }
 
 export function connectionFault(cause: unknown): ConnectionFault {
+  if (cause instanceof DaemonProtocolError) {
+    return {
+      retriable: false,
+      headline: "This app is out of date with the daemon",
+      detail: `${cause.message}. Update whichever of the two is older.`,
+    }
+  }
   if (!(cause instanceof DaemonError)) {
     return {
       retriable: true,
