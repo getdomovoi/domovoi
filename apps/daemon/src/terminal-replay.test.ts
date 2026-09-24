@@ -80,3 +80,34 @@ describe("TerminalReplayBuffer", () => {
     expect(buffer.heldCharacters).toBeLessThan(maximumTerminalReplayCharacters + 513)
   })
 })
+
+describe("TerminalReplayBuffer record", () => {
+  it("names when its record starts and whether earlier output was dropped", () => {
+    let now = 1_000
+    const buffer = new TerminalReplayBuffer(8, () => now)
+    expect(buffer.record()).toEqual({ text: "", startsAt: undefined, dropped: false })
+    buffer.push("abcd")
+    now = 2_000
+    buffer.push("efgh")
+    expect(buffer.record()).toEqual({ text: "abcdefgh", startsAt: 1_000, dropped: false })
+    now = 3_000
+    buffer.push("ij")
+    // The first segment is only partly inside the window: the record still
+    // starts with it, and says that something before it was dropped.
+    expect(buffer.record()).toEqual({ text: "cdefghij", startsAt: 1_000, dropped: true })
+    now = 3_500
+    buffer.push("klmn")
+    expect(buffer.record()).toEqual({ text: "ghijklmn", startsAt: 2_000, dropped: true })
+    now = 4_000
+    buffer.push("0123456789")
+    expect(buffer.record()).toEqual({ text: "23456789", startsAt: 4_000, dropped: true })
+  })
+
+  it("marks a partially kept first segment as dropped", () => {
+    const buffer = new TerminalReplayBuffer(4, () => 7)
+    buffer.push("abc")
+    buffer.push("de")
+    expect(buffer.read()).toBe("bcde")
+    expect(buffer.record()).toEqual({ text: "bcde", startsAt: 7, dropped: true })
+  })
+})

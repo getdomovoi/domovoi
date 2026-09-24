@@ -13,6 +13,7 @@ import {
 } from "./codex-repository-config.js"
 import { redactDurableText } from "./secret-redaction.js"
 import { normalizeProviderUsage } from "./usage.js"
+import { onProcessEnd } from "./process-end.js"
 
 export type { AgentAdapter, AgentEvent } from "./agents.js"
 
@@ -176,12 +177,24 @@ export class StdioCodexTransport implements CodexTransport {
     this.#child = childFactory()
     this.#shutdownGraceMs = shutdownGraceMs
     const stderrTail = captureStderrTail(this.#child.stderr)
+    // Once the process has exited, or its stdout has ended, an unparseable line
+    // is not reported: the process-end report below carries the reason it
+    // stopped, usually a sign-in failure on stderr. Such a line is a fragment
+    // the process died in the middle of, or output a background process that
+    // inherited the pipe wrote after the exit. The end listener is registered
+    // before readline's own, so it is set by the time readline flushes a last
+    // line that had no newline.
+    let stdoutEnded = false
+    let exited = false
+    this.#child.stdout.once("end", () => { stdoutEnded = true })
+    this.#child.once("exit", () => { exited = true })
     const lines = createInterface({ input: this.#child.stdout })
     lines.on("line", (line) => {
       try {
         const message = requireJsonRpcMessage(JSON.parse(line))
         for (const listener of this.#messageListeners) listener(message)
       } catch {
+        if (stdoutEnded || exited) return
         this.#emitError(new Error("Codex app-server emitted invalid JSONL"))
       }
     })
@@ -189,7 +202,7 @@ export class StdioCodexTransport implements CodexTransport {
     this.#child.stdin.on("error", (error) => this.#emitError(error))
     this.#child.stdout.on("error", (error) => this.#emitError(error))
     this.#child.stderr.on("error", (error) => this.#emitError(error))
-    this.#child.once("exit", (code, signal) => {
+    onProcessEnd(this.#child, (code, signal) => {
       if (this.#closing) return
       const exit = code !== null
         ? `Codex app-server exited with code ${code}`

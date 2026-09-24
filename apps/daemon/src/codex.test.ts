@@ -1,4 +1,4 @@
-import type { ChildProcessWithoutNullStreams } from "node:child_process"
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 
@@ -193,6 +193,7 @@ describe("StdioCodexTransport", () => {
     transport.onError(error)
 
     child.emit("exit", 1, null)
+    child.emit("close", 1, null)
     child.emit("error", new Error("late process error"))
 
     expect(error).toHaveBeenCalledTimes(1)
@@ -212,11 +213,99 @@ describe("StdioCodexTransport", () => {
     child.stderr.write("token=super-secret\nNot logged in\n")
     await new Promise((resolve) => setImmediate(resolve))
     child.emit("exit", 1, null)
+    child.emit("close", 1, null)
 
     expect(error).toHaveBeenCalledTimes(1)
     const message = (error.mock.calls[0]?.[0] as Error).message
     expect(message).toBe("Codex app-server exited with code 1: token=[REDACTED]\nNot logged in")
     expect(classifyProviderFailure(new Error(message)).kind).toBe("authentication-expired")
+  })
+
+  it.runIf(process.platform !== "win32")("keeps the sign-in reason when a real child ends on a partial stdout line", async () => {
+    for (let run = 0; run < 20; run += 1) {
+      const transport = new StdioCodexTransport(() => spawn(
+        "sh",
+        ["-c", "printf 'Error: boom'; echo 'Not logged in' >&2; exit 1"],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      ))
+      const failure = new Promise<Error>((resolve) => transport.onError(resolve))
+      const message = (await failure).message
+
+      expect(message, `run ${run}`).toBe("Codex app-server exited with code 1: Not logged in")
+      expect(classifyProviderFailure(new Error(message)).kind).toBe("authentication-expired")
+      await transport.close()
+    }
+  })
+
+  it("keeps the exit reason over malformed output an inherited pipe delivers after the exit", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    child.stderr.write("Not logged in\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("exit", 1, null)
+    child.stdout.write("not json from a grandchild\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("close", 1, null)
+
+    expect(error).toHaveBeenCalledTimes(1)
+    expect((error.mock.calls[0]?.[0] as Error).message).toBe("Codex app-server exited with code 1: Not logged in")
+  })
+
+  it.runIf(process.platform !== "win32")("keeps the sign-in reason when a background process writes a malformed line after the exit", async () => {
+    for (let run = 0; run < 5; run += 1) {
+      const transport = new StdioCodexTransport(() => spawn(
+        "sh",
+        ["-c", "(sleep 0.1; echo 'not json') & echo 'Not logged in' >&2; exit 1"],
+        { stdio: ["pipe", "pipe", "pipe"] },
+      ))
+      const failure = new Promise<Error>((resolve) => transport.onError(resolve))
+      const message = (await failure).message
+
+      expect(message, `run ${run}`).toBe("Codex app-server exited with code 1: Not logged in")
+      await transport.close()
+    }
+  })
+
+  it("reads stderr that arrives after the exit and before the streams close", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const error = vi.fn()
+    transport.onError(error)
+
+    child.emit("exit", 1, null)
+    child.stderr.write("Not logged in\n")
+    await new Promise((resolve) => setImmediate(resolve))
+    child.emit("close", 1, null)
+
+    expect(error).toHaveBeenCalledTimes(1)
+    expect((error.mock.calls[0]?.[0] as Error).message).toBe("Codex app-server exited with code 1: Not logged in")
+  })
+
+  it("still reports an exit whose streams a grandchild keeps open", async () => {
+    vi.useFakeTimers()
+    try {
+      const child = new FakeChild()
+      const transport = new StdioCodexTransport(
+        () => child as unknown as ChildProcessWithoutNullStreams,
+      )
+      const error = vi.fn()
+      transport.onError(error)
+
+      child.emit("exit", 1, null)
+      expect(error).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1_000)
+
+      expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: "Codex app-server exited with code 1" }))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("keeps only the last 16 KiB of stderr in the exit error", async () => {
@@ -231,6 +320,7 @@ describe("StdioCodexTransport", () => {
     child.stderr.write("Not logged in\n")
     await new Promise((resolve) => setImmediate(resolve))
     child.emit("exit", null, "SIGABRT")
+    child.emit("close", null, "SIGABRT")
 
     const message = (error.mock.calls[0]?.[0] as Error).message
     expect(message.startsWith("Codex app-server exited from signal SIGABRT: ")).toBe(true)
