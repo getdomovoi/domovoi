@@ -291,9 +291,8 @@ function migrateStoredWorkspace(value: unknown): {
   const migrated = structuredClone(value)
   let repaired = false
   // These reviewed predecessors retain their state. Rules from 0.6 gain a zero
-  // use count below; 0.8 differs from 0.9 only by optional fields. Full
-  // validation still runs before any migrated write.
-  if (typeof migrated.protocolVersion === "string" && /^0\.(?:3|6|7|8)\.\d+$/.test(migrated.protocolVersion)) {
+  // use count below; full validation still runs before any migrated write.
+  if (typeof migrated.protocolVersion === "string" && /^0\.(?:3|6|7)\.\d+$/.test(migrated.protocolVersion)) {
     migrated.protocolVersion = protocolVersion
     repaired = true
   }
