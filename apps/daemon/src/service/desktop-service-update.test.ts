@@ -8,7 +8,7 @@ import {
   updateDaemonService,
   type DaemonServiceDependencies,
 } from "../public.js"
-import { createServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import type { CapturedRun, ServiceEffects } from "./install.js"
 import { installedWslTask } from "./wsl-registration.js"
 import { wslUpdateIntentPath } from "./wsl-install.js"
@@ -42,7 +42,16 @@ type Fake = DaemonServiceDependencies & ServiceEffects & {
   serviceLease: { release: ReturnType<typeof vi.fn<() => void>> }
   profileLeases: { release: ReturnType<typeof vi.fn<() => void>> }[]
   files: Map<string, string>
+  // The Windows logon task: its registered command, whether an instance of it
+  // runs, and the command that instance was started from. Task Scheduler
+  // ignores a run while an instance runs, and a stop ends the instance.
+  task: { definition: string, running: boolean, runningDefinition: string }
+  // A start whose daemon reports ready only this long after it; a stop before
+  // then means it never does.
+  lateReadyMs: number
 }
+
+const oldWindowsCommand = "\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-config \"C:\\Users\\dl\\.domovoi\\service.json\""
 
 function saved(platform: string, home: string): ServiceConfiguration {
   return { ...createServiceConfiguration({}, { platform, homeDirectory: home, workingDirectory: home }), registrationId }
@@ -68,9 +77,12 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
   ])
   let agentLoaded = true
   let starts = 0
+  let pendingReady: ReturnType<typeof setTimeout> | undefined
   const effects: Fake = {
     order,
     files,
+    task: { definition: oldWindowsCommand, running: true, runningDefinition: oldWindowsCommand },
+    lateReadyMs: 0,
     crashingStarts: 0,
     owner: { instanceId: "instance-old", state: "ready" },
     instances: ["instance-old"],
@@ -104,6 +116,12 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
       order.push(`${command} ${args.join(" ")}`)
       if (args[0] === "bootout") agentLoaded = false
       if (args[0] === "bootstrap") agentLoaded = true
+      if (args[0] === "/create") effects.task.definition = args[args.indexOf("/tr") + 1]!
+      if (args[0] === "/run") {
+        if (effects.task.running) return
+        effects.task.running = true
+        effects.task.runningDefinition = effects.task.definition
+      }
       if (args[0] === "bootstrap" || args[1] === "restart" || args[0] === "/run") start()
     }),
     capture: vi.fn(async (command: string, args: string[]): Promise<CapturedRun> => {
@@ -117,12 +135,18 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
         return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: "C:\\Program Files\\Domovoi\\runtime-1\\node.exe", arguments: "\"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-config \"C:\\Users\\dl\\.domovoi\\service.json\"" })}\n` }
       }
       if (body.includes("DeleteTask")) { order.push("delete task"); return { code: 0, stdout: "domovoi-task:deleted\n" } }
-      if (body.includes("$task.Stop(0)")) { order.push("stop task"); return { code: 0, stdout: "domovoi-task:1\n" } }
+      if (body.includes("$task.Stop(0)")) {
+        order.push("stop task")
+        effects.task.running = false
+        if (pendingReady !== undefined) clearTimeout(pendingReady)
+        pendingReady = undefined
+        return { code: 0, stdout: "domovoi-task:1\n" }
+      }
       if (body.includes("$task.Enabled = $false")) { order.push("disable task"); return { code: 0, stdout: "domovoi-task:1\n" } }
       if (body.includes("RegisterTaskDefinition")) { order.push("register task"); return { code: 0, stdout: "domovoi-task:created\n" } }
       if (body.includes("$task.Run($null)")) { order.push("start task"); start(); return { code: 0, stdout: "domovoi-task:4\n" } }
       order.push(`capture ${command}`)
-      return { code: 0, stdout: "domovoi-task:1\n" }
+      return { code: 0, stdout: effects.task.running ? "domovoi-task:4\n" : "domovoi-task:1\n" }
     }),
     exists: vi.fn(async (path: string) => files.has(path)),
     remove: vi.fn(async (path: string) => { order.push(`remove ${path}`); files.delete(path) }),
@@ -133,9 +157,13 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
   function start() {
     starts += 1
     if (starts <= effects.crashingStarts) { effects.owner = undefined; return }
-    const instanceId = `instance-${effects.instances.length}`
-    effects.instances.push(instanceId)
-    effects.owner = { instanceId, state: "ready" }
+    const ready = () => {
+      const instanceId = `instance-${effects.instances.length}`
+      effects.instances.push(instanceId)
+      effects.owner = { instanceId, state: "ready" }
+    }
+    if (effects.lateReadyMs > 0 && starts === 1) pendingReady = setTimeout(ready, effects.lateReadyMs)
+    else ready()
   }
   return effects
 }
@@ -217,7 +245,7 @@ describe("updateDaemonService with launchd", () => {
   it("puts the previous agent back when the new daemon never reports ready", async () => {
     const effects = fake("darwin", "/Users/dl", { crashingStarts: 1 })
     await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
-      "Domovoi could not start the service on the new runtime: the service did not report ready within 1 seconds. The previous service was put back and is running.",
+      "Domovoi could not start the service on the new runtime: the service did not report ready within 1 second. The previous service was put back and is running.",
     )
     expect(effects.files.get(agent)).toBe(`<plist>${oldRuntime.nodePath}</plist>`)
     expect(effects.owner).toEqual({ instanceId: "instance-1", state: "ready" })
@@ -226,7 +254,7 @@ describe("updateDaemonService with launchd", () => {
   it("does not say the previous service is running when it does not report ready either", async () => {
     const effects = fake("darwin", "/Users/dl", { crashingStarts: 2 })
     await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
-      "Domovoi could not start the service on the new runtime: the service did not report ready within 1 seconds. Putting the previous service back also failed: the service did not report ready within 1 seconds. The service is not running. Check it with `domovoid service status`, then install it again.",
+      "Domovoi could not start the service on the new runtime: the service did not report ready within 1 second. Putting the previous service back also failed: the service did not report ready within 1 second. The service is not running. Check it with `domovoid service status`, then install it again.",
     )
   })
 
@@ -254,6 +282,24 @@ describe("updateDaemonService with launchd", () => {
     )
     expect(effects.write).not.toHaveBeenCalled()
     expect(vi.mocked(effects.run).mock.calls.map(([, args]) => args[0])).toEqual(["bootout", "bootstrap"])
+  })
+
+  // Ruled 2026-09-23: a profile another daemon holds is named in a few words
+  // when putting the previous service back fails too.
+  it("names another daemon holding the profile briefly when the restore fails too", async () => {
+    const effects = fake("darwin", "/Users/dl")
+    effects.claimProfile = vi.fn(() => {
+      effects.owner = { instanceId: "instance-desktop", state: "ready" }
+      throw new ProfileAlreadyOwnedError("/Users/dl/.domovoi")
+    })
+    const run = effects.run
+    effects.run = vi.fn(async (command: string, args: string[], deadline) => {
+      if (args[0] === "bootstrap") throw new Error("old agent refused")
+      await run(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
+      "Domovoi could not start the service on the new runtime: another Domovoi daemon holds the profile. Putting the previous service back also failed: old agent refused. The service is not running. Check it with `domovoid service status`, then install it again.",
+    )
   })
 
   // Review of 77c28291 (P2): the daemon the update stopped still holding the
@@ -382,11 +428,11 @@ describe("updateDaemonService with a Windows logon task", () => {
     let stops = 0
     effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
       const body = script(args)
-      // The first stop leaves the task running (state 4) for as long as it is asked.
-      if (body.includes("$task.Stop(0)")) {
-        stops += 1
+      // The first stop leaves the task running (state 4) for as long as it is
+      // asked; a later stop works.
+      if (body.includes("$task.Stop(0)") && ++stops === 1) {
         effects.order.push("stop task")
-        return { code: 0, stdout: stops === 1 ? "domovoi-task:4\n" : "domovoi-task:1\n" }
+        return { code: 0, stdout: "domovoi-task:4\n" }
       }
       if (stops === 1 && body.includes("[int]$task.State") && !body.includes("domovoi-task-action")) return { code: 0, stdout: "domovoi-task:4\n" }
       return capture(command, args, deadline)
@@ -485,6 +531,33 @@ describe("updateDaemonService with a WSL guest service (ruled B)", () => {
     expect(written.wsl).toMatchObject({ executable: runtime.nodePath, args: [runtime.daemonEntryPath] })
   })
 
+  // Ruled 2026-09-23: inside an update, a failed removal of the old task is
+  // named in a few words, not with the removal command's own advice.
+  it("names a failed removal of the old task briefly, and puts the old task back", async () => {
+    const effects = fake("linux", "/home/dl", {}, wslConfiguration())
+    const capture = effects.capture
+    let deletions = 0
+    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
+      if (script(args).includes("DeleteTask") && ++deletions === 1) return { code: 1, stdout: "", stderr: "Access is denied" }
+      return capture(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
+      "Domovoi could not start the service on the new runtime: the old Windows task could not be removed: Access is denied. The previous service was put back and is running.",
+    )
+  })
+
+  // Ruled 2026-09-23: a damaged intent record has one fixed cause.
+  it("says nothing changed, in fixed words, when the record of an interrupted update is damaged", async () => {
+    for (const damaged of ["{not json", JSON.stringify({ version: 2 }), JSON.stringify({ version: 1, previous: "x", next: "y" })]) {
+      const effects = fake("linux", "/home/dl", {}, wslConfiguration())
+      effects.files.set(intentPath, damaged)
+      await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
+        "Domovoi could not update the service: the record of an interrupted update is unreadable. Nothing was changed, and the service was left as it was.",
+      )
+      expect(effects.order).toEqual([])
+    }
+  })
+
   it("says nothing changed when the guest shutdown cannot be proved", async () => {
     const effects = fake("linux", "/home/dl", {}, wslConfiguration())
     delete effects.stopSupervisor
@@ -492,6 +565,147 @@ describe("updateDaemonService with a WSL guest service (ruled B)", () => {
       "Domovoi could not update the service: WSL guest shutdown proof is unavailable. Nothing was changed, and the service was left as it was.",
     )
     expect(effects.order).toEqual([])
+  })
+})
+
+// Review of ae039f1e: each probe the reviewer ran against the fakes.
+describe("review round 2 probes", () => {
+  const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
+
+  // W2: the new runtime reports ready only after the swap gave up on it. The
+  // restore must stop it, or the late record passes for the old service.
+  it("W2: stops the task the swap started before putting the old one back", async () => {
+    const effects = fake("win32", "C:\\Users\\dl", { lateReadyMs: 60 })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
+    expect(effects.task.runningDefinition).toBe(oldWindowsCommand)
+    expect(effects.order.slice(-3)).toEqual(["stop task", expect.stringMatching(/^schtasks \/create /), "schtasks /run /tn Domovoi daemon"])
+  })
+
+  // W1: the stop fails while the old task runs. The restore must stop it too,
+  // and must not say "not running" while the old daemon runs.
+  it("W1: stops the running task before putting the old one back after a failed stop", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    const capture = effects.capture
+    let stops = 0
+    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
+      if (script(args).includes("$task.Stop(0)") && ++stops === 1) return { code: 1, stdout: "", stderr: "Access is denied." }
+      return capture(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
+    expect(effects.task.runningDefinition).toBe(oldWindowsCommand)
+    expect(effects.owner).toMatchObject({ state: "ready" })
+    expect(effects.owner!.instanceId).not.toBe("instance-old")
+  })
+
+  // R1: the owner read right before the restart fails. The old instance's
+  // record must not count as the new service's.
+  it("R1: never counts the instance that ran before the update as the new one", async () => {
+    const effects = fake("linux", "/home/dl")
+    const read = effects.readOwner!
+    let failed = false
+    // The read right before the restart (after the reload) fails, once.
+    effects.readOwner = vi.fn((profile) => {
+      if (!failed && effects.order.includes("systemctl --user daemon-reload")) {
+        failed = true
+        throw new Error("local-owner.json is being replaced")
+      }
+      return read(profile)
+    })
+    const run = effects.run
+    // The restart leaves the old daemon running: nothing new ever reports ready.
+    effects.run = vi.fn(async (command: string, args: string[], deadline) => {
+      if (args[1] === "restart") { effects.order.push("restart ignored"); return }
+      await run(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toBeInstanceOf(DaemonServiceUpdateError)
+  })
+
+  // S1: once the new service reports ready, a record that cannot be removed
+  // does not undo a working update. The next update or status clears it.
+  it("S1: keeps a working update when its intent record cannot be removed, and clears the leftover later", async () => {
+    const configurationPath = "/home/dl/.domovoi/service.json"
+    const intentPath = wslUpdateIntentPath(configurationPath)
+    const configuration: ServiceConfiguration = {
+      ...saved("linux", "/home/dl"),
+      wsl: {
+        distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+      },
+    }
+    const effects = fake("linux", "/home/dl", {}, configuration)
+    const remove = effects.remove
+    effects.remove = vi.fn(async (path: string, deadline) => {
+      if (path === intentPath) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" })
+      await remove(path, deadline)
+    })
+    expect(await updateDaemonService({ runtime }, effects)).toMatchObject({ kind: "task" })
+    expect(effects.files.has(intentPath)).toBe(true)
+    expect(effects.order.at(-1)).toBe("start task")
+
+    // The next update: the leftover names the configuration now saved, so it
+    // is a finished update's record, cleared rather than rolled back.
+    // As the service reads it.
+    const now = parseServiceConfiguration(effects.files.get(configurationPath)!)
+    const next = fake("linux", "/home/dl", {}, now)
+    next.files.set(intentPath, effects.files.get(intentPath)!)
+    const newer = { nodePath: "/opt/runtime-3/node", daemonEntryPath: "/opt/runtime-3/index.js" }
+    expect(await updateDaemonService({ runtime: newer }, next)).toMatchObject({ kind: "task" })
+    expect(next.order).toContain("disable task")
+    expect(next.files.has(intentPath)).toBe(false)
+  })
+
+  // L1: launchctl can list the job right after error 36 and unload it a
+  // moment later. The update watches for a while before deciding.
+  it("L1: watches a bootout that errored, and restores once the agent unloads", async () => {
+    const effects = fake("darwin", "/Users/dl", { profileReleaseWaitMs: 100 })
+    const run = effects.run
+    const capture = effects.capture
+    let bootouts = 0
+    let prints = 0
+    effects.run = vi.fn(async (command: string, args: string[], deadline) => {
+      if (args[0] === "bootout" && ++bootouts === 1) { effects.order.push("bootout error 36"); throw new Error("Boot-out failed: 36: Operation now in progress") }
+      await run(command, args, deadline)
+    })
+    effects.capture = vi.fn(async (command: string, args: string[], deadline) => {
+      if (command === "launchctl" && args[0] === "print" && ++prints <= 2) {
+        effects.order.push("launchctl print")
+        // Loaded at first, unloaded from the second look on.
+        return prints === 1 ? { code: 0, stdout: "\tstate = running\n" } : { code: 113, stdout: "", stderr: "Could not find service \"sh.domovoi.domovoid\" in domain for user gui: 501" }
+      }
+      return capture(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(restored)
+    expect(effects.order.at(-1)).toBe(`launchctl bootstrap gui/501 ${agent}`)
+  })
+
+  // A step that ran out of time may still be running. The restore waits for
+  // it to settle before it starts, and the lease is held until then.
+  it("waits for a timed-out call to settle before restoring", async () => {
+    const effects = fake("darwin", "/Users/dl", { updateBudgetMs: 50 })
+    const run = effects.run
+    let bootstraps = 0
+    effects.run = vi.fn(async (command: string, args: string[], deadline) => {
+      if (args[0] === "bootstrap" && ++bootstraps === 1) {
+        effects.order.push("bootstrap started")
+        // A manager call that outlives its deadline and ignores the abort.
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        effects.order.push("bootstrap settled")
+        await run(command, args, deadline)
+        return
+      }
+      await run(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toBeInstanceOf(DaemonServiceUpdateError)
+    const settled = effects.order.indexOf("bootstrap settled")
+    expect(settled).toBeGreaterThan(-1)
+    const restoreStart = effects.order.findIndex((entry, index) => index > effects.order.indexOf("bootstrap started") && entry !== "bootstrap settled" && !entry.startsWith("launchctl bootstrap gui/501"))
+    expect(restoreStart).toBeGreaterThan(settled)
+    expect(effects.serviceLease.release).toHaveBeenCalledOnce()
+  })
+
+  it("P3: says one second, not one seconds", async () => {
+    const effects = fake("darwin", "/Users/dl", { crashingStarts: 1, readinessWaitMs: 1_000 })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow("did not report ready within 1 second.")
   })
 })
 

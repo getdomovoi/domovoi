@@ -17,7 +17,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
 import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
-import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, runServiceUpdate, waitUntilReady, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, runServiceUpdate, trackInFlight, within, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
@@ -390,11 +390,15 @@ function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, wai
     if (!readOwner) throw new Error("the update needs to read the daemon's owner record")
     const runIn = (deadline: OperationDeadline) => (command: ServiceCommand) => withinServiceDeadline(deadline, () => effects.run(command.command, command.args, deadline))
     const writeIn = (deadline: OperationDeadline) => (path: string, contents: string) => withinServiceDeadline(deadline, () => effects.write(path, contents, deadline))
+    // Every instance seen, from the one running now on; none of them can
+    // count as a new start.
+    const instances = new OwnerInstances(readOwner, profile)
+    await instances.note(readDeadline)
     // Starts a service definition and waits for its daemon to report ready.
     const startIn = (deadline: OperationDeadline) => async (commands: readonly ServiceCommand[]) => {
-      const before = currentInstance(readOwner, profile)
+      await instances.note(deadline)
       for (const command of commands) await runIn(deadline)(command)
-      await waitUntilReady(readOwner, profile, registrationId, before, waits.readinessWaitMs, deadline)
+      await instances.waitUntilReady(registrationId, waits.readinessWaitMs, deadline)
     }
     // Holds the profile once the stopped daemon lets it go, for the step given.
     const whileHeldIn = (deadline: OperationDeadline, stoppedInstance: string | undefined) => async (step: () => Promise<void>) => {
@@ -456,9 +460,12 @@ function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, wai
           await runIn(deadline)(bootout)
         } catch (cause) {
           if (isMissingServiceFailure("darwin", cause)) return
-          // The refusal may still have stopped the agent. Still loaded, it
-          // stopped nothing; not loaded, it stopped the previous service.
-          if (await loaded(deadline)) throw new DaemonServiceUpdateError("nothing-changed", cause)
+          // The refusal may still stop the agent, and a job listed right after
+          // it can unload a moment later, so it is watched for a while.
+          // Still loaded then, it stopped nothing; unloaded, it stopped the
+          // previous service, which is put back.
+          const unloaded = await within(waits.profileWaitMs, deadline, async () => !await loaded(deadline))
+          if (!unloaded) throw new DaemonServiceUpdateError("nothing-changed", cause)
           throw cause
         }
       }
@@ -499,6 +506,10 @@ function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, wai
         return plan
       },
       restore: async (deadline) => {
+        // Whatever instance the swap left running is stopped first: Task
+        // Scheduler ignores a run while one runs, and a late start of the new
+        // runtime must not pass for the previous service.
+        await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
         await startIn(deadline)(restoreCommands)
       },
     }
@@ -506,7 +517,8 @@ function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, wai
 }
 
 export function updateService(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits): Promise<ServicePlan> {
-  return runServiceUpdate(effects.claimServiceOperation, waits.budgetMs, prepareUpdate(target, effects, waits))
+  const tracked = trackInFlight(effects)
+  return runServiceUpdate(effects.claimServiceOperation, waits.budgetMs, prepareUpdate(target, tracked.effects, waits), tracked.inFlight)
 }
 
 // A service that was never installed is not an error to remove: the end state

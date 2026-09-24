@@ -16,7 +16,7 @@ import {
   type ServiceEffects,
   type ServiceStatus,
 } from "./install.js"
-import { DaemonServiceUpdateError, runServiceUpdate } from "./update-outcome.js"
+import { DaemonServiceUpdateError, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
@@ -175,7 +175,8 @@ export async function updateDaemonService(
     budgetMs: dependencies.updateBudgetMs ?? 60_000,
   }
   if (dependencies.platform === "linux" && saved.wsl) {
-    const updated = await runServiceUpdate(dependencies.claimServiceOperation, waits.budgetMs, prepareWslUpdate(saved, options.runtime, dependencies, waits))
+    const tracked = trackInFlight(dependencies)
+    const updated = await runServiceUpdate(dependencies.claimServiceOperation, waits.budgetMs, prepareWslUpdate(saved, options.runtime, tracked.effects, waits), tracked.inFlight)
     return { kind: "task", ...updated }
   }
   const plan = await updateService({
