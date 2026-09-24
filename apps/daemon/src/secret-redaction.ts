@@ -12,7 +12,10 @@ export type RedactedText = {
 }
 
 const sensitiveName = String.raw`(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password|passwd|secret[_-]?key|secret|client[_-]?secret|credentials?|cookie|private[_-]?key|aws[_-]?secret[_-]?access[_-]?key|github[_-]?token|openai[_-]?api[_-]?key|azure[_-]?client[_-]?secret)`
-const quotedValue = String.raw`(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`
+// A quoted value, "…", '…', $'…' or $"…", runs to its first unescaped closing
+// quote, across spaces and line breaks. When that quote never comes, the value
+// runs to the end of the text.
+const quotedValue = String.raw`(?:\$?"(?:\\(?:[\s\S]|$)|[^"\\])*(?:"|$)|\$?'(?:\\(?:[\s\S]|$)|[^'\\])*(?:'|$))`
 // A sensitive name may carry an identifier prefix, as in NPM_TOKEN, db.password,
 // npm's :_authToken or npm_config__authToken (a segment may be only its
 // separator). It may not carry a suffix: TOKEN_BUDGET names a number.
@@ -52,19 +55,28 @@ const plainValue = /^(?:\d+(?:\.\d+)?|true|false)$/iu
 // The name is the last identifier run in the matched prefix, without the
 // dashes of a flag or the -D of a Java property. A -D property can also be
 // matched as a plain assignment, so -D is dropped whichever pattern found it.
-function showsPlainValue(prefix: string, secret: string, before = ""): boolean {
+function nameOf(prefix: string): { name: string, run: string, runStart: number } {
   const run = prefix.match(/[A-Za-z0-9_.-]+/gu)?.at(-1) ?? ""
   const name = run.startsWith("-D") ? run.slice(2) : run.replace(/^-+/u, "")
-  // A quoted value must be closed by the same quote. A quote opened before the
-  // name, as in set "NAME=5", must close right after the value. Otherwise the
-  // value holds no quote at all. When the name starts the match, the quote is
-  // the character before it.
-  const runStart = prefix.lastIndexOf(run)
+  return { name, run, runStart: prefix.lastIndexOf(run) }
+}
+
+// A quote opened right before the name that does not close before the
+// separator, as in set "NAME=5", is still open: it closes after the value.
+// When the name starts the match, the quote is the character before it.
+function openNameQuote(prefix: string, before = ""): string | undefined {
+  const { run, runStart } = nameOf(prefix)
   const preceding = runStart > 0 ? prefix[runStart - 1] : before
   const nameQuote = preceding === '"' || preceding === "'" ? preceding : undefined
-  // A quote before the name that does not close before the separator, as in
-  // set "NAME=5", is still open, and the value is complete only with it.
-  const openQuote = nameQuote !== undefined && !prefix.slice(runStart + run.length).includes(nameQuote) ? nameQuote : undefined
+  return nameQuote !== undefined && !prefix.slice(runStart + run.length).includes(nameQuote) ? nameQuote : undefined
+}
+
+function showsPlainValue(prefix: string, secret: string, before = ""): boolean {
+  const { name } = nameOf(prefix)
+  // A quoted value must be closed by the same quote. A quote opened before the
+  // name, as in set "NAME=5", must close right after the value. Otherwise the
+  // value holds no quote at all.
+  const openQuote = openNameQuote(prefix, before)
   const quote = secret[0] === '"' || secret[0] === "'" ? secret[0] : undefined
   let value = secret
   if (quote !== undefined) {
@@ -81,14 +93,91 @@ const lostContextAssignment = new RegExp(
   String.raw`(${sensitiveName}["']?\s*[:=]\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
+// cmd's set "NAME=value": the quote before the name closes after the value,
+// across line breaks; when it never closes, the value runs to the end.
 const quotedCmdAssignment = new RegExp(
-  String.raw`(\bset\s+)(["'])(${namePrefix}${sensitiveName}\s*=)[^\r\n]*?\2`,
+  String.raw`(\bset\s+)(["'])(${namePrefix}${sensitiveName}\s*=)[\s\S]*?(?:\2|$)`,
   "giu",
 )
 const javaSystemProperty = new RegExp(
   String.raw`((?:(?<![A-Za-z0-9_.-])-D${namePrefix}|-D)${sensitiveName}\s*=)(${quotedValue}|[^\s;&|\r\n]+)`,
   "giu",
 )
+
+// Reads a quoted value's text after its opening quote. end: the index just
+// after the first unescaped closing quote, or -1 when the text ends first;
+// escaped: whether the text ends in a backslash that escapes what comes next.
+function scanQuoted(text: string, close: string, escaped: boolean): { end: number, escaped: boolean } {
+  let escaping = escaped
+  for (let at = 0; at < text.length; at += 1) {
+    if (escaping) escaping = false
+    else if (text[at] === "\\") escaping = true
+    else if (text[at] === close) return { end: at + 1, escaped: false }
+  }
+  return { end: -1, escaped: escaping }
+}
+
+// A matched value's quoting: its opening quote, with any $, its closing
+// quote, and whether that closing quote never came.
+function quoting(secret: string): { opener: string, close: string, open: boolean, escaped: boolean } | undefined {
+  const opener = /^\$?["']/u.exec(secret)?.[0]
+  if (opener === undefined) return undefined
+  const close = opener.slice(-1)
+  const scanned = scanQuoted(secret.slice(opener.length), close, false)
+  return { opener, close, open: scanned.end < 0, escaped: scanned.escaped }
+}
+
+// A hidden value keeps its quotes. A value whose quote never closed ran to the
+// end of the text, so the line break it ended on is kept. An unquoted value
+// that ends in a quote it did not open, as in set "NAME=value", keeps that
+// quote, which closes the text around it.
+function hiddenValue(prefix: string, secret: string): string {
+  const quoted = quoting(secret)
+  if (quoted === undefined) {
+    const last = secret.at(-1)
+    const closesAround = (last === '"' || last === "'") && secret.length > 1 && secret.indexOf(last) === secret.length - 1
+    return `${prefix}${replacement}${closesAround ? last : ""}`
+  }
+  const lineEnd = quoted.open ? /(?:\r\n|\r|\n)$/u.exec(secret)?.[0] ?? "" : ""
+  return `${prefix}${quoted.opener}${replacement}${quoted.close}${lineEnd}`
+}
+
+// A quoted value these patterns hide whose closing quote has not arrived by
+// the end of the text. start: where its match starts; valueStart: where its
+// opening quote starts, or for set "NAME=value", where the value starts.
+type OpenQuotedValue = { start: number, valueStart: number, opener: string, close: string, escaped: boolean }
+
+const openValuePatterns = [assignment, structuredAssignment, secretFlag, javaSystemProperty]
+
+function lastMatch(pattern: RegExp, text: string): RegExpExecArray | undefined {
+  let last: RegExpExecArray | undefined
+  for (const match of text.matchAll(pattern)) last = match
+  return last
+}
+
+function openQuotedValue(text: string): OpenQuotedValue | undefined {
+  if (!/["']/u.test(text)) return undefined
+  let found: OpenQuotedValue | undefined
+  for (const pattern of openValuePatterns) {
+    const match = lastMatch(pattern, text)
+    if (match === undefined || match.index + match[0].length !== text.length) continue
+    const secret = match[2] ?? ""
+    const quoted = quoting(secret)
+    if (!quoted?.open) continue
+    if (found !== undefined && found.start <= match.index) continue
+    found = { start: match.index, valueStart: text.length - secret.length, opener: quoted.opener, close: quoted.close, escaped: quoted.escaped }
+  }
+  const cmd = lastMatch(quotedCmdAssignment, text)
+  if (cmd !== undefined && cmd.index + cmd[0].length === text.length) {
+    const quote = cmd[2] ?? "\""
+    const head = (cmd[1] ?? "").length + quote.length + (cmd[3] ?? "").length
+    const closed = cmd[0].length > head && cmd[0].endsWith(quote)
+    if (!closed && (found === undefined || cmd.index < found.start)) {
+      found = { start: cmd.index, valueStart: cmd.index + head, opener: "", close: quote, escaped: false }
+    }
+  }
+  return found
+}
 
 export function redactDurableText(value: unknown): RedactedText {
   return redact(value, maximumDurableTextLength)
@@ -121,42 +210,109 @@ export function appendDurableOutput(current: string | undefined, addition: strin
   return `…${combined.slice(-(maximumDurableOutputLength - 1))}`
 }
 
+const longRecordOmitted = "[Long command output line omitted]\n"
+
+// A quoted value that is still open when its record ends goes on into the next
+// record: that record is dropped up to the value's closing quote, which the
+// replacement has already written.
+type OpenQuote = { close: string, escaped: boolean }
+
 export class DurableOutputRedactor {
   #pending = ""
   #droppingLongRecord = false
+  #open: OpenQuote | undefined
+  // The end of an omitted record's text, so a name split across reads of it
+  // is still seen with its quoted value.
+  #omittedTail = ""
 
   push(chunk: string): string {
     let input = chunk
-    if (this.#droppingLongRecord) {
-      const newline = input.indexOf("\n")
-      if (newline < 0) return ""
-      input = input.slice(newline + 1)
-      this.#droppingLongRecord = false
-    }
-
-    let combined = `${this.#pending}${input}`
-    this.#pending = ""
     let emitted = ""
-    let newline = combined.indexOf("\n")
-    while (newline >= 0) {
-      const record = combined.slice(0, newline + 1)
-      emitted = appendDurableOutput(
-        emitted,
-        record.length > maximumStreamingOutputBufferLength
-          ? "[Long command output line omitted]\n"
-          : redactDurableOutput(record).value,
-      )
-      combined = combined.slice(newline + 1)
-      newline = combined.indexOf("\n")
-    }
+    while (input !== "") {
+      if (this.#droppingLongRecord) {
+        const newline = input.indexOf("\n")
+        const end = newline < 0 ? input.length : newline + 1
+        this.#omit(input.slice(0, end))
+        if (newline < 0) return emitted
+        this.#droppingLongRecord = false
+        this.#omittedTail = ""
+        input = input.slice(end)
+        continue
+      }
+      if (this.#open) {
+        const scanned = scanQuoted(input, this.#open.close, this.#open.escaped)
+        if (scanned.end < 0) {
+          this.#open = { ...this.#open, escaped: scanned.escaped }
+          return emitted
+        }
+        this.#open = undefined
+        input = input.slice(scanned.end)
+        continue
+      }
 
-    if (combined.length > maximumStreamingOutputBufferLength) {
-      emitted = appendDurableOutput(emitted, "[Long command output line omitted]\n")
-      this.#droppingLongRecord = true
-    } else {
-      this.#pending = combined
+      let combined = `${this.#pending}${input}`
+      this.#pending = ""
+      input = ""
+      let newline = combined.indexOf("\n")
+      while (newline >= 0) {
+        const record = combined.slice(0, newline + 1)
+        combined = combined.slice(newline + 1)
+        if (record.length > maximumStreamingOutputBufferLength) {
+          emitted = appendDurableOutput(emitted, longRecordOmitted)
+          this.#omit(record)
+          this.#omittedTail = ""
+        } else {
+          emitted = appendDurableOutput(emitted, redactDurableOutput(record).value)
+          const open = openQuotedValue(record)
+          if (open) this.#open = { close: open.close, escaped: open.escaped }
+        }
+        if (this.#open) {
+          input = combined
+          combined = ""
+          break
+        }
+        newline = combined.indexOf("\n")
+      }
+
+      if (combined.length > maximumStreamingOutputBufferLength) {
+        emitted = appendDurableOutput(emitted, longRecordOmitted)
+        this.#droppingLongRecord = true
+        this.#omittedTail = ""
+        this.#omit(combined)
+      } else {
+        this.#pending = combined
+      }
     }
     return emitted
+  }
+
+  // Follows quoted values through text that is omitted rather than shown, so
+  // a value still open at the end of an omitted record is dropped from the
+  // next record as well.
+  #omit(text: string): void {
+    let rest = text
+    while (rest !== "") {
+      if (this.#open) {
+        const scanned = scanQuoted(rest, this.#open.close, this.#open.escaped)
+        if (scanned.end < 0) {
+          this.#open = { ...this.#open, escaped: scanned.escaped }
+          return
+        }
+        this.#open = undefined
+        this.#omittedTail = ""
+        rest = rest.slice(scanned.end)
+        continue
+      }
+      const view = `${this.#omittedTail}${rest}`
+      const open = openQuotedValue(view)
+      if (open) {
+        this.#open = { close: open.close, escaped: open.escaped }
+        this.#omittedTail = ""
+      } else {
+        this.#omittedTail = view.slice(-maximumStreamingOutputBufferLength)
+      }
+      return
+    }
   }
 
   // The pending record has no newline yet, so its last value may still grow.
@@ -168,6 +324,8 @@ export class DurableOutputRedactor {
     const output = this.#droppingLongRecord ? "" : redactDurableOutput(this.#pending).value
     this.#droppingLongRecord = false
     this.#pending = ""
+    this.#open = undefined
+    this.#omittedTail = ""
     return output
   }
 }
@@ -216,9 +374,25 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
     const offset = Number(args.at(-2))
     const whole = String(args.at(-1))
     if (offset >= exemptFrom && showsPlainValue(prefix, secret, whole[offset - 1]) && delimitedAt(whole, offset + args[0]!.length)) return args[0]!
-    const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
-    return `${prefix}${quote}${replacement}${quote}`
+    return hiddenValue(prefix, secret)
   }
+  // cmd's set "NAME=value" is read first, while its closing quote is still in
+  // place: an assignment read first would take that quote as part of the
+  // value.
+  output = replace(output, quotedCmdAssignment, (...args) => {
+    const matched = args[0]!
+    const quote = args[2] ?? "\""
+    const name = args[3] ?? ""
+    const head = (args[1] ?? "").length + quote.length + name.length
+    const closed = matched.length > head && matched.endsWith(quote)
+    const offset = Number(args.at(-2))
+    const whole = String(args.at(-1))
+    if (closed && offset >= exemptFrom && showsPlainValue(name.replace(/\s*=$/u, ""), matched.slice(head, -quote.length)) && delimitedAt(whole, offset + matched.length)) return matched
+    // A quote that never closed ran to the end of the text; the line break
+    // it ended on is kept.
+    const lineEnd = closed ? "" : /(?:\r\n|\r|\n)$/u.exec(matched)?.[0] ?? ""
+    return `${args[1] ?? ""}${quote}${name}${replacement}${quote}${lineEnd}`
+  })
   // Where what came before a name is out of view, a sensitive word counts as
   // a name wherever it starts, as it did before prefixes were read: main's
   // terminal redactor, holding only from the sensitive word, redacted
@@ -226,23 +400,11 @@ function redact(value: unknown, maximumLength: number, complete = true, exemptFr
   if (exemptFrom > 0) {
     output = replace(output, lostContextAssignment, (...args: string[]) => {
       if (Number(args.at(-2)) >= exemptFrom) return args[0]!
-      const secret = args[2] ?? ""
-      const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
-      return `${args[1] ?? ""}${quote}${replacement}${quote}`
+      return hiddenValue(args[1] ?? "", args[2] ?? "")
     })
   }
   output = replace(output, assignment, valueReplacer)
   output = replace(output, structuredAssignment, valueReplacer)
-  output = replace(output, quotedCmdAssignment, (...args) => {
-    const matched = args[0]!
-    const quote = args[2] ?? "\""
-    const name = args[3] ?? ""
-    const value = matched.slice((args[1] ?? "").length + quote.length + name.length, -quote.length)
-    const offset = Number(args.at(-2))
-    const whole = String(args.at(-1))
-    if (offset >= exemptFrom && showsPlainValue(name.replace(/\s*=$/u, ""), value) && delimitedAt(whole, offset + matched.length)) return matched
-    return `${args[1] ?? ""}${quote}${name}${replacement}${quote}`
-  })
   output = replace(output, secretFlag, valueReplacer)
   output = replace(output, javaSystemProperty, valueReplacer)
   output = replace(
@@ -324,31 +486,16 @@ const lineBreak = /[\r\n]/u
 // no longer growing. A closing quote at the very end may still be followed by
 // more of the same shell word.
 function closedQuote(value: string): boolean {
-  const quote = value[0]
-  if (quote !== '"' && quote !== "'") return false
-  for (let at = 1; at < value.length; at += 1) {
-    if (value[at] === "\\") at += 1
-    else if (value[at] === quote) return at < value.length - 1
-  }
-  return false
+  const quoted = quoting(value)
+  if (quoted === undefined || quoted.open) return false
+  return quoted.opener.length + scanQuoted(value.slice(quoted.opener.length), quoted.close, false).end < value.length
 }
 
-// Whether a quoted value's closing quote has arrived at all.
-function quoteCloses(value: string): boolean {
-  const quote = value[0]
-  for (let at = 1; at < value.length; at += 1) {
-    if (value[at] === "\\") at += 1
-    else if (value[at] === quote) return true
-  }
-  return false
-}
-
-// Whether an open quoted value ends in a backslash that escapes whatever
-// comes next.
-function endsEscaped(value: string): boolean {
-  let escaped = false
-  for (let at = 1; at < value.length; at += 1) escaped = !escaped && value[at] === "\\"
-  return escaped
+// Text that ends inside an open quoted value: what comes before the value is
+// redacted as usual, and the value becomes the replacement in its quotes.
+function hideOpenValue(text: string, open: OpenQuotedValue, complete: boolean, exemptFrom: number): string {
+  const before = redactStreamText(text.slice(0, open.valueStart), complete, exemptFrom, text[open.valueStart])
+  return `${before}${open.opener}${replacement}${open.close}`
 }
 
 // Where an unquoted value ends, once the redactor has decided it is inside one.
@@ -359,15 +506,22 @@ const closedValueDelimiter = /[\s;&|,}\r\n]/u
 // quoted: an open quoted value, which ends at its first unescaped closing
 // quote; escaped says the last character seen was an escaping backslash.
 // unquoted: a value that ends at a delimiter.
+// A quoted value ends only at that quote, across spaces, line breaks and
+// idle flushes.
 // pending: the name alone outgrew the carry, so the value has not started.
 // What still belongs to the name (its closing quote, the separator, spaces)
 // is shown, and the first character of the value decides how it is dropped.
 // A name written as a flag may take its value after spaces alone; any other
-// name needs its separator first.
+// name needs its separator first. word: the end of the name so far, since it
+// may still grow (CREDENTIAL into CREDENTIALS, SECRET into SECRET_KEY); the
+// drop goes on only while the name still ends in a sensitive name.
 type Dropping =
   | { kind: "quoted", quote: string, escaped: boolean }
-  | { kind: "unquoted", end: RegExp }
-  | { kind: "pending", separator: string | undefined, quoted: boolean, spaced: boolean, flag: boolean }
+  | { kind: "unquoted", end: RegExp, dollar: boolean }
+  | { kind: "pending", separator: string | undefined, quoted: boolean, spaced: boolean, flag: boolean, word: string, grown: boolean }
+
+const nameWordLength = 64
+const endsInSensitiveName = new RegExp(String.raw`(?:^|[_.-])${sensitiveName}$`, "iu")
 
 export class TerminalOutputRedactor {
   #carry = ""
@@ -398,6 +552,26 @@ export class TerminalOutputRedactor {
 
     const combined = `${this.#carry}${input}`
     const exemptFrom = this.#exemptFrom(combined)
+
+    // A quoted value whose closing quote has not arrived is held whole from
+    // its name, whatever it holds so far: spaces and line breaks do not end
+    // it. Once it outgrows the carry, the replacement stands for it and the
+    // rest is dropped up to its closing quote.
+    const open = openQuotedValue(combined)
+    if (open) {
+      const start = Math.min(open.start, this.#contextStart(combined, this.#nameStart(combined, open.start, 0)))
+      if (combined.length - start > terminalRedactionCarryCharacters) {
+        this.#carry = ""
+        this.#dropping = { kind: "quoted", quote: open.close, escaped: open.escaped }
+        this.#settle(combined)
+        return `${lead}${hideOpenValue(combined, open, false, exemptFrom)}`
+      }
+      const emitted = combined.slice(0, start)
+      this.#carry = combined.slice(start)
+      this.#settle(emitted)
+      return `${lead}${redactStreamText(emitted, false, exemptFrom, this.#carry[0])}`
+    }
+
     const hold = this.#holdFrom(combined)
     const held = combined.length - hold.start
     if (held > terminalRedactionCarryCharacters && hold.value !== undefined) {
@@ -405,7 +579,7 @@ export class TerminalOutputRedactor {
       // carry. Redact what there is, which turns the value seen so far into
       // the replacement, and drop the rest of it as it arrives.
       this.#carry = ""
-      this.#dropping = this.#startDropping(hold.value, hold.syntax ?? "", hold.flag ?? false)
+      this.#dropping = this.#startDropping(hold.value, hold.syntax ?? "", hold.flag ?? false, hold.word ?? "")
       this.#settle(combined)
       return `${lead}${redactStreamText(combined, false, exemptFrom)}`
     }
@@ -417,16 +591,15 @@ export class TerminalOutputRedactor {
     return `${lead}${redactStreamText(emitted, false, exemptFrom, this.#carry[0])}`
   }
 
-  #startDropping(value: string, syntax: string, flag: boolean): Dropping {
+  #startDropping(value: string, syntax: string, flag: boolean, word: string): Dropping {
     if (value === "") {
-      return { kind: "pending", separator: /[:=]/u.exec(syntax)?.[0], quoted: /["']/u.test(syntax), spaced: /\s/u.test(syntax), flag }
+      return { kind: "pending", separator: /[:=]/u.exec(syntax)?.[0], quoted: /["']/u.test(syntax), spaced: /\s/u.test(syntax), flag, word, grown: false }
     }
-    const first = value[0]!
-    const quoted = first === '"' || first === "'"
-    if (quoted && !quoteCloses(value)) return { kind: "quoted", quote: first, escaped: endsEscaped(value) }
+    const quoted = quoting(value)
+    if (quoted?.open) return { kind: "quoted", quote: quoted.close, escaped: quoted.escaped }
     // A value whose quote has closed ends at a delimiter or at the comma or
     // brace that follows a JSON string.
-    return { kind: "unquoted", end: quoted ? closedValueDelimiter : valueDelimiter }
+    return { kind: "unquoted", end: quoted ? closedValueDelimiter : valueDelimiter, dollar: value === "$" }
   }
 
   // Drops what belongs to the value in one read. shown: what is emitted for
@@ -437,25 +610,35 @@ export class TerminalOutputRedactor {
       return { shown, rest: input.slice(at) }
     }
     if (dropping.kind === "unquoted") {
+      // A value that so far is only $ is quoted when a quote comes next.
+      if (dropping.dollar && (input[0] === '"' || input[0] === "'")) {
+        this.#dropping = { kind: "quoted", quote: input[0], escaped: false }
+        return { shown: "", rest: input.slice(1) }
+      }
       const delimiter = dropping.end.exec(input)
-      return delimiter ? end(delimiter.index) : { shown: "", rest: "" }
+      if (delimiter) return end(delimiter.index)
+      this.#dropping = { ...dropping, dollar: false }
+      return { shown: "", rest: "" }
     }
     if (dropping.kind === "quoted") {
-      let escaped = dropping.escaped
-      for (let at = 0; at < input.length; at += 1) {
-        const character = input[at]!
-        if (character === "\r" || character === "\n") return end(at)
-        if (escaped) escaped = false
-        else if (character === "\\") escaped = true
-        else if (character === dropping.quote) return end(at + 1)
-      }
-      this.#dropping = { ...dropping, escaped }
+      const scanned = scanQuoted(input, dropping.quote, dropping.escaped)
+      if (scanned.end >= 0) return end(scanned.end)
+      this.#dropping = { ...dropping, escaped: scanned.escaped }
       return { shown: "", rest: "" }
     }
 
-    let { separator, quoted, spaced } = dropping
+    let { separator, quoted, spaced, word, grown } = dropping
     for (let at = 0; at < input.length; at += 1) {
       const character = input[at]!
+      // The name is still being written: it goes on only while it still ends
+      // in a sensitive name, and it is shown.
+      if (separator === undefined && !quoted && !spaced && nameCharacter.test(character)) {
+        word = `${word}${character}`.slice(-nameWordLength)
+        grown = true
+        continue
+      }
+      if (grown && !endsInSensitiveName.test(word)) return end(at, input.slice(0, at))
+      grown = false
       if (character === "\r" || character === "\n") return end(at, input.slice(0, at))
       if (character === " " || character === "\t") {
         spaced = true
@@ -476,14 +659,20 @@ export class TerminalOutputRedactor {
       const structured = separator === ":" && !dropping.flag
       if ((structured ? closedValueDelimiter : valueDelimiter).test(character)) return end(at, input.slice(0, at))
       const shown = input.slice(0, at)
-      if (isQuote) {
-        this.#dropping = { kind: "quoted", quote: character, escaped: false }
-        return { shown: `${shown}${character}${replacement}${character}`, rest: input.slice(at + 1) }
+      // $'…' and $"…" are quoted as '…' and "…" are.
+      const dollarQuote = character === "$" && (input[at + 1] === '"' || input[at + 1] === "'")
+      if (isQuote || dollarQuote) {
+        const quote = dollarQuote ? input[at + 1]! : character
+        const opener = dollarQuote ? `$${quote}` : quote
+        this.#dropping = { kind: "quoted", quote, escaped: false }
+        return { shown: `${shown}${opener}${replacement}${quote}`, rest: input.slice(at + opener.length) }
       }
-      this.#dropping = { kind: "unquoted", end: structured ? closedValueDelimiter : valueDelimiter }
-      return { shown: `${shown}${replacement}`, rest: input.slice(at) }
+      // A $ at the end of the read may still open $'…'.
+      const dollar = character === "$"
+      this.#dropping = { kind: "unquoted", end: structured ? closedValueDelimiter : valueDelimiter, dollar }
+      return { shown: `${shown}${replacement}`, rest: input.slice(dollar ? at + 1 : at) }
     }
-    this.#dropping = { ...dropping, separator, quoted, spaced }
+    this.#dropping = { ...dropping, separator, quoted, spaced, word, grown }
     return { shown: input, rest: "" }
   }
 
@@ -493,11 +682,21 @@ export class TerminalOutputRedactor {
     if (this.#contextLost === "name" && /[^A-Za-z0-9_./-]/u.test(emitted)) this.#contextLost = undefined
   }
 
+  // A flush emits what is held. A quoted value still open at that point is
+  // replaced, and what arrives after the flush is dropped up to its closing
+  // quote, as it would be had the value outgrown the carry.
   flush(): string {
-    this.#dropping = undefined
+    if (this.#dropping?.kind !== "quoted") this.#dropping = undefined
     const remainder = this.#carry
     this.#carry = ""
-    const output = remainder === "" ? "" : redactStreamText(remainder, true, this.#exemptFrom(remainder))
+    const exemptFrom = this.#exemptFrom(remainder)
+    const open = remainder === "" ? undefined : openQuotedValue(remainder)
+    if (open) this.#dropping = { kind: "quoted", quote: open.close, escaped: open.escaped }
+    const output = remainder === ""
+      ? ""
+      : open
+        ? hideOpenValue(remainder, open, true, exemptFrom)
+        : redactStreamText(remainder, true, exemptFrom)
     // A flush in the middle of a line leaves the rest of the line without
     // what came before it.
     this.#settle(remainder)
@@ -519,16 +718,20 @@ export class TerminalOutputRedactor {
   // cut: the held name reaches back past the bound, so what came before it
   // was emitted without it.
   // syntax: what follows the sensitive word before its value; flag: the name
-  // starts with a dash or a slash.
-  #holdFrom(combined: string): { start: number, value?: string, syntax?: string, flag?: boolean, cut?: boolean } {
+  // starts with a dash or a slash; word: the end of the name.
+  #holdFrom(combined: string): { start: number, value?: string, syntax?: string, flag?: boolean, word?: string, cut?: boolean } {
     const assignment = danglingSecret.exec(combined)
     if (assignment && !closedQuote(assignment[2] ?? "")) {
       const nameStart = this.#nameStart(combined, assignment.index, 0)
+      const value = assignment[2] ?? ""
+      const syntax = assignment[1] ?? ""
+      const wordEnd = assignment.index + assignment[0].length - syntax.length - value.length
       return {
         start: this.#contextStart(combined, nameStart),
-        value: assignment[2] ?? "",
-        syntax: assignment[1] ?? "",
+        value,
+        syntax,
         flag: combined[nameStart] === "-" || combined[nameStart] === "/",
+        word: combined.slice(Math.max(nameStart, wordEnd - nameWordLength), wordEnd),
       }
     }
     const floor = Math.max(0, combined.length - terminalRedactionCarryCharacters)
@@ -539,8 +742,11 @@ export class TerminalOutputRedactor {
       return { start: context ? floor + context.index : combined.length }
     }
     const nameStart = this.#nameStart(combined, floor + name.index, floor)
-    const start = Math.max(floor, this.#contextStart(combined, nameStart))
-    return { start, cut: start === floor && floor > 0 && nameCharacter.test(combined[floor - 1]!) }
+    const contextStart = this.#contextStart(combined, nameStart)
+    const start = Math.max(floor, contextStart)
+    // Cut when the name, or the set " or quote read before it, goes on past
+    // the bound.
+    return { start, cut: start === floor && floor > 0 && (nameCharacter.test(combined[floor - 1]!) || contextStart < floor) }
   }
 
   #nameStart(combined: string, start: number, floor: number): number {

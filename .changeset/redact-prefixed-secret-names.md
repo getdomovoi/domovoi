@@ -24,4 +24,9 @@ quoted value it drops ends only at an unescaped closing quote, even when a backs
 arrive in different reads. When a name alone outgrows what it carries, the value that follows is
 still dropped whole, quoted or not, and the fields after it are kept. A quoted flag or `-D`
 property value now honours backslash escapes, so `--token "a\"b"` is hidden whole instead of
-leaving `b` in clear.
+leaving `b` in clear. A quoted value, including `$'...'`, now stays hidden up to its unescaped
+closing quote across spaces, tabs, `;`, CR, LF and terminal reads, so `NPM_TOKEN="a b"` read in
+two pieces and `--npm-token="a\rb"` no longer show `b`, in terminal output, stored command output,
+approval cards and thread copies. A quote that never closes hides the rest of the record, and the
+terminal and the command output stream keep hiding into the following output until it closes,
+across an idle flush too.

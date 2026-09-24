@@ -1,3 +1,4 @@
+import { demoWorkspace } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -10,6 +11,7 @@ import {
   redactDurableText,
   TerminalOutputRedactor,
 } from "./secret-redaction.js"
+import { redactWorkspaceCopies } from "./workspace-redaction.js"
 
 // Flag and property values with escapes inside their quotes: an escaped quote
 // of either kind, an escaped backslash before an escaped quote, an escaped
@@ -477,5 +479,127 @@ describe("prefixed names across the terminal's reads", () => {
     expect(run(['set "total-password=123456']).includes("123456")).toBe(false)
     expect(redactDurableOutput('set "total-password=123456').value).not.toContain("123456")
     expect(redactDurableCommand('set "total-password=123456').value).not.toContain("123456")
+  })
+})
+
+// Review of dbce5143, and what the widened differential fuzz found with it: a
+// quoted value stays hidden until its unescaped closing quote, across spaces,
+// tabs, CR, LF, ; and reads, in every redactor. A quote that never closes
+// hides the rest of the record, and the streams carry it into the next one.
+describe("quoted values across spaces, line breaks and reads", () => {
+  function run(reads: readonly string[]): string {
+    const redactor = new TerminalOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+  function stream(reads: readonly string[]): string {
+    const redactor = new DurableOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+  // Every way of reading a text in two or three reads.
+  function splits(text: string): string[][] {
+    const all: string[][] = []
+    for (let first = 1; first < text.length; first += 1) {
+      all.push([text.slice(0, first), text.slice(first)])
+      for (let second = first + 1; second < text.length; second += 1) {
+        all.push([text.slice(0, first), text.slice(first, second), text.slice(second)])
+      }
+    }
+    return all
+  }
+
+  const closed: Array<{ text: string, expected: string }> = [
+    { text: 'NPM_TOKEN="zqx jwvk" -s\n', expected: 'NPM_TOKEN="[REDACTED]" -s\n' },
+    { text: 'run --npm-token="zqx\rjwvk" -s\n', expected: 'run --npm-token="[REDACTED]" -s\n' },
+    { text: 'run --npm-token="zqx\r\njwvk" -s\n', expected: 'run --npm-token="[REDACTED]" -s\n' },
+    { text: "export X_SECRET='zqx\tjwvk;=:é' -s\n", expected: "export X_SECRET='[REDACTED]' -s\n" },
+    { text: "token=$'zqx \\'jwvk' -s\n", expected: "token=$'[REDACTED]' -s\n" },
+    { text: 'set "DB_PASSWORD=zqx jwvk"\n', expected: 'set "DB_PASSWORD=[REDACTED]"\n' },
+    { text: '{"x_token": "zqx \\" jwvk", "safe": "visible"}\n', expected: '{"x_token": "[REDACTED]", "safe": "visible"}\n' },
+  ]
+
+  it.each(closed)("hides $text whole in the durable redactors", ({ text, expected }) => {
+    expect(redactDurableCommand(text)).toMatchObject({ value: expected, redacted: true })
+    expect(redactDurableOutput(text).value).toBe(expected)
+    expect(redactDurableText(text).value).toBe(expected)
+  })
+
+  it.each(closed)("hides $text in every two- and three-read split of the terminal", ({ text, expected }) => {
+    const wrong = splits(text).filter((reads) => run(reads) !== expected).map((reads) => JSON.stringify(reads))
+    expect(wrong).toEqual([])
+  })
+
+  it.each(closed)("hides $text in every two- and three-read split of the durable stream", ({ text }) => {
+    const wrong = splits(text).filter((reads) => {
+      const shown = stream(reads)
+      return /zq|qx|jw|wv|vk/u.test(shown) || !/ -s\n$|"safe": "visible"\}\n$|"\n$/u.test(shown)
+    }).map((reads) => JSON.stringify(reads))
+    expect(wrong).toEqual([])
+  })
+
+  it("keeps a quoted value open across an idle flush", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push('NPM_TOKEN="zqx ') + redactor.flush() + redactor.push('jwvk" -s\n') + redactor.flush()
+    expect(shown).toBe('NPM_TOKEN="[REDACTED]" -s\n')
+  })
+
+  it("keeps a long quoted value open across line breaks until it closes", () => {
+    const value = `${"zqx ".repeat(80)}\r\n${"jwvk\n".repeat(80)}`
+    const shown = run([`export X_TOKEN="${value.slice(0, 300)}`, value.slice(300), '" -s\n'])
+    expect(shown).toBe('export X_TOKEN="[REDACTED]" -s\n')
+  })
+
+  it("hides the rest of the record after a quote that never closes, and carries it into the next", () => {
+    expect(redactDurableOutput('NPM_TOKEN="zqx jwvk\nnext zqx\n').value).toBe('NPM_TOKEN="[REDACTED]"\n')
+    expect(redactDurableCommand('run --npm-token "zqx\rjwvk').value).toBe('run --npm-token "[REDACTED]"')
+    expect(redactDurableCommand('set "X_PASSWORD=zqx\njwvk').value).toBe('set "X_PASSWORD=[REDACTED]"')
+    expect(stream(['NPM_TOKEN="zqx jwvk\n', "still jwvk\n", 'jwvk" -s\n', "after\n"])).toBe('NPM_TOKEN="[REDACTED]"\n -s\nafter\n')
+    expect(run(['NPM_TOKEN="zqx jwvk\r\n', "still jwvk\r\n", 'jwvk" -s\r\n'])).toBe('NPM_TOKEN="[REDACTED]" -s\r\n')
+  })
+
+  it("carries a quote left open by an omitted long record into the next record", () => {
+    const long = "a".repeat(maximumStreamingOutputBufferLength + 10)
+    expect(stream([`${long} NPM_TOKEN="zqx\n`, 'jwvk" -s\n'])).toBe("[Long command output line omitted]\n -s\n")
+    expect(stream([`${long} NPM_TOK`, 'EN="zqx', "\n", 'jwvk" -s\n'])).toBe("[Long command output line omitted]\n -s\n")
+    expect(stream([`${long} NPM_TOKEN="zqx" ok\n`, "visible\n"])).toBe("[Long command output line omitted]\nvisible\n")
+  })
+
+  it("hides quoted values in workspace approval and thread copies", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.approvals[0]!.command = 'run --npm-token="zqx\rjwvk" -s'
+    snapshot.approvals[0]!.operation = 'Run with NPM_TOKEN="zqx\r\njwvk"'
+    const sessionId = snapshot.sessions[0]!.id
+    snapshot.thread.push(
+      { id: "tool-quoted", sessionId, kind: "tool", tool: "command", status: "completed", title: 'run --npm-token "zqx jwvk" -s', output: 'X_SECRET="zqx\njwvk" -s\n', createdAt: "2026-09-24T12:00:00.000Z" },
+      { id: "user-quoted", sessionId, kind: "user", body: "export X_PASSWORD='zqx\rjwvk' now", createdAt: "2026-09-24T12:00:00.000Z" },
+    )
+    const copies = redactWorkspaceCopies(snapshot)
+    const shown = JSON.stringify({ approval: copies.approvals[0], thread: copies.thread.filter((item) => item.id.endsWith("-quoted")) })
+    expect(shown).not.toMatch(/jwvk/u)
+    expect(copies.approvals[0]).toMatchObject({ risk: "hard-gate", command: 'run --npm-token="[REDACTED]" -s' })
+    expect(copies.thread).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "tool-quoted", title: 'run --npm-token "[REDACTED]" -s', output: 'X_SECRET="[REDACTED]" -s\n' }),
+      expect.objectContaining({ id: "user-quoted", body: "export X_PASSWORD='[REDACTED]' now" }),
+    ]))
+  })
+
+  // Found by the widened fuzz at 200,000 cases on seed 424242.
+  it("keeps the line after a closed set quote read past an idle flush", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push("a".repeat(60)) + redactor.flush() + redactor.push(`${"a".repeat(30)} set "DB-ACCESS_TOKEN=False"\nvisible output\n`) + redactor.flush()
+    expect(shown).toContain("\nvisible output\n")
+    expect(shown).not.toContain("False")
+  })
+
+  it("does not show a counting value in a set quote whose name outgrew the carry", () => {
+    const name = `${"a.".repeat(1_400)}min.auth-token`
+    const text = `set "${name}=339.726\n`
+    expect(run([text.slice(0, 261), text.slice(261)])).not.toContain("339")
+  })
+
+  it("keeps dropping a name that outgrew the carry while it still grows into a sensitive name", () => {
+    const name = `${"a.".repeat(140)}CREDENTIAL`
+    expect(run([`{"${name}`, 'S":"zqxjwvk","safe":"visible"}\n'])).toBe(`{"${name}S":"[REDACTED]","safe":"visible"}\n`)
+    expect(run([`${"a.".repeat(140)}SECRET`, "_KEY=zqxjwvk -s\n"])).toBe(`${"a.".repeat(140)}SECRET_KEY=[REDACTED] -s\n`)
+    expect(run([`${"a.".repeat(140)}TOKEN`, "_BUDGET=4096\n"])).toBe(`${"a.".repeat(140)}TOKEN_BUDGET=4096\n`)
   })
 })
