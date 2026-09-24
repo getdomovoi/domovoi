@@ -1,6 +1,7 @@
 import { lstat, readlink } from "node:fs/promises"
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 
+import { canonicalPath } from "./credential-stores.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { redactDurableText } from "./secret-redaction.js"
 
@@ -52,8 +53,14 @@ function within(workspace: string, target: string): string | undefined {
 
 // Where the path really leads, where the worktree really is, and every link
 // followed on the way: each link's own path and its target, as written and as
-// read from the link's directory.
-export type ResolvedApprovalPath = Readonly<{ target: string; workspace: string; hops: readonly string[] }>
+// read from the link's directory. Canonical is the real path the filesystem
+// gives, which also reads a name it treats as another as that name.
+export type ResolvedApprovalPath = Readonly<{
+  target: string
+  workspace: string
+  hops: readonly string[]
+  canonical?: string | undefined
+}>
 
 // The path as the request gave it, relative to the directory the request runs
 // in, before anything is collapsed: ".." is applied only after the links
@@ -100,10 +107,11 @@ async function followPath(path: string): Promise<{ target: string; hops: string[
 // Where the path really leads, and where the worktree really is, each followed
 // the same way. Undefined when either loops, and then the lexical answer stands.
 export async function resolveApprovalPath(workspace: string, path: string, cwd?: string): Promise<ResolvedApprovalPath | undefined> {
-  const followed = await followPath(requestedPath(workspace, path, cwd))
+  const requested = requestedPath(workspace, path, cwd)
+  const followed = await followPath(requested)
   const realWorkspace = await followPath(resolve(workspace))
   if (followed === undefined || realWorkspace === undefined) return undefined
-  return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops }
+  return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops, canonical: await canonicalPath(requested) }
 }
 
 // A path that names a credential file is hidden whole on the card; the line
@@ -137,6 +145,29 @@ function affectedFile(input: {
   return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted }
 }
 
+// The directory a request runs in, as the card shows it. It is persisted and
+// sent like the file path, so a credential store there, or inside one, as
+// written or at its real path, is hidden whole and the line keeps only where
+// the directory is; the request is then a hard gate.
+export function approvalDirectory(input: { directory: string; workspace: string; canonical?: string | undefined }): {
+  text: string
+  redacted: boolean
+  sensitive: boolean
+} {
+  const workspace = resolve(input.workspace)
+  const directory = resolve(workspace, input.directory)
+  if (
+    namesSecretPath(input.directory)
+    || namesSecretPath(directory)
+    || (input.canonical !== undefined && namesSecretPath(input.canonical))
+  ) {
+    const inside = directory === workspace || within(workspace, directory) !== undefined
+    return { text: inside ? "[REDACTED] in the session worktree" : "[REDACTED], outside the session worktree", redacted: false, sensitive: true }
+  }
+  const copy = redactDurableText(input.directory)
+  return { text: copy.value, redacted: copy.redacted, sensitive: false }
+}
+
 export function approvalFacts(input: {
   path?: string
   workspace: string
@@ -152,7 +183,9 @@ export function approvalFacts(input: {
   const sensitive = namesSecretPath(input.path)
     || namesSecretPath(resolve(input.workspace, input.cwd ?? ".", input.path))
     || (input.resolved !== undefined
-      && (namesSecretPath(input.resolved.target) || input.resolved.hops.some(namesSecretPath)))
+      && (namesSecretPath(input.resolved.target)
+        || input.resolved.hops.some(namesSecretPath)
+        || (input.resolved.canonical !== undefined && namesSecretPath(input.resolved.canonical))))
   const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
   return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }

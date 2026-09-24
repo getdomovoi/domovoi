@@ -1,6 +1,6 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, chmod, mkdir, mkdtemp, realpath, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
@@ -1087,6 +1087,52 @@ describe("DomovoiDaemon", () => {
     const envApproval = (await rpc("workspace.get", {})).result.approvals
       .find((candidate) => candidate.providerRequestId === 93)
     expect(envApproval).toMatchObject({ risk: "hard-gate", affects: "The file [REDACTED], outside the session worktree." })
+
+    // The directory a request runs in is persisted and sent too. A credential
+    // store there is hidden whole, keeps its location, and makes the gate hard.
+    listener!({
+      type: "approval-requested",
+      requestId: 94,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "ls",
+      reason: "List files",
+      cwd: "/home/u/.aws",
+    })
+    const directoryApproval = (await rpc("workspace.get", {})).result.approvals
+      .find((candidate) => candidate.providerRequestId === 94)
+    expect(directoryApproval).toMatchObject({ risk: "hard-gate", directory: "[REDACTED], outside the session worktree" })
+    expect(JSON.stringify(directoryApproval)).not.toContain(".aws")
+
+    // A link with an ordinary name reaches a store only on disk: the operand
+    // and the directory are judged at their real paths as well.
+    const onDisk = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-real-")))
+    onTestFinished(() => rm(onDisk, { recursive: true, force: true }))
+    await mkdir(join(onDisk, ".aws"))
+    await writeFile(join(onDisk, ".aws", "credentials"), "")
+    await symlink(join(onDisk, ".aws"), join(onDisk, "plain"))
+    listener!({
+      type: "approval-requested",
+      requestId: 95,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "tar czf x.tgz plain/credentials",
+      reason: "Archive a file",
+      cwd: onDisk,
+    })
+    listener!({
+      type: "approval-requested",
+      requestId: 96,
+      threadId: session.providerThreadId,
+      turnId: session.activeTurnId,
+      command: "ls",
+      reason: "List files",
+      cwd: join(onDisk, "plain"),
+    })
+    const onDiskApprovals = (await rpc("workspace.get", {})).result.approvals
+    expect(onDiskApprovals.find((candidate) => candidate.providerRequestId === 95)).toMatchObject({ risk: "hard-gate" })
+    expect(onDiskApprovals.find((candidate) => candidate.providerRequestId === 96))
+      .toMatchObject({ risk: "hard-gate", directory: "[REDACTED], outside the session worktree" })
 
     listener!({
       type: "command-output",

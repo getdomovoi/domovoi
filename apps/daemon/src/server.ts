@@ -95,7 +95,8 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
-import { approvalFacts, resolveApprovalPath } from "./approval-facts.js"
+import { approvalDirectory, approvalFacts, resolveApprovalPath } from "./approval-facts.js"
+import { canonicalPath, commandOperands, operandPieces, operandsReachCredentialPath } from "./credential-stores.js"
 import {
   boundedQueuedSendReason,
   SqliteWorkspaceStore,
@@ -8549,16 +8550,30 @@ export class DomovoiDaemon {
         ...(event.path === undefined ? {} : { filePath: event.path }),
         ...(event.blockedPath === undefined ? {} : { blockedPath: event.blockedPath }),
       })
+      const factsWorkspace = session.workspacePath ?? project.path
       const decision = permissionDecisionFor({
         runtime: session.runtime,
         ...(event.command ? { command: event.command } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
         execution,
       })
+      // Where each operand and the directory really are on disk: a link or a
+      // name the filesystem treats as another can reach a credential store
+      // that no written name shows.
+      const requestDirectory = resolve(factsWorkspace, event.cwd ?? ".")
+      const reachesCredentialStore = await operandsReachCredentialPath([
+        ...(event.command === undefined ? [] : commandOperands(event.command)),
+        ...(execution.state === "resolved" && execution.record.kind === "shell"
+          ? execution.record.entries.flatMap((entry) => entry.parts.flatMap((part) => part.argv.flatMap(operandPieces)))
+          : []),
+      ], requestDirectory)
       const commandCopy = redactDurableCommand(event.command ?? "Command details unavailable")
       const reasonCopy = redactDurableText(event.reason ?? "Run a command")
-      const directoryCopy = redactDurableText(event.cwd ?? session.workspacePath ?? project.path)
-      const factsWorkspace = session.workspacePath ?? project.path
+      const directoryCopy = approvalDirectory({
+        directory: event.cwd ?? factsWorkspace,
+        workspace: factsWorkspace,
+        canonical: await canonicalPath(requestDirectory),
+      })
       const facts = approvalFacts({
         ...(event.path === undefined ? {} : { path: event.path }),
         workspace: factsWorkspace,
@@ -8569,6 +8584,8 @@ export class DomovoiDaemon {
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted
         || directoryCopy.redacted
+        || directoryCopy.sensitive
+        || reachesCredentialStore
         || facts.redacted
         || facts.sensitive
         || (execution.state === "unresolved" && execution.reason === "sensitive-content")
@@ -8649,7 +8666,7 @@ export class DomovoiDaemon {
           machine: this.#snapshot.machine.name,
           agent: `${session.runtime.provider} / ${session.runtime.model}`,
           mode: session.runtime.permissionMode,
-          directory: directoryCopy.value,
+          directory: directoryCopy.text,
           affects: facts.affects,
           network: facts.network,
           estimatedDuration: "Unknown",

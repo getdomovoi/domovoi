@@ -5,7 +5,7 @@ import { join, resolve } from "node:path"
 import { demoWorkspace, type Runtime } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { approvalFacts, resolveApprovalPath, unrestrictedApprovalScope } from "./approval-facts.js"
+import { approvalDirectory, approvalFacts, resolveApprovalPath, unrestrictedApprovalScope } from "./approval-facts.js"
 import { codexApprovalScope } from "./codex.js"
 
 const workspace = join("/", "worktrees", "session-1")
@@ -268,6 +268,35 @@ describe("approvalFacts", () => {
       const facts = approvalFacts({ workspace: tree, ...(cwd === undefined ? {} : { cwd }), path, scope: undefined, resolved })
       expect({ affects: facts.affects, sensitive: facts.sensitive })
         .toEqual({ affects: row.affects({ root, tree, outside }), sensitive: row.sensitive })
+    })
+  })
+
+  // The directory a request runs in is persisted and sent like the file path,
+  // so a credential store there is hidden whole and keeps its location.
+  describe("approvalDirectory", () => {
+    it.each([
+      { directory: "/home/u/.aws", text: "[REDACTED], outside the session worktree" },
+      { directory: "/home/u/.aws/", text: "[REDACTED], outside the session worktree" },
+      { directory: "/home/u/.ssh/keys", text: "[REDACTED], outside the session worktree" },
+      { directory: "/home/u/.docker", text: "[REDACTED], outside the session worktree" },
+      { directory: "/home/u/.conﬁg/gh", text: "[REDACTED], outside the session worktree" },
+      { directory: join(workspace, ".aws"), text: "[REDACTED] in the session worktree" },
+    ])("hides and hard-gates $directory", ({ directory, text }) => {
+      expect(approvalDirectory({ directory, workspace })).toEqual({ text, redacted: false, sensitive: true })
+    })
+
+    it.each([workspace, join(workspace, "src"), "/home/u/.docker/project", "/home/u/.domovoi/worktrees/x"])(
+      "shows the ordinary directory %s as it is",
+      (directory) => {
+        expect(approvalDirectory({ directory, workspace })).toEqual({ text: directory, redacted: false, sensitive: false })
+      },
+    )
+
+    it("redacts a secret in the directory like any other text", () => {
+      const token = `ghp_${"a1B2".repeat(9)}`
+      const shown = approvalDirectory({ directory: `/tmp/${token}`, workspace })
+      expect(shown.text).not.toContain(token)
+      expect(shown.redacted).toBe(true)
     })
   })
 

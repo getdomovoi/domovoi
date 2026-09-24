@@ -5,9 +5,9 @@ import { dirname, join } from "node:path"
 import { type Runtime } from "@getdomovoi/protocol"
 import { afterAll, describe, expect, it } from "vitest"
 
-import { approvalFacts, resolveApprovalPath } from "./approval-facts.js"
+import { approvalDirectory, approvalFacts, resolveApprovalPath } from "./approval-facts.js"
 import { codexAppServerArguments, codexSecretLocations } from "./codex.js"
-import { credentialStores } from "./credential-stores.js"
+import { canonicalPath, commandOperands, credentialStores, operandsReachCredentialPath } from "./credential-stores.js"
 import { resolveCommandExecution } from "./execution-resolution.js"
 import { permissionDecisionFor } from "./permission-policy.js"
 
@@ -67,19 +67,32 @@ const secretFiles: readonly string[] = [
 
 const home = join("/", "home", "u")
 
-// The same file, written every way a path or a command line can spell it.
+// ASCII letters in their fullwidth compatibility forms.
+function fullwidth(name: string): string {
+  return name.replace(/[A-Za-z]/gu, (letter) => String.fromCodePoint(letter.codePointAt(0)! + 0xfee0))
+}
+
+// The same file, written every way a path or a command line can spell it. A
+// spelling that leaves this name unchanged is left out.
 function pathVariants(name: string): { label: string; path: string }[] {
   const parts = name.split("/")
-  return [
+  const variants = [
     { label: "as written", path: `${home}/${name}` },
     { label: "doubled separators", path: `${home}//${parts.join("//")}` },
     { label: "dot components", path: `${home}/./${parts.join("/./")}` },
     { label: "a detour through ..", path: `${home}/${[...parts.slice(0, -1), "x", "..", parts.at(-1)!].join("/")}` },
     { label: "backslashes", path: ["C:", "Users", "u", ...parts].join("\\") },
     { label: "upper case", path: `${home}/${name.toUpperCase()}` },
+    { label: "mixed case", path: `${home}/${[...name].map((character, index) => index % 2 === 0 ? character.toUpperCase() : character).join("")}` },
     { label: "NFD", path: `${home}/${name.normalize("NFD")}` },
+    { label: "fullwidth letters", path: `${home}/${fullwidth(name)}` },
+    { label: "compatibility ligatures", path: `${home}/${name.replaceAll("ffi", "ﬃ").replaceAll("fi", "ﬁ").replaceAll("fl", "ﬂ").replaceAll("ff", "ﬀ")}` },
+    { label: "long s and the Kelvin sign", path: `${home}/${name.replaceAll("s", "ſ").replaceAll("k", "K")}` },
+    { label: "sharp s, which only case folding reads as ss", path: `${home}/${name.replaceAll("ss", "ß")}` },
+    { label: "a zero width joiner", path: `${home}/${name.replace(/(?<=\p{L})(?=\p{L})/u, "‍")}` },
     { label: "home relative", path: `~/${name}` },
   ]
+  return variants.filter((variant, index) => index === 0 || variant.path !== variants[0]!.path)
 }
 
 function commandVariants(path: string): string[] {
@@ -137,6 +150,126 @@ describe("one classifier for card paths and command operands", () => {
       expect(permissionDecisionFor({ runtime: { ...runtime, auto: true }, command: "pnpm test", execution }))
         .toEqual(hardGate)
     })
+  })
+})
+
+// A store that marks itself on a card by a narrower name is still a store as a
+// whole: its root, with or without a trailing slash, and a pattern that
+// reaches every file in it.
+const storeRoots: readonly string[] = [".docker", ".docker/", ".docker/*", ".domovoi", ".domovoi/", ".domovoi/*"]
+
+describe("a whole store known on the card by a narrower name", () => {
+  describe.each(storeRoots)("the store root %s", (name) => {
+    it.each(pathVariants(name))("hides and hard-gates it on the card: $label", ({ path }) => {
+      const facts = approvalFacts({ workspace, path, scope: undefined })
+      expect({ affects: facts.affects, sensitive: facts.sensitive })
+        .toEqual({ affects: expect.stringMatching(hiddenOnCard), sensitive: true })
+    })
+
+    it.each(pathVariants(name))("hard-gates a command that names it: $label", ({ path }) => {
+      for (const command of commandVariants(path)) {
+        expect({ command, decision: permissionDecisionFor({ runtime, command }) })
+          .toEqual({ command, decision: hardGate })
+      }
+    })
+  })
+
+  it.each([
+    "tar czf x.tgz ~/.docker",
+    "tar czf x.tgz ~/.docker/",
+    "cp -r ~/.domovoi /tmp/x",
+    "cp -r ~/.domovoi/ /tmp/x",
+    "cp -r ~/.docker/. /tmp/x",
+    "zip -r out.zip ~/.docker",
+    "tar -C ~ -czf x.tgz .domovoi",
+    `rsync -a ${home}/.domovoi/ /backup/`,
+    "cd ~ && tar czf x.tgz .docker",
+  ])("hard-gates an archive or copy of the whole store: %s", (command) => {
+    expect(permissionDecisionFor({ runtime, command })).toEqual(hardGate)
+  })
+})
+
+// A shell joins a word across a backslash and a newline, and decodes the
+// escapes in an ANSI-C quote before the command runs.
+describe("words the shell assembles before running the command", () => {
+  it.each([
+    "cat .e\\\nnv",
+    "cat \".e\\\nnv\"",
+    "cat $'\\x2eenv'",
+    "cat $'\\056env'",
+    "cat $'\\u002eenv'",
+    "cat $'.env'",
+    "cat $'.en'v",
+    "cat $\".env\"",
+    `cat ${home}/.a\\\nws/credentials`,
+    `cat ${home}/$'\\x2e'aws/credentials`,
+    `cat $'${home}/\\056ssh/id'`,
+    `cat $'${home}/.ssh\\x2fid'`,
+    "tar czf x.tgz ~/.dock\\\ner",
+    `cp -r $'${home}/\\x2edomovoi' /tmp/x`,
+  ])("hard-gates %j", (command) => {
+    expect(permissionDecisionFor({ runtime, command })).toEqual(hardGate)
+  })
+
+  it.each([
+    "cat '.e\\\nnv'",
+    "cat $'notes\\x2etxt'",
+  ])("gives %j a normal gate", (command) => {
+    expect(permissionDecisionFor({ runtime, command })).toEqual({ action: "review", risk: "normal" })
+  })
+})
+
+describe("the real path of a name on disk", () => {
+  let root: string | undefined
+  afterAll(async () => {
+    if (root !== undefined) await rm(root, { recursive: true, force: true })
+  })
+
+  // A store and an ordinary directory, each behind a link with an ordinary
+  // name, so only the real path names the store.
+  async function layout(): Promise<string> {
+    if (root !== undefined) return root
+    root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-credential-real-")))
+    await mkdir(join(root, ".aws"))
+    await writeFile(join(root, ".aws", "credentials"), "")
+    await mkdir(join(root, ".docker"))
+    await writeFile(join(root, ".docker", "Dockerfile"), "")
+    await mkdir(join(root, "notes"))
+    await writeFile(join(root, "notes", "a.txt"), "")
+    await symlink(join(root, ".aws"), join(root, "plain"))
+    await symlink(join(root, ".docker"), join(root, "box"))
+    await symlink(join(root, "notes"), join(root, "ordinary"))
+    return root
+  }
+
+  it.each([
+    { label: "a file through a link to a store", path: "plain/credentials" },
+    { label: "a file not written yet, through a link to a store", path: "plain/new-file" },
+    { label: "a link to a whole store", path: "box" },
+  ])("hides and hard-gates $label", async ({ path }) => {
+    const base = await layout()
+    const workspace = join(base, "worktree")
+    const absolute = join(base, path)
+    // Only the real path is given, not the links followed on the way.
+    const resolved = { target: absolute, workspace, hops: [], canonical: await canonicalPath(absolute) }
+    const facts = approvalFacts({ workspace, path: absolute, scope: undefined, resolved })
+    expect({ affects: facts.affects, sensitive: facts.sensitive })
+      .toEqual({ affects: "The file [REDACTED], outside the session worktree.", sensitive: true })
+    expect(await operandsReachCredentialPath(commandOperands(`tar czf x.tgz ${absolute}`), undefined)).toBe(true)
+    expect(await operandsReachCredentialPath(commandOperands(`tar czf x.tgz ${path}`), base)).toBe(true)
+    expect(approvalDirectory({ directory: absolute, workspace, canonical: await canonicalPath(absolute) }))
+      .toEqual({ text: "[REDACTED], outside the session worktree", redacted: false, sensitive: true })
+  })
+
+  it("shows an ordinary file behind a link, and a store's ordinary child", async () => {
+    const base = await layout()
+    const workspace = join(base, "worktree")
+    for (const path of ["ordinary/a.txt", "box/Dockerfile"]) {
+      const absolute = join(base, path)
+      const resolved = { target: absolute, workspace, hops: [], canonical: await canonicalPath(absolute) }
+      expect(approvalFacts({ workspace, path: absolute, scope: undefined, resolved }).sensitive).toBe(false)
+      expect(await operandsReachCredentialPath(commandOperands(`cat ${path}`), base)).toBe(false)
+    }
   })
 })
 
@@ -217,6 +350,12 @@ describe("negative controls", () => {
       path: `${home}/.domovoi/worktrees/x/file.ts`,
       affects: `The file ${home}/.domovoi/worktrees/x/file.ts, outside the session worktree.`,
     },
+    {
+      path: `${home}/.domovoi/worktrees/x`,
+      affects: `The file ${home}/.domovoi/worktrees/x, outside the session worktree.`,
+    },
+    { path: ".docker/compose.yml", affects: "The file .docker/compose.yml in the session worktree." },
+    { path: "ﬁle.txt", affects: "The file ﬁle.txt in the session worktree." },
   ])("shows $path and gives it a normal gate", ({ path, affects }) => {
     expect(approvalFacts({ workspace, path, scope: undefined })).toMatchObject({ affects, sensitive: false })
     for (const command of [`cat ${path}`, `tool --file=${path}`]) {
