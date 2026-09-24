@@ -7117,8 +7117,9 @@ export class DomovoiDaemon {
               execution: currentExecution,
             })
             // A card raised as a hard gate (a secret in its text, say) stays
-            // one, and a secret in the file it now names makes it one.
-            approval.risk = approval.risk === "hard-gate" || currentAffects?.redacted === true
+            // one, and a secret in the file it now names, or a file it hides,
+            // makes it one.
+            approval.risk = approval.risk === "hard-gate" || currentAffects?.redacted === true || currentAffects?.sensitive === true
               ? "hard-gate"
               : currentDecision.risk
             await this.#persistSnapshot()
@@ -9026,11 +9027,12 @@ export class DomovoiDaemon {
         : undefined
       const affectsCopy = fileTarget
         ? await fileTargetAffects({ workspace: session.workspacePath ?? project.path, path: fileTarget.filePath, cwd: fileTarget.cwd })
-        : { text: "Files and processes in the session worktree.", redacted: false }
+        : { text: "Files and processes in the session worktree.", redacted: false, sensitive: false }
       const containsSecret = commandCopy.redacted
         || reasonCopy.redacted
         || directoryCopy.redacted
         || affectsCopy.redacted
+        || affectsCopy.sensitive
         || (execution.state === "unresolved" && execution.reason === "sensitive-content")
       const matchingRule = this.#snapshot.approvalRules.find(
         (rule) => !containsSecret

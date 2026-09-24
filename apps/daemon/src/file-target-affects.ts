@@ -47,12 +47,15 @@ function within(workspace: string, target: string): string | undefined {
 const hiddenPath = { text: "[REDACTED]", redacted: false }
 
 // Redacted is true when the durable redaction changed a path, which makes the
-// card a hard gate the way a secret anywhere else in its text does.
+// card a hard gate the way a secret anywhere else in its text does. Sensitive
+// is true when the file is hidden as [REDACTED] for naming a credential file:
+// the card is then a hard gate too (ruled for #541), so no standing rule is
+// made or used for a file the person cannot see.
 export async function fileTargetAffects(input: {
   workspace: string
   path: string
   cwd?: string | undefined
-}): Promise<{ text: string; redacted: boolean }> {
+}): Promise<{ text: string; redacted: boolean; sensitive: boolean }> {
   const lexicalTarget = resolve(input.workspace, input.cwd ?? ".", input.path)
   const followed = await followedTarget(input.workspace, input.path, input.cwd)
   const hide = namesSecretPath(input.path)
@@ -64,7 +67,7 @@ export async function fileTargetAffects(input: {
   if (real !== undefined) {
     // The file the edit reaches, which is the one a rule made here names.
     const name = shown(real)
-    return { text: `The file ${name.text} in the session worktree.`, redacted: name.redacted }
+    return { text: `The file ${name.text} in the session worktree.`, redacted: name.redacted, sensitive: hide }
   }
   if (lexical !== undefined && followed) {
     const destination = shown(followed.target)
@@ -72,8 +75,9 @@ export async function fileTargetAffects(input: {
     return {
       text: `The file ${destination.text}, outside the session worktree, through a link at ${link.text}.`,
       redacted: destination.redacted || link.redacted,
+      sensitive: hide,
     }
   }
   const name = shown(lexicalTarget)
-  return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted }
+  return { text: `The file ${name.text}, outside the session worktree.`, redacted: name.redacted, sensitive: hide }
 }

@@ -22,9 +22,10 @@ revision of the card they show. The protocol version stays 0.8.0.
 A file-tool card's Affects line names the file the edit reaches, read the way execution resolution
 reads it: "The file src/index.ts in the session worktree.", or, when the file is outside the
 worktree, "The file /path, outside the session worktree." with ", through a link at <path>" when a
-link inside the worktree leads there. A path that names a credential file shows as [REDACTED], and
-other text passes through the durable secret redaction; a card whose path that redaction changes is
-a hard gate, as a secret anywhere else in a card makes it. Control characters in the path are
+link inside the worktree leads there. A path that names a credential file, or that a link carries to
+one, shows as [REDACTED], and the card is a hard gate: it offers no Always, and no standing rule or
+Build auto answers it. Other text passes through the durable secret redaction; a card whose path
+that redaction changes is a hard gate too, as a secret anywhere else in a card makes it. Control characters in the path are
 escaped and a path past 512 characters is shortened in the middle. The line is set when the card is
 raised and read again when the card is answered: if the file changed, the card is rewritten with the
 new line under the next revision, broadcast, and the Allow is refused.
