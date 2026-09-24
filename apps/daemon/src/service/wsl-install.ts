@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { posix, win32 } from "node:path"
+import { isDeepStrictEqual } from "node:util"
 
 import type { OperationDeadline } from "../operation-deadline.js"
 import { profileLocation } from "../profile-directory.js"
@@ -74,23 +75,49 @@ function wslUpdateIntentText(previous: ServiceConfiguration, next: ServiceConfig
   return `${JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(next), ...(completed === undefined ? {} : { completed }) })}\n`
 }
 
+// The configuration as it is saved and read back, so two can be compared
+// whatever order their fields were built in.
+function asSaved(configuration: ServiceConfiguration): ServiceConfiguration {
+  return parseServiceConfiguration(serializeServiceConfiguration(configuration))
+}
+
+// An update changes only the guest runtime, and writes it in the shape an
+// install does: an absolute executable and at most one absolute daemon entry.
+// A recorded configuration that differs from the saved one in anything else
+// (registration, profile, distribution, user, PowerShell or wsl.exe), or
+// names a runtime of another shape, was not written by an update of this
+// service, and nothing it names is registered or started.
+function recordedByThisService(recorded: ServiceConfiguration, saved: ServiceConfiguration): boolean {
+  if (!recorded.wsl || !saved.wsl) return false
+  const { executable, args } = recorded.wsl
+  if (args.length > 1 || ![executable, ...args].every((path) => posix.isAbsolute(path) && posix.normalize(path) === path)) return false
+  return isDeepStrictEqual(asSaved({ ...recorded, wsl: { ...recorded.wsl, executable: saved.wsl.executable, args: saved.wsl.args } }), asSaved(saved))
+}
+
 // Ruled 2026-09-23: a damaged record has one fixed cause, never a parser's
-// own words.
+// own words. A record that cannot be read as a private regular file, or that
+// does not match the saved registration, is damaged too.
 async function readWslUpdateIntent(
   intentPath: string,
   read: (path: string, deadline: OperationDeadline) => Promise<string>,
+  saved: ServiceConfiguration | undefined,
   deadline: OperationDeadline,
 ): Promise<WslUpdateIntent> {
-  const text = await withinServiceDeadline(deadline, () => read(intentPath, deadline))
   try {
+    const text = await withinServiceDeadline(deadline, () => read(intentPath, deadline))
     const parsed: unknown = JSON.parse(text)
     const intent = wslUpdateIntentSchema.parse(parsed)
-    return {
+    const recorded = {
       previous: parseServiceConfiguration(intent.previous),
       next: parseServiceConfiguration(intent.next),
       ...(intent.completed === undefined ? {} : { completed: intent.completed }),
     }
+    if (!saved || !recordedByThisService(recorded.previous, saved) || !recordedByThisService(recorded.next, saved)) {
+      throw new Error("The update record does not match the saved service registration")
+    }
+    return recorded
   } catch (cause) {
+    if (deadline.signal.aborted) throw cause
     throw new Error("the record of an interrupted update is unreadable", { cause })
   }
 }
@@ -157,7 +184,7 @@ export function prepareWslUpdate(
     let interrupted: ServiceConfiguration | undefined
     let previous = saved
     if (await withinServiceDeadline(readDeadline, () => effects.exists(intentPath, readDeadline))) {
-      const recorded = await readWslUpdateIntent(intentPath, read, readDeadline)
+      const recorded = await readWslUpdateIntent(intentPath, read, saved, readDeadline)
       // A finished update whose record could not be removed leaves nothing to
       // roll back; this update writes its own record over it.
       if (!finishedUpdate(recorded, saved)) {
@@ -254,7 +281,7 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
   let interrupted = await withinServiceDeadline(deadline, () => dependencies.exists(intentPath, deadline))
   const saved = dependencies.readConfiguration?.(home, "linux")
   if (interrupted && verb === "status" && dependencies.read) {
-    const recorded = await readWslUpdateIntent(intentPath, dependencies.read, deadline).catch(() => undefined)
+    const recorded = await readWslUpdateIntent(intentPath, dependencies.read, saved, deadline).catch(() => undefined)
     if (recorded && finishedUpdate(recorded, saved)) {
       // A finished update whose record could not be removed: cleared here.
       await withinServiceDeadline(deadline, () => dependencies.remove(intentPath, deadline)).catch(() => undefined)
@@ -307,7 +334,7 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
   const tasks = [task]
   if (interrupted && dependencies.read) {
     const read = dependencies.read
-    const recorded = await readWslUpdateIntent(intentPath, read, deadline).catch(() => undefined)
+    const recorded = await readWslUpdateIntent(intentPath, read, saved, deadline).catch(() => undefined)
     for (const configuration of recorded ? [recorded.previous, recorded.next] : []) {
       if (configuration.wsl) tasks.push(installedWslTask(configuration.wsl, saved.registrationId, path))
     }

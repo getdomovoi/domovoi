@@ -1,6 +1,11 @@
+import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { LocalOwnerRecord } from "../local-owner-record.js"
+import { OperationDeadline } from "../operation-deadline.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
@@ -9,7 +14,7 @@ import {
   type DaemonServiceDependencies,
 } from "../public.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
-import type { CapturedRun, ServiceEffects } from "./install.js"
+import { nodeServiceEffects, type CapturedRun, type ServiceEffects } from "./install.js"
 import { installedWslTask } from "./wsl-registration.js"
 import { wslUpdateIntentPath } from "./wsl-install.js"
 
@@ -876,6 +881,57 @@ describe("security review round 1", () => {
     expect(effects.owner).toMatchObject({ state: "ready" })
     // Left for later cleanup, marked as settled with the previous service.
     expect(JSON.parse(effects.files.get(intentPath)!)).toMatchObject({ completed: "previous" })
+  })
+
+  // F3: a planted intent record supplied the previous configuration that a
+  // rollback registers and starts. A record must agree with the saved
+  // registration on everything but the runtime, and name a runtime of the
+  // shape an install or update writes: an absolute executable and at most one
+  // absolute daemon entry.
+  it("F3: refuses an intent record that does not match the saved registration, changing nothing", async () => {
+    const planted = wslConfiguration("/tmp/planted/node", "/tmp/planted/index.js")
+    for (const previous of [
+      { ...planted, registrationId: "00000000-0000-4000-8000-000000000000" },
+      { ...planted, wsl: { ...planted.wsl!, linuxUser: "root" } },
+      { ...planted, profileDirectory: "/tmp/planted-profile" },
+      wslConfiguration("/tmp/planted/node", "planted/index.js"),
+      { ...planted, wsl: { ...planted.wsl!, args: ["/tmp/planted/index.js", "/tmp/planted/more.js"] } },
+    ]) {
+      const effects = fake("linux", "/home/dl", {}, wslConfiguration())
+      effects.files.set(intentPath, JSON.stringify({ version: 1, previous: serializeServiceConfiguration(previous), next: serializeServiceConfiguration(wslConfiguration()) }))
+      await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
+        "Domovoi could not update the service: the record of an interrupted update is unreadable. Nothing was changed, and the service was left as it was.",
+      )
+      expect(effects.order).toEqual([])
+    }
+  })
+
+  // F3: the read effect followed a symbolic link and took any file. It now
+  // reads a service record only as a bounded private regular file owned by
+  // this user, without following a link. No Windows form: O_NOFOLLOW and
+  // POSIX modes do not exist there, and the WSL intent record lives in a
+  // Linux guest.
+  it.skipIf(process.platform === "win32")("F3: reads a service record only as a private regular file, never through a link", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-service-read-"))
+    const deadline = OperationDeadline.start(5_000)
+    try {
+      const read = nodeServiceEffects().read!
+      const target = join(directory, "planted.json")
+      await writeFile(target, "{}", { mode: 0o600 })
+      const linked = join(directory, "service.json.update-intent.json")
+      await symlink(target, linked)
+      await expect(read(linked, deadline)).rejects.toThrow()
+      const shared = join(directory, "shared.json")
+      await writeFile(shared, "{}")
+      await chmod(shared, 0o644)
+      await expect(read(shared, deadline)).rejects.toThrow()
+      const own = join(directory, "own.json")
+      await writeFile(own, "{\"version\":1}", { mode: 0o600 })
+      expect(await read(own, deadline)).toBe("{\"version\":1}")
+    } finally {
+      deadline.clear()
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 })
 

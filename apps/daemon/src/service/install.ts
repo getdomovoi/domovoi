@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix } from "node:path"
 import { userInfo } from "node:os"
 import { installedWslTask } from "./wsl-registration.js"
@@ -816,7 +816,13 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
     supervisorStatus: async (home) => readGuestSupervisorStatus(home),
     write: writeUnit,
-    read: (path, deadline) => withinServiceDeadline(deadline, () => readFile(path, { encoding: "utf8", signal: deadline.signal })),
+    // A service file or update record is read only as a bounded private
+    // regular file owned by this user, without following a link, as
+    // service.json is: what it names is registered and started on a rollback.
+    read: async (path, deadline) => {
+      deadline.throwIfExpired()
+      return readLocalProfileFile(path, 64 * 1024)
+    },
     readOwner: readLocalOwnerRecord,
     run: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")
