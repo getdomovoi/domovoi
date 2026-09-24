@@ -45,8 +45,8 @@ export function Composer({
   onOpenAttach: () => void
   onRemoveAttachment: (index: number) => void
   onFocusChange: (focused: boolean) => void
-  bottomInset?: number
-  onFootprint?: (footprint: number) => void
+  bottomInset?: number | undefined
+  onFootprint?: ((footprint: number) => void) | undefined
 }) {
   const [focused, setFocused] = useState(false)
   const { palette } = useTheme()
@@ -65,7 +65,7 @@ export function Composer({
       padding={expanded ? "stack" : "composer"}
       bottomInset={bottomInset}
       onFootprint={onFootprint}
-      className={expanded ? "gap-2" : undefined}
+      className={expanded ? "gap-2" : ""}
     >
       {problem ? <Text className="text-[11px] text-destructive">{problem}</Text> : null}
       {readiness.can && readiness.hint ? <Text variant="note">{readiness.hint}</Text> : null}

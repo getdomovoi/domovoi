@@ -23,16 +23,19 @@ This repository is early. The current vertical slice includes:
 
 ```text
 apps/
+  cli/       domovoi terminal client: pair, status, doctor, logs, skill install
   daemon/    domovoid execution service and JSON-RPC endpoint
   desktop/   Electron client
-  mobile/    Expo phone app, see apps/mobile/README.md
+  mobile/    Expo phone and tablet app, see apps/mobile/README.md
   web/       browser client and installable PWA
 packages/
-  protocol/  publishable wire schemas and shared types
-  ui/        shared product UI and brand assets
+  credential-store/  publishable keychain or private-file custody for client credentials
+  protocol/          publishable wire schemas and shared types
+  ui/                shared product UI and brand assets
 design/
-  design_handoff_domovoi/        signed product-design source
+  design_handoff_domovoi/        signed v1 product-design source
   design_handoff_domovoi_brand/  signed brand source
+  design_handoff_domovoi_v2/     v2 handoff the current clients are built from, see DESIGN.md
   design_system_domovoi/         signed design system: tokens, specimens, and the
                                  adherence manifest scripts/design-rule.mjs reads
 ```
@@ -65,11 +68,12 @@ To work on the interface itself, run the desktop shell against a fixture daemon 
 one:
 
 ```bash
-pnpm dev:fixture
+pnpm dev:desktop:fixture
 ```
 
 This opens the real Electron window against `apps/desktop/scripts/dev-fixture-daemon.mjs`, a
-separate process that speaks the protocol and validates every frame against the schemas in
+separate process that speaks the protocol. It looks each request's method up in the protocol's
+`rpcMethods` and validates that method's params, and its own answer, against the schemas in
 `packages/protocol`. It never touches `~/.domovoi`, and it refuses any method it has no handler
 for, naming the method and the file to add it in, rather than answering with something plausible.
 Because it is its own process, its state survives a window relaunch.
@@ -102,12 +106,14 @@ policy refusals, unreachable machines, partial transfers and mid-turn disconnect
 use the same watched Electron window: renderer edits apply in place, while main and preload edits
 relaunch onto the same selected daemon.
 
-The terminal prints one line for every saved file it watches. An edit under `packages/ui/src` or
-`apps/desktop/src/renderer` applies in place and keeps the window state. An edit under
-`apps/desktop/src/main` or `apps/desktop/src/preload` relaunches the window on the same selected
-daemon.
-An unchanged window therefore always has a line beside it saying which of the two was supposed to
-happen.
+Every watched save prints a line naming the file and what should happen next. An edit under
+`packages/ui/src`, `apps/desktop/src/renderer` or `apps/desktop/src/dev` prints a renderer-update
+line and applies in place, keeping the window state; if
+Fast Refresh cannot apply it, a second line says the renderer reloaded and the window state is
+gone. An edit under `apps/desktop/src/main` or `apps/desktop/src/preload` relaunches the window on
+the same selected daemon, and the relaunched window prints a boot line. Saves elsewhere, and saves
+to test files, print nothing. An unchanged window after a watched save therefore always has a line
+beside it saying what was supposed to happen.
 
 Every daemon requires authentication. Standalone `domovoid` creates a user-private credential at
 `~/.domovoi/daemon.token` when `DOMOVOI_AUTH_TOKEN` is unset. Remote listeners additionally require

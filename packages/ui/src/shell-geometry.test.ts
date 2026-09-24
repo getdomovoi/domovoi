@@ -25,6 +25,47 @@ it("uses the v2 titlebar and drawer geometry without retired rail or inspector t
   expect(source("sessions-drawer.tsx")).toContain("w-[268px]")
 })
 
+const designRegions: Record<string, string> = {
+  Rail: "--shell-rail",
+  Sidebar: "--shell-sidebar",
+  "Thread lane": "--shell-thread",
+  Inspector: "--shell-inspector",
+  Titlebar: "--shell-titlebar",
+  Header: "--shell-header",
+  "Control height": "--shell-control",
+}
+
+function designGeometry(): Map<string, string | null> {
+  const design = readFileSync(join(sourceDirectory, "..", "..", "..", "DESIGN.md"), "utf8")
+  const rows = new Map<string, string | null>()
+  let productionColumn: number | undefined
+  for (const line of design.split("\n")) {
+    const columns = line.split("|").map((column) => column.trim())
+    if (columns[1] === "Region") {
+      const index = columns.indexOf("Production")
+      productionColumn = index === -1 ? undefined : index
+      continue
+    }
+    const token = designRegions[columns[1] ?? ""]
+    const cell = productionColumn === undefined ? undefined : columns[productionColumn]
+    if (!token || cell === undefined) continue
+    rows.set(token, cell === "none" ? null : (/^(\d+px)\b/u.exec(cell)?.[1] ?? cell))
+  }
+  return rows
+}
+
+it("keeps the shell geometry tokens equal to the Production column in DESIGN.md", () => {
+  const design = designGeometry()
+  const styles = shellGeometry()
+
+  expect([...design.keys()].sort()).toEqual(Object.values(designRegions).sort())
+  for (const [token, size] of design) {
+    if (size === null) expect(styles).not.toHaveProperty(token)
+    else expect(styles[token]).toBe(size)
+  }
+  for (const token of Object.keys(styles)) expect(design.has(token)).toBe(true)
+})
+
 it("does not render the retired workspace rail", () => {
   const shell = source("workspace-shell.tsx")
   expect(shell).not.toContain("WorkspaceRail")
