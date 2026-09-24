@@ -10,6 +10,11 @@ import { codexHistoryScanLimits, committedCodexSecretPaths, gitSupportsNoLazyFet
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const git = promisify(execFile)
+// The machine's own Git configuration must not decide these results: Git for
+// Windows, for one, ships a system diff textconv that the gate counts.
+const isolated: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")))
+isolated.GIT_CONFIG_GLOBAL = "/dev/null"
+isolated.GIT_CONFIG_NOSYSTEM = "1"
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
@@ -35,7 +40,7 @@ describe("committedCodexSecretPaths", () => {
     await run("add", "-A")
     await run("commit", "-qm", "two")
 
-    await expect(committedCodexSecretPaths(root)).resolves.toEqual([".env", ".env.example", "certs/dev.pem"])
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toEqual([".env", ".env.example", "certs/dev.pem"])
   })
 
   it("lists nothing for a history without denied files", async () => {
@@ -44,14 +49,14 @@ describe("committedCodexSecretPaths", () => {
     await run("add", ".")
     await run("commit", "-qm", "one")
 
-    await expect(committedCodexSecretPaths(root)).resolves.toEqual([])
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toEqual([])
   })
 
   it("reports that it could not tell when the directory is not a repository", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-git-secrets-none-")))
     scratchDirectories.push(root)
 
-    await expect(committedCodexSecretPaths(root)).resolves.toBeUndefined()
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toBeUndefined()
   })
 
   it("reports that it could not finish when the history reaches the commit bound", async () => {
@@ -62,8 +67,8 @@ describe("committedCodexSecretPaths", () => {
       await run("commit", "-qm", name)
     }
 
-    await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 3 })).resolves.toBeUndefined()
-    await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 4 })).resolves.toEqual([".env", ".env.local", "server.pem"])
+    await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 3 }, { env: isolated })).resolves.toBeUndefined()
+    await expect(committedCodexSecretPaths(root, { ...codexHistoryScanLimits, commits: 4 }, { env: isolated })).resolves.toEqual([".env", ".env.local", "server.pem"])
   })
 
   it("does not scan a repository whose Git settings could run a program, and reports that it could not finish", async () => {
@@ -71,10 +76,10 @@ describe("committedCodexSecretPaths", () => {
     await writeFile(join(root, ".env"), "x\n")
     await run("add", ".")
     await run("commit", "-qm", "x")
-    await expect(committedCodexSecretPaths(root)).resolves.toEqual([".env"])
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toEqual([".env"])
     await run("config", "core.fsmonitor", join(root, "helper"))
 
-    await expect(committedCodexSecretPaths(root)).resolves.toBeUndefined()
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toBeUndefined()
   })
 
   it("does not scan a partial clone, where git log could fetch through the remote's programs", async () => {
@@ -94,7 +99,7 @@ describe("committedCodexSecretPaths", () => {
     await chmod(join(parent, "up"), 0o755)
     await g(join(parent, "clone"), "config", "remote.origin.uploadpack", join(parent, "up"))
 
-    await expect(committedCodexSecretPaths(join(parent, "clone"))).resolves.toBeUndefined()
+    await expect(committedCodexSecretPaths(join(parent, "clone"), codexHistoryScanLimits, { env: isolated })).resolves.toBeUndefined()
     await expect(access(marker)).rejects.toThrow()
   })
 
@@ -142,8 +147,8 @@ describe("committedCodexSecretPaths", () => {
     await run("add", ".")
     await run("commit", "-qm", "x")
 
-    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { gitVersion: async () => "git version 2.43.0" })).resolves.toBeUndefined()
-    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { gitVersion: async () => "git version 2.45.0" })).resolves.toEqual([".env"])
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { gitVersion: async () => "git version 2.43.0", env: isolated })).resolves.toBeUndefined()
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { gitVersion: async () => "git version 2.45.0", env: isolated })).resolves.toEqual([".env"])
   })
 
   it("bounds the scan", () => {

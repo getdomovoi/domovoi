@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process"
 import { access, chmod, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { promisify } from "node:util"
 
 import { afterEach, describe, expect, it } from "vitest"
@@ -164,7 +164,7 @@ describe("gitReadCanRunProgram", () => {
 
   it("reads settings from an included file", async () => {
     const { root, set } = await repository()
-    const included = join(root, "..", `${root.split("/").at(-1)}-included.gitconfig`)
+    const included = join(root, "..", `${basename(root)}-included.gitconfig`)
     scratchDirectories.push(included)
     await writeFile(included, "[core]\n\tfsmonitor = /tmp/helper\n")
     await set("include.path", included)

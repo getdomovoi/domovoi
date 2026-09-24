@@ -48,11 +48,12 @@ function gitVersion(): Promise<string | undefined> {
 export async function committedCodexSecretPaths(
   worktree: string,
   limits: Readonly<HistoryScanLimits> = codexHistoryScanLimits,
-  options: { gitVersion?: () => Promise<string | undefined> } = {},
+  options: { gitVersion?: () => Promise<string | undefined>; env?: NodeJS.ProcessEnv } = {},
 ): Promise<string[] | undefined> {
+  const baseEnv = options.env ?? process.env
   if (!gitSupportsNoLazyFetch(await (options.gitVersion ?? gitVersion)())) return undefined
-  if (await gitReadCanRunProgram(worktree)) return undefined
-  const env = { ...process.env, GIT_NO_LAZY_FETCH: "1" }
+  if (await gitReadCanRunProgram(worktree, baseEnv)) return undefined
+  const env = { ...baseEnv, GIT_NO_LAZY_FETCH: "1" }
   const args = [
     "-C", worktree, ...historyScanGit, "log", "--all", "--no-renames", "--name-only", "--format=%x01",
     `--max-count=${limits.commits}`,

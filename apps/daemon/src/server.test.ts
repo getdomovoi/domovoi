@@ -10,7 +10,7 @@ import { dirname, join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import WebSocket from "ws"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest"
 
 import {
   applyWorkspaceDelta,
@@ -9867,6 +9867,16 @@ describe("DomovoiDaemon", () => {
   })
 
   it("names the files in the repository history that Codex can still read through Git", async () => {
+    // The machine's Git configuration must not decide the result: Git for
+    // Windows ships a system diff textconv that the Git settings check counts.
+    const inherited = Object.entries(process.env).filter(([name]) => name.startsWith("GIT_"))
+    for (const [name] of inherited) delete process.env[name]
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/dev/null")
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1")
+    onTestFinished(() => {
+      vi.unstubAllEnvs()
+      for (const [name, value] of inherited) process.env[name] = value
+    })
     const { execFileSync } = await import("node:child_process")
     const repository = await realpath(await mkdtemp(join(tmpdir(), "domovoi-codex-history-")))
     scratchDirectories.push(repository)
