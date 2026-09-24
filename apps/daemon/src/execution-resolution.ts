@@ -424,7 +424,18 @@ export function resolveCommandExecution(input: {
     : undefined)
 }
 
+// An approval request waits on this answer, so it never throws: a request it
+// cannot fingerprint is unresolved, which still raises a card and makes no
+// standing rule.
 export async function resolveExecution(input: ExecutionInput): Promise<ExecutionResolution> {
+  try {
+    return await resolveExecutionOrThrow(input)
+  } catch {
+    return unresolved("unsupported-syntax")
+  }
+}
+
+async function resolveExecutionOrThrow(input: ExecutionInput): Promise<ExecutionResolution> {
   const command = input.command?.trim()
   if (!command) return unresolved("command-missing")
   const directory = await canonicalCwd(input.workspaceRoot, input.cwd)
@@ -439,6 +450,8 @@ export async function resolveExecution(input: ExecutionInput): Promise<Execution
       : "cwd-outside-project")
     const target = await canonicalTarget(resolve(directory.absolute, input.filePath))
     const path = relative(directory.root, target).split(sep).join("/")
+    // The worktree root itself names no file, so no file-scoped rule fits it.
+    if (path === "" || path === ".") return unresolved("unsupported-syntax")
     return fingerprint({
       version: 1,
       coverage: "tool-and-file",

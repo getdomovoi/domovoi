@@ -245,6 +245,17 @@ describe("resolveExecution", () => {
     })
   })
 
+  // A file tool aimed at the worktree root itself names no file, so it has no
+  // file-scoped record. It stays unresolved, which still raises a card and
+  // gives no standing rule, rather than throwing and leaving the request open.
+  it.each(["Edit", "Write", "MultiEdit", "NotebookEdit"])("leaves a %s aimed at the worktree root unresolved", async (command) => {
+    const root = await project()
+    for (const filePath of [root, `${root}/`, join(root, "."), join(root, "src", "..")]) {
+      await expect(resolveExecution({ workspaceRoot: root, cwd: root, command, filePath }), filePath)
+        .resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+    }
+  })
+
   it("rejects blocked, missing, and outside-worktree file targets", async () => {
     const root = await project()
     const outside = await project()
@@ -266,6 +277,19 @@ describe("resolveExecution", () => {
       filePath: join(root, "file.ts"),
       blockedPath: join(root, "file.ts"),
     })).resolves.toEqual({ state: "unresolved", reason: "unsupported-syntax" })
+  })
+
+  // Ruled by fetzy 2026-09-23: Claude's Read, Glob, Grep and Task never get a
+  // standing rule. The Claude adapter names them as provider tools, so each one
+  // stays unresolved wherever it points and asks every time.
+  it.each(["Read", "Glob", "Grep", "Task"])("never fingerprints Claude's %s, inside or outside the worktree", async (tool) => {
+    const root = await project()
+    const outside = await project()
+    for (const filePath of [join(root, "src", "index.ts"), join(outside, "credentials"), undefined]) {
+      await expect(resolveExecution({
+        workspaceRoot: root, cwd: root, command: tool, tool, ...(filePath === undefined ? {} : { filePath }),
+      }), String(filePath)).resolves.toMatchObject({ state: "unresolved" })
+    }
   })
 
   it.each(["Read", "Glob", "Grep", "LS", "NotebookRead"])(

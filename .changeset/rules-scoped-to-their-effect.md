@@ -15,3 +15,10 @@ File-tool requests now resolve to a record scoped to the target file (`coverage:
 worktree stay listed and no longer match; Settings says so. Requests for provider tools that are
 neither a shell command nor a file tool, such as WebFetch, WebSearch and MCP tools, stay unresolved,
 so no standing rule can be made for them and each one asks.
+
+A file-tool request aimed at the worktree root itself names no file and now stays unresolved. It
+used to fail validation while resolving, so the request got no card and the provider waited for an
+answer that never came. Resolving a request no longer throws at all: one it cannot fingerprint is
+unresolved, which still raises a card and makes no standing rule. Claude's Read, Glob, Grep and Task
+requests stay unresolved inside and outside the worktree, so each one asks and none can become a
+standing rule.

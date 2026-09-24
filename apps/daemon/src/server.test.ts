@@ -11510,13 +11510,57 @@ describe("DomovoiDaemon", () => {
       reason: "Edit a file",
       command: "Edit",
     })
+    // An edit aimed at the worktree root names no file. It still gets a card,
+    // never a silent drop that leaves the provider waiting for an answer.
+    listener!({
+      type: "approval-requested",
+      requestId: 25,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Edit a file",
+      command: "Edit",
+      path: workspacePath,
+    })
+    await vi.waitFor(async () => {
+      const pending = await rpc("workspace.get", {})
+      expect((pending.result as { approvals: unknown[] }).approvals).toHaveLength(4)
+    }, { timeout: 3_000 })
     const current = await rpc("workspace.get", {})
 
     expect(agent.resolveApproval).toHaveBeenCalledTimes(1)
     expect(agent.resolveApproval).toHaveBeenCalledWith(21, "allow-once")
     expect((current.result as {
       approvals: Array<{ providerRequestId?: number }>
-    }).approvals.map((approval) => approval.providerRequestId)).toEqual([22, 23, 24])
+    }).approvals.map((approval) => approval.providerRequestId)).toEqual([22, 23, 24, 25])
+
+    // Neither the root edit nor a Claude Read (ruled 2026-09-23: never Always)
+    // can become a standing rule; the card still resolves once.
+    listener!({
+      type: "approval-requested",
+      requestId: 26,
+      threadId: session.providerThreadId,
+      turnId: "turn-rule-scope",
+      reason: "Read a file",
+      command: "Read",
+      tool: "Read",
+      path: join(workspacePath, "src/index.ts"),
+    })
+    await vi.waitFor(async () => {
+      const pending = await rpc("workspace.get", {})
+      expect((pending.result as { approvals: unknown[] }).approvals).toHaveLength(5)
+    }, { timeout: 3_000 })
+    const cards = ((await rpc("workspace.get", {})).result as {
+      approvals: Array<{ id: string; providerRequestId?: number }>
+    }).approvals
+    for (const providerRequestId of [25, 26]) {
+      const approvalId = cards.find((approval) => approval.providerRequestId === providerRequestId)!.id
+      await expect(rpc("approval.resolve", { approvalId, decision: "always-project", client: "desktop" }))
+        .resolves.toMatchObject({ error: { message: "Unresolved commands cannot create standing rules" } })
+      await expect(rpc("approval.resolve", { approvalId, decision: "allow-once", client: "desktop" }))
+        .resolves.not.toHaveProperty("error")
+      expect(agent.resolveApproval).toHaveBeenLastCalledWith(providerRequestId, "allow-once")
+    }
+    expect(((await rpc("workspace.get", {})).result as { approvalRules: unknown[] }).approvalRules).toHaveLength(1)
     socket.close()
   })
 
