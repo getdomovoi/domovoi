@@ -228,4 +228,52 @@ describe("whole-snapshot writes", () => {
       providerThreadId: "restarted-thread",
     })
   })
+  it("keeps a provider restart that was cancelled while its write waited off disk", async () => {
+    const { snapshot, streaming, source } = streamingWorkspace()
+    const failed = snapshot.sessions.find((session) => session.id === source.id)!
+    failed.state = "failed"
+    delete failed.providerThreadId
+    const { store, disk, parkNextWrite, parkedWrite, release } = parkingStore(snapshot)
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const agent = agentWith(listeners, ["restarted-thread"])
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store,
+      agents: { codex: agent },
+      workspaceService,
+      errorSink: vi.fn(),
+    })
+    daemons.push(daemon)
+    const { port } = await daemon.start()
+    const { rpc } = await connect(daemon, port)
+    const other = await connect(daemon, port)
+
+    parkNextWrite()
+    const earlier = rpc("session.setRuntime", {
+      sessionId: streaming.id,
+      client: "desktop",
+      runtime: { ...streaming.runtime, reasoning: "high" },
+    })
+    await parkedWrite
+    const restarted = rpc("session.restartProviderThread", { sessionId: source.id, client: "desktop" })
+    await waitForDaemon(() => expect(agent.startThread).toHaveBeenCalledOnce())
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const stopped = other.rpc("system.emergencyStop", { client: "desktop" })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    release()
+    expect((await earlier).error).toBeUndefined()
+    expect((await restarted).error).toBeDefined()
+    expect((await stopped).error).toBeUndefined()
+
+    expect(agent.stopThread).toHaveBeenCalledWith("restarted-thread")
+    const restartNotice = (item: WorkspaceSnapshot["thread"][number]) =>
+      item.kind === "system" && item.body.startsWith("Provider thread restarted")
+    for (const written of disk) {
+      expect(written.sessions.find((session) => session.id === source.id)?.providerThreadId).toBeUndefined()
+      expect(written.thread.some(restartNotice)).toBe(false)
+    }
+    const live = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+    expect(live.sessions.find((session) => session.id === source.id)?.providerThreadId).toBeUndefined()
+    expect(live.thread.some(restartNotice)).toBe(false)
+  })
 })

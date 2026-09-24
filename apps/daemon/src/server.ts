@@ -6860,6 +6860,7 @@ export class DomovoiDaemon {
           // worker write posted before it cannot land afterwards and put the
           // provider thread it records back out of the stored snapshot.
           await this.#serializeSnapshotPersistence(async () => {
+            signal?.throwIfAborted()
             const candidate = structuredClone(this.#snapshot)
             const currentSession = candidate.sessions.find(({ id }) => id === params.sessionId)
             if (!currentSession || !currentSession.workspacePath || currentSession.providerThreadId) {
