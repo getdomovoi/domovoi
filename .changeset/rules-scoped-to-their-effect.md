@@ -22,3 +22,10 @@ answer that never came. Resolving a request no longer throws at all: one it cann
 unresolved, which still raises a card and makes no standing rule. Claude's Read, Glob, Grep and Task
 requests stay unresolved inside and outside the worktree, so each one asks and none can become a
 standing rule.
+
+A file-tool target is read the way the filesystem reads it: each link is followed before the `..`
+after it applies, a dangling link leads where it points, and a relative path starts at the request's
+directory. A rule for an inside file no longer matches a path that a link carries outside. The
+Claude adapter passes the file name exactly as the provider will use it, untrimmed and with `..`
+kept. A `package.json` that is not a regular file, or that is too large or too slow to read, leaves
+a script run unresolved instead of holding the request.

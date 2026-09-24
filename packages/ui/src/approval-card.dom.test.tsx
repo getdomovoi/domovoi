@@ -35,8 +35,9 @@ it("sends the selected approval-card decision", async () => {
   expect(onResolve).toHaveBeenCalledWith(approval.id, "allow-once", undefined)
 })
 
-function renderThread(surface: "desktop" | "web" = "desktop") {
+function renderThread(surface: "desktop" | "web" = "desktop", risk?: "normal" | "hard-gate") {
   const snapshot = structuredClone(demoWorkspace)
+  if (risk) snapshot.approvals[0]!.risk = risk
   render(
     <Thread
       onQueuedChange={vi.fn()}
@@ -62,14 +63,24 @@ it("uses the signed web gate wording and names the holder", () => {
   renderThread("web")
   const card = screen.getByRole("alert")
   expect(card.textContent).toContain("Approval required, hard gate")
-  expect(screen.getByRole("button", { name: "Always here" })).toBeTruthy()
   expect(card.textContent).toContain("This tab holds the gate")
+  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+})
+
+// Ruled by fetzy 2026-09-24, against the signed web design on this one point:
+// the daemon refuses a standing rule on a hard gate, so no surface offers one.
+it.each(["desktop", "web"] as const)("offers no Always on a %s hard-gate card", (surface) => {
+  const approval = renderThread(surface)
+  expect(approval.risk).toBe("hard-gate")
+  expect(approval.execution.state).toBe("resolved")
+  expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
   expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
 })
 
 it("keeps optional explanation behind Deny instead of a fourth peer action", async () => {
   const user = userEvent.setup()
-  renderThread()
+  renderThread("desktop", "normal")
   const weight = (name: string) => screen.getByRole("button", { name }).className
   expect(weight("Allow once")).toContain("bg-warning")
   expect(weight("Always in this project")).toContain("border-border")
