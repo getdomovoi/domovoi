@@ -181,7 +181,7 @@ function DaemonSection({ daemon }: { daemon: LocalDaemonDescription & { owner: N
               <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{profileRecoverCommand}</span>
             </>
           ) : phase.daemonRunning ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
-          {phase.daemonRunning ? null : <span>Removed. The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.</span>}
+          {phase.daemonRunning ? null : <span>{`${phase.recovery ? "" : "Removed. "}The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.`}</span>}
         </div>
       ) : null}
       {phase.kind === "waits" ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{`The switch waits: ${phase.refusal} Nothing is interrupted.`}</p> : null}

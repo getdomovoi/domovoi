@@ -408,3 +408,15 @@ it("says nothing about versions when the service is current or newer", () => {
   rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
   expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
 })
+
+// Ruled by fetzy 2026-09-23: when the recovery line and the not-running line
+// both show, the second does not repeat "Removed.".
+it("says Removed once when the profile owner is unresolved and the daemon did not start again", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "operator-confirmation-required", daemonRunning: false }))
+  const section = daemonSection("outside", { remove })
+  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  expect(await within(section).findByText("Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal.")).toBeTruthy()
+  expect(within(section).getByText("The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
+  expect(section.textContent?.match(/Removed\./g)).toHaveLength(1)
+})
