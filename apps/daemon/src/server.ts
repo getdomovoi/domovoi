@@ -82,6 +82,7 @@ import {
   type ClientKind,
   type Runtime,
   type TerminalOwner,
+  type PairingAddress,
   type ToolFileEntry,
   type SkillInstallRefusal,
   type StateRecovery,
@@ -235,6 +236,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer } from "./terminal-replay.js"
+import { pairingAddressFor } from "./pairing-address.js"
 import {
   RpcOutboundBackpressure,
   type RpcOutboundBackpressureOptions,
@@ -1628,6 +1630,19 @@ export class DomovoiDaemon {
           )
         }
       }),
+    )
+  }
+
+  // The address a code issued here tells a device to dial: the name on the
+  // certificate this daemon serves, never the address it binds, or the one
+  // problem that leaves a device nothing to dial. One source for every surface
+  // that draws a code.
+  #pairingAddress(): PairingAddress {
+    const port = this.address?.port ?? this.requestedPort
+    const tls = this.#tls
+    return pairingAddressFor(
+      { host: this.host, port, ...(tls ? { tls: { certPath: "the certificate this daemon serves" } } : {}) },
+      () => tls!.cert.toString("utf8"),
     )
   }
 
@@ -5848,9 +5863,10 @@ export class DomovoiDaemon {
         this.#send(socket, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(
-            this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
-          ),
+          result: rpcMethods[method].result.parse({
+            ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
+            pairingAddress: this.#pairingAddress(),
+          }),
         })
         return
       }
