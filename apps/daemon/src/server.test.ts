@@ -8604,6 +8604,10 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     const sessionId = (created.result as { activeSessionId: string }).activeSessionId
+    // The session names the branch its worktree is on from the start.
+    expect(created).toMatchObject({ result: { sessions: expect.arrayContaining([
+      expect.objectContaining({ id: sessionId, branch: `domovoi/${sessionId}` }),
+    ]) } })
     const sent = await rpc("session.send", {
       sessionId,
       prompt: "Start the migration",
@@ -11542,6 +11546,7 @@ describe("DomovoiDaemon", () => {
     const workspaceService = {
       inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(),
       archiveSessionWorkspace: vi.fn(async () => {}),
+      sessionBranchFacts: vi.fn(async () => ({ branch: "domovoi/session-billing", unmergedFiles: 7 })),
       checkpoint: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
       restore: vi.fn(),
     } satisfies WorkspaceService
@@ -11617,8 +11622,10 @@ describe("DomovoiDaemon", () => {
 
     const archived = await rpc("session.archive", { sessionId: session.id, client: "desktop" })
     expect(archived).toMatchObject({ result: { sessions: expect.arrayContaining([
-      expect.objectContaining({ id: session.id, state: "archived", archiveCheckpoint: "d".repeat(40) }),
+      // The archived notice: the kept branch and what the source never received.
+      expect.objectContaining({ id: session.id, state: "archived", archiveCheckpoint: "d".repeat(40), branch: "domovoi/session-billing", unmergedFiles: 7 }),
     ]) } })
+    expect(workspaceService.sessionBranchFacts).toHaveBeenCalledWith(sessionWorkspacePath, store.snapshot.project!.path, expect.any(AbortSignal))
     expect(agent.interruptTurn).toHaveBeenCalledWith("thread-billing", "turn-billing")
     expect(agent.stopThread).toHaveBeenCalledWith("thread-billing")
     expect(agent.resolveApproval).toHaveBeenCalledWith(11, "deny")
