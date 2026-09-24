@@ -22,4 +22,6 @@ with a `set "` or `$env:` before it, drops the rest of a value that outgrows wha
 the value's end, and does not show a counting value whose line began before an idle flush. A
 quoted value it drops ends only at an unescaped closing quote, even when a backslash and the quote
 arrive in different reads. When a name alone outgrows what it carries, the value that follows is
-still dropped whole, quoted or not, and the fields after it are kept.
+still dropped whole, quoted or not, and the fields after it are kept. A quoted flag or `-D`
+property value now honours backslash escapes, so `--token "a\"b"` is hidden whole instead of
+leaving `b` in clear.
