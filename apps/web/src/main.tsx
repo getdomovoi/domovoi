@@ -31,6 +31,15 @@ const platform = createBrowserPlatform(environment)
 
 forgetSupersededCredential(sessionStorage)
 
+// A code the machine's QR put in the address bar is read once and removed, so
+// it is not kept in history or sent on with the next navigation.
+const codeFromUrl = new URL(window.location.href).searchParams.get("code") ?? undefined
+if (codeFromUrl !== undefined) {
+  const clean = new URL(window.location.href)
+  clean.searchParams.delete("code")
+  window.history.replaceState(window.history.state, "", clean.toString())
+}
+
 if ("serviceWorker" in navigator) {
   void registerDomovoiServiceWorker(navigator.serviceWorker, import.meta.env.PROD).catch(() => undefined)
 }
@@ -43,9 +52,11 @@ createRoot(document.getElementById("root")!).render(
         clientKind={clientKind}
         environment={environment}
         storage={sessionStorage}
+        memory={localStorage}
+        codeFromUrl={codeFromUrl}
         createClient={(input) => new DomovoiClient(input.url, input.client, {
           budgets: { connectMs: 30_000, requestMs: 30_000 },
-          authToken: input.bearer,
+          ...(input.bearer ? { authToken: input.bearer } : {}),
         })}
         labelSuffix={() => crypto.randomUUID().slice(0, 8)}
         workspace={({ token, onChangeCredential }) => (
