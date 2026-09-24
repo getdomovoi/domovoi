@@ -182,6 +182,44 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  // JSON.parse accepts "null", a number and an array. None of them is a
+  // JSON-RPC message, and reading an id off null must not throw inside the
+  // socket's message handler.
+  it.each([null, 7, [1, 2]])("reports a %j frame as a message it cannot classify, without throwing", async (frame) => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const protocolErrors: string[] = []
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+
+    expect(() => socket.receive(frame)).not.toThrow()
+    expect(protocolErrors).toEqual(["Daemon sent a message this client could not classify"])
+    client.disconnect()
+  })
+
+  it("rejects a malformed reply to a pending request without repeating what it said", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const listing = client.listModels("codex")
+    socket.receive({ jsonrpc: "2.0", id: 2, result: [], smuggled: "token-a1b2c3 was here" })
+
+    const failure = await listing.then(() => undefined, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe("Daemon returned a response this client could not parse")
+    expect((failure as Error).message).not.toContain("token-a1b2c3")
+    client.disconnect()
+  })
+
   it("rejects a pending request immediately when its response cannot be parsed", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()
