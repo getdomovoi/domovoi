@@ -16,6 +16,7 @@ function fakeServerModule() {
         delete: vi.fn(),
         abort: vi.fn(),
         promptAsync: vi.fn(),
+        messages: vi.fn(),
       },
       event: { subscribe: vi.fn() },
       postSessionIdPermissionsPermissionId: vi.fn(),
