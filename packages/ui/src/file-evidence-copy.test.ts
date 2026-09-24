@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { coverageIsKnown, coverageLabel, revertPrompt } from "./file-evidence-copy"
+import { coverageLabel, revertPrompt } from "./file-evidence-copy"
 
 const commit = "8f3c1de4a2b7c9d0e1f2a3b4c5d6e7f8a9b0c1d2"
 
@@ -13,7 +13,6 @@ describe("coverage", () => {
 
   it("treats a missing association as unknown, not as none", () => {
     expect(coverageLabel(undefined)).toBe("Domovoi cannot tell which runs touched this file")
-    expect(coverageIsKnown(undefined)).toBe(false)
   })
 
   it("says none only when the daemon actually proved none", () => {

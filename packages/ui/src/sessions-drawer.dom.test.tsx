@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { SessionsDrawer } from "./sessions-drawer"
+import { ComposedSessionsDrawer as SessionsDrawer } from "./test-support/sessions-drawer"
 
 afterEach(cleanup)
 
