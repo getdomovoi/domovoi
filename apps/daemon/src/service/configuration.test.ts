@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { parseDaemonEnvironment } from "../config.js"
+import { DaemonConfigurationError, parseDaemonEnvironment } from "../config.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceEnvironment } from "./configuration.js"
 
 describe("service configuration", () => {
@@ -56,6 +56,27 @@ describe("service configuration", () => {
   ])("refuses invalid or secret-bearing saved state without echoing it: %j", (override) => {
     expect(() => parseServiceConfiguration(JSON.stringify({ ...defaults, ...override })))
       .toThrow(/^Invalid service configuration\. Reinstall with valid non-secret daemon settings\.$/)
+  })
+
+  // A saved address the daemon settings refuse is a configuration error, typed
+  // as one, and the message does not repeat the address.
+  it.each([
+    "https://person:secret@app.example.com/", "https://app.example.com/#code",
+    ...[
+      " https://app.domovoi.dev/", "https://app.domovoi.dev/ ", "https://app.domovoi.dev/con nect",
+      "https://app.domovoi.dev/\tconnect", "https://app.domovoi.dev/connect\r\n", "https://app.domovoi.dev/\nconnect",
+      "https://app.domovoi.dev/\u0000", "https://app.domovoi.dev/\u007f", "https://app.domovoi.dev/\u0085",
+      "https://app.domovoi.dev/\u00a0", "https://app.domovoi.dev/\u2028",
+    ],
+  ])("refuses a saved web app address as a configuration error without echoing it: %j", (webAppUrl) => {
+    let thrown: unknown
+    try {
+      parseServiceConfiguration(JSON.stringify({ ...defaults, webAppUrl }))
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(DaemonConfigurationError)
+    expect((thrown as Error).message).toBe("Invalid service configuration. Reinstall with valid non-secret daemon settings.")
   })
 
   it("bounds the saved configuration and refuses broken JSON", () => {

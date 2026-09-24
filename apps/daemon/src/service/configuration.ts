@@ -4,7 +4,7 @@ import { posix, win32 } from "node:path"
 
 import { z } from "zod"
 
-import { parseDaemonEnvironment, type DaemonEnvironment, type DaemonEnvironmentConfig } from "../config.js"
+import { DaemonConfigurationError, parseDaemonEnvironment, type DaemonEnvironment, type DaemonEnvironmentConfig } from "../config.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { configuredSshTunnelsSchema, tailnetHostSchema } from "../transport-config.js"
 import { withinServiceDeadline } from "./deadline.js"
@@ -136,9 +136,11 @@ export function parseServiceConfiguration(text: string): ServiceConfiguration {
       installedWslTask(wsl, registrationId, serviceConfigurationPath(config.homeDirectory, "linux"))
     }
     return config
-  } catch {
-    // No parser diagnostics that could echo unexpected secret-bearing fields.
-    throw new Error("Invalid service configuration. Reinstall with valid non-secret daemon settings.")
+  } catch (error) {
+    // No parser diagnostics that could echo unexpected secret-bearing fields. A
+    // setting the daemon refuses keeps its type, without its message or cause.
+    const message = "Invalid service configuration. Reinstall with valid non-secret daemon settings."
+    throw error instanceof DaemonConfigurationError ? new DaemonConfigurationError(message) : new Error(message)
   }
 }
 
