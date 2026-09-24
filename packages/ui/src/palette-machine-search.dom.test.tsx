@@ -110,3 +110,18 @@ it("names every silent machine in one plural notice", async () => {
   await user.type(screen.getByRole("combobox"), "billing")
   expect(await screen.findByText("hetzner-cx42 and wsl-ubuntu-24 did not answer, so their sessions were not searched. This is not the same as having no results, and Domovoi will not round it down to one.")).toBeTruthy()
 })
+
+// Ruled 2026-09-23 (A): a machine that stopped at the search limit says so.
+it("says when a machine stopped at the search limit", async () => {
+  const matches = Array.from({ length: 20 }, (_, index) => ({ session: session(`s-${index}`, `Billing task ${index}`), matchedIn: "title" as const }))
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => machineId === machines[0]!.id
+    ? { query: "billing", truncated: true, matches }
+    : none("billing"))
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  await screen.findByText("searched 3 of 3 machines")
+  const group = screen.getByRole("group", { name: "hetzner-cx42" })
+  expect(group.textContent).toContain("first 20 matches, more not shown")
+  expect(group.textContent).not.toContain("Type more")
+  expect(screen.getByRole("group", { name: "wsl-ubuntu-24" }).textContent).toContain("no matches")
+})

@@ -317,7 +317,7 @@ export type MachineSearch = {
 
 type MachineAnswer =
   | { state: "asking" }
-  | { state: "hits"; matches: SessionSearchMatch[] }
+  | { state: "hits"; matches: SessionSearchMatch[]; truncated: boolean }
   | { state: "none" }
   | { state: "silent" }
   | { state: "left" }
@@ -331,7 +331,9 @@ function listOfNames(names: readonly string[]): string {
 function answerLabel(answer: MachineAnswer): string {
   switch (answer.state) {
     case "asking": return "asking"
-    case "hits": return `${answer.matches.length} ${answer.matches.length === 1 ? "match" : "matches"}`
+    case "hits": return answer.truncated
+      ? `first ${answer.matches.length} ${answer.matches.length === 1 ? "match" : "matches"}, more not shown`
+      : `${answer.matches.length} ${answer.matches.length === 1 ? "match" : "matches"}`
     case "none": return "no matches"
     case "silent": return "not searched, did not answer"
     case "left": return "not searched, left out"
@@ -358,7 +360,7 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
         machineSearch.search(machine.id, trimmed, controller.signal).then(
           (result) => {
             if (controller.signal.aborted) return
-            setAnswers((current) => ({ ...current, [machine.id]: result.matches.length ? { state: "hits", matches: result.matches } : { state: "none" } }))
+            setAnswers((current) => ({ ...current, [machine.id]: result.matches.length ? { state: "hits", matches: result.matches, truncated: result.truncated } : { state: "none" } }))
           },
           () => {
             if (controller.signal.aborted) return
