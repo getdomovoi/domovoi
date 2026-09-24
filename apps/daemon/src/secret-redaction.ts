@@ -34,8 +34,9 @@ const secretFlag = new RegExp(
   // takes no value: when any segment of the whole flag name is no, skip or
   // without (--no-password, --no-auth-token, --db-skip-client-secret), the
   // prefixed branch does not match. The check walks the name once, from the
-  // one start the lookbehind allows.
-  String.raw`((?:(?<![A-Za-z0-9_.-])--(?!(?:[A-Za-z0-9]*[_.-])*?(?:no|skip|without)[_.-])${namePrefix}|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  // one start the lookbehind allows. One dash starts a flag as two do
+  // (-token, -db-password), as Go and Java tools write them.
+  String.raw`((?:(?<![A-Za-z0-9_.-])--?(?!(?:[A-Za-z0-9]*[_.-])*?(?:no|skip|without)[_.-])${namePrefix}|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 // Ruled 2026-09-24: after a prefixed sensitive name, the value shows only
@@ -49,25 +50,35 @@ const plainValue = /^(?:\d+(?:\.\d+)?|true|false)$/iu
 // The name is the last identifier run in the matched prefix, without the
 // dashes of a flag or the -D of a Java property. A -D property can also be
 // matched as a plain assignment, so -D is dropped whichever pattern found it.
-function showsPlainValue(prefix: string, secret: string): boolean {
+function showsPlainValue(prefix: string, secret: string, before = ""): boolean {
   const run = prefix.match(/[A-Za-z0-9_.-]+/gu)?.at(-1) ?? ""
   const name = run.startsWith("-D") ? run.slice(2) : run.replace(/^-+/u, "")
   // A quoted value must be closed by the same quote. A quote opened before the
   // name, as in set "NAME=5", must close right after the value. Otherwise the
-  // value holds no quote at all.
+  // value holds no quote at all. When the name starts the match, the quote is
+  // the character before it.
   const runStart = prefix.lastIndexOf(run)
-  const nameQuote = runStart > 0 && (prefix[runStart - 1] === '"' || prefix[runStart - 1] === "'") ? prefix[runStart - 1] : undefined
+  const preceding = runStart > 0 ? prefix[runStart - 1] : before
+  const nameQuote = preceding === '"' || preceding === "'" ? preceding : undefined
+  // A quote before the name that does not close before the separator, as in
+  // set "NAME=5", is still open, and the value is complete only with it.
+  const openQuote = nameQuote !== undefined && !prefix.slice(runStart + run.length).includes(nameQuote) ? nameQuote : undefined
   const quote = secret[0] === '"' || secret[0] === "'" ? secret[0] : undefined
   let value = secret
   if (quote !== undefined) {
-    if (secret.length < 2 || !secret.endsWith(quote)) return false
+    if (openQuote !== undefined || secret.length < 2 || !secret.endsWith(quote)) return false
     value = secret.slice(1, -1)
-  } else if (nameQuote !== undefined && secret.endsWith(nameQuote)) {
+  } else if (openQuote !== undefined) {
+    if (!secret.endsWith(openQuote)) return false
     value = secret.slice(0, -1)
   }
   return countingName.test(name) && plainValue.test(value)
 }
 
+const lostContextAssignment = new RegExp(
+  String.raw`(${sensitiveName}["']?\s*[:=]\s*)(${quotedValue}|[^\s;&|\r\n]+)`,
+  "giu",
+)
 const quotedCmdAssignment = new RegExp(
   String.raw`(\bset\s+)(["'])(${namePrefix}${sensitiveName}\s*=)[^\r\n]*?\2`,
   "giu",
@@ -90,8 +101,12 @@ export function redactDurableCommand(value: unknown): RedactedText {
 // lose output rather than protect anything.
 // A read the terminal redactor emits before the rest arrives is incomplete: a
 // value at its end may still be growing, so it is not taken as complete.
-export function redactStreamText(value: string, complete = true): string {
-  return redact(value, Number.MAX_SAFE_INTEGER, complete).value
+// exemptFrom: where the text's context is known again. Before it, a counting
+// value is not shown, since what came before its name is not in view.
+// following: the character that comes after the text, when the rest is held
+// back; it decides whether a value at the very end is complete.
+export function redactStreamText(value: string, complete = true, exemptFrom = 0, following?: string): string {
+  return redact(value, Number.MAX_SAFE_INTEGER, complete, exemptFrom, following).value
 }
 
 export function redactDurableOutput(value: unknown): RedactedText {
@@ -155,13 +170,15 @@ export class DurableOutputRedactor {
   }
 }
 
-function redact(value: unknown, maximumLength: number, complete = true): RedactedText {
+function redact(value: unknown, maximumLength: number, complete = true, exemptFrom = 0, following?: string): RedactedText {
   const bounded = boundedText(value, maximumLength)
-  // The end of the text ends a value only when nothing more can follow it.
-  const endIsDelimiter = complete && !bounded.truncated
+  // The end of the text ends a value only when nothing more can follow it, or
+  // when what follows is known and is a delimiter.
+  const delimiter = /[\s;&|,}\r\n]/u
+  const endIsDelimiter = !bounded.truncated && (following === undefined ? complete : delimiter.test(following))
   const delimitedAt = (whole: string, index: number) => index >= whole.length
     ? endIsDelimiter
-    : /[\s;&|,}\r\n]/u.test(whole[index]!)
+    : delimiter.test(whole[index]!)
   let changed = false
   const replace = (input: string, pattern: RegExp, replacer: string | ((...args: string[]) => string)) =>
     input.replace(pattern, (...args: string[]) => {
@@ -196,9 +213,21 @@ function redact(value: unknown, maximumLength: number, complete = true): Redacte
     const secret = args[2] ?? ""
     const offset = Number(args.at(-2))
     const whole = String(args.at(-1))
-    if (showsPlainValue(prefix, secret) && delimitedAt(whole, offset + args[0]!.length)) return args[0]!
+    if (offset >= exemptFrom && showsPlainValue(prefix, secret, whole[offset - 1]) && delimitedAt(whole, offset + args[0]!.length)) return args[0]!
     const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
     return `${prefix}${quote}${replacement}${quote}`
+  }
+  // Where what came before a name is out of view, a sensitive word counts as
+  // a name wherever it starts, as it did before prefixes were read: main's
+  // terminal redactor, holding only from the sensitive word, redacted
+  // Dpassword=... after a flush left -D behind.
+  if (exemptFrom > 0) {
+    output = replace(output, lostContextAssignment, (...args: string[]) => {
+      if (Number(args.at(-2)) >= exemptFrom) return args[0]!
+      const secret = args[2] ?? ""
+      const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
+      return `${args[1] ?? ""}${quote}${replacement}${quote}`
+    })
   }
   output = replace(output, assignment, valueReplacer)
   output = replace(output, structuredAssignment, valueReplacer)
@@ -209,7 +238,7 @@ function redact(value: unknown, maximumLength: number, complete = true): Redacte
     const value = matched.slice((args[1] ?? "").length + quote.length + name.length, -quote.length)
     const offset = Number(args.at(-2))
     const whole = String(args.at(-1))
-    if (showsPlainValue(name.replace(/\s*=$/u, ""), value) && delimitedAt(whole, offset + matched.length)) return matched
+    if (offset >= exemptFrom && showsPlainValue(name.replace(/\s*=$/u, ""), value) && delimitedAt(whole, offset + matched.length)) return matched
     return `${args[1] ?? ""}${quote}${name}${replacement}${quote}`
   })
   output = replace(output, secretFlag, valueReplacer)
@@ -270,84 +299,162 @@ export const terminalRedactionCarryCharacters = 256
 
 // The start of an assignment this redactor would act on, left dangling at the
 // end of a read: a sensitive name, or one followed by its separator and a value
-// that may still be growing.
+// that may still be growing. The name's prefix, its flag dashes and the
+// context before it are found by walking back from the sensitive word.
 const danglingSecret = new RegExp(
-  String.raw`(?:${sensitiveName}\b["']?\s*[:=]?\s*|(?:--|/)${sensitiveName}(?:\s*=\s*|\s+|:)?|-D${sensitiveName}\s*=?)[^\s;&|\r\n]*$`,
-  "i",
+  String.raw`${sensitiveName}\b["']?\s*[:=]?\s*([^\s;&|\r\n]*)$`,
+  "iu",
 )
 
-// A sensitive name can itself be split, so a word still being typed at the end
-// of a read is held until the next one resolves it.
-const danglingWord = /[A-Za-z][A-Za-z0-9_-]*$/
+// A name can itself be split, so a run of name characters still being typed at
+// the end of a read, with any flag dashes, slash or dot in it, is held until
+// the next read resolves it.
+const danglingName = /[A-Za-z_./-][A-Za-z0-9_./-]*$/u
+const nameCharacter = /[A-Za-z0-9_./-]/u
+// What a pattern reads before a name: set, $env: and an opening quote.
+const nameContext = /(?:\$env:|\bset\s+)?["']?$/iu
+// That context alone at the end of a read, before any name has arrived. A
+// quote counts only where it can open a name, not where it closes a value.
+const danglingContext = /(?:\$env:|\bset\s+)["']?$|(?:^|[\s{,(])["']$/iu
+const lineBreak = /[\r\n]/u
 
-// Where a value ends, once the redactor has decided it is inside one.
-const valueDelimiter = /[\s;&|\r\n]/
+// A quoted value whose closing quote has arrived, with something after it, is
+// no longer growing. A closing quote at the very end may still be followed by
+// more of the same shell word.
+function closedQuote(value: string): boolean {
+  const quote = value[0]
+  if (quote !== '"' && quote !== "'") return false
+  for (let at = 1; at < value.length; at += 1) {
+    if (value[at] === "\\") at += 1
+    else if (value[at] === quote) return at < value.length - 1
+  }
+  return false
+}
+
+// Whether a quoted value's closing quote has arrived at all.
+function quoteCloses(value: string): boolean {
+  const quote = value[0]
+  for (let at = 1; at < value.length; at += 1) {
+    if (value[at] === "\\") at += 1
+    else if (value[at] === quote) return true
+  }
+  return false
+}
+
+// Where an unquoted value ends, once the redactor has decided it is inside one.
+const valueDelimiter = /[\s;&|\r\n]/u
+const closedValueDelimiter = /[\s;&|,}\r\n]/u
 
 export class TerminalOutputRedactor {
   #carry = ""
   // Set once an assignment's value has outgrown what can be carried. From then
-  // on the value's bytes are dropped rather than held, until its delimiter, so
-  // a token of any length is redacted without anything being buffered for it.
-  #droppingValue = false
+  // on the value's bytes are dropped rather than held, until it ends, so a
+  // token of any length is redacted without anything being buffered for it. A
+  // quoted value ends at its closing quote, whose place the replacement's own
+  // closing quote has already taken; an unquoted one at its delimiter.
+  // closed: the value's quote has already closed, so what is left of it ends
+  // at a delimiter or at the comma or brace that follows a JSON string.
+  #dropping: { quote: string | undefined, closed: boolean } | undefined
+  // Set when text before a name was emitted without the name. After a flush
+  // in the middle of a line, a counting value is not shown until the next line
+  // break; after a name that outgrew the carry, not within the rest of that
+  // name. Whether such a value is complete depends on what is no longer in
+  // view.
+  #contextLost: "line" | "name" | undefined
 
   // Everything held back plus the new read is redacted as one string, so an
   // assignment split across two reads is seen whole.
   push(chunk: string): string {
     let input = chunk
-    if (this.#droppingValue) {
-      const delimiter = valueDelimiter.exec(input)
-      if (!delimiter) return ""
-      input = input.slice(delimiter.index)
-      this.#droppingValue = false
+    if (this.#dropping) {
+      const quote = this.#dropping.quote
+      const end = quote !== undefined
+        ? new RegExp(`[${quote}\\r\\n]`, "u").exec(input)
+        : (this.#dropping.closed ? closedValueDelimiter : valueDelimiter).exec(input)
+      if (!end) return ""
+      input = quote !== undefined && input[end.index] === quote ? input.slice(end.index + 1) : input.slice(end.index)
+      this.#dropping = undefined
     }
 
     const combined = `${this.#carry}${input}`
-    const holdFrom = this.#suspiciousTailStart(combined)
-    const held = combined.length - holdFrom
-    if (held > terminalRedactionCarryCharacters) {
-      // The tail is an assignment whose value has already run past the carry.
-      // Redact what there is, which turns the value seen so far into the
-      // replacement, and drop the rest of it as it arrives.
+    const exemptFrom = this.#exemptFrom(combined)
+    const hold = this.#holdFrom(combined)
+    const held = combined.length - hold.start
+    if (held > terminalRedactionCarryCharacters && hold.value !== undefined) {
+      // The held text is an assignment whose value has already run past the
+      // carry. Redact what there is, which turns the value seen so far into
+      // the replacement, and drop the rest of it as it arrives.
       this.#carry = ""
-      this.#droppingValue = true
-      return redactStreamText(combined, false)
+      const first = hold.value[0]
+      const quoted = first === '"' || first === "'"
+      this.#dropping = { quote: quoted && !quoteCloses(hold.value) ? first : undefined, closed: quoted }
+      this.#settle(combined)
+      return redactStreamText(combined, false, exemptFrom)
     }
 
-    this.#carry = combined.slice(holdFrom)
-    return redactStreamText(combined.slice(0, holdFrom), false)
+    const emitted = combined.slice(0, hold.start)
+    this.#carry = combined.slice(hold.start)
+    this.#settle(emitted)
+    if (hold.cut && this.#contextLost === undefined) this.#contextLost = "name"
+    return redactStreamText(emitted, false, exemptFrom, this.#carry[0])
+  }
+
+  // Context is known again once what was lost has ended in emitted text.
+  #settle(emitted: string): void {
+    if (this.#contextLost === "line" && lineBreak.test(emitted)) this.#contextLost = undefined
+    if (this.#contextLost === "name" && /[^A-Za-z0-9_./-]/u.test(emitted)) this.#contextLost = undefined
   }
 
   flush(): string {
-    this.#droppingValue = false
-    if (this.#carry === "") return ""
+    this.#dropping = undefined
     const remainder = this.#carry
     this.#carry = ""
-    return redactStreamText(remainder)
+    const output = remainder === "" ? "" : redactStreamText(remainder, true, this.#exemptFrom(remainder))
+    // A flush in the middle of a line leaves the rest of the line without
+    // what came before it.
+    this.#settle(remainder)
+    if (output !== "" && !/[\r\n]$/u.test(remainder)) this.#contextLost = "line"
+    return output
   }
 
-  // Only a tail that could still become a secret is worth withholding, so a
-  // terminal that is simply busy is never held up. A dangling word is checked
-  // within the carry bound; a dangling assignment is checked in full, since the
-  // point is to notice one that has outgrown the bound.
-  #suspiciousTailStart(combined: string): number {
+  #exemptFrom(text: string): number {
+    if (this.#contextLost === undefined) return 0
+    const end = (this.#contextLost === "line" ? lineBreak : /[^A-Za-z0-9_./-]/u).exec(text)
+    return end ? end.index + 1 : Number.MAX_SAFE_INTEGER
+  }
+
+  // Only an end of text that could still become a secret is worth withholding,
+  // so a terminal that is simply busy is never held up. A dangling name is held
+  // from the start of the whole name, with the context a pattern reads before
+  // it; a dangling assignment in full, since the point is to notice one that
+  // has outgrown the bound. A name still being typed is held within the bound.
+  // cut: the held name reaches back past the bound, so what came before it
+  // was emitted without it.
+  #holdFrom(combined: string): { start: number, value?: string, cut?: boolean } {
     const assignment = danglingSecret.exec(combined)
-    if (assignment) return this.#wholeName(combined, assignment.index)
-    const window = combined.slice(-terminalRedactionCarryCharacters)
-    const word = danglingWord.exec(window)
-    if (word) return this.#wholeName(combined, combined.length - window.length + word.index)
-    // A flag's leading dashes or slash, left at the end of a read.
-    const flag = /[-/]{1,2}$/u.exec(window)
-    return flag ? combined.length - window.length + flag.index : combined.length
+    if (assignment && !closedQuote(assignment[1] ?? "")) {
+      return { start: this.#contextStart(combined, this.#nameStart(combined, assignment.index, 0)), value: assignment[1] ?? "" }
+    }
+    const floor = Math.max(0, combined.length - terminalRedactionCarryCharacters)
+    const window = combined.slice(floor)
+    const name = danglingName.exec(window)
+    if (!name) {
+      const context = danglingContext.exec(window)
+      return { start: context ? floor + context.index : combined.length }
+    }
+    const nameStart = this.#nameStart(combined, floor + name.index, floor)
+    const start = Math.max(floor, this.#contextStart(combined, nameStart))
+    return { start, cut: start === floor && floor > 0 && nameCharacter.test(combined[floor - 1]!) }
   }
 
-  // A held tail starts at the beginning of the name it is part of, so a
-  // prefixed flag or property such as --x-token, -Ddb.password or /password
-  // is carried whole, not from its sensitive word. The walk stays within the
-  // carry bound.
-  #wholeName(combined: string, start: number): number {
-    const floor = Math.max(0, combined.length - terminalRedactionCarryCharacters)
+  #nameStart(combined: string, start: number, floor: number): number {
     let at = start
-    while (at > floor && /[A-Za-z0-9_./-]/u.test(combined[at - 1]!)) at -= 1
+    while (at > floor && nameCharacter.test(combined[at - 1]!)) at -= 1
     return at
+  }
+
+  #contextStart(combined: string, start: number): number {
+    const context = nameContext.exec(combined.slice(Math.max(0, start - 16), start))
+    return context ? start - context[0].length : start
   }
 }

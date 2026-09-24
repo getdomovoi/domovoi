@@ -16,4 +16,7 @@ A suffix still does not count, so `TOKEN_BUDGET=4096`, `TOKENIZERS_PARALLELISM=f
 prefixed name, a plain number or `true`/`false` stays visible when the word right before the
 sensitive name is `total`, `has`, `max`, `min`, `count`, `is` or `enable`, so `total_token=5` and
 `has_secret=false` read as written. Every other value stays hidden, including
-`DB_PASSWORD=123456` and `limit_token=5`.
+`DB_PASSWORD=123456` and `limit_token=5`. One-dash flags such as `-db-password value`
+and `-token value` are read as flags too. The terminal holds a prefixed name whole across reads,
+with a `set "` or `$env:` before it, drops the rest of a value that outgrows what it carries up to
+the value's end, and does not show a counting value whose line began before an idle flush.

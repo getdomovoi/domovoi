@@ -375,3 +375,66 @@ describe("durable secret redaction", () => {
     expect(stream.flush()).toBe("")
   })
 })
+
+// Review of 7ba25ba8, executed by the reviewer; each also found by the
+// differential fuzz in secret-redaction-prefixed-differential.test.ts.
+describe("prefixed names across the terminal's reads", () => {
+  function run(reads: readonly string[]): string {
+    const redactor = new TerminalOutputRedactor()
+    return reads.map((read) => redactor.push(read)).join("") + redactor.flush()
+  }
+
+  it("hides a prefixed flag's value that runs past the carry", () => {
+    const value = "a".repeat(247)
+    const shown = run([`--x-token ${value}`, "a".repeat(20), " done\n"])
+    expect(shown).not.toContain("aaa")
+    expect(shown).toContain(" done\n")
+  })
+
+  it("holds a dotted prefix left at the end of a read", () => {
+    const shown = run(["--x.", "token fake-value done\n"])
+    expect(shown).not.toContain("fake-value")
+    expect(shown).toContain(" done\n")
+  })
+
+  // Found by the differential fuzz while fixing the three above.
+  it("hides a one-dash prefixed flag's value, and shows a complete counting one", () => {
+    expect(redactDurableOutput("tool -db-password hunter2zz -s").value).toBe("tool -db-password [REDACTED] -s")
+    expect(redactDurableOutput("tool -max-token 5 -s").value).toBe("tool -max-token 5 -s")
+    expect(run(["tool -db-pass", "word hunter2zz -s\n"])).toBe("tool -db-password [REDACTED] -s\n")
+  })
+
+  it("keeps what follows a long quoted value once its quote closes", () => {
+    const shown = run([`{"npm.secret_key":"${"q".repeat(300)}","safe":"visibl`, "e\"}\n"])
+    expect(shown).toBe('{"npm.secret_key":"[REDACTED]","safe":"visible"}\n')
+  })
+
+  it("keeps the set quote before a name that arrives in the next read", () => {
+    expect(run(['set "', "min-secret_key=2979\r\n"])).not.toContain("2979")
+    expect(run(['set "', 'is-API_KEY=False"\n'])).toBe('set "is-API_KEY=False"\n')
+  })
+
+  it("does not show a counting value whose line began before a flush", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push('set "COUNT-') + redactor.flush() + redactor.push("IS-PRIVATE-KEY=TRUE\n") + redactor.flush()
+    expect(shown).not.toContain("TRUE")
+  })
+
+  it("hides a value main hid after a flush left the property's -D behind", () => {
+    const redactor = new TerminalOutputRedactor()
+    const shown = redactor.push("java -") + redactor.flush() + redactor.push("Dpassword=403 -jar app.jar\n") + redactor.flush()
+    expect(shown).not.toContain("403")
+    expect(shown).toContain(" -jar app.jar\n")
+  })
+
+  it("keeps what follows a long quoted value whose quote closed at the end of a read", () => {
+    const shown = run([`{"x.secret_key":"${"q".repeat(300)}"`, ',"safe":"visible"}\n'])
+    expect(shown).toBe('{"x.secret_key":"[REDACTED]","safe":"visible"}\n')
+  })
+
+  it("does not take a value in an unclosed set quote as complete", () => {
+    expect(run(['set "total-password=123456']).includes("123456")).toBe(false)
+    expect(redactDurableOutput('set "total-password=123456').value).not.toContain("123456")
+    expect(redactDurableCommand('set "total-password=123456').value).not.toContain("123456")
+  })
+})
