@@ -85,6 +85,16 @@ prototype markup or `support.js`.
 Where the tracked handoff and the newer design system disagree, the design system wins. See
 "Design authority" below for what that changes and what is still to be synced.
 
+The v2 handoff is tracked at
+[`design/design_handoff_domovoi_v2/`](design/design_handoff_domovoi_v2/HANDOFF-V2.md): vendored on
+2026-09-10 (42cd0afd) and re-vendored whole on 2026-09-18 (e841e66c, #488). The v2 clients that
+landed in #517 (23ae1342, 2026-09-22) are built from it and measured against it by the inventories
+in [`docs/design-conformance/`](docs/design-conformance/README.md). That README records the
+binding precedence for every surface v2 draws: the current v2 design file, then the approved
+exception ledger, then production behavior. Older design documents, this one included, do not
+override v2 there. `HANDOFF-V2.md` says v2 supersedes nothing: the v1 files stay as the record of
+the previous direction, and they still govern what v2 does not draw.
+
 The system presents the same daemon-owned objects across desktop, browser, tablet, and phone:
 machine, project, session, turn, artifact, and annotation. State remains consistent across
 clients, consequential decisions are attributed to their originating client, and smaller
@@ -106,28 +116,34 @@ motion, interaction states, and the component inventory are all there. The proje
 source of truth for anything the vendored contract does not spell out, and for the canonical
 interactive surfaces.
 
-**Shell geometry follows the design system, not the tracked handoff README.**
+**Shell geometry follows the v2 handoff in production.** Since 33c937f3 (2026-09-20, landed in
+#517) the desktop shell is the v2 drawer. The design system's tokens and the tracked v1 handoff
+README are kept beside it for the record. `packages/ui/src/shell-geometry.test.ts` compares the
+Production column with the `--shell-*` tokens in `packages/ui/src/styles.css`, so a change to
+either fails until both agree.
 
-| Region | Design system | Tracked handoff README |
-| --- | --- | --- |
-| Rail | 62px, never collapses | not present |
-| Sidebar | 240px | 200 to 420px, collapsing to a 46px icon rail |
-| Thread lane | 760px centred | 620px centred |
-| Inspector | 280px | resizable dock |
-| Titlebar | 38px | unstated |
-| Header | 62px | unstated |
-| Control height | 34px | unstated |
-| Touch target | 44px minimum | 44pt iOS, 48dp Android |
+| Region | Production | Design system tokens | Tracked handoff README |
+| --- | --- | --- | --- |
+| Rail | none | 62px, never collapses | not present |
+| Sidebar | 268px sessions drawer | 240px | 200 to 420px, collapsing to a 46px icon rail |
+| Thread lane | 760px centred | 760px centred | 620px centred |
+| Inspector | none | 280px | resizable dock |
+| Titlebar | 46px | 38px | unstated |
+| Header | 62px, not used by the desktop shell | 62px | unstated |
+| Control height | 34px | 34px | unstated |
+| Touch target | 44px minimum is the requirement, not met: the titlebar icon buttons are 28px (`size-7` in `packages/ui/src/app-bar.tsx`) | 44px minimum | 44pt iOS, 48dp Android |
 
-Claude Design settled the desktop chrome on 2026-09-03 in `ui_kits/desktop/README.md` of the
-Domovoi Design System project. The desktop shell is a 38px titlebar carrying traffic lights, project,
+Before v2, Claude Design settled the desktop chrome on 2026-09-03 in `ui_kits/desktop/README.md` of
+the Domovoi Design System project. The desktop shell is a 38px titlebar carrying traffic lights, project,
 machine, version, and the pending count, and a separate 62px vertical rail carrying the mark, section
 switcher, settings, and avatar, which never collapses. There is no 62px horizontal header on desktop,
 so `--shell-header` does not apply to this surface. The tracked handoff file draws one unified 44px
-bar instead; the design system supersedes it.
+bar instead; the design system superseded it, and v2 has since superseded both on desktop.
 
-Other design-system rules that supersede the tracked handoff: theme scoping is `.theme-dark` and
-`.theme-light` with a dark `:root` default rather than `.dv-dark` and `.dv-light`; spacing is a
+Other design-system rules that supersede the tracked handoff: the design system scopes themes with
+`.theme-dark` and `.theme-light` rather than `.dv-dark` and `.dv-light`. Production does not use
+either pair: `packages/ui/src/styles.css` puts the light theme on `:root` and `.light` and the dark
+theme on `.dark`. Spacing is a
 literal named scale with compound paddings rather than a 4px grid; motion is `dv-pop-in`,
 `dv-pulse`, `dv-sweep`, and `dv-blink` at 90, 140, 200, and 320ms, collapsing to 0.01ms under
 reduced motion; product sans type never exceeds 20px (`--text-title`) or falls below 10.5px
@@ -153,9 +169,6 @@ section covers what they do not state.
 
 **Still to sync.** Measured against the vendored tokens on 2026-09-02:
 
-- `--faint` has drifted. The design system sets `oklch(0.53 0.01 285)` for dark; production ships
-  `oklch(0.59 0.01 285)` in `packages/ui/src/styles.css`. Machine metadata reads lighter than
-  intended.
 - `--desk`, `--overlay`, `--danger-on`, and the `--info-bg`, `--info-border`, `--info-fg`,
   `--info-dim` ramp were added to production on 2026-09-04 with the design system's values. The
   phone's session notices fill with the info ramp; the desktop and web handoff receipts still
@@ -173,8 +186,9 @@ section covers what they do not state.
   summary rows use the strong token with the duration in muted foreground, blank lines become
   seven pixel spacers, the header and footer bars use the sidebar token, and the line height
   is 1.85. Everything else matches the tracked bundle.
-- Production still implements the tracked handoff geometry rather than the numbers above. Aligning
-  the shell is tracked in `ROADMAP.md`, not done.
+- Production implements the v2 geometry in the Production column above, not the design system's
+  rail, sidebar, inspector and titlebar tokens. `SHIP-PLAN.md` records it under "Align the shell
+  to the v2 geometry".
 
 ## Colors
 
@@ -199,10 +213,11 @@ Desktop body text is 12.5–13px with a 1.6–1.72 line height. Window and secti
 
 ## Layout
 
-Shell geometry comes from `design/design_system_domovoi/tokens/spacing.css` and the table in
-"Design authority" above: a 62px rail that never collapses, a 240px sidebar, a 760px thread lane,
-a 280px inspector, and the fixed chrome heights. Those values supersede the resizable sidebar and
-620px thread column the tracked handoff README describes.
+Shell geometry is the Production column of the table in "Design authority" above: a 46px
+titlebar, a 268px sessions drawer, a 760px thread lane, and no rail or inspector, as the v2
+handoff draws it. Those values supersede both the design system's shell tokens in
+`design/design_system_domovoi/tokens/spacing.css` and the resizable sidebar and 620px thread
+column the tracked handoff README describes.
 
 Everything the tokens do not fix still comes from the handoff: pane collapse order, resizing
 behavior, and the platform adaptations. Browser promotes preview work, tablet promotes
@@ -263,7 +278,7 @@ The Claude Design handoff under `design/` is signed and is never edited in this 
 notes record where the repository has moved past it. They do not change the handoff.
 
 **Open question 1 is resolved.** `design/design_handoff_domovoi/OPEN-QUESTIONS.md` still asks
-whether a transfer to an unreachable machine queues or refuses. `ROADMAP.md` records the decision
+whether a transfer to an unreachable machine queues or refuses. `SHIP-PLAN.md` records the decision
 under "Resolved architecture decisions": a transfer is refused at the moment it is requested, so a
 session never changes hands later and unattended. Preflight refuses an unreachable target, a target
 that is not answering, a target on an incompatible protocol in either direction, a target that

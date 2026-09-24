@@ -1,7 +1,7 @@
 import { demoWorkspace, type FleetEntry, type FleetMachine, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { approvalLead, elapsedLabel, sessionGroups, sessionRows, sessionsHeaderLine, waitingCount } from "./session-rows"
+import { elapsedLabel, sessionGroups, sessionRows, sessionsHeaderLine, waitingCount } from "./session-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -99,41 +99,6 @@ describe("elapsedLabel", () => {
 
   it("does not report a negative age when the clocks disagree", () => {
     expect(elapsedLabel("2026-08-25T22:05:00.000Z", at)).toBe("now")
-  })
-})
-
-describe("approvalLead", () => {
-  const at = Date.parse("2026-08-25T21:56:00.000Z")
-
-  it("leads with the command and where it would run", () => {
-    const lead = approvalLead(workspace(), at)
-
-    expect(lead?.headline).toBe("1 approval waiting")
-    expect(lead?.command).toBe("pnpm prisma migrate deploy")
-    expect(lead?.context).toContain("macbook-pro-m3")
-    expect(lead?.waited).toBe("4m")
-  })
-
-  it("counts them all but leads with the one waiting longest", () => {
-    const snapshot = workspace()
-    const first = snapshot.approvals[0]
-    if (!first) throw new Error("fixture needs an approval")
-    snapshot.approvals = [
-      { ...first, id: "approval-recent", requestedAt: "2026-08-25T21:55:00.000Z" },
-      { ...first, id: "approval-older", requestedAt: "2026-08-25T21:00:00.000Z" },
-    ]
-
-    const lead = approvalLead(snapshot, at)
-
-    expect(lead?.headline).toBe("2 approvals waiting")
-    expect(lead?.approvalId).toBe("approval-older")
-  })
-
-  it("says nothing at all when nothing is waiting", () => {
-    const snapshot = workspace()
-    snapshot.approvals = []
-
-    expect(approvalLead(snapshot, at)).toBeUndefined()
   })
 })
 

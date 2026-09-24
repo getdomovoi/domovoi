@@ -130,6 +130,15 @@ function toPairedDevice(row: StoredDevice): PairedDevice {
   })
 }
 
+export function storedDeviceRowIsValid(row: unknown): boolean {
+  try {
+    toPairedDevice(row as StoredDevice)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function credentialBinding(row: StoredDevice): ActiveDeviceCredentialBinding | undefined {
   if (row.credential_role === "client" && row.machine_id === null) {
     const client = clientKindSchema.safeParse(row.client_kind)
