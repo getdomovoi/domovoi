@@ -229,8 +229,6 @@ export const deviceRedeemCodeParamsSchema = z.object({
   protocolVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
 }).strict()
 
-export const machineCredentialSchema = credentialSchema
-
 export const deviceListParamsSchema = z.object({}).strict()
 
 export const devicesResultSchema = z.object({
