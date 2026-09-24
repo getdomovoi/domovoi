@@ -52,7 +52,19 @@ const plainValue = /^(?:\d+(?:\.\d+)?|true|false)$/iu
 function showsPlainValue(prefix: string, secret: string): boolean {
   const run = prefix.match(/[A-Za-z0-9_.-]+/gu)?.at(-1) ?? ""
   const name = run.startsWith("-D") ? run.slice(2) : run.replace(/^-+/u, "")
-  const value = secret.replace(/^["']/u, "").replace(/["']$/u, "")
+  // A quoted value must be closed by the same quote. A quote opened before the
+  // name, as in set "NAME=5", must close right after the value. Otherwise the
+  // value holds no quote at all.
+  const runStart = prefix.lastIndexOf(run)
+  const nameQuote = runStart > 0 && (prefix[runStart - 1] === '"' || prefix[runStart - 1] === "'") ? prefix[runStart - 1] : undefined
+  const quote = secret[0] === '"' || secret[0] === "'" ? secret[0] : undefined
+  let value = secret
+  if (quote !== undefined) {
+    if (secret.length < 2 || !secret.endsWith(quote)) return false
+    value = secret.slice(1, -1)
+  } else if (nameQuote !== undefined && secret.endsWith(nameQuote)) {
+    value = secret.slice(0, -1)
+  }
   return countingName.test(name) && plainValue.test(value)
 }
 
@@ -76,8 +88,10 @@ export function redactDurableCommand(value: unknown): RedactedText {
 // A terminal read is shown, not stored, so it is redacted without the length
 // bound the durable records carry: truncating what a terminal printed would
 // lose output rather than protect anything.
-export function redactStreamText(value: string): string {
-  return redact(value, Number.MAX_SAFE_INTEGER).value
+// A read the terminal redactor emits before the rest arrives is incomplete: a
+// value at its end may still be growing, so it is not taken as complete.
+export function redactStreamText(value: string, complete = true): string {
+  return redact(value, Number.MAX_SAFE_INTEGER, complete).value
 }
 
 export function redactDurableOutput(value: unknown): RedactedText {
@@ -128,20 +142,26 @@ export class DurableOutputRedactor {
     return emitted
   }
 
+  // The pending record has no newline yet, so its last value may still grow.
   peek(): string {
-    return this.#droppingLongRecord ? "" : redactDurableOutput(this.#pending).value
+    return this.#droppingLongRecord ? "" : redact(this.#pending, maximumDurableOutputLength, false).value
   }
 
   flush(): string {
-    const output = this.peek()
+    const output = this.#droppingLongRecord ? "" : redactDurableOutput(this.#pending).value
     this.#droppingLongRecord = false
     this.#pending = ""
     return output
   }
 }
 
-function redact(value: unknown, maximumLength: number): RedactedText {
+function redact(value: unknown, maximumLength: number, complete = true): RedactedText {
   const bounded = boundedText(value, maximumLength)
+  // The end of the text ends a value only when nothing more can follow it.
+  const endIsDelimiter = complete && !bounded.truncated
+  const delimitedAt = (whole: string, index: number) => index >= whole.length
+    ? endIsDelimiter
+    : /[\s;&|,}\r\n]/u.test(whole[index]!)
   let changed = false
   const replace = (input: string, pattern: RegExp, replacer: string | ((...args: string[]) => string)) =>
     input.replace(pattern, (...args: string[]) => {
@@ -169,10 +189,14 @@ function redact(value: unknown, maximumLength: number): RedactedText {
     /(\b(?:proxy-)?authorization\b["']?\s*[:=]\s*["']?)[^\s"',;\r\n]+/giu,
     `$1${replacement}`,
   )
+  // The exemption applies only to a value that is complete: balanced quotes and
+  // a delimiter, or the true end of the text, right after it.
   const valueReplacer = (...args: string[]) => {
     const prefix = args[1] ?? ""
     const secret = args[2] ?? ""
-    if (showsPlainValue(prefix, secret)) return args[0]!
+    const offset = Number(args.at(-2))
+    const whole = String(args.at(-1))
+    if (showsPlainValue(prefix, secret) && delimitedAt(whole, offset + args[0]!.length)) return args[0]!
     const quote = secret.startsWith('"') ? '"' : secret.startsWith("'") ? "'" : ""
     return `${prefix}${quote}${replacement}${quote}`
   }
@@ -183,7 +207,9 @@ function redact(value: unknown, maximumLength: number): RedactedText {
     const quote = args[2] ?? "\""
     const name = args[3] ?? ""
     const value = matched.slice((args[1] ?? "").length + quote.length + name.length, -quote.length)
-    if (showsPlainValue(name.replace(/\s*=$/u, ""), value)) return matched
+    const offset = Number(args.at(-2))
+    const whole = String(args.at(-1))
+    if (showsPlainValue(name.replace(/\s*=$/u, ""), value) && delimitedAt(whole, offset + matched.length)) return matched
     return `${args[1] ?? ""}${quote}${name}${replacement}${quote}`
   })
   output = replace(output, secretFlag, valueReplacer)
@@ -284,11 +310,11 @@ export class TerminalOutputRedactor {
       // replacement, and drop the rest of it as it arrives.
       this.#carry = ""
       this.#droppingValue = true
-      return redactStreamText(combined)
+      return redactStreamText(combined, false)
     }
 
     this.#carry = combined.slice(holdFrom)
-    return redactStreamText(combined.slice(0, holdFrom))
+    return redactStreamText(combined.slice(0, holdFrom), false)
   }
 
   flush(): string {
@@ -305,10 +331,23 @@ export class TerminalOutputRedactor {
   // point is to notice one that has outgrown the bound.
   #suspiciousTailStart(combined: string): number {
     const assignment = danglingSecret.exec(combined)
-    if (assignment) return assignment.index
+    if (assignment) return this.#wholeName(combined, assignment.index)
     const window = combined.slice(-terminalRedactionCarryCharacters)
     const word = danglingWord.exec(window)
-    if (!word) return combined.length
-    return combined.length - window.length + word.index
+    if (word) return this.#wholeName(combined, combined.length - window.length + word.index)
+    // A flag's leading dashes or slash, left at the end of a read.
+    const flag = /[-/]{1,2}$/u.exec(window)
+    return flag ? combined.length - window.length + flag.index : combined.length
+  }
+
+  // A held tail starts at the beginning of the name it is part of, so a
+  // prefixed flag or property such as --x-token, -Ddb.password or /password
+  // is carried whole, not from its sensitive word. The walk stays within the
+  // carry bound.
+  #wholeName(combined: string, start: number): number {
+    const floor = Math.max(0, combined.length - terminalRedactionCarryCharacters)
+    let at = start
+    while (at > floor && /[A-Za-z0-9_./-]/u.test(combined[at - 1]!)) at -= 1
+    return at
   }
 }

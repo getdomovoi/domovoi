@@ -225,6 +225,45 @@ describe("durable secret redaction", () => {
     expect(shown).toEqual([])
   })
 
+  // Differential against main: the prefixed flags are this change's own (main
+  // does not match them); every other shape is one main's redactor hides. Each
+  // must stay hidden whole, and split at every position across two terminal
+  // reads. The plain-value exemption never shows a value that is not complete,
+  // balanced and followed by a delimiter.
+  const mainHides: Array<[string, string]> = [
+    ["deploy --x-token fake-value-4f2a9c done", "fake-value-4f2a9c"],
+    ["deploy --db-password=fake-value-4f2a9c done", "fake-value-4f2a9c"],
+    ["deploy --npm-auth-token fake-value-4f2a9c", "fake-value-4f2a9c"],
+    ["total-password=\"123456\"x", "123456"],
+    ["has-secret='42'tail", "42"],
+    ["{\"total-token\": \"123456\"x}", "123456"],
+    ["{\"count-token\": \"123456\"extra}", "123456"],
+    ["total-password=\"123456", "123456"],
+    ["{\"total-token\": \"123456", "123456"],
+  ]
+
+  it.each(mainHides)("hides the value in %s", (text, value) => {
+    expect(redactDurableOutput(text).value).not.toContain(value)
+    expect(redactDurableCommand(text)).toMatchObject({ redacted: true })
+  })
+
+  it.each(mainHides)("hides the value in %s split at every position across two terminal reads", (text, value) => {
+    const leaks: number[] = []
+    for (let split = 1; split < text.length; split += 1) {
+      const redactor = new TerminalOutputRedactor()
+      const shown = `${redactor.push(text.slice(0, split))}${redactor.push(text.slice(split))}${redactor.flush()}`
+      if (shown.includes(value)) leaks.push(split)
+    }
+    expect(leaks).toEqual([])
+  })
+
+  it("does not show a plain value the durable stream has only part of", () => {
+    const redactor = new DurableOutputRedactor()
+    expect(redactor.push("total_token=5")).toBe("")
+    expect(redactor.peek()).not.toContain("=5")
+    expect(`${redactor.push("abcsecret\n")}${redactor.flush()}`).not.toContain("5abcsecret")
+  })
+
   it("is idempotent and keeps replacement markers stable", () => {
     const once = redactDurableText("token=one --api-key two")
     expect(redactDurableText(once.value)).toEqual({ ...once, truncated: false })
