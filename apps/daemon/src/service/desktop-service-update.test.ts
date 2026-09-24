@@ -807,6 +807,28 @@ describe("security review round 1", () => {
       vi.useRealTimers()
     }
   })
+
+  // F5: every owner read before the restart failed, so no instance was on
+  // record, and the old daemon, left running by a restart that did nothing,
+  // passed for the new one once its record could be read again.
+  it("F5: refuses the update when the owner record cannot be read before any change", async () => {
+    const effects = fake("linux", "/home/dl")
+    const read = effects.readOwner!
+    let failures = 10
+    effects.readOwner = vi.fn((profile) => {
+      if (failures > 0) { failures -= 1; throw new Error("EACCES: permission denied, open 'local-owner.json'") }
+      return read(profile)
+    })
+    const run = effects.run
+    effects.run = vi.fn(async (command: string, args: string[], deadline) => {
+      if (args[1] === "restart") { effects.order.push("restart ignored"); return }
+      await run(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime }, effects)).rejects.toThrow(
+      "Domovoi could not update the service: EACCES: permission denied, open 'local-owner.json'. Nothing was changed, and the service was left as it was.",
+    )
+    expect(effects.order).toEqual([])
+  })
 })
 
 it("names each outcome the desktop can tell apart", () => {

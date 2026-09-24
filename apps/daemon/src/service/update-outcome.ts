@@ -171,14 +171,14 @@ export async function runServiceUpdate<T>(
 
 export type OwnerReader = (profile: ProfileLocation) => LocalOwnerRecord | undefined
 
-type OwnerRead = { ok: true, record: LocalOwnerRecord | undefined } | { ok: false }
+type OwnerRead = { ok: true, record: LocalOwnerRecord | undefined } | { ok: false, error: unknown }
 
 function readOwnerOnce(readOwner: OwnerReader, profile: ProfileLocation): OwnerRead {
   try {
     return { ok: true, record: readOwner(profile) }
-  } catch {
+  } catch (error) {
     // A record being rewritten, or not readable yet, says nothing either way.
-    return { ok: false }
+    return { ok: false, error }
   }
 }
 
@@ -207,15 +207,20 @@ export class OwnerInstances {
   constructor(readonly readOwner: OwnerReader, readonly profile: ProfileLocation) {}
 
   // Records whichever instance the owner record names now. A read that fails
-  // is tried again briefly; what was seen before still counts either way.
+  // is tried again briefly. A record that stays unreadable is a failure, not
+  // a pass: with the instance running now unknown, it could later pass for a
+  // new start. Before any change that is "nothing changed"; before a start it
+  // fails that start.
   async note(deadline: OperationDeadline): Promise<void> {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    const attempts = 5
+    for (let attempt = 1; ; attempt += 1) {
       const read = readOwnerOnce(this.readOwner, this.profile)
       if (read.ok) {
         const instance = instanceOf(read.record)
         if (instance !== undefined) this.#seen.add(instance)
         return
       }
+      if (attempt === attempts) throw read.error
       await pause(50, deadline)
     }
   }
