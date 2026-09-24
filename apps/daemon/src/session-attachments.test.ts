@@ -179,6 +179,22 @@ describe("session attachments over a paired socket", () => {
     expect(sent.error === undefined).toBe(vision)
   })
 
+  it("reports image input from the adapter's capability now, not when the list was cached", async () => {
+    // Review round 2: the model list is cached for a minute; the send reads
+    // the capability at send time, and so must the list.
+    const f = await fixture(true)
+    const first = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })
+    expect(first.result).toEqual([expect.objectContaining({ imageInput: true })])
+    ;(f.agent.capabilities as { vision: boolean }).vision = false
+    const second = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })
+    expect(second.result).toEqual([expect.objectContaining({ imageInput: false })])
+    const discovered = await f.rpc("runtime.discover", { provider: "claude-code", client: "phone" })
+    if ((discovered.result as { status?: string } | undefined)?.status === "ready") {
+      expect(discovered.result).toMatchObject({ models: [expect.objectContaining({ imageInput: false })] })
+    }
+    expect(await f.send([image])).toMatchObject({ error: { data: { reason: "image-input-unsupported" } } })
+  })
+
   it.each([true, false, "unknown"] as const)("reports per model whether images are delivered, from the adapter's capability: %s", async (vision) => {
     const f = await fixture(vision)
     const models = await f.rpc("runtime.models", { provider: "claude-code", client: "phone" })

@@ -3805,7 +3805,20 @@ export class DomovoiDaemon {
     return agent
   }
 
+  // Whether a model takes image input is read from the adapter each time the
+  // list is read, by the rule the send uses, so a cached list never disagrees
+  // with the send. Whatever an adapter listed is overridden.
+  #withImageInput(provider: string, models: readonly ProviderModel[]): ProviderModel[] {
+    if (models.length === 0) return []
+    const imageInput = modelImageInput(this.#agents.require(provider).capabilities)
+    return models.map((model) => ({ ...model, imageInput }))
+  }
+
   async #listProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
+    return this.#withImageInput(provider, await this.#listCachedProviderModels(provider, deadline))
+  }
+
+  async #listCachedProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
     deadline?.throwIfExpired()
     const cached = this.#providerModels.get(provider)
     if (cached && Date.now() - cached.cachedAt < this.#modelCacheTtlMs) return cached.models
@@ -3825,9 +3838,6 @@ export class DomovoiDaemon {
       }).finally(() => modelDeadline.clear()).then((models) => {
         const parsed = rpcMethods["runtime.models"].result.parse(models)
           .filter((model) => model.provider === provider)
-          // The send decides by this rule alone, so the list says the same,
-          // whatever an adapter listed.
-          .map((model) => ({ ...model, imageInput: modelImageInput(agent.capabilities) }))
         if (parsed.length > 0 && this.#providerEpoch(provider) === epoch
           && this.#providerModelRequests.get(provider) === discovery) {
           this.#providerModels.set(provider, { models: parsed, cachedAt: Date.now() })
@@ -4934,7 +4944,7 @@ export class DomovoiDaemon {
         let models: ProviderModel[]
         try {
           models = this.#watchingOnly(socket) && !this.#connectedAgents.has(params.provider)
-            ? this.#providerModels.get(params.provider)?.models ?? []
+            ? this.#withImageInput(params.provider, this.#providerModels.get(params.provider)?.models ?? [])
             : await this.#listProviderModels(params.provider)
         } catch (error) {
           if (!(error instanceof AgentProviderUnavailableError)) throw error
