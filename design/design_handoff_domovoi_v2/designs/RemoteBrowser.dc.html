@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+<style>
+  @keyframes dvPulse { 0% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 45%, transparent); } 70% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--warning) 0%, transparent); } 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--warning) 0%, transparent); } }
+</style>
+</helmet>
+<div style="border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; display: flex; flex-direction: column; font-family: 'Instrument Sans', system-ui, sans-serif; color: var(--foreground);">
+
+  <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border);">
+    <span style="display: inline-flex; color: var(--muted-foreground);">{{ iServer }}</span>
+    <span style="font-size: 12.5px; font-weight: 500;">Project on <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong);">{{ machineName }}</span></span>
+    <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint);">{{ transportText }}</span>
+    <span style="flex: 1;"></span>
+    <sc-if value="{{ showBack }}" hint-placeholder-val="{{ false }}">
+      <div onClick="{{ backToRecent }}" style="display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: calc(var(--radius) - 3px); font-size: 11.5px; color: var(--muted-foreground); cursor: pointer;" style-hover="background: var(--accent); color: var(--foreground);">
+        <span style="display: inline-flex;">{{ iBack }}</span>
+        <span>Recent projects</span>
+      </div>
+    </sc-if>
+    <sc-if value="{{ hasClose }}" hint-placeholder-val="{{ false }}">
+      <div onClick="{{ close }}" aria-label="Close" style="display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); cursor: pointer; color: var(--muted-foreground);" style-hover="background: var(--accent); color: var(--foreground);">{{ iClose }}</div>
+    </sc-if>
+  </div>
+
+  <sc-if value="{{ isRecent }}" hint-placeholder-val="{{ true }}">
+    <div style="display: flex; flex-direction: column;">
+      <div style="padding: 12px 14px 7px; font-size: 10.5px; font-weight: 500; letter-spacing: .13em; color: var(--faint);">{{ recentEyebrow }}</div>
+      <sc-for list="{{ recent }}" as="r" hint-placeholder-count="3">
+        <div onClick="{{ r.go }}" style="{{ r.style }}" style-hover="background: var(--accent);">
+          <span style="display: inline-flex; color: var(--muted-foreground);">{{ r.icon }}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); width: 130px; flex: 0 0 130px;">{{ r.name }}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground);">{{ r.path }}</span>
+          <span style="flex: 1;"></span>
+          <sc-if value="{{ r.chosen }}" hint-placeholder-val="{{ false }}">
+            <span style="font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);">Chosen</span>
+          </sc-if>
+          <span style="font-size: 11px; color: var(--faint);">Last session <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ r.when }}</span></span>
+        </div>
+      </sc-for>
+      <div onClick="{{ openBrowse }}" style="display: flex; align-items: center; gap: 11px; padding: 11px 14px; border-top: 1px solid var(--border); cursor: pointer;" style-hover="background: var(--accent);">
+        <span style="display: inline-flex; color: var(--muted-foreground);">{{ iFolder }}</span>
+        <span style="font-size: 12.5px; color: var(--foreground);">Browse folders on {{ machineName }}</span>
+        <span style="flex: 1;"></span>
+        <span style="font-size: 11px; color: var(--faint);">Inside <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px;">{{ rootsText }}</span></span>
+        <span style="display: inline-flex; color: var(--faint);">{{ iChevron }}</span>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isBrowse }}" hint-placeholder-val="{{ false }}">
+    <div style="display: flex; flex-direction: column;">
+      <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid var(--border);">
+        <sc-if value="{{ isB }}" hint-placeholder-val="{{ false }}">
+          <div onClick="{{ goUp }}" aria-label="Up one level" style="{{ upStyle }}">{{ iUp }}</div>
+          <div style="display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden;">
+            <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="2">
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span onClick="{{ c.go }}" style="{{ c.style }}">{{ c.label }}</span>
+                <sc-if value="{{ c.sep }}" hint-placeholder-val="{{ false }}"><span style="display: inline-flex; color: var(--faint);">{{ iChevronSm }}</span></sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ isA }}" hint-placeholder-val="{{ true }}">
+          <span style="font-size: 11.5px; color: var(--muted-foreground);">Allowed roots</span>
+          <sc-for list="{{ rootChips }}" as="rc" hint-placeholder-count="2">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--strong);">{{ rc.path }}</span>
+          </sc-for>
+        </sc-if>
+        <span style="flex: 1;"></span>
+        <input value="{{ input }}" onChange="{{ onInput }}" onKeyDown="{{ onKey }}" placeholder="Go to a path" aria-label="Go to a path" style="width: 190px; padding: 6px 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px); background: var(--background); color: var(--foreground); font-family: 'JetBrains Mono', monospace; font-size: 11px;">
+        <div onClick="{{ goInput }}" style="padding: 6px 11px; border-radius: calc(var(--radius) - 3px); border: 1px solid var(--border); font-size: 11.5px; color: var(--foreground); cursor: pointer;" style-hover="background: var(--accent);">Go</div>
+      </div>
+
+      <sc-if value="{{ hasAsk }}" hint-placeholder-val="{{ false }}">
+        <div style="margin: 12px 14px 0; border: 1.5px solid var(--warning); border-radius: var(--radius); background: var(--warn-bg); overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px 10px;">
+            <span style="width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--warning); animation: dvPulse 2.4s infinite;"></span>
+            <span style="font-size: 13px; font-weight: 600; color: var(--warn-fg);">Read a folder outside the roots</span>
+            <span style="flex: 1;"></span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--warn-dim);">outside_roots · {{ machineName }}</span>
+          </div>
+          <div style="padding: 0 14px 10px;">
+            <div style="padding: 10px 12px; border-radius: calc(var(--radius) - 3px); background: var(--warn-bg-deep); font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: var(--warn-fg);">{{ askPath }}</div>
+          </div>
+          <div style="padding: 0 14px 11px; font-size: 12px; line-height: 1.55; color: var(--warn-fg);">Lists folder names one level down. Allowed roots here: <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px;">{{ rootsText }}</span>.</div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 0 14px 12px; flex-wrap: wrap;">
+            <div onClick="{{ allowOnce }}" style="padding: 6px 13px; border-radius: calc(var(--radius) - 3px); background: var(--warning); color: var(--warning-foreground); font-size: 12px; font-weight: 600; cursor: pointer;">Allow once</div>
+            <div onClick="{{ allowAlways }}" style="padding: 6px 13px; border-radius: calc(var(--radius) - 3px); border: 1px solid var(--warn-border); color: var(--warn-fg); font-size: 12px; white-space: nowrap; cursor: pointer;">{{ alwaysLabel }}</div>
+            <div onClick="{{ deny }}" style="padding: 6px 13px; border-radius: calc(var(--radius) - 3px); border: 1px solid var(--warn-border); color: var(--warn-dim); font-size: 12px; cursor: pointer;">Deny</div>
+            <span style="flex: 1;"></span>
+            <span style="font-size: 11px; color: var(--warn-dim);">{{ alwaysNote }}</span>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ hasNotice }}" hint-placeholder-val="{{ false }}">
+        <div style="margin: 12px 14px 0; display: flex; align-items: center; gap: 9px; padding: 9px 12px; border: 1px dashed var(--info-border); border-radius: calc(var(--radius) - 2px); background: var(--info-bg); font-size: 12px; color: var(--info-fg);">
+          <span style="width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--info);"></span>
+          <span>{{ notice }}</span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isA }}" hint-placeholder-val="{{ true }}">
+        <div ref="{{ colsRef }}" style="{{ bodyStyleA }}">
+          <sc-for list="{{ cols }}" as="c" hint-placeholder-count="3">
+            <div style="flex: 0 0 236px; min-width: 0; border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column;">
+              <div style="flex: 0 0 auto; padding: 8px 13px 6px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ c.title }}</div>
+              <sc-for list="{{ c.rows }}" as="r" hint-placeholder-count="4">
+                <div style="flex: 0 0 auto;">
+                  <div onClick="{{ r.go }}" style="{{ r.style }}">
+                    <span style="{{ r.iconStyle }}">{{ r.icon }}</span>
+                    <span style="min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ r.name }}</span>
+                    <span style="flex: 1;"></span>
+                    <sc-if value="{{ r.hasBadge }}" hint-placeholder-val="{{ false }}"><span style="{{ r.badgeStyle }}">{{ r.badge }}</span></sc-if>
+                    <sc-if value="{{ r.enterable }}" hint-placeholder-val="{{ false }}"><span style="display: inline-flex; color: var(--faint);">{{ r.chev }}</span></sc-if>
+                  </div>
+                  <sc-if value="{{ r.hasReason }}" hint-placeholder-val="{{ false }}">
+                    <div style="padding: 0 13px 9px 36px; font-size: 11px; line-height: 1.5; color: var(--danger-fg);">{{ r.reason }}</div>
+                  </sc-if>
+                </div>
+              </sc-for>
+              <sc-if value="{{ c.empty }}" hint-placeholder-val="{{ false }}">
+                <div style="padding: 10px 13px; font-size: 11.5px; color: var(--muted-foreground);">No folders at this level.</div>
+              </sc-if>
+              <sc-if value="{{ c.capped }}" hint-placeholder-val="{{ false }}">
+                <div style="margin: 8px 10px 10px; padding: 9px 11px; border: 1px dashed var(--info-border); border-radius: calc(var(--radius) - 3px); background: var(--info-bg); font-size: 11px; line-height: 1.5; color: var(--info-fg);">{{ capText }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isB }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ bodyStyleB }}">
+          <sc-for list="{{ listRows }}" as="r" hint-placeholder-count="4">
+            <div style="flex: 0 0 auto;">
+              <div onClick="{{ r.go }}" style="{{ r.style }}">
+                <span style="{{ r.iconStyle }}">{{ r.icon }}</span>
+                <span style="flex: 0 0 170px; min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ r.name }}</span>
+                <span style="min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ r.meta }}</span>
+                <span style="flex: 1;"></span>
+                <sc-if value="{{ r.hasBadge }}" hint-placeholder-val="{{ false }}"><span style="{{ r.badgeStyle }}">{{ r.badge }}</span></sc-if>
+                <sc-if value="{{ r.enterable }}" hint-placeholder-val="{{ false }}"><span style="display: inline-flex; color: var(--faint);">{{ r.chev }}</span></sc-if>
+              </div>
+              <sc-if value="{{ r.hasReason }}" hint-placeholder-val="{{ false }}">
+                <div style="padding: 0 14px 10px 38px; font-size: 11.5px; line-height: 1.5; color: var(--danger-fg);">{{ r.reason }}</div>
+              </sc-if>
+            </div>
+          </sc-for>
+          <sc-if value="{{ listEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="padding: 14px; font-size: 12px; color: var(--muted-foreground);">No folders at this level.</div>
+          </sc-if>
+          <sc-if value="{{ listCapped }}" hint-placeholder-val="{{ false }}">
+            <div style="margin: 10px 14px 12px; padding: 10px 12px; border: 1px dashed var(--info-border); border-radius: calc(var(--radius) - 2px); background: var(--info-bg); font-size: 12px; line-height: 1.5; color: var(--info-fg);">{{ capText }}</div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <div style="flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--border);">
+        <div onClick="{{ useGo }}" style="{{ useStyle }}">{{ useLabel }}</div>
+        <span style="min-width: 0; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ usePath }}</span>
+        <span style="flex: 1;"></span>
+        <span style="font-size: 11px; color: var(--faint); white-space: nowrap;">Folders only. Names travel, contents stay on {{ machineName }}.</span>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isNoAnswer }}" hint-placeholder-val="{{ false }}">
+    <div style="padding: 14px; display: flex; flex-direction: column; gap: 12px;">
+      <div style="border: 1px solid var(--danger-border); border-radius: calc(var(--radius) - 2px); background: var(--danger-bg); overflow: hidden;">
+        <div style="display: flex; align-items: center; gap: 10px; padding: 11px 13px;">
+          <span style="width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--destructive);"></span>
+          <span style="font-size: 12.5px; font-weight: 500; color: var(--danger-fg);">{{ machineName }} did not answer</span>
+          <span style="flex: 1;"></span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--danger-dim);">no reply in 10s · last answer 14:02</span>
+        </div>
+        <div style="padding: 0 13px 12px; font-size: 12px; line-height: 1.55; color: var(--danger-fg);">Nothing was listed, so there are no recent projects or folders to show.</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <div onClick="{{ retry }}" style="padding: 7px 13px; border-radius: calc(var(--radius) - 3px); border: 1px solid var(--border); font-size: 12px; color: var(--foreground); cursor: pointer;" style-hover="background: var(--accent);">Ask again</div>
+        <span style="font-size: 11.5px; color: var(--muted-foreground);">Start stays locked until the daemon answers.</span>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:760,&quot;height&quot;:460},&quot;layout&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;A: columns&quot;,&quot;options&quot;:[&quot;A: columns&quot;,&quot;B: breadcrumb list&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;scenario&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;recent&quot;,&quot;options&quot;:[&quot;recent&quot;,&quot;browse&quot;,&quot;outside&quot;,&quot;capped&quot;,&quot;denied&quot;,&quot;noanswer&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;machine&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;hetzner-cx42&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;transport&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;tailnet · 38ms&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;picked&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;onScenario&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(s: string) =&gt; void&quot;},&quot;onPick&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;(path: string) =&gt; void&quot;},&quot;onClose&quot;:{&quot;editor&quot;:null,&quot;tsType&quot;:&quot;() =&gt; void&quot;}}">
+class Component extends DCLogic {
+  state = { path: null, refused: null, ask: null, input: "", once: null, added: [], notice: null };
+  colsRef = React.createRef();
+
+  componentDidMount() {
+    this.preset(this.props.scenario || "recent");
+    let n = 0;
+    const poll = () => { if (window.lucide && window.lucide.icons) { this.forceUpdate(); return; } if (n++ < 60) this._luT = setTimeout(poll, 150); };
+    poll();
+  }
+  componentWillUnmount() { clearTimeout(this._luT); }
+  componentDidUpdate(prev) {
+    const s = this.props.scenario;
+    if (s !== prev.scenario) { if (s !== this._mine) this.preset(s); this._mine = null; }
+    const el = this.colsRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }
+
+  lu(name, size) {
+    const L = window.lucide;
+    const node = L && L.icons && L.icons[name];
+    if (!node) return React.createElement("span", { style: { display: "inline-block", width: size, height: size } });
+    const kids = node[0] === "svg" ? node[2] : node;
+    return React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+      kids.map((c, i) => React.createElement(c[0], Object.assign({ key: i }, c[1]))));
+  }
+
+  preset(s) {
+    const clear = { refused: null, ask: null, input: "", notice: null, linkSel: null };
+    const p = {
+      recent: { path: null },
+      browse: { path: "~/src" },
+      outside: { path: "~/src", ask: "/srv/checkouts", input: "/srv/checkouts" },
+      capped: { path: "~/work/datasets" },
+      denied: { path: "~/work", refused: "secrets" },
+      noanswer: { path: null }
+    }[s] || {};
+    this.setState(Object.assign({ once: null, added: [] }, clear, p));
+  }
+
+  report(s) {
+    if (s === this.props.scenario) return;
+    this._mine = s;
+    if (this.props.onScenario) this.props.onScenario(s);
+  }
+
+  roots() { return ["~/src", "~/work"].concat(this.state.added); }
+  rootOf(p) {
+    const inside = r => p === r || p.indexOf(r + "/") === 0;
+    const r = this.roots().find(inside);
+    if (r) return r;
+    return this.state.once && inside(this.state.once) ? this.state.once : null;
+  }
+
+  // What the daemon answers for one level: names and a kind, nothing read from inside a file.
+  level(p) {
+    const D = {
+      "~/src": [["acme-api", "repo"], ["acme-web", "repo"], ["billing-worker", "repo"], ["go", "link", "/usr/local/go"], ["scratch", "dir"]],
+      "~/src/scratch": [["pg-load-test", "dir"], ["webhook-replay", "dir"]],
+      "~/src/acme-api": [[".github", "dir"], ["apps", "dir"], ["packages", "dir"], ["scripts", "dir"]],
+      "~/src/acme-web": [["app", "dir"], ["public", "dir"], ["src", "dir"]],
+      "~/src/billing-worker": [["cmd", "dir"], ["internal", "dir"]],
+      "~/work": [["datasets", "dir"], ["infra", "repo"], ["monorepo", "repo"], ["secrets", "denied"]],
+      "~/work/infra": [["envs", "dir"], ["modules", "dir"]],
+      "~/work/monorepo": [["apps", "dir"], ["packages", "dir"], ["tools", "dir"]],
+      "/srv/checkouts": [["acme-api-release", "repo"], ["legacy-billing", "repo"]]
+    };
+    if (p === "~/work/datasets") {
+      const out = [];
+      for (let i = 1; i <= 500; i++) out.push(["shard-" + String(i).padStart(4, "0"), "dir"]);
+      return { entries: out, capped: true };
+    }
+    return { entries: D[p] || [], capped: false };
+  }
+
+  enter(p) {
+    if (p === "~/work/secrets") { this.setState({ path: "~/work", refused: "secrets", ask: null, notice: null }); this.report("denied"); return; }
+    this.setState({ path: p, refused: null, ask: null, notice: null, linkSel: null });
+    this.report(p === "~/work/datasets" ? "capped" : "browse");
+  }
+
+  submit() {
+    const v = (this.state.input || "").trim().replace(/\/$/, "");
+    if (!v) return;
+    if (this.rootOf(v)) this.enter(v);
+    else { this.setState({ ask: v, notice: null }); this.report("outside"); }
+  }
+
+  decide(kind) {
+    const a = this.state.ask;
+    const m = this.props.machine || "hetzner-cx42";
+    if (kind === "deny") { this.setState({ ask: null, input: "", notice: "Denied. Nothing outside the roots was read." }); this.report("browse"); return; }
+    if (kind === "once") this.setState({ once: a, ask: null, path: a, input: "", notice: "Allowed once, for this browse only. No root was recorded." });
+    else this.setState(s => ({ added: s.added.concat([a]), ask: null, path: a, input: "", notice: "Recorded " + a + " as a root on " + m + "." }));
+    this.report("browse");
+  }
+
+  rowsFor(p, selName, wide) {
+    const st = this.state;
+    const L = this.level(p);
+    return L.entries.map((e, i) => {
+      const name = e[0], kind = e[1];
+      const refused = kind === "denied" && st.refused === name;
+      const locked = kind === "link" || refused;
+      const sel = selName === name || st.linkSel === p + "/" + name;
+      const icon = kind === "repo" ? "FolderGit2" : kind === "link" ? "Link2" : refused ? "Lock" : "Folder";
+      const badge = kind === "repo" ? "repository" : kind === "link" ? "not followed" : refused ? "permission denied" : "";
+      const bColor = refused ? "var(--destructive)" : kind === "link" ? "var(--muted-foreground)" : "var(--strong)";
+      return {
+        name: name,
+        meta: kind === "link" ? "symlink to " + e[2] : "",
+        icon: this.lu(icon, 16),
+        chev: this.lu("ChevronRight", 13),
+        iconStyle: "display: inline-flex; flex: 0 0 16px; color: " + (sel ? "var(--foreground)" : "var(--muted-foreground)") + ";",
+        hasBadge: !!badge, badge: badge,
+        badgeStyle: "flex: 0 0 auto; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; color: " + bColor + "; background: " +
+          (refused ? "color-mix(in oklab, var(--destructive) 14%, transparent)" : kind === "link" ? "transparent; border: 1px solid var(--border)" : "var(--accent); border: 1px solid var(--border)") + ";",
+        enterable: !locked,
+        hasReason: refused || (kind === "link" && sel),
+        reason: refused ? "The system refused to list it for dana. The daemon does not retry as another user." : "The daemon lists links but does not follow them. Go to " + e[2] + " by path.",
+        go: locked ? (kind === "link" ? () => this.setState({ refused: null, linkSel: p + "/" + name }) : undefined) : () => this.enter(p + "/" + name),
+        style: "display: flex; align-items: center; gap: 10px; padding: " + (wide ? "9px 14px" : "7px 13px") + "; border-left: 2px solid " + (sel ? "var(--primary)" : "transparent") + ";" +
+          (sel ? " background: var(--accent);" : "") + (locked ? " cursor: default;" : " cursor: pointer;") + (locked && !refused ? " opacity: .6;" : "")
+      };
+    });
+  }
+
+  rootRows(selRoot, wide) {
+    const st = this.state;
+    const list = this.roots().map(r => ({ p: r, tag: st.added.indexOf(r) >= 0 ? "added just now" : "" }));
+    if (st.once) list.push({ p: st.once, tag: "allowed once" });
+    return list.map(r => {
+      const sel = selRoot === r.p;
+      return {
+        name: r.p, meta: "", icon: this.lu("FolderRoot", 16), chev: this.lu("ChevronRight", 13),
+        iconStyle: "display: inline-flex; flex: 0 0 16px; color: " + (sel ? "var(--foreground)" : "var(--muted-foreground)") + ";",
+        hasBadge: !!r.tag, badge: r.tag,
+        badgeStyle: "flex: 0 0 auto; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; color: var(--info-fg); background: var(--info-bg);",
+        enterable: true, hasReason: false, reason: "",
+        go: () => this.enter(r.p),
+        style: "display: flex; align-items: center; gap: 10px; padding: " + (wide ? "9px 14px" : "7px 13px") + "; cursor: pointer; border-left: 2px solid " + (sel ? "var(--primary)" : "transparent") + ";" + (sel ? " background: var(--accent);" : "")
+      };
+    });
+  }
+
+  renderVals() {
+    const st = this.state;
+    const sc = this.props.scenario || "recent";
+    const layoutB = String(this.props.layout ?? "A").charAt(0) === "B";
+    const m = this.props.machine || "hetzner-cx42";
+    const picked = this.props.picked || null;
+    const pick = p => { if (this.props.onPick) this.props.onPick(p); };
+    const browsing = sc !== "recent" && sc !== "noanswer";
+    const path = browsing ? st.path : null;
+    const root = path ? this.rootOf(path) : null;
+    const rest = path && root ? path.slice(root.length).split("/").filter(Boolean) : [];
+    const levels = root ? [root].concat(rest.map((_, i) => root + "/" + rest.slice(0, i + 1).join("/"))) : [];
+    const cur = path ? this.level(path) : { entries: [], capped: false };
+    const refusedSel = st.refused;
+    const rootsText = this.roots().join(" · ");
+
+    const cols = [{ title: "roots", rows: this.rootRows(root, false), empty: false, capped: false }].concat(levels.map((lv, i) => {
+      const next = rest[i] || (i === levels.length - 1 ? refusedSel : null);
+      const L = this.level(lv);
+      return { title: lv, rows: this.rowsFor(lv, next, false), empty: !L.entries.length, capped: L.capped };
+    }));
+
+    const crumbs = [{ label: "Roots", p: null }].concat(levels.map((lv, i) => ({ label: i === 0 ? lv : rest[i - 1], p: lv })));
+    const canUse = !!path && !st.ask;
+    const isPicked = canUse && picked === path;
+
+    return {
+      machineName: m,
+      transportText: this.props.transport || "tailnet · 38ms",
+      iServer: this.lu("Server", 16), iBack: this.lu("ArrowLeft", 16), iClose: this.lu("X", 16),
+      iFolder: this.lu("Folder", 16), iChevron: this.lu("ChevronRight", 16), iChevronSm: this.lu("ChevronRight", 12), iUp: this.lu("ArrowUp", 16),
+      hasClose: !!this.props.onClose, close: this.props.onClose,
+      isRecent: sc === "recent", isBrowse: browsing, isNoAnswer: sc === "noanswer",
+      isA: !layoutB, isB: layoutB,
+      showBack: browsing,
+      backToRecent: () => { this.preset("recent"); this.report("recent"); },
+      recentEyebrow: "RECENT ON " + m.toUpperCase(),
+      recent: [
+        { name: "billing-worker", path: "~/src/billing-worker", when: "2h ago" },
+        { name: "acme-api", path: "~/src/acme-api", when: "yesterday" },
+        { name: "infra", path: "~/work/infra", when: "6d ago" }
+      ].map(r => ({
+        name: r.name, path: r.path, when: r.when, chosen: picked === r.path,
+        icon: this.lu("FolderGit2", 16), go: () => pick(r.path),
+        style: "display: flex; align-items: center; gap: 11px; padding: 10px 14px; cursor: pointer; border-top: 1px solid var(--border); border-left: 2px solid " +
+          (picked === r.path ? "var(--primary)" : "transparent") + ";" + (picked === r.path ? " background: var(--accent);" : "")
+      })),
+      openBrowse: () => { this.preset("browse"); this.report("browse"); },
+      rootsText: rootsText,
+      rootChips: this.roots().map(r => ({ path: r })),
+
+      crumbs: crumbs.map((c, i) => ({
+        label: c.label, sep: i < crumbs.length - 1,
+        go: () => (c.p ? this.enter(c.p) : (this.setState({ path: null, refused: null, notice: null }), this.report("browse"))),
+        style: (i === 0 ? "font-size: 11.5px;" : "font-family: 'JetBrains Mono', monospace; font-size: 11px;") + " white-space: nowrap; cursor: pointer; color: " +
+          (i === crumbs.length - 1 ? "var(--foreground)" : "var(--muted-foreground)") + ";"
+      })),
+      goUp: path ? () => (levels.length > 1 ? this.enter(levels[levels.length - 2]) : (this.setState({ path: null, refused: null, notice: null }), this.report("browse"))) : undefined,
+      upStyle: "display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border-radius: calc(var(--radius) - 3px); color: var(--muted-foreground);" +
+        (path ? " cursor: pointer;" : " opacity: .42; cursor: default;"),
+
+      input: st.input,
+      onInput: e => this.setState({ input: e.target.value }),
+      onKey: e => { if (e.key === "Enter") this.submit(); },
+      goInput: () => this.submit(),
+
+      hasAsk: !!st.ask, askPath: st.ask || "",
+      alwaysLabel: "Always for " + (st.ask || "") + " here",
+      alwaysNote: "Always records a new root on " + m + " only.",
+      allowOnce: () => this.decide("once"), allowAlways: () => this.decide("always"), deny: () => this.decide("deny"),
+      hasNotice: !!st.notice && !st.ask, notice: st.notice || "",
+
+      colsRef: this.colsRef,
+      cols: cols,
+      bodyStyleA: "height: " + (st.ask ? 214 : 300) + "px; display: flex; overflow-x: auto; overflow-y: hidden;" + (st.ask ? " opacity: .5; pointer-events: none;" : ""),
+      bodyStyleB: "height: " + (st.ask ? 214 : 300) + "px; overflow-y: auto; display: flex; flex-direction: column; padding: 4px 0;" + (st.ask ? " opacity: .5; pointer-events: none;" : ""),
+      listRows: path ? this.rowsFor(path, refusedSel, true) : this.rootRows(null, true),
+      listEmpty: !!path && !cur.entries.length,
+      listCapped: cur.capped,
+      capText: "Showing the first 500 names. The daemon stops a list at 500 and does not fetch the rest. Go to a name by path.",
+
+      useLabel: isPicked ? "Chosen" : "Use this folder",
+      usePath: canUse ? path : "Pick a folder",
+      useGo: canUse ? () => pick(path) : undefined,
+      useStyle: "flex: 0 0 auto; padding: 7px 14px; border-radius: calc(var(--radius) - 2px); font-size: 12.5px; font-weight: 600;" +
+        (canUse ? " background: var(--primary); color: var(--primary-foreground); cursor: pointer;" : " background: var(--muted); color: var(--faint); cursor: default;"),
+
+      retry: () => { this.preset("recent"); this.report("recent"); }
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -6,6 +6,11 @@ approved exception ledger, then production behavior. Old design documents and te
 override v2. The gate checks the manifest, each present inventory, and the desktop and phone
 structural contracts through `pnpm design:conformance` and `pnpm release:invariants`.
 
+Components and studies vendored beside the v2 designs have inventories of their own, outside the
+manifest: `TailnetReach`, `PairingCard` and `RemoteBrowser` (imported by Desktop V2 and v2
+Onboarding, whose template holds only the import), `Domovoi Pairing Layouts`, `Domovoi Projects`
+and `Domovoi CLI Transcripts`. The gate checks every `*-v2.json` in this directory.
+
 Every other invariant in this repository has a gate because it drifted once. Design conformance
 drifted for weeks with none: the designs were converted into itemised change lists and the items
 were built, so anything not itemised was never built, and no check said so. The inventory is the
