@@ -15,12 +15,12 @@ import { DomovoiDaemon } from "./server.js"
 import type { WorkspaceStore } from "./store.js"
 import type { WorkspaceService } from "./workspace.js"
 
-// A person's allow takes a checkpoint before the decision is saved (J34), so
-// these gates need a worktree that can be checkpointed.
+// A person's allow takes a snapshot checkpoint before the decision is saved
+// (J34), so these gates need a worktree that can take one.
 function checkpointingWorkspace(): WorkspaceService {
   return {
-    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(),
-    checkpoint: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
+    snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
   }
 }
 

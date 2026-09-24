@@ -122,12 +122,12 @@ describe("helloProtocolCompatibility", () => {
   })
 })
 
-// A person's allow takes a checkpoint before the decision is saved (J34), so
-// a gate in a worktree the fixture never made needs one that can be checkpointed.
+// A person's allow takes a snapshot checkpoint before the decision is saved
+// (J34), so a gate in a worktree the fixture never made needs one that can.
 function checkpointingWorkspace(): WorkspaceService {
   return {
-    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(),
-    checkpoint: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
+    snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
   }
 }
 
@@ -960,7 +960,8 @@ describe("DomovoiDaemon", () => {
       inspect: vi.fn(),
       createSessionWorkspace: vi.fn(),
       removeSessionWorkspace: vi.fn(),
-      checkpoint: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+      checkpoint: vi.fn(),
+      snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
       restore: vi.fn(),
       evidence: vi.fn(async () => ({
         baseCommit: "a".repeat(40),
@@ -8942,6 +8943,7 @@ describe("DomovoiDaemon", () => {
         restoredCommit: "b".repeat(40),
         recoveryCommit: "c".repeat(40),
       })),
+      snapshot: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
       id: `machine-${"8".repeat(32)}`,
@@ -9224,8 +9226,8 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "allow-once")
-    // The allow took its checkpoint first (J34); the refused create below adds none.
-    expect(workspaceService.checkpoint).toHaveBeenCalledOnce()
+    // The allow took a snapshot first (J34), which is not a branch checkpoint.
+    expect(workspaceService.snapshot).toHaveBeenCalledOnce()
 
     const activeCheckpoint = await rpc("checkpoint.create", {
       sessionId,
@@ -9235,7 +9237,7 @@ describe("DomovoiDaemon", () => {
     expect(activeCheckpoint).toMatchObject({
       error: { code: -32602, message: "Stop the active turn before creating a checkpoint" },
     })
-    expect(workspaceService.checkpoint).toHaveBeenCalledOnce()
+    expect(workspaceService.checkpoint).not.toHaveBeenCalled()
 
     const activeRestore = await rpc("checkpoint.restore", {
       sessionId,

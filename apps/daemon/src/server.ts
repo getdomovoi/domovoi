@@ -6683,14 +6683,19 @@ export class DomovoiDaemon {
         // J34, ruled 2026-09-23: a person's allow takes a checkpoint first,
         // so the write it lets through can be undone. If the checkpoint
         // cannot be taken, the command does not run and the gate stays. A
-        // session with no worktree has nothing to checkpoint.
+        // session with no worktree has nothing to checkpoint. The agent is
+        // mid-turn, so the checkpoint is a snapshot that leaves HEAD, the
+        // index and the files alone (ruled B the same day).
         const allows = params.decision === "allow-once" || params.decision === "always-project"
         let approvedCheckpoint: { id: string, commit: string } | undefined
         if (allows && session?.workspacePath) {
           const worktree = session.workspacePath
           try {
             const taken = await this.#withAbortTimeout(
-              (signal) => this.#workspaceService.checkpoint(worktree, "before approved command", signal),
+              (signal) => {
+                if (!this.#workspaceService.snapshot) throw new Error("This workspace cannot take a checkpoint while the agent runs")
+                return this.#workspaceService.snapshot(worktree, "before approved command", signal)
+              },
               this.#agentTimeoutMs,
               "Approval checkpoint timed out",
             )

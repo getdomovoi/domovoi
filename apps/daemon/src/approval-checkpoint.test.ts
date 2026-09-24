@@ -51,7 +51,8 @@ async function start(options: { worktree?: boolean, checkpoint?: () => Promise<{
   } satisfies AgentAdapter
   const workspaceService = {
     inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(),
-    checkpoint: vi.fn(options.checkpoint ?? (async () => ({ commit: checkpointCommit, changedFiles: ["db/schema.sql"] }))),
+    checkpoint: vi.fn(),
+    snapshot: vi.fn(options.checkpoint ?? (async () => ({ commit: checkpointCommit, changedFiles: ["db/schema.sql"] }))),
   } satisfies WorkspaceService
   const daemon = new DomovoiDaemon({
     port: 0, store: new SqliteWorkspaceStore(":memory:", pendingApproval(options.worktree ?? true)),
@@ -91,9 +92,10 @@ describe("a checkpoint before an approved write", () => {
   it("is taken before the agent hears the decision, and named on the receipt", async () => {
     const { provider, workspaceService, rpc, snapshot, approvalId } = await start()
     expect((await rpc("approval.resolve", allow(approvalId))).error).toBeUndefined()
-    expect(workspaceService.checkpoint).toHaveBeenCalledOnce()
-    expect(workspaceService.checkpoint).toHaveBeenCalledWith("/worktrees/session-billing", "before approved command", expect.any(AbortSignal))
-    expect(workspaceService.checkpoint.mock.invocationCallOrder[0]!).toBeLessThan(provider.resolveApproval.mock.invocationCallOrder[0]!)
+    expect(workspaceService.snapshot).toHaveBeenCalledOnce()
+    expect(workspaceService.checkpoint).not.toHaveBeenCalled()
+    expect(workspaceService.snapshot).toHaveBeenCalledWith("/worktrees/session-billing", "before approved command", expect.any(AbortSignal))
+    expect(workspaceService.snapshot.mock.invocationCallOrder[0]!).toBeLessThan(provider.resolveApproval.mock.invocationCallOrder[0]!)
     const state = await snapshot()
     expect(state.thread).toContainEqual(expect.objectContaining({ kind: "checkpoint", label: `${checkpointCommit.slice(0, 8)} · before an approved command`, commit: checkpointCommit, sessionId: "session-billing" }))
     expect(state.thread).toContainEqual(expect.objectContaining({ kind: "receipt", decision: "allow-once", checkpoint: checkpointCommit }))
@@ -113,11 +115,11 @@ describe("a checkpoint before an approved write", () => {
   it("takes none for a denial, and says unavailable with no worktree", async () => {
     const denied = await start()
     expect((await denied.rpc("approval.resolve", allow(denied.approvalId, "deny"))).error).toBeUndefined()
-    expect(denied.workspaceService.checkpoint).not.toHaveBeenCalled()
+    expect(denied.workspaceService.snapshot).not.toHaveBeenCalled()
 
     const bare = await start({ worktree: false })
     expect((await bare.rpc("approval.resolve", allow(bare.approvalId))).error).toBeUndefined()
-    expect(bare.workspaceService.checkpoint).not.toHaveBeenCalled()
+    expect(bare.workspaceService.snapshot).not.toHaveBeenCalled()
     expect((await bare.snapshot()).thread).toContainEqual(expect.objectContaining({ kind: "receipt", checkpoint: "unavailable" }))
   })
 
