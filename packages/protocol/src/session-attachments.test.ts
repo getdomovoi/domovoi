@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { sessionSendParamsSchema } from "./rpc.js"
-import { sessionAttachmentRefusalSchema } from "./image-upload.js"
+import { z } from "zod"
+
+import { modelImageInputRefusalCode, sessionAttachmentRefusalSchema } from "./image-upload.js"
 
 const image = { mimeType: "image/png", width: 1, height: 1, data: "AAAA" }
 const send = { sessionId: "session-images", prompt: "Read these images", client: "phone" }
@@ -59,5 +61,22 @@ describe("session image attachments", () => {
       expect(sessionAttachmentRefusalSchema.safeParse({ kind: "session-attachment-refused", reason }).success).toBe(true)
     }
     expect(sessionAttachmentRefusalSchema.safeParse({ kind: "session-attachment-refused", reason: "ignored" }).success).toBe(false)
+  })
+
+  it("keeps the refusal shape an older client's strict parser accepts", () => {
+    // The shape on main before per-model image input, as a released client parses it.
+    const legacy = z.object({
+      kind: z.literal("session-attachment-refused"),
+      reason: z.enum(["image-input-unsupported", "invalid-image", "invalid-text", "invalid-workspace-file"]),
+    }).strict()
+    for (const reason of ["image-input-unsupported", "invalid-image", "invalid-text", "invalid-workspace-file"] as const) {
+      const refusal = sessionAttachmentRefusalSchema.parse({ kind: "session-attachment-refused", reason })
+      expect(legacy.safeParse(refusal).success, reason).toBe(true)
+    }
+    expect(sessionAttachmentRefusalSchema.safeParse({
+      kind: "session-attachment-refused", reason: "image-input-unsupported", model: "qwen3-coder-72b",
+    }).success).toBe(false)
+    // The code the attach sheet shows is a client constant, not a wire field.
+    expect(modelImageInputRefusalCode).toBe("attach.image.model_no_input")
   })
 })

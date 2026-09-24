@@ -163,7 +163,7 @@ import {
   type AgentAdapter,
   type AgentEvent,
 } from "./agents.js"
-import { prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
+import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -3959,7 +3959,20 @@ export class DomovoiDaemon {
     return agent
   }
 
+  // Whether a model takes image input is read from the adapter each time the
+  // list is read, by the rule the send uses, so a cached list never disagrees
+  // with the send. Whatever an adapter listed is overridden.
+  #withImageInput(provider: string, models: readonly ProviderModel[]): ProviderModel[] {
+    if (models.length === 0) return []
+    const imageInput = modelImageInput(this.#agents.require(provider).capabilities)
+    return models.map((model) => ({ ...model, imageInput }))
+  }
+
   async #listProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
+    return this.#withImageInput(provider, await this.#listCachedProviderModels(provider, deadline))
+  }
+
+  async #listCachedProviderModels(provider: string, deadline?: OperationDeadline): Promise<ProviderModel[]> {
     deadline?.throwIfExpired()
     const cached = this.#providerModels.get(provider)
     if (cached && Date.now() - cached.cachedAt < this.#modelCacheTtlMs) return cached.models
@@ -5089,7 +5102,7 @@ export class DomovoiDaemon {
         let models: ProviderModel[]
         try {
           models = this.#watchingOnly(socket) && !this.#connectedAgents.has(params.provider)
-            ? this.#providerModels.get(params.provider)?.models ?? []
+            ? this.#withImageInput(params.provider, this.#providerModels.get(params.provider)?.models ?? [])
             : await this.#listProviderModels(params.provider)
         } catch (error) {
           if (!(error instanceof AgentProviderUnavailableError)) throw error
@@ -7787,7 +7800,7 @@ export class DomovoiDaemon {
         let preparedTurn
         try {
           const images = params.attachments?.filter((attachment): attachment is ImageUpload => !("kind" in attachment))
-          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities)
+          const attachments = prepareSessionAttachments(images, registeredAgent.capabilities, session.runtime.model)
           const attachmentText = await prepareSessionAttachmentText(params.attachments, session.workspacePath)
           const userPrompt = attachmentText ? `${params.prompt}\n\n${attachmentText}` : params.prompt
           preparedTurn = await composeProviderPrompt({

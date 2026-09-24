@@ -1487,6 +1487,19 @@ describe("workspace protocol", () => {
     }).success).toBe(true)
   })
 
+  it("says per model whether an image attachment is delivered to it", () => {
+    // Phone v2 frames 13 and 13b: "takes image input, as its harness reports".
+    // Absent means the daemon did not say, which is an older daemon, not a no.
+    const model = {
+      provider: "claude-code", id: "sonnet", displayName: "Sonnet", description: "",
+      supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: true,
+    }
+    expect(providerModelSchema.parse({ ...model, imageInput: true }).imageInput).toBe(true)
+    expect(providerModelSchema.parse({ ...model, imageInput: false }).imageInput).toBe(false)
+    expect(providerModelSchema.parse(model)).not.toHaveProperty("imageInput")
+    expect(providerModelSchema.safeParse({ ...model, imageInput: "yes" }).success).toBe(false)
+  })
+
   it("validates machine provider readiness", () => {
     expect(providerRuntimeSchema.parse({
       id: "claude-code",
