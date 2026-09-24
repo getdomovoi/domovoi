@@ -125,6 +125,10 @@ type Session = {
   // The uuids of the user messages sent for the active turn: its prompt and
   // any steering. A result names the messages it answered.
   turnMessageIds: Set<string>
+  // The uuids of turns that were interrupted and whose own result has not come
+  // back yet. Only a result naming one of these is dropped: a result naming a
+  // uuid the SDK made itself (a compaction, a merged queue) ends the turn.
+  interruptedMessageIds: Set<string>
   assistantError?: string
   // Set once a turn has been sent. Claude has no conversation to resume until
   // then, so a reopen before it must start a fresh one.
@@ -289,6 +293,13 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   async interruptTurn(threadId: string, turnId: string): Promise<void> {
     const session = this.#requireSession(threadId)
     if (session.activeTurnId !== turnId) return
+    for (const id of session.turnMessageIds) session.interruptedMessageIds.add(id)
+    // Bounded: a result that never comes must not hold its uuids forever.
+    while (session.interruptedMessageIds.size > maximumInterruptedMessageIds) {
+      const oldest = session.interruptedMessageIds.values().next().value
+      if (oldest === undefined) break
+      session.interruptedMessageIds.delete(oldest)
+    }
     await session.query.interrupt()
   }
 
@@ -350,7 +361,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       stderr: (data) => stderr.push(data),
     }
     const query = this.#factory(input, options)
-    const session: Session = { threadId, cwd, input, query, runtime, tools: new Map(), turnMessageIds: new Set(), stderr }
+    const session: Session = { threadId, cwd, input, query, runtime, tools: new Map(), turnMessageIds: new Set(), interruptedMessageIds: new Set(), stderr }
     this.#sessions.set(threadId, session)
     void this.#consume(session).then(
       () => this.#endSession(session, "Claude session connection closed before the turn completed"),
@@ -480,11 +491,15 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     }
     if (message.type === "result") {
       // An interrupted turn's own result arrives after the interrupt returns,
-      // and by then the next turn may hold the slot. A result that names the
-      // messages it answered belongs to this turn only if one of them is this
-      // turn's; older producers name none, and are taken as before.
+      // and by then the next turn may hold the slot. A result that names only
+      // an interrupted turn's messages is that turn's, and ends nothing. Any
+      // other result, including one naming a uuid the SDK made itself or none
+      // at all, ends the active turn as before.
       const answered = resultMessageIds(message)
-      if (answered && !answered.some((id) => session.turnMessageIds.has(id))) return
+      if (answered?.some((id) => session.interruptedMessageIds.has(id))) {
+        for (const id of answered) session.interruptedMessageIds.delete(id)
+        if (!answered.some((id) => session.turnMessageIds.has(id))) return
+      }
       const failed = message.is_error === true || message.subtype !== "success"
       const context = failed ? {} : await claudeContextOccupancy(session.query)
       // The reply has already reached the person. A counter that does not add
@@ -695,6 +710,8 @@ function baseOptions(): ClaudeQueryOptions {
     systemPrompt: { type: "preset", preset: "claude_code" },
   }
 }
+
+const maximumInterruptedMessageIds = 64
 
 function resultMessageIds(message: ClaudeSdkMessage): string[] | undefined {
   const ids = Array.isArray(message.user_message_uuids)

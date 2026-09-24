@@ -1072,4 +1072,25 @@ describe("a result that arrives after its turn was interrupted", () => {
     }))
     await adapter.close()
   })
+
+  // A result may name a uuid the SDK made itself (a compaction, a merged
+  // queue). Only a result naming an interrupted turn's messages is dropped.
+  it("completes the turn on a result naming a message the SDK made itself", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => "11111111-1111-4111-8111-111111111111")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: "44444444-4444-4444-8444-444444444444",
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual({
+      type: "turn-completed",
+      params: { threadId, turnId, turn: { id: turnId, status: "completed" } },
+    }))
+    await adapter.close()
+  })
 })
