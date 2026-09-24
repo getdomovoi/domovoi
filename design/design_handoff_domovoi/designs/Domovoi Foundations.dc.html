@@ -16,8 +16,8 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: oklch(0.11 0.004 285); }
   body { font-family: 'Instrument Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-  a { color: oklch(0.78 0.14 275); text-decoration: none; }
-  a:hover { color: oklch(0.87 0.1 275); }
+  a { color: var(--primary, oklch(0.78 0.14 275)); text-decoration: none; }
+  a:hover { color: color-mix(in oklab, var(--primary, oklch(0.78 0.14 275)) 78%, var(--foreground, #fff)); }
   ::-webkit-scrollbar { width: 11px; height: 11px; }
   ::-webkit-scrollbar-track { background: color-mix(in oklab, var(--code, #111) 70%, transparent); }
   ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, var(--border) 0%, color-mix(in oklab, var(--border) 60%, var(--muted)) 100%); border-radius: 11px; border: 3px solid transparent; background-clip: content-box; }
@@ -30,15 +30,29 @@
     --faint: oklch(0.53 0.01 285); --code: oklch(0.145 0.004 285); --desk: oklch(0.11 0.004 285);
     --primary: oklch(0.72 0.17 275); --primary-foreground: oklch(0.17 0.03 275);
     --success: oklch(0.75 0.14 158); --warning: oklch(0.79 0.13 62); --destructive: oklch(0.63 0.19 25); --info: oklch(0.72 0.1 240);
+    --warn-fill: oklch(0.79 0.13 62); --warn-fill-fg: oklch(0.2 0.04 62);
     --warn-bg: oklch(0.235 0.045 62); --warn-border: oklch(0.38 0.08 62); --warn-fg: oklch(0.94 0.05 68); --warn-dim: oklch(0.76 0.07 62);
     --danger-bg: oklch(0.28 0.08 25); --danger-border: oklch(0.4 0.11 25); --danger-fg: oklch(0.93 0.04 25);
     --info-bg: oklch(0.22 0.02 240); --info-border: oklch(0.32 0.05 240); --info-fg: oklch(0.86 0.05 240);
     --shadow-md: oklch(0 0 0 / .4); --shadow-lg: oklch(0 0 0 / .6);
     --popover: var(--card); --ring: var(--primary); --radius: 0.65rem;
   }
+  .dv-dark.theme-light {
+    --background: oklch(0.985 0.003 90); --sidebar: oklch(0.965 0.004 90); --card: oklch(1 0 0);
+    --accent: oklch(0.945 0.005 90); --muted: oklch(0.925 0.005 90); --border: oklch(0.87 0.006 90);
+    --foreground: oklch(0.22 0.01 285); --strong: oklch(0.32 0.01 285); --muted-foreground: oklch(0.48 0.01 285);
+    --faint: oklch(0.6 0.01 285); --code: oklch(0.955 0.004 90); --desk: oklch(0.905 0.005 90);
+    --primary: oklch(0.52 0.19 275); --primary-foreground: oklch(0.99 0.005 275);
+    --success: oklch(0.5 0.14 158); --warning: oklch(0.53 0.145 68); --destructive: oklch(0.53 0.2 25); --info: oklch(0.5 0.14 245);
+    --warn-fill: oklch(0.85 0.15 82); --warn-fill-fg: oklch(0.32 0.07 62);
+    --warn-bg: oklch(0.975 0.032 85); --warn-border: oklch(0.875 0.075 75); --warn-fg: oklch(0.42 0.1 64); --warn-dim: oklch(0.5 0.095 64);
+    --danger-bg: oklch(0.975 0.02 25); --danger-border: oklch(0.88 0.06 25); --danger-fg: oklch(0.45 0.16 25); --danger-dim: oklch(0.53 0.14 25);
+    --info-bg: oklch(0.975 0.018 242); --info-border: oklch(0.88 0.045 242); --info-fg: oklch(0.42 0.09 242);
+    --shadow-lg: oklch(0.45 0.02 285 / .16); --shadow-md: oklch(0.45 0.02 285 / .12);
+  }
 </style>
 </helmet>
-<div class="dv-dark" style="min-height: 100vh; padding: 40px 44px 64px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
+<div ref="{{ rootRef }}" class="dv-dark {{ themeExtra }}" style="min-height: 100vh; min-width: max-content; padding: 40px 44px 64px; background: var(--desk); color: var(--foreground); font-family: 'Instrument Sans', system-ui, sans-serif;">
 
   <div style="max-width: 1240px; margin: 0 auto;">
     <div style="display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap;">
@@ -48,7 +62,12 @@
         <div style="font-size: 13.5px; line-height: 1.7; color: var(--muted-foreground); margin-top: 10px; max-width: 720px; text-wrap: pretty;">Everything in this project is built from the shadcn/ui token contract with Radix primitives underneath, plus a small set of Domovoi additions for state the base set does not name. Desktop, browser, phone and tablet render the same objects from the same daemon events, so a decision made anywhere is the same decision everywhere.</div>
       </div>
       <span style="flex: 1;"></span>
-      <div style="display: flex; flex-direction: column; gap: 7px;">
+      <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 7px;">
+        <div style="display: flex; gap: 3px; padding: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; margin-bottom: 3px;">
+          <sc-for list="{{ themeTabs }}" as="th" hint-placeholder-count="2">
+            <div onClick="{{ th.pick }}" style="{{ th.style }}">{{ th.label }}</div>
+          </sc-for>
+        </div>
         <sc-for list="{{ surfaceLinks }}" as="sl" hint-placeholder-count="5">
           <a href="{{ sl.href }}" style="display: flex; align-items: center; gap: 9px; padding: 8px 13px; background: var(--card); border: 1px solid var(--border); border-radius: calc(var(--radius) - 2px); font-size: 12.5px; color: var(--strong);" style-hover="background: var(--accent);">
             <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--faint);">{{ sl.n }}</span>{{ sl.label }}
@@ -70,9 +89,18 @@
           <div style="font-size: 11px; line-height: 1.55; color: var(--muted-foreground); margin-top: 5px;">{{ tg.note }}</div>
           <div style="display: flex; flex-direction: column; gap: 7px; margin-top: 13px;">
             <sc-for list="{{ tg.rows }}" as="tr" hint-placeholder-count="4">
-              <div style="display: flex; align-items: center; gap: 9px;">
+              <div style="display: flex; align-items: flex-start; gap: 9px;">
                 <span style="{{ tr.chipStyle }}"></span>
-                <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;">{{ tr.name }}</span>
+                <div style="flex: 1; min-width: 0;">
+                  <span style="display: block; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: var(--strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ tr.name }}</span>
+                  <span style="display: flex; align-items: baseline; gap: 7px; margin-top: 3px;">
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ tr.oklch }}</span>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--muted-foreground); flex: 0 0 auto;">{{ tr.hex }}</span>
+                    <sc-if value="{{ tr.oog }}" hint-placeholder-val="{{ false }}">
+                      <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--warn-border); color: var(--warning); flex: 0 0 auto;">≈</span>
+                    </sc-if>
+                  </span>
+                </div>
                 <sc-if value="{{ tr.ours }}" hint-placeholder-val="{{ false }}">
                   <span style="font-size: 8.5px; letter-spacing: .08em; padding: 2px 5px; border-radius: 4px; background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);">OURS</span>
                 </sc-if>
@@ -81,6 +109,11 @@
           </div>
         </div>
       </sc-for>
+    </div>
+
+    <div style="display: flex; align-items: baseline; gap: 8px; margin-top: 10px; font-size: 10.5px; line-height: 1.6; color: var(--muted-foreground);">
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 9px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--warn-border); color: var(--warning); flex: 0 0 auto;">≈</span>
+      <span>Marks a value outside the sRGB gamut. Its hex is the nearest renderable colour, so an sRGB-only consumer renders it slightly less saturated than the oklch value. Every other hex here is an exact conversion, rounded to 8 bits.</span>
     </div>
 
     <div style="display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; margin-top: 12px;">
@@ -235,7 +268,7 @@
               </sc-for>
             </div>
             <div style="display: flex; gap: 7px; margin-top: 13px;">
-              <span style="padding: 9px 14px; background: var(--warning); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; color: oklch(0.2 0.04 62);">Allow once</span>
+              <span style="padding: 9px 14px; background: var(--warn-fill); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; font-weight: 500; color: var(--warn-fill-fg);">Allow once</span>
               <span style="padding: 9px 13px; border: 1px solid var(--warn-border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; color: var(--warn-fg);">Always in this project</span>
               <span style="padding: 9px 13px; border: 1px solid var(--warn-border); border-radius: calc(var(--radius) - 4px); font-size: 11.5px; color: var(--warn-dim);">Deny</span>
             </div>
@@ -339,16 +372,96 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1400,&quot;height&quot;:1100}}">
 class Component extends DCLogic {
-  state = { mode: "Build", auto: false, reasoning: 1 };
+  state = { mode: "Build", auto: false, reasoning: 1, theme: "dark", resolved: null };
 
   dot(c, s, pulse) {
     const n = s || 7;
     return "width: " + n + "px; height: " + n + "px; flex: 0 0 " + n + "px; border-radius: 50%; background: " + c + ";" + (pulse ? " animation: dvPulse 2.4s infinite;" : "");
   }
 
+  componentDidMount() { this.resolveColors(); }
+
+  componentDidUpdate() { this.resolveColors(); }
+
+  toHex(rgb) {
+    const m = /rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/.exec(rgb || "");
+    if (!m) return "";
+    const h = n => Math.max(0, Math.min(255, Math.round(parseFloat(n)))).toString(16).padStart(2, "0");
+    return "#" + (h(m[1]) + h(m[2]) + h(m[3])).toUpperCase();
+  }
+
+  outOfSrgb(str) {
+    const m = /oklch\(\s*([\d.]+%?)\s+([\d.]+)\s+([\d.]+)/.exec(str || "");
+    if (!m) return false;
+    const L = m[1].endsWith("%") ? parseFloat(m[1]) / 100 : parseFloat(m[1]);
+    const C = parseFloat(m[2]);
+    const H = parseFloat(m[3]) * Math.PI / 180;
+    const a = C * Math.cos(H), b = C * Math.sin(H);
+    const l3 = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+    const m3 = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+    const s3 = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+    const rgb = [
+      4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3,
+      -1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3,
+      -0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3
+    ];
+    return rgb.some(v => v < -0.0005 || v > 1.0005);
+  }
+
+  pixelHex(color) {
+    const ctx = this._ctx;
+    if (!ctx || !color) return "";
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = "#000";
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 1, 1);
+    const d = ctx.getImageData(0, 0, 1, 1).data;
+    const h = n => n.toString(16).padStart(2, "0");
+    return "#" + (h(d[0]) + h(d[1]) + h(d[2])).toUpperCase();
+  }
+
+  resolveColors() {
+    const root = this._rootEl;
+    const refs = this._refs;
+    if (!root || !refs || !refs.length) return;
+    if (!this._probe) {
+      const p = document.createElement("span");
+      p.style.cssText = "position: absolute; width: 0; height: 0; overflow: hidden; opacity: 0; pointer-events: none;";
+      root.appendChild(p);
+      this._probe = p;
+    }
+    if (!this._ctx) {
+      const cv = document.createElement("canvas");
+      cv.width = 1; cv.height = 1;
+      this._ctx = cv.getContext("2d", { willReadFrequently: true });
+    }
+    const cs = getComputedStyle(root);
+    const out = {};
+    refs.forEach(c => {
+      const m = /var\((--[a-z0-9-]+)\)/i.exec(c);
+      this._probe.style.color = c;
+      const authored = m ? cs.getPropertyValue(m[1]).trim() : c;
+      const computed = getComputedStyle(this._probe).color;
+      out[c] = { oklch: authored, hex: this.toHex(computed) || this.pixelHex(computed || authored), oog: this.outOfSrgb(authored) };
+    });
+    if (JSON.stringify(out) !== JSON.stringify(this.state.resolved)) this.setState({ resolved: out });
+  }
+
   renderVals() {
     const st = this.state;
+    const refs = [];
+    this._refs = refs;
     return {
+      rootRef: el => { this._rootEl = el; },
+      themeExtra: st.theme === "light" ? "theme-light" : "",
+      themeTabs: [{ k: "dark", label: "Dark" }, { k: "light", label: "Light" }].map(t => ({
+        label: t.label,
+        pick: () => this.setState({ theme: t.k }),
+        style: "padding: 6px 13px; border-radius: 999px; font-size: 11.5px; cursor: pointer; color: " +
+          (st.theme === t.k ? "var(--foreground)" : "var(--muted-foreground)") + "; background: " +
+          (st.theme === t.k ? "var(--accent)" : "transparent") + "; border: 1px solid " +
+          (st.theme === t.k ? "var(--border)" : "transparent") + ";"
+      })),
       surfaceLinks: [
         { n: "01", label: "Desktop app", href: "Domovoi Desktop.dc.html" },
         { n: "02", label: "Public site", href: "Domovoi Site.dc.html" },
@@ -379,10 +492,17 @@ class Component extends DCLogic {
         ] }
       ].map(g => ({
         title: g.title, note: g.note,
-        rows: g.rows.map(r => ({
-          name: r.name, ours: !!r.ours,
-          chipStyle: "width: 22px; height: 15px; flex: 0 0 22px; border-radius: 4px; border: 1px solid var(--border); background: " + r.c + ";"
-        }))
+        rows: g.rows.map(r => {
+          refs.push(r.c);
+          const got = (st.resolved || {})[r.c] || {};
+          return {
+            name: r.name, ours: !!r.ours,
+            oklch: got.oklch || "",
+            hex: got.hex || "",
+            oog: !!got.oog,
+            chipStyle: "width: 22px; height: 15px; flex: 0 0 22px; margin-top: 2px; border-radius: 4px; border: 1px solid var(--border); background: " + r.c + ";"
+          };
+        })
       })),
 
       additions: [

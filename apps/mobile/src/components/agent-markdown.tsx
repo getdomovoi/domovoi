@@ -1,3 +1,4 @@
+import { useMemo } from "react"
 import { ScrollView, View } from "react-native"
 
 import { parseAgentMarkdown, type InlineSpan } from "../lib/agent-markdown"
@@ -26,9 +27,9 @@ function Inline({ spans }: { spans: InlineSpan[] }) {
 }
 
 export function AgentMarkdown({ body, className }: { body: string; className?: string }) {
-  const blocks = parseAgentMarkdown(body)
+  const blocks = useMemo(() => parseAgentMarkdown(body), [body])
   return (
-    <View className={className}>
+    <View className={className ?? ""}>
       {blocks.map((block, index) => {
         if (block.kind === "code") {
           return (
