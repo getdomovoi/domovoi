@@ -24,8 +24,9 @@ A direct adapter proposal must name the missing CLI capability, define its permi
 Recorded 2026-09-22. The Claude row depends on terms Domovoi does not control.
 
 - The vendor's [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance), read
-  2026-09-22, says: "Advertised usage limits for Pro and Max plans assume ordinary, individual usage
-  of Claude Code and the Agent SDK." The Claude adapter drives sessions through the Agent SDK.
+  2026-09-22, says the advertised usage limits of its Pro and Max plans assume ordinary, individual
+  use of its coding CLI and of the Agent SDK. The Claude adapter drives sessions through the Agent
+  SDK.
 - Trade press
   ([report dated 2026-06-18](https://devops.com/anthropic-hits-pause-on-claude-agent-sdk-billing-change-for-now/))
   reported that the vendor planned to move Agent SDK, headless and third-party app usage off
