@@ -31,8 +31,11 @@ const secretFlag = new RegExp(
   // starts one prefix walk rather than one at every position. A bare -- or /
   // followed directly by the sensitive name matches anywhere, as before
   // prefixes were added; it walks nothing, so it stays linear. A negated flag
-  // such as --no-password or --db-skip-password takes no value.
-  String.raw`((?:(?<![A-Za-z0-9_.-])--${namePrefix}(?<![_.-](?:no|skip|without)[_.-])|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
+  // takes no value: when any segment of the whole flag name is no, skip or
+  // without (--no-password, --no-auth-token, --db-skip-client-secret), the
+  // prefixed branch does not match. The check walks the name once, from the
+  // one start the lookbehind allows.
+  String.raw`((?:(?<![A-Za-z0-9_.-])--(?!(?:[A-Za-z0-9]*[_.-])*?(?:no|skip|without)[_.-])${namePrefix}|--|/)${sensitiveName}(?:\s*=\s*|\s+|:))("[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|\r\n]+)`,
   "giu",
 )
 const quotedCmdAssignment = new RegExp(

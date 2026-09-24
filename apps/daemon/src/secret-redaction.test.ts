@@ -132,6 +132,10 @@ describe("durable secret redaction", () => {
       "pg_dump --without-password mydb",
       "tool --db-no-password mydb",
       "tool --db_skip.password mydb",
+      "psql --no-auth-token mydb",
+      "tool --skip-client-secret mydb",
+      "tool --without-api-key mydb",
+      "tool --db-no-auth-token mydb",
     ]) {
       expect(redactDurableCommand(safe), safe).toEqual({ value: safe, redacted: false, truncated: false })
     }
