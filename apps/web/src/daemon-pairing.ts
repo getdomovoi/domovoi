@@ -30,12 +30,15 @@ export async function redeemBrowserCode(input: {
   code: string
   label: string
   createClient: PairingClientFactory
+  // Called once the socket opened, so the page may speak of the connection.
+  onConnected?: (() => void) | undefined
 }): Promise<DaemonSession> {
   const code = pairingCodeSchema.safeParse(input.code.trim())
   if (!code.success) throw new Error(webCodeShapeMessage)
   const client = input.createClient({ url: input.url, client: input.client })
   try {
     await client.connect()
+    input.onConnected?.()
     return daemonSessionFrom(
       await client.request("device.redeemCode", { code: code.data, label: input.label, protocolVersion }),
     )

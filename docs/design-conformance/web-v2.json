@@ -86,6 +86,19 @@
       ]
     },
     {
+      "id": "connect.page-origin",
+      "name": "Trust fact: the page came from the daemon",
+      "where": "HOW THIS TAB IS TRUSTED on the connect page: This page came from the daemon on <machine>, at its tailnet name. No Domovoi server is in the path.",
+      "evidence": [
+        "No Domovoi server is in the path"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "platform",
+        "reason": "apps/web is a separate build and the daemon serves no page, so the address a tab shows is the one it dials, not where the page came from; the page says This tab talks only to the daemon at <host> until the daemon serves the web app"
+      }
+    },
+    {
       "id": "connect.outcomes-distinct",
       "name": "Expired and wrong-machine outcomes",
       "where": "outcome card after Pair this browser: the design draws expired and wrong-machine refusals apart",

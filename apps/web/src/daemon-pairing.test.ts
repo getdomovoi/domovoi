@@ -118,4 +118,35 @@ describe("redeeming a web code", () => {
     expect(pairingOutcomeFor(new DaemonRpcError(devicePairingLimitErrorCode, "The paired device limit is reached"), host)).toMatchObject({ pill: "refused", title: "mac-mini-m4.tail4c2e.ts.net has no room for another device" })
     expect(pairingOutcomeFor(new Error("socket closed"), host)).toMatchObject({ pill: "unconfirmed", title: "mac-mini-m4.tail4c2e.ts.net did not answer, so pairing is unconfirmed" })
   })
+
+  it("draws a refusal it has no card for with the daemon's own words", async () => {
+    const { pairingOutcomeFor } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    expect(pairingOutcomeFor(new DaemonRpcError(-32099, "Pairing is closed on this daemon"), "host")).toMatchObject({ pill: "refused", title: "The daemon refused pairing", mono: "pair.refused · -32099", body: "Pairing is closed on this daemon" })
+  })
+
+  it("names a protocol mismatch even when the daemon sent no versions", async () => {
+    const { pairingOutcomeFor } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    const { protocolVersion, protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
+    expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x"), "host").mono).toBe(`pair.refused · protocol_mismatch · page ${protocolVersion}, daemon unknown`)
+    expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { daemonProtocolVersion: 9 }), "host").mono).toBe(`pair.refused · protocol_mismatch · page ${protocolVersion}, daemon unknown`)
+  })
+
+  it("says a malformed code was never sent", async () => {
+    const { pairingOutcomeFor, webCodeShapeMessage } = await import("./daemon-pairing")
+    expect(pairingOutcomeFor(new Error(webCodeShapeMessage), "host")).toMatchObject({ pill: "not sent", title: "That is not a web code", body: webCodeShapeMessage })
+  })
+
+  it("reports the connection once it opens, before the daemon answers", async () => {
+    const { redeemBrowserCode } = await import("./daemon-pairing")
+    const order: string[] = []
+    const client = fakeClient({ connect: vi.fn(async () => { order.push("connect") }), request: vi.fn(async () => { order.push("request"); return pairResult() }) })
+    await redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "web", code: "hearth-quiet-ember-42", label: "x", createClient: () => client, onConnected: () => order.push("connected") })
+    expect(order).toEqual(["connect", "connected", "request"])
+    const refused = fakeClient({ connect: vi.fn(async () => { throw new Error("socket closed") }) })
+    const onConnected = vi.fn()
+    await expect(redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "web", code: "hearth-quiet-ember-42", label: "x", createClient: () => refused, onConnected })).rejects.toThrow("socket closed")
+    expect(onConnected).not.toHaveBeenCalled()
+  })
 })

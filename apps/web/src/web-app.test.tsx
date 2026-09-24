@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import type { PairingClient, PairingClientFactory } from "./daemon-pairing"
-import { WebApp } from "./web-app"
+import { WebApp, type WebAppProps } from "./web-app"
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true)
 
@@ -54,11 +54,13 @@ afterEach(async () => {
   container.remove()
 })
 
-function draw(storage: Storage, createClient: PairingClientFactory) {
+function draw(storage: Storage, createClient: PairingClientFactory, extra: Partial<Pick<WebAppProps, "rpcUrl" | "memory" | "codeFromUrl">> = {}) {
   return act(async () => {
     root.render(
       <WebApp
-        rpcUrl={rpcUrl}
+        rpcUrl={extra.rpcUrl ?? rpcUrl}
+        {...(extra.memory ? { memory: extra.memory } : {})}
+        {...(extra.codeFromUrl ? { codeFromUrl: extra.codeFromUrl } : {})}
         clientKind="web"
         environment={environment}
         storage={storage}
@@ -204,6 +206,78 @@ describe("WebApp", () => {
     root = createRoot(container)
     await draw(storage, createClient)
     expect(text()).toContain("Workspace open with the device credential")
+  })
+
+  // Ruled 2026-09-23: the certificate line is a fact about a connection, so
+  // it shows only once the daemon answered over a secure one.
+  it("states the certificate only after the daemon answered over wss", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
+    const certificate = "The certificate is the one the browser checked for this name."
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused") }) }
+    await draw(memoryStorage(), vi.fn(() => client), { rpcUrl: "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc" })
+    expect(text()).toContain("This tab talks only to the daemon at mac-mini-m4.tail4c2e.ts.net:47831.")
+    expect(text()).not.toContain(certificate)
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("That code was refused")
+    expect(text()).toContain(certificate)
+  })
+
+  it("says nothing about the certificate when the daemon never answered", async () => {
+    const client = { ...pairingClient("pairs"), connect: vi.fn(() => Promise.reject(new Error("socket closed"))) }
+    await draw(memoryStorage(), vi.fn(() => client), { rpcUrl: "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc" })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("did not answer, so pairing is unconfirmed")
+    expect(text()).not.toContain("The certificate is the one the browser checked")
+  })
+
+  it("names the address as given when it is not a URL", async () => {
+    await draw(memoryStorage(), vi.fn(), { rpcUrl: "not a url" })
+    expect(text()).toContain("This tab talks only to the daemon at not a url.")
+  })
+
+  it("says a reopened tab pairs again when this browser paired before", async () => {
+    const memory = memoryStorage()
+    memory.setItem("domovoi.paired-before", "1")
+    await draw(memoryStorage(), vi.fn(), { memory })
+    expect(text()).toContain("Pair this browser again with")
+    expect(text()).toContain("This tab has no credential")
+  })
+
+  it("treats unreadable memory as a first visit and still pairs when it cannot be written", async () => {
+    const memory = { getItem: () => { throw new Error("blocked") }, setItem: () => { throw new Error("blocked") } }
+    const storage = memoryStorage()
+    await draw(storage, vi.fn(() => pairingClient("pairs")), { memory: memory as unknown as Storage })
+    expect(text()).toContain("Connect this browser to")
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This browser is paired with 127.0.0.1:47831")
+    expect(storage.getItem("domovoi.daemon-session")).toContain(deviceToken)
+  })
+
+  it("redeems the code the machine's QR put in the address bar", async () => {
+    const client = pairingClient("pairs")
+    await draw(memoryStorage(), vi.fn(() => client), { codeFromUrl: "hearth-quiet-ember-42" })
+    expect(text()).toContain("Filled from the QR on the machine.")
+    const input = container.querySelector<HTMLInputElement>("#web-code")!
+    expect(input.value).toBe("hearth-quiet-ember-42")
+    await act(async () => {
+      input.form?.requestSubmit()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(client.request).toHaveBeenCalledWith("device.redeemCode", expect.objectContaining({ code: "hearth-quiet-ember-42" }))
+  })
+
+  it("states the limits again after the person asks for them from the connect page", async () => {
+    const storage = memoryStorage()
+    await draw(storage, vi.fn(() => pairingClient("pairs")))
+    await submitCode("hearth-quiet-ember-42")
+    await act(async () => { button("Open sessions").click() })
+    await act(async () => { button("Continue to the session").click() })
+    await act(async () => { button("Change credential").click() })
+    await act(async () => { button("What a browser tab can and cannot do").click() })
+    await submitCode("amber-still-river-07")
+    await act(async () => { button("Open sessions").click() })
+    expect(text()).toContain("Continue to the session")
   })
 
   it("returns to the prompt when the person changes the credential", async () => {

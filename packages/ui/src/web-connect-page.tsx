@@ -1,6 +1,6 @@
 import { pairingCodeSchema } from "@getdomovoi/protocol"
 import { QrCodeIcon } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
 import { Button } from "./components/ui/button"
 import { Input } from "./components/ui/input"
@@ -38,6 +38,7 @@ export function WebConnectPage({
   reopened = false,
   initialCode = "",
   fromUrl = false,
+  reached = false,
   pending,
   outcome,
   onPair,
@@ -50,6 +51,9 @@ export function WebConnectPage({
   reopened?: boolean
   initialCode?: string
   fromUrl?: boolean
+  // The daemon answered over this address, so the browser checked its
+  // certificate. Until then the page has nothing to say about it.
+  reached?: boolean
   pending: boolean
   outcome?: PairingOutcome | undefined
   onPair: (code: string) => void
@@ -57,10 +61,14 @@ export function WebConnectPage({
   onUseCredential?: (() => void) | undefined
 }) {
   const [code, setCode] = useState(initialCode)
+  // A code from the address bar is locked until the daemon has answered it;
+  // after that the field is the person's again.
+  const [filledFromUrl, setFilledFromUrl] = useState(fromUrl)
+  useEffect(() => { if (outcome) setFilledFromUrl(false) }, [outcome])
   const ready = isWebCode(code)
   const facts = [
-    { text: `This page came from the daemon at ${host}. No Domovoi server is in the path.`, tone: "bg-info" },
-    ...(secure ? [{ text: "The certificate is the one the browser checked for this name.", tone: "bg-success" }] : []),
+    { text: `This tab talks only to the daemon at ${host}.`, tone: "bg-info" },
+    ...(secure && reached ? [{ text: "The certificate is the one the browser checked for this name.", tone: "bg-success" }] : []),
     { text: "The credential lives in this tab only. Close the tab and you pair again.", tone: "bg-info" },
     { text: "Previews open in a sandboxed frame that cannot reach this page.", tone: "bg-success" },
     { text: "This page and the daemon must speak the same protocol version. After a daemon update, reload.", tone: "bg-info" },
@@ -109,14 +117,14 @@ export function WebConnectPage({
             autoComplete="off"
             spellCheck={false}
             autoFocus
-            readOnly={fromUrl || Boolean(outcome)}
+            readOnly={filledFromUrl || Boolean(outcome)}
             disabled={pending}
             className="h-11 font-machine text-[15px] tracking-wide"
             placeholder="word-word-word-00"
             value={code}
             onChange={(event) => setCode(event.target.value.toLowerCase())}
           />
-          {fromUrl ? (
+          {filledFromUrl ? (
             <p className="m-0 flex items-center gap-2 text-[11.5px] text-muted-foreground">
               <QrCodeIcon className="size-4" />
               Filled from the QR on the machine. Removed from the address bar when this page loaded.

@@ -30,7 +30,8 @@ it("asks for the daemon's word code and locks Pair until the code is complete", 
 it("says how this tab is trusted, and that the credential lives in the tab", () => {
   render(<WebConnectPage {...base} />)
   const facts = screen.getByRole("list", { name: "HOW THIS TAB IS TRUSTED" })
-  expect(within(facts).getByText("This page came from the daemon at mac-mini-m4.tail4c2e.ts.net. No Domovoi server is in the path.")).toBeTruthy()
+  expect(within(facts).getByText("This tab talks only to the daemon at mac-mini-m4.tail4c2e.ts.net.")).toBeTruthy()
+  expect(within(facts).queryByText(/came from the daemon/)).toBeNull()
   expect(within(facts).getByText("The credential lives in this tab only. Close the tab and you pair again.")).toBeTruthy()
   expect(within(facts).getByText("Previews open in a sandboxed frame that cannot reach this page.")).toBeTruthy()
   expect(within(facts).getByText("This page and the daemon must speak the same protocol version. After a daemon update, reload.")).toBeTruthy()
@@ -54,4 +55,30 @@ it("draws the outcome the daemon gave, with its own action", async () => {
   expect(screen.getByText("pair.refused · works once")).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Type a new code" }))
   expect(act).toHaveBeenCalledOnce()
+})
+
+// Ruled 2026-09-23: the certificate line is a fact about a connection, so it
+// shows only once the daemon answered over it.
+it("states the certificate only after the daemon answered", () => {
+  const certificate = "The certificate is the one the browser checked for this name."
+  const { rerender } = render(<WebConnectPage {...base} />)
+  expect(screen.queryByText(certificate)).toBeNull()
+  rerender(<WebConnectPage {...base} reached />)
+  expect(screen.getByText(certificate)).toBeTruthy()
+  rerender(<WebConnectPage {...base} secure={false} reached />)
+  expect(screen.queryByText(certificate)).toBeNull()
+})
+
+it("lets a person type a new code after a code from the address bar was refused", async () => {
+  const user = userEvent.setup()
+  const refused = { tone: "plain" as const, pill: "refused", title: "That code was refused", mono: "pair.refused", body: "Show another." }
+  const { rerender } = render(<WebConnectPage {...base} initialCode="hearth-quiet-ember-42" fromUrl />)
+  expect(screen.getByRole("textbox", { name: "Web code" }).hasAttribute("readonly")).toBe(true)
+  rerender(<WebConnectPage {...base} initialCode="hearth-quiet-ember-42" fromUrl outcome={refused} />)
+  rerender(<WebConnectPage {...base} initialCode="hearth-quiet-ember-42" fromUrl />)
+  const field = screen.getByRole("textbox", { name: "Web code" })
+  expect(field.hasAttribute("readonly")).toBe(false)
+  await user.clear(field)
+  await user.type(field, "amber-still-river-07")
+  expect((field as HTMLInputElement).value).toBe("amber-still-river-07")
 })

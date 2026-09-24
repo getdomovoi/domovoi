@@ -53,6 +53,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
   const [pairingError, setPairingError] = useState("")
   const [path, setPath] = useState<"code" | "credential">("code")
   const [outcome, setOutcome] = useState<PairingOutcome | undefined>(undefined)
+  const [reached, setReached] = useState(false)
   const [reopened] = useState(() => readPairedBefore(memory))
   // The limits are stated once per tab, after pairing and before the session,
   // so a refusal inside the session is never the first time a person hears
@@ -92,6 +93,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
     return <WebConnectPage
       host={host}
       secure={secure}
+      reached={reached}
       reopened={reopened}
       {...(codeFromUrl ? { initialCode: codeFromUrl, fromUrl: true } : {})}
       pending={pairing}
@@ -105,6 +107,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
           code,
           label: browserDeviceLabel(clientKind, labelSuffix()),
           createClient,
+          onConnected: () => setReached(true),
         }).then((next) => {
           // Kept in the tab at once, so a closed page after this point did
           // pair; the card only says so and offers the way on.
