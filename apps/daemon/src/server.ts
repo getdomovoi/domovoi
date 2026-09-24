@@ -25,6 +25,7 @@ import {
   daemonPersistenceUnavailableErrorCode,
   deviceLabelMismatchErrorCode,
   devicePairingLimitErrorCode,
+  deviceIdSchema,
   type DeviceLabelMismatch,
   sourcePreflight,
   transferPreflight,
@@ -1408,6 +1409,12 @@ export class DomovoiDaemon {
     relayKey?: string
   }>()
   #authenticatedActors = new WeakMap<RpcOutboundSocket, AuditActor>()
+
+  #requestMayNameClient(socket: RpcOutboundSocket, clientId: string | undefined): boolean {
+    if (clientId === undefined || !deviceIdSchema.safeParse(clientId).success) return true
+    const actor = this.#authenticatedActors.get(socket)
+    return actor?.kind === "client" && actor.clientId === clientId
+  }
   #connectionIds = new WeakMap<RpcOutboundSocket, string>()
   #preAuthAuditDeadlines = new Map<PreAuthAuditKind, number>()
   #pairingClaimAdmission = new PairingClaimAdmission()
@@ -2860,10 +2867,13 @@ export class DomovoiDaemon {
       close: () => {},
     }
     this.#authenticatedClients.add(internalSocket)
+    // The replayed send acts under the credential that queued it: a paired
+    // device when the queue recorded its device id, the daemon bearer otherwise.
     this.#authenticatedActors.set(internalSocket, {
       kind: "client",
       client: queued.origin.client,
       ...(queued.origin.clientId ? { clientId: queued.origin.clientId } : {}),
+      credential: queued.credentialDeviceId ? "device" : "daemon",
     })
     this.#connectionIds.set(internalSocket, queued.origin.connectionId)
     await this.#handle(internalSocket, JSON.stringify({
@@ -4569,6 +4579,18 @@ export class DomovoiDaemon {
           )
           return
         }
+        // A paired device's id belongs to that device's credential. The bearer
+        // is readable by any process of the owner's user, and must not put
+        // its actions under a device's name.
+        if (!credential && hello.clientId !== undefined && deviceIdSchema.safeParse(hello.clientId).success) {
+          this.#error(
+            socket,
+            request.id,
+            daemonAuthenticationErrorCode,
+            "A daemon credential cannot use a paired device's id",
+          )
+          return
+        }
         if (credential) this.#store.devices?.markSeen(credential.device.id, new Date().toISOString())
         this.#authenticatedActors.set(socket, {
           kind: "client",
@@ -4578,6 +4600,7 @@ export class DomovoiDaemon {
           ...(credential
             ? { clientId: credential.device.id }
             : hello.clientId ? { clientId: hello.clientId } : {}),
+          credential: credential ? "device" : "daemon",
         })
       }
       this.#connectionIds.set(socket, randomUUID())
@@ -4971,6 +4994,13 @@ export class DomovoiDaemon {
       }
       if (method === "terminal.create") {
         const params = paramsResult.data as RpcParams<"terminal.create">
+        // A request may name a paired device's id only as that device. A daemon
+        // credential cannot name one in hello, so a device-shaped actor id is
+        // always the connection's own authenticated device.
+        if (!this.#requestMayNameClient(socket, params.clientId)) {
+          this.#error(socket, request.id, invalidParams, "A request cannot name a paired device's id it did not authenticate as")
+          return
+        }
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
@@ -5140,6 +5170,13 @@ export class DomovoiDaemon {
 
       if (method === "terminal.claim") {
         const params = paramsResult.data as RpcParams<"terminal.claim">
+        // A request may name a paired device's id only as that device. A daemon
+        // credential cannot name one in hello, so a device-shaped actor id is
+        // always the connection's own authenticated device.
+        if (!this.#requestMayNameClient(socket, params.clientId)) {
+          this.#error(socket, request.id, invalidParams, "A request cannot name a paired device's id it did not authenticate as")
+          return
+        }
         const terminal = this.#terminals.get(params.terminalId)
         if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
