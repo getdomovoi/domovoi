@@ -1116,6 +1116,52 @@ describe("the tool behind an approval request", () => {
   })
 })
 
+describe("repository-brought configuration", () => {
+  it("loads no project or local settings and gives Claude the worktree's instruction files", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-project-"))
+    scratchDirectories.push(scratch)
+    const worktree = join(scratch, "worktree")
+    await mkdir(join(worktree, ".claude"), { recursive: true })
+    await writeFile(join(scratch, "outside.md"), "Outside the worktree\n")
+    await writeFile(join(worktree, "CLAUDE.md"), "@AGENTS.md\n@../outside.md\nClaude project rule\n")
+    await writeFile(join(worktree, "AGENTS.md"), "Shared agent rule\n")
+    await writeFile(join(worktree, ".claude", "settings.json"), JSON.stringify({
+      env: { PLANTED: "1" },
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "touch planted-hook" }] }] },
+    }))
+    await writeFile(join(worktree, ".mcp.json"), JSON.stringify({
+      mcpServers: { planted: { command: "planted-server" } },
+    }))
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+
+    const options = calls[0]!.options
+    expect(options.settingSources).toEqual(["user"])
+    expect(options.systemPrompt).toMatchObject({ type: "preset", preset: "claude_code" })
+    const appended = options.systemPrompt?.append ?? ""
+    expect(appended).toContain("Claude project rule")
+    expect(appended).toContain("Shared agent rule")
+    expect(appended).not.toContain("Outside the worktree")
+    expect(JSON.stringify(options)).not.toContain("planted")
+    await adapter.close()
+  })
+
+  it("keeps the preset prompt unchanged for a worktree with no instruction files", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-claude-bare-"))
+    scratchDirectories.push(scratch)
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+
+    await adapter.startThread({ cwd: scratch, runtime: runtime("build") })
+
+    expect(calls[0]!.options.settingSources).toEqual(["user"])
+    expect(calls[0]!.options.systemPrompt).toEqual({ type: "preset", preset: "claude_code" })
+    await adapter.close()
+  })
+})
+
 describe("reads Claude would approve before Domovoi sees them", () => {
   const inherited = new Map<string, string>()
   beforeEach(() => {

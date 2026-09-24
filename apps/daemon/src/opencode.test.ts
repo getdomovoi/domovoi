@@ -1,5 +1,9 @@
 import { waitForDaemon } from "./test-wait-for.js"
-import { describe, expect, it, vi } from "vitest"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
 
@@ -18,6 +22,10 @@ import {
   type OpenCodeEvent,
   type OpenCodeFactory,
 } from "./opencode.js"
+import { removeScratchDirectories } from "./test-scratch.js"
+
+const scratchDirectories: string[] = []
+afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
 class EventStream implements AsyncIterable<OpenCodeEvent> {
   #events: OpenCodeEvent[] = []
@@ -661,6 +669,48 @@ describe("KiloSdkAdapter", () => {
         model: { providerID: "anthropic", modelID: "sonnet" },
         parts: [{ type: "text", text: "Use repo-audit" }],
       }),
+    }))
+    await adapter.close()
+  })
+})
+
+describe("repository instruction files", () => {
+  it.each([
+    ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+    ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+  ])("sends %s the worktree's AGENTS.md itself, since project configuration stays off", async (_name, create) => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-instructions-"))
+    scratchDirectories.push(worktree)
+    await writeFile(join(worktree, "AGENTS.md"), "Shared agent rule\n")
+    await writeFile(join(worktree, "CLAUDE.md"), "Claude only rule\n")
+    const { client, factory } = harness()
+    const adapter = create(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        system: expect.stringMatching(/^Instructions from: .*AGENTS\.md\nShared agent rule/),
+      }),
+    }))
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ system: expect.not.stringContaining("Claude only rule") }),
+    }))
+    await adapter.close()
+  })
+
+  it("sends no system text for a worktree without instruction files", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-bare-"))
+    scratchDirectories.push(worktree)
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: expect.not.objectContaining({ system: expect.anything() }),
     }))
     await adapter.close()
   })
@@ -1559,6 +1609,60 @@ describe("subagents and current permission events", () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(events).not.toContainEqual(expect.objectContaining({ type: "approval-requested" }))
+    await adapter.close()
+  })
+})
+
+describe("Kilo legacy repository configuration", () => {
+  it.each([
+    [".kilo/mcp.json"],
+    [".kilocode/mcp.json"],
+    [".kilocodemodes"],
+  ])("refuses a Kilo session before Kilo can load the worktree's %s", async (file) => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-kilo-legacy-"))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, file, ".."), { recursive: true })
+    await writeFile(join(worktree, file), "{}\n")
+    const { client, factory } = harness()
+    const adapter = new KiloSdkAdapter(factory)
+
+    await expect(adapter.startThread({ cwd: worktree, runtime: runtime("build") }))
+      .rejects.toThrow(`Kilo would load ${file} from this worktree`)
+    await expect(adapter.resumeThread({ threadId: "kilo-thread", cwd: worktree, runtime: runtime("build") }))
+      .rejects.toThrow(`Kilo would load ${file} from this worktree`)
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.session.get).not.toHaveBeenCalled()
+    expect(client.event.subscribe).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("refuses a Kilo turn once the worktree gains a legacy MCP file", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-kilo-legacy-turn-"))
+    scratchDirectories.push(worktree)
+    const { client, factory } = harness()
+    const adapter = new KiloSdkAdapter(factory)
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await mkdir(join(worktree, ".kilo"))
+    await writeFile(join(worktree, ".kilo", "mcp.json"), "{}\n")
+
+    await expect(adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") }))
+      .rejects.toThrow("Kilo would load .kilo/mcp.json from this worktree")
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
+    await adapter.close()
+  })
+
+  it("leaves OpenCode sessions in a worktree with Kilo legacy files alone", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-kilo-files-"))
+    scratchDirectories.push(worktree)
+    await mkdir(join(worktree, ".kilo"))
+    await writeFile(join(worktree, ".kilo", "mcp.json"), "{}\n")
+    const { client, factory } = harness()
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    const threadId = await adapter.startThread({ cwd: worktree, runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: worktree, prompt: "Hello", runtime: runtime("build") })
+
+    expect(client.session.promptAsync).toHaveBeenCalledOnce()
     await adapter.close()
   })
 })

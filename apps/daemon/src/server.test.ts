@@ -122,6 +122,15 @@ describe("helloProtocolCompatibility", () => {
   })
 })
 
+// A person's allow takes a snapshot checkpoint before the decision is saved
+// (J34), so a gate in a worktree the fixture never made needs one that can.
+function checkpointingWorkspace(): WorkspaceService {
+  return {
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(), checkpoint: vi.fn(),
+    snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+  }
+}
+
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 type TestRpcResponse<M extends RpcMethod> = Record<string, unknown> & { result: RpcResult<M> }
@@ -952,6 +961,7 @@ describe("DomovoiDaemon", () => {
       createSessionWorkspace: vi.fn(),
       removeSessionWorkspace: vi.fn(),
       checkpoint: vi.fn(),
+      snapshot: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
       restore: vi.fn(),
       evidence: vi.fn(async () => ({
         baseCommit: "a".repeat(40),
@@ -6422,6 +6432,7 @@ describe("DomovoiDaemon", () => {
         client: "desktop",
         clientId: "desktop-reviewer",
         connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        credential: "daemon",
       },
       action: "skill.setEnabled",
       projectId: demoWorkspace.project!.id,
@@ -6525,6 +6536,7 @@ describe("DomovoiDaemon", () => {
         client: "desktop",
         clientId: "desktop-reviewer",
         connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        credential: "daemon",
       },
       action: "skill.review",
       target: discovered.id,
@@ -6649,6 +6661,7 @@ describe("DomovoiDaemon", () => {
         client: "desktop",
         clientId: "desktop-installer",
         connectionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        credential: "daemon",
       },
       action: "skill.install",
       outcome: "failed",
@@ -6936,6 +6949,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -6984,7 +6998,7 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({
             kind: "receipt",
             decision: "always-project",
-            checkpoint: "ckpt_7f21",
+            checkpoint: "c".repeat(40),
             client: "desktop",
           }),
         ]),
@@ -7119,6 +7133,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -8948,6 +8963,7 @@ describe("DomovoiDaemon", () => {
         restoredCommit: "b".repeat(40),
         recoveryCommit: "c".repeat(40),
       })),
+      snapshot: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
       id: `machine-${"8".repeat(32)}`,
@@ -9231,6 +9247,8 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "allow-once")
+    // The allow took a snapshot first (J34), which is not a branch checkpoint.
+    expect(workspaceService.snapshot).toHaveBeenCalledOnce()
 
     const activeCheckpoint = await rpc("checkpoint.create", {
       sessionId,
@@ -11290,7 +11308,7 @@ describe("DomovoiDaemon", () => {
       save: vi.fn(),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
     running.push(daemon)
     const address = await daemon.start()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)

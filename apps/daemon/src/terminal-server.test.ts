@@ -132,6 +132,55 @@ afterEach(async () => {
 })
 
 describe("terminal RPC", () => {
+  it("refuses a daemon credential that names a paired device as a terminal owner", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.workspacePath = "/worktrees/owner-name"
+    snapshot.approvals = []
+    const terminal = {
+      process: "bash",
+      write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+      onData: vi.fn(() => ({ dispose: vi.fn() })),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    } satisfies TerminalProcess
+    const store = { load: () => structuredClone(snapshot), save: vi.fn(), close: vi.fn() } satisfies WorkspaceStore
+    const daemon = new DomovoiDaemon({ port: 0, store, terminalService: { spawn: vi.fn(() => terminal) }, errorSink: vi.fn() })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let id = 0
+    const rpc = <M extends RpcMethod>(method: M, params: Record<string, unknown>) => {
+      const requestId = ++id
+      const response = new Promise<TestRpcResponse<M>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== requestId) return
+          socket.off("message", receive)
+          resolve(message as TestRpcResponse<M>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+      return response
+    }
+    const deviceId = `device-${"a".repeat(32)}`
+    const create = { terminalId: "owner-name", sessionId: session.id, cols: 80, rows: 24, client: "desktop" }
+
+    await expect(rpc("terminal.create", { ...create, clientId: deviceId })).resolves.toMatchObject({
+      error: { message: "A request cannot name a paired device's id it did not authenticate as" },
+    })
+    expect(terminal.kill).not.toHaveBeenCalled()
+    await expect(rpc("terminal.create", { ...create, clientId: "desktop-own" })).resolves.toHaveProperty("result")
+    await expect(rpc("terminal.claim", { terminalId: "owner-name", client: "desktop", clientId: deviceId })).resolves.toMatchObject({
+      error: { message: "A request cannot name a paired device's id it did not authenticate as" },
+    })
+    socket.close()
+  })
+
   it("returns a bounded outcome when emergency persistence fails after teardown", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -1422,16 +1471,10 @@ describe("terminal RPC", () => {
       protocolVersion,
       clientId: "tablet-watcher",
     })
-    // Terminal notifications go to the connections that opened or claimed the
-    // terminal, so the watcher attaches the way a second window does.
-    await expect(watcher.rpc("terminal.create", {
-      terminalId: "terminal-reconnect",
-      sessionId: session.id,
-      cols: 80,
-      rows: 24,
-      client: "tablet",
-      clientId: "tablet-watcher",
-    })).resolves.toMatchObject({ result: { owner: { clientId: "desktop-owner" } } })
+    // Terminal notifications go to the connections that opened, claimed or
+    // watch the terminal, so the watcher reads it before the owner drops.
+    await expect(watcher.rpc("terminal.watch", { terminalId: "terminal-reconnect" }))
+      .resolves.toMatchObject({ result: { owner: { clientId: "desktop-owner" }, state: "live" } })
 
     owner.socket.close()
     await new Promise<void>((resolve) => owner.socket.once("close", resolve))

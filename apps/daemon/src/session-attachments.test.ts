@@ -312,6 +312,28 @@ describe("session attachments over a paired socket", () => {
     expect(JSON.stringify(f.store.load())).not.toContain(image.data)
   })
 
+  it("records the originating credential on the audit entry of a released queued send", async () => {
+    const f = await fixture()
+    await f.send()
+    await f.rpc("session.send", {
+      sessionId: f.sessionId,
+      prompt: "Release with its credential",
+      client: "phone",
+      delivery: "next-turn-replace",
+    })
+    f.emit({
+      type: "turn-completed",
+      params: { threadId: "thread-images", turnId: "turn-images-1", status: "completed" },
+    })
+    await vi.waitFor(() => expect(f.startTurn).toHaveBeenCalledTimes(2), { timeout: 10000 })
+    const exported = await f.owner("audit.export", {})
+    const entries = (exported.result as { content: string }).content.trim().split("\n")
+      .map((line) => JSON.parse(line) as { action: string; actor: Record<string, unknown> })
+      .filter((entry) => entry.action === "session.send" && entry.actor.client === "phone")
+    expect(entries.length).toBeGreaterThanOrEqual(3)
+    for (const entry of entries) expect(entry.actor).toMatchObject({ kind: "client", client: "phone", credential: "device" })
+  })
+
   it("refuses a queued attachment when provider capability changes before release", async () => {
     const f = await fixture()
     await f.send()

@@ -94,6 +94,15 @@ jobs:
           launchctl print "gui/$uid" > "$RUNNER_TEMP/launchd-domain.txt"
           echo "gui/$uid answers with $(wc -l < "$RUNNER_TEMP/launchd-domain.txt") lines"
       - run: pnpm test
+      # A wire change since the last protocol release needs a minor above it.
+      # The release record is committed once, at release. --base refuses a
+      # pull request that changes or removes a record the base branch has, so
+      # no pull request rewrites the record it is measured against.
+      - name: Require a protocol minor bump for every wire change since the last release
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        env:
+          WIRE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/protocol-wire.mjs check --base "$WIRE_BASE_SHA"
       - run: pnpm build
       - run: pnpm performance:budget
       - run: pnpm release:invariants

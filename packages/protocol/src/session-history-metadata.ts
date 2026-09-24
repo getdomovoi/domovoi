@@ -19,6 +19,10 @@ export type CheckpointReason = z.infer<typeof checkpointReasonSchema>
 // latency, never the execution duration of the approved operation.
 export const approvalDecisionDurationMsSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 
+// Wall-clock time from the decision to the provider reporting the allowed
+// command's item complete. Absent when no completion was seen for that item.
+export const approvedCommandRunMsSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
+
 // Only an acknowledged target commit emits this metadata. Refusal, recovery,
 // and conflict release must not masquerade as a completed machine transfer.
 export const sessionTransferHistorySchema = z.object({

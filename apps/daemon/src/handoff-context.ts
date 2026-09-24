@@ -3,6 +3,26 @@ import type {
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+import { testEvidence } from "./test-evidence.js"
+
+type HandoffTests = { passed: number; failed: number; last?: "passed" | "failed" }
+
+// The session summary's counters are set when a session is created and never
+// updated, so a live session always reports zero. The test runs the daemon
+// recognizes in the thread are what is true; the counters stand only when the
+// thread holds no recognized run. The run counts are cumulative over the
+// session's life, so the latest run's status travels with them: three failures
+// and then a green run are not tests currently failing.
+function handoffTests(
+  sessionThread: WorkspaceSnapshot["thread"],
+  session: WorkspaceSnapshot["sessions"][number] | undefined,
+): HandoffTests {
+  const evidence = testEvidence(sessionThread)
+  const last = evidence.runs.at(-1)?.status
+  if (evidence.totalRuns > 0 && last) return { passed: evidence.passed, failed: evidence.failed, last }
+  return { passed: session?.testsPassed ?? 0, failed: session?.testsFailed ?? 0 }
+}
+
 const contextBudget = 24_000
 const maximumThreadItems = 40
 
@@ -19,7 +39,7 @@ type HandoffContext = {
   handoff: string
   worktree: string | undefined
   changedFiles: number
-  tests: { passed: number; failed: number }
+  tests: HandoffTests
   history: { kind: string; body: string | undefined }[]
   artifacts: {
     id: string
@@ -94,7 +114,7 @@ export function prepareHandoffContext(
     handoff: handoff?.kind === "system" ? handoff.body : "Provider handoff",
     worktree: session?.workspacePath,
     changedFiles: session?.changedFiles ?? 0,
-    tests: { passed: session?.testsPassed ?? 0, failed: session?.testsFailed ?? 0 },
+    tests: handoffTests(sessionThread, session),
     history,
     artifacts,
     openAnnotations,

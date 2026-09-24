@@ -85,6 +85,7 @@ export function permissionHardGates(): { categories: HardGateCategory[] } {
 
 const fileToolCommands = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 
+// Whether an approval card is a file tool's, which names its target file.
 export function isFileToolCommand(command: string): boolean {
   return fileToolCommands.has(command)
 }

@@ -5,7 +5,7 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validati
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
 import { maximumImageUploadBytes, maximumImageUploadDimension, maximumSessionAttachments, maximumTextAttachmentBytes } from "./image-upload.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
-import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
@@ -518,6 +518,9 @@ export const approvalRequestSchema = z.object({
   estimatedDuration: z.string().min(1),
   checkpoint: z.string().min(1),
   providerRequestId: z.number().int().nonnegative().optional(),
+  // The provider's item the gate belongs to, so the receipt can say how long
+  // the allowed command ran once that item completes.
+  itemId: z.string().min(1).check(utf16MaxLength(256)).optional(),
   requestedAt: dateTimeSchema,
   execution: executionResolutionSchema,
   // Raised each time the daemon rewrites the card, so an Allow names the card
@@ -654,6 +657,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
     decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
+    ranForMs: approvedCommandRunMsSchema.optional(),
     createdAt: dateTimeSchema,
   }),
   z.object({

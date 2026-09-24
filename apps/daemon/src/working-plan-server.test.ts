@@ -508,6 +508,7 @@ describe("working plan RPC", () => {
         client: "desktop",
         clientId: "desktop-plan-test",
         connectionId: context.connectionId,
+        credential: "daemon",
       },
       action: "plan.edit",
       target: response.result.receipt.editId,

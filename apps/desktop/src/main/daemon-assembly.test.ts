@@ -28,8 +28,10 @@ describe("desktop daemon assembly", () => {
           .filter((name) => name.length > 0 && !name.startsWith("type "))
         for (const name of values) {
           // Route verification uses an existing home owner; it cannot construct
-          // or acquire a daemon. Neither the constructor nor factory is allowed.
-          if (!["acquireLocalDaemon", "verifyLocalFleetClientRoute"].includes(name)) {
+          // or acquire a daemon. Credential capture only takes the inherited
+          // credentials out of process.env. Neither the constructor nor factory
+          // is allowed.
+          if (!["acquireLocalDaemon", "verifyLocalFleetClientRoute", "captureInheritedCredentials"].includes(name)) {
             offenders.push(`${file}: imports ${name} from @getdomovoi/daemon`)
           }
         }
