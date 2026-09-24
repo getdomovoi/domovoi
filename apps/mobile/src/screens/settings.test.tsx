@@ -23,6 +23,7 @@ async function draw(overrides: Partial<Parameters<typeof SettingsScreen>[0]> = {
     themePreference: "system" as const,
     onChangeTheme: jest.fn<(preference: "light" | "dark" | "system") => void>(),
     paired: true,
+    device: "phone" as const,
     bottomInset: 0,
     ...overrides,
   }
@@ -138,5 +139,21 @@ describe("SettingsScreen", () => {
     expect(screen.getByRole("radio", { name: "System", checked: true })).toBeOnTheScreen()
     await fireEvent.press(screen.getByRole("radio", { name: "Light" }))
     expect(onChangeTheme).toHaveBeenCalledWith("light")
+  })
+
+  // A setting that does not exist yet stays listed, dimmed and untouchable,
+  // and the line under it says why.
+  it("lists notifications as not yet, and says when a gate can reach this phone", async () => {
+    await draw()
+    const row = screen.getByLabelText("Notifications, Not yet")
+    expect(row).toBeOnTheScreen()
+    expect(row).toBeDisabled()
+    expect(screen.getAllByRole("button").map((node) => node.props.accessibilityLabel)).not.toContain("Notifications, Not yet")
+    expect(screen.getByText("Gates reach this phone only while Domovoi is open on it. There are no notifications yet.")).toBeOnTheScreen()
+  })
+
+  it("names the tablet when it runs on one", async () => {
+    await draw({ device: "tablet" })
+    expect(screen.getByText("Gates reach this tablet only while Domovoi is open on it. There are no notifications yet.")).toBeOnTheScreen()
   })
 })

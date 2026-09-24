@@ -7,6 +7,8 @@ import { Card } from "../components/ui/card"
 import { KeyProbeCard } from "../components/key-probe-card"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
+import type { HandheldClient } from "../lib/protocol-facts"
+import { gateReach } from "../gate-reach"
 import { clientVersion } from "../lib/protocol-facts"
 import { phoneFacts } from "../phone-facts"
 import type { ConnectionFault } from "../lib/connection-fault"
@@ -43,6 +45,7 @@ export function SettingsScreen({
   themePreference,
   onChangeTheme,
   paired,
+  device,
   bottomInset,
 }: {
   url: string
@@ -59,6 +62,8 @@ export function SettingsScreen({
   // Whether this phone has a daemon to talk to at all. Device settings work
   // either way; the machine-scoped ones do not exist until one is paired.
   paired: boolean
+  // Which device this is, so the line about gates names it.
+  device: HandheldClient
   // What the floating tab bar covers, so the list can pad by exactly that.
   bottomInset: number
 }) {
@@ -128,7 +133,7 @@ export function SettingsScreen({
             disagree with what the machine has been told. None has anywhere to
             go, so none is drawn with a chevron. */}
         <View className="gap-[7px]">
-          <Text variant="label" className="px-1">This phone</Text>
+          <Text variant="label" className="px-1">THIS PHONE</Text>
           <Card flush>
             {phoneFacts({
               os: Platform.OS,
@@ -177,7 +182,18 @@ export function SettingsScreen({
                 <Text variant="meta">{fact.value}</Text>
               </View>
             ))}
+            {/* Listed, dimmed and not touchable, with no chevron: there is no
+                push without the relay, so the setting does not exist yet. */}
+            <View
+              accessibilityLabel="Notifications, Not yet"
+              accessibilityState={{ disabled: true }}
+              className="flex-row items-center gap-2.5 border-t border-border px-[13px] py-3 opacity-50"
+            >
+              <Text className="flex-1 text-[12.5px]">Notifications</Text>
+              <Text variant="meta">Not yet</Text>
+            </View>
           </Card>
+          <Text variant="note" className="px-1">{gateReach(device)}</Text>
         </View>
 
         {paired ? (

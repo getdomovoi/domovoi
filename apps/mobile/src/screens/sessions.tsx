@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
 import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
+import { sessionsGateReach } from "../gate-reach"
 import { cn } from "../lib/cn"
 import { sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroup, type SessionRow } from "../session-rows"
 import { useTheme } from "../theme/theme-provider"
@@ -133,6 +134,11 @@ export function SessionsScreen({
         }
       >
         <ConnectionBanner notice={notice} />
+
+        <View className="flex-row items-start gap-[9px] px-1">
+          <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-info" />
+          <Text variant="meta" className="flex-1">{sessionsGateReach}</Text>
+        </View>
 
         {empty ? (
           <View className="gap-3 px-3">
