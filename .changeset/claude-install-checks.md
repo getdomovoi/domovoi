@@ -2,6 +2,7 @@
 "@getdomovoi/daemon": patch
 "@getdomovoi/protocol": patch
 "@getdomovoi/ui": patch
+"@getdomovoi/mobile": patch
 ---
 
 Claude Code sessions now refuse, with a message that says what to install, the two installs the
@@ -13,4 +14,9 @@ for SDK 0.3.263); an older `claude` is now refused with "Update Claude Code to 2
 
 Provider readiness carries the same text in a new optional `problem` field. The desktop and web
 clients show it in Settings and first run, label the provider "Cannot start", and keep it out of
-the launcher.
+the launcher. The phone skips such a provider when it starts a fresh session and
+says the problem when no other provider is ready.
+
+The version is read without blocking the daemon's event loop, before a session starts or models
+are listed, and once per executable and modification time. A bare `claude` that a probe with no
+PATH ran on Windows is not called a shim, since Windows starts `claude.exe` for it.
