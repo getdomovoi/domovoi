@@ -76,6 +76,29 @@ export function codexMainCheckoutConfigRefusal(file: string, mainCheckout: strin
     + `Remove ${file} from the main checkout or use another provider here.`
 }
 
+// Codex looks trust up in [projects]: for each .codex folder under its own
+// directory, then the project root, then the repository root, which for a
+// linked worktree is the main checkout; the thread's project under the
+// session's directory, then the repository root. At every step it tries the
+// canonical path first. Read from decision_for_dir, get_active_project and
+// resolve_root_git_project_for_trust at rust-v0.156.1. Every path returned
+// here, marked untrusted, answers each of those lookups before any trust level
+// set elsewhere is reached.
+export function codexProjectTrustKeys(cwd: string): string[] {
+  const start = resolve(cwd)
+  const root = projectRoot(start)
+  const paths = [...directoriesFrom(root, start), mainCheckoutOf(root) ?? root]
+  return [...new Set(paths.map(canonicalPath))]
+}
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync.native(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
 function mainCheckoutOf(root: string): string | undefined {
   const marker = join(root, ".git")
   if (!statSync(marker, { throwIfNoEntry: false })?.isFile()) return undefined

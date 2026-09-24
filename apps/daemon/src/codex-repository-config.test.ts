@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -219,5 +219,161 @@ describe("Codex configuration in the repository's main checkout", () => {
 
     await expect(adapter.startThread({ cwd: worktree, runtime })).rejects.toThrow(refusal(".codex/config.toml"))
     expect(sentMethods(transport)).toEqual(["initialize", "initialized"])
+  })
+})
+
+const threadReply: Reply = (method) => {
+  if (method === "thread/start" || method === "thread/resume") return { result: { thread: { id: "thread-1" } } }
+  if (method === "turn/start") return { result: { turn: { id: "turn-1" } } }
+  return { result: {} }
+}
+
+const untrusted = (...paths: string[]) => ({
+  projects: Object.fromEntries(paths.map((path) => [realpathSync.native(path), { trust_level: "untrusted" }])),
+})
+
+function sentParams(transport: RecordingTransport, method: string): Record<string, unknown>[] {
+  return transport.sent.filter((message) => message.method === method).map(({ params }) => params as Record<string, unknown>)
+}
+
+// Codex looks a project's trust up under the directory holding each .codex
+// folder, then the project root, then the repository root, which for a linked
+// worktree is the main checkout; canonical paths first. Every thread Domovoi
+// starts or resumes marks each of those paths untrusted, so Codex loads no
+// repository configuration and writes no trust entry of its own.
+describe("Codex project trust", () => {
+  it("marks a plain repository untrusted on thread/start and thread/resume", async () => {
+    const root = repository({ "README.md": "" })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startThread({ cwd: root, runtime })
+    await adapter.resumeThread({ threadId: "thread-1", cwd: root, runtime })
+
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(root))
+    expect(sentParams(transport, "thread/resume")[0]).toEqual({ threadId: "thread-1", config: untrusted(root) })
+  })
+
+  it.runIf(process.platform !== "win32")("uses the canonical path when the session's directory is reached through a link", async () => {
+    const root = repository({ "README.md": "" })
+    const link = join(realpathSync(mkdtempSync(join(tmpdir(), "domovoi-codex-link-"))), "repo")
+    directories.push(dirname(link))
+    symlinkSync(root, link)
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startThread({ cwd: link, runtime })
+
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(root))
+  })
+
+  it("marks a linked worktree and its main checkout untrusted", async () => {
+    const { main, worktree } = linkedWorktree({ "README.md": "" }, {})
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startThread({ cwd: worktree, runtime })
+    await adapter.resumeThread({ threadId: "thread-1", cwd: worktree, runtime })
+
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(worktree, main))
+    expect(sentParams(transport, "thread/resume")[0]?.config).toEqual(untrusted(worktree, main))
+  })
+
+  it("marks every directory from the project root to the session's directory untrusted", async () => {
+    const root = repository({ "packages/app/src/.keep": "" })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startThread({ cwd: join(root, "packages/app/src"), runtime })
+
+    expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(
+      root,
+      join(root, "packages"),
+      join(root, "packages/app"),
+      join(root, "packages/app/src"),
+    ))
+  })
+
+  it("keeps the rest of thread/start as it was", async () => {
+    const root = repository({ "README.md": "" })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startThread({ cwd: root, runtime })
+
+    const params = sentParams(transport, "thread/start")[0]
+    expect(Object.keys(params ?? {}).sort()).toEqual(
+      ["approvalPolicy", "config", "cwd", "developerInstructions", "model", "sandbox", "serviceName"],
+    )
+    expect(params).toMatchObject({ cwd: root, sandbox: "workspace-write", serviceName: "domovoi" })
+    expect(Object.keys(params?.config as object)).toEqual(["projects"])
+  })
+})
+
+function additionalContext(transport: RecordingTransport, index = 0): Record<string, { kind: string, value: string }> {
+  return sentParams(transport, "turn/start")[index]?.additionalContext as Record<string, { kind: string, value: string }>
+}
+
+// Marking the project untrusted also stops Codex reading the repository's
+// AGENTS.md, so Domovoi reads it and sends it with every turn.
+describe("Codex project instructions", () => {
+  it("sends the repository's AGENTS.md with the first turn of a new thread", async () => {
+    const root = repository({ "AGENTS.md": "Run pnpm test before review.\n" })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startThread({ cwd: root, runtime })
+    await adapter.startTurn({ threadId: "thread-1", cwd: root, prompt: "hello", runtime })
+
+    const context = additionalContext(transport)
+    expect(Object.keys(context)).toEqual(["domovoi-project-instructions", "domovoi-sandbox"])
+    expect(context["domovoi-project-instructions"]).toEqual({
+      kind: "application",
+      value: `# AGENTS.md instructions for ${realpathSync.native(root)}\n\n<INSTRUCTIONS>\nRun pnpm test before review.\n\n</INSTRUCTIONS>`,
+    })
+  })
+
+  it("sends it again with every turn after a resume, read afresh each time", async () => {
+    const root = repository({ "AGENTS.md": "First rule.\n" })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.resumeThread({ threadId: "thread-1", cwd: root, runtime })
+    await adapter.startTurn({ threadId: "thread-1", cwd: root, prompt: "hello", runtime })
+    write(root, { "AGENTS.md": "Second rule.\n" })
+    await adapter.startTurn({ threadId: "thread-1", cwd: root, prompt: "again", runtime })
+
+    expect(additionalContext(transport, 0)["domovoi-project-instructions"]?.value).toContain("First rule.")
+    expect(additionalContext(transport, 1)["domovoi-project-instructions"]?.value).toContain("Second rule.")
+  })
+
+  it("sends only the sandbox context when the repository has no AGENTS.md", async () => {
+    const root = repository({ "CLAUDE.md": "claude rule\n" })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startTurn({ threadId: "thread-1", cwd: root, prompt: "hello", runtime })
+
+    expect(Object.keys(additionalContext(transport))).toEqual(["domovoi-sandbox"])
+  })
+
+  it("sends nothing from an AGENTS.md over the 128 KiB file limit", async () => {
+    const root = repository({ "AGENTS.md": "x".repeat(128 * 1024 + 1) })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startTurn({ threadId: "thread-1", cwd: root, prompt: "hello", runtime })
+
+    expect(Object.keys(additionalContext(transport))).toEqual(["domovoi-sandbox"])
+  })
+
+  it("splits a long AGENTS.md into ordered entries Codex does not shorten", async () => {
+    const lines = Array.from({ length: 700 }, (_, index) => `Rule ${index}: keep this line whole.`)
+    const root = repository({ "AGENTS.md": `${lines.join("\n")}\n` })
+    const { adapter, transport } = await connected(threadReply)
+
+    await adapter.startTurn({ threadId: "thread-1", cwd: root, prompt: "hello", runtime })
+
+    const context = additionalContext(transport)
+    const keys = Object.keys(context).filter((key) => key.startsWith("domovoi-project-instructions"))
+    expect(keys.length).toBeGreaterThan(1)
+    expect(keys).toEqual(keys.map((_, index) => `domovoi-project-instructions-${String(index + 1).padStart(2, "0")}`))
+    for (const key of keys) {
+      expect(context[key]?.kind).toBe("application")
+      expect(Buffer.byteLength(context[key]?.value ?? "")).toBeLessThanOrEqual(4_000)
+    }
+    expect(keys.map((key) => context[key]?.value).join(""))
+      .toBe(`# AGENTS.md instructions for ${realpathSync.native(root)}\n\n<INSTRUCTIONS>\n${lines.join("\n")}\n\n</INSTRUCTIONS>`)
   })
 })

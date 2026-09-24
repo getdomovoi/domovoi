@@ -8,10 +8,15 @@ import { fromMarkdown } from "mdast-util-from-markdown"
 // files. The daemon reads those files itself: text only, from inside the
 // session worktree, never a hook, server, plugin or environment block.
 
-export type ProjectInstructionReader = "claude" | "opencode"
+export type ProjectInstructionReader = "claude" | "codex" | "opencode"
 
 const claudeInstructionFiles = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"]
 const openCodeInstructionFiles = ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"]
+// Codex takes AGENTS.override.md when it is a file, else AGENTS.md, and reads
+// at most project_doc_max_bytes of it, 32 KiB unless configured. Read from
+// agents_md.rs and config_toml.rs at rust-v0.156.1.
+const codexInstructionFiles = ["AGENTS.override.md", "AGENTS.md"]
+const codexInstructionBudgetBytes = 32 * 1024
 const maximumInstructionFileBytes = 128 * 1024
 const maximumInstructionFiles = 32
 const maximumImportDepth = 5
@@ -35,6 +40,7 @@ export async function projectInstructions(
     }
     return undefined
   }
+  if (reader === "codex") return codexInstructions(root)
   const files: InstructionFile[] = []
   const seen = new Set<string>()
   for (const name of claudeInstructionFiles) {
@@ -44,6 +50,37 @@ export async function projectInstructions(
   return files
     .map((file) => `Contents of ${relative(root, file.path).split(sep).join("/")} (project instructions, checked into the codebase):\n\n${file.text}`)
     .join("\n\n")
+}
+
+// The first candidate that is a file decides, as in Codex: an override that is
+// empty or refused here does not hand the turn to AGENTS.md.
+async function codexInstructions(root: string): Promise<string | undefined> {
+  for (const name of codexInstructionFiles) {
+    const candidate = join(root, name)
+    if (!(await isFile(candidate))) continue
+    const file = await worktreeFile(root, candidate)
+    if (!file) return undefined
+    const text = utf8Prefix(file.text, codexInstructionBudgetBytes)
+    if (!text.trim()) return undefined
+    return `# AGENTS.md instructions for ${root}\n\n<INSTRUCTIONS>\n${text}\n</INSTRUCTIONS>`
+  }
+  return undefined
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
+}
+
+function utf8Prefix(text: string, bytes: number): string {
+  const encoded = Buffer.from(text, "utf8")
+  if (encoded.length <= bytes) return text
+  let end = bytes
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end -= 1
+  return encoded.toString("utf8", 0, end)
 }
 
 async function collectClaudeFile(

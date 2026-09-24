@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -186,5 +186,65 @@ describe("projectInstructions", () => {
 
     expect(text).toMatch(/^Instructions from: .*CLAUDE\.md\nclaude rule/)
     expect(text).not.toContain("context rule")
+  })
+})
+
+// Codex reads AGENTS.override.md, else AGENTS.md, and nothing else by default,
+// within a 32 KiB budget, in its own AGENTS.md instructions format.
+describe("projectInstructions for Codex", () => {
+  it("gives Codex its own root AGENTS.md in Codex's instruction format", async () => {
+    const worktree = await realpath(await scratch())
+    await writeFile(join(worktree, "AGENTS.md"), "agents rule\n")
+
+    await expect(projectInstructions(worktree, "codex")).resolves
+      .toBe(`# AGENTS.md instructions for ${worktree}\n\n<INSTRUCTIONS>\nagents rule\n\n</INSTRUCTIONS>`)
+  })
+
+  it("prefers AGENTS.override.md, the way Codex does", async () => {
+    const worktree = await scratch()
+    await writeFile(join(worktree, "AGENTS.override.md"), "override rule\n")
+    await writeFile(join(worktree, "AGENTS.md"), "agents rule\n")
+
+    const text = await projectInstructions(worktree, "codex")
+
+    expect(text).toContain("override rule")
+    expect(text).not.toContain("agents rule")
+  })
+
+  it("does not fall back to AGENTS.md when the override is empty or refused", async () => {
+    const root = await scratch()
+    const worktree = join(root, "worktree")
+    await mkdir(worktree)
+    await writeFile(join(worktree, "AGENTS.md"), "agents rule\n")
+    await writeFile(join(worktree, "AGENTS.override.md"), "  \n")
+    await expect(projectInstructions(worktree, "codex")).resolves.toBeUndefined()
+
+    if (process.platform === "win32") return
+    await writeFile(join(root, "outside.md"), "outside secret\n")
+    await rm(join(worktree, "AGENTS.override.md"))
+    await symlink(join(root, "outside.md"), join(worktree, "AGENTS.override.md"))
+    await expect(projectInstructions(worktree, "codex")).resolves.toBeUndefined()
+  })
+
+  it("reads no other instruction file for Codex", async () => {
+    const worktree = await scratch()
+    await writeFile(join(worktree, "CLAUDE.md"), "claude rule\n")
+    await writeFile(join(worktree, "CONTEXT.md"), "context rule\n")
+
+    await expect(projectInstructions(worktree, "codex")).resolves.toBeUndefined()
+  })
+
+  it("keeps Codex's 32 KiB budget and the 128 KiB file limit", async () => {
+    const worktree = await scratch()
+    await writeFile(join(worktree, "AGENTS.md"), `${"a".repeat(32 * 1024 - 1)}é tail`)
+
+    const text = await projectInstructions(worktree, "codex")
+
+    expect(text).toContain("a".repeat(32 * 1024 - 1))
+    expect(text).not.toContain("tail")
+    expect(text).not.toContain("�")
+
+    await writeFile(join(worktree, "AGENTS.md"), "b".repeat(128 * 1024 + 1))
+    await expect(projectInstructions(worktree, "codex")).resolves.toBeUndefined()
   })
 })
