@@ -392,3 +392,19 @@ it("does not call a daemon this app did not start the installed service", () => 
   expect(section.textContent).toContain("Install and Remove are off: this app did not start that daemon.")
   expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
 })
+
+// Ruled 2026-09-23 (#577, B): after an app update the service can still run
+// the runtime it was installed with. Settings names both versions.
+it("says the login service runs an older Domovoi than this app", () => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
+  expect(screen.getByText("The login service runs Domovoi 0.9.2. This app is 0.10.0.")).toBeTruthy()
+})
+
+it("says nothing about versions when the service is current or newer", () => {
+  const { rerender } = render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", serviceVersion: "0.10.0", appVersion: "0.10.0" }} />)
+  expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, platform: "darwin", serviceVersion: "0.11.0", appVersion: "0.10.0" }} />)
+  expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", platform: "darwin", serviceVersion: "0.9.2", appVersion: "0.10.0" }} />)
+  expect(screen.queryByText(/The login service runs Domovoi/)).toBeNull()
+})

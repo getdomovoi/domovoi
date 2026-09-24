@@ -113,3 +113,19 @@ it("keeps a daemon outside the app unnamed when the service status cannot be rea
   expect(within(section).getByText("Not started here")).toBeTruthy()
   expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
 })
+
+// Ruled 2026-09-23 (#577, B): the service answered with its own version in
+// the snapshot; the shell compares it with this app's build.
+it("names an older login service from the snapshot it answered with", async () => {
+  const { clientVersion } = await import("./client")
+  const older = workspaceSnapshot()
+  older.machine = { ...older.machine, version: "0.0.0" }
+  render(<WorkspaceShell clientKind="desktop" windowBridge={bridge(vi.fn())} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true }} />)
+  await act(async () => { completeHandshake(harness.socket(0), older) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  expect(section.textContent).toContain(`The login service runs Domovoi 0.0.0. This app is ${clientVersion}.`)
+})

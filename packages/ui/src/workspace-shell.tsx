@@ -43,7 +43,7 @@ import {
 import { fleetMachines } from "./fleet-entries.js"
 import { machineAttachment } from "./machine-selection.js"
 import { TooltipProvider } from "./components/ui/tooltip"
-import { DaemonRpcError, ProjectSwitchConfirmationError } from "./client"
+import { DaemonRpcError, ProjectSwitchConfirmationError, clientVersion } from "./client"
 import { SessionsDrawerColumn, SessionsDrawerTrigger, type SessionRowAction } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
@@ -1304,6 +1304,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...localDaemon,
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
+              ...(localDaemon.owner === "outside" ? { serviceVersion: snapshot.machine.version, appVersion: clientVersion } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
                 install: async () => { const outcome = await windowBridge.daemonService!.install(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
                 remove: async () => { const outcome = await windowBridge.daemonService!.remove(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
