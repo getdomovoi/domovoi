@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest"
 
 import {
   orderedTransports,
-  selectTransport,
   transportCandidateSchema,
   transportPreference,
+  usableTransports,
 } from "./transport.js"
 
 const loopback = { kind: "local" as const, endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true as const }
@@ -56,29 +56,29 @@ describe("orderedTransports", () => {
   })
 })
 
-describe("selectTransport", () => {
+describe("usableTransports", () => {
   it("chooses the most private usable transport", () => {
-    expect(selectTransport([relay, tailnet, loopback])).toEqual(loopback)
+    expect(usableTransports([relay, tailnet, loopback])[0]).toEqual(loopback)
   })
 
   it("falls back to the next transport when a closer one is unavailable", () => {
-    expect(selectTransport([relay, tailnet])).toEqual(tailnet)
+    expect(usableTransports([relay, tailnet])[0]).toEqual(tailnet)
   })
 
   it("uses an SSH tunnel only where it was explicitly configured", () => {
-    expect(selectTransport([{ ...ssh, configured: false }, relay])).toBeUndefined()
-    expect(selectTransport([ssh, relay])).toEqual(ssh)
+    expect(usableTransports([{ ...ssh, configured: false }, relay])[0]).toBeUndefined()
+    expect(usableTransports([ssh, relay])[0]).toEqual(ssh)
   })
 
   it("refuses the relay until a hosted relay exists", () => {
-    expect(selectTransport([relay], { relayAvailable: false })).toBeUndefined()
+    expect(usableTransports([relay])).toEqual([])
   })
 
   it("has nothing to choose when no candidate is usable", () => {
-    expect(selectTransport([])).toBeUndefined()
+    expect(usableTransports([])[0]).toBeUndefined()
   })
 
   it("never selects an undescribable candidate", () => {
-    expect(() => selectTransport([{ ...lan, authenticated: false } as never])).toThrow()
+    expect(() => usableTransports([{ ...lan, authenticated: false } as never])).toThrow()
   })
 })

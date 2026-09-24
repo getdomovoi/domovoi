@@ -36,8 +36,8 @@ declared patch compatibility usable by snapshot readers too.
 ## Version and payload validation
 
 One protocol schema now validates hello parameters, pairing claims and
-confirmations, fleet descriptors, refusal data, local owner identities, and the
-daemon's advertised version option. A version contains three decimal,
+confirmations, pairing-code redemptions, fleet descriptors, refusal data, local
+owner identities, and the daemon's advertised version option. A version contains three decimal,
 nonnegative integers separated by dots, at most 64 characters total. Leading
 zeros, suffixes, whitespace, and incomplete versions are refused. Comparison
 uses exact integers, so components above `Number.MAX_SAFE_INTEGER` cannot round

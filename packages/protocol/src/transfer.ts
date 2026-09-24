@@ -10,17 +10,6 @@ import { sessionTransferContractRefusalSchema } from "./transfer-contract-refusa
 
 export const transferMethodSchema = z.enum(["git-bundle", "remote-ref"])
 
-export const transferStepSchema = z.enum([
-  "create-recovery-checkpoint",
-  "commit-session-checkpoint",
-  "bundle-incremental",
-  "stream-to-target",
-  "push-session-ref",
-  "fetch-on-target",
-  "restore-on-target",
-  "record-receipt",
-])
-
 export const sourceRefusalSchema = z.enum([
   "session-turn-active",
   "session-archived",
@@ -41,7 +30,6 @@ export const sourceRefusalMessage: Record<SourceRefusal, string> = {
   "source-ref-push-unavailable": "This machine cannot publish the Git ref needed to move the session",
 }
 export type TransferMethod = z.infer<typeof transferMethodSchema>
-export type TransferStep = z.infer<typeof transferStepSchema>
 
 export type SourcePreflight =
   | { allowed: true }
@@ -62,55 +50,6 @@ export function sourcePreflight(input: { session: SessionSummary }): SourcePrefl
   }
   if (!session.workspacePath) return { allowed: false, reason: "session-has-no-worktree" }
   return { allowed: true }
-}
-
-// The incremental bundle is the default because repository bytes travel
-// daemon to daemon. Pushing a Domovoi ref puts them on a remote the user did
-// not necessarily choose, so it is opt-in.
-const bundleSteps: TransferStep[] = [
-  "create-recovery-checkpoint",
-  "commit-session-checkpoint",
-  "bundle-incremental",
-  "stream-to-target",
-  "restore-on-target",
-  "record-receipt",
-]
-
-const remoteRefSteps: TransferStep[] = [
-  "create-recovery-checkpoint",
-  "commit-session-checkpoint",
-  "push-session-ref",
-  "fetch-on-target",
-  "restore-on-target",
-  "record-receipt",
-]
-
-export type TransferPlan = {
-  sessionId: string
-  sourceMachineId: string
-  targetMachineId: string
-  method: TransferMethod
-  steps: TransferStep[]
-}
-
-export function planTransfer(input: {
-  session: SessionSummary
-  sourceMachineId: string
-  targetMachineId: string
-  method?: TransferMethod
-}): TransferPlan {
-  if (input.targetMachineId === input.sourceMachineId) throw new Error("target-is-source")
-  const source = sourcePreflight({ session: input.session })
-  if (!source.allowed) throw new Error(source.reason)
-
-  const method = input.method ?? "git-bundle"
-  return {
-    sessionId: input.session.id,
-    sourceMachineId: input.sourceMachineId,
-    targetMachineId: input.targetMachineId,
-    method,
-    steps: method === "git-bundle" ? [...bundleSteps] : [...remoteRefSteps],
-  }
 }
 
 export const transferReceiptSchema = z.object({

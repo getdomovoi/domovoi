@@ -26,6 +26,7 @@ import type {
   AcpUpdate,
 } from "./acp.js"
 import type { AcpProviderDefinition } from "./acp-providers.js"
+import { onProcessEnd } from "./process-end.js"
 
 type ProcessSpawner = (command: string, args: readonly string[]) => ChildProcessWithoutNullStreams
 const ACP_CLOSE_GRACE_MS = 1_000
@@ -60,14 +61,16 @@ export class StdioAcpPeer implements AcpPeer {
     }
     this.#process = process
     const stderrTail = captureStderrTail(process.stderr)
-    process.once("exit", (code, signal) => {
+    let disconnected = false
+    process.once("exit", () => {
       if (this.#process !== process) return
       this.#process = undefined
       this.#connection = undefined
       this.#capabilities = undefined
-      if (!this.#closing) {
-        this.#handlers.onDisconnect(exitReason(this.#definition.id, code, signal, stderrTail()))
-      }
+      disconnected = !this.#closing
+    })
+    onProcessEnd(process, (code, signal) => {
+      if (disconnected) this.#handlers.onDisconnect(exitReason(this.#definition.id, code, signal, stderrTail()))
     })
     try {
       const stream = ndJsonStream(
