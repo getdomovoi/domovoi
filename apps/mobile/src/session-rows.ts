@@ -29,38 +29,6 @@ export function elapsedLabel(iso: string, now: number): string | undefined {
   return `${Math.floor(hours / 24)}d`
 }
 
-export type ApprovalLead = {
-  approvalId: string
-  headline: string
-  command: string
-  context: string
-  // Absent when the daemon sent a timestamp this phone cannot read. An age is
-  // worth showing but not worth inventing.
-  waited: string | undefined
-}
-
-// The one thing a person opening this app at a traffic light needs to see
-// without scrolling. When several approvals are waiting, the one that has been
-// waiting longest is the one shown, because it is the one closest to blocking
-// everything behind it.
-export function approvalLead(
-  snapshot: WorkspaceSnapshot,
-  now: number,
-): ApprovalLead | undefined {
-  const oldest = [...snapshot.approvals]
-    .sort((left, right) => Date.parse(left.requestedAt) - Date.parse(right.requestedAt))[0]
-  if (!oldest) return undefined
-  const count = snapshot.approvals.length
-  const title = snapshot.sessions.find((session) => session.id === oldest.sessionId)?.title
-  return {
-    approvalId: oldest.id,
-    headline: `${count} approval${count === 1 ? "" : "s"} waiting`,
-    command: oldest.command,
-    context: title ? `${oldest.machine} · ${title}` : oldest.machine,
-    waited: elapsedLabel(oldest.requestedAt, now),
-  }
-}
-
 // Lower sorts first. The phone is for acting, so the order is how much each
 // session wants from the person, not when the daemon happened to list it.
 const attentionRank: Record<"approval" | "preview" | "none", number> = {

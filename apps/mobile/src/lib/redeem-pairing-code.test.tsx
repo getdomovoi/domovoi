@@ -39,7 +39,7 @@ describe("spending a pairing code", () => {
       token: "t".repeat(43),
       device: { id: `device-${"a".repeat(32)}`, label: "iPhone", pairedAt: "2026-09-16T12:00:00.000Z", binding: { kind: "client", client: "phone" } },
     } }) })
-    await expect(pending).resolves.toEqual({ url: payload.url, token: "t".repeat(43), client: "phone" })
+    await expect(pending).resolves.toEqual({ url: payload.url, token: "t".repeat(43), client: "phone", deviceId: `device-${"a".repeat(32)}` })
     expect(socket.closed).toBe(true)
   })
 
@@ -109,7 +109,7 @@ describe("spending a pairing code", () => {
   }
 
   it("keeps a tablet code's kind, so the app greets as the tablet it was paired as", async () => {
-    await expect(answered(paired("tablet"))).resolves.toEqual({ url: payload.url, token: "t".repeat(43), client: "tablet" })
+    await expect(answered(paired("tablet"))).resolves.toEqual({ url: payload.url, token: "t".repeat(43), client: "tablet", deviceId: `device-${"a".repeat(32)}` })
   })
 
   it("refuses a code issued for a desktop and says which kind to show instead", async () => {
