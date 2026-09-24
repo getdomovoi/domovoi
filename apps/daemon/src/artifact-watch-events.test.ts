@@ -1,10 +1,10 @@
-import { mkdtemp, opendir, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, opendir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { ArtifactWatcher, watchFactoryFor, type ArtifactWatchFactory } from "./artifact-watcher.js"
+import { ArtifactWatcher, artifactIdleAfterScans, artifactIdlePollIntervalMs, artifactPollIntervalMs, watchFactoryFor, type ArtifactWatchFactory } from "./artifact-watcher.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const scratchDirectories: string[] = []
@@ -103,5 +103,83 @@ describe("artifact watch events", () => {
     await watcher.rescan()
     expect(onError).toHaveBeenCalledTimes(2)
     watcher.stop()
+  })
+
+  // fetzy, 2026-09-23: after a few unchanged scans an idle session is scanned
+  // every 10 s; activity snaps it back to 2 s. "A few" is three.
+  describe("idle backoff on the polled platforms", () => {
+    const io = async () => {
+      for (let turn = 0; turn < 40; turn += 1) await new Promise((resolve) => setImmediate(resolve))
+    }
+
+    async function polledWatcher() {
+      const root = await mkdtemp(join(tmpdir(), "domovoi-artifact-idle-"))
+      scratchDirectories.push(root)
+      const realRoot = await realpath(root)
+      const openDirectory = vi.fn(opendir)
+      const onChange = vi.fn()
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] })
+      const watcher = new ArtifactWatcher({ root, onChange, openDirectory, watchFactory: watchFactoryFor("linux") })
+      await watcher.start()
+      await io()
+      const scans = () => openDirectory.mock.calls.filter(([path]) => path === realRoot).length
+      const wait = async (ms: number) => {
+        await vi.advanceTimersByTimeAsync(ms)
+        await io()
+      }
+      return { root, watcher, scans, wait, onChange }
+    }
+
+    it("names the bound", () => {
+      expect([artifactPollIntervalMs, artifactIdlePollIntervalMs, artifactIdleAfterScans]).toEqual([2_000, 10_000, 3])
+    })
+
+    it("scans every 2 s until three scans find nothing new, then every 10 s", async () => {
+      const { watcher, scans, wait } = await polledWatcher()
+      const started = scans()
+      await wait(2_000)
+      await wait(2_000)
+      expect(scans() - started).toBe(2)
+      await wait(2_000)
+      await wait(2_000)
+      expect(scans() - started).toBe(2)
+      await wait(6_000)
+      expect(scans() - started).toBe(3)
+      watcher.stop()
+    })
+
+    it("goes back to 2 s once a scan finds a new artifact", async () => {
+      const { root, watcher, scans, wait, onChange } = await polledWatcher()
+      await wait(4_000)
+      const idle = scans()
+      await mkdir(join(root, "plans"))
+      await writeFile(join(root, "plans", "next-plan.md"), "# Next")
+      await wait(10_000)
+      expect(onChange).toHaveBeenCalledOnce()
+      const found = scans()
+      expect(found - idle).toBe(1)
+      await wait(2_000)
+      expect(scans() - found).toBe(1)
+      watcher.stop()
+    })
+
+    it("scans within 2 s of a turn starting and stays at 2 s while it runs", async () => {
+      const { watcher, scans, wait } = await polledWatcher()
+      await wait(4_000)
+      const idle = scans()
+      watcher.setBusy(true)
+      await wait(2_000)
+      expect(scans() - idle).toBe(1)
+      for (let poll = 0; poll < 4; poll += 1) await wait(2_000)
+      expect(scans() - idle).toBe(5)
+      watcher.setBusy(false)
+      await wait(2_000)
+      await wait(2_000)
+      await wait(2_000)
+      const settled = scans()
+      await wait(2_000)
+      expect(scans()).toBe(settled)
+      watcher.stop()
+    })
   })
 })

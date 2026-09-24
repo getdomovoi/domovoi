@@ -2161,6 +2161,16 @@ export class DomovoiDaemon {
         : []),
     ))
     this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+    this.#syncArtifactWatchActivity()
+  }
+
+  // A session with a turn starting or running keeps its artifact watch on the
+  // fast poll; an idle one may back off (artifact-watcher.ts).
+  #syncArtifactWatchActivity(): void {
+    for (const [sessionId, active] of this.#artifactWatchers) {
+      const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+      active.watcher.setBusy?.(Boolean(session?.activeTurnId))
+    }
   }
 
   #updateUsageAccounting(update: () => void): void {
@@ -9758,6 +9768,7 @@ export class DomovoiDaemon {
       })
       const entry = { root, watcher }
       this.#artifactWatchers.set(sessionId, entry)
+      watcher.setBusy?.(Boolean(this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)?.activeTurnId))
       void watcher.start().catch((error: unknown) => {
         if (this.#artifactWatchers.get(sessionId) !== entry) return
         watcher.stop()
@@ -9933,6 +9944,7 @@ export class DomovoiDaemon {
   }
 
   async #persistSnapshot(): Promise<void> {
+    this.#syncArtifactWatchActivity()
     await this.#serializeSnapshotPersistence(async () => {
       this.#sessionHistory.invalidate()
       try {

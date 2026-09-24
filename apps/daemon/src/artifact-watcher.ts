@@ -13,11 +13,17 @@ export type ArtifactFileChange = {
   variant?: { id: string; groupId: string; label: string; order: number }
 }
 
-export type ArtifactWatchSubscription = { close(): void }
+// wake() is for a polled watch: reschedule the next poll at the current delay,
+// used when the session turns active again. A native watch has nothing to wake.
+export type ArtifactWatchSubscription = { close(): void; wake?(): void }
+// A polled watch calls poll.tick() on its own schedule, waits for that scan,
+// and asks poll.delay() for the wait before the next one.
+export type ArtifactPoll = { delay(): number; tick(): Promise<void> }
 export type ArtifactWatchFactory = (
   root: string,
   onEvent: (path?: string) => void,
   onError: (error: unknown) => void,
+  poll?: ArtifactPoll,
 ) => ArtifactWatchSubscription
 
 export type ArtifactWatcherOptions = {
@@ -35,6 +41,9 @@ export type ArtifactWatcherOptions = {
 export type ArtifactWatcherHandle = {
   start(): Promise<void>
   stop(): void
+  // Whether the session has a turn starting or running. A busy session is
+  // polled every 2 s however many scans came back unchanged.
+  setBusy?(busy: boolean): void
 }
 
 export type SessionArtifactWatcherFactory = (options: ArtifactWatcherOptions) => ArtifactWatcherHandle
@@ -62,15 +71,50 @@ const nativeRecursiveWatch: ArtifactWatchFactory = (root, onEvent, onError) => {
 }
 
 export const artifactPollIntervalMs = 2_000
+// fetzy, 2026-09-23: an idle session backs off. After this many scans in a
+// row find nothing new, and while no turn runs, it is scanned every 10 s. A
+// watch event, a turn starting or running, or a scan that finds a new or
+// changed artifact puts it back on 2 s.
+export const artifactIdlePollIntervalMs = 10_000
+export const artifactIdleAfterScans = 3
 
 // Node emulates a recursive watch outside macOS and Windows: it walks the
 // whole tree synchronously and holds one inotify watch per file, including
 // node_modules, with no way to skip it. There the bounded asynchronous scan is
 // polled instead; its fingerprints already decide whether anything changed.
-const pollingWatch: ArtifactWatchFactory = (_root, onEvent) => {
-  const timer = setInterval(() => onEvent(), artifactPollIntervalMs)
-  timer.unref?.()
-  return { close: () => clearInterval(timer) }
+const pollingWatch: ArtifactWatchFactory = (_root, onEvent, _onError, poll) => {
+  const delay = () => poll?.delay() ?? artifactPollIntervalMs
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let ticking = false
+  let closed = false
+  const arm = () => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => void tick(), delay())
+    timer.unref?.()
+  }
+  const tick = async () => {
+    timer = undefined
+    ticking = true
+    try {
+      if (poll) await poll.tick().catch(() => undefined)
+      else onEvent()
+    } finally {
+      ticking = false
+    }
+    if (!closed) arm()
+  }
+  arm()
+  return {
+    close: () => {
+      closed = true
+      if (timer) clearTimeout(timer)
+      timer = undefined
+    },
+    wake: () => {
+      if (closed || ticking) return
+      arm()
+    },
+  }
 }
 
 export function watchFactoryFor(platform: NodeJS.Platform): ArtifactWatchFactory {
@@ -97,6 +141,8 @@ export class ArtifactWatcher {
   #subscription: ArtifactWatchSubscription | undefined
   #timer: ReturnType<typeof setTimeout> | undefined
   #scanning: Promise<void> | undefined
+  #unchangedScans = 0
+  #busy = false
   #waiting: Promise<void> | undefined
   #failure: string | undefined
   #running = false
@@ -130,9 +176,11 @@ export class ArtifactWatcher {
           // in them can change an artifact; a build or test run there should
           // not cost a walk of the worktree.
           if (path !== undefined && insideIgnoredDirectory(path)) return
+          this.#active()
           this.#schedule()
         },
         (error) => this.#onError(error),
+        { delay: () => this.#pollDelay(), tick: () => this.rescan() },
       )
       await this.rescan()
     } catch (error) {
@@ -165,6 +213,7 @@ export class ArtifactWatcher {
     const settle = () => { if (this.#scanning === task) this.#scanning = undefined }
     task.then(settle, (error: unknown) => {
       settle()
+      this.#unchangedScans += 1
       this.#fail(error instanceof Error ? error.message : String(error), error)
     })
     return task
@@ -174,12 +223,15 @@ export class ArtifactWatcher {
     const scan = await this.#scan()
     if (!this.#running) return
     if (scan.truncated) {
+      this.#unchangedScans += 1
       this.#fail("truncated", new Error("Artifact watcher scan exceeded its entry limit"))
       return
     }
     const next = new Map(scan.files.map((file) => [file.path, file.fingerprint]))
+    let changed = false
     for (const file of scan.files) {
       if (this.#known.get(file.path) === file.fingerprint) continue
+      changed = true
       const { fingerprint, readContent, ...rest } = file
       void fingerprint
       const content = readContent === undefined ? undefined : await readContent()
@@ -187,10 +239,32 @@ export class ArtifactWatcher {
     }
     this.#known = next
     this.#failure = undefined
+    if (changed) this.#unchangedScans = 0
+    else this.#unchangedScans += 1
   }
 
   // A failure that repeats on every poll is reported once, and again only
   // after a scan has succeeded in between.
+  setBusy(busy: boolean): void {
+    const was = this.#busy
+    this.#busy = busy
+    if (busy && !was) this.#active()
+  }
+
+  #pollDelay(): number {
+    return this.#busy || this.#unchangedScans < artifactIdleAfterScans
+      ? artifactPollIntervalMs
+      : artifactIdlePollIntervalMs
+  }
+
+  // Activity puts an idle session back on the fast poll now, not after the
+  // 10 s wait already scheduled.
+  #active(): void {
+    const wasIdle = this.#pollDelay() === artifactIdlePollIntervalMs
+    this.#unchangedScans = 0
+    if (wasIdle) this.#subscription?.wake?.()
+  }
+
   #fail(key: string, error: unknown): void {
     if (this.#failure === key) return
     this.#failure = key
@@ -207,6 +281,8 @@ export class ArtifactWatcher {
     this.#subscription = undefined
     this.#known.clear()
     this.#failure = undefined
+    this.#unchangedScans = 0
+    this.#busy = false
   }
 
   #schedule(): void {

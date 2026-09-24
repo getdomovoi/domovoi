@@ -6,7 +6,7 @@ import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { createHash } from "node:crypto"
 import { request as httpRequest } from "node:http"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import WebSocket from "ws"
@@ -12885,6 +12885,51 @@ describe("DomovoiDaemon session transfer requests", () => {
 
     expect(answer).toMatchObject({ result: { outcome: "refused", reason: "session-turn-active" } })
     expect(dialed).toBe(0)
+    socket.close()
+  })
+
+  // A running turn keeps its session's artifact watch on the fast poll; an
+  // idle session may back off. The daemon tells each watcher which it is.
+  it("tells a session's artifact watcher when a turn starts and when it ends", async () => {
+    const { snapshot, streaming } = transferSnapshot()
+    const listeners = new Set<(event: AgentEvent) => void>()
+    const busy = new Map<string, boolean[]>()
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      statePath: ":memory:",
+      store: new SqliteWorkspaceStore(":memory:", snapshot),
+      agents: { codex: fakeCodexAgent(listeners) },
+      authToken: testAuthToken("correct-horse-battery-staple"),
+      errorSink: vi.fn(),
+      workspaceService: stubWorkspaceService(),
+      artifactWatcherFactory: (options) => ({
+        start: async () => {},
+        stop: () => {},
+        setBusy: (next: boolean) => { busy.set(options.root, [...busy.get(options.root) ?? [], next]) },
+      }),
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    const root = resolve(streaming.workspacePath!)
+    expect(busy.get(root)?.at(-1)).toBe(false)
+
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolveOpen, reject) => {
+      socket.once("open", resolveOpen)
+      socket.once("error", reject)
+    })
+    await identifyClient(socket)
+    const { rpc } = observingClient(socket)
+    await rpc("session.send", { sessionId: streaming.id, prompt: "go", client: "desktop" })
+    await waitForDaemon(() => expect(busy.get(root)?.at(-1)).toBe(true))
+
+    for (const listener of listeners) {
+      listener({
+        type: "turn-completed",
+        params: { threadId: "thread-streaming", turnId: "turn-streaming", turn: { id: "turn-streaming", status: "completed" } },
+      })
+    }
+    await waitForDaemon(() => expect(busy.get(root)?.at(-1)).toBe(false))
     socket.close()
   })
 
