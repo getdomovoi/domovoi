@@ -71,10 +71,8 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
-  it("uses a breaking minor for the wire additions ruled 2026-09-23", () => {
-    // 0.9: read-only terminals, per-model image input, the pairing address on
-    // issued codes, the archived branch and unmerged count, session search.
-    expect(protocolVersion).toBe("0.9.0")
+  it("uses a breaking minor for client access, refusals, and queued sends", () => {
+    expect(protocolVersion).toBe("0.8.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
   })
 
