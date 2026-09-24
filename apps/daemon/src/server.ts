@@ -1368,7 +1368,7 @@ export class DomovoiDaemon {
   // asked for it, keyed by approval id. approval.resolve reads it again before
   // releasing the edit. Held in memory: the provider request it answers does
   // not outlive the daemon either.
-  #fileApprovalTargets = new Map<string, { cwd: string; filePath: string }>()
+  #fileApprovalTargets = new Map<string, { cwd: string; filePath: string; tool: string }>()
   #persistenceFailures = 0
   #persistenceUnavailable = false
   #snapshotPersistenceTail: Promise<void> = Promise.resolve()
@@ -7049,41 +7049,43 @@ export class DomovoiDaemon {
           ? approval.execution
           : undefined
         const approvedRecord = resolvedApprovalExecution?.record
+        const requestedFile = this.#fileApprovalTargets.get(approval.id)
         // A package script can change while its card waits, and so can the
         // file an edit reaches: a directory on its path can become a link to
-        // somewhere else. Both are read again before anything is released.
+        // somewhere else, and a file with another link can be replaced by a
+        // link out of the worktree. Every file tool's card, resolved or not,
+        // and every package script's is read again before anything is
+        // released.
+        const fileTool = approvedRecord?.kind === "workspace-file-tool"
+          ? approvedRecord.tool
+          : fileCard ? requestedFile?.tool : undefined
+        const packageScript = approvedRecord?.kind === "shell" && approvedRecord.entries.some(
+          (entry) => entry.source.kind === "package-script",
+        )
         if (
           params.decision !== "deny"
           && params.decision !== "deny-explain"
-          && resolvedApprovalExecution !== undefined
-          && approvedRecord !== undefined
-          && (
-            approvedRecord.kind === "workspace-file-tool"
-            || (approvedRecord.kind === "shell" && approvedRecord.entries.some(
-              (entry) => entry.source.kind === "package-script",
-            ))
-          )
+          && (fileTool !== undefined || packageScript)
         ) {
           const project = this.#snapshot.project
           const workspaceRoot = session?.workspacePath ?? project?.path
           const cwd = workspaceRoot === undefined
             ? undefined
-            : approvedRecord.cwd === "."
+            : approvedRecord === undefined || approvedRecord.cwd === "."
               ? workspaceRoot
               : join(workspaceRoot, approvedRecord.cwd)
-          const requestedFile = this.#fileApprovalTargets.get(approval.id)
-          const fileTarget = workspaceRoot === undefined || cwd === undefined || approvedRecord.kind !== "workspace-file-tool"
+          const fileTarget = workspaceRoot === undefined || cwd === undefined || fileTool === undefined
             ? undefined
-            : requestedFile ?? (approvedRecord.scope === "file"
+            : requestedFile ?? (approvedRecord?.kind === "workspace-file-tool" && approvedRecord.scope === "file"
               ? { cwd, filePath: join(workspaceRoot, approvedRecord.path) }
               : undefined)
           const currentExecution = workspaceRoot === undefined || cwd === undefined
             ? { state: "unresolved" as const, reason: "cwd-outside-project" as const }
-            : approvedRecord.kind === "workspace-file-tool"
+            : fileTool !== undefined
               ? await resolveExecution({
                   workspaceRoot,
                   cwd: fileTarget?.cwd ?? cwd,
-                  command: approvedRecord.tool,
+                  command: fileTool,
                   ...(fileTarget ? { filePath: fileTarget.filePath } : {}),
                 })
               : await resolveExecution({
@@ -7096,45 +7098,43 @@ export class DomovoiDaemon {
           const currentAffects = fileTarget && workspaceRoot !== undefined
             ? await fileTargetAffects({ workspace: workspaceRoot, path: fileTarget.filePath, cwd: fileTarget.cwd })
             : undefined
+          const currentDecision = permissionDecisionFor({
+            runtime: session?.runtime ?? {
+              provider: "claude-code",
+              model: "unknown",
+              reasoning: "high",
+              permissionMode: approval.mode,
+              auto: false,
+            },
+            command: approval.command,
+            reason: approval.operation,
+            execution: currentExecution,
+          })
+          // A card raised as a hard gate (a secret in its text, say) stays
+          // one, and a secret in the file it now names, or a file it hides,
+          // makes it one.
+          const currentRisk = approval.risk === "hard-gate" || currentAffects?.redacted === true || currentAffects?.sensitive === true
+            ? "hard-gate"
+            : currentDecision.risk
+          const shownExecution = approval.execution
+          const executionChanged = shownExecution.state === "resolved"
+            ? currentExecution.state !== "resolved" || currentExecution.digest !== shownExecution.digest
+            : currentExecution.state !== "unresolved" || currentExecution.reason !== shownExecution.reason
           if (
-            currentExecution.state !== "resolved"
-            || currentExecution.digest !== resolvedApprovalExecution.digest
+            executionChanged
             || (currentAffects !== undefined && currentAffects.text !== approval.affects)
+            || currentRisk !== approval.risk
           ) {
             approval.execution = currentExecution
             approval.revision += 1
             if (currentAffects !== undefined) approval.affects = currentAffects.text
-            const currentDecision = permissionDecisionFor({
-              runtime: session?.runtime ?? {
-                provider: "claude-code",
-                model: "unknown",
-                reasoning: "high",
-                permissionMode: approval.mode,
-                auto: false,
-              },
-              command: approval.command,
-              reason: approval.operation,
-              execution: currentExecution,
-            })
-            // A card raised as a hard gate (a secret in its text, say) stays
-            // one, and a secret in the file it now names, or a file it hides,
-            // makes it one.
-            approval.risk = approval.risk === "hard-gate" || currentAffects?.redacted === true || currentAffects?.sensitive === true
-              ? "hard-gate"
-              : currentDecision.risk
+            approval.risk = currentRisk
             await this.#persistSnapshot()
             this.#broadcastSnapshot()
-            this.#error(
-              socket,
-              request.id,
-              invalidParams,
-              approvedRecord.kind === "workspace-file-tool"
-                ? "The file target changed; review the updated approval before allowing it"
-                : "The resolved command changed; review the updated approval before allowing it",
-            )
+            this.#error(socket, request.id, invalidParams, changedCardMessage)
             return
           }
-          resolvedApprovalExecution = currentExecution
+          resolvedApprovalExecution = currentExecution.state === "resolved" ? currentExecution : undefined
         }
         if (params.decision === "always-project" && !resolvedApprovalExecution) {
           this.#error(
@@ -9023,7 +9023,7 @@ export class DomovoiDaemon {
         && event.tool === undefined
         && event.command !== undefined
         && isFileToolCommand(event.command)
-        ? { cwd: requestCwd, filePath: event.path }
+        ? { cwd: requestCwd, filePath: event.path, tool: event.command }
         : undefined
       const affectsCopy = fileTarget
         ? await fileTargetAffects({ workspace: session.workspacePath ?? project.path, path: fileTarget.filePath, cwd: fileTarget.cwd })
@@ -9126,9 +9126,7 @@ export class DomovoiDaemon {
           }),
         }
         this.#snapshot.approvals.push(approval)
-        if (execution.state === "resolved" && execution.record.kind === "workspace-file-tool" && fileTarget) {
-          this.#fileApprovalTargets.set(approval.id, fileTarget)
-        }
+        if (fileTarget) this.#fileApprovalTargets.set(approval.id, fileTarget)
         const blocked = blockWorkingPlanForApproval(
           this.#snapshot.workingPlans,
           session.id,

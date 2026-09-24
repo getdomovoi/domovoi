@@ -28,4 +28,7 @@ Build auto answers it. Other text passes through the durable secret redaction; a
 that redaction changes is a hard gate too, as a secret anywhere else in a card makes it. Control characters in the path are
 escaped and a path past 512 characters is shortened in the middle. The line is set when the card is
 raised and read again when the card is answered: if the file changed, the card is rewritten with the
-new line under the next revision, broadcast, and the Allow is refused.
+new line under the next revision, broadcast, and the Allow is refused. Every Allow on a file-tool
+card is read again this way, including a card the daemon could not resolve (a file with another
+hard link, say), and a change in its target, Affects line, sensitivity or execution record rewrites
+the card and refuses the Allow. An unresolved card still offers no Always.
