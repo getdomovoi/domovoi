@@ -68,15 +68,18 @@ async function collectClaudeFile(
 // An import in code is not an import. The file is parsed as CommonMark, and
 // imports are read from text only, never from a code block, a code span or
 // raw HTML, so containers, escapes, paragraph boundaries and tab stops follow
-// Markdown's own rules. Inline HTML tags arrive as separate nodes beside the
-// text they enclose, so text between an opening <code>, <pre>, <kbd> or <samp>
-// and its closing tag is skipped too, within the same paragraph. The parser
-// gives one node per tag and one per comment, so only a node's leading tag
-// name counts: a tag written inside an attribute value or a comment does not.
-// A tag can open inside emphasis and close after it, so each paragraph's
-// inline nodes are read as one sequence in document order, with a stack of
-// open code tags; a closing tag pops back to its own name and is otherwise
-// ignored.
+// Markdown's own rules. HTML arrives as separate nodes beside the text it
+// encloses, inline or as a block of its own, so text between an opening
+// <code>, <pre>, <kbd> or <samp> and its closing tag is skipped too. The whole
+// document is read as one sequence in order, with one stack of open code tags:
+// a tag can open inside emphasis and close after it, or open in an HTML block
+// and close in a later one, with paragraphs between. A closing tag pops back
+// to its own name and is otherwise ignored. A code tag that is never closed
+// hides every import after it, which errs toward loading less.
+//
+// Tags are read from each HTML node's own markup, skipping comments and quoted
+// attribute values, so a tag written inside an attribute value or a comment
+// does not count.
 //
 // An import is read from the text as written, not as CommonMark decodes it,
 // the way Claude Code reads its lexer's text tokens: a backslash escape
@@ -91,9 +94,43 @@ type MarkdownNode = {
 }
 
 const backslashEscape = /\\[!-/:-@[-`{-~]/
+const codeTagNames = new Set(["code", "pre", "kbd", "samp"])
+const tagStart = /<(\/?)([A-Za-z][A-Za-z0-9-]*)/y
 
-const codeTag = /^<(\/?)(code|pre|kbd|samp)(?=[\s>/])/i
-const inlineContainers = new Set(["paragraph", "heading", "tableCell"])
+// The code tags an HTML node opens and closes, in order.
+function codeTags(html: string): Array<{ closing: boolean; name: string }> {
+  const tags: Array<{ closing: boolean; name: string }> = []
+  let at = 0
+  while (at < html.length) {
+    const open = html.indexOf("<", at)
+    if (open === -1) break
+    if (html.startsWith("<!--", open)) {
+      const close = html.indexOf("-->", open + 4)
+      if (close === -1) break
+      at = close + 3
+      continue
+    }
+    tagStart.lastIndex = open
+    const tag = tagStart.exec(html)
+    if (!tag) {
+      at = open + 1
+      continue
+    }
+    let end = tagStart.lastIndex
+    let quote: string | undefined
+    for (; end < html.length; end += 1) {
+      const character = html[end]
+      if (quote) {
+        if (character === quote) quote = undefined
+      } else if (character === "\"" || character === "'") quote = character
+      else if (character === ">") break
+    }
+    const name = tag[2]!.toLowerCase()
+    if (codeTagNames.has(name)) tags.push({ closing: tag[1] === "/", name })
+    at = end + 1
+  }
+  return tags
+}
 
 export function importReferences(text: string): string[] {
   const references: string[] = []
@@ -106,37 +143,21 @@ export function importReferences(text: string): string[] {
     if (start === undefined || end === undefined) return
     for (const run of text.slice(start, end).split(backslashEscape)) collect(run)
   }
-  const leaves = (node: MarkdownNode, sequence: MarkdownNode[]): void => {
-    if (node.children === undefined) {
-      sequence.push(node)
-      return
-    }
-    for (const child of node.children) leaves(child, sequence)
-  }
+  const open: string[] = []
   const visit = (node: MarkdownNode): void => {
-    if (inlineContainers.has(node.type)) {
-      const sequence: MarkdownNode[] = []
-      for (const child of node.children ?? []) leaves(child, sequence)
-      const open: string[] = []
-      for (const leaf of sequence) {
-        if (leaf.type === "html" && typeof leaf.value === "string") {
-          const tag = codeTag.exec(leaf.value)
-          if (!tag) continue
-          const name = tag[2]!.toLowerCase()
-          if (tag[1] !== "/") {
-            open.push(name)
-            continue
-          }
-          const index = open.lastIndexOf(name)
-          if (index !== -1) open.length = index
+    if (node.type === "html" && typeof node.value === "string") {
+      for (const tag of codeTags(node.value)) {
+        if (!tag.closing) {
+          open.push(tag.name)
           continue
         }
-        if (open.length === 0 && leaf.type === "text") collectText(leaf)
+        const index = open.lastIndexOf(tag.name)
+        if (index !== -1) open.length = index
       }
       return
     }
     if (node.type === "text") {
-      collectText(node)
+      if (open.length === 0) collectText(node)
       return
     }
     for (const child of node.children ?? []) visit(child)

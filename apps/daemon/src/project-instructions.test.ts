@@ -54,6 +54,10 @@ describe("importReferences code boundaries", () => {
     ["an escaped at sign at the start of a line", "\\@sample.md"],
     ["an at sign written as a character reference", "See &#64;sample.md here."],
     ["an at sign written as a named character reference", "See &commat;sample.md here."],
+    ["code tags on their own lines around a separate paragraph", "<code>\n\n@sample.md\n\n</code>"],
+    ["pre tags on their own lines around a list", "<pre>\n\n- @sample.md\n\n</pre>"],
+    ["a code tag left open, which hides every later paragraph", "Open <code>@sample.md\n\n@later.md"],
+    ["a code block tag left open at the top of the file", "<code>\n\nIntro\n\n@later.md"],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
@@ -64,7 +68,9 @@ describe("importReferences code boundaries", () => {
     ["an indented line that continues a paragraph", "Intro line\n    @continued.md", ["continued.md"]],
     ["a fence closed by a shorter run, which does not close it", "````\n```\n@still/inside.md\n````\n@outside.md", ["outside.md"]],
     ["an import after a closed inline code tag", "Use <code>@sample.md</code> or @real.md", ["real.md"]],
-    ["an import in the next paragraph after an unclosed code tag", "Open <code>@sample.md\n\n@real.md", ["real.md"]],
+    ["an import after code tags closed in a later block", "<code>\n\n@sample.md\n\n</code>\n\n@real.md", ["real.md"]],
+    ["an import after an HTML block that opens and closes a code tag", "<code>x</code>\n\n@real.md", ["real.md"]],
+    ["an import after an HTML block whose attribute quotes a code tag", "<div title=\"<code>\">\n\n@real.md", ["real.md"]],
     ["an import between other inline tags", "A <b>@real.md</b> rule", ["real.md"]],
     ["an import in a tag whose attribute quotes an opening code tag", "<span title=\"<code>\">@real.md</span>", ["real.md"]],
     ["an import after an HTML comment that mentions a code tag", "A <!-- <code> --> @real.md", ["real.md"]],
