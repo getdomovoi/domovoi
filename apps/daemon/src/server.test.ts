@@ -122,6 +122,15 @@ describe("helloProtocolCompatibility", () => {
   })
 })
 
+// A person's allow takes a checkpoint before the decision is saved (J34), so
+// a gate in a worktree the fixture never made needs one that can be checkpointed.
+function checkpointingWorkspace(): WorkspaceService {
+  return {
+    inspect: vi.fn(), createSessionWorkspace: vi.fn(), removeSessionWorkspace: vi.fn(), restore: vi.fn(),
+    checkpoint: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
+  }
+}
+
 const running: DomovoiDaemon[] = []
 const scratchDirectories: string[] = []
 type TestRpcResponse<M extends RpcMethod> = Record<string, unknown> & { result: RpcResult<M> }
@@ -951,7 +960,7 @@ describe("DomovoiDaemon", () => {
       inspect: vi.fn(),
       createSessionWorkspace: vi.fn(),
       removeSessionWorkspace: vi.fn(),
-      checkpoint: vi.fn(),
+      checkpoint: vi.fn(async () => ({ commit: "c".repeat(40), changedFiles: [] })),
       restore: vi.fn(),
       evidence: vi.fn(async () => ({
         baseCommit: "a".repeat(40),
@@ -6926,6 +6935,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -6973,7 +6983,7 @@ describe("DomovoiDaemon", () => {
           expect.objectContaining({
             kind: "receipt",
             decision: "always-project",
-            checkpoint: "ckpt_7f21",
+            checkpoint: "c".repeat(40),
             client: "desktop",
           }),
         ]),
@@ -7108,6 +7118,7 @@ describe("DomovoiDaemon", () => {
       port: 0,
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agents: { "claude-code": agent },
+      workspaceService: checkpointingWorkspace(),
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -9213,6 +9224,8 @@ describe("DomovoiDaemon", () => {
       client: "desktop",
     })
     expect(agent.resolveApproval).toHaveBeenCalledWith(71, "allow-once")
+    // The allow took its checkpoint first (J34); the refused create below adds none.
+    expect(workspaceService.checkpoint).toHaveBeenCalledOnce()
 
     const activeCheckpoint = await rpc("checkpoint.create", {
       sessionId,
@@ -9222,7 +9235,7 @@ describe("DomovoiDaemon", () => {
     expect(activeCheckpoint).toMatchObject({
       error: { code: -32602, message: "Stop the active turn before creating a checkpoint" },
     })
-    expect(workspaceService.checkpoint).not.toHaveBeenCalled()
+    expect(workspaceService.checkpoint).toHaveBeenCalledOnce()
 
     const activeRestore = await rpc("checkpoint.restore", {
       sessionId,
@@ -11019,7 +11032,7 @@ describe("DomovoiDaemon", () => {
       save: vi.fn(),
       close: vi.fn(),
     } satisfies WorkspaceStore
-    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent } })
+    const daemon = new DomovoiDaemon({ port: 0, store, agents: { "claude-code": agent }, workspaceService: checkpointingWorkspace() })
     running.push(daemon)
     const address = await daemon.start()
     const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)

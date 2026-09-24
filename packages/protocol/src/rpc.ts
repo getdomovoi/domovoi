@@ -7,7 +7,7 @@ import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 import { approvalRuleRevokeParamsSchema, permissionHardGatesParamsSchema, permissionHardGatesResultSchema } from "./rules.js"
-import { approvalDecisionDurationMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import {
   updateActivateParamsSchema,
   updateActivateResultSchema,
@@ -344,6 +344,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     clientId: clientIdentityIdSchema.optional(),
     explanation: z.string().min(1).optional(),
     decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
+    ranForMs: approvedCommandRunMsSchema.optional(),
   }),
   z.object({
     ...historyEntryBase,

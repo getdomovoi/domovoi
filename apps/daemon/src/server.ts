@@ -319,6 +319,10 @@ const sessionResourceMethods = new Set([
   "session.transferResolveConflict",
   "transfer.fromRef",
 ])
+function approvedRunKey(sessionId: string, itemId: string): string {
+  return `${sessionId}\u0000${itemId}`
+}
+
 type CommandOutputRemainder = { key: string, itemId: string, remainder: string }
 
 function appendCommandOutputRemainders(
@@ -887,6 +891,7 @@ export function sessionHistoryEntries(
         ...(item.clientId ? { clientId: item.clientId } : {}),
         ...(item.explanation ? { explanation: item.explanation } : {}),
         ...(item.decisionDurationMs === undefined ? {} : { decisionDurationMs: item.decisionDurationMs }),
+        ...(item.ranForMs === undefined ? {} : { ranForMs: item.ranForMs }),
       })
     } else if (item.kind === "policy-refusal") {
       entries.push({
@@ -1353,6 +1358,11 @@ export class DomovoiDaemon {
   #artifactAccessTtlSeconds = 60
   #terminalService: TerminalService
   #terminals = new Map<string, ActiveTerminal>()
+  // Commands a person allowed, by session and provider item, waiting for that
+  // item to complete so the receipt can say how long the command ran. Held in
+  // memory: a daemon that restarts before the item completes leaves the
+  // receipt without a run time, as ruled.
+  #approvedRuns = new Map<string, { receiptId: string, sessionId: string, decidedAtMs: number }>()
   #providerProbe: ProviderProbe | undefined
   #providerSecrets: Pick<ProviderSecretManager, "status">
   #usageLedger: DaemonUsageLedger
@@ -6670,6 +6680,31 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, internalError, "Approval has no open project")
           return
         }
+        // J34, ruled 2026-09-23: a person's allow takes a checkpoint first,
+        // so the write it lets through can be undone. If the checkpoint
+        // cannot be taken, the command does not run and the gate stays. A
+        // session with no worktree has nothing to checkpoint.
+        const allows = params.decision === "allow-once" || params.decision === "always-project"
+        let approvedCheckpoint: { id: string, commit: string } | undefined
+        if (allows && session?.workspacePath) {
+          const worktree = session.workspacePath
+          try {
+            const taken = await this.#withAbortTimeout(
+              (signal) => this.#workspaceService.checkpoint(worktree, "before approved command", signal),
+              this.#agentTimeoutMs,
+              "Approval checkpoint timed out",
+            )
+            approvedCheckpoint = { id: `checkpoint-${randomUUID()}`, commit: taken.commit }
+          } catch (error) {
+            this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
+            this.#error(socket, request.id, internalError, "Domovoi could not take a checkpoint, so the command did not run; decide again")
+            return
+          }
+          if (!this.#snapshot.approvals.some((pending) => pending.id === approval.id)) {
+            this.#error(socket, request.id, invalidParams, "Approval does not exist")
+            return
+          }
+        }
         // The decision is saved before the agent hears it. A decision the
         // agent acts on but the daemon never stored would leave the person
         // told the gate is still waiting while the command runs, and a
@@ -6711,13 +6746,23 @@ export class DomovoiDaemon {
             newRule,
           ]
         }
+        if (approvedCheckpoint) {
+          candidate.thread.push({
+            id: approvedCheckpoint.id,
+            sessionId: approval.sessionId,
+            kind: "checkpoint",
+            label: `${approvedCheckpoint.commit.slice(0, 8)} · before an approved command`,
+            commit: approvedCheckpoint.commit,
+            createdAt: decidedAt,
+          })
+        }
         candidate.thread.push({
           id: receiptId,
           sessionId: approval.sessionId,
           kind: "receipt",
           decision: params.decision,
           operation: approval.operation,
-          checkpoint: approval.checkpoint,
+          checkpoint: approvedCheckpoint?.commit ?? (allows ? "unavailable" : approval.checkpoint),
           client: actor.client,
           connectionId,
           decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, decidedAt),
@@ -6799,7 +6844,7 @@ export class DomovoiDaemon {
           } catch (error) {
             this.#reportError("Domovoi could not pass an approval decision to the agent", error)
             const undo = (snapshot: WorkspaceSnapshot) => {
-              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId)
+              snapshot.thread = snapshot.thread.filter((item) => item.id !== receiptId && item.id !== approvedCheckpoint?.id)
               if (!snapshot.approvals.some((pending) => pending.id === approval.id)) {
                 snapshot.approvals.push(structuredClone(undecided.approval))
               }
@@ -6843,6 +6888,13 @@ export class DomovoiDaemon {
             )
             return
           }
+        }
+        if (allows && approval.itemId) {
+          this.#approvedRuns.set(approvedRunKey(approval.sessionId, approval.itemId), {
+            receiptId,
+            sessionId: approval.sessionId,
+            decidedAtMs: Date.parse(decidedAt),
+          })
         }
         if (blockedPlan) {
           this.#appendAudit({
@@ -8509,6 +8561,7 @@ export class DomovoiDaemon {
           estimatedDuration: "Unknown",
           checkpoint: session.baseCommit ?? "unavailable",
           providerRequestId: event.requestId,
+          ...(event.itemId && event.itemId.length <= 256 ? { itemId: event.itemId } : {}),
           requestedAt: createdAt,
           execution,
           ...(inactiveRuleIds.length === 0 ? {} : {
@@ -8556,6 +8609,16 @@ export class DomovoiDaemon {
         ...(this.#snapshot.project ? { projectId: this.#snapshot.project.id } : {}),
         ...(typeof itemRecord?.id === "string" ? { target: itemRecord.id } : {}),
       })
+      const completedItemId = event.phase === "completed" && typeof itemRecord?.id === "string" ? itemRecord.id : undefined
+      const approvedRun = completedItemId === undefined ? undefined : this.#approvedRuns.get(approvedRunKey(session.id, completedItemId))
+      if (completedItemId !== undefined && approvedRun) {
+        this.#approvedRuns.delete(approvedRunKey(session.id, completedItemId))
+        const receipt = this.#snapshot.thread.find((threadItem) => threadItem.id === approvedRun.receiptId)
+        if (receipt?.kind === "receipt") {
+          receipt.ranForMs = Math.max(0, Date.now() - approvedRun.decidedAtMs)
+          this.#sessionHistory.invalidate(session.id)
+        }
+      }
       if (event.phase === "completed" && itemRecord?.type === "contextCompaction") {
         const id = providerContextCompactionRowId(
           String(itemRecord.id ?? randomUUID()),
@@ -8679,6 +8742,9 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "turn-completed") {
+      // A command whose completion never arrived by the end of its turn keeps
+      // a receipt without a run time, as ruled 2026-09-23.
+      for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
       const { failed, failure } = providerTurnCompletion(event.params)
       let receivedProviderPlan = false
       if (reportedTurnId) {
