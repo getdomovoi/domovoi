@@ -43,6 +43,7 @@ type Manifest = {
 }
 
 const fileTools = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
+const readTools = new Set(["Read", "Glob", "Grep", "LS", "NotebookRead"])
 const packageManagers = new Set(["npm", "pnpm", "yarn", "bun"])
 const packageSubcommands = new Set([
   "add", "audit", "create", "dedupe", "dlx", "exec", "i", "init", "install", "link",
@@ -88,7 +89,7 @@ async function canonicalCwd(
   }
 }
 
-async function pathStaysInside(root: string, cwd: string, path: string): Promise<boolean> {
+export async function pathStaysInside(root: string, cwd: string, path: string): Promise<boolean> {
   let existing = resolve(cwd, path)
   while (true) {
     try {
@@ -426,6 +427,11 @@ export async function resolveExecution(input: ExecutionInput): Promise<Execution
       scope: "workspace",
     })
   }
+  if (
+    readTools.has(command)
+    && input.filePath !== undefined
+    && !await pathStaysInside(directory.root, directory.absolute, input.filePath)
+  ) return unresolved("cwd-outside-project")
   const parts = parseCommand(command)
   if (!parts) return unresolved("unsupported-syntax")
   const needsManifest = parts.some((part) => packageInvocation(part.argv) !== undefined)
