@@ -15,7 +15,13 @@ Read-only checks against `getdomovoi/domovoi` and the public npm registry found:
 | Actions policy | Default token permissions `read`; `can_approve_pull_request_reviews: false` | Enable PR creation, not repository-wide write defaults |
 | npm packages | Both `@getdomovoi/protocol` and `@getdomovoi/daemon` return 404 | Bootstrap their first public versions |
 | Prerelease state | All six manifests are `0.0.1`; no `.changeset/pre.json` | Review and enter alpha mode before versioning |
-| Release protection | No main branch protection/ruleset or GitHub release | Retain the exact-commit CI gate and protect environment admission |
+| Release protection | Recorded 2026-09-06: no `main` protection, ruleset or GitHub release. Since 2026-09-11 `main` requires five checks; see [working rules](working-rules.md), rule 9 | Retain the exact-commit CI gate and protect environment admission |
+
+Since that check, `@getdomovoi/cli` (2026-09-11) and `@getdomovoi/credential-store` (2026-09-13)
+were added as non-private packages, so eight manifests exist and four are publishable by their
+manifests. Ruled 2026-09-22: the first release publishes all four. Steps 8 and 9 below and the
+release tooling still cover only protocol and daemon; do not run them until the tooling names all
+four. See [distribution](distribution.md#versioning-and-release-metadata).
 
 npm organization ownership and name availability were not established by those package 404s.
 Do not treat missing packages as proof that the organization is available.
@@ -55,7 +61,7 @@ same protected environment as subsequent OIDC releases. [npm trust prerequisites
 6. **Enable versioning only.** In Settings, Secrets and variables, Actions, Variables, create
    **`RELEASE_PUBLISHING=version-only`**. The next main push or a manual `release` run with
    **first_publish unchecked** can open the version PR after that commit's CI passes.
-   Approve any pending CI runs on the bot-created PR, review all six versions and changelogs,
+   Approve any pending CI runs on the bot-created PR, review all eight versions and changelogs,
    then merge. Wait for the merge commit's full CI verdict. Publishing remains disabled.
    [GitHub's bot-triggered PR approval behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request).
 7. **Create the one-time credential.** On npm, Access Tokens, Generate New Token: use granular

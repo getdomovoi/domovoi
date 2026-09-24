@@ -1,5 +1,5 @@
 {
-  "recordedOn": "2026-09-10",
+  "recordedOn": "2026-09-23",
   "note": "Ticks that predate the citation rule. This list only shrinks: a tick that gains a citation is pruned, and nothing is ever added. Re-keyed from ROADMAP.md to SHIP-PLAN.md on 2026-09-14 when the roadmap folded into the plan; the entries are the same ticks, moved verbatim.",
   "exempt": {
     "SHIP-PLAN.md": [
@@ -113,7 +113,6 @@
       "Say on a sent turn which skills reached the provider and which did not",
       "Let a person choose which reviewed skills a single turn carries",
       "Give the prompt composer a total budget and a documented drop order",
-      "Align the shell to the design-system geometry: 62px rail, 240px sidebar, 760px thread lane,",
       "Vendor the Claude Design system contract so it lives in the repository",
       "Port the live terminal-pane restyle from the current design revision",
       "Rework the Changes dock as per-file accordions from the current design revision",

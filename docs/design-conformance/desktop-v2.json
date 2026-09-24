@@ -1249,12 +1249,11 @@
         "Keep the chosen side"
       ],
       "presence": [
-        "conflict"
+        "keep-target-session"
       ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "protocol",
-        "reason": "The daemon can refuse a diverged target, but it exposes no conflict-resolution RPC or Keep the chosen side action."
+      "partial": {
+        "since": "2026-09-22",
+        "reason": "reclassified from blocked: session.transferResolveConflict (since b5b1aa90, #226) resolves an ownership conflict by keeping the target side, and the transfer outcome offers it; keeping the source side has no RPC, so the design's pick of either side and its Keep the chosen side copy are not drawn"
       }
     },
     {
