@@ -127,6 +127,54 @@ describe("createProductionDaemon", () => {
     }
   })
 
+  async function withInheritedBearer(run: (authToken: string) => Promise<void>) {
+    const authToken = testToken("inherited bearer")
+    const previous = { token: process.env.DOMOVOI_AUTH_TOKEN, path: process.env.DOMOVOI_CREDENTIAL_PATH }
+    process.env.DOMOVOI_AUTH_TOKEN = authToken
+    process.env.DOMOVOI_CREDENTIAL_PATH = join(await temporaryHome(), "daemon.token")
+    try {
+      await run(authToken)
+    } finally {
+      if (previous.token === undefined) delete process.env.DOMOVOI_AUTH_TOKEN
+      else process.env.DOMOVOI_AUTH_TOKEN = previous.token
+      if (previous.path === undefined) delete process.env.DOMOVOI_CREDENTIAL_PATH
+      else process.env.DOMOVOI_CREDENTIAL_PATH = previous.path
+    }
+  }
+  const acquire = (home: string, environment: NodeJS.ProcessEnv) => createProductionDaemonWithDependencies({ homeDirectory: home, environment }, {
+    ...productionDaemonDependencies,
+    createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+    createDaemon: vi.fn((options: DaemonServerOptions) => fakeRuntime(options)),
+  })
+
+  it.each([
+    ["the process environment itself", () => process.env],
+    ["a copy of the process environment", () => ({ ...process.env })],
+  ])("takes the bearer out of the process environment when the desktop passes %s", async (_label, environment) => {
+    await withInheritedBearer(async (authToken) => {
+      const handle = await acquire(await temporaryHome(), environment())
+      running.push(handle)
+
+      expect(handle.authToken).toBe(authToken)
+      expect(process.env.DOMOVOI_AUTH_TOKEN).toBeUndefined()
+      expect(process.env.DOMOVOI_CREDENTIAL_PATH).toBeUndefined()
+    })
+  })
+
+  it("keeps the inherited bearer for a second acquisition in the same process", async () => {
+    await withInheritedBearer(async (authToken) => {
+      const home = await temporaryHome()
+      const first = await acquire(home, process.env)
+      expect(first.credential).toEqual({ source: "environment" })
+      await first.stop()
+
+      const second = await acquire(home, process.env)
+      running.push(second)
+      expect(second.authToken).toBe(authToken)
+      expect(second.credential).toEqual({ source: "environment" })
+    })
+  })
+
   it("passes validated routes from the production environment to the server", async () => {
     const sshTunnels = [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))

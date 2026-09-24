@@ -55,7 +55,6 @@ type StoredAuditEntry = {
   actor_name: string | null
   actor_reference: string | null
   actor_connection_id: string | null
-  actor_credential: string | null
   action: string
   outcome: string
   session_id: string | null
@@ -92,7 +91,6 @@ export class SqliteAuditLog implements AuditLog {
         actor_name TEXT,
         actor_reference TEXT,
         actor_connection_id TEXT,
-        actor_credential TEXT,
         action TEXT NOT NULL,
         outcome TEXT NOT NULL,
         session_id TEXT,
@@ -111,9 +109,6 @@ export class SqliteAuditLog implements AuditLog {
     }
     if (!columns.some(({ name }) => name === "actor_connection_id")) {
       this.#database.exec("ALTER TABLE audit_log ADD COLUMN actor_connection_id TEXT")
-    }
-    if (!columns.some(({ name }) => name === "actor_credential")) {
-      this.#database.exec("ALTER TABLE audit_log ADD COLUMN actor_credential TEXT")
     }
     if (!columns.some(({ name }) => name === "retention_class")) {
       // Keep legacy history intact. There was no durable classification to
@@ -153,9 +148,9 @@ export class SqliteAuditLog implements AuditLog {
     try {
       this.#insert ??= this.#database.prepare(`
         INSERT INTO audit_log (
-          id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id, actor_credential,
+          id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
           action, outcome, session_id, project_id, target, detail, retention_class
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       this.#insert.run(
         entry.id,
@@ -164,7 +159,6 @@ export class SqliteAuditLog implements AuditLog {
         auditActorName(entry.actor),
         auditActorReference(entry.actor),
         entry.actor.kind === "client" ? entry.actor.connectionId ?? null : null,
-        entry.actor.kind === "client" ? entry.actor.credential ?? null : null,
         entry.action,
         entry.outcome,
         entry.sessionId ?? null,
@@ -296,7 +290,7 @@ export class SqliteAuditLog implements AuditLog {
     }
     const where = conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`
     const statement = this.#database.prepare(`
-      SELECT id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id, actor_credential,
+      SELECT id, occurred_at, actor_kind, actor_name, actor_reference, actor_connection_id,
         action, outcome, session_id, project_id, target, detail
       FROM audit_log
       ${where}
@@ -350,7 +344,6 @@ function sanitizeAuditActor(actor: AuditActor): AuditActor {
           ? {}
           : { clientId: sanitizeAuditText(actor.clientId, 128) }),
         ...(actor.connectionId === undefined ? {} : { connectionId: actor.connectionId }),
-        ...(actor.credential === undefined ? {} : { credential: actor.credential }),
       }
     case "provider":
       return {
@@ -401,7 +394,6 @@ function storedAuditActor(row: StoredAuditEntry): unknown {
         client: row.actor_name,
         ...(row.actor_reference === null ? {} : { clientId: row.actor_reference }),
         ...(row.actor_connection_id === null ? {} : { connectionId: row.actor_connection_id }),
-        ...(row.actor_credential === null ? {} : { credential: row.actor_credential }),
       }
     case "provider":
       return {

@@ -18,6 +18,7 @@ import {
 } from "./production-daemon.js"
 import { serviceRegistrationBlocksProfile } from "./service/configuration.js"
 import { configuredProfileDirectory, profileLocation, type ProfileLocation } from "./profile-directory.js"
+import { withInheritedCredentials } from "./inherited-credentials.js"
 
 export type LocalDaemonRefusalReason =
   | "owner-busy" | "owner-unreachable" | "owner-incompatible" | "owner-unverified" | "profile-invalid"
@@ -165,7 +166,7 @@ export async function acquireLocalDaemon(options: AcquireLocalDaemonOptions): Pr
     const record = readLocalOwnerRecord(profile)
     if (!lease) {
       if (record?.state !== "ready") return refused("owner-unreachable")
-      return await attach(profile, record, (options.environment ?? process.env).DOMOVOI_AUTH_TOKEN, deadline)
+      return await attach(profile, record, withInheritedCredentials(options.environment ?? process.env).DOMOVOI_AUTH_TOKEN, deadline)
     }
     // Lease freedom alone is not a shutdown record. A crashed service keeps
     // its record, and an installed but restarting service keeps its config.

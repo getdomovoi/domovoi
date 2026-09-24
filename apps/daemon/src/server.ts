@@ -1342,6 +1342,12 @@ export class DomovoiDaemon {
     relayKey?: string
   }>()
   #authenticatedActors = new WeakMap<RpcOutboundSocket, AuditActor>()
+
+  #requestMayNameClient(socket: RpcOutboundSocket, clientId: string | undefined): boolean {
+    if (clientId === undefined || !deviceIdSchema.safeParse(clientId).success) return true
+    const actor = this.#authenticatedActors.get(socket)
+    return actor?.kind === "client" && actor.clientId === clientId
+  }
   #connectionIds = new WeakMap<RpcOutboundSocket, string>()
   #preAuthAuditDeadlines = new Map<PreAuthAuditKind, number>()
   #pairingClaimAdmission = new PairingClaimAdmission()
@@ -4337,7 +4343,6 @@ export class DomovoiDaemon {
           ...(credential
             ? { clientId: credential.device.id }
             : hello.clientId ? { clientId: hello.clientId } : {}),
-          credential: credential ? "device" : "daemon",
         })
       }
       this.#connectionIds.set(socket, randomUUID())
@@ -4731,6 +4736,13 @@ export class DomovoiDaemon {
       }
       if (method === "terminal.create") {
         const params = paramsResult.data as RpcParams<"terminal.create">
+        // A request may name a paired device's id only as that device. A daemon
+        // credential cannot name one in hello, so a device-shaped actor id is
+        // always the connection's own authenticated device.
+        if (!this.#requestMayNameClient(socket, params.clientId)) {
+          this.#error(socket, request.id, invalidParams, "A request cannot name a paired device's id it did not authenticate as")
+          return
+        }
         const session = this.#snapshot.sessions.find(
           (candidate) => candidate.id === params.sessionId,
         )
@@ -4893,6 +4905,13 @@ export class DomovoiDaemon {
 
       if (method === "terminal.claim") {
         const params = paramsResult.data as RpcParams<"terminal.claim">
+        // A request may name a paired device's id only as that device. A daemon
+        // credential cannot name one in hello, so a device-shaped actor id is
+        // always the connection's own authenticated device.
+        if (!this.#requestMayNameClient(socket, params.clientId)) {
+          this.#error(socket, request.id, invalidParams, "A request cannot name a paired device's id it did not authenticate as")
+          return
+        }
         const terminal = this.#terminals.get(params.terminalId)
         if (!terminal) {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")

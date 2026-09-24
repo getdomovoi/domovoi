@@ -27,6 +27,7 @@ import { skillTrustPath } from "./skill-signing.js"
 import { profileDirectory, profileLocation } from "./profile-directory.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
 import { wslHostFacts } from "./wsl-host.js"
+import { withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
 
 export type ProductionDaemonOptions = {
   environment?: DaemonEnvironment
@@ -109,7 +110,10 @@ export async function createProductionDaemonWithDependencies(
   ownership?: { lease: ProfileLease; deadline: OperationDeadline },
 ): Promise<ProductionDaemonHandle> {
   const deadline = ownership?.deadline ?? OperationDeadline.start(30_000)
-  const environment = options.environment ?? process.env
+  // The desktop passes process.env or a copy of it; either way the bearer
+  // leaves process.env here and is read from the kept copy.
+  const settings = withInheritedCredentials(options.environment ?? process.env)
+  const environment = withoutInheritedCredentials(options.environment ?? process.env)
   const homeDirectory = resolve(options.homeDirectory ?? homedir())
   const machineLabel = options.machineLabel ?? hostname()
   let profile = profileLocation(homeDirectory)
@@ -120,13 +124,7 @@ export async function createProductionDaemonWithDependencies(
   let relaySettled = false
   let relayResult: ProvisionedRelayChannel | undefined
   try {
-    const config = dependencies.parseEnvironment(environment, homeDirectory)
-    // Every provider, agent server and terminal the daemon starts inherits its
-    // environment, and this bearer resolves approvals. Once read, it is gone.
-    if (options.environment === undefined) {
-      delete process.env.DOMOVOI_AUTH_TOKEN
-      delete process.env.DOMOVOI_CREDENTIAL_PATH
-    }
+    const config = dependencies.parseEnvironment(settings, homeDirectory)
     profile = profileLocation(homeDirectory, config.profileDirectory)
     if (options.owner === "desktop" && options.serviceRegistrationId !== undefined) throw new Error("Desktop cannot claim a service registration")
     // Validate transport before any secret or listener side effect. Store
