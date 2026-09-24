@@ -17,7 +17,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
 import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
-import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, within, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
@@ -390,7 +390,7 @@ export type ServiceUpdateWaits = {
 // daemon reports ready, after the swap and after a restore alike. The caller
 // runs this under the service-operation lease (runServiceUpdate), with effects
 // tracked by trackInFlight.
-export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits) {
+export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits, inFlight: InFlight) {
   return async (readDeadline: OperationDeadline): Promise<ServiceSwap<ServicePlan>> => {
     const plan = servicePlan(target)
     const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
@@ -409,13 +409,14 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       for (const command of commands) await runIn(deadline)(command)
       await instances.waitUntilReady(registrationId, waits.readinessWaitMs, deadline)
     }
-    // Holds the profile once the stopped daemon lets it go, for the step given.
+    // Holds the profile once the stopped daemon lets it go, for the step given
+    // and until every call it started has settled.
     const whileHeldIn = (deadline: OperationDeadline, stoppedInstance: string | undefined) => async (step: () => Promise<void>) => {
       const lease = await claimProfileAfterStop(effects.claimProfile, readOwner, profile, stoppedInstance, waits.profileWaitMs, deadline)
       try {
         await step()
       } finally {
-        lease.release()
+        await releaseWhenSettled(lease, inFlight)
       }
     }
 

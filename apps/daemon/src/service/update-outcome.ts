@@ -94,9 +94,21 @@ export function trackInFlight<E extends object>(effects: E): { effects: E, inFli
   }
 }
 
-// How long a call that outlived its step may keep running before the restore
-// starts anyway.
+// How long the update's caller waits for calls still running after the update
+// ended before it returns; the service lease is released once they settle.
+// The restore never starts on this timer: it waits for them to settle.
 const inFlightWaitMs = 10_000
+
+// Releases a profile lease once no call the update started is still running.
+// A write the deadline cut short may still land, and it must land while the
+// profile is held.
+export async function releaseWhenSettled(lease: ProfileLease, inFlight: InFlight): Promise<void> {
+  try {
+    await inFlight.settled()
+  } finally {
+    lease.release()
+  }
+}
 
 // The two halves of an update once everything it needs has been read: the
 // swap to the new runtime, and the way back to what ran before.
@@ -108,8 +120,9 @@ export type ServiceSwap<T> = {
 // Each half gets its own budget. The swap runs under one deadline; when any of
 // its steps fails, a timeout included, the restore runs after the swap has
 // ended and its calls have settled, under a fresh deadline, so a swap that ran
-// out of time is still put back. The service-operation lease is released on
-// every path, once no call the update started is still running.
+// out of time is still put back. The service-operation lease is claimed before
+// prepare reads anything, and released on every path, once no call the update
+// started is still running.
 export async function runServiceUpdate<T>(
   claim: () => ReturnType<typeof claimServiceOperation>,
   budgetMs: number,
@@ -133,7 +146,10 @@ export async function runServiceUpdate<T>(
         return await steps.swap(swapDeadline)
       } catch (cause) {
         if (cause instanceof DaemonServiceUpdateError) throw cause
-        await inFlight.settle(inFlightWaitMs)
+        // A step that ran out of time may still be writing or starting what
+        // the restore is about to replace. The restore waits for it, however
+        // long, rather than for a fixed time: a late write would undo it.
+        await inFlight.settled()
         const restoreDeadline = OperationDeadline.start(budgetMs)
         try {
           await steps.restore(restoreDeadline)

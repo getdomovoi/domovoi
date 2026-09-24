@@ -181,7 +181,7 @@ export async function updateDaemonService(
     }
     if (!saved) throw new DaemonServiceUpdateError("not-installed")
     if (dependencies.platform === "linux" && saved.wsl) {
-      const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits)(readDeadline)
+      const steps = await prepareWslUpdate(saved, options.runtime, tracked.effects, waits, tracked.inFlight)(readDeadline)
       return { ...steps, swap: async (deadline) => ({ kind: "task" as const, ...await steps.swap(deadline) }) }
     }
     const steps = await prepareServiceUpdate({
@@ -189,7 +189,7 @@ export async function updateDaemonService(
       execPath: options.runtime.daemonEntryPath,
       runtime: options.runtime.nodePath,
       configuration: saved,
-    }, tracked.effects, waits)(readDeadline)
+    }, tracked.effects, waits, tracked.inFlight)(readDeadline)
     return {
       ...steps,
       swap: async (deadline): Promise<DaemonServiceInstallResult> => {

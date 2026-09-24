@@ -9,7 +9,7 @@ import { z } from "zod"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
-import { claimProfileAfterStop, currentInstance, OwnerInstances, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
 import { installedWslTask, type WslInstallation } from "./wsl-registration.js"
 import { removeWindowsTask, WindowsTaskRemovalError, type WindowsTaskRemovalPlan } from "./windows-task.js"
@@ -124,6 +124,7 @@ export function prepareWslUpdate(
   runtime: { nodePath: string; daemonEntryPath: string },
   effects: WslServiceUpdateEffects,
   waits: { profileWaitMs: number; readinessWaitMs: number },
+  inFlight: InFlight,
 ) {
   return async (readDeadline: OperationDeadline): Promise<ServiceSwap<{ name: string; configurationPath: string }>> => {
     const path = serviceConfigurationPath(saved.homeDirectory, "linux")
@@ -194,7 +195,7 @@ export function prepareWslUpdate(
         try {
           await writeIn(deadline)(path, serializeServiceConfiguration(updated))
         } finally {
-          lease.release()
+          await releaseWhenSettled(lease, inFlight)
         }
         await startIn(deadline)(next)
         // The new service is running. A record that cannot be removed now

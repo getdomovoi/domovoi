@@ -773,6 +773,40 @@ describe("security review round 1", () => {
     expect(effects.order.indexOf("new unit write settled")).toBeLessThan(effects.order.lastIndexOf(`write ${unit}`))
     expect(effects.order.slice(-2)).toEqual(["systemctl --user daemon-reload", "systemctl --user restart domovoid.service"])
   })
+
+  // F4: the restore started after a fixed wait even with the new agent's
+  // write still pending, and the late write replaced the restored agent. The
+  // restore waits for the write to settle, however long that takes, and the
+  // profile stays held until it has.
+  it("F4: restores only once a pending agent write settles, never on a timer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    try {
+      const effects = fake("darwin", "/Users/dl", { updateBudgetMs: 50 })
+      const write = effects.write
+      let finish: (() => void) | undefined
+      effects.write = vi.fn(async (path: string, contents: string, deadline) => {
+        if (contents.includes(runtime.nodePath)) {
+          effects.order.push("new agent write started")
+          await new Promise<void>((resolve) => { finish = resolve })
+          effects.order.push("new agent write settled")
+        }
+        await write(path, contents, deadline)
+      })
+      const outcome = updateDaemonService({ runtime }, effects).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(50)
+      // Far past any fixed wait: nothing may be restored yet.
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(effects.order.at(-1)).toBe("new agent write started")
+      expect(effects.profileLeases.filter((lease) => lease.release.mock.calls.length === 0)).toHaveLength(1)
+      finish!()
+      expect(await outcome).toMatchObject({ outcome: "swap-failed-restored" })
+      expect(effects.files.get(agent)).toBe(`<plist>${oldRuntime.nodePath}</plist>`)
+      expect(effects.order.indexOf("new agent write settled")).toBeLessThan(effects.order.lastIndexOf(`write ${agent}`))
+      expect(effects.serviceLease.release).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 it("names each outcome the desktop can tell apart", () => {
