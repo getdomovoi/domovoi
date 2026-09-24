@@ -74,6 +74,8 @@ it("lets a person type a new code after a code from the address bar was refused"
   const refused = { tone: "plain" as const, pill: "refused", title: "That code was refused", mono: "pair.refused", body: "Show another." }
   const { rerender } = render(<WebConnectPage {...base} initialCode="hearth-quiet-ember-42" fromUrl />)
   expect(screen.getByRole("textbox", { name: "Web code" }).hasAttribute("readonly")).toBe(true)
+  expect(screen.getByText("Opened from the QR on the machine. Check the machine name above, then pair.")).toBeTruthy()
+  expect(screen.queryByText("Type the web code shown on the machine, in Settings under Phone and tablet.")).toBeNull()
   rerender(<WebConnectPage {...base} initialCode="hearth-quiet-ember-42" fromUrl outcome={refused} />)
   rerender(<WebConnectPage {...base} initialCode="hearth-quiet-ember-42" fromUrl />)
   const field = screen.getByRole("textbox", { name: "Web code" })
