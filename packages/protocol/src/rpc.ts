@@ -64,6 +64,7 @@ import {
   workingPlanStructureSchema,
   workingPlanStructureStepSchema,
   workspaceSnapshotSchema,
+  sessionSummarySchema,
 } from "./schema.js"
 import {
   clientAccessSchema,
@@ -404,6 +405,29 @@ export const sessionHistoryParamsSchema = z.object({
   ).optional(),
   query: z.string().trim().min(1).check(utf16MaxLength(maximumSessionHistoryQueryLength)).optional(),
 })
+
+// Search over what a client already reads in the snapshot, without pulling
+// the snapshot: a session's title, and its summary, the newest assistant
+// message the daemon holds for it. A client fans this out per admitted
+// machine for the palette's "Sessions on other machines"; each machine answers
+// for itself, so "not searched" stays distinct from "no match".
+export const maximumSessionSearchQueryLength = 256
+export const maximumSessionSearchResults = 50
+export const sessionSearchParamsSchema = z.object({
+  query: z.string().trim().min(1).check(utf16MaxLength(maximumSessionSearchQueryLength)),
+  limit: z.number().int().min(1).max(maximumSessionSearchResults).default(20),
+}).strict()
+export const sessionSearchMatchSchema = z.object({
+  session: sessionSummarySchema,
+  // Where the query was found; the title wins when both match.
+  matchedIn: z.enum(["title", "summary"]),
+}).strict()
+export const sessionSearchResultSchema = z.object({
+  query: z.string().min(1),
+  matches: z.array(sessionSearchMatchSchema).max(maximumSessionSearchResults),
+  // More sessions matched than the limit allowed; the list is not every match.
+  truncated: z.boolean(),
+}).strict()
 
 export const sessionHistoryPageSchema = z.object({
   sessionId: streamedIdSchema,
@@ -1414,6 +1438,7 @@ export const rpcMethods = {
   "workspace.get": { params: z.object({}).strict(), result: workspaceSnapshotSchema },
   "session.evidence": { params: sessionEvidenceParamsSchema, result: sessionEvidenceSchema },
   "session.history": { params: sessionHistoryParamsSchema, result: sessionHistoryPageSchema },
+  "session.search": { params: sessionSearchParamsSchema, result: sessionSearchResultSchema },
   "audit.query": { params: auditQueryParamsSchema, result: auditQueryPageSchema },
   "audit.export": { params: auditExportParamsSchema, result: auditExportResultSchema },
   "skill.list": { params: z.object({}).strict(), result: skillSummariesSchema },
@@ -1579,6 +1604,7 @@ export const rpcMethodAuthorizations = {
   "workspace.get": "observe",
   "session.evidence": "observe",
   "session.history": "observe",
+  "session.search": "observe",
   "audit.query": "observe",
   "audit.export": "observe",
   "skill.list": "observe",
@@ -1648,6 +1674,7 @@ export const rpcMethodMutations = {
   "fleet.clientRoute": "read-only",
   "session.evidence": "read-only",
   "session.history": "read-only",
+  "session.search": "read-only",
   "session.usage": "read-only",
   "usage.window": "read-only",
   "audit.query": "read-only",
@@ -1812,6 +1839,8 @@ export type RpcNotification = z.infer<typeof rpcNotificationSchema>
 export type ArtifactAccess = z.infer<typeof artifactAuthorizeResultSchema>
 export type ArtifactAccessPurpose = z.infer<typeof artifactAccessPurposeSchema>
 export type TerminalSession = z.infer<typeof terminalSessionSchema>
+export type SessionSearchMatch = z.infer<typeof sessionSearchMatchSchema>
+export type SessionSearchResult = z.infer<typeof sessionSearchResultSchema>
 export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>

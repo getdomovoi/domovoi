@@ -1713,11 +1713,7 @@
       ],
       "evidence": [
         "SESSIONS ON OTHER MACHINES"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J39; the palette searches the connected machine only"
-      }
+      ]
     },
     {
       "id": "composer.action-row",
@@ -1830,6 +1826,11 @@
       "id": "settings.pairing",
       "since": "2026-09-23",
       "note": "Shown to desktop clients only: device.issueCode takes the daemon credential, which a web tab (a paired device) does not hold. The card's problem states that point at a tailnet setting draw no action while TailnetReach is blocked; the reach and certificate lines come from the pairingAddress the daemon sends with the code."
+    },
+    {
+      "id": "palette.other-machines",
+      "since": "2026-09-23",
+      "note": "Grouped per machine (the design's layout A). The window's own machine is searched too and counted by its answer; its summary matches join the SESSIONS group, marked in summary. A row picked elsewhere switches this window to that machine and opens the session once its snapshot arrives (needs session.search, #570)."
     }
   ],
   "annotations": [

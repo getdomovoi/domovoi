@@ -22,6 +22,10 @@ import {
   rpcMethodMutations,
   protocolVersionMismatchErrorCode,
   rpcMethods,
+  maximumSessionSearchQueryLength,
+  maximumSessionSearchResults,
+  sessionSearchParamsSchema,
+  sessionSearchResultSchema,
   rpcNotificationSchema,
   rpcRequestSchema,
   rpcResponseSchema,
@@ -1430,5 +1434,26 @@ describe("phone and tablet credential scope", () => {
     expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
       { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
     ])
+  })
+})
+
+describe("session search", () => {
+  it("takes a bounded query and limit, and answers with matches and whether it cut them", () => {
+    expect(sessionSearchParamsSchema.parse({ query: " webhooks " })).toEqual({ query: "webhooks", limit: 20 })
+    expect(sessionSearchParamsSchema.parse({ query: "webhooks", limit: 5 })).toEqual({ query: "webhooks", limit: 5 })
+    expect(sessionSearchParamsSchema.safeParse({ query: "   " }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "x".repeat(maximumSessionSearchQueryLength + 1) }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", limit: 0 }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", limit: maximumSessionSearchResults + 1 }).success).toBe(false)
+    expect(sessionSearchParamsSchema.safeParse({ query: "webhooks", sessionId: "session-1" }).success).toBe(false)
+    const session = demoWorkspace.sessions[0]!
+    const result = { query: "webhooks", matches: [{ session, matchedIn: "title" }], truncated: false }
+    expect(sessionSearchResultSchema.parse(result)).toEqual(result)
+    expect(sessionSearchResultSchema.safeParse({ ...result, matches: [{ session, matchedIn: "body" }] }).success).toBe(false)
+    expect(sessionSearchResultSchema.safeParse({ query: "webhooks", matches: [] }).success).toBe(false)
+    expect(rpcMethodAuthorizations["session.search"]).toBe("observe")
+    expect(rpcMethodMutations["session.search"]).toBe("read-only")
+    // The palette fans out from a desktop or web client; the phone list is unchanged.
+    expect(phoneAndTabletRpcMethods.has("session.search")).toBe(false)
   })
 })
