@@ -68,7 +68,7 @@ export function ProviderSettings({ providers, secrets, localDaemon }: ProviderSe
                     {provider.command}{provider.version ? ` · ${provider.version}` : ""}
                   </span>
                   <span id={`provider-account-${provider.id}`} className="text-micro text-muted-foreground">
-                    Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal
+                    {provider.problem ?? <>Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal</>}
                   </span>
                 </span>
                 <span className="ml-auto flex flex-wrap items-center gap-2">

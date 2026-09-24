@@ -54,9 +54,13 @@ This mechanism is local instance discovery, not relay encryption or protection f
 | `refused` | `reason`, `message` | No replacement daemon was started. |
 
 Refusal reasons are `owner-busy` (owner changed during discovery), `owner-unreachable`,
-`owner-incompatible`, `owner-unverified` and `profile-invalid`. The returned message names
-the remedy. Never turn any refusal into construction of another daemon or selection of a
-different profile.
+`owner-incompatible`, `owner-unverified`, `profile-invalid`, and three startup causes the owner
+can act on: `port-in-use` (another program holds the daemon's port), `state-locked` (another
+process holds the profile's state database) and `identity-mismatch` (the stored workspace belongs
+to another machine identity). Other startup failures keep `profile-invalid`. The returned message
+names the remedy, and every startup failure is also written to `errorSink` with its redacted
+cause. Never turn any refusal into construction of another daemon or selection of a different
+profile.
 
 `attached.closed` resolves when the verification socket closes, including owner shutdown,
 connection failure and explicit detach. It never rejects or starts another acquisition. It is
@@ -68,7 +72,9 @@ a free lease, an absent or `none` record (or an exact-instance removal receipt),
 service configuration. After attaching,
 use `attach-only` on reconnect and call acquisition again, not a cached URL. A stale record,
 starting/stopping owner or installed-service restart gap returns `owner-unreachable`, even if
-the OS lease is momentarily free. A deliberate CLI/service start can reclaim the free lease
+the OS lease is momentarily free. One exception: a `stopping` record whose owner is `desktop` is
+retired when this acquisition holds the lease, because Desktop quits on a shorter bound than a
+daemon stop can take and its process is gone once the lease is free. A deliberate CLI/service start can reclaim the free lease
 and publish its new instance; Desktop never guesses that the old owner is gone.
 
 One finite monotonic deadline covers each acquisition, including upgrade, proof and hello.
