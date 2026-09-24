@@ -116,6 +116,9 @@ export const providerRuntimeSchema = z.object({
   status: providerRuntimeStatusSchema,
   version: z.string().trim().min(1).optional(),
   sessionCapable: z.boolean().default(false),
+  // Why this machine cannot start sessions with the detected CLI, in the words
+  // a session start would be refused with. Absent when nothing is known wrong.
+  problem: z.string().trim().min(1).max(1_024).optional(),
 })
 
 export const machineSchema = z.object({

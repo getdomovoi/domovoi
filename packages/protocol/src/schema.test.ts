@@ -1521,6 +1521,20 @@ describe("workspace protocol", () => {
     }).success).toBe(false)
   })
 
+  it("carries why a detected provider cannot start sessions here", () => {
+    const provider = {
+      id: "claude-code",
+      command: "claude",
+      status: "ready",
+      version: "2.1.100",
+      sessionCapable: true,
+      problem: "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100.",
+    } as const
+    expect(providerRuntimeSchema.parse(provider)).toEqual(provider)
+    expect(providerRuntimeSchema.safeParse({ ...provider, problem: "" }).success).toBe(false)
+    expect(providerRuntimeSchema.safeParse({ ...provider, problem: "x".repeat(1_025) }).success).toBe(false)
+  })
+
   it("upgrades snapshots that predate annotation state", () => {
     const legacy = structuredClone(demoWorkspace) as unknown as Record<string, unknown>
     delete legacy.annotations

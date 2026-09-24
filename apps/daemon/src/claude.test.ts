@@ -1297,3 +1297,18 @@ describe("a result that arrives after its turn was interrupted", () => {
     await adapter.close()
   })
 })
+
+describe("the install check before a query", () => {
+  // The check runs before the synchronous factory, so a claude the SDK cannot
+  // drive is refused without starting a query at all.
+  it("refuses a session and a model list without calling the factory", async () => {
+    const { calls, factory } = factoryHarness()
+    const problem = "Update Claude Code to 2.1.263 or newer. The claude on this machine is 2.1.100."
+    const adapter = new ClaudeAgentSdkAdapter(factory, undefined, async () => { throw new Error(problem) })
+
+    await expect(adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })).rejects.toThrow(problem)
+    await expect(adapter.listModels()).rejects.toThrow(problem)
+    expect(calls).toHaveLength(0)
+    await adapter.close()
+  })
+})
