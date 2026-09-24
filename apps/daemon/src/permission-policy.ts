@@ -6,7 +6,7 @@ import type {
   Runtime,
 } from "@getdomovoi/protocol"
 
-import { credentialStoreNames } from "./credential-stores.js"
+import { commandOperands, credentialStoreNames, isCredentialPath, operandPieces } from "./credential-stores.js"
 
 export type PermissionDecision = {
   action: "allow" | "review"
@@ -30,30 +30,19 @@ const credentialStorePatterns = credentialStoreNames.map(
   (parts) => parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join(pathSeparator),
 )
 
-// The same names read two ways. On a command line a name is a run of letters,
-// digits, underscores, dots and hyphens in any script. In a path it is a whole
-// component, whatever characters it holds.
-function secretNamePattern(nameCharacter: string, start: string, end: string, privateKey: boolean): RegExp {
-  const names = [
-    String.raw`${nameCharacter}*\.env(?:rc|\.${nameCharacter}+)?`,
-    String.raw`${nameCharacter}+\.(?:pem|key|p12|pfx)`,
-    String.raw`gh[/\\]hosts\.yml`,
-    String.raw`daemon\.token`,
-    String.raw`credentials\.json`,
-    ...(privateKey ? [String.raw`id_(?:rsa|dsa|ecdsa|ed25519)${nameCharacter}*`] : []),
-    ...credentialStorePatterns,
-  ]
-  return new RegExp(`${start}(?:${names.join("|")})${end}`, "iu")
-}
-
+// The command-line reading of secret names, kept beside the path classifier so
+// nothing it matched stops matching: a name is a run of letters, digits,
+// underscores, dots and hyphens in any script.
 const commandNameCharacter = String.raw`[\p{L}\p{M}\p{N}_.-]`
-const secretFilePattern = secretNamePattern(
-  commandNameCharacter,
-  String.raw`(?:^|[\s:=/\\'"])`,
-  `(?!${commandNameCharacter})`,
-  false,
-)
-const secretPathPattern = secretNamePattern(String.raw`[^/\\]`, String.raw`(?:^|[/\\])`, String.raw`(?=[/\\]|$)`, true)
+const commandNameStart = String.raw`(?:^|[\s:=/\\'"])`
+const secretFilePattern = new RegExp(`${commandNameStart}(?:${[
+  String.raw`${commandNameCharacter}*\.env(?:rc|\.${commandNameCharacter}+)?`,
+  String.raw`${commandNameCharacter}+\.(?:pem|key|p12|pfx)`,
+  String.raw`gh[/\\]hosts\.yml`,
+  String.raw`daemon\.token`,
+  String.raw`credentials\.json`,
+  ...credentialStorePatterns,
+].join("|")})(?!${commandNameCharacter})`, "iu")
 // A private key keeps its name with any suffix: id_rsa, id_rsa.pub, id_rsa_work.
 const privateKeyFileName = /\bid_(?:rsa|dsa|ecdsa|ed25519)/i
 
@@ -63,10 +52,16 @@ function namesSecretFile(text: string): boolean {
   return secretFilePattern.test(text) || privateKeyFileName.test(text)
 }
 
-// Whether a path names a credential file or private key in any of its
-// components, or the way a command line would.
+// Whether a path names a credential store or secret file, by the one path
+// classifier or the way a command line would.
 export function namesSecretPath(path: string): boolean {
-  return secretPathPattern.test(path) || namesSecretFile(path)
+  return isCredentialPath(path) || namesSecretFile(path)
+}
+
+// Whether any operand of a command line names a credential store or secret
+// file, each operand read by the same path classifier as a card path.
+function commandNamesSecretPath(command: string): boolean {
+  return commandOperands(command).some(isCredentialPath)
 }
 
 const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: readonly RegExp[] }> = {
@@ -246,6 +241,7 @@ function resolvedExecutionDecision(execution: ExecutionResolution): BodyDecision
       if (
         isSkillInstallCommand(command)
         || hardGatePatterns.some((pattern) => pattern.test(command))
+        || part.argv.some((word) => operandPieces(word).some(isCredentialPath))
       ) return "hard-gate"
       if (part.expandsTo.length > 0) continue
       if (entry.source.kind === "request") {
@@ -270,6 +266,9 @@ export function permissionDecisionFor(input: {
     return { action: "review", risk: "hard-gate" }
   }
   if (hardGatePatterns.some((pattern) => pattern.test(operation))) {
+    return { action: "review", risk: "hard-gate" }
+  }
+  if (command && commandNamesSecretPath(command)) {
     return { action: "review", risk: "hard-gate" }
   }
   const executionDecision = input.execution

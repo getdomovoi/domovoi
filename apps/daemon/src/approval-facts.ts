@@ -50,7 +50,10 @@ function within(workspace: string, target: string): string | undefined {
     : undefined
 }
 
-export type ResolvedApprovalPath = Readonly<{ target: string; workspace: string }>
+// Where the path really leads, where the worktree really is, and every link
+// followed on the way: each link's own path and its target, as written and as
+// read from the link's directory.
+export type ResolvedApprovalPath = Readonly<{ target: string; workspace: string; hops: readonly string[] }>
 
 // The path as the request gave it, relative to the directory the request runs
 // in, before anything is collapsed: ".." is applied only after the links
@@ -68,12 +71,13 @@ const maximumLinksFollowed = 40
 // Walk the path one component at a time from its root. A link, including one
 // whose target does not exist yet, is replaced by its target before the rest
 // of the path is read; ".." then leaves the directory the link led to. A
-// component that does not exist is kept as written. Undefined when the links
-// loop past the bound.
-async function followPath(path: string): Promise<string | undefined> {
+// component that does not exist is kept as written. Every link followed is
+// recorded. Undefined when the links loop past the bound.
+async function followPath(path: string): Promise<{ target: string; hops: string[] } | undefined> {
   const root = parse(path).root
   let current = root
   const pending = path.slice(root.length).split(separators).filter((part) => part !== "")
+  const hops: string[] = []
   let links = 0
   while (pending.length > 0) {
     const part = pending.shift()!
@@ -85,20 +89,21 @@ async function followPath(path: string): Promise<string | undefined> {
     if (!isLink) { current = next; continue }
     if (++links > maximumLinksFollowed) return undefined
     const target = await readlink(next)
+    hops.push(next, target, isAbsolute(target) ? target : join(current, target))
     const targetRoot = parse(target).root
     if (targetRoot !== "") current = targetRoot
     pending.unshift(...target.slice(targetRoot.length).split(separators).filter((item) => item !== ""))
   }
-  return current
+  return { target: current, hops }
 }
 
 // Where the path really leads, and where the worktree really is, each followed
 // the same way. Undefined when either loops, and then the lexical answer stands.
 export async function resolveApprovalPath(workspace: string, path: string, cwd?: string): Promise<ResolvedApprovalPath | undefined> {
-  const target = await followPath(requestedPath(workspace, path, cwd))
+  const followed = await followPath(requestedPath(workspace, path, cwd))
   const realWorkspace = await followPath(resolve(workspace))
-  if (target === undefined || realWorkspace === undefined) return undefined
-  return { target, workspace: realWorkspace }
+  if (followed === undefined || realWorkspace === undefined) return undefined
+  return { target: followed.target, workspace: realWorkspace.target, hops: followed.hops }
 }
 
 // A path that names a credential file is hidden whole on the card; the line
@@ -142,11 +147,12 @@ export function approvalFacts(input: {
 }): { affects: string; network: string; redacted: boolean; sensitive: boolean } {
   const scope = input.scope ?? unrestrictedApprovalScope
   if (input.path === undefined) return { affects: scope.command, network: scope.network, redacted: false, sensitive: false }
-  // A credential file is a hard gate whether the agent named it or a link
-  // with an ordinary name leads to it.
+  // A credential file is a hard gate whether the agent named it or any link
+  // on the way to the file, or the file it ends at, names one.
   const sensitive = namesSecretPath(input.path)
     || namesSecretPath(resolve(input.workspace, input.cwd ?? ".", input.path))
-    || (input.resolved !== undefined && namesSecretPath(input.resolved.target))
+    || (input.resolved !== undefined
+      && (namesSecretPath(input.resolved.target) || input.resolved.hops.some(namesSecretPath)))
   const file = affectedFile({ path: input.path, workspace: input.workspace, cwd: input.cwd, resolved: input.resolved, hide: sensitive })
   return { affects: file.text, network: scope.network, redacted: file.redacted, sensitive }
 }
