@@ -80,7 +80,8 @@ async function collectClaudeFile(
 // processing instruction, CDATA, a declaration, a script or style body, nor a
 // node with attributes or any other text beside the closing tag. A node whose
 // markup ends inside an unfinished tag, quoted value, comment, processing
-// instruction, CDATA section or declaration hides everything after it. The
+// instruction, CDATA section or declaration hides everything after it, and
+// so does an end tag that carries attributes or an unfinished quote. The
 // cost: an import after a code tag closed in any other way stays hidden, and
 // so does one after a <pre> block, whose closing tag shares its HTML block.
 //
@@ -119,11 +120,15 @@ function openedCodeTags(html: string): { opened: string[]; unfinished: boolean }
     else if (html.startsWith("<![CDATA[", open)) next = skipTo(open + 9, "]]>")
     else if (html.startsWith("<?", open)) next = skipTo(open + 2, "?>")
     else if (html.startsWith("<!", open)) next = skipTo(open + 2, ">")
-    else if (html.startsWith("</", open)) next = skipTo(open + 2, ">")
     else {
-      tagStart.lastIndex = open
+      // Start and end tags are scanned alike, with quoted values tracked. An
+      // end tag carries nothing but its name, so one with attributes or an
+      // unfinished quote is treated as unfinished markup.
+      const closing = html.startsWith("</", open)
+      tagStart.lastIndex = closing ? open + 1 : open
       const tag = tagStart.exec(html)
       if (!tag) {
+        if (closing) return { opened, unfinished: true }
         at = open + 1
         continue
       }
@@ -137,8 +142,9 @@ function openedCodeTags(html: string): { opened: string[]; unfinished: boolean }
         else if (character === ">") break
       }
       if (end >= html.length) return { opened, unfinished: true }
+      if (closing && html.slice(tagStart.lastIndex, end).trim() !== "") return { opened, unfinished: true }
       const name = tag[1]!.toLowerCase()
-      if (codeTagNames.has(name)) opened.push(name)
+      if (!closing && codeTagNames.has(name)) opened.push(name)
       next = end + 1
     }
     if (next === -1) return { opened, unfinished: true }

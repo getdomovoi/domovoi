@@ -65,6 +65,8 @@ describe("importReferences code boundaries", () => {
     ["a code tag closed only by an HTML block that holds more than the closing tag", "<code>\n\n</code>\nmore\n\n@hidden.md"],
     ["a pre block, whose closing tag shares its HTML block", "<pre>\nexample\n</pre>\n\n@hidden.md"],
     ["an HTML block that ends inside an unfinished tag", "<div title=\"never closed\n\n@hidden.md"],
+    ["a code tag whose only closing tag follows an end tag with an unfinished quote", "<code>\n\n</div title=\"first>\n\n</code>\n\nlast\">\n\n@hidden.md"],
+    ["a code tag whose only closing tag follows an end tag that carries attributes", "<code>\n\n</div class=x>\n\n</code>\n\n@hidden.md"],
   ])("skips an import inside %s", (_label, text) => {
     expect(importReferences(text)).toEqual([])
   })
