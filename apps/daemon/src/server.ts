@@ -203,6 +203,7 @@ import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
 import {
   internalRpcErrorMessage,
+  repositoryInspectionRefusal,
   PublicRpcError,
   redactErrorDetail,
 } from "./rpc-errors.js"
@@ -215,7 +216,7 @@ import { resolveExecution } from "./execution-resolution.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
-import type { MachineIdentity } from "./machine-identity.js"
+import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
@@ -1586,7 +1587,7 @@ export class DomovoiDaemon {
       if (!options.store) void Promise.resolve(this.#store.close()).catch((error: unknown) => {
         this.#reportError("Closing mismatched workspace state failed", error)
       })
-      throw new Error("Stored workspace machine identity does not match this daemon; restore the matching identity and state before restarting")
+      throw new StoredMachineIdentityMismatchError()
     }
     if (options.machineIdentity) {
       // A saved machine row is not evidence of this executable's platform or
@@ -1858,6 +1859,13 @@ export class DomovoiDaemon {
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
     })
+    // The WebSocket server re-emits its HTTP server's errors. A listen failure
+    // such as a port in use is answered by start() below; without a listener
+    // here the re-emitted copy throws first and start() never settles.
+    this.#websocket.on("error", (error) => {
+      // Before listening, start() answers the listen failure itself.
+      if (this.#http?.listening) this.#reportError("Domovoi WebSocket server failed", error)
+    })
     this.#websocket.on("headers", (headers, request) => {
       const nonce = request.headers["x-domovoi-owner-nonce"]
       const peer = request.socket.remoteAddress
@@ -1969,7 +1977,11 @@ export class DomovoiDaemon {
     try {
       await new Promise<void>((resolve, reject) => {
         if (!this.#http) return resolve()
-        this.#http.close((error) => (error ? reject(error) : resolve()))
+        // A listener that never started (a port already in use, say) has
+        // nothing to close; failing here would keep the profile lease held.
+        this.#http.close((error) => (
+          error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()
+        ))
       })
     } catch (error) {
       failures.push(error)
@@ -7264,11 +7276,22 @@ export class DomovoiDaemon {
           )
           return
         }
-        const repository = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.inspect(params.path, signal),
-          this.#agentTimeoutMs,
-          "Repository inspection timed out",
-        )
+        let repository: Awaited<ReturnType<WorkspaceService["inspect"]>>
+        try {
+          repository = await this.#withAbortTimeout(
+            (signal) => this.#workspaceService.inspect(params.path, signal),
+            this.#agentTimeoutMs,
+            "Repository inspection timed out",
+          )
+        } catch (error) {
+          if (error instanceof OperationTimeoutError || signal?.aborted) throw error
+          const refusal = repositoryInspectionRefusal(error)
+          if (refusal === undefined) throw error
+          // The git error quotes the machine's paths and output, which stay in
+          // the daemon log; the caller gets the one thing it can act on.
+          this.#reportError("RPC project.open failed", error)
+          throw new PublicRpcError(invalidParams, refusal)
+        }
         const projectId = `project-${createHash("sha256").update(repository.root).digest("hex").slice(0, 12)}`
         if (this.#snapshot.project?.path === repository.root) {
           if (
@@ -7859,12 +7882,31 @@ export class DomovoiDaemon {
         }
         this.#emergencyBlockedThreads.delete(emergencyThread)
         this.#inFlightProviderThreads.set(emergencyThread, session.id)
+        // A provider that cannot connect, resume or start a turn is something
+        // the person can act on: record the classified failure on the session,
+        // where the sign-in, quota and model guidance is shown, and answer with
+        // its fixed message. Timeouts and cancellations keep their own paths.
+        // A failed steer leaves its turn running, so only the answer names the
+        // failure; the session is not marked as failed.
+        const providerRefusal = async (error: unknown, record = true): Promise<never> => {
+          if (error instanceof PublicRpcError || signal?.aborted) throw error
+          this.#reportError("RPC session.send failed", error)
+          const failure = classifyProviderFailure(error)
+          const failed = record ? this.#snapshot.sessions.find((candidate) => candidate.id === session.id) : undefined
+          if (failed) {
+            failed.providerFailure = failure
+            failed.updatedAt = new Date().toISOString()
+            await this.#persistSnapshot()
+            this.#broadcastSnapshot()
+          }
+          throw new PublicRpcError(invalidParams, failure.message)
+        }
         let agent: AgentAdapter
         try {
           agent = await this.#ensureAgentConnected(session.runtime.provider)
         } catch (error) {
           this.#inFlightProviderThreads.delete(emergencyThread)
-          throw error
+          return await providerRefusal(error)
         }
         if (signal?.aborted) {
           this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7887,7 +7929,7 @@ export class DomovoiDaemon {
             if (error instanceof OperationTimeoutError) {
               await this.#quarantineProviderThread(session.id, error.message)
             }
-            throw error
+            return await providerRefusal(error)
           }
           if (signal?.aborted) {
             this.#inFlightProviderThreads.delete(emergencyThread)
@@ -7896,6 +7938,7 @@ export class DomovoiDaemon {
           this.#loadedAgentThreads.add(loadedThread)
         }
         let turnId = session.activeTurnId
+        const steering = turnId !== undefined
         let providerMessageId: string | undefined
         try {
           signal?.throwIfAborted()
@@ -7934,7 +7977,7 @@ export class DomovoiDaemon {
           if (error instanceof OperationTimeoutError) {
             await this.#quarantineProviderThread(session.id, error.message)
           }
-          throw error
+          return await providerRefusal(error, !steering)
         }
         if (signal?.aborted) {
           if (turnId) await this.#stopCancelledProviderTurn(session, turnId, providerThreadId)
