@@ -20,10 +20,12 @@ export {
 } from "./local-daemon.js"
 export {
   DaemonServiceRuntimeMissingError,
+  DaemonServiceUpdateError,
   installDaemonService,
   readDaemonServiceRuntimeVersion,
   readDaemonServiceStatus,
   removeDaemonService,
+  updateDaemonService,
   type DaemonServiceDependencies,
   type DaemonServiceRuntimeReport,
   type DaemonServiceInstallResult,
@@ -31,5 +33,7 @@ export {
   type DaemonServiceRemovalResult,
   type DaemonServiceRuntime,
   type DaemonServiceStatus,
+  type DaemonServiceUpdateOptions,
+  type DaemonServiceUpdateOutcome,
   type RuntimeFileState,
 } from "./service/desktop-service.js"

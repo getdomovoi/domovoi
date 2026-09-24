@@ -179,6 +179,57 @@ describe("WSL service installation", () => {
     expect(deps.remove).not.toHaveBeenCalled()
   })
 
+  // Ruled 2026-09-23 (option A): an update interrupted between deleting the
+  // old Windows task and registering the new one left its intent record.
+  describe("after an interrupted update", () => {
+    const intentPath = home + "/.domovoi/service.json.update-intent.json"
+
+    it("reports it from status and exits 1", async () => {
+      const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => configuration,
+        exists: vi.fn(async (path: string) => path === intentPath) }
+      expect(await runServiceCommand(["service", "status"], deps)).toBe(1)
+      expect(deps.stdout).toHaveBeenCalledExactlyOnceWith("not installed; a service update was interrupted before the new Windows task was registered. Run Update the service from the app, or domovoid service remove, to settle it.\n")
+      expect(deps.capture).not.toHaveBeenCalled()
+      expect(deps.run).not.toHaveBeenCalled()
+    })
+
+    // Review of ae039f1e (S1): a finished update whose record could not be
+    // removed is not an interrupted one. Status clears it and reports as usual.
+    it("clears a finished update's leftover record from status", async () => {
+      const intent = JSON.stringify({ version: 1, previous: serializeServiceConfiguration({ ...configuration, wsl: { ...wsl, executable: "/usr/bin/node-old" } }), next: serializeServiceConfiguration(configuration) })
+      const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => parseServiceConfiguration(serializeServiceConfiguration(configuration)),
+        read: vi.fn(async () => intent),
+        exists: vi.fn(async (path: string) => path === intentPath),
+        capture: vi.fn(async () => ({ code: 0, stdout: "domovoi-task:4" })),
+        supervisorStatus: async () => ({ installed: null, running: true, detail: "guest daemon running" }) }
+      expect(await runServiceCommand(["service", "status"], deps)).toBe(0)
+      expect(deps.stdout).toHaveBeenCalledWith("installed; guest daemon running\n")
+      expect(deps.remove).toHaveBeenCalledWith(intentPath, expect.anything())
+    })
+
+    it("refuses install, changing nothing", async () => {
+      const deps = { ...dependencies(), readConfiguration: vi.fn(() => configuration), exists: vi.fn(async (path: string) => path === intentPath) }
+      expect(await runServiceCommand(["service", "install"], deps)).toBe(1)
+      expect(deps.stderr).toHaveBeenCalledExactlyOnceWith("A service update was interrupted before the new Windows task was registered. Run Update the service from the app, or domovoid service remove, before installing.\n")
+      expect(deps.write).not.toHaveBeenCalled()
+      expect(deps.run).not.toHaveBeenCalled()
+      expect(deps.capture).not.toHaveBeenCalled()
+    })
+
+    it("deletes the intent record on remove", async () => {
+      const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => configuration,
+        stopSupervisor: async () => {},
+        capture: async (_command, args) => {
+          const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+          return { code: 0, stdout: script.includes("$folder.DeleteTask") ? "domovoi-task:deleted" : "domovoi-task:1" }
+        },
+        exists: vi.fn(async (path: string) => path === intentPath) }
+      expect(await runServiceCommand(["service", "remove"], deps)).toBe(0)
+      expect(deps.remove).toHaveBeenCalledWith(intentPath, expect.anything())
+      expect(deps.remove).toHaveBeenCalledWith(home + "/.domovoi/service.json", expect.anything())
+    })
+  })
+
   it("selects the guest supervisor task instead of systemd", () => {
     const plan = servicePlan({ platform: "linux", home, execPath: "/opt/domovoi/index.js", runtime: "/usr/bin/node", configuration })
     expect(plan.kind).toBe("task")

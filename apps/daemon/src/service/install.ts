@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix } from "node:path"
 import { userInfo } from "node:os"
 import { loginServiceAgentLabel, loginServiceHomePaths, loginServiceTaskName, loginServiceUnitFile } from "@getdomovoi/protocol"
@@ -17,7 +17,9 @@ import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, systemdUnit } from "./units.js"
-import { readWindowsTaskState, removeWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsTaskRemovalPlan, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, runServiceUpdate, trackInFlight, within, type ServiceSwap } from "./update-outcome.js"
+import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 
@@ -62,6 +64,11 @@ export type ServiceEffects = {
   removalSnapshot: typeof readServiceRemovalSnapshot
   writeRemovalReceipt: typeof writeLocalOwnerRemovalReceipt
   write: (path: string, contents: string, deadline: OperationDeadline) => Promise<void>
+  // Reads a service file back, so an update can restore it.
+  read?: (path: string, deadline: OperationDeadline) => Promise<string>
+  // The daemon's local owner record: which instance holds the profile, and
+  // whether it reports ready.
+  readOwner?: (profile: ProfileLocation) => LocalOwnerRecord | undefined
   run: (command: string, args: string[], deadline: OperationDeadline) => Promise<void>
   capture: (command: string, args: string[], deadline: OperationDeadline) => Promise<CapturedRun>
   exists: (path: string, deadline: OperationDeadline) => Promise<boolean>
@@ -358,6 +365,174 @@ export function installService(target: ServiceTarget, effects: Pick<ServiceEffec
   return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline))
 }
 
+export type ServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "claimServiceOperation" | "readOwner">
+
+export type ServiceUpdateWaits = {
+  // How long a stopped service's daemon has to let the profile go.
+  profileWaitMs: number
+  // How long a started service has to report ready.
+  readinessWaitMs: number
+  // The budget of the swap, and separately of the restore.
+  budgetMs: number
+}
+
+// Ruled 2026-09-23: an update swaps the installed service to a new runtime in
+// place. The saved service configuration is kept as it is; the service
+// definition changes. What the service ran before is read first, so any
+// failed step, a timeout included, puts it back. A start counts only once the
+// daemon reports ready, after the swap and after a restore alike.
+function prepareUpdate(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits) {
+  return async (readDeadline: OperationDeadline): Promise<ServiceSwap<ServicePlan>> => {
+    const plan = servicePlan(target)
+    const profile = profileLocation(target.configuration.homeDirectory, target.configuration.profileDirectory)
+    const registrationId = target.configuration.registrationId
+    const readOwner = effects.readOwner
+    if (!readOwner) throw new Error("the update needs to read the daemon's owner record")
+    const runIn = (deadline: OperationDeadline) => (command: ServiceCommand) => withinServiceDeadline(deadline, () => effects.run(command.command, command.args, deadline))
+    const writeIn = (deadline: OperationDeadline) => (path: string, contents: string) => withinServiceDeadline(deadline, () => effects.write(path, contents, deadline))
+    // Every instance seen, from the one running now on; none of them can
+    // count as a new start.
+    const instances = new OwnerInstances(readOwner, profile)
+    await instances.note(readDeadline)
+    // Starts a service definition and waits for its daemon to report ready.
+    const startIn = (deadline: OperationDeadline) => async (commands: readonly ServiceCommand[]) => {
+      await instances.note(deadline)
+      for (const command of commands) await runIn(deadline)(command)
+      await instances.waitUntilReady(registrationId, waits.readinessWaitMs, deadline)
+    }
+    // Holds the profile once the stopped daemon lets it go, for the step given.
+    const whileHeldIn = (deadline: OperationDeadline, stoppedInstance: string | undefined) => async (step: () => Promise<void>) => {
+      const lease = await claimProfileAfterStop(effects.claimProfile, readOwner, profile, stoppedInstance, waits.profileWaitMs, deadline)
+      try {
+        await step()
+      } finally {
+        lease.release()
+      }
+    }
+
+    if (plan.kind === "file") {
+      if (!await withinServiceDeadline(readDeadline, () => effects.exists(plan.path, readDeadline))) throw new DaemonServiceUpdateError("not-installed")
+      if (!effects.read) throw new Error("the update needs to read the installed service file")
+      const read = effects.read
+      const previous = await withinServiceDeadline(readDeadline, () => read(plan.path, readDeadline))
+
+      if (target.platform === "linux") {
+        // The running daemon holds the profile across its own restart, so the
+        // profile is not claimed here.
+        const reload = { command: "systemctl", args: ["--user", "daemon-reload"] }
+        const restart = { command: "systemctl", args: ["--user", "restart", unitFile] }
+        return {
+          swap: async (deadline) => {
+            try {
+              await writeIn(deadline)(plan.path, plan.contents)
+            } catch (cause) {
+              // The unit is replaced by rename, so a failed write left the old one.
+              throw new DaemonServiceUpdateError("nothing-changed", cause)
+            }
+            await runIn(deadline)(reload)
+            await startIn(deadline)([restart])
+            return plan
+          },
+          restore: async (deadline) => {
+            await writeIn(deadline)(plan.path, previous)
+            await runIn(deadline)(reload)
+            await startIn(deadline)([restart])
+          },
+        }
+      }
+
+      // launchd: the agent is booted out, so its daemon lets the profile go.
+      // The profile is held while the new agent is written, then released
+      // before the new agent starts and claims it.
+      const domain = `gui/${assertUid(target.uid)}`
+      const job = `${domain}/${agentLabel}`
+      const bootout = { command: "launchctl", args: ["bootout", job] }
+      const bootstrap = { command: "launchctl", args: ["bootstrap", domain, plan.path] }
+      const stoppedInstance = currentInstance(readOwner, profile)
+      const loaded = async (deadline: OperationDeadline) => {
+        const printed = await withinServiceDeadline(deadline, () => effects.capture("launchctl", ["print", job], deadline))
+        if (printed.code === 0) return true
+        if (printed.code === 113 && isMissingServiceFailure("darwin", printed)) return false
+        throw captureFailure("launchctl", printed)
+      }
+      const bootoutIn = (deadline: OperationDeadline) => async () => {
+        try {
+          await runIn(deadline)(bootout)
+        } catch (cause) {
+          if (isMissingServiceFailure("darwin", cause)) return
+          // The refusal may still stop the agent, and a job listed right after
+          // it can unload a moment later, so it is watched for a while.
+          // Still loaded then, it stopped nothing; unloaded, it stopped the
+          // previous service, which is put back.
+          const unloaded = await within(waits.profileWaitMs, deadline, async () => !await loaded(deadline))
+          if (!unloaded) throw new DaemonServiceUpdateError("nothing-changed", cause)
+          throw cause
+        }
+      }
+      let wroteNew = false
+      return {
+        swap: async (deadline) => {
+          await bootoutIn(deadline)()
+          await whileHeldIn(deadline, stoppedInstance)(async () => {
+            wroteNew = true
+            await writeIn(deadline)(plan.path, plan.contents)
+          })
+          await startIn(deadline)([bootstrap])
+          return plan
+        },
+        restore: async (deadline) => {
+          if (await loaded(deadline)) await runIn(deadline)(bootout)
+          if (wroteNew) await writeIn(deadline)(plan.path, previous)
+          await startIn(deadline)([bootstrap])
+        },
+      }
+    }
+
+    // The Windows logon task: stopped (and disabled) through Task Scheduler,
+    // the profile held while it lets go, then registered again with the new
+    // command, which enables it, and run.
+    const previous = await readWindowsTaskAction(displayName, effects, readDeadline)
+    if (previous === "missing") throw new DaemonServiceUpdateError("not-installed")
+    const restoreCommands = plan.commands.map((command) => command.args[0] !== "/create" ? command : {
+      ...command,
+      args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? `"${previous.path}" ${previous.arguments}` : arg),
+    })
+    const stoppedInstance = currentInstance(readOwner, profile)
+    return {
+      swap: async (deadline) => {
+        try {
+          await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        } catch (cause) {
+          // A refused stop may have changed nothing: the task still enabled,
+          // running the command it ran before. Then the service was left as
+          // it was, and there is nothing to put back.
+          const now = await readWindowsTaskAction(displayName, effects, deadline).catch(() => undefined)
+          if (now !== undefined && now !== "missing" && now.enabled && now.state === 4
+            && now.path === previous.path && now.arguments === previous.arguments) {
+            throw new DaemonServiceUpdateError("nothing-changed", cause)
+          }
+          throw cause
+        }
+        await whileHeldIn(deadline, stoppedInstance)(async () => {})
+        await startIn(deadline)(plan.commands)
+        return plan
+      },
+      restore: async (deadline) => {
+        // Whatever instance the swap left running is stopped first: Task
+        // Scheduler ignores a run while one runs, and a late start of the new
+        // runtime must not pass for the previous service.
+        await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        await startIn(deadline)(restoreCommands)
+      },
+    }
+  }
+}
+
+export function updateService(target: ServiceTarget, effects: ServiceUpdateEffects, waits: ServiceUpdateWaits): Promise<ServicePlan> {
+  const tracked = trackInFlight(effects)
+  return runServiceUpdate(effects.claimServiceOperation, waits.budgetMs, prepareUpdate(target, tracked.effects, waits), tracked.inFlight)
+}
+
 // A service that was never installed is not an error to remove: the end state
 // the caller asked for is the one they get either way.
 type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation">
@@ -632,6 +807,8 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
     supervisorStatus: async (home) => readGuestSupervisorStatus(home),
     write: writeUnit,
+    read: (path, deadline) => withinServiceDeadline(deadline, () => readFile(path, { encoding: "utf8", signal: deadline.signal })),
+    readOwner: readLocalOwnerRecord,
     run: async (command, args, deadline) => {
       const { execFile } = await import("node:child_process")
       deadline.throwIfExpired()
