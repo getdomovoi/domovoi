@@ -35,7 +35,9 @@ function problemFor(report: PairingAddressReport, kind: Kind): Problem | undefin
     return { title: `No code: ${noun} would not trust this daemon`, mono: report.problem.replace(/,? then run this again\.$/u, "."), still: "Sessions and this window are unaffected.", next: "Give the daemon a certificate for its tailnet name, then show a code." }
   }
   if (report.loopback) {
-    return { title: `No code: ${noun} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code." }
+    // A browser on this machine can reach loopback; the one that cannot is
+    // elsewhere (ruled 2026-09-23).
+    return { title: `No code: ${kind === "browser" ? "a browser on another device" : noun} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code." }
   }
   return undefined
 }
