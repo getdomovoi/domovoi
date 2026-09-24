@@ -74,6 +74,14 @@ const channels: readonly ChannelSpec[] = [
     unauthorized: { rejects: notAuthorized },
     argument: externalRequest,
   },
+  { channel: "domovoi:window-decoration-get", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  {
+    channel: "domovoi:window-decoration-set",
+    via: "handle",
+    guard: "authorized",
+    unauthorized: { rejects: notAuthorized },
+    argument: "system",
+  },
   { channel: "domovoi:deep-link-ready", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   { channel: "domovoi:deep-link-paused", via: "on", guard: "authorized", unauthorized: { ignored: true } },
   {
@@ -151,6 +159,8 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "launchSmoke.ready": vi.fn(),
     "launchSmoke.failed": vi.fn(),
     "launchSmoke.unauthorized": vi.fn(),
+    "windowDecoration.get": vi.fn(() => "domovoi" as const),
+    "windowDecoration.set": vi.fn((_decoration: "domovoi" | "system") => true),
   } satisfies Record<string, Mock>
   const authorize = vi.fn((_event: DesktopIpcEvent) => authorized)
   const deps: DesktopIpcDependencies = {
@@ -176,6 +186,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
       pause: effects["deepLinks.pause"],
     },
     rendererDeepLinkSink: { get: () => sink, set: effects["rendererDeepLinkSink.set"] },
+    windowDecoration: { get: effects["windowDecoration.get"], set: effects["windowDecoration.set"] },
     launchSmoke: {
       enabled: options.launchSmoke ?? true,
       preloadReady: effects["launchSmoke.preloadReady"],
@@ -214,6 +225,16 @@ describe("registerDesktopIpc", () => {
     target.listener("handle", "domovoi:fleet-route-forget")(target.event, "machine-peer")
     expect(target.effects.forgetFleetRoute).toHaveBeenCalledWith("machine-peer")
   })
+  it("reads and saves the window decoration, refusing a value it does not know", async () => {
+    const target = harness()
+    expect(await target.listener("handle", "domovoi:window-decoration-get")(target.event)).toBe("domovoi")
+    const set = target.listener("handle", "domovoi:window-decoration-set")
+    expect(await set(target.event, "system")).toBe(true)
+    expect(target.effects["windowDecoration.set"]).toHaveBeenCalledWith("system")
+    expect(() => set(target.event, "chromeless")).toThrow("Window decoration is invalid")
+    expect(target.effects["windowDecoration.set"]).toHaveBeenCalledTimes(1)
+  })
+
   it("registers exactly the documented channels", () => {
     const target = harness()
     const expected = channels.map((spec) => [spec.via, spec.channel] as const)

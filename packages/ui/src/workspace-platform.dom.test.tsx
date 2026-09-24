@@ -96,7 +96,7 @@ async function openWorkspace(platform: WorkspacePlatform, snapshot = workspaceSn
 async function openNotificationSettings() {
   await userEvent.click(screen.getByRole("button", { name: "Settings" }))
   await settle()
-  expect(screen.getByRole("heading", { name: "Notifications" })).toBeTruthy()
+  expect(await screen.findByRole("heading", { name: "Notifications" })).toBeTruthy()
 }
 
 it("names the command palette scope", async () => {

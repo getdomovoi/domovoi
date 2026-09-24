@@ -11,10 +11,6 @@ export function coverageLabel(tests: FileTestAssociation | undefined): string {
   return `${count} recorded ${count === 1 ? "run" : "runs"} touched this file`
 }
 
-export function coverageIsKnown(tests: FileTestAssociation | undefined): boolean {
-  return tests?.state === "known"
-}
-
 export type RevertPrompt =
   | { available: false, reason: string }
   | { available: true, verb: "Restore" | "Remove" | "Revert", confirmation: string, expectedBaseCommit?: string }

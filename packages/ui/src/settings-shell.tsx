@@ -10,7 +10,6 @@ import type { NotificationPreferences } from "./notification-preferences.js"
 import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
 import { PermissionRuleSettings } from "./permission-settings.js"
 
-export type SettingsPane = "providers" | "appearance" | "permissions" | "external-editor" | "notifications"
 
 type DesktopCapability = {
   externalEditor: DesktopExternalEditor
