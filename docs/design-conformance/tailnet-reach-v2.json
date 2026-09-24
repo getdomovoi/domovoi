@@ -1,0 +1,51 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/TailnetReach.dc.html",
+  "sha256": "3f4f54f3c49d8863baed1078ac17e860ae7bac2ce448c7b2da435268ebed1c91",
+  "derivedOn": "2026-09-23",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts",
+    "apps/desktop/src/**/*.{ts,tsx}"
+  ],
+  "note": "A component, imported by Desktop V2 (Settings) and v2 Onboarding (Add a machine), answering J25. Its title, status line, step labels and platform commands live in the component's data; the template draws only the six strings held here.",
+  "sample": [],
+  "annotations": [],
+  "elements": [
+    {
+      "id": "tailnet-reach.card",
+      "name": "Reach this machine from the tailnet",
+      "where": "Settings and onboarding: title, line, the tailnet name in mono, status with a toggle; TURNING IT ON CHANGES and DOMOVOI NEVER TOUCHES lists; the public-certificate warning; the off line; Check again when Tailscale is down",
+      "states": [
+        "off",
+        "turning on",
+        "on",
+        "Tailscale not running",
+        "failed"
+      ],
+      "copy": [
+        "Check again",
+        "Bring Tailscale up yourself, then check again.",
+        "TURNING IT ON CHANGES",
+        "DOMOVOI NEVER TOUCHES",
+        "Every certificate is recorded in public logs, so this machine's tailnet name becomes public.",
+        "Turning it off deletes those files and restarts the service on 127.0.0.1 only."
+      ],
+      "evidence": [
+        "TURNING IT ON CHANGES",
+        "DOMOVOI NEVER TOUCHES"
+      ],
+      "blocked": {
+        "since": "2026-09-23",
+        "needs": "protocol",
+        "reason": "no RPC or desktop adapter turns tailnet serving on or off (a certificate for the tailnet name and a listen address beyond loopback); J25 was drawn as an owner decision"
+      }
+    }
+  ],
+  "humanRead": [
+    {
+      "id": "tailnet-reach.card",
+      "since": "2026-09-23",
+      "note": "Title, status, steps and per-platform commands are in the component's data, so the gate cannot hold them; read them against the component."
+    }
+  ]
+}

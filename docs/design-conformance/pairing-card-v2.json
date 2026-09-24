@@ -1,0 +1,88 @@
+{
+  "design": "design/design_handoff_domovoi_v2/designs/PairingCard.dc.html",
+  "sha256": "47923ec2f6bdb01929e3929423d818a061e43027107382f29a35edb244970dfd",
+  "derivedOn": "2026-09-23",
+  "sources": [
+    "packages/ui/src/**/*.{ts,tsx}",
+    "packages/protocol/src/**/*.ts",
+    "apps/desktop/src/**/*.{ts,tsx}"
+  ],
+  "note": "A component, imported by Desktop V2 Settings (Phone and tablet) and drawn at narrow widths in Domovoi Pairing Layouts, answering J23. Phase titles, the reach lines, the grant list and the outcome lines live in the component's data; the grant list is phoneAndTabletPromise in packages/protocol.",
+  "sample": [],
+  "annotations": [],
+  "elements": [
+    {
+      "id": "pairing-card.code",
+      "name": "Show a pairing code",
+      "where": "the card's code slot: Show a pairing code, the 180-second bound, the QR with its address and no credential, Show another cancelling the last, the locked state for a watching window",
+      "states": [
+        "idle",
+        "code shown",
+        "expired",
+        "locked: watching only",
+        "paired"
+      ],
+      "copy": [
+        "Show a pairing code",
+        "A code lasts 180 seconds. Showing another cancels it.",
+        "Locked: this window is watching only, and only a full client can ask for a code.",
+        "pair.issue refused · watch_only_client",
+        "The same code as",
+        "Show another",
+        "The previous code no longer works.",
+        "The QR holds this address and the code, never a credential:"
+      ],
+      "evidence": [
+        "Show a pairing code",
+        "A code lasts 180 seconds. Showing another cancels it.",
+        "The QR holds this address and the code, never a credential"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J23; device.issueCode exists but no desktop surface shows a code, its QR or its expiry"
+      }
+    },
+    {
+      "id": "pairing-card.grants",
+      "name": "What a paired device can do",
+      "where": "the card's right column: A PAIRED DEVICE CAN with the shared grant list, the certificate line, the in-app daemon warning",
+      "copy": [
+        "A PAIRED DEVICE CAN",
+        "A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.",
+        "While the daemon runs inside this app, quitting the app disconnects every paired device."
+      ],
+      "evidence": [
+        "A PAIRED DEVICE CAN",
+        "quitting the app disconnects every paired device"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J23; the grant list exists in packages/protocol for the CLI and phone, but no desktop surface draws it"
+      }
+    },
+    {
+      "id": "pairing-card.done",
+      "name": "Paired",
+      "where": "after a device pairs: Open Machines, Pair another",
+      "copy": [
+        "Open Machines",
+        "Pair another"
+      ],
+      "evidence": [
+        "Open Machines",
+        "Pair another"
+      ],
+      "missing": {
+        "since": "2026-09-23",
+        "reason": "drawn 2026-09-23 for J23"
+      }
+    }
+  ],
+  "humanRead": [
+    {
+      "id": "pairing-card.code",
+      "since": "2026-09-23",
+      "note": "Phase titles, reach lines and outcome lines are in the component's data; read them against the component. The design's own open question: the unbuilt grant line reads \"Terminal output is not on a phone yet.\" here and \"... Everything else here works.\" in phoneAndTabletPromise."
+    }
+  ]
+}

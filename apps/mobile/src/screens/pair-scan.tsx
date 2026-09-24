@@ -116,7 +116,7 @@ export function PairScanScreen({
               <Text
                 key={line.text}
                 variant="note"
-                className={line.tone === "unbuilt" ? "text-warning" : undefined}
+                className={line.tone === "unbuilt" ? "text-warning" : ""}
               >{line.text}</Text>
             ))}
             <Text variant="note">
