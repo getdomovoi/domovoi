@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { pairingAddressSchema } from "./pairing-url.js"
 import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
 import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
@@ -210,9 +211,13 @@ export const deviceIssueCodeParamsSchema = z.object({
   clientAccess: clientAccessSchema.optional(),
 }).strict()
 
+// The code comes with the address a device dials to spend it, or the problem
+// that leaves it nothing to dial, so the desktop card, the web connect page
+// and the command line draw one address and none of them guesses it.
 export const deviceIssueCodeResultSchema = z.object({
   code: pairingCodeSchema,
   expiresAt: offsetDateTimeSchema,
+  pairingAddress: pairingAddressSchema,
 }).strict()
 
 // Redeeming is one step, unlike a machine claim: a client stores its

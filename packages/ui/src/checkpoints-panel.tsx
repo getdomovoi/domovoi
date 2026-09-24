@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
+import { Input } from "./components/ui/input"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { CheckpointFork, CheckpointRestore } from "./checkpoint-actions.js"
 import { SessionHistoryRequestController, latestSessionHistoryRequest, mergeOlderHistory, sessionHistoryEntryOutcome } from "./session-history.js"
@@ -52,12 +53,95 @@ export function checkpointMeta(entry: CheckpointEntry): string {
   return entry.reason ? `${time} · ${reasonCopy[entry.reason]}` : time
 }
 
+// v2 draws Take a checkpoint at the head of the tab: an optional label, a line
+// saying what it commits, then the two buttons. The daemon refuses a checkpoint
+// while a turn runs, so the control says that instead of the design's
+// next-tool-boundary note.
+function TakeCheckpoint({
+  blockedReason,
+  onTake,
+}: {
+  blockedReason?: string | undefined
+  onTake: (label: string | undefined) => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [label, setLabel] = useState("")
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+  const blocked = Boolean(blockedReason)
+  const takeButton = useRef<HTMLButtonElement>(null)
+  const wasOpen = useRef(false)
+
+  useEffect(() => {
+    if (wasOpen.current && !open) takeButton.current?.focus()
+    wasOpen.current = open
+  }, [open])
+
+  const take = async () => {
+    setPending(true)
+    setError("")
+    try {
+      await onTake(label.trim() || undefined)
+      setOpen(false)
+      setLabel("")
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The checkpoint was not taken")
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <>
+      <Button
+        ref={takeButton}
+        variant="outline"
+        size="sm"
+        className="shrink-0 rounded-full"
+        disabled={blocked || open}
+        onClick={() => setOpen(true)}
+      >
+        <GitCommitHorizontalIcon data-icon="inline-start" />
+        Take a checkpoint
+      </Button>
+      {blockedReason ? <p className="basis-full text-right text-[11px] text-faint">{blockedReason}</p> : null}
+      {open && !blocked ? (
+        <form
+          className="flex basis-full flex-col gap-2 rounded-lg border border-primary bg-card p-3"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!pending) void take()
+          }}
+        >
+          <Input
+            aria-label="Checkpoint label"
+            autoFocus
+            value={label}
+            maxLength={512}
+            onChange={(event) => setLabel(event.target.value)}
+          />
+          <p className="text-[11px] leading-normal text-muted-foreground">
+            Optional label. It commits the worktree as it is now, on the session branch, and reverts like the others.
+          </p>
+          {error ? <Alert variant="destructive"><CircleStopIcon /><AlertTitle>Checkpoint not taken</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+          <div className="flex items-center gap-2">
+            <Button type="submit" size="sm" disabled={pending}>Take checkpoint</Button>
+            <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => { setOpen(false); setError("") }}>Cancel</Button>
+          </div>
+        </form>
+      ) : null}
+    </>
+  )
+}
+
 export function CheckpointsPanel({
   sessionId,
   connected,
   onLoad,
   onRestoreCheckpoint,
   onForkCheckpoint,
+  onTakeCheckpoint,
+  takeBlockedReason,
   restoreBlocked = false,
   revision,
 }: {
@@ -74,6 +158,9 @@ export function CheckpointsPanel({
   ) => Promise<SessionHistoryPage>
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
   onForkCheckpoint?: ((checkpointId: string) => void) | undefined
+  // Absent where this client cannot take one: watching, or no session.
+  onTakeCheckpoint?: ((label: string | undefined) => Promise<void>) | undefined
+  takeBlockedReason?: string | undefined
   restoreBlocked?: boolean
 }) {
   const [page, setPage] = useState<SessionHistoryPage>()
@@ -127,7 +214,10 @@ export function CheckpointsPanel({
     <div className="flex h-full min-h-0 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <div data-testid="checkpoints-content" className="flex w-0 min-w-full flex-col gap-2 p-3">
-          <p className="text-[12px] leading-relaxed text-muted-foreground">{checkpointsIntro}</p>
+          <div className="flex flex-wrap items-start gap-3">
+            <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">{checkpointsIntro}</p>
+            {onTakeCheckpoint ? <TakeCheckpoint blockedReason={takeBlockedReason} onTake={onTakeCheckpoint} /> : null}
+          </div>
           {entries.map((entry) => {
             const outcome = sessionHistoryEntryOutcome(entry)
             const sessionStart = entry.reason === "session-start"
