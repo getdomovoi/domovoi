@@ -1308,6 +1308,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...(windowBridge?.daemonService && !watching ? { service: {
                 install: async () => { const outcome = await windowBridge.daemonService!.install(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
                 remove: async () => { const outcome = await windowBridge.daemonService!.remove(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
+                update: async () => { const outcome = await windowBridge.daemonService!.update(); readServiceStatus(); if (outcome.ok) onLocalDaemonChanged?.(); return outcome },
                 refusal: serviceHandoffRefusal(snapshot),
               } } : {}),
             } } : {})}

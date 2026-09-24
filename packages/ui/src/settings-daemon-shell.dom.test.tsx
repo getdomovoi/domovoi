@@ -35,7 +35,7 @@ function bridge(install: () => Promise<{ ok: true; kind: "file"; target: string;
     minimize: () => {},
     maximize: () => {},
     close: () => {},
-    daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true, kind: "file", target: "/p", daemonRunning: true }) },
+    daemonService: { status: async () => ({ installed: false, running: false, detail: "" }), install, remove: async () => ({ ok: true, kind: "file", target: "/p", daemonRunning: true }), update: async () => ({ ok: true, kind: "file", target: "/p", daemonRunning: true }) },
   }
 }
 
@@ -128,4 +128,26 @@ it("names an older login service from the snapshot it answered with", async () =
   await user.click(screen.getByRole("button", { name: "Settings" }))
   const section = await screen.findByRole("region", { name: "Daemon on this machine" })
   expect(section.textContent).toContain(`The login service runs Domovoi 0.0.0. This app is ${clientVersion}.`)
+})
+
+// Ruled 2026-09-23 (#577, B): the button asks the desktop to update the
+// service in place, and a success tells the desktop to resolve its daemon again.
+it("updates an older login service through the desktop and reports the change", async () => {
+  const older = workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
+  older.machine = { ...older.machine, version: "0.0.0" }
+  const onLocalDaemonChanged = vi.fn()
+  const windowBridge = bridge(vi.fn())
+  const update = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }))
+  windowBridge.daemonService = { ...windowBridge.daemonService!, update }
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true }} onLocalDaemonChanged={onLocalDaemonChanged} />)
+  await act(async () => { completeHandshake(harness.socket(0), older) })
+  await settle()
+  const user = userEvent.setup()
+  await skipFirstRun(user)
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const section = await screen.findByRole("region", { name: "Daemon on this machine" })
+  await user.click(within(section).getByRole("button", { name: "Update the service" }))
+  await settle()
+  expect(update).toHaveBeenCalledOnce()
+  await vi.waitFor(() => expect(onLocalDaemonChanged).toHaveBeenCalledOnce())
 })
