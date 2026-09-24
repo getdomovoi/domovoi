@@ -765,6 +765,65 @@ describe("message order across processes", () => {
     await adapter.close()
   })
 
+  it.each([
+    ["the same cursor twice in a row", ["page-2", "page-2"]],
+    ["a cursor that comes back after another page", ["page-2", "page-3", "page-2"]],
+  ])("refuses to resume when the history repeats %s", async (_label, cursors) => {
+    const { client, factory } = harness()
+    for (const cursor of cursors) {
+      client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: "msg_000000000001AAAAAAAAAAAAAA" } }], response: new Response(null, { headers: { "x-next-cursor": cursor } }) })
+    }
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("OpenCode session history repeated a page")
+    await adapter.close()
+  })
+
+  it("reads the whole history at once when a full page comes back without a cursor", async () => {
+    const { client, factory } = harness()
+    const base = Date.now() + 18_000_000
+    const page = Array.from({ length: 200 }, (_, index) => ({ info: { id: `msg_${openCodeMessageOrder(base, index + 1)}GGGGGGGGGGGGGG` } }))
+    const unread = `msg_${openCodeMessageOrder(base + 60_000)}HHHHHHHHHHHHHH`
+    client.session.messages
+      .mockResolvedValueOnce({ data: page, response: new Response(null) })
+      .mockResolvedValueOnce({ data: [...page, { info: { id: unread } }], response: new Response(null) })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    const turnId = await adapter.startTurn({ threadId: "open-session", cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+
+    expect(client.session.messages).toHaveBeenCalledTimes(2)
+    const fallback = client.session.messages.mock.calls[1]![0] as { query: Record<string, unknown> }
+    expect(fallback.query).not.toHaveProperty("limit")
+    expect(fallback.query).not.toHaveProperty("before")
+    expect(turnId > unread).toBe(true)
+    await adapter.close()
+  })
+
+  it("refuses to resume when the whole-history read after a full page fails", async () => {
+    const { client, factory } = harness()
+    const page = Array.from({ length: 200 }, (_, index) => ({ info: { id: `msg_${openCodeMessageOrder(Date.now(), index + 1)}JJJJJJJJJJJJJJ` } }))
+    client.session.messages
+      .mockResolvedValueOnce({ data: page, response: new Response(null) })
+      .mockRejectedValueOnce(new Error("history unavailable"))
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await expect(adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") }))
+      .rejects.toThrow("history unavailable")
+    await adapter.close()
+  })
+
+  it("ends normally on a short last page without a cursor", async () => {
+    const { client, factory } = harness()
+    client.session.messages.mockResolvedValueOnce({ data: [{ info: { id: "msg_000000000001KKKKKKKKKKKKKK" } }], response: new Response(null) })
+    const adapter = new OpenCodeSdkAdapter(factory)
+
+    await adapter.resumeThread({ threadId: "open-session", cwd: "/worktree", runtime: runtime("build") })
+    expect(client.session.messages).toHaveBeenCalledTimes(1)
+    await adapter.close()
+  })
+
   it("counts a message another client creates while the history is being read", async () => {
     const { client, factory, stream } = harness()
     const base = Date.now() + 14_400_000

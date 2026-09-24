@@ -40,7 +40,7 @@ export type OpenCodeClient = {
     // the next page's cursor comes back in the X-Next-Cursor header.
     messages(options: {
       path: { id: string }
-      query: { directory: string; limit: number; before?: string }
+      query: { directory: string; limit?: number; before?: string }
       throwOnError: true
     }): Promise<OpenCodeResult<unknown> & { response?: Response }>
   }
@@ -409,24 +409,54 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
   // The servers page a session newest-first by creation time, and a clock that
   // stepped back can leave an older message with a greater id, so the whole
   // history is read for its greatest id.
+  // A repeated cursor means the pages cannot be trusted to cover the history,
+  // so the resume is refused. A full page with no cursor may be a server that
+  // does not page; the whole history is then read in one request.
   async #greatestMessageId(client: OpenCodeClient, threadId: string, cwd: string): Promise<string | undefined> {
     let greatest: string | undefined
     let before: string | undefined
+    const seenCursors = new Set<string>()
     for (let page = 0; page < maximumHistoryPages; page += 1) {
       const result = await client.session.messages({
         path: { id: threadId },
         query: { directory: cwd, limit: historyPageSize, ...(before === undefined ? {} : { before }) },
         throwOnError: true,
       })
-      const messages = unwrap(result, `${this.#identity.providerName} session history`)
-      for (const message of Array.isArray(messages) ? messages : []) {
-        greatest = laterMessageId(greatest, asRecord(asRecord(message)?.info)?.id)
-      }
+      const messages = this.#historyMessages(result)
+      for (const message of messages) greatest = laterMessageId(greatest, asRecord(asRecord(message)?.info)?.id)
       const next = result.response?.headers.get("x-next-cursor") ?? undefined
-      if (!next || next === before) return greatest
+      if (!next) {
+        if (messages.length < historyPageSize) return greatest
+        return this.#greatestInWholeHistory(client, threadId, cwd, greatest)
+      }
+      if (seenCursors.has(next)) {
+        throw new Error(`${this.#identity.providerName} session history repeated a page, so it cannot be resumed`)
+      }
+      seenCursors.add(next)
       before = next
     }
     throw new Error(`${this.#identity.providerName} session history is too long to resume`)
+  }
+
+  async #greatestInWholeHistory(
+    client: OpenCodeClient,
+    threadId: string,
+    cwd: string,
+    greatest: string | undefined,
+  ): Promise<string | undefined> {
+    const result = await client.session.messages({
+      path: { id: threadId },
+      query: { directory: cwd },
+      throwOnError: true,
+    })
+    let whole = greatest
+    for (const message of this.#historyMessages(result)) whole = laterMessageId(whole, asRecord(asRecord(message)?.info)?.id)
+    return whole
+  }
+
+  #historyMessages(result: OpenCodeResult<unknown>): unknown[] {
+    const messages = unwrap(result, `${this.#identity.providerName} session history`)
+    return Array.isArray(messages) ? messages : []
   }
 
   #nextMessageId(session: Session): string {
