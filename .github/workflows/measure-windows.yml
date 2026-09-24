@@ -11,7 +11,7 @@ permissions:
 jobs:
   measure:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -32,21 +32,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build
-      - name: Claim tests, twelve rounds, with a process census every five seconds
+      - name: Recovery file three times on a runner whose first PowerShell run is the ancestry walk
         working-directory: apps/daemon
         run: |
-          stop="$RUNNER_TEMP/stop-sampler"
-          node measure/sampler.mjs "$stop" 5000 > ../../samples.log 2>&1 &
-          for round in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            echo "ROUND $round $(date -u +%H:%M:%S)" | tee -a ../../claims.log
-            npx vitest run --config measure/vitest.measure.config.ts --reporter=verbose src/workspace.test.ts -t "bounds claim" 2>&1 | tee -a ../../claims.log || true
+          for round in 1 2 3; do
+            echo "ROUND $round $(date -u +%H:%M:%S)" | tee -a ../../recovery.log
+            npx vitest run --reporter=verbose src/workspace-recovery.test.ts 2>&1 | tee -a ../../recovery.log || true
           done
-          touch "$stop"
-          wait
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: measure-logs-5-${{ matrix.attempt }}
-          path: |
-            claims.log
-            samples.log
+          name: measure-logs-6-${{ matrix.attempt }}
+          path: recovery.log
