@@ -220,3 +220,28 @@ it("links the release page directly where there is no desktop to open it", () =>
   expect(within(section).getByText("domovoid 0.9.4")).toBeTruthy()
   expect(within(section).getByRole("link", { name: "Release page" }).getAttribute("href")).toBe("https://github.com/getdomovoi/domovoi/releases")
 })
+
+// A daemon that reports a pending target is updating itself; the body stops
+// saying it does not, and one line names the target (ruled 2026-09-23).
+const pendingTarget = { pendingVersion: "0.9.5", pendingSourceCommit: "abcdef1".padEnd(40, "0") }
+const refusal = { reason: "busy" as const, message: "A turn is running." }
+it.each([
+  ["pending", { state: "pending" as const, ...pendingTarget }, "The daemon reports domovoid 0.9.5 · abcdef1 waiting to switch in."],
+  ["activating", { state: "activating" as const, ...pendingTarget }, "The daemon reports it is switching to domovoid 0.9.5 · abcdef1 now."],
+  ["deferred", { state: "deferred" as const, ...pendingTarget, refusal }, "The daemon reports domovoid 0.9.5 · abcdef1 waiting. The switch was put off: A turn is running."],
+])("names the %s update the daemon reports", async (_state, status, line) => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), ...status })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText(line)).toBeTruthy()
+  expect(within(section).getByText("This build is not signed. Get new versions from the release page.")).toBeTruthy()
+  expect(section.textContent).not.toContain("does not update itself")
+  expect(within(section).getByText("Not signed")).toBeTruthy()
+})
+
+it("adds nothing for a quarantined target", async () => {
+  render(<SettingsShell {...shellProps()} about={{ version: "0.9.4", onUpdateStatus: vi.fn(async () => ({ channel: "stable" as const, currentVersion: "0.9.4", currentSourceCommit: "3f8b01d".padEnd(40, "0"), state: "quarantined" as const, ...pendingTarget, refusal })) }} />)
+  const section = screen.getByRole("region", { name: "About this build" })
+  expect(await within(section).findByText("domovoid 0.9.4 · 3f8b01d")).toBeTruthy()
+  expect(within(section).getByText("This build is not signed and does not update itself. Get new versions from the release page.")).toBeTruthy()
+  expect(section.textContent).not.toContain("The daemon reports")
+})

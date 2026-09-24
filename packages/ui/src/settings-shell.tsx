@@ -40,17 +40,31 @@ export type AboutBuild = {
   onOpenReleasePage?: (() => Promise<boolean>) | undefined
 }
 
+// A daemon that reports a pending target is updating itself, so the body
+// drops "does not update itself" and one line names the target. Quarantined
+// targets were refused by the daemon and add nothing (ruled 2026-09-23).
+function pendingUpdateLine(status: UpdateStatus): string | undefined {
+  if (!status.pendingVersion || !status.pendingSourceCommit) return undefined
+  const target = `domovoid ${status.pendingVersion} · ${status.pendingSourceCommit.slice(0, 7)}`
+  if (status.state === "pending") return `The daemon reports ${target} waiting to switch in.`
+  if (status.state === "activating") return `The daemon reports it is switching to ${target} now.`
+  if (status.state === "deferred" && status.refusal) return `The daemon reports ${target} waiting. The switch was put off: ${status.refusal.message}`
+  return undefined
+}
+
 function AboutBuildSection({ about }: { about: AboutBuild }) {
-  const [commit, setCommit] = useState<string | undefined>(undefined)
+  const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
   const { onUpdateStatus } = about
   useEffect(() => {
     let active = true
     onUpdateStatus().then(
-      (status) => { if (active) setCommit(status.currentSourceCommit?.slice(0, 7)) },
-      () => { if (active) setCommit(undefined) },
+      (next) => { if (active) setStatus(next) },
+      () => { if (active) setStatus(undefined) },
     )
     return () => { active = false }
   }, [onUpdateStatus])
+  const commit = status?.currentSourceCommit?.slice(0, 7)
+  const pending = status ? pendingUpdateLine(status) : undefined
   return (
     <section aria-labelledby="settings-about" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -62,7 +76,14 @@ function AboutBuildSection({ about }: { about: AboutBuild }) {
           Not signed
         </span>
       </div>
-      <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
+      {pending ? (
+        <>
+          <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">This build is not signed. Get new versions from the release page.</p>
+          <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">{pending}</p>
+        </>
+      ) : (
+        <p className="m-0 text-[12px] leading-[1.55] text-muted-foreground">This build is not signed and does not update itself. Get new versions from the release page.</p>
+      )}
       {about.onOpenReleasePage ? (
         <Button variant="outline" size="sm" className="self-start" onClick={() => void about.onOpenReleasePage?.()}>
           Release page
